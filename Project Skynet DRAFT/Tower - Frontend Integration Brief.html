@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"></meta>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"></meta>
+<title>Tower — Frontend Integration Brief</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"></link>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous"></link>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"></link>
+<style>
+  :root {
+    --paper: #FBFAF7; --card: #FFFFFF; --ink: #1B1E24; --body: #3A3F4A; --soft: #6A7180; --faint: #969CA8;
+    --line: #E6E4DD; --line2: #EFEDE7; --rule: #D9D6CD;
+    --accent: #B5740A; --accent-bright: #FFB224;
+    --ok: #1F8A4C; --warn: #B5740A; --info: #2E6FD6; --violet: #7C5CD6; --danger: #C8472F;
+    --band: #11141A; --band2: #1A1F29;
+    --ui: 'Space Grotesk', sans-serif; --mono: 'IBM Plex Mono', monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--paper); color: var(--body); font-family: var(--ui); font-size: 15px; line-height: 1.62; -webkit-font-smoothing: antialiased; }
+  .doc { max-width: 860px; margin: 0 auto; padding: 0 0 120px; }
+
+  /* ---- header band ---- */
+  .band { background: var(--band); color: #E9ECF2; padding: 52px 60px 46px; border-bottom: 3px solid var(--accent-bright); }
+  .band-kicker { font-family: var(--mono); font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--accent-bright); margin: 0 0 18px; display: flex; align-items: center; gap: 10px; }
+  .band-logo { width: 22px; height: 22px; border-radius: 5px; background: var(--accent-bright); color: #11141A; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; }
+  .band h1 { font-size: 40px; line-height: 1.08; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 14px; color: #fff; }
+  .band p { font-size: 16px; line-height: 1.55; color: #AEB6C4; margin: 0; max-width: 620px; }
+  .band-meta { display: flex; flex-wrap: wrap; gap: 18px 26px; margin-top: 26px; font-family: var(--mono); font-size: 12px; color: #7E869A; }
+  .band-meta span { white-space: nowrap; }
+  .band-meta b { color: #C4CBD8; font-weight: 500; }
+
+  /* ---- body sections ---- */
+  .body { padding: 0 60px; }
+  section { padding: 40px 0 4px; border-bottom: 1px solid var(--line); }
+  section:last-of-type { border-bottom: none; }
+  .secnum { font-family: var(--mono); font-size: 12px; color: var(--accent); letter-spacing: 0.14em; font-weight: 600; }
+  h2 { font-size: 25px; font-weight: 700; letter-spacing: -0.015em; color: var(--ink); margin: 8px 0 6px; }
+  h3 { font-size: 17px; font-weight: 600; color: var(--ink); margin: 30px 0 8px; letter-spacing: -0.01em; }
+  .lead { font-size: 16px; color: var(--soft); margin: 0 0 22px; max-width: 640px; }
+  p { margin: 0 0 14px; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid color-mix(in oklch, var(--accent), transparent 65%); }
+  strong { color: var(--ink); font-weight: 600; }
+  ul, ol { margin: 0 0 16px; padding-left: 22px; }
+  li { margin: 0 0 7px; }
+  code { font-family: var(--mono); font-size: 0.86em; background: #F0EEE7; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; color: #5A4A1F; }
+  .mono { font-family: var(--mono); }
+
+  /* ---- TOC ---- */
+  .toc { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 26px; margin: 34px 0 8px; }
+  .toc-h { font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint); margin: 0 0 14px; }
+  .toc ol { margin: 0; padding: 0; list-style: none; columns: 2; column-gap: 36px; }
+  .toc li { margin: 0 0 9px; display: flex; gap: 10px; align-items: baseline; break-inside: avoid; }
+  .toc li span { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .toc a { color: var(--ink); border: none; font-size: 14px; }
+  .toc a:hover { color: var(--accent); }
+
+  /* ---- callout ---- */
+  .note { border-radius: 10px; padding: 16px 20px; margin: 20px 0; font-size: 14.5px; border: 1px solid; }
+  .note-h { font-weight: 600; display: block; margin-bottom: 4px; font-size: 13.5px; letter-spacing: 0.01em; }
+  .note.real { background: #F0F7F2; border-color: #C5E2D0; color: #2A5C3E; }
+  .note.real .note-h { color: var(--ok); }
+  .note.stub { background: #FBF3EC; border-color: #EAD4BE; color: #6E4D26; }
+  .note.stub .note-h { color: var(--warn); }
+  .note.info { background: #EEF3FC; border-color: #CBDBF3; color: #2C4C7A; }
+  .note.info .note-h { color: var(--info); }
+
+  /* ---- status / kind badges ---- */
+  .badge { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; border: 1px solid; border-radius: 5px; padding: 2px 8px; white-space: nowrap; vertical-align: middle; }
+  .b-ok { color: var(--ok); border-color: color-mix(in oklch, var(--ok), transparent 55%); background: color-mix(in oklch, var(--ok), transparent 92%); }
+  .b-warn { color: var(--warn); border-color: color-mix(in oklch, var(--warn), transparent 55%); background: color-mix(in oklch, var(--warn), transparent 92%); }
+  .b-info { color: var(--info); border-color: color-mix(in oklch, var(--info), transparent 55%); background: color-mix(in oklch, var(--info), transparent 92%); }
+  .b-violet { color: var(--violet); border-color: color-mix(in oklch, var(--violet), transparent 55%); background: color-mix(in oklch, var(--violet), transparent 92%); }
+  .b-muted { color: var(--soft); border-color: var(--rule); background: #F2F0EA; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+  /* ---- tables ---- */
+  .tbl { width: 100%; border-collapse: collapse; margin: 16px 0 22px; font-size: 13.5px; }
+  .tbl th { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); font-weight: 600; padding: 0 14px 9px 0; border-bottom: 1.5px solid var(--rule); vertical-align: bottom; }
+  .tbl td { padding: 11px 14px 11px 0; border-bottom: 1px solid var(--line2); vertical-align: top; color: var(--body); }
+  .tbl td:first-child { color: var(--ink); font-weight: 500; white-space: nowrap; }
+  .tbl tr:last-child td { border-bottom: none; }
+  .tbl code { white-space: nowrap; }
+  .tbl-tight td:first-child { font-family: var(--mono); font-size: 12.5px; color: var(--accent); font-weight: 500; }
+
+  /* ---- code block ---- */
+  pre { background: var(--band); color: #D7DCE6; border-radius: 11px; padding: 18px 20px; overflow-x: auto; margin: 16px 0 22px; font-family: var(--mono); font-size: 12.5px; line-height: 1.7; border: 1px solid #222834; }
+  pre .c { color: #6F7180; } pre .cm { color: #6A7180; font-style: italic; }
+  pre .k { color: #C99BFF; } pre .s { color: #8BD49C; } pre .n { color: #FFC861; } pre .p { color: #9FB0C8; }
+  pre .fn { color: #6FB6FF; }
+
+  /* ---- step / flow ---- */
+  .flow { display: flex; flex-direction: column; gap: 2px; margin: 18px 0 24px; }
+  .flow-step { display: grid; grid-template-columns: 30px 1fr; gap: 14px; align-items: start; padding: 12px 0; border-bottom: 1px solid var(--line2); }
+  .flow-step:last-child { border-bottom: none; }
+  .flow-n { width: 26px; height: 26px; border-radius: 50%; background: var(--band); color: var(--accent-bright); font-family: var(--mono); font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+  .flow-b strong { display: block; color: var(--ink); margin-bottom: 2px; }
+  .flow-b span { font-size: 13.5px; color: var(--soft); }
+  .flow-b code { font-size: 12px; }
+
+  /* ---- view cards ---- */
+  .vgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 20px 0 24px; }
+  .vcard { background: var(--card); border: 1px solid var(--line); border-radius: 11px; padding: 16px 18px; }
+  .vcard h4 { margin: 0 0 4px; font-size: 15px; color: var(--ink); display: flex; align-items: center; gap: 8px; }
+  .vcard .tag { font-family: var(--mono); font-size: 10px; color: var(--faint); letter-spacing: 0.06em; }
+  .vcard p { margin: 6px 0 0; font-size: 13.5px; color: var(--soft); line-height: 1.5; }
+  .vcard .ic { width: 22px; height: 22px; border-radius: 6px; background: #F0EEE7; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; color: var(--accent); }
+
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12px; border: 1px solid var(--line); border-radius: 20px; padding: 3px 11px 3px 9px; background: var(--card); color: var(--body); margin: 0 6px 8px 0; }
+  .chip .g { font-size: 13px; }
+  .chips { display: flex; flex-wrap: wrap; margin: 14px 0 20px; }
+
+  .kgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 11px; overflow: hidden; margin: 20px 0 24px; }
+  .kbox { background: var(--card); padding: 16px 18px; }
+  .kbox .n { font-family: var(--mono); font-size: 26px; font-weight: 600; color: var(--ink); letter-spacing: -0.02em; line-height: 1; }
+  .kbox .l { font-size: 12px; color: var(--soft); margin-top: 6px; }
+
+  .foot { padding: 30px 60px 0; color: var(--faint); font-size: 12.5px; font-family: var(--mono); }
+
+  @media print {
+    body { background: #fff; font-size: 11.5pt; }
+    .doc { max-width: none; padding: 0; }
+    .band { padding: 30px 0 26px; border-bottom-color: var(--accent); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .band, pre, .flow-n, .band-logo, .kgrid { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .body, .foot { padding-left: 0; padding-right: 0; }
+    section { break-inside: avoid-page; padding-top: 26px; }
+    h2, h3 { break-after: avoid; }
+    .tbl, pre, .vgrid, .kgrid, .flow, .note { break-inside: avoid; }
+    .toc { break-inside: avoid; }
+    a { color: var(--ink); border: none; }
+  }
+  @media (max-width: 720px) {
+    .band, .body, .foot { padding-left: 24px; padding-right: 24px; }
+    .band h1 { font-size: 30px; }
+    .toc ol, .vgrid, .kgrid { columns: 1; grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="doc">
+
+  <header class="band">
+    <p class="band-kicker"><span class="band-logo">▣</span> Tower · Internal Engineering Brief</p>
+    <h1>Mission Control — Frontend Integration Brief</h1>
+    <p>What the prototype is, how it's structured, and exactly where the frontend team plugs in real data and a real orchestration backend. The UI is complete and interactive; this document marks the seams between the working interface and the engine that needs to be wired behind it.</p>
+    <div class="band-meta">
+      <span>Artifact &nbsp;<b>Tower - Mission Control.html</b></span>
+      <span>Shell &nbsp;<b>Operator / "Classic"</b></span>
+      <span>Stack &nbsp;<b>React 18 + Babel (in-browser)</b></span>
+      <span>Status &nbsp;<b>UI complete · engine stubbed</b></span>
+      <span>Updated &nbsp;<b>Jun 2026</b></span>
+    </div>
+  </header>
+
+  <div class="body">
+
+    <nav class="toc">
+      <div class="toc-h">Contents</div>
+      <ol>
+        <li><span>01</span><a href="#what">What we built</a></li>
+        <li><span>02</span><a href="#real">Real vs. stubbed</a></li>
+        <li><span>03</span><a href="#shell">App shell &amp; navigation</a></li>
+        <li><span>04</span><a href="#views">Views &amp; what each does</a></li>
+        <li><span>05</span><a href="#hitl">The HITL model</a></li>
+        <li><span>06</span><a href="#entities">Core data entities</a></li>
+        <li><span>07</span><a href="#state">State &amp; data flow</a></li>
+        <li><span>08</span><a href="#api">Integration surface (the API)</a></li>
+        <li><span>09</span><a href="#files">Component &amp; file map</a></li>
+        <li><span>10</span><a href="#visual">Visual language</a></li>
+        <li><span>11</span><a href="#next">Open questions &amp; sequence</a></li>
+      </ol>
+    </nav>
+
+    <section id="what">
+      <div class="secnum">01</div>
+      <h2>What we built</h2>
+      <p class="lead">A non-IDE supervision console for running a fleet of coding agents in parallel. It answers the three operator questions: <em>what needs me right now</em>, <em>where is each task</em>, and <em>who is working on what</em>.</p>
+      <p>Tower is a "flight deck," not a code editor. Operators don't read files — they review <strong>plans, decisions, approvals, and diffs</strong>, then unblock agents so work never stalls. The codebase is shown <strong>code-agnostically</strong>: as named architectural modules (Billing, Auth, Shared UI…) rather than a file tree.</p>
+      <div class="kgrid">
+        <div class="kbox"><div class="n">5</div><div class="l">home lenses on the same fleet</div></div>
+        <div class="kbox"><div class="n">4</div><div class="l">HITL decision types</div></div>
+        <div class="kbox"><div class="n">5</div><div class="l">agent providers configurable</div></div>
+        <div class="kbox"><div class="n">9</div><div class="l">codebase modules tracked</div></div>
+        <div class="kbox"><div class="n">3</div><div class="l">live CRUD domains (projects · tasks · fleet)</div></div>
+        <div class="kbox"><div class="n">0</div><div class="l">file trees or diffs shown raw</div></div>
+      </div>
+      <p>The three founding requirements, and where each is served:</p>
+      <table class="tbl">
+        <thead><tr><th>Operator need</th><th>Where it lives</th></tr></thead>
+        <tbody>
+          <tr><td>Resolve HITL stops fast so agents work, not wait</td><td><strong>Inbox</strong> + Home "needs you" strip + inline approve/decide on the agent</td></tr>
+          <tr><td>See where each task is — current step &amp; progress</td><td><strong>Subway</strong> &amp; <strong>Timeline</strong> lenses + per-agent <strong>plan</strong> checklist</td></tr>
+          <tr><td>Know who works on what (no double work)</td><td><strong>Roster</strong> &amp; <strong>Ledger</strong> lenses + <strong>conflict</strong> banners on shared modules</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="real">
+      <div class="secnum">02</div>
+      <h2>Real vs. stubbed</h2>
+      <p class="lead">The single most important thing for the frontend team: the interface is real and complete, but it runs on in-memory mock data and a fake activity loop. Nothing talks to a server yet.</p>
+      <div class="note real">
+        <span class="note-h">✓ Real &amp; interactive (built)</span>
+        Full navigation; all five home lenses; Inbox triage with approve / reject / modify / chat / pick-option; project CRUD; task backlog CRUD; "assign" spins up an agent on an idle runner; fleet configure / retire across 5 providers; agent detail with plan, log, live preview, fork; status-bar drill-downs; clickable conflict + dependency display; tweakable theme/density.
+      </div>
+      <div class="note stub">
+        <span class="note-h">◌ Stubbed — needs a backend (wire these)</span>
+        <strong>Persistence</strong> (all state resets on reload) · <strong>agent execution</strong> (assigned agents get a canned 4-step plan + simulated log, they don't really run) · <strong>chat</strong> (echoes a single canned reply) · <strong>dependency &amp; conflict detection</strong> (display-only from static data, not computed) · <strong>live preview</strong> (rendered mock per known agent id, not a real build artifact) · <strong>heartbeat</strong> (a static number, doesn't tick).
+      </div>
+      <p>Everywhere the UI calls a handler (see <a href="#api">§08</a>), the handler currently mutates React state. Each one is a drop-in seam for a real API call.</p>
+    </section>
+
+    <section id="shell">
+      <div class="secnum">03</div>
+      <h2>App shell &amp; navigation</h2>
+      <p class="lead">The "Classic" Operator shell: a title bar, a persistent left sidebar, the content area, and a status bar. Selected from a five-way layout exploration; the others live in <code>Tower - Operator Variations.html</code> for reference.</p>
+      <table class="tbl">
+        <thead><tr><th>Region</th><th>Component</th><th>Contents</th></tr></thead>
+        <tbody>
+          <tr><td>Title bar</td><td><code>TitleBar</code></td><td>macOS traffic lights · centered product name · search field · user avatar</td></tr>
+          <tr><td>Sidebar</td><td><code>OpSidebar</code></td><td>Workspace switcher (Atlas) · primary nav · live project list (colored by state) · user footer</td></tr>
+          <tr><td>Content</td><td><code>&lt;main&gt;</code></td><td>The active view (see §04)</td></tr>
+          <tr><td>Status bar</td><td><code>OpStatusBar</code></td><td>Clickable <em>running</em> / <em>need you</em> counts (open agent lists) · busy/idle · longest wait · sync state</td></tr>
+        </tbody>
+      </table>
+      <p>Primary nav routes a single <code>view</code> string. <strong>Home</strong> and <strong>Timeline</strong> both land on Home with a preset lens. There are <strong>no keyboard shortcuts</strong> (removed by request).</p>
+      <pre><span class="cm">// app.jsx — the router is one piece of state</span>
+<span class="k">const</span> [view, setView] = React.useState(<span class="s">'home'</span>);
+<span class="cm">// 'home' | 'queue' | 'projects' | 'fleet' | 'project' | 'agent'</span>
+<span class="k">const</span> [lens, setLens] = React.useState(<span class="s">'subway'</span>);
+<span class="cm">// home lens: 'subway' | 'timeline' | 'ledger' | 'roster'</span></pre>
+      <div class="note info">
+        <span class="note-h">Routing note</span>
+        Navigation is in-memory state, not URLs. If the integrated app needs deep links, shareable views, or browser back/forward, map <code>view</code> + <code>projectId</code> + <code>agentId</code> + <code>lens</code> onto the router of your choice.
+      </div>
+    </section>
+
+    <section id="views">
+      <div class="secnum">04</div>
+      <h2>Views &amp; what each does</h2>
+      <p class="lead">One fleet, several lenses. Home hosts four interchangeable lenses above a persistent "needs you" strip; the remaining destinations are full views.</p>
+      <h3>Home lenses</h3>
+      <div class="vgrid">
+        <div class="vcard"><h4><span class="ic">▦</span> Subway</h4><div class="tag">PROGRESS · default</div><p>Each project is a transit line; stations are plan steps with the current step lit. Lines branch when a forked task spins off mid-flow.</p></div>
+        <div class="vcard"><h4><span class="ic">▭</span> Timeline</h4><div class="tag">PROGRESS</div><p>Horizontal time bars per agent with dependency connectors (task B gated on task A) and a "now" marker.</p></div>
+        <div class="vcard"><h4><span class="ic">≣</span> Ledger</h4><div class="tag">OVERVIEW</div><p>Dense grouped list of every active task with status, runner, progress and current step — the fast scan.</p></div>
+        <div class="vcard"><h4><span class="ic">◉</span> Roster</h4><div class="tag">WHO · idle/active</div><p>Worktree-style cards split into active agents and idle runners, with heartbeat and provider — answers "who's on what."</p></div>
+      </div>
+      <p>Above every lens: the <strong>needs-you strip</strong> (oldest-first blocker cards → open the agent) and <strong>conflict banners</strong> when two agent families touch the same module.</p>
+      <h3>Full views</h3>
+      <table class="tbl">
+        <thead><tr><th>View</th><th>Component</th><th>Purpose &amp; interactions</th></tr></thead>
+        <tbody>
+          <tr><td>Inbox</td><td><code>QueueView</code></td><td>The HITL queue. Each card carries full context; resolve in place — approve / reject / modify / chat / pick an option (see §05).</td></tr>
+          <tr><td>Projects</td><td><code>OverviewView</code></td><td>Project grid with rollup stats + create. Click through to a project.</td></tr>
+          <tr><td>Project</td><td><code>ProjectView</code></td><td>Kanban (Backlog → Active → Done). Edit goal, delete, CRUD backlog tasks, <em>Assign</em> a task (spins an agent), and a foldable <strong>Live Preview</strong> of the project's aimed delivery (hidden for non-visual work).</td></tr>
+          <tr><td>Fleet</td><td><code>FleetView</code></td><td>Configure / edit / retire runners across providers. Busy runners can't be retired.</td></tr>
+          <tr><td>Agent</td><td><code>AgentDetail</code></td><td>One agent: plan checklist, activity log, modified modules, live preview, chat, inline HITL resolution, and <em>Fork agent</em> (duplicate with shared context).</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="hitl">
+      <div class="secnum">05</div>
+      <h2>The HITL model</h2>
+      <p class="lead">The heart of the product. An agent that needs a human raises a queue item of one of four kinds; the operator resolves it and the agent resumes immediately. This is the contract the backend must speak.</p>
+      <table class="tbl">
+        <thead><tr><th>Kind</th><th>Badge</th><th>Raised when…</th><th>Extra payload</th></tr></thead>
+        <tbody>
+          <tr><td><code>approval</code></td><td><span class="badge b-warn">APPROVAL</span></td><td>Agent wants to run a risky action (migration, command)</td><td><code>command</code></td></tr>
+          <tr><td><code>question</code></td><td><span class="badge b-info">DECISION</span></td><td>Agent needs a choice to proceed</td><td><code>options[]</code>, <code>recommended</code></td></tr>
+          <tr><td><code>plan</code></td><td><span class="badge b-violet">PLAN REVIEW</span></td><td>Agent wants sign-off before executing a plan</td><td><code>steps[]</code></td></tr>
+          <tr><td><code>diff</code></td><td><span class="badge b-ok">DIFF REVIEW</span></td><td>Work is ready to merge</td><td><code>diff {add, del, files[]}</code></td></tr>
+        </tbody>
+      </table>
+      <h3>Resolution actions</h3>
+      <p>Every card resolves through one handler, <code>resolve(queueItemId, action)</code>:</p>
+      <table class="tbl tbl-tight">
+        <tbody>
+          <tr><td>'approve'</td><td>Accept; agent resumes. For <code>diff</code> kind this merges and marks the agent <span class="badge b-muted">DONE</span>.</td></tr>
+          <tr><td>'reject'</td><td>Decline; agent revises its approach and resumes.</td></tr>
+          <tr><td>'modify'</td><td>Operator types an adjusted instruction; agent resumes <em>with that guidance</em>. (Inline composer.)</td></tr>
+          <tr><td>'option-N'</td><td>For <code>question</code> kind — operator picked option index N.</td></tr>
+          <tr><td>chat</td><td>Discuss <em>before</em> deciding without resolving — the agent keeps working meanwhile. (Does not call <code>resolve</code>.)</td></tr>
+        </tbody>
+      </table>
+      <div class="note info">
+        <span class="note-h">Design decisions baked in</span>
+        Cards never resolve from a list with bare buttons alone — full context travels with the card, and the whole card is clickable through to the task. <strong>Modify</strong> and <strong>Chat</strong> are first-class alongside Approve/Reject (an explicit requirement). Queue is sorted <strong>oldest-wait first</strong>.
+      </div>
+    </section>
+
+    <section id="entities">
+      <div class="secnum">06</div>
+      <h2>Core data entities</h2>
+      <p class="lead">All shapes live in <code>data.jsx</code> as mock instances. These are the contracts to back with real models. Replace the constants; keep the shapes (or adapt the components — they're small).</p>
+
+      <h3>Agent</h3>
+      <pre><span class="k">{</span>
+  id, name,                          <span class="cm">// task this agent owns</span>
+  status: <span class="s">'running'|'waiting'|'review'|'done'</span>,
+  areas: [<span class="s">'api/billing'</span>, …],          <span class="cm">// module ids it touches</span>
+  progress: <span class="n">0.45</span>,                     <span class="cm">// 0–1</span>
+  branch: <span class="s">'agent/billing-hooks'</span>,
+  model: <span class="s">'opus-4.5'</span>, hb: <span class="n">742</span>,         <span class="cm">// heartbeat: seconds since last beat</span>
+  startedMin: <span class="n">84</span>,
+  plan: [{ t: <span class="s">'Apply migration'</span>, s: <span class="s">'done'|'now'|'todo'</span> }, …],
+  files: [<span class="s">'api/billing/webhooks.ts'</span>, …], <span class="cm">// modified, shown as modules</span>
+  log: [<span class="s">'14:02  worker passes replay suite'</span>, …],
+  visual: <span class="k">true</span>,                       <span class="cm">// has a renderable delivery (optional)</span>
+  conflict: <span class="s">'shared/ui'</span>,               <span class="cm">// contested module (optional)</span>
+  fork: <span class="s">'billing'</span>,                       <span class="cm">// parent agent id, if forked (optional)</span>
+  branchFrom: { parent: <span class="s">'billing'</span>, step: <span class="n">1</span> } <span class="cm">// subway branch origin (optional)</span>
+<span class="k">}</span></pre>
+
+      <h3>Project</h3>
+      <pre><span class="k">{</span> id, name, goal,
+  agentIds: [<span class="s">'billing'</span>, <span class="s">'billing-replay'</span>],  <span class="cm">// active/done agents</span>
+  backlog: [<span class="s">'Alerting on drift'</span>, …]          <span class="cm">// unassigned task strings</span>
+<span class="k">}</span></pre>
+
+      <h3>Queue item (HITL)</h3>
+      <pre><span class="k">{</span> id, agentId,
+  kind: <span class="s">'approval'|'question'|'plan'|'diff'</span>,
+  waited: <span class="n">742</span>,                       <span class="cm">// seconds (the live tick increments this)</span>
+  risk: <span class="s">'low'|'medium'|'high'</span>,
+  title, why,                          <span class="cm">// human-readable context</span>
+  command, steps, options, recommended, diff   <span class="cm">// kind-specific (see §05)</span>
+<span class="k">}</span></pre>
+
+      <h3>Fleet runner &amp; Provider</h3>
+      <pre><span class="cm">// runner</span>
+<span class="k">{</span> rn: <span class="s">'runner-04'</span>, provider: <span class="s">'codex'</span>, model: <span class="s">'gpt-5.2-codex'</span>, idle: <span class="s">'18m'</span> <span class="k">}</span>
+<span class="cm">// provider catalog — drives glyphs, colors, and the model dropdown</span>
+PROVIDERS.codex = { name: <span class="s">'Codex'</span>, glyph: <span class="s">'◌'</span>, color: <span class="s">'#19C2A8'</span>,
+                    models: [<span class="s">'gpt-5.2-codex'</span>, <span class="s">'gpt-5.2-codex-mini'</span>] }</pre>
+      <div class="chips">
+        <span class="chip"><span class="g" style="color:#D97757">✱</span> Claude Code</span>
+        <span class="chip"><span class="g" style="color:#19C2A8">◌</span> Codex</span>
+        <span class="chip"><span class="g" style="color:#5EA2FF">✦</span> Gemini CLI</span>
+        <span class="chip"><span class="g" style="color:#7C5CD6">▎</span> Cursor Agent</span>
+        <span class="chip"><span class="g" style="color:#8B93A5">◈</span> GitHub Copilot</span>
+      </div>
+
+      <h3>Supporting maps</h3>
+      <ul>
+        <li><code>MODULES</code> — module id → friendly name (<code>'api/billing'</code> → "Billing"). The code-agnostic layer; nothing renders raw paths.</li>
+        <li><code>DEPS</code> — <code>{ from, to }</code> agent-id pairs powering Timeline connectors and gating.</li>
+        <li><code>AREAS</code> — module id → file count (sizing only).</li>
+        <li><code>RUNNERS</code> — agent id → runner name (<code>window.RUNNERS</code>, mutated when agents spin up).</li>
+      </ul>
+    </section>
+
+    <section id="state">
+      <div class="secnum">07</div>
+      <h2>State &amp; data flow</h2>
+      <p class="lead">All live state is lifted into <code>App</code> (<code>app.jsx</code>). Views are presentational — they receive data and callbacks as props and never hold domain state.</p>
+      <pre><span class="cm">// app.jsx — the four live collections</span>
+<span class="k">const</span> [agents,   setAgents]   = React.useState(AGENTS);
+<span class="k">const</span> [queue,    setQueue]    = React.useState(QUEUE);
+<span class="k">const</span> [projects, setProjects] = React.useState(PROJECTS);
+<span class="k">const</span> [fleet,    setFleet]    = React.useState(FLEET);
+
+window.LIVE_PROJECTS = projects;  <span class="cm">// helpers resolve names against current state</span></pre>
+      <p><strong>The live simulation</strong> (toggleable via Tweaks → "Live activity") runs two intervals. Replace both with your real-time transport (WebSocket / SSE / poll):</p>
+      <table class="tbl">
+        <thead><tr><th>Loop</th><th>Now</th><th>Replace with</th></tr></thead>
+        <tbody>
+          <tr><td>1s tick</td><td>Increments <code>queue[].waited</code></td><td>Server-authoritative wait time, or compute from a <code>raisedAt</code> timestamp client-side</td></tr>
+          <tr><td>4s log poll</td><td>Appends canned lines from <code>LOG_POOL</code> &amp; nudges <code>progress</code></td><td>Streamed agent log lines + real progress/heartbeat events</td></tr>
+        </tbody>
+      </table>
+      <div class="note stub">
+        <span class="note-h">Persistence is the #1 wire-up</span>
+        Every CRUD and resolve mutates React state only — a reload restores the seed data. Back the four collections with your store/API before anything else; the rest of the integration hangs off that.
+      </div>
+    </section>
+
+    <section id="api">
+      <div class="secnum">08</div>
+      <h2>Integration surface (the API)</h2>
+      <p class="lead">These handlers are defined in <code>App</code> and threaded to views as props. Each is a clean seam: swap the local state mutation for a backend call (optimistic update or await + refetch — your call).</p>
+      <table class="tbl tbl-tight">
+        <thead><tr><th>Handler</th><th>Fires when</th><th>Backend needs to…</th></tr></thead>
+        <tbody>
+          <tr><td>resolve(id, action)</td><td>Operator resolves a HITL item</td><td>Deliver the decision to the agent &amp; resume/merge it</td></tr>
+          <tr><td>createProject(p)</td><td>New project</td><td>Persist project, return id</td></tr>
+          <tr><td>updateProject(id, patch)</td><td>Edit goal/name</td><td>Persist patch</td></tr>
+          <tr><td>deleteProject(id)</td><td>Delete project</td><td>Delete + reassign/stop its agents</td></tr>
+          <tr><td>addTask / updateTask / deleteTask</td><td>Backlog edits</td><td>Persist the backlog list</td></tr>
+          <tr><td>assignTask(pid, idx)</td><td>"Assign" a backlog task</td><td><strong>Provision a runner &amp; start a real agent</strong> on the task; return the agent</td></tr>
+          <tr><td>configureAgent(r)</td><td>Add a runner in Fleet</td><td>Register the runner with the provider/credentials</td></tr>
+          <tr><td>updateAgent(rn, patch)</td><td>Edit a runner</td><td>Persist config (model, etc.)</td></tr>
+          <tr><td>retireAgent(rn)</td><td>Retire a runner</td><td>Tear down (guarded: busy runners blocked in UI)</td></tr>
+          <tr><td>openAgent / openProject</td><td>Navigation</td><td>Nothing — pure client nav</td></tr>
+        </tbody>
+      </table>
+      <p>Two behaviors that aren't single handlers but need backends: <strong>chat</strong> (the composer in <code>QueueCard</code> / <code>AgentDetail</code> currently echoes one canned reply — point it at the agent's conversation channel) and <strong>Fork agent</strong> (the button in <code>AgentDetail</code> — should duplicate an agent with shared context onto a new runner; the data model already supports it via <code>fork</code> / <code>branchFrom</code>).</p>
+    </section>
+
+    <section id="files">
+      <div class="secnum">09</div>
+      <h2>Component &amp; file map</h2>
+      <p class="lead">In-browser React via Babel — no build step. The HTML loads React, then the JSX modules in order. Components export to <code>window</code> to share scope across files.</p>
+      <table class="tbl tbl-tight">
+        <thead><tr><th>File</th><th>Contains</th></tr></thead>
+        <tbody>
+          <tr><td>Tower - Mission Control.html</td><td>Document shell, all CSS (design tokens + component styles), script load order</td></tr>
+          <tr><td>data.jsx</td><td>All mock data &amp; the entity shapes (§06); <code>PROVIDERS</code>, <code>MODULES</code>, <code>DEPS</code></td></tr>
+          <tr><td>app.jsx</td><td><code>App</code>: live state, all handlers (§08), the simulation loop, Tweaks, shell assembly</td></tr>
+          <tr><td>components.jsx</td><td>Shell (<code>TitleBar</code>, <code>OpSidebar</code>, <code>OpStatusBar</code>) + <code>QueueView</code>, <code>ProjectView</code>, <code>AgentDetail</code>, <code>OverviewView</code></td></tr>
+          <tr><td>views.jsx</td><td>Home + the lenses: <code>HomeView</code>, <code>SubwayView</code>, <code>TimelineView</code>, <code>LedgerView</code>, <code>RosterView</code>, <code>FleetView</code>, <code>GetStarted</code></td></tr>
+          <tr><td>previews.jsx</td><td><code>PreviewFor</code> — the rendered "live preview" mock per agent</td></tr>
+          <tr><td>tweaks-panel.jsx</td><td>Tweaks shell (theme accent, density, live toggle)</td></tr>
+        </tbody>
+      </table>
+      <div class="note info">
+        <span class="note-h">Productionizing the stack</span>
+        The in-browser Babel setup is ideal for design iteration, not for shipping. For the integrated app, port these modules into your real toolchain (Vite/Next + JSX), replace the <code>window.*</code> exports with imports, and lift the four collections into your state layer. Component logic transfers directly.
+      </div>
+    </section>
+
+    <section id="visual">
+      <div class="secnum">10</div>
+      <h2>Visual language</h2>
+      <p class="lead">Dark mission-control aesthetic. Type and color carry meaning — status and provider colors are semantic, not decorative.</p>
+      <table class="tbl">
+        <thead><tr><th>Token</th><th>Value</th><th>Use</th></tr></thead>
+        <tbody>
+          <tr><td>Display / UI</td><td>Space Grotesk</td><td>All interface text</td></tr>
+          <tr><td>Mono</td><td>IBM Plex Mono</td><td>IDs, runners, branches, logs, metrics</td></tr>
+          <tr><td>Accent (signal)</td><td><code>#FFB224</code> amber</td><td>Primary action, "needs you", brand — tweakable</td></tr>
+          <tr><td>Running</td><td><span class="badge b-ok">●&nbsp;green</span> <code>#3DD68C</code></td><td>Agent working</td></tr>
+          <tr><td>Blocked / waiting</td><td><span class="badge b-warn">●&nbsp;amber</span> <code>#FFB224</code></td><td>Needs a human</td></tr>
+          <tr><td>Review</td><td><span class="badge b-info">●&nbsp;blue</span> <code>#5EA2FF</code></td><td>Diff/plan ready</td></tr>
+          <tr><td>Done</td><td><span class="badge b-muted">●&nbsp;grey</span></td><td>Merged / complete</td></tr>
+        </tbody>
+      </table>
+      <p>Density is tweakable (compact / regular / comfy) via a <code>data-density</code> attribute and spacing variables. Minimum body type holds at a legible size; the dark palette and restrained accent keep a dense fleet readable. <strong>No emoji</strong> as UI — provider glyphs are typographic marks.</p>
+    </section>
+
+    <section id="next">
+      <div class="secnum">11</div>
+      <h2>Open questions &amp; recommended sequence</h2>
+      <p class="lead">Suggested order to turn the prototype into the integrated product.</p>
+      <div class="flow">
+        <div class="flow-step"><span class="flow-n">1</span><div class="flow-b"><strong>Persistence + read API</strong><span>Back the four collections (agents, queue, projects, fleet). Everything else depends on this.</span></div></div>
+        <div class="flow-step"><span class="flow-n">2</span><div class="flow-b"><strong>Real-time transport</strong><span>Replace the two sim loops with streamed log / progress / heartbeat / new-blocker events.</span></div></div>
+        <div class="flow-step"><span class="flow-n">3</span><div class="flow-b"><strong>HITL round-trip</strong><span>Wire <code>resolve()</code> to actually deliver the decision and resume/merge the agent. Highest operator value.</span></div></div>
+        <div class="flow-step"><span class="flow-n">4</span><div class="flow-b"><strong>Agent lifecycle</strong><span>Make <code>assignTask</code> &amp; Fork provision a runner and start a real agent; enforce the busy-runner retire guard server-side.</span></div></div>
+        <div class="flow-step"><span class="flow-n">5</span><div class="flow-b"><strong>Chat channel</strong><span>Connect the discuss composer to the agent's real conversation.</span></div></div>
+        <div class="flow-step"><span class="flow-n">6</span><div class="flow-b"><strong>Computed conflicts &amp; deps</strong><span>Derive module conflicts and task dependencies from real agent activity instead of static data.</span></div></div>
+        <div class="flow-step"><span class="flow-n">7</span><div class="flow-b"><strong>Live preview source</strong><span>Decide how a project's "aimed delivery" preview is produced (deploy URL, build artifact, screenshot service) and which projects qualify as visual.</span></div></div>
+      </div>
+      <h3>Decisions we need from product / backend</h3>
+      <ul>
+        <li>Routing model — do we need shareable URLs / deep links for views, projects, and agents?</li>
+        <li>Auth, workspaces, and multi-operator presence (the avatar/workspace switcher are visual today).</li>
+        <li>Decision audit trail — should resolved HITL items be reviewable after the fact? (Not built.)</li>
+        <li>Capacity policy — should the UI nudge to spin up runners when the queue backs up? (Hooks exist, behavior doesn't.)</li>
+        <li>Source of truth for "modules" — derived from repo structure, or curated?</li>
+        <li>Mobile: project notes call for shipping the app as an installable, Inbox-first PWA — confirm scope.</li>
+      </ul>
+    </section>
+
+  </div>
+
+  <div class="foot">Tower · Mission Control — internal engineering brief · companion to <b>Tower - Mission Control.html</b> · not for external distribution</div>
+
+</div>
+</body>
+</html>
