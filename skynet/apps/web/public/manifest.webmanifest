@@ -1,0 +1,49 @@
+{
+  "name": "Skynet — Mission Control",
+  "short_name": "Skynet",
+  "description": "Supervise a fleet of coding agents in parallel. Triage what needs you from the Inbox.",
+  "id": "/?source=pwa",
+  "start_url": "/?view=queue&source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#0B0D11",
+  "theme_color": "#0B0D11",
+  "categories": ["productivity", "developer"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Inbox — what needs you",
+      "short_name": "Inbox",
+      "description": "Jump straight to the human-in-the-loop queue",
+      "url": "/?view=queue&source=shortcut",
+      "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Fleet",
+      "short_name": "Fleet",
+      "url": "/?view=fleet&source=shortcut",
+      "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Home",
+      "short_name": "Home",
+      "url": "/?view=home&source=shortcut",
+      "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    }
+  ]
+}
