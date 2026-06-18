@@ -7,6 +7,7 @@ import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { config } from "./config.js";
 import { InProcessBus } from "./bus.js";
+import type { Bus } from "./bus.js";
 import { Hub } from "./hub.js";
 import { Orchestrator } from "./orchestrator.js";
 import { registerApi } from "./api.js";
@@ -23,7 +24,13 @@ async function main() {
   } else {
     store = new MemoryStore();
   }
-  const bus = new InProcessBus();
+  let bus: Bus;
+  if (config.bus === "redis") {
+    const { RedisBus } = await import("./bus.redis.js");
+    bus = await RedisBus.create(config.redisUrl);
+  } else {
+    bus = new InProcessBus();
+  }
   const hub = new Hub(store, bus);
   const orchestrator = new Orchestrator(store, hub);
 
