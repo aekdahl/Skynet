@@ -13,6 +13,14 @@
     "./claude": {
       "types": "./dist/claude.d.ts",
       "default": "./dist/claude.js"
+    },
+    "./codex": {
+      "types": "./dist/codex.d.ts",
+      "default": "./dist/codex.js"
+    },
+    "./gemini": {
+      "types": "./dist/gemini.d.ts",
+      "default": "./dist/gemini.js"
     }
   },
   "scripts": {
