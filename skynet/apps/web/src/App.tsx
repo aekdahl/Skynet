@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNow, useStore } from "./lib/store";
+import { initialView, onNavigate } from "./pwa/launch"; // [pwa] Inbox-first launch + push deep-link
 import { TitleBar, OpSidebar, OpStatusBar } from "./components/shell";
 import {
   TweaksPanel,
@@ -32,13 +33,29 @@ export function App() {
   const now = useNow(1000);
   const [t, setTweak] = useTweaks();
 
-  const [view, setView] = useState<ViewName>("home");
+  const [view, setView] = useState<ViewName>(() => initialView() ?? "home"); // [pwa]
   const [lens, setLens] = useState<Lens>("subway");
   const [projectId, setProjectId] = useState<string | null>(null);
   const [agentId, setAgentId] = useState<string | null>(null);
   const [from, setFrom] = useState<ViewName>("home");
   const [fromP, setFromP] = useState<ViewName>("home");
   const [selIdx] = useState(0);
+
+  // [pwa] A push / notification click (relayed by the service worker) or a
+  // manifest shortcut navigates the app in-place — usually to the Inbox.
+  useEffect(
+    () =>
+      onNavigate((v, navAgentId) => {
+        if (navAgentId) {
+          setFrom(v);
+          setAgentId(navAgentId);
+          setView("agent");
+        } else {
+          setView(v);
+        }
+      }),
+    [],
+  );
 
   const openAgent = (id: string) => {
     setFrom(view === "agent" ? from : view);
