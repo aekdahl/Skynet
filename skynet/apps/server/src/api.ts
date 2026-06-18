@@ -79,7 +79,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     const resolved = await hub.resolveHitl(req.params.id, resolution);
     // Deliver to the agent & resume/merge (idempotent: only on first resolve).
     if (resolved && resolved.resolution?.at === resolution.at) {
-      await orchestrator.deliver(item.agentId, resolution);
+      await orchestrator.deliver(item, resolution);
     }
     return resolved ?? item;
   });
