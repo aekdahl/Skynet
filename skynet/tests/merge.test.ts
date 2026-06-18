@@ -30,6 +30,11 @@ const commit = (file: string, content: string, msg: string) => {
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), "skynet-merge-"));
   execFileSync("git", ["init", "-b", "main", repo], { env: GIT_ENV });
+  // Repo-local identity so the MergeEngine's *own* git commits work even when
+  // the host has no global git config (e.g. CI runners). GIT_ENV only covers
+  // this test's setup commits — the engine shells out with the ambient env.
+  git("config", "user.email", "test@skynet.local");
+  git("config", "user.name", "Test");
   commit("README.md", "base\n", "init");
 });
 afterEach(() => rmSync(repo, { recursive: true, force: true }));
