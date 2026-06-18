@@ -62,6 +62,8 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.get("/api/providers", async () => store.listProviders());
   app.get("/api/projects", async (req) => store.listProjects(ws(req)));
   app.get("/api/fleet/runners", async (req) => store.listRunners(ws(req)));
+  // Decision audit trail — resolved HITL items, newest first (W8, Backend Brief §11).
+  app.get("/api/audit", async (req) => store.listAudit(ws(req)));
 
   // ── HITL ───────────────────────────────────────────────────────────────
   app.post<{ Params: { id: string } }>("/api/hitl/:id/resolve", async (req, reply) => {
