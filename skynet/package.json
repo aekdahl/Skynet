@@ -13,9 +13,12 @@
     "dev:server": "pnpm --filter @skynet/server dev",
     "dev:web": "pnpm --filter @skynet/web dev",
     "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "clean": "pnpm -r exec rm -rf dist node_modules/.cache"
   },
   "devDependencies": {
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
   }
 }

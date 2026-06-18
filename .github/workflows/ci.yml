@@ -1,0 +1,70 @@
+name: CI
+
+# Typecheck + build + test on every PR (and pushes to main). The monorepo lives
+# under skynet/, so all package-manager steps run there.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: skynet
+
+    # Postgres so the Store adapter contract runs against the real adapter too,
+    # not just the in-memory one (tests skip the PG suite when DATABASE_URL is unset).
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: skynet
+          POSTGRES_PASSWORD: skynet
+          POSTGRES_DB: skynet
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U skynet"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: skynet/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # shared + runner-sdk emit the dist/.d.ts that apps' typecheck resolves
+      # against — build them before typechecking.
+      - name: Build packages
+        run: pnpm -r --filter "./packages/**" build
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Build apps
+        run: pnpm -r --filter "./apps/**" build
+
+      - name: Test
+        run: pnpm test
+        env:
+          DATABASE_URL: postgres://skynet:skynet@localhost:5432/skynet
