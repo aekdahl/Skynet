@@ -20,7 +20,7 @@ import {
   type Task,
 } from "@skynet/shared";
 import { now } from "./config.js";
-import { resolvePrincipal, tokenFrom, type Principal } from "./auth.js";
+import { authenticate, type Principal } from "./auth.js";
 import type { Hub } from "./hub.js";
 import { NoCapacityError, type Orchestrator } from "./orchestrator.js";
 import type { Store } from "./store/store.js";
@@ -49,8 +49,10 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   // ── auth: every /api route resolves a workspace-scoped principal ──────────
   app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
     if (!req.url.startsWith("/api")) return;
-    const token = tokenFrom(req.headers.authorization, (req.query as { token?: string })?.token);
-    const principal = resolvePrincipal(token);
+    // Login is the one public /api route — it issues the token, so it can't
+    // require one. (Path may carry a query string; match the prefix.)
+    if (req.url === "/api/auth/login" || req.url.startsWith("/api/auth/login?")) return;
+    const principal = authenticate(req);
     if (!principal) return reply.code(401).send({ error: "Unauthorized" });
     req.principal = principal;
   });

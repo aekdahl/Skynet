@@ -6,7 +6,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
 import type { WsMessage } from "@skynet/shared";
-import { resolvePrincipal, tokenFrom } from "./auth.js";
+import { authenticate } from "./auth.js";
 import type { Bus } from "./bus.js";
 import type { Store } from "./store/store.js";
 
@@ -19,8 +19,7 @@ export async function registerWs(app: FastifyInstance, deps: WsDeps): Promise<vo
   const { store, bus } = deps;
 
   app.get("/ws", { websocket: true }, async (socket: WebSocket, req: FastifyRequest) => {
-    const token = tokenFrom(req.headers.authorization, (req.query as { token?: string })?.token);
-    const principal = resolvePrincipal(token);
+    const principal = authenticate(req);
     if (!principal) {
       socket.close(1008, "Unauthorized");
       return;
