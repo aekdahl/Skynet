@@ -14,6 +14,10 @@ import { registerApi } from "./api.js";
 import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
 import { registerPreview, backfillPreviews } from "./preview/index.js";
+import { configureAuth } from "./auth.js";
+import { MemorySessionStore } from "./auth/sessions.js";
+import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
+import { registerAuthRoutes } from "./auth/routes.js";
 import { MemoryStore } from "./store/memory.js";
 import type { Store } from "./store/store.js";
 
@@ -35,12 +39,18 @@ async function main() {
   const hub = new Hub(store, bus);
   const orchestrator = new Orchestrator(store, hub);
 
+  // Auth: dev tokens always resolve; real login issues sessions (W6).
+  const sessions = new MemorySessionStore();
+  const operators = new MemoryOperatorDirectory(seedOperators());
+  configureAuth({ sessions });
+
   const app = Fastify({ logger: { level: config.nodeEnv === "development" ? "info" : "warn" } });
   await app.register(cors, { origin: true });
   await app.register(websocket);
 
   app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: config.runner }));
 
+  await registerAuthRoutes(app, { sessions, operators });
   await registerApi(app, { store, hub, orchestrator });
   await registerWs(app, { store, bus });
   // W5 live preview: mount the sandboxed /preview route and stamp visual/
