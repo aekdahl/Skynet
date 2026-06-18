@@ -85,6 +85,7 @@ export function OpSidebar({
           view === "home" && lens !== "timeline",
         )}
         {item("Inbox", "⊙", () => setView("queue"), view === "queue", queueCount)}
+        {item("Audit", "❑", () => setView("audit"), view === "audit")}
         {item(
           "Projects",
           "▤",

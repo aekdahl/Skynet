@@ -14,9 +14,17 @@ import { OverviewView } from "./views/overview";
 import { FleetView } from "./views/fleet";
 import { ProjectView } from "./views/project";
 import { QueueView } from "./views/queue";
+import { AuditView } from "./views/audit";
 import { AgentDetail } from "./views/agent";
 
-export type ViewName = "home" | "queue" | "projects" | "fleet" | "project" | "agent";
+export type ViewName =
+  | "home"
+  | "queue"
+  | "audit"
+  | "projects"
+  | "fleet"
+  | "project"
+  | "agent";
 export type Lens = "subway" | "timeline" | "ledger" | "roster";
 
 const VIEW_LABEL: Record<string, string> = {
@@ -24,6 +32,7 @@ const VIEW_LABEL: Record<string, string> = {
   projects: "Projects",
   fleet: "Fleet",
   queue: "Inbox",
+  audit: "Audit",
   project: "Project",
 };
 
@@ -120,6 +129,9 @@ export function App() {
             )}
             {store.loaded && view === "queue" && (
               <QueueView selectedIdx={selIdx} onOpen={openAgent} now={now} />
+            )}
+            {store.loaded && view === "audit" && (
+              <AuditView now={now} onOpenAgent={openAgent} />
             )}
             {store.loaded && view === "agent" && agent && (
               <AgentDetail
