@@ -55,14 +55,29 @@ export class Orchestrator {
     }
   }
 
-  // Lazily resolve the runner provider. RUNNER=claude loads the real Claude
-  // Code SDK on demand (heavy); the default mock path never imports it.
+  // Lazily resolve the runner provider. Each real provider is a subpath import
+  // loaded on demand (heavy SDKs/CLIs); the default mock path imports none.
   private getProvider(): Promise<RunnerProvider> {
     if (!this.providerPromise) {
-      this.providerPromise =
-        config.runner === "claude"
-          ? import("@skynet/runner-sdk/claude").then((m) => new m.ClaudeRunnerProvider())
-          : Promise.resolve(new MockRunnerProvider());
+      switch (config.runner) {
+        case "claude":
+          this.providerPromise = import("@skynet/runner-sdk/claude").then((m) => new m.ClaudeRunnerProvider());
+          break;
+        case "codex":
+          this.providerPromise = import("@skynet/runner-sdk/codex").then((m) => new m.CodexRunnerProvider());
+          break;
+        case "gemini":
+          this.providerPromise = import("@skynet/runner-sdk/gemini").then((m) => new m.GeminiRunnerProvider());
+          break;
+        case "cursor":
+          this.providerPromise = import("@skynet/runner-sdk/cursor").then((m) => new m.CursorRunnerProvider());
+          break;
+        case "copilot":
+          this.providerPromise = import("@skynet/runner-sdk/copilot").then((m) => new m.CopilotRunnerProvider());
+          break;
+        default:
+          this.providerPromise = Promise.resolve(new MockRunnerProvider());
+      }
     }
     return this.providerPromise;
   }
