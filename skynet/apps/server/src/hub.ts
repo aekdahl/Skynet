@@ -15,10 +15,31 @@ import type {
 } from "@skynet/shared";
 import { now } from "./config.js";
 import type { Bus } from "./bus.js";
+import { computeConflicts } from "./derive/conflicts.js";
 import type { Store } from "./store/store.js";
 
 export class Hub {
+  // Per-workspace set of already-emitted conflict keys, to avoid re-emitting.
+  private conflictKeys = new Map<string, Set<string>>();
+
   constructor(private store: Store, private bus: Bus) {}
+
+  /**
+   * Recompute conflicts for a workspace and emit `conflict.detected` for any
+   * newly-contested module (Backend Brief §09). Call after agent activity that
+   * changes module sets or active status.
+   */
+  async refreshConflicts(workspaceId: string): Promise<void> {
+    const agents = await this.store.listAgents(workspaceId);
+    const seen = this.conflictKeys.get(workspaceId) ?? new Set<string>();
+    for (const c of computeConflicts(agents)) {
+      const key = `${c.moduleId}|${[...c.agentIds].sort().join(",")}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      this.bus.publish(workspaceId, { type: "conflict.detected", moduleId: c.moduleId, agentIds: c.agentIds });
+    }
+    this.conflictKeys.set(workspaceId, seen);
+  }
 
   /** Resolve an agent's workspace so delta-only events land on the right channel. */
   private async wsOf(agentId: string): Promise<string | undefined> {

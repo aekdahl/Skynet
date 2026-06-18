@@ -8,15 +8,17 @@ import type { WebSocket } from "ws";
 import type { WsMessage } from "@skynet/shared";
 import { authenticate } from "./auth.js";
 import type { Bus } from "./bus.js";
+import type { Hub } from "./hub.js";
 import type { Store } from "./store/store.js";
 
 export interface WsDeps {
   store: Store;
   bus: Bus;
+  hub: Hub;
 }
 
 export async function registerWs(app: FastifyInstance, deps: WsDeps): Promise<void> {
-  const { store, bus } = deps;
+  const { store, bus, hub } = deps;
 
   app.get("/ws", { websocket: true }, async (socket: WebSocket, req: FastifyRequest) => {
     const principal = authenticate(req);
@@ -37,5 +39,8 @@ export async function registerWs(app: FastifyInstance, deps: WsDeps): Promise<vo
     const unsubscribe = bus.subscribe(ws, (event) => send(event));
     socket.on("close", unsubscribe);
     socket.on("error", unsubscribe);
+
+    // 3. compute current conflicts now that the socket is listening (W4)
+    void hub.refreshConflicts(ws);
   });
 }

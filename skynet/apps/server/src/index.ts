@@ -52,7 +52,7 @@ async function main() {
 
   await registerAuthRoutes(app, { sessions, operators });
   await registerApi(app, { store, hub, orchestrator });
-  await registerWs(app, { store, bus });
+  await registerWs(app, { store, bus, hub });
   // W5 live preview: mount the sandboxed /preview route and stamp visual/
   // previewUrl onto already-stored agents. No-op unless PREVIEW != off.
   await registerPreview(app);
