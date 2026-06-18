@@ -13,6 +13,7 @@ import { Orchestrator } from "./orchestrator.js";
 import { registerApi } from "./api.js";
 import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
+import { registerPreview, backfillPreviews } from "./preview/index.js";
 import { MemoryStore } from "./store/memory.js";
 import type { Store } from "./store/store.js";
 
@@ -42,6 +43,11 @@ async function main() {
 
   await registerApi(app, { store, hub, orchestrator });
   await registerWs(app, { store, bus });
+  // W5 live preview: mount the sandboxed /preview route and stamp visual/
+  // previewUrl onto already-stored agents. No-op unless PREVIEW != off.
+  await registerPreview(app);
+  const stamped = await backfillPreviews(store);
+  if (stamped) app.log.info(`preview: stamped ${stamped} agent(s) with a live preview URL`);
   const servingSpa = await registerStatic(app);
 
   await app.listen({ port: config.port, host: "0.0.0.0" });
