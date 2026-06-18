@@ -166,6 +166,8 @@ export class Orchestrator {
       startedAt: now(),
       lastHeartbeatAt: now(),
       visual: false,
+      previewUrl: null,
+      dependsOn: [],
       parentId: null,
       branchFromStep: null,
     };

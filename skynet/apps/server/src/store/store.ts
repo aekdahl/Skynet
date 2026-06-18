@@ -5,6 +5,7 @@
 
 import type {
   Agent,
+  AuditRecord,
   Dependency,
   HitlItem,
   Module,
@@ -14,6 +15,8 @@ import type {
   Snapshot,
   Task,
 } from "@skynet/shared";
+
+export type { AuditRecord };
 
 export interface Store {
   /** Full connect-time snapshot of one workspace's collections. */
@@ -54,16 +57,7 @@ export interface Store {
   listProviders(): Promise<ProviderInfo[]>;
 
   /** Append a decision to the audit trail (who/what/when/payload). */
-  recordAudit(entry: AuditEntry): Promise<void>;
-}
-
-/** Decision audit record — Backend Brief §11. */
-export interface AuditEntry {
-  workspaceId: string;
-  hitlId: string;
-  agentId: string;
-  action: string;
-  operatorId: string;
-  at: number;
-  payload: unknown;
+  recordAudit(entry: AuditRecord): Promise<void>;
+  /** Read the workspace's decision audit trail, newest first (W8). */
+  listAudit(workspaceId: string): Promise<AuditRecord[]>;
 }

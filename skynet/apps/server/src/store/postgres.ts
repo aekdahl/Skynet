@@ -7,6 +7,7 @@
 import { Pool } from "pg";
 import type {
   Agent,
+  AuditRecord,
   Dependency,
   HitlItem,
   Module,
@@ -17,7 +18,7 @@ import type {
   Task,
 } from "@skynet/shared";
 import { now } from "../config.js";
-import type { AuditEntry, Store } from "./store.js";
+import type { Store } from "./store.js";
 import { buildSeed, PROVIDERS } from "./seed.js";
 
 const SCHEMA = `
@@ -156,11 +157,24 @@ export class PostgresStore implements Store {
   listDeps(ws: string) { return this.list<Dependency>("deps", ws); }
   async listProviders(): Promise<ProviderInfo[]> { return PROVIDERS; }
 
-  async recordAudit(e: AuditEntry): Promise<void> {
+  async recordAudit(e: AuditRecord): Promise<void> {
     await this.pool.query(
       "INSERT INTO hitl_audit(workspace_id,hitl_id,agent_id,action,operator_id,at,payload) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)",
       [e.workspaceId, e.hitlId, e.agentId, e.action, e.operatorId, e.at, J(e.payload)],
     );
+  }
+
+  async listAudit(ws: string): Promise<AuditRecord[]> {
+    const { rows } = await this.pool.query<{
+      workspace_id: string; hitl_id: string; agent_id: string; action: string; operator_id: string; at: string; payload: unknown;
+    }>(
+      "SELECT workspace_id,hitl_id,agent_id,action,operator_id,at,payload FROM hitl_audit WHERE workspace_id=$1 ORDER BY at DESC, id DESC",
+      [ws],
+    );
+    return rows.map((r) => ({
+      workspaceId: r.workspace_id, hitlId: r.hitl_id, agentId: r.agent_id,
+      action: r.action, operatorId: r.operator_id, at: Number(r.at), payload: r.payload,
+    }));
   }
 
   async snapshot(ws: string): Promise<Snapshot> {
