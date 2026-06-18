@@ -19,10 +19,10 @@ function App() {
   const [queue, setQueue] = React.useState(QUEUE);
   const [projects, setProjects] = React.useState(PROJECTS);
   const [fleet, setFleet] = React.useState(FLEET);
-  const [view, setView] = React.useState('home');   // home | queue | projects | fleet | project | agent
-  const [lens, setLens] = React.useState('subway');  // home lens: subway | timeline | ledger | roster
-  const [projectId, setProjectId] = React.useState(null);
-  const [agentId, setAgentId] = React.useState(null);
+  // Router state (view | queue | projects | fleet | project | agent) and the home lens
+  // (subway | timeline | ledger | roster) are synced to the URL hash for shareable
+  // deep links + browser back/forward; reloading a link restores the view. See routing.jsx.
+  const { view, setView, lens, setLens, projectId, setProjectId, agentId, setAgentId } = useTowerRouter();
   const [from, setFrom] = React.useState('home');
   const [fromP, setFromP] = React.useState('home');
   const [selIdx, setSelIdx] = React.useState(0);
@@ -154,6 +154,9 @@ function App() {
                          onResolve={resolve} onOpenAgent={openAgent} onBack={() => setView(fromP)}
                          onUpdateProject={updateProject} onDeleteProject={deleteProject}
                          onAddTask={addTask} onUpdateTask={updateTask} onDeleteTask={deleteTask} onAssignTask={assignTask} />
+          )}
+          {view === 'project' && !project && (
+            <div className="vw"><div className="kb-empty">This project doesn’t exist or was deleted. <button className="kb-assign" onClick={() => setView('projects')}>All projects →</button></div></div>
           )}
           {view === 'queue' && (
             <QueueView queue={queue} agents={agents} selectedIdx={selIdx}
