@@ -14,6 +14,7 @@ import { registerApi } from "./api.js";
 import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
 import { registerPreview, backfillPreviews } from "./preview/index.js";
+import { registerSecretsRoutes } from "./secrets/index.js";
 import { configureAuth } from "./auth.js";
 import { MemorySessionStore } from "./auth/sessions.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
@@ -52,6 +53,8 @@ async function main() {
 
   await registerAuthRoutes(app, { sessions, operators });
   await registerApi(app, { store, hub, orchestrator });
+  // Workspace-scoped provider keys (encrypted at rest); /api auth hook applies.
+  await registerSecretsRoutes(app);
   await registerWs(app, { store, bus, hub });
   // W5 live preview: mount the sandboxed /preview route and stamp visual/
   // previewUrl onto already-stored agents. No-op unless PREVIEW != off.

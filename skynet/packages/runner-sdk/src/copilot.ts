@@ -83,7 +83,11 @@ class CopilotRunnerHandle implements RunnerHandle {
     try {
       child = spawn(COPILOT_BIN, args, {
         cwd: this.spec.cwd ?? process.cwd(),
-        env: process.env,
+        // Per-workspace key (orchestrator-injected) overrides ambient env. The
+        // Copilot CLI authenticates via GitHub token env vars.
+        env: this.spec.apiKey
+          ? { ...process.env, GH_TOKEN: this.spec.apiKey, GITHUB_TOKEN: this.spec.apiKey }
+          : process.env,
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {

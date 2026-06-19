@@ -115,6 +115,9 @@ class ClaudeRunnerHandle implements RunnerHandle {
       permissionMode: "default",
       canUseTool,
       maxTurns: 60,
+      // Per-workspace key (orchestrator-injected) overrides the ambient env for
+      // this session only — no global process.env mutation across workspaces.
+      ...(spec.apiKey ? { env: { ...process.env, ANTHROPIC_API_KEY: spec.apiKey } } : {}),
       ...(resumeSessionId ? { resume: resumeSessionId, forkSession: true } : {}),
     };
 

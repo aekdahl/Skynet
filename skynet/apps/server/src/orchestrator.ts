@@ -16,6 +16,7 @@ import type { Hub } from "./hub.js";
 import { MergeEngine, type MergeRequest } from "./merge.js";
 import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { previewService } from "./preview/index.js";
+import { secretService } from "./secrets/index.js";
 import type { Store } from "./store/store.js";
 
 interface LiveAgent {
@@ -215,8 +216,10 @@ export class Orchestrator {
     await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 
     const provider = await this.getProvider();
+    // Inject this workspace's provider key (env fallback when none is stored).
+    const apiKey = await secretService.resolve(project.workspaceId, runner.provider);
     const handle = await provider.start(
-      { agentId, projectId, task: task.text, model: runner.model, branch, cwd: config.runnerCwd },
+      { agentId, projectId, task: task.text, model: runner.model, branch, cwd: config.runnerCwd, apiKey },
       this.events(),
     );
     this.live.set(agentId, { handle, runnerId: runner.id, taskId });
@@ -267,8 +270,9 @@ export class Orchestrator {
     if (project) await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 
     const provider = await this.getProvider();
+    const apiKey = await secretService.resolve(parent.workspaceId, runner.provider);
     const handle = await provider.start(
-      { agentId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd: config.runnerCwd, parentId, branchFromStep: stepIndex },
+      { agentId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd: config.runnerCwd, parentId, branchFromStep: stepIndex, apiKey },
       this.events(),
     );
     this.live.set(agentId, { handle, runnerId: runner.id, taskId: null });

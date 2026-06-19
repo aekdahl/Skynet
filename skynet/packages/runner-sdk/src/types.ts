@@ -18,6 +18,13 @@ export interface StartSpec {
   /** Set when forked — provider should clone the parent's context. */
   parentId?: string | null;
   branchFromStep?: number | null;
+  /**
+   * Per-workspace provider API key, resolved by the orchestrator from the
+   * secret store and injected into the runner's environment/SDK so each
+   * workspace uses its own credentials. Null/absent → fall back to the ambient
+   * environment (the local-dev default). Never logged.
+   */
+  apiKey?: string | null;
 }
 
 /**

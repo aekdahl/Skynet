@@ -118,7 +118,8 @@ class CursorRunnerHandle implements RunnerHandle {
     try {
       child = spawn(CURSOR_BIN, args, {
         cwd: this.spec.cwd ?? process.cwd(),
-        env: process.env,
+        // Per-workspace key (orchestrator-injected) overrides ambient env.
+        env: this.spec.apiKey ? { ...process.env, CURSOR_API_KEY: this.spec.apiKey } : process.env,
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {

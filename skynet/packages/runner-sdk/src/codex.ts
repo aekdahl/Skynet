@@ -56,6 +56,11 @@ const codex: CliVendor = {
   bin: BIN,
   installHint: "Install with `npm i -g @openai/codex` and authenticate (`codex login`).",
 
+  env(spec: StartSpec): Record<string, string> {
+    // Per-workspace key injected by the orchestrator; empty → inherit ambient env.
+    return spec.apiKey ? { OPENAI_API_KEY: spec.apiKey } : {};
+  },
+
   buildArgs(spec: StartSpec): string[] {
     // `exec` = non-interactive; `--json` = JSONL event stream on stdout.
     return [
