@@ -15,11 +15,17 @@ import { config, now } from "./config.js";
 import type { Hub } from "./hub.js";
 import { MergeEngine, type MergeRequest } from "./merge.js";
 import type { Store } from "./store/store.js";
+import { WorktreeProvisioner } from "./worktrees.js";
 
 interface LiveAgent {
   handle: RunnerHandle;
   runnerId: string | null;
   taskId: string | null;
+  /** The agent's branch (used as its merge-queue source). */
+  branch: string;
+  /** Set when the agent runs in a real worktree; enables the commit→review→merge
+   *  loop. The ref the branch was cut from, for diffing. */
+  baseRef?: string;
 }
 
 export class NoCapacityError extends Error {
@@ -35,9 +41,16 @@ export class Orchestrator {
   private seq = 0;
   private providerPromise?: Promise<RunnerProvider>;
   private merge?: MergeEngine;
+  private worktrees?: WorktreeProvisioner;
 
   constructor(private store: Store, private hub: Hub) {
     if (config.integrationRepo) {
+      // One worktree per agent feeds real branches to the merge queue (§2).
+      this.worktrees = new WorktreeProvisioner(
+        config.integrationRepo,
+        config.baseBranch,
+        config.worktreesDir,
+      );
       this.merge = new MergeEngine(
         config.integrationRepo,
         config.baseBranch,
@@ -115,18 +128,73 @@ export class Orchestrator {
 
   private async complete(agentId: string, branch: string): Promise<void> {
     const live = this.live.get(agentId);
-    // Free the runner back to idle.
-    if (live?.runnerId) {
-      const runner = await this.store.getRunner(live.runnerId);
-      if (runner) await this.hub.upsertRunner({ ...runner, status: "idle", idleSince: now() });
+
+    // Real loop: the agent ran in an isolated worktree → commit its diff onto
+    // its branch and raise a review. Approving it enqueues the branch onto the
+    // merge queue (deliver → merge.enqueue → completeMerged).
+    if (this.worktrees && this.merge && live?.baseRef !== undefined) {
+      const agent = await this.store.getAgent(agentId);
+      const res = await this.worktrees
+        .commitAll(agentId, `Skynet agent ${agentId}${agent ? `: ${agent.name}` : ""}`)
+        .catch((err) => {
+          void this.hub.agentLog(agentId, `commit failed: ${(err as Error).message}`);
+          return { committed: false } as const;
+        });
+
+      if (res.committed) {
+        const stat = await this.worktrees.diffStat(agentId, live.baseRef);
+        await this.freeRunner(live.runnerId); // compute is done; awaiting review
+        await this.hub.agentStatus(agentId, "review");
+        await this.raiseDiffReview(agentId, stat);
+        this.live.delete(agentId);
+        return;
+      }
+
+      // Nothing to integrate — retire the worktree and complete plainly.
+      await this.hub.agentLog(agentId, "no changes to integrate");
+      await this.worktrees.retire(agentId).catch(() => undefined);
+    } else if (this.worktrees) {
+      await this.worktrees.retire(agentId).catch(() => undefined);
     }
-    // Move the owning task to Done.
+
+    // Phase 0 / no-diff completion: free the runner, finish the task & agent.
+    await this.freeRunner(live?.runnerId ?? null);
     if (live?.taskId) {
       const task = await this.store.getTask(live.taskId);
       if (task) await this.hub.upsertTask({ ...task, state: "done" });
     }
     await this.hub.agentCompleted(agentId, branch);
     this.live.delete(agentId);
+  }
+
+  /** Return a runner to the idle pool (no-op if it's already gone). */
+  private async freeRunner(runnerId: string | null): Promise<void> {
+    if (!runnerId) return;
+    const runner = await this.store.getRunner(runnerId);
+    if (runner) await this.hub.upsertRunner({ ...runner, status: "idle", idleSince: now() });
+  }
+
+  /** Raise the `diff` review that gates a finished agent's branch into the queue. */
+  private async raiseDiffReview(agentId: string, stat: { add: number; del: number; files: string[] }): Promise<void> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent) return;
+    await this.hub.raiseHitl({
+      id: `q-diff-${agentId}-${++this.seq}`,
+      workspaceId: agent.workspaceId,
+      agentId,
+      kind: "diff",
+      title: `Review diff: ${agent.name}`,
+      why: `Finished on ${agent.branch} — ${stat.add}+/${stat.del}- across ${stat.files.length} file(s). Approve to integrate.`,
+      risk: stat.del > 200 || stat.files.length > 40 ? "high" : "medium",
+      raisedAt: now(),
+      resolvedAt: null,
+      resolution: null,
+      command: null,
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: { add: stat.add, del: stat.del, modules: agent.modules },
+    });
   }
 
   /** Acquire an idle runner in a workspace; mark it busy. Throws if none. */
@@ -138,6 +206,32 @@ export class Orchestrator {
     return { id: idle.id, provider: idle.provider, model: idle.model };
   }
 
+  /**
+   * Provision the runner's working directory. With an integration repo
+   * configured this is a fresh isolated git worktree on `branch` (cut from
+   * `baseRef` when it exists, else the base branch); otherwise the shared
+   * config.runnerCwd (Phase 0). Falls back to runnerCwd if worktree creation
+   * fails, so a misconfigured repo never blocks the agent from running.
+   */
+  private async provisionCwd(
+    agentId: string,
+    branch: string,
+    baseRef?: string,
+  ): Promise<{ cwd: string | undefined; baseRef?: string }> {
+    if (!this.worktrees) return { cwd: config.runnerCwd };
+    try {
+      const prov = await this.worktrees.provision(agentId, branch, { baseRef });
+      await this.hub.agentLog(agentId, `worktree ready on ${branch} (from ${prov.baseRef})`);
+      return { cwd: prov.cwd, baseRef: prov.baseRef };
+    } catch (err) {
+      await this.hub.agentLog(
+        agentId,
+        `worktree provisioning failed (${(err as Error).message}) — running without isolation`,
+      );
+      return { cwd: config.runnerCwd };
+    }
+  }
+
   // ── assignTask ────────────────────────────────────────────────────────────
   async assignTask(projectId: string, taskId: string): Promise<Agent> {
     const task = await this.store.getTask(taskId);
@@ -147,7 +241,9 @@ export class Orchestrator {
 
     const runner = await this.acquireRunner(project.workspaceId);
     const agentId = `${this.slug(task.text)}-${++this.seq}`;
-    const branch = `agent/${this.slug(task.text)}`;
+    // agentId is unique → unique branch & worktree path (two same-named tasks
+    // never collide on the same branch).
+    const branch = `agent/${agentId}`;
     const agent: Agent = {
       id: agentId,
       workspaceId: project.workspaceId,
@@ -174,12 +270,19 @@ export class Orchestrator {
     await this.hub.upsertTask({ ...task, state: "assigned", agentId });
     await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 
+    // Isolated worktree cut from the project's integration tip (or base).
+    const { cwd, baseRef } = await this.provisionCwd(
+      agentId,
+      branch,
+      this.merge?.integrationBranch(projectId),
+    );
+
     const provider = await this.getProvider();
     const handle = await provider.start(
-      { agentId, projectId, task: task.text, model: runner.model, branch, cwd: config.runnerCwd },
+      { agentId, projectId, task: task.text, model: runner.model, branch, cwd },
       this.events(),
     );
-    this.live.set(agentId, { handle, runnerId: runner.id, taskId });
+    this.live.set(agentId, { handle, runnerId: runner.id, taskId, branch, baseRef });
     return agent;
   }
 
@@ -199,7 +302,7 @@ export class Orchestrator {
       runnerId: runner.id,
       provider: runner.provider,
       model: runner.model,
-      branch: `${parent.branch}-fork`,
+      branch: `agent/${agentId}`,
       progress: parent.progress,
       log: [],
       startedAt: now(),
@@ -212,12 +315,15 @@ export class Orchestrator {
     const project = await this.store.getProject(parent.projectId);
     if (project) await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 
+    // A fork branches from its parent (family-internal integration, §7).
+    const { cwd, baseRef } = await this.provisionCwd(agentId, agent.branch, parent.branch);
+
     const provider = await this.getProvider();
     const handle = await provider.start(
-      { agentId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd: config.runnerCwd, parentId, branchFromStep: stepIndex },
+      { agentId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex },
       this.events(),
     );
-    this.live.set(agentId, { handle, runnerId: runner.id, taskId: null });
+    this.live.set(agentId, { handle, runnerId: runner.id, taskId: null, branch: agent.branch, baseRef });
     return agent;
   }
 
@@ -250,10 +356,7 @@ export class Orchestrator {
   /** Merge committed: free the runner, mark the owning task done, finish the agent. */
   private async completeMerged(agentId: string, branch: string): Promise<void> {
     const agent = await this.store.getAgent(agentId);
-    if (agent?.runnerId) {
-      const runner = await this.store.getRunner(agent.runnerId);
-      if (runner) await this.hub.upsertRunner({ ...runner, status: "idle", idleSince: now() });
-    }
+    await this.freeRunner(agent?.runnerId ?? null);
     if (agent) {
       const tasks = await this.store.listTasks(agent.workspaceId);
       const task = tasks.find((t) => t.agentId === agentId);
@@ -266,6 +369,8 @@ export class Orchestrator {
       await live.handle.stop().catch(() => undefined);
       this.live.delete(agentId);
     }
+    // Integrated — retire the agent's worktree (the branch is kept in history).
+    if (this.worktrees) await this.worktrees.retire(agentId).catch(() => undefined);
   }
 
   /** Textual merge conflict → raise a `merge` HITL for an operator to reconcile. */
@@ -320,6 +425,8 @@ export class Orchestrator {
       await live.handle.stop();
       this.live.delete(agentId);
     }
+    // Retire the worktree so a stopped agent doesn't leave one behind.
+    if (this.worktrees) await this.worktrees.retire(agentId).catch(() => undefined);
   }
 
   isBusy(runnerId: string): boolean {
