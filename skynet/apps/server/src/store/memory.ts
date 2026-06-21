@@ -14,8 +14,9 @@ import type {
   Snapshot,
   Task,
 } from "@skynet/shared";
+import type { AuditRecord } from "@skynet/shared";
 import { now } from "../config.js";
-import type { AuditEntry, Store } from "./store.js";
+import type { Store } from "./store.js";
 import { buildSeed, PROVIDERS } from "./seed.js";
 
 export class MemoryStore implements Store {
@@ -27,7 +28,7 @@ export class MemoryStore implements Store {
   private modules: Module[];
   private deps: Dependency[];
   private providers: ProviderInfo[] = PROVIDERS;
-  private audit: AuditEntry[] = [];
+  private audit: AuditRecord[] = [];
 
   constructor() {
     const seed = buildSeed(now());
@@ -85,5 +86,6 @@ export class MemoryStore implements Store {
   async listDeps(_ws: string) { return this.deps; }
   async listProviders() { return this.providers; }
 
-  async recordAudit(entry: AuditEntry) { this.audit.push(entry); }
+  async recordAudit(entry: AuditRecord) { this.audit.push(entry); }
+  async listAudit(ws: string) { return this.audit.filter((e) => e.workspaceId === ws).reverse(); }
 }

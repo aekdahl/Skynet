@@ -7,11 +7,13 @@ import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { config } from "./config.js";
 import { InProcessBus } from "./bus.js";
+import type { Bus } from "./bus.js";
 import { Hub } from "./hub.js";
 import { Orchestrator } from "./orchestrator.js";
 import { registerApi } from "./api.js";
 import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
+import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
 import { MemoryStore } from "./store/memory.js";
 import type { Store } from "./store/store.js";
 
@@ -23,7 +25,13 @@ async function main() {
   } else {
     store = new MemoryStore();
   }
-  const bus = new InProcessBus();
+  let bus: Bus;
+  if (config.bus === "redis") {
+    const { RedisBus } = await import("./bus.redis.js");
+    bus = await RedisBus.create(config.redisUrl);
+  } else {
+    bus = new InProcessBus();
+  }
   const hub = new Hub(store, bus);
   const orchestrator = new Orchestrator(store, hub);
 
@@ -35,6 +43,13 @@ async function main() {
 
   await registerApi(app, { store, hub, orchestrator });
   await registerWs(app, { store, bus });
+  // W5 live preview: mount the sandboxed /preview route, stamp visual/previewUrl
+  // onto already-stored agents, then warm their builds. No-op unless PREVIEW != off.
+  await registerPreview(app, { store });
+  const stamped = await backfillPreviews(store);
+  if (stamped) app.log.info(`preview: stamped ${stamped} agent(s) with a live preview URL`);
+  const queued = await kickoffPreviewBuilds(store);
+  if (queued) app.log.info(`preview: queued ${queued} agent build(s)`);
   const servingSpa = await registerStatic(app);
 
   await app.listen({ port: config.port, host: "0.0.0.0" });

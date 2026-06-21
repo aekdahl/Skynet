@@ -13,6 +13,14 @@
     "./claude": {
       "types": "./dist/claude.d.ts",
       "default": "./dist/claude.js"
+    },
+    "./cursor": {
+      "types": "./dist/cursor.d.ts",
+      "default": "./dist/cursor.js"
+    },
+    "./copilot": {
+      "types": "./dist/copilot.d.ts",
+      "default": "./dist/copilot.js"
     }
   },
   "scripts": {

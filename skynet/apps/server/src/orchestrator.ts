@@ -14,6 +14,7 @@ import {
 import { config, now } from "./config.js";
 import type { Hub } from "./hub.js";
 import { MergeEngine, type MergeRequest } from "./merge.js";
+import { previewService } from "./preview/index.js";
 import type { Store } from "./store/store.js";
 import { WorktreeProvisioner } from "./worktrees.js";
 
@@ -244,6 +245,16 @@ export class Orchestrator {
     // agentId is unique → unique branch & worktree path (two same-named tasks
     // never collide on the same branch).
     const branch = `agent/${agentId}`;
+    // W5: reserve a sandboxed live-preview URL for visual deliverables.
+    const preview = await previewService.resolve({
+      workspaceId: project.workspaceId,
+      projectId,
+      projectName: project.name,
+      projectGoal: project.goal,
+      agentId,
+      branch,
+      seedVisual: false,
+    });
     const agent: Agent = {
       id: agentId,
       workspaceId: project.workspaceId,
@@ -261,7 +272,9 @@ export class Orchestrator {
       log: [],
       startedAt: now(),
       lastHeartbeatAt: now(),
-      visual: false,
+      visual: preview.visual,
+      previewUrl: preview.previewUrl,
+      dependsOn: [],
       parentId: null,
       branchFromStep: null,
     };
@@ -294,6 +307,19 @@ export class Orchestrator {
     const runner = await this.acquireRunner(parent.workspaceId);
     const agentId = `${this.slug(parent.name)}-fork-${++this.seq}`;
     const stepIndex = Math.max(0, parent.plan.findIndex((s) => s.state === "now"));
+    const forkBranch = `${parent.branch}-fork`;
+    const project = await this.store.getProject(parent.projectId);
+    // W5: a fork is its own branch, so it gets its own preview URL (inherits the
+    // parent's visual nature as the seed signal).
+    const preview = await previewService.resolve({
+      workspaceId: parent.workspaceId,
+      projectId: parent.projectId,
+      projectName: project?.name ?? "",
+      projectGoal: project?.goal ?? "",
+      agentId,
+      branch: forkBranch,
+      seedVisual: parent.visual,
+    });
     const agent: Agent = {
       ...parent,
       id: agentId,
@@ -307,12 +333,13 @@ export class Orchestrator {
       log: [],
       startedAt: now(),
       lastHeartbeatAt: now(),
+      visual: preview.visual,
+      previewUrl: preview.previewUrl,
       parentId,
       branchFromStep: stepIndex,
     };
 
     await this.hub.createAgent(agent);
-    const project = await this.store.getProject(parent.projectId);
     if (project) await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 
     // A fork branches from its parent (family-internal integration, §7).
