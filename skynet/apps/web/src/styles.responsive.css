@@ -1,0 +1,73 @@
+/* ─── Responsive / mobile passes ──────────────────────────────────────────────
+   Additive layer loaded after styles.css. The desktop shell is a fixed 220px
+   sidebar between a top title bar and bottom status bar; on narrow screens we
+   turn the sidebar into a horizontal nav strip and let content scroll, so the
+   console is usable as an installed PWA on a phone. Pure overrides on existing
+   class names — no edits to styles.css (collision-free with other streams). */
+
+/* Honour the notch / home indicator on installed iOS/Android. */
+.op-titlebar { padding-top: env(safe-area-inset-top, 0px); }
+.op-statusbar { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+@media (max-width: 820px) {
+  /* Allow the page to scroll vertically on touch devices. */
+  body { overflow: auto; }
+  #root { height: 100dvh; }
+  .app { height: 100dvh; }
+
+  /* Stack the shell: nav strip on top, content below. */
+  .op-shell { flex-direction: column; min-height: 0; }
+
+  .op-side {
+    width: 100%;
+    flex: none;
+    flex-direction: row;
+    align-items: center;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .op-side::-webkit-scrollbar { display: none; }
+
+  /* Sidebar chrome that doesn't belong in a horizontal strip. */
+  .op-ws,
+  .op-navsec,
+  .op-plist,
+  .op-side-foot { display: none; }
+
+  .op-nav {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    padding: 6px 8px;
+    gap: 4px;
+  }
+  .op-navitem {
+    width: auto;
+    white-space: nowrap;
+    padding: 10px 12px; /* comfortable tap target */
+  }
+  .op-navitem .badge { margin-left: 6px; }
+
+  /* The desktop search affordance is noise on mobile. */
+  .op-titlebar .op-search { display: none; }
+
+  .main { min-height: 0; }
+  .content { -webkit-overflow-scrolling: touch; }
+}
+
+@media (max-width: 520px) {
+  :root { --card-pad: 14px; --sp: 12px; }
+  .op-title { font-size: 12px; }
+  /* Status bar gets dense on small phones — keep the essentials legible. */
+  .op-statusbar { gap: 8px; font-size: 10px; }
+  .op-sb-r { display: none; }
+}
+
+/* Coarse-pointer (touch) devices: enlarge interactive nav targets regardless
+   of width, so a tablet in landscape is still comfortable. */
+@media (pointer: coarse) {
+  .op-navitem { min-height: 40px; }
+}
