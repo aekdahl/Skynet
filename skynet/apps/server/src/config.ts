@@ -5,7 +5,7 @@ export const config = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   store: (process.env.STORE ?? "memory") as "memory" | "postgres",
   bus: (process.env.BUS ?? "memory") as "memory" | "redis",
-  runner: (process.env.RUNNER ?? "mock") as "mock" | "claude",
+  runner: (process.env.RUNNER ?? "mock") as "mock" | "claude" | "codex" | "gemini" | "cursor" | "copilot",
   // Working directory for a real runner (the target repo / agent worktree).
   runnerCwd: process.env.SKYNET_RUNNER_CWD || undefined,
   databaseUrl: process.env.DATABASE_URL ?? "",
