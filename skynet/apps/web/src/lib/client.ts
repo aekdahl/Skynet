@@ -1,4 +1,5 @@
 import {
+  AuditRecord,
   Snapshot,
   WsMessage,
   type Agent,
@@ -40,6 +41,12 @@ export class ApiError extends Error {
 export async function fetchSnapshot(): Promise<Snapshot> {
   const raw = await req<unknown>("GET", "/api/snapshot");
   return Snapshot.parse(raw);
+}
+
+// Decision audit trail — resolved HITL decisions, newest first (W8).
+export async function fetchAudit(): Promise<AuditRecord[]> {
+  const raw = await req<unknown>("GET", "/api/audit");
+  return AuditRecord.array().parse(raw);
 }
 
 // HITL

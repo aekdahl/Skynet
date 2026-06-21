@@ -61,6 +61,24 @@ const AUTO_ALLOW = new Set(["Read", "LS", "Glob", "Grep", "NotebookRead", "TodoW
 const mapModel = (m: string): string | undefined =>
   m.startsWith("opus") ? "opus" : m.startsWith("sonnet") ? "sonnet" : m.startsWith("haiku") ? "haiku" : undefined;
 
+// Build the env handed to the Agent SDK subprocess. `Options.env` REPLACES the
+// subprocess environment, so we spread the ambient env (PATH/HOME/…) and then
+// drop the markers that would route a nested Claude Code child to host-managed
+// OAuth — a standalone server can't satisfy that path and would 401. When an
+// ANTHROPIC_API_KEY is present we also drop the inherited gateway
+// ANTHROPIC_BASE_URL and any ANTHROPIC_AUTH_TOKEN so the key isn't shadowed.
+function buildRunnerEnv(): Record<string, string> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v == null) continue;
+    if (k.startsWith("CLAUDE_CODE_")) continue; // nested child-session markers
+    if (apiKey && (k === "ANTHROPIC_BASE_URL" || k === "ANTHROPIC_AUTH_TOKEN")) continue;
+    env[k] = v;
+  }
+  return env;
+}
+
 // Extract text + tool names from an assistant message's content blocks.
 function readAssistant(message: { content?: unknown }): { text: string; tools: string[] } {
   const blocks = Array.isArray(message.content) ? (message.content as Array<Record<string, unknown>>) : [];
@@ -77,7 +95,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
   readonly agentId: string;
   readonly provider: ProviderId = "claude";
   private input = createInputStream();
-  private q: Query;
+  private q?: Query; // unset when we couldn't authenticate (see constructor)
   private gate: ((r: PermissionResult) => void) | null = null;
   private pendingChat = false;
   private progress = 0;
@@ -109,12 +127,30 @@ class ClaudeRunnerHandle implements RunnerHandle {
       });
     };
 
+    // Auth: a self-hosted server authenticates the nested Agent SDK with a
+    // static ANTHROPIC_API_KEY. Without one we'd inherit this process's env —
+    // which, when Skynet itself runs under Claude Code, carries CLAUDE_CODE_*
+    // child-session markers + a gateway ANTHROPIC_BASE_URL that expect a host to
+    // refresh a short-lived OAuth token over the control channel. A standalone
+    // server has no such host, so those credentials 401. Fast-fail with a clear
+    // reason instead of spinning up an agent that immediately 401s.
+    const env = buildRunnerEnv();
+    if (!env.ANTHROPIC_API_KEY) {
+      this.events.onLog(
+        this.agentId,
+        "ANTHROPIC_API_KEY is not set — the Claude runner cannot authenticate (set it to enable live runs; RUNNER=mock needs no key).",
+      );
+      this.events.onStatus(this.agentId, "review");
+      return; // q stays unset; consume()/heartbeat never start
+    }
+
     const options: Options = {
       cwd: spec.cwd ?? process.cwd(),
       model: mapModel(spec.model),
       permissionMode: "default",
       canUseTool,
       maxTurns: 60,
+      env, // scrubbed env: forces the API key, drops the nested-session OAuth path
       ...(resumeSessionId ? { resume: resumeSessionId, forkSession: true } : {}),
     };
 
@@ -144,6 +180,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
   }
 
   private async consume() {
+    if (!this.q) return;
     try {
       for await (const msg of this.q as AsyncIterable<SDKMessage>) {
         if (this.finished) break;
@@ -205,7 +242,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
   async stop() {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
-    await this.q.interrupt().catch(() => undefined);
+    await this.q?.interrupt().catch(() => undefined);
     this.input.close();
   }
 }

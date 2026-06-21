@@ -14,6 +14,7 @@ import {
 import { config, now } from "./config.js";
 import type { Hub } from "./hub.js";
 import { MergeEngine, type MergeRequest } from "./merge.js";
+import { previewService } from "./preview/index.js";
 import type { Store } from "./store/store.js";
 
 interface LiveAgent {
@@ -148,6 +149,16 @@ export class Orchestrator {
     const runner = await this.acquireRunner(project.workspaceId);
     const agentId = `${this.slug(task.text)}-${++this.seq}`;
     const branch = `agent/${this.slug(task.text)}`;
+    // W5: reserve a sandboxed live-preview URL for visual deliverables.
+    const preview = await previewService.resolve({
+      workspaceId: project.workspaceId,
+      projectId,
+      projectName: project.name,
+      projectGoal: project.goal,
+      agentId,
+      branch,
+      seedVisual: false,
+    });
     const agent: Agent = {
       id: agentId,
       workspaceId: project.workspaceId,
@@ -165,8 +176,8 @@ export class Orchestrator {
       log: [],
       startedAt: now(),
       lastHeartbeatAt: now(),
-      visual: false,
-      previewUrl: null,
+      visual: preview.visual,
+      previewUrl: preview.previewUrl,
       dependsOn: [],
       parentId: null,
       branchFromStep: null,
@@ -193,6 +204,19 @@ export class Orchestrator {
     const runner = await this.acquireRunner(parent.workspaceId);
     const agentId = `${this.slug(parent.name)}-fork-${++this.seq}`;
     const stepIndex = Math.max(0, parent.plan.findIndex((s) => s.state === "now"));
+    const forkBranch = `${parent.branch}-fork`;
+    const project = await this.store.getProject(parent.projectId);
+    // W5: a fork is its own branch, so it gets its own preview URL (inherits the
+    // parent's visual nature as the seed signal).
+    const preview = await previewService.resolve({
+      workspaceId: parent.workspaceId,
+      projectId: parent.projectId,
+      projectName: project?.name ?? "",
+      projectGoal: project?.goal ?? "",
+      agentId,
+      branch: forkBranch,
+      seedVisual: parent.visual,
+    });
     const agent: Agent = {
       ...parent,
       id: agentId,
@@ -201,17 +225,18 @@ export class Orchestrator {
       runnerId: runner.id,
       provider: runner.provider,
       model: runner.model,
-      branch: `${parent.branch}-fork`,
+      branch: forkBranch,
       progress: parent.progress,
       log: [],
       startedAt: now(),
       lastHeartbeatAt: now(),
+      visual: preview.visual,
+      previewUrl: preview.previewUrl,
       parentId,
       branchFromStep: stepIndex,
     };
 
     await this.hub.createAgent(agent);
-    const project = await this.store.getProject(parent.projectId);
     if (project) await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 
     const provider = await this.getProvider();

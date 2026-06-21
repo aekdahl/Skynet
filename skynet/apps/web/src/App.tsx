@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNow, useStore } from "./lib/store";
+import { initialView, onNavigate } from "./pwa/launch"; // [pwa] Inbox-first launch + push deep-link
 import { TitleBar, OpSidebar, OpStatusBar } from "./components/shell";
 import {
   TweaksPanel,
@@ -14,9 +15,17 @@ import { OverviewView } from "./views/overview";
 import { FleetView } from "./views/fleet";
 import { ProjectView } from "./views/project";
 import { QueueView } from "./views/queue";
+import { AuditView } from "./views/audit";
 import { AgentDetail } from "./views/agent";
 
-export type ViewName = "home" | "queue" | "projects" | "fleet" | "project" | "agent";
+export type ViewName =
+  | "home"
+  | "queue"
+  | "audit"
+  | "projects"
+  | "fleet"
+  | "project"
+  | "agent";
 export type Lens = "subway" | "timeline" | "ledger" | "roster";
 
 const VIEW_LABEL: Record<string, string> = {
@@ -24,6 +33,7 @@ const VIEW_LABEL: Record<string, string> = {
   projects: "Projects",
   fleet: "Fleet",
   queue: "Inbox",
+  audit: "Audit",
   project: "Project",
 };
 
@@ -32,13 +42,29 @@ export function App() {
   const now = useNow(1000);
   const [t, setTweak] = useTweaks();
 
-  const [view, setView] = useState<ViewName>("home");
+  const [view, setView] = useState<ViewName>(() => initialView() ?? "home"); // [pwa]
   const [lens, setLens] = useState<Lens>("subway");
   const [projectId, setProjectId] = useState<string | null>(null);
   const [agentId, setAgentId] = useState<string | null>(null);
   const [from, setFrom] = useState<ViewName>("home");
   const [fromP, setFromP] = useState<ViewName>("home");
   const [selIdx] = useState(0);
+
+  // [pwa] A push / notification click (relayed by the service worker) or a
+  // manifest shortcut navigates the app in-place — usually to the Inbox.
+  useEffect(
+    () =>
+      onNavigate((v, navAgentId) => {
+        if (navAgentId) {
+          setFrom(v);
+          setAgentId(navAgentId);
+          setView("agent");
+        } else {
+          setView(v);
+        }
+      }),
+    [],
+  );
 
   const openAgent = (id: string) => {
     setFrom(view === "agent" ? from : view);
@@ -120,6 +146,9 @@ export function App() {
             )}
             {store.loaded && view === "queue" && (
               <QueueView selectedIdx={selIdx} onOpen={openAgent} now={now} />
+            )}
+            {store.loaded && view === "audit" && (
+              <AuditView now={now} onOpenAgent={openAgent} />
             )}
             {store.loaded && view === "agent" && agent && (
               <AgentDetail
