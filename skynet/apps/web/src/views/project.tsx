@@ -1,0 +1,363 @@
+import { useEffect, useState } from "react";
+import type { Agent, Project, Task } from "@skynet/shared";
+import { useStore } from "../lib/store";
+import {
+  agentsForProject,
+  backlogTasks,
+  curStep,
+  fmtWait,
+  openQueue,
+  planDone,
+  STATUS_META,
+  waitedSecs,
+} from "../lib/derive";
+import { Bar, StatusDot } from "../components/common";
+import { ProjectDelivery, visualLeadOf } from "../components/preview";
+import { QueueCard } from "./queue";
+
+function ProjectAgentCard({
+  agent,
+  now,
+  onOpen,
+}: {
+  agent: Agent;
+  now: number;
+  onOpen: () => void;
+}) {
+  const { queue } = useStore();
+  const q = openQueue(queue).find((it) => it.agentId === agent.id);
+  const done = planDone(agent);
+  return (
+    <button className="pa-card" onClick={onOpen}>
+      <div className="pa-top">
+        <StatusDot status={agent.status} />
+        <span className="pa-name">{agent.name}</span>
+        <span className="status-word" style={{ color: STATUS_META[agent.status].color }}>
+          {STATUS_META[agent.status].label}
+        </span>
+      </div>
+      <Bar value={agent.progress} status={agent.status} />
+      <div className="pa-step">
+        {q ? (
+          <span className="wait-tag">⏸ {q.title}</span>
+        ) : agent.status === "done" ? (
+          <span className="done-tag">✓ merged</span>
+        ) : (
+          <span className="step-tag">→ {curStep(agent)}</span>
+        )}
+      </div>
+      <div className="pa-meta mono">
+        {done}/{agent.plan.length} steps · {agent.branch}
+      </div>
+    </button>
+  );
+}
+
+function BacklogCard({
+  task,
+  onAssign,
+}: {
+  task: Task;
+  onAssign: () => void;
+}) {
+  const { updateTask, deleteTask } = useStore();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(task.text);
+  if (editing) {
+    return (
+      <div className="kb-card kb-backlog">
+        <textarea
+          className="qx-input"
+          rows={2}
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+        <div className="qx-row">
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              if (draft.trim()) {
+                updateTask(task.projectId, task.id, { text: draft.trim() });
+                setEditing(false);
+              }
+            }}
+          >
+            Save
+          </button>
+          <button
+            className="btn btn-ghost"
+            onClick={() => {
+              setDraft(task.text);
+              setEditing(false);
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="kb-card kb-backlog">
+      <div className="kb-card-top">
+        <span className="kb-task">{task.text}</span>
+        <span className="kb-card-tools">
+          <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>
+            ✎
+          </button>
+          <button
+            className="kb-tool kb-tool-del"
+            title="Delete task"
+            onClick={() => deleteTask(task.projectId, task.id)}
+          >
+            ×
+          </button>
+        </span>
+      </div>
+      <button className="kb-assign" onClick={onAssign}>
+        Assign agent →
+      </button>
+    </div>
+  );
+}
+
+function AddTaskCard({ onAdd }: { onAdd: (text: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  if (!open)
+    return (
+      <button className="kb-add" onClick={() => setOpen(true)}>
+        + Add task
+      </button>
+    );
+  return (
+    <div className="kb-card kb-backlog">
+      <textarea
+        className="qx-input"
+        rows={2}
+        autoFocus
+        placeholder="Describe the task…"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <div className="qx-row">
+        <button
+          className="btn btn-primary"
+          disabled={!draft.trim()}
+          onClick={() => {
+            onAdd(draft.trim());
+            setDraft("");
+            setOpen(false);
+          }}
+        >
+          Add to backlog
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={() => {
+            setDraft("");
+            setOpen(false);
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function ProjectView({
+  project,
+  now,
+  onOpenAgent,
+  onBack,
+}: {
+  project: Project;
+  now: number;
+  onOpenAgent: (id: string) => void;
+  onBack: () => void;
+}) {
+  const {
+    agents,
+    queue,
+    tasks,
+    updateProject,
+    deleteProject,
+    createTask,
+    assignTask,
+  } = useStore();
+  const pa = agentsForProject(agents, project.id);
+  const items = openQueue(queue).filter((q) =>
+    pa.some((a) => a.id === q.agentId),
+  );
+  const inProgress = pa.filter((a) => a.status !== "done");
+  const doneList = pa.filter((a) => a.status === "done");
+  const backlog = backlogTasks(tasks, project.id);
+  const lead = visualLeadOf(project, agents);
+
+  const [folded, setFolded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [name, setName] = useState(project.name);
+  const [goal, setGoal] = useState(project.goal);
+
+  useEffect(() => {
+    setName(project.name);
+    setGoal(project.goal);
+    setFolded(false);
+  }, [project.id, project.name, project.goal]);
+
+  return (
+    <section className="projview">
+      <button className="btn btn-ghost btn-back" onClick={onBack}>
+        ← Back
+      </button>
+      {editing ? (
+        <div className="projview-edit">
+          <input
+            className="qx-input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <textarea
+            className="qx-input"
+            rows={2}
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+          />
+          <div className="qx-row">
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                updateProject(project.id, {
+                  name: name.trim() || project.name,
+                  goal: goal.trim(),
+                });
+                setEditing(false);
+              }}
+            >
+              Save
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setName(project.name);
+                setGoal(project.goal);
+                setEditing(false);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="projview-head">
+          <div className="projview-head-main">
+            <h2>{project.name}</h2>
+            <p>{project.goal}</p>
+          </div>
+          <div className="projview-head-tools">
+            <button className="btn btn-ghost" onClick={() => setEditing(true)}>
+              Edit
+            </button>
+            {confirmDel ? (
+              <span className="del-confirm">
+                Delete project?{" "}
+                <button
+                  className="btn btn-danger"
+                  onClick={() => {
+                    deleteProject(project.id);
+                    onBack();
+                  }}
+                >
+                  Yes, delete
+                </button>
+                <button className="btn btn-ghost" onClick={() => setConfirmDel(false)}>
+                  No
+                </button>
+              </span>
+            ) : (
+              <button
+                className="btn btn-ghost btn-retire"
+                onClick={() => setConfirmDel(true)}
+              >
+                Delete
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {lead && (
+        <div className="proj-delivery">
+          <button className="proj-delivery-head" onClick={() => setFolded((f) => !f)}>
+            <span className="fold-caret">{folded ? "▸" : "▾"}</span>
+            <span className="proj-delivery-title">LIVE PREVIEW</span>
+            <span className="proj-delivery-sub">
+              aimed delivery · {lead.status === "done" ? "shipped" : "building"} ·{" "}
+              {lead.name}
+            </span>
+          </button>
+          {!folded && (
+            <div className="proj-delivery-body">
+              <ProjectDelivery project={project} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {items.length > 0 && (
+        <div className="projview-queue">
+          <div className="panel-head">WAITING ON YOU</div>
+          {items.map((it) => (
+            <QueueCard
+              key={it.id}
+              item={it}
+              agent={agents.find((a) => a.id === it.agentId)}
+              now={now}
+              selected={false}
+              onOpen={() => onOpenAgent(it.agentId)}
+            />
+          ))}
+        </div>
+      )}
+
+      <div className="kb-cols">
+        <div className="kb-col">
+          <div className="kb-head">BACKLOG · {backlog.length}</div>
+          {backlog.map((t) => (
+            <BacklogCard
+              key={t.id}
+              task={t}
+              onAssign={() => assignTask(project.id, t.id)}
+            />
+          ))}
+          <AddTaskCard onAdd={(text) => createTask(project.id, text)} />
+        </div>
+        <div className="kb-col">
+          <div className="kb-head kb-head-active">IN PROGRESS · {inProgress.length}</div>
+          {inProgress.length === 0 && <div className="kb-empty">No agents running.</div>}
+          {inProgress.map((a) => (
+            <ProjectAgentCard
+              key={a.id}
+              agent={a}
+              now={now}
+              onOpen={() => onOpenAgent(a.id)}
+            />
+          ))}
+        </div>
+        <div className="kb-col">
+          <div className="kb-head kb-head-done">DONE · {doneList.length}</div>
+          {doneList.length === 0 && <div className="kb-empty">Nothing merged yet.</div>}
+          {doneList.map((a) => (
+            <button key={a.id} className="kb-card kb-done" onClick={() => onOpenAgent(a.id)}>
+              <span className="kb-task">✓ {a.name}</span>
+              <span className="kb-done-meta mono">merged · {a.branch}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}

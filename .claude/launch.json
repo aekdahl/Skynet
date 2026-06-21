@@ -2,10 +2,11 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "tower",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8099", "--directory", "Project Skynet DRAFT"],
-      "port": 8099
+      "name": "skynet",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["-C", "skynet", "--filter", "@skynet/server", "dev"],
+      "port": 8080,
+      "autoPort": true
     }
   ]
 }
