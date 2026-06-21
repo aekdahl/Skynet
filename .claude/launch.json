@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "skynet",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["-C", "skynet", "--filter", "@skynet/server", "dev"],
+      "port": 8080,
+      "autoPort": true
+    }
+  ]
+}

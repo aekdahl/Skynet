@@ -1,0 +1,21 @@
+{
+  "name": "skynet",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Skynet — Mission Control: a fleet-supervision console for running coding agents in parallel.",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r --filter ./packages/** build && pnpm -r --filter ./apps/** build",
+    "dev": "pnpm --parallel --filter ./apps/** dev",
+    "dev:server": "pnpm --filter @skynet/server dev",
+    "dev:web": "pnpm --filter @skynet/web dev",
+    "typecheck": "pnpm -r typecheck",
+    "clean": "pnpm -r exec rm -rf dist node_modules/.cache"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

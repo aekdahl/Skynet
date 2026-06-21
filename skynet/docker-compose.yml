@@ -1,0 +1,50 @@
+# ─── Skynet self-host stack ─────────────────────────────────────────────────
+# `docker compose up` brings up the app (web SPA + API + WS + orchestrator),
+# Postgres, and Redis. Phase 0 defaults the app to the in-memory store and
+# in-process bus; set STORE=postgres / BUS=redis in .env to use the services
+# below (adapters land in Phase 0→1). Runners are managed by the orchestrator
+# via the Docker socket once real providers ship (Phase 1).
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgres://skynet:skynet@postgres:5432/skynet
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: skynet
+      POSTGRES_PASSWORD: skynet
+      POSTGRES_DB: skynet
+    volumes:
+      - skynet-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skynet"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  skynet-pg:
