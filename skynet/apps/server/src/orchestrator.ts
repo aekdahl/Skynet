@@ -14,7 +14,6 @@ import {
 import { config, now } from "./config.js";
 import type { Hub } from "./hub.js";
 import { MergeEngine, type MergeRequest } from "./merge.js";
-import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { previewService } from "./preview/index.js";
 import type { Store } from "./store/store.js";
 
@@ -37,7 +36,6 @@ export class Orchestrator {
   private seq = 0;
   private providerPromise?: Promise<RunnerProvider>;
   private merge?: MergeEngine;
-  private moduleMap: ModuleMap = loadModuleMap(config.integrationRepo);
 
   constructor(private store: Store, private hub: Hub) {
     if (config.integrationRepo) {
@@ -58,29 +56,14 @@ export class Orchestrator {
     }
   }
 
-  // Lazily resolve the runner provider. Each real provider is a subpath import
-  // loaded on demand (heavy SDKs/CLIs); the default mock path imports none.
+  // Lazily resolve the runner provider. RUNNER=claude loads the real Claude
+  // Code SDK on demand (heavy); the default mock path never imports it.
   private getProvider(): Promise<RunnerProvider> {
     if (!this.providerPromise) {
-      switch (config.runner) {
-        case "claude":
-          this.providerPromise = import("@skynet/runner-sdk/claude").then((m) => new m.ClaudeRunnerProvider());
-          break;
-        case "codex":
-          this.providerPromise = import("@skynet/runner-sdk/codex").then((m) => new m.CodexRunnerProvider());
-          break;
-        case "gemini":
-          this.providerPromise = import("@skynet/runner-sdk/gemini").then((m) => new m.GeminiRunnerProvider());
-          break;
-        case "cursor":
-          this.providerPromise = import("@skynet/runner-sdk/cursor").then((m) => new m.CursorRunnerProvider());
-          break;
-        case "copilot":
-          this.providerPromise = import("@skynet/runner-sdk/copilot").then((m) => new m.CopilotRunnerProvider());
-          break;
-        default:
-          this.providerPromise = Promise.resolve(new MockRunnerProvider());
-      }
+      this.providerPromise =
+        config.runner === "claude"
+          ? import("@skynet/runner-sdk/claude").then((m) => new m.ClaudeRunnerProvider())
+          : Promise.resolve(new MockRunnerProvider());
     }
     return this.providerPromise;
   }
@@ -143,15 +126,6 @@ export class Orchestrator {
       const task = await this.store.getTask(live.taskId);
       if (task) await this.hub.upsertTask({ ...task, state: "done" });
     }
-    // W3: derive the modules actually touched from the changed files.
-    const agent = await this.store.getAgent(agentId);
-    if (agent && agent.modifiedFiles.length) {
-      const modules = this.moduleMap.modulesForFiles(agent.modifiedFiles);
-      if (modules.length) {
-        await this.store.putAgent({ ...agent, modules });
-        await this.hub.refreshConflicts(agent.workspaceId);
-      }
-    }
     await this.hub.agentCompleted(agentId, branch);
     this.live.delete(agentId);
   }
@@ -210,7 +184,6 @@ export class Orchestrator {
     };
 
     await this.hub.createAgent(agent);
-    void this.hub.refreshConflicts(agent.workspaceId);
     await this.hub.upsertTask({ ...task, state: "assigned", agentId });
     await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 

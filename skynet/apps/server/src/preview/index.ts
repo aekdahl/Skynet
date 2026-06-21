@@ -8,3 +8,5 @@ export { isVisual } from "./providers.js";
 export { PreviewService, previewService } from "./service.js";
 export { registerPreview } from "./route.js";
 export { backfillPreviews } from "./backfill.js";
+export { PreviewBuilder, previewBuilder } from "./builder.js";
+export { kickoffPreviewBuilds } from "./kickoff.js";

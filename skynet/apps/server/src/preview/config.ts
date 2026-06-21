@@ -42,6 +42,20 @@ export const previewConfig = {
   visualHeuristic: process.env.SKYNET_PREVIEW_VISUAL_HEURISTIC === "true",
   // Who may embed a preview in an <iframe>. `*` suits dev (SPA on another port).
   frameAncestors: process.env.SKYNET_PREVIEW_FRAME_ANCESTORS || "*",
+
+  // ── build pipeline (artifact provider) ──────────────────────────────────
+  // Per-agent branch source, in priority order: a worktree of the integration
+  // repo (SKYNET_INTEGRATION_REPO) → <SOURCE_ROOT>/<agentId> → SOURCE_DIR.
+  sourceRoot: process.env.SKYNET_PREVIEW_SOURCE_ROOT || "",
+  sourceDir: process.env.SKYNET_PREVIEW_SOURCE_DIR || "",
+  // Optional install + build commands run in the source dir. With no build
+  // command the source is published as static files (zero-config, nothing runs).
+  installCmd: process.env.SKYNET_PREVIEW_INSTALL_CMD || "",
+  buildCmd: process.env.SKYNET_PREVIEW_BUILD_CMD || "",
+  // Built output dir (relative to source) published when a build command runs.
+  outputDir: process.env.SKYNET_PREVIEW_OUTPUT_DIR || "dist",
+  // Per-build wall-clock cap before the build is killed and marked failed.
+  buildTimeoutMs: Number(process.env.SKYNET_PREVIEW_BUILD_TIMEOUT_MS ?? 120_000),
 };
 
 export type PreviewConfig = typeof previewConfig;
