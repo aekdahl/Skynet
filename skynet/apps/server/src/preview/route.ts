@@ -12,8 +12,10 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { normalize, resolve, sep } from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { Store } from "../store/store.js";
 import { previewConfig } from "./config.js";
 import { previewService } from "./service.js";
+import { previewBuilder } from "./builder.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -61,6 +63,7 @@ function buildingPage(agentId: string): string {
   const safeId = agentId.replace(/[<>&"]/g, "");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="2">
 <title>Preview building…</title><style>
 :root{color-scheme:dark}
 html,body{height:100%;margin:0}
@@ -80,10 +83,20 @@ border:3px solid #2a2f3a;border-top-color:#f5a524;animation:s .9s linear infinit
 
 /**
  * Register the sandboxed preview route. No-op unless a non-`off` provider is
- * configured, so the default dev path mounts nothing.
+ * configured, so the default dev path mounts nothing. Serving a placeholder for
+ * an agent that hasn't been built lazily kicks off its build (idempotent), so a
+ * first iframe view triggers the pipeline and the page auto-refreshes into it.
  */
-export async function registerPreview(app: FastifyInstance): Promise<boolean> {
+export async function registerPreview(app: FastifyInstance, deps: { store: Store }): Promise<boolean> {
   if (!previewService.enabled) return false;
+  const { store } = deps;
+
+  // Fire-and-forget: resolve the agent's branch and request a build once.
+  const ensureBuild = async (agentId: string): Promise<void> => {
+    if (previewBuilder.stateOf(agentId)) return; // already queued/building/built
+    const agent = await store.getAgent(agentId);
+    if (agent) previewBuilder.request(agent.id, agent.branch);
+  };
 
   type PreviewParams = { agentId: string; "*"?: string };
   const handler = (req: FastifyRequest<{ Params: PreviewParams }>, reply: FastifyReply) => {
@@ -103,7 +116,9 @@ export async function registerPreview(app: FastifyInstance): Promise<boolean> {
     if (existsSync(index) && statSync(index).isFile()) {
       return reply.type("text/html; charset=utf-8").send(createReadStream(index));
     }
-    // …otherwise the reserved-URL "building…" placeholder.
+    // …otherwise kick off the build (once) and serve the auto-refreshing
+    // "building…" placeholder until the artifact lands.
+    void ensureBuild(agentId);
     return reply.type("text/html; charset=utf-8").send(buildingPage(agentId));
   };
 
