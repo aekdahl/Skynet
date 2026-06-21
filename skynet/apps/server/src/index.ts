@@ -15,7 +15,7 @@ import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
 import { registerPreview, backfillPreviews } from "./preview/index.js";
 import { configureAuth } from "./auth.js";
-import { MemorySessionStore } from "./auth/sessions.js";
+import { MemorySessionStore, type SessionStore } from "./auth/sessions.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import { MemoryStore } from "./store/memory.js";
@@ -39,8 +39,19 @@ async function main() {
   const hub = new Hub(store, bus);
   const orchestrator = new Orchestrator(store, hub);
 
-  // Auth: dev tokens always resolve; real login issues sessions (W6).
-  const sessions = new MemorySessionStore();
+  // Auth: dev tokens always resolve; real login issues sessions (W6). The
+  // session backend is durable (Postgres) or multi-replica (Redis) when
+  // selected, else in-memory. Adapters connect lazily, so no await here.
+  let sessions: SessionStore;
+  if (config.sessions === "postgres") {
+    const { PostgresSessionStore } = await import("./auth/sessions.postgres.js");
+    sessions = new PostgresSessionStore(config.databaseUrl);
+  } else if (config.sessions === "redis") {
+    const { RedisSessionStore } = await import("./auth/sessions.redis.js");
+    sessions = new RedisSessionStore(config.redisUrl);
+  } else {
+    sessions = new MemorySessionStore();
+  }
   const operators = new MemoryOperatorDirectory(seedOperators());
   configureAuth({ sessions });
 
@@ -48,7 +59,7 @@ async function main() {
   await app.register(cors, { origin: true });
   await app.register(websocket);
 
-  app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: config.runner }));
+  app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: config.runner, sessions: config.sessions }));
 
   await registerAuthRoutes(app, { sessions, operators });
   await registerApi(app, { store, hub, orchestrator });
@@ -62,7 +73,7 @@ async function main() {
 
   await app.listen({ port: config.port, host: "0.0.0.0" });
   if (servingSpa) app.log.info("serving built web SPA from this server");
-  app.log.info(`Skynet server up on :${config.port}  (store=${config.store} bus=${config.bus} runner=${config.runner})`);
+  app.log.info(`Skynet server up on :${config.port}  (store=${config.store} bus=${config.bus} runner=${config.runner} sessions=${config.sessions})`);
 }
 
 main().catch((err) => {

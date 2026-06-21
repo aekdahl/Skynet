@@ -21,7 +21,7 @@ export async function registerWs(app: FastifyInstance, deps: WsDeps): Promise<vo
   const { store, bus, hub } = deps;
 
   app.get("/ws", { websocket: true }, async (socket: WebSocket, req: FastifyRequest) => {
-    const principal = authenticate(req);
+    const principal = await authenticate(req);
     if (!principal) {
       socket.close(1008, "Unauthorized");
       return;
