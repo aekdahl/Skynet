@@ -1,52 +1,76 @@
-// ─── Derived intelligence: conflicts & dependencies ──────────────────────────
-// Computes the "no double work" signal server-side (Backend Brief §09), so it's
-// authoritative for non-UI consumers (capacity, merge gating) rather than only
-// derived in the client. Fork-aware: a fork and its parent are one family and
-// never flag each other (`parentId`). VCS brief §4.
+// ─── Server-side conflict computation (W4) ─────────────────────────────────
+// "No double work": a conflict exists when two different agent *families* are
+// concurrently active and their *touched* module sets intersect (VCS brief §4).
+//
+//   • Family — an agent plus its fork-descendants, collapsed via `parentId`.
+//     A fork and its parent share context on purpose, so they are ONE family
+//     and never flag each other.
+//   • Concurrently active — both not `done`.
+//   • Touched modules — `Agent.modules` (derived from changed files by W3).
+//
+// This is the server-side mirror of the client's `conflicts()` in
+// `apps/web/src/lib/derive.ts`: same families, same grouping, same threshold —
+// so it MATCHES what the UI shows today, then supersedes it once Core triggers
+// recomputation from the Hub and publishes `conflict.detected`.
+//
+// Owned by W4 (Lane D). Pure functions — Core adds the hub trigger and decides
+// when to publish (e.g. on agent.started / agent.progress / agent.status).
 
-import type { Agent, Dependency } from "@skynet/shared";
+import type { Agent, ServerEvent } from "@skynet/shared";
 
-/** Family root — a fork collapses onto its parent so they share a family. */
+/** Collapse an agent to its conflict family: a fork shares its parent's id. */
 export const familyOf = (a: Agent): string => a.parentId ?? a.id;
 
-export interface Conflict {
+/** A module touched concurrently by more than one active family. */
+export interface ModuleConflict {
   moduleId: string;
+  /** Ids of the active agents touching the module (≥2 distinct families). */
   agentIds: string[];
 }
 
 /**
- * A module is contested when two *different active families* both touch it.
- * Returns one entry per contested module with all involved agent ids.
+ * Compute the current module-level conflicts across a set of agents (scope the
+ * input to one workspace before calling). Mirrors the client `conflicts()`:
+ * group non-done agents by module, keep modules whose touching agents span more
+ * than one family. Output is sorted (module id, then agent id) for stable
+ * diffing by the caller.
  */
-export function computeConflicts(agents: Agent[]): Conflict[] {
-  const active = agents.filter((a) => a.status !== "done");
+export function computeConflicts(agents: Agent[]): ModuleConflict[] {
   const byModule = new Map<string, Agent[]>();
-  for (const a of active) {
-    for (const m of a.modules) {
-      const list = byModule.get(m) ?? [];
+  for (const a of agents) {
+    if (a.status === "done") continue;
+    for (const moduleId of a.modules) {
+      const list = byModule.get(moduleId) ?? [];
       list.push(a);
-      byModule.set(m, list);
+      byModule.set(moduleId, list);
     }
   }
-  const out: Conflict[] = [];
+
+  const conflicts: ModuleConflict[] = [];
   for (const [moduleId, list] of byModule) {
     const families = new Set(list.map(familyOf));
-    if (families.size > 1) out.push({ moduleId, agentIds: list.map((a) => a.id) });
-  }
-  return out;
-}
-
-/**
- * Dependency edges derived from explicit `dependsOn` (upstream → downstream).
- * Only edges to known active agents are kept.
- */
-export function computeDeps(agents: Agent[]): Dependency[] {
-  const ids = new Set(agents.map((a) => a.id));
-  const edges: Dependency[] = [];
-  for (const a of agents) {
-    for (const upstream of a.dependsOn) {
-      if (ids.has(upstream)) edges.push({ fromAgentId: upstream, toAgentId: a.id });
+    if (families.size > 1) {
+      conflicts.push({
+        moduleId,
+        agentIds: list.map((a) => a.id).sort(),
+      });
     }
   }
-  return edges;
+  return conflicts.sort((a, b) => a.moduleId.localeCompare(b.moduleId));
+}
+
+type ConflictEvent = Extract<ServerEvent, { type: "conflict.detected" }>;
+
+/**
+ * The current conflicts as ready-to-publish `conflict.detected` events. Core
+ * publishes these on the agents' workspace channel from the Hub trigger
+ * (typically after diffing against the previously-emitted set so unchanged
+ * conflicts don't re-broadcast).
+ */
+export function conflictEvents(agents: Agent[]): ConflictEvent[] {
+  return computeConflicts(agents).map((c) => ({
+    type: "conflict.detected",
+    moduleId: c.moduleId,
+    agentIds: c.agentIds,
+  }));
 }
