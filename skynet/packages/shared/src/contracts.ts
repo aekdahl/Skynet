@@ -80,6 +80,8 @@ export const Agent = z.object({
   startedAt: Timestamp,
   lastHeartbeatAt: Timestamp,
   visual: z.boolean().default(false), // has a renderable live-preview delivery
+  previewUrl: z.string().nullable().default(null), // live-preview artifact/URL (W5)
+  dependsOn: z.array(z.string()).default([]), // upstream agent ids this is gated on (W4)
   // Set when forked — shares context with its parent (same conflict "family"):
   parentId: z.string().nullable().default(null),
   branchFromStep: z.number().int().nullable().default(null),
@@ -173,6 +175,18 @@ export const Dependency = z.object({
   toAgentId: z.string(), // downstream — gated on upstream
 });
 export type Dependency = z.infer<typeof Dependency>;
+
+/** A persisted HITL decision — the audit trail (Backend Brief §11). Served by W8. */
+export const AuditRecord = z.object({
+  workspaceId: z.string(),
+  hitlId: z.string(),
+  agentId: z.string(),
+  action: z.string(),
+  operatorId: z.string(),
+  at: Timestamp,
+  payload: z.unknown(),
+});
+export type AuditRecord = z.infer<typeof AuditRecord>;
 
 /** Provider catalog entry — drives glyphs, colors, and the model dropdown. */
 export const ProviderInfo = z.object({

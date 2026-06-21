@@ -286,6 +286,8 @@ export function buildSeed(now: number): SeedData {
     startedAt: now - ra.startedMin * 60_000,
     lastHeartbeatAt: now - ra.hb * 1000,
     visual: ra.visual ?? false,
+    previewUrl: null,
+    dependsOn: [],
     parentId: ra.parentId ?? null,
     branchFromStep: ra.branchFromStep ?? null,
   }));
