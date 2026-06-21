@@ -53,6 +53,24 @@ function PvTerm({ lines }: { lines: string[] }) {
   );
 }
 
+// The real, sandboxed preview the backend reserved for this branch (W5). The
+// iframe is sandboxed so previewed app code can't reach the console origin;
+// production should also serve previews from a separate origin (subdomain).
+function PreviewFrame({ url, title }: { url: string; title: string }) {
+  return (
+    <iframe
+      title={title}
+      src={url}
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+      referrerPolicy="no-referrer"
+      loading="lazy"
+      style={{ display: "block", width: "100%", height: 300, border: 0, background: "#fff" }}
+    />
+  );
+}
+
+const hostPath = (url: string) => url.replace(/^https?:\/\//, "");
+
 export function PreviewFor({ agent }: { agent: Agent }) {
   const now = agent.plan.find((p) => p.state === "now");
   const done = planDone(agent);
@@ -67,17 +85,23 @@ export function PreviewFor({ agent }: { agent: Agent }) {
               <i />
               <i />
             </span>
-            <span className="dlv-url">app.cyberdyne.net/{agent.branch.split("/").pop()}</span>
+            <span className="dlv-url">
+              {agent.previewUrl ? hostPath(agent.previewUrl) : "app.cyberdyne.net/" + agent.branch.split("/").pop()}
+            </span>
           </div>
-          <div className="dlv-pad dlv-center">
-            <div className="dlv-buildspin" />
-            <div className="dlv-h1">{agent.name}</div>
-            <div className="dlv-sub">
-              {agent.status === "done"
-                ? "shipped"
-                : "Building: " + (now ? now.text : "wrap-up")}
+          {agent.previewUrl ? (
+            <PreviewFrame url={agent.previewUrl} title={agent.name + " preview"} />
+          ) : (
+            <div className="dlv-pad dlv-center">
+              <div className="dlv-buildspin" />
+              <div className="dlv-h1">{agent.name}</div>
+              <div className="dlv-sub">
+                {agent.status === "done"
+                  ? "shipped"
+                  : "Building: " + (now ? now.text : "wrap-up")}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </PvShell>
     );
@@ -133,17 +157,23 @@ export function ProjectDelivery({ project }: { project: Project }) {
             <i />
             <i />
           </span>
-          <span className="dlv-url">app.cyberdyne.net/{project.id}</span>
+          <span className="dlv-url">
+            {lead.previewUrl ? hostPath(lead.previewUrl) : "app.cyberdyne.net/" + project.id}
+          </span>
         </div>
-        <div className="dlv-pad dlv-center">
-          <div className="dlv-buildspin" />
-          <div className="dlv-h1">{project.name}</div>
-          <div className="dlv-sub">
-            {lead.status === "done"
-              ? "Shipped: " + lead.name
-              : "Building: " + lead.name}
+        {lead.previewUrl ? (
+          <PreviewFrame url={lead.previewUrl} title={project.name + " preview"} />
+        ) : (
+          <div className="dlv-pad dlv-center">
+            <div className="dlv-buildspin" />
+            <div className="dlv-h1">{project.name}</div>
+            <div className="dlv-sub">
+              {lead.status === "done"
+                ? "Shipped: " + lead.name
+                : "Building: " + lead.name}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </PvShell>
   );
