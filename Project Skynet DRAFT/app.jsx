@@ -15,14 +15,20 @@ const DEFAULT_PLAN = () => [
 
 function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
-  const [agents, setAgents] = React.useState(AGENTS);
-  const [queue, setQueue] = React.useState(QUEUE);
-  const [projects, setProjects] = React.useState(PROJECTS);
-  const [fleet, setFleet] = React.useState(FLEET);
-  const [view, setView] = React.useState('home');   // home | queue | projects | fleet | project | agent
-  const [lens, setLens] = React.useState('subway');  // home lens: subway | timeline | ledger | roster
-  const [projectId, setProjectId] = React.useState(null);
-  const [agentId, setAgentId] = React.useState(null);
+  // First-run gate: a workspace either exists (persisted) or we show the onboarding wizard.
+  // A real (non-demo) workspace starts EMPTY — GetStarted then guides the first project;
+  // the seeded fixtures only load when the operator picks the demo path. See onboarding.jsx.
+  const [ws, setWs] = React.useState(loadWorkspace);   // lazy: read persisted workspace once
+  const boot = React.useRef(ws).current;               // boot config captured at mount, for initial collections
+  const [agents, setAgents] = React.useState(boot && boot.demo ? AGENTS : []);
+  const [queue, setQueue] = React.useState(boot && boot.demo ? QUEUE : []);
+  const [projects, setProjects] = React.useState(boot && boot.demo ? PROJECTS : []);
+  const [fleet, setFleet] = React.useState(
+    boot ? (boot.demo ? FLEET : buildFleet(boot.providers)) : []);
+  // Router state (view | queue | projects | fleet | project | agent) and the home lens
+  // (subway | timeline | ledger | roster) are synced to the URL hash for shareable
+  // deep links + browser back/forward; reloading a link restores the view. See routing.jsx.
+  const { view, setView, lens, setLens, projectId, setProjectId, agentId, setAgentId } = useTowerRouter();
   const [from, setFrom] = React.useState('home');
   const [fromP, setFromP] = React.useState('home');
   const [selIdx, setSelIdx] = React.useState(0);
@@ -120,12 +126,35 @@ function App() {
   const updateAgent = (rn, patch) => setFleet(fs => fs.map(f => f.rn === rn ? { ...f, ...patch } : f));
   const retireAgent = (rn) => setFleet(fs => fs.filter(f => f.rn !== rn));
 
+  /* ----- onboarding: finish the wizard, or skip into demo data ----- */
+  const completeOnboarding = (cfg) => {
+    const full = { ...cfg, onboarded: true, demo: false };
+    saveWorkspace(full); setWs(full);
+    setFleet(buildFleet(cfg.providers));
+    setView('home'); setLens('subway');   // land on an empty Home → GetStarted takes over
+  };
+  const useDemoData = () => {
+    const full = { workspace: 'Demo workspace', operator: 'Operator', repo: 'acme/monolith',
+                   modules: DEFAULT_MODULES, providers: Object.keys(window.PROVIDERS || {}), onboarded: true, demo: true };
+    saveWorkspace(full); setWs(full);
+    setAgents(AGENTS); setQueue(QUEUE); setProjects(PROJECTS); setFleet(FLEET);
+    setView('home'); setLens('subway');
+  };
+  const resetWorkspace = () => {
+    clearWorkspace(); setWs(null);
+    setAgents([]); setQueue([]); setProjects([]); setFleet([]);
+  };
+
   const openAgent = (id) => { setFrom(view === 'agent' ? from : view); setAgentId(id); setView('agent'); };
   const openProject = (id) => { setFromP(view === 'project' || view === 'agent' ? fromP : view); setProjectId(id); setView('project'); };
 
   const agent = agents.find(a => a.id === agentId);
   const project = projects.find(p => p.id === projectId);
   const VIEW_LABEL = { home: 'Home', projects: 'Projects', fleet: 'Fleet', queue: 'Inbox', project: 'Project' };
+
+  // First run: no workspace yet → show the onboarding wizard instead of the app shell.
+  // (All hooks above run unconditionally; only the render branches here.)
+  if (!ws) return <Onboarding onComplete={completeOnboarding} onDemo={useDemoData} />;
 
   return (
     <div className="app" style={{ '--accent': t.accent }} data-density={t.density}>
@@ -155,6 +184,9 @@ function App() {
                          onUpdateProject={updateProject} onDeleteProject={deleteProject}
                          onAddTask={addTask} onUpdateTask={updateTask} onDeleteTask={deleteTask} onAssignTask={assignTask} />
           )}
+          {view === 'project' && !project && (
+            <div className="vw"><div className="kb-empty">This project doesn’t exist or was deleted. <button className="kb-assign" onClick={() => setView('projects')}>All projects →</button></div></div>
+          )}
           {view === 'queue' && (
             <QueueView queue={queue} agents={agents} selectedIdx={selIdx}
                        onResolve={resolve} onOpen={openAgent} resolvedCount={resolved} />
@@ -181,6 +213,10 @@ function App() {
                     onChange={(v) => setTweak('density', v)} />
         <TweakSection label="Simulation" />
         <TweakToggle label="Live activity" value={t.live} onChange={(v) => setTweak('live', v)} />
+        <TweakSection label="Workspace" />
+        <TweakRow label={ws.workspace || 'Workspace'} value={ws.demo ? 'demo' : 'live'}>
+          <button className="btn btn-ghost" onClick={resetWorkspace}>Reset / switch →</button>
+        </TweakRow>
       </TweaksPanel>
     </div>
   );
