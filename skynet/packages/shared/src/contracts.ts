@@ -244,3 +244,23 @@ export const UpdateRunnerRequest = z.object({
   name: z.string().optional(),
 });
 export type UpdateRunnerRequest = z.infer<typeof UpdateRunnerRequest>;
+
+// ─── Secrets (per-workspace provider credentials) ──────────────────────────
+// The raw key is write-only — it is never returned over the wire. The UI only
+// ever sees this metadata (which provider has a key, and a last-4 fingerprint
+// so an operator can confirm which key is stored).
+
+export const SecretMeta = z.object({
+  workspaceId: z.string(),
+  provider: ProviderId,
+  last4: z.string(), // last 4 chars of the key — for recognition, not reuse
+  updatedAt: Timestamp,
+  updatedBy: z.string(), // operator id — audit trail
+});
+export type SecretMeta = z.infer<typeof SecretMeta>;
+
+/** Body for setting/rotating a workspace's provider key. */
+export const SetSecretRequest = z.object({
+  apiKey: z.string().min(1),
+});
+export type SetSecretRequest = z.infer<typeof SetSecretRequest>;

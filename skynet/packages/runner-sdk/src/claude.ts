@@ -135,7 +135,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     // server has no such host, so those credentials 401. Fast-fail with a clear
     // reason instead of spinning up an agent that immediately 401s.
     const env = buildRunnerEnv();
-    if (!env.ANTHROPIC_API_KEY) {
+    if (!env.ANTHROPIC_API_KEY && !spec.apiKey) {
       this.events.onLog(
         this.agentId,
         "ANTHROPIC_API_KEY is not set — the Claude runner cannot authenticate (set it to enable live runs; RUNNER=mock needs no key).",
@@ -150,7 +150,9 @@ class ClaudeRunnerHandle implements RunnerHandle {
       permissionMode: "default",
       canUseTool,
       maxTurns: 60,
-      env, // scrubbed env: forces the API key, drops the nested-session OAuth path
+      // Scrubbed env (drops the nested-session OAuth path); a per-workspace key
+      // (orchestrator-injected) overrides ANTHROPIC_API_KEY for this session only.
+      env: spec.apiKey ? { ...env, ANTHROPIC_API_KEY: spec.apiKey } : env,
       ...(resumeSessionId ? { resume: resumeSessionId, forkSession: true } : {}),
     };
 

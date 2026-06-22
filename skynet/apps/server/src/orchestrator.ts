@@ -15,6 +15,7 @@ import { config, now } from "./config.js";
 import type { Hub } from "./hub.js";
 import { MergeEngine, type MergeRequest } from "./merge.js";
 import { loadModuleMap, type ModuleMap } from "./modules-map.js";
+import { secretService } from "./secrets/index.js";
 import { previewService } from "./preview/index.js";
 import type { Store } from "./store/store.js";
 import { WorktreeProvisioner } from "./worktrees.js";
@@ -178,15 +179,6 @@ export class Orchestrator {
       const task = await this.store.getTask(live.taskId);
       if (task) await this.hub.upsertTask({ ...task, state: "done" });
     }
-    // W3: derive the modules actually touched from the changed files.
-    const agent = await this.store.getAgent(agentId);
-    if (agent && agent.modifiedFiles.length) {
-      const modules = this.moduleMap.modulesForFiles(agent.modifiedFiles);
-      if (modules.length) {
-        await this.store.putAgent({ ...agent, modules });
-        await this.hub.refreshConflicts(agent.workspaceId);
-      }
-    }
     await this.hub.agentCompleted(agentId, branch);
     this.live.delete(agentId);
   }
@@ -303,7 +295,6 @@ export class Orchestrator {
     };
 
     await this.hub.createAgent(agent);
-    void this.hub.refreshConflicts(agent.workspaceId);
     await this.hub.upsertTask({ ...task, state: "assigned", agentId });
     await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 
@@ -315,8 +306,10 @@ export class Orchestrator {
     );
 
     const provider = await this.getProvider();
+    // Inject this workspace's provider key (env fallback when none is stored).
+    const apiKey = await secretService.resolve(project.workspaceId, runner.provider);
     const handle = await provider.start(
-      { agentId, projectId, task: task.text, model: runner.model, branch, cwd },
+      { agentId, projectId, task: task.text, model: runner.model, branch, cwd, apiKey },
       this.events(),
     );
     this.live.set(agentId, { handle, runnerId: runner.id, taskId, branch, baseRef });
@@ -370,8 +363,9 @@ export class Orchestrator {
     const { cwd, baseRef } = await this.provisionCwd(agentId, agent.branch, parent.branch);
 
     const provider = await this.getProvider();
+    const apiKey = await secretService.resolve(parent.workspaceId, runner.provider);
     const handle = await provider.start(
-      { agentId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex },
+      { agentId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex, apiKey },
       this.events(),
     );
     this.live.set(agentId, { handle, runnerId: runner.id, taskId: null, branch: agent.branch, baseRef });

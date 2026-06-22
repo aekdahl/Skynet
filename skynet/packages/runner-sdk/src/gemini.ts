@@ -48,6 +48,11 @@ const gemini: CliVendor = {
   bin: BIN,
   installHint: "Install with `npm i -g @google/gemini-cli` and authenticate (`gemini`, then sign in).",
 
+  env(spec: StartSpec): Record<string, string> {
+    // Per-workspace key injected by the orchestrator; empty → inherit ambient env.
+    return spec.apiKey ? { GEMINI_API_KEY: spec.apiKey, GOOGLE_API_KEY: spec.apiKey } : {};
+  },
+
   buildArgs(spec: StartSpec): string[] {
     // `-p` runs the prompt non-interactively in the cwd; `-m` selects the model.
     return ["-m", spec.model, ...EXTRA, "-p", spec.task];
