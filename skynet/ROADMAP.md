@@ -36,6 +36,11 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
 - Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** — then breadth
   reactively from the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
 - **Agent labels / custom grouping** — rename agents and group them beyond project (small UX add).
+- **Mass inform** — select multiple agents (or a whole project / area / manager-family) and attach a
+  note that rides the *next* prompt each already receives — **no extra turn, ~free** (Claude SDK
+  `shouldQuery:false`; CLI runners buffer + prepend). A third interaction type (`inform`) alongside
+  chat + resolve; optional "also remember" promotes the note to area/workspace memory (v4) so future
+  agents inherit it too. Audited via existing streams.
 - Real **live-preview** pipeline (sandboxed per-branch URLs).
 - **Scale:** Redis multi-replica fan-out; GKE Jobs for runners.
 - Command-safety hardening; secrets at rest; **observability** (metrics/logging/tracing).
