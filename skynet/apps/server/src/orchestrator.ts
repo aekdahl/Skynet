@@ -14,6 +14,7 @@ import {
 import { config, now } from "./config.js";
 import type { Hub } from "./hub.js";
 import { MergeEngine, type MergeRequest } from "./merge.js";
+import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { previewService } from "./preview/index.js";
 import type { Store } from "./store/store.js";
 import { WorktreeProvisioner } from "./worktrees.js";
@@ -42,6 +43,7 @@ export class Orchestrator {
   private seq = 0;
   private providerPromise?: Promise<RunnerProvider>;
   private merge?: MergeEngine;
+  private moduleMap: ModuleMap = loadModuleMap(config.integrationRepo);
   private worktrees?: WorktreeProvisioner;
 
   constructor(private store: Store, private hub: Hub) {
@@ -176,6 +178,15 @@ export class Orchestrator {
       const task = await this.store.getTask(live.taskId);
       if (task) await this.hub.upsertTask({ ...task, state: "done" });
     }
+    // W3: derive the modules actually touched from the changed files.
+    const agent = await this.store.getAgent(agentId);
+    if (agent && agent.modifiedFiles.length) {
+      const modules = this.moduleMap.modulesForFiles(agent.modifiedFiles);
+      if (modules.length) {
+        await this.store.putAgent({ ...agent, modules });
+        await this.hub.refreshConflicts(agent.workspaceId);
+      }
+    }
     await this.hub.agentCompleted(agentId, branch);
     this.live.delete(agentId);
   }
@@ -292,6 +303,7 @@ export class Orchestrator {
     };
 
     await this.hub.createAgent(agent);
+    void this.hub.refreshConflicts(agent.workspaceId);
     await this.hub.upsertTask({ ...task, state: "assigned", agentId });
     await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 
