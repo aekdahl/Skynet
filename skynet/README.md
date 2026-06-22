@@ -4,18 +4,17 @@ A fleet-supervision console for running coding agents in parallel. Operators don
 edit files — they resolve human-in-the-loop (HITL) stops (approve / reject / modify /
 decide / diff-review) so agents never stall.
 
-This is the integrated build of the prototype + the three integration briefs in
-`../Project Skynet DRAFT/`. It's a **TypeScript monorepo shipped as one Docker
-Compose stack**, per the Architecture & Distribution brief.
+A **TypeScript monorepo shipped as one Docker Compose stack**. The current release
+is **v0.1.0 (MVP)** — see [`CHANGELOG.md`](./CHANGELOG.md).
 
 ```
 skynet/
 ├─ apps/
-│  ├─ web/        # React + Vite SPA (the prototype, ported)
-│  └─ server/     # Fastify API + WebSocket gateway + orchestrator
+│  ├─ web/        # React + Vite SPA (routing, audit view, installable PWA)
+│  └─ server/     # Fastify API + WebSocket gateway + orchestrator + merge queue
 ├─ packages/
 │  ├─ shared/     # ◀ entity + event contracts (zod) — the frontend/backend spine
-│  └─ runner-sdk/ # provider-agnostic runner interface (+ mock runner)
+│  └─ runner-sdk/ # provider-agnostic runner interface + 5 real runners + mock
 ├─ docker-compose.yml
 └─ Dockerfile     # multi-stage: build web → served by the server image
 ```
@@ -23,59 +22,97 @@ skynet/
 The `shared` package is the spine: both apps import the same zod-validated entity
 and `ServerEvent` types, so the wire contract can't silently drift.
 
+## The core loop
+
+Assign a task → the orchestrator acquires an idle runner and provisions an
+**isolated git worktree** on an `agent/<id>` branch → the agent works there →
+on completion its diff is committed and raised as a **diff review** in the Inbox →
+approving **enqueues the branch** onto a serialized per-project **merge queue**
+(`skynet/integration/<projectId>`), which merges it, runs the project's checks, and
+escalates textual conflicts as a `merge` HITL. Real-time `ServerEvent` deltas stream
+every step to the SPA over WebSocket.
+
 ## Run it
 
-### Local dev (hot reload)
+### ① Demo — mock agents, zero external deps
 
 ```bash
+cd skynet
 pnpm install
-pnpm --filter @skynet/shared build      # build the contract package first
-pnpm --filter @skynet/runner-sdk build
-pnpm dev                               # server on :8080, web on :5173 (proxies /api + /ws)
+pnpm --filter @skynet/shared build       # build the contract package first…
+pnpm --filter @skynet/runner-sdk build    # …apps typecheck/run against its dist
+pnpm dev                                  # server :8080, web :5173 (proxies /api + /ws)
 ```
 
-Open http://localhost:5173. The Vite dev server proxies `/api` and `/ws` to the
-API server on :8080.
+Open <http://localhost:5173>. Auth is off by default (you land in the `cyberdyne`
+workspace). Assign a task to a project → a mock agent runs a canned plan and hits a
+HITL gate → resolve it in the **Inbox**. This exercises the whole control plane with
+no API keys.
 
-### Self-host (one command)
+### ② Self-host (one command)
 
 ```bash
-cp .env.example .env     # provider keys + secrets (optional for Phase 0)
-docker compose up        # app (web+api+ws) + postgres + redis
-# → open http://localhost:8080
+cp .env.example .env
+docker compose up        # app (web+api+ws) + postgres + redis  →  http://localhost:8080
 ```
 
-## Status — Phase 0 (Foundations) is running
+### ③ Go live — real agents doing real work→diff→merge
 
-What works today, end-to-end:
+In `.env`:
 
-- **Persistence + read API** — four collections (agents, queue, projects, fleet)
-  plus tasks/modules/deps/providers, behind a `Store` interface. Phase 0 ships an
-  in-memory implementation seeded from the prototype's data; a Postgres adapter
-  drops in behind the same interface.
-- **Connect-time snapshot + deltas** — `GET /api/snapshot` and a WebSocket at `/ws`
-  that pushes a full snapshot on connect, then typed `ServerEvent` deltas. This
-  replaces the prototype's two client-side simulation loops.
-- **The HITL round-trip** — `POST /api/hitl/:id/resolve` is idempotent and
-  first-writer-wins; the decision is delivered to the agent and resumes it.
-- **Agent lifecycle (mock)** — assigning a task acquires an idle runner, starts an
-  agent (mock runner: canned plan + simulated log + one HITL gate), and frees the
-  runner on completion. The server-side busy-runner retire guard is enforced.
-- **CRUD** — projects, tasks, and fleet runners, each persisted + broadcast.
+- `RUNNER=claude` (or `codex` / `gemini` / `cursor` / `copilot`) + the matching
+  provider key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …), or
+  store per-workspace keys encrypted (set `SKYNET_MASTER_KEY=$(openssl rand -base64 32)`).
+- `SKYNET_INTEGRATION_REPO=/path/to/your/repo` + `SKYNET_BASE_BRANCH=main` — turns on
+  worktree provisioning and the merge queue. Optional `SKYNET_CHECK_CMD="pnpm test"`
+  runs before each merge commits.
 
-### Configuration (`.env`)
+Assign a task → the agent works in its own worktree → you get a diff review in the
+Inbox → approve → it integrates into `skynet/integration/<project>`.
 
-| Var      | Phase 0 default | Notes                                          |
-|----------|-----------------|------------------------------------------------|
-| `STORE`  | `memory`        | `postgres` selects the durable adapter         |
-| `BUS`    | `memory`        | `redis` fans out across multiple app replicas  |
-| `RUNNER` | `mock`          | `claude` (real execution) lands in Phase 1     |
+## What's in v0.1.0
 
-## What's next (see `../Project Skynet DRAFT/ROADMAP.md`)
+- **Core loop** — worktree-per-agent provisioning + serialized merge queue with
+  conflict escalation and post-merge checks.
+- **5 runner backends** behind one `RunnerProvider` seam — Claude Code, Codex,
+  Gemini, Cursor, Copilot (`RUNNER=`), plus the default `mock`.
+- **Per-workspace encrypted secrets** with runner key-injection (`SKYNET_MASTER_KEY`).
+- **Persistence** — in-memory or Postgres `Store`; **real-time** in-process or Redis
+  `Bus` (cross-replica fan-out).
+- **Auth** — dev tokens + real login with durable sessions (memory / Postgres / Redis).
+- **Derived intelligence** — module map (`.skynet/modules.json`) + server-side
+  conflict/dependency derivation feeding the Timeline and conflict banner.
+- **Live preview** — sandboxed per-branch preview URLs / built artifacts (`PREVIEW=`).
+- **Web** — deep-link routing, decision audit-trail view, installable PWA
+  (offline shell, push → Inbox), onboarding.
+- **Quality** — Vitest suite (contracts, Store adapters, merge engine, HITL) + CI
+  (typecheck + build + test against Postgres).
 
-- **Phase 0 finish:** Postgres `Store` adapter + Redis `Bus` adapter (interfaces exist).
-- **Phase 1:** real provider runners behind the `runner-sdk` interface (Claude Code first).
-- **Phase 3:** compute conflicts (fork-aware module families) & dependencies from real activity.
-- The two hardest open problems — the **git merge / conflict-ownership model** and
-  **delivering decisions mid-stream into heterogeneous provider CLIs** — still need
-  their own design pass before Phase 1.
+## Configuration (`.env`)
+
+See [`.env.example`](./.env.example) for the full list. Most-used:
+
+| Var | Default | Notes |
+|-----|---------|-------|
+| `STORE` | `memory` | `postgres` selects the durable adapter |
+| `BUS` | `memory` | `redis` fans out across replicas |
+| `SESSIONS` | `memory` | login session backend: `postgres` / `redis` for durability |
+| `RUNNER` | `mock` | `claude` / `codex` / `gemini` / `cursor` / `copilot` |
+| `AUTH_REQUIRED` | `false` | `true` rejects unauthenticated requests (401) |
+| `SKYNET_INTEGRATION_REPO` | _(unset)_ | target repo → enables worktrees + merge queue |
+| `SKYNET_BASE_BRANCH` | `main` | branch agents cut from / the queue integrates onto |
+| `SKYNET_CHECK_CMD` | _(unset)_ | command run in the repo before a merge commits |
+| `SKYNET_MASTER_KEY` | _(unset)_ | base64 32-byte key → enables encrypted secrets |
+| `PREVIEW` | `off` | `artifact` (build + serve) / `deploy` (external URL) |
+
+With `AUTH_REQUIRED=true`, sign in with the dev seed creds
+`jordan@cyberdyne.dev` / `kyle@resistance.dev` (password `skynet`), or use the dev
+tokens `dev-cyberdyne` / `dev-resistance`.
+
+## Docs
+
+- [`CHANGELOG.md`](./CHANGELOG.md) — release notes
+- [`ROADMAP.md`](./ROADMAP.md) — MVP (v0) then versioned releases
+- [`docs/vcs-and-conflict-model.md`](./docs/vcs-and-conflict-model.md) — worktree /
+  merge / conflict-ownership model
+- [`docs/`](./docs/) — positioning, agent-hierarchy, runner-catalog, workstreams
