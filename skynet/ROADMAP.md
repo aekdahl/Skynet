@@ -33,7 +33,9 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
 ---
 
 ## v1 — Orchestration completeness & hardening
-- Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot**.
+- Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** — then breadth
+  reactively from the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
+- **Agent labels / custom grouping** — rename agents and group them beyond project (small UX add).
 - Real **live-preview** pipeline (sandboxed per-branch URLs).
 - **Scale:** Redis multi-replica fan-out; GKE Jobs for runners.
 - Command-safety hardening; secrets at rest; **observability** (metrics/logging/tracing).
@@ -46,8 +48,24 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
 [docs/agent-hierarchy.md](docs/agent-hierarchy.md)
 - 🔬 The decomposition is **LLM planning** — Skynet supplies the area goal + module map + the
   `spawn_worker` tool, surfaces a `plan` HITL, and spawns workers on approval. The model does the "how."
+- **Managers organize by area *or* role** — same mechanism, different scope: a "Billing manager"
+  (module area) or a "Review / QA / Security manager" (function). Role-managers are how specialized
+  agents are arranged; workers under them inherit the role's prompt + tool scope.
 
-## v3 — Moat Layer: Portable cross-vendor memory (M1)  🔗
+## v3 — Triggers & integrations (inbound work)  🔗
+Turn Skynet from "I assign tasks" into "work flows in from my stack, human-gated." Every integration
+uses the **user's own accounts** (their Sentry, GitHub, LLM key) — Skynet is the connective +
+supervision layer, it doesn't host or resell those services.
+- **The enabling primitive:** an **inbound-trigger** concept — a webhook/event creates a task or agent
+  in a workspace. Today the only trigger is "operator assigns a task"; this one primitive unlocks the
+  whole category. (Cheap to design early so we don't foreclose it; build here.)
+- **Tools via MCP:** an agent gets scoped tools (GitHub / Sentry / Slack MCP) to act back into the
+  user's services. A "Sentry agent" = a coding agent + Sentry MCP + a Sentry webhook trigger.
+- **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
+  fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
+- Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.
+
+## v4 — Moat Layer: Portable cross-vendor memory (M1)  🔗
 User-owned memory that no single vendor can match, because everything streams through Skynet.
 [docs/positioning.md](docs/positioning.md) §3.2
 - Cross-vendor, long-lived, **portable/exportable**, scoped (workspace / project / area / family).
@@ -58,23 +76,23 @@ User-owned memory that no single vendor can match, because everything streams th
 - 🔬 **LLM-assisted distillation** of good memory from history — open research; start with
   operator-authored + decision-derived facts, add a Skynet-side curating LLM later.
 
-## v4 — Moat Layer: Agent fluency (M2)  🔬🔗
+## v5 — Moat Layer: Agent fluency (M2)  🔬🔗
 Help users run **more agents with clearer tasks** — the flywheel (better results + more usage).
 [docs/positioning.md](docs/positioning.md) §3.3
 - **Task linter** (split/clarify suggestions), **parallelism nudges**, and an **outcome feedback loop**
   (which task phrasings one-shot cleanly vs. churn through HITL).
 - 🔬 The coach is **LLM-based** (critiques tasks, proposes decompositions); open research on UX + quality.
-- Compounds with v3 — the coach learns from the workspace's own memory/history.
+- Compounds with v4 — the coach learns from the workspace's own memory/history.
 
-## v5 — Vendor migration
+## v6 — Vendor migration
 Help a user **move from one vendor to another** (Claude ↔ Codex ↔ Gemini …): carry over the
 vendor-neutral memory, translate config/rules, and re-home in-flight work — leveraging the portable
-memory (v3) + thin runner adapters.
+memory (v4) + thin runner adapters.
 
 ---
 
 ## Considerations / open questions (decide later)
-- 🔬 **LLMs for memory distillation (v3) and the fluency coach (v4)** — both likely require an LLM;
+- 🔬 **LLMs for memory distillation (v4) and the fluency coach (v5)** — both likely require an LLM;
   decide model / cost / UX. (Flagged by design, not avoidance.)
 - **Repo-optional / chat-only mode** — a repo should *not* be hard-required. A "just chat with an
   agent" mode is mechanically a runner with **no worktree and no merge**; it widens the funnel to try
