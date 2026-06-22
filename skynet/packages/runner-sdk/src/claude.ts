@@ -97,6 +97,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
   private input = createInputStream();
   private q?: Query; // unset when we couldn't authenticate (see constructor)
   private gate: ((r: PermissionResult) => void) | null = null;
+  // Original input of the gated tool call, echoed back on allow (the SDK treats
+  // the allow result's `updatedInput` as the input to run — omitting it stalls
+  // the session, so we always pass the tool's own input through).
+  private gateInput: Record<string, unknown> | null = null;
   private pendingChat = false;
   private progress = 0;
   private finished = false;
@@ -118,12 +122,16 @@ class ClaudeRunnerHandle implements RunnerHandle {
     );
 
     const canUseTool: CanUseTool = (toolName, input) => {
-      if (AUTO_ALLOW.has(toolName)) return Promise.resolve({ behavior: "allow" } as PermissionResult);
+      if (AUTO_ALLOW.has(toolName)) return Promise.resolve({ behavior: "allow", updatedInput: input });
       return new Promise<PermissionResult>((resolve) => {
         // One gate at a time — the SDK serializes tool calls in a turn.
+        // Register the gate BEFORE emitting the event: a synchronous resume
+        // (auto-approve policy / fast operator) can re-enter during onHitl, and
+        // if the resolver isn't stored yet it would miss the gate → permanent stall.
+        this.gate = resolve;
+        this.gateInput = input;
         this.events.onStatus(this.agentId, "waiting");
         this.events.onHitl(this.agentId, this.buildRaise(toolName, input));
-        this.gate = resolve;
       });
     };
 
@@ -222,14 +230,18 @@ class ClaudeRunnerHandle implements RunnerHandle {
   async resume(decision?: Resolution) {
     if (this.gate) {
       const gate = this.gate;
+      const input = this.gateInput ?? {};
       this.gate = null;
+      this.gateInput = null;
       this.events.onStatus(this.agentId, "running");
       if (decision?.action === "reject") {
         gate({ behavior: "deny", message: "Operator rejected this action — revise your approach." });
       } else if (decision?.action === "modify") {
         gate({ behavior: "deny", message: decision.guidance ?? "Adjust per operator guidance." });
       } else {
-        gate({ behavior: "allow" });
+        // Echo the tool's own input as `updatedInput` — required for the SDK to
+        // actually run the approved tool (omitting it stalls the session).
+        gate({ behavior: "allow", updatedInput: input });
       }
     } else if (decision?.guidance) {
       this.input.push(decision.guidance);
