@@ -14,6 +14,7 @@ import {
 import { config, now } from "./config.js";
 import type { Hub } from "./hub.js";
 import { MergeEngine, type MergeRequest } from "./merge.js";
+import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { secretService } from "./secrets/index.js";
 import { previewService } from "./preview/index.js";
 import type { Store } from "./store/store.js";
@@ -43,6 +44,7 @@ export class Orchestrator {
   private seq = 0;
   private providerPromise?: Promise<RunnerProvider>;
   private merge?: MergeEngine;
+  private moduleMap: ModuleMap = loadModuleMap(config.integrationRepo);
   private worktrees?: WorktreeProvisioner;
 
   constructor(private store: Store, private hub: Hub) {

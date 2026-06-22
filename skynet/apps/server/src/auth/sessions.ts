@@ -1,9 +1,9 @@
 // ─── Session store ────────────────────────────────────────────────────────
 // Opaque session tokens issued at login (W6). A token maps to a Principal and
-// expires after a TTL; resolve() sweeps expired entries so unknown/expired
-// tokens resolve to undefined → the caller returns 401. In-memory by default,
-// matching the Store/Bus pattern; a Redis/Postgres adapter drops in behind this
-// same interface for multi-replica or durable sessions.
+// expires after a TTL; unknown/expired tokens resolve to undefined → the caller
+// returns 401. The interface is async so a durable (Postgres) or multi-replica
+// (Redis) backend drops in behind it — see sessions.postgres.ts / sessions.redis.ts.
+// In-memory is the default, matching the Store/Bus pattern.
 
 import { randomBytes } from "node:crypto";
 import { now } from "../config.js";
@@ -18,25 +18,34 @@ export interface Session {
 
 export interface SessionStore {
   /** Issue a session for a freshly authenticated principal. */
-  create(principal: Principal, ttlMs: number): Session;
+  create(principal: Principal, ttlMs: number): Promise<Session>;
   /** Resolve a live session; undefined if missing or expired. */
-  resolve(token: string): Principal | undefined;
+  resolve(token: string): Promise<Principal | undefined>;
   /** Invalidate a session (logout). */
-  destroy(token: string): void;
+  destroy(token: string): Promise<void>;
+}
+
+/** Mint a fresh opaque token + timestamps. Shared by every adapter. */
+export function newSession(principal: Principal, ttlMs: number): Session {
+  const createdAt = now();
+  return {
+    token: `sess_${randomBytes(32).toString("base64url")}`,
+    principal,
+    createdAt,
+    expiresAt: createdAt + ttlMs,
+  };
 }
 
 export class MemorySessionStore implements SessionStore {
   private sessions = new Map<string, Session>();
 
-  create(principal: Principal, ttlMs: number): Session {
-    const token = `sess_${randomBytes(32).toString("base64url")}`;
-    const createdAt = now();
-    const session: Session = { token, principal, createdAt, expiresAt: createdAt + ttlMs };
-    this.sessions.set(token, session);
+  async create(principal: Principal, ttlMs: number): Promise<Session> {
+    const session = newSession(principal, ttlMs);
+    this.sessions.set(session.token, session);
     return session;
   }
 
-  resolve(token: string): Principal | undefined {
+  async resolve(token: string): Promise<Principal | undefined> {
     const s = this.sessions.get(token);
     if (!s) return undefined;
     if (now() >= s.expiresAt) {
@@ -46,7 +55,7 @@ export class MemorySessionStore implements SessionStore {
     return s.principal;
   }
 
-  destroy(token: string): void {
+  async destroy(token: string): Promise<void> {
     this.sessions.delete(token);
   }
 }

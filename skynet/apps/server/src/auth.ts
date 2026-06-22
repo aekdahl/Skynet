@@ -63,10 +63,10 @@ export function cookieToken(cookieHeader?: string): string | undefined {
  * AUTH_REQUIRED is off an absent/unknown/expired token falls back to the dev
  * default (keeps local dev open). When on, only a valid token/session passes.
  */
-export function resolvePrincipal(token?: string): Principal | undefined {
+export async function resolvePrincipal(token?: string): Promise<Principal | undefined> {
   if (token) {
     if (TOKENS[token]) return TOKENS[token];
-    const fromSession = sessions?.resolve(token);
+    const fromSession = await sessions?.resolve(token);
     if (fromSession) return fromSession;
   }
   if (config.authRequired) return undefined;
@@ -74,7 +74,7 @@ export function resolvePrincipal(token?: string): Principal | undefined {
 }
 
 /** Resolve a principal from a request (header → query → cookie). */
-export function authenticate(req: FastifyRequest): Principal | undefined {
+export async function authenticate(req: FastifyRequest): Promise<Principal | undefined> {
   const queryToken = (req.query as { token?: string } | undefined)?.token;
   const token = tokenFrom(req.headers.authorization, queryToken) ?? cookieToken(req.headers.cookie);
   return resolvePrincipal(token);
