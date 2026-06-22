@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNow, useStore } from "./lib/store";
 import { initialView, onNavigate } from "./pwa/launch"; // [pwa] Inbox-first launch + push deep-link
+import { parseHash, toHash } from "./lib/routing"; // [w7] deep links
 import { TitleBar, OpSidebar, OpStatusBar } from "./components/shell";
 import {
   TweaksPanel,
@@ -42,10 +43,12 @@ export function App() {
   const now = useNow(1000);
   const [t, setTweak] = useTweaks();
 
-  const [view, setView] = useState<ViewName>(() => initialView() ?? "home"); // [pwa]
-  const [lens, setLens] = useState<Lens>("subway");
-  const [projectId, setProjectId] = useState<string | null>(null);
-  const [agentId, setAgentId] = useState<string | null>(null);
+  // [w7] A URL hash deep-link wins over the PWA launch default.
+  const route0 = parseHash();
+  const [view, setView] = useState<ViewName>(() => route0?.view ?? initialView() ?? "home");
+  const [lens, setLens] = useState<Lens>(() => route0?.lens ?? "subway");
+  const [projectId, setProjectId] = useState<string | null>(() => route0?.projectId ?? null);
+  const [agentId, setAgentId] = useState<string | null>(() => route0?.agentId ?? null);
   const [from, setFrom] = useState<ViewName>("home");
   const [fromP, setFromP] = useState<ViewName>("home");
   const [selIdx] = useState(0);
@@ -65,6 +68,26 @@ export function App() {
       }),
     [],
   );
+
+  // [w7] Keep the URL hash in sync with router state (shareable deep links).
+  useEffect(() => {
+    const desired = toHash({ view, lens, projectId, agentId });
+    if (location.hash !== desired) location.hash = desired;
+  }, [view, lens, projectId, agentId]);
+
+  // [w7] Apply hash changes (back/forward, manual edits, shared links).
+  useEffect(() => {
+    const onHash = () => {
+      const r = parseHash();
+      if (!r) return;
+      if (r.view) setView(r.view);
+      if (r.lens) setLens(r.lens);
+      setProjectId(r.projectId ?? null);
+      setAgentId(r.agentId ?? null);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   const openAgent = (id: string) => {
     setFrom(view === "agent" ? from : view);

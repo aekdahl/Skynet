@@ -43,7 +43,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     const principal = operators.verify(body.data.email, body.data.password);
     if (!principal) return reply.code(401).send({ error: "Invalid credentials" });
-    const session = sessions.create(principal, config.sessionTtlMs);
+    const session = await sessions.create(principal, config.sessionTtlMs);
     setSessionCookie(reply, session.token, session.expiresAt);
     return { token: session.token, principal, expiresAt: session.expiresAt };
   });
@@ -52,7 +52,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
   app.post("/api/auth/logout", async (req: FastifyRequest, reply: FastifyReply) => {
     const token =
       cookieToken(req.headers.cookie) ?? tokenFrom(req.headers.authorization, undefined);
-    if (token) sessions.destroy(token);
+    if (token) await sessions.destroy(token);
     clearSessionCookie(reply);
     return { ok: true };
   });

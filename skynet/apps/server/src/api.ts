@@ -52,7 +52,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     // Login is the one public /api route — it issues the token, so it can't
     // require one. (Path may carry a query string; match the prefix.)
     if (req.url === "/api/auth/login" || req.url.startsWith("/api/auth/login?")) return;
-    const principal = authenticate(req);
+    const principal = await authenticate(req);
     if (!principal) return reply.code(401).send({ error: "Unauthorized" });
     req.principal = principal;
   });
