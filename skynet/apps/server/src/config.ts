@@ -22,6 +22,10 @@ export const config = {
   baseBranch: process.env.SKYNET_BASE_BRANCH || "main",
   // Optional check command run in the repo before a merge is committed.
   checkCmd: process.env.SKYNET_CHECK_CMD || undefined,
+  // Where per-agent git worktrees are created. Defaults to a sibling of the
+  // integration repo (.skynet-worktrees) so working copies never show as
+  // untracked inside the repo.
+  worktreesDir: process.env.SKYNET_WORKTREES_DIR || undefined,
 };
 
 export const now = (): number => Date.now();
