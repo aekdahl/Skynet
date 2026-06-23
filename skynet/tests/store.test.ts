@@ -75,7 +75,7 @@ describePg("Store contract — postgres (DATABASE_URL set)", () => {
   let store: Store;
   beforeAll(async () => {
     const { PostgresStore } = await import("../apps/server/src/store/postgres.js");
-    store = await PostgresStore.create(dbUrl!);
+    store = await PostgresStore.create(dbUrl!, true);
   });
   afterAll(async () => {
     // best-effort: PostgresStore holds a pool; let the process exit close it.
