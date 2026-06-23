@@ -108,7 +108,11 @@ class CursorRunnerHandle implements RunnerHandle {
   /** Launch one cursor-agent turn. `primary` turns drive the task to completion. */
   private spawnTurn(prompt: string, primary: boolean) {
     const model = mapModel(this.spec.model);
-    const args = ["-p", "--output-format", "stream-json"];
+    // `-f` (force) also satisfies cursor-agent's "Workspace Trust" gate: in a
+    // fresh per-agent worktree, headless `-p` mode otherwise blocks forever on an
+    // interactive trust prompt it can't answer. The operator's gate is preserved
+    // by Skynet's own post-run diff review before anything merges.
+    const args = ["-p", "--output-format", "stream-json", "--force"];
     if (model) args.push("--model", model);
     // Continue the parent/own chat when we have an id (fork or follow-up turn).
     if (this.resumeChatId) args.push("--resume", this.resumeChatId);
