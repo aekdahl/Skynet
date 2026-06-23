@@ -26,9 +26,9 @@ async function main() {
   let store: Store;
   if (config.store === "postgres") {
     const { PostgresStore } = await import("./store/postgres.js");
-    store = await PostgresStore.create(config.databaseUrl);
+    store = await PostgresStore.create(config.databaseUrl, config.seedDemo);
   } else {
-    store = new MemoryStore();
+    store = new MemoryStore({ seed: config.seedDemo });
   }
   let bus: Bus;
   if (config.bus === "redis") {

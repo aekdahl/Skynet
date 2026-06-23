@@ -4,6 +4,9 @@ export const config = {
   port: Number(process.env.PORT ?? 8080),
   nodeEnv: process.env.NODE_ENV ?? "development",
   store: (process.env.STORE ?? "memory") as "memory" | "postgres",
+  // Prefill the store with demo fixtures (sample projects/agents/queue/fleet).
+  // Off by default — a fresh deploy starts empty; opt in with SKYNET_SEED=true.
+  seedDemo: process.env.SKYNET_SEED === "true",
   bus: (process.env.BUS ?? "memory") as "memory" | "redis",
   // Session backend: in-memory (default), durable Postgres, or multi-replica Redis.
   sessions: (process.env.SESSIONS ?? "memory") as "memory" | "postgres" | "redis",
