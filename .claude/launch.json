@@ -7,6 +7,13 @@
       "runtimeArgs": ["-C", "skynet", "--filter", "@skynet/server", "dev"],
       "port": 8080,
       "autoPort": true
+    },
+    {
+      "name": "skynet-web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["-C", "skynet", "--filter", "@skynet/web", "dev"],
+      "port": 5173,
+      "autoPort": true
     }
   ]
 }
