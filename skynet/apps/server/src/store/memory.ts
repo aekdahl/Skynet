@@ -25,12 +25,15 @@ export class MemoryStore implements Store {
   private projects = new Map<string, Project>();
   private tasks = new Map<string, Task>();
   private fleet = new Map<string, Runner>();
-  private modules: Module[];
-  private deps: Dependency[];
+  private modules: Module[] = [];
+  private deps: Dependency[] = [];
   private providers: ProviderInfo[] = PROVIDERS;
   private audit: AuditRecord[] = [];
 
-  constructor() {
+  // `seed` defaults to true so direct `new MemoryStore()` (tests, scripts) keeps
+  // the demo fixtures; the server passes `config.seedDemo` to start clean.
+  constructor(opts: { seed?: boolean } = {}) {
+    if (opts.seed === false) return; // empty store — no prefilled demo data
     const seed = buildSeed(now());
     for (const a of seed.agents) this.agents.set(a.id, a);
     for (const q of seed.queue) this.queue.set(q.id, q);

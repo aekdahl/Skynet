@@ -46,13 +46,15 @@ const J = (v: unknown) => JSON.stringify(v);
 export class PostgresStore implements Store {
   private constructor(private pool: Pool) {}
 
-  /** Connect, migrate, and seed the fixtures if the database is empty. */
-  static async create(connectionString: string): Promise<PostgresStore> {
+  /** Connect, migrate, and (only when `seed` is set) seed fixtures into an empty DB. */
+  static async create(connectionString: string, seed = false): Promise<PostgresStore> {
     const pool = new Pool({ connectionString });
     await pool.query(SCHEMA);
     const store = new PostgresStore(pool);
-    const { rows } = await pool.query<{ n: string }>("SELECT count(*) AS n FROM projects");
-    if (Number(rows[0]?.n ?? 0) === 0) await store.seed();
+    if (seed) {
+      const { rows } = await pool.query<{ n: string }>("SELECT count(*) AS n FROM projects");
+      if (Number(rows[0]?.n ?? 0) === 0) await store.seed();
+    }
     return store;
   }
 
