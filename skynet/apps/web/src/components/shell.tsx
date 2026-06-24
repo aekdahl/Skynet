@@ -69,8 +69,8 @@ export function OpSidebar({
   return (
     <aside className="op-side">
       <div className="op-ws">
-        <span className="op-ws-logo">▣</span>
-        <span className="op-ws-name">Cyberdyne</span>
+        <span className="op-ws-logo">S</span>
+        <span className="op-ws-name">Skynet</span>
         <span className="op-ws-caret">▾</span>
       </div>
       <nav className="op-nav">
