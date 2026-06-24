@@ -20,15 +20,20 @@ import type { Store } from "./store.js";
 import { buildSeed, PROVIDERS } from "./seed.js";
 
 export class MemoryStore implements Store {
-  private agents = new Map<string, Agent>();
-  private queue = new Map<string, HitlItem>();
-  private projects = new Map<string, Project>();
-  private tasks = new Map<string, Task>();
-  private fleet = new Map<string, Runner>();
-  private modules: Module[] = [];
-  private deps: Dependency[] = [];
+  // `protected` so a persistence subclass (FileStore) can load/serialize them.
+  protected agents = new Map<string, Agent>();
+  protected queue = new Map<string, HitlItem>();
+  protected projects = new Map<string, Project>();
+  protected tasks = new Map<string, Task>();
+  protected fleet = new Map<string, Runner>();
+  protected modules: Module[] = [];
+  protected deps: Dependency[] = [];
+  protected audit: AuditRecord[] = [];
   private providers: ProviderInfo[] = PROVIDERS;
-  private audit: AuditRecord[] = [];
+
+  /** Hook called after every mutation. No-op in memory; FileStore overrides it
+   *  to schedule a debounced write to disk. */
+  protected persist(): void {}
 
   // `seed` defaults to true so direct `new MemoryStore()` (tests, scripts) keeps
   // the demo fixtures; the server passes `config.seedDemo` to start clean.
@@ -60,35 +65,35 @@ export class MemoryStore implements Store {
 
   async listAgents(ws: string) { return [...this.agents.values()].filter((a) => a.workspaceId === ws); }
   async getAgent(id: string) { return this.agents.get(id); }
-  async putAgent(agent: Agent) { this.agents.set(agent.id, agent); return agent; }
+  async putAgent(agent: Agent) { this.agents.set(agent.id, agent); this.persist(); return agent; }
   async appendLog(agentId: string, at: number, line: string, detail?: string) {
     const a = this.agents.get(agentId);
-    if (a) a.log.push(detail ? { at, line, detail } : { at, line });
+    if (a) { a.log.push(detail ? { at, line, detail } : { at, line }); this.persist(); }
   }
 
   async listQueue(ws: string) { return [...this.queue.values()].filter((q) => q.workspaceId === ws); }
   async getHitl(id: string) { return this.queue.get(id); }
-  async putHitl(item: HitlItem) { this.queue.set(item.id, item); return item; }
+  async putHitl(item: HitlItem) { this.queue.set(item.id, item); this.persist(); return item; }
 
   async listProjects(ws: string) { return [...this.projects.values()].filter((p) => p.workspaceId === ws); }
   async getProject(id: string) { return this.projects.get(id); }
-  async putProject(project: Project) { this.projects.set(project.id, project); return project; }
-  async deleteProject(id: string) { this.projects.delete(id); }
+  async putProject(project: Project) { this.projects.set(project.id, project); this.persist(); return project; }
+  async deleteProject(id: string) { this.projects.delete(id); this.persist(); }
 
   async listTasks(ws: string) { return [...this.tasks.values()].filter((t) => t.workspaceId === ws); }
   async getTask(id: string) { return this.tasks.get(id); }
-  async putTask(task: Task) { this.tasks.set(task.id, task); return task; }
-  async deleteTask(id: string) { this.tasks.delete(id); }
+  async putTask(task: Task) { this.tasks.set(task.id, task); this.persist(); return task; }
+  async deleteTask(id: string) { this.tasks.delete(id); this.persist(); }
 
   async listRunners(ws: string) { return [...this.fleet.values()].filter((r) => r.workspaceId === ws); }
   async getRunner(id: string) { return this.fleet.get(id); }
-  async putRunner(runner: Runner) { this.fleet.set(runner.id, runner); return runner; }
-  async deleteRunner(id: string) { this.fleet.delete(id); }
+  async putRunner(runner: Runner) { this.fleet.set(runner.id, runner); this.persist(); return runner; }
+  async deleteRunner(id: string) { this.fleet.delete(id); this.persist(); }
 
   async listModules(_ws: string) { return this.modules; }
   async listDeps(_ws: string) { return this.deps; }
   async listProviders() { return this.providers; }
 
-  async recordAudit(entry: AuditRecord) { this.audit.push(entry); }
+  async recordAudit(entry: AuditRecord) { this.audit.push(entry); this.persist(); }
   async listAudit(ws: string) { return this.audit.filter((e) => e.workspaceId === ws).reverse(); }
 }

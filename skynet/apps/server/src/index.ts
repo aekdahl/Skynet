@@ -27,6 +27,9 @@ async function main() {
   if (config.store === "postgres") {
     const { PostgresStore } = await import("./store/postgres.js");
     store = await PostgresStore.create(config.databaseUrl, config.seedDemo);
+  } else if (config.store === "file") {
+    const { FileStore } = await import("./store/file.js");
+    store = FileStore.create(config.dbPath, config.seedDemo);
   } else {
     store = new MemoryStore({ seed: config.seedDemo });
   }

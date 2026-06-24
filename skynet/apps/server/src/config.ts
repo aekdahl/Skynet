@@ -3,7 +3,10 @@
 export const config = {
   port: Number(process.env.PORT ?? 8080),
   nodeEnv: process.env.NODE_ENV ?? "development",
-  store: (process.env.STORE ?? "memory") as "memory" | "postgres",
+  store: (process.env.STORE ?? "memory") as "memory" | "file" | "postgres",
+  // Path for STORE=file (zero-dependency JSON persistence; default cwd-relative).
+  // The desktop app points this at its per-user data directory.
+  dbPath: process.env.SKYNET_DB_PATH || "skynet-data.json",
   // Prefill the store with demo fixtures (sample projects/agents/queue/fleet).
   // Off by default — a fresh deploy starts empty; opt in with SKYNET_SEED=true.
   seedDemo: process.env.SKYNET_SEED === "true",
