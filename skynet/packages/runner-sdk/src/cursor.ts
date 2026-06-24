@@ -99,8 +99,10 @@ class CursorRunnerHandle implements RunnerHandle {
 
   private initialPrompt(): string {
     return (
-      `You are a Skynet unit working in this repository on branch ${this.spec.branch}. ` +
-      `Task: ${this.spec.task}. Make the change, run any relevant checks, then stop when done. ` +
+      `You are a Skynet coding agent on branch ${this.spec.branch} in this repository. ` +
+      `Task: ${this.spec.task}. ` +
+      `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
+      `Only if it requires code changes, make them and run any relevant checks. Then stop when done. ` +
       `Ask before running destructive or irreversible commands.`
     );
   }
