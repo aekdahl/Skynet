@@ -253,6 +253,17 @@ class ClaudeRunnerHandle implements RunnerHandle {
   }
 
   async message(text: string) {
+    // While a permission gate is open the SDK turn is parked inside canUseTool —
+    // it won't read a new user message until the gate is resolved, so a pushed
+    // chat would hang. Answer from the gate context instead of going silent.
+    if (this.gate) {
+      this.events.onChatReply(
+        this.agentId,
+        "I'm paused waiting on your decision for the command above. Approve to run it, " +
+          "Reject to skip it, or use Modify to tell me what to do differently — then I'll continue and can answer follow-ups.",
+      );
+      return;
+    }
     this.pendingChat = true;
     this.input.push(text);
   }

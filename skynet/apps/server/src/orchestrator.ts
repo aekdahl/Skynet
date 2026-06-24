@@ -452,10 +452,11 @@ export class Orchestrator {
       return reply;
     }
     return new Promise<string>((resolve) => {
+      // A real model turn can take well over 5s; give it room before giving up.
       const timer = setTimeout(() => {
         this.chatWaiters.delete(agentId);
-        resolve("(no reply)");
-      }, 5_000);
+        resolve("(no reply yet — it may still be working; check the agent's log)");
+      }, 45_000);
       this.chatWaiters.set(agentId, (reply) => {
         clearTimeout(timer);
         resolve(reply);
