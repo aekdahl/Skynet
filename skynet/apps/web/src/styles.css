@@ -306,6 +306,10 @@ kbd {
 .log-hitl { color: var(--warn); }
 .log-warn { color: var(--danger); }
 .log-cursor { color: var(--ok); }
+/* Foldable tool entries — native disclosure triangle + the line's ▸/↳ marker */
+.log-foldable > summary { cursor: pointer; color: var(--muted); }
+.log-foldable > summary:hover { color: var(--text); }
+.log-detail { margin: 4px 0 6px 14px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line-soft); border-radius: 6px; color: var(--faint); white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow: auto; font-size: 11.5px; }
 @media (prefers-reduced-motion: no-preference) {
   .log-cursor { animation: blink 1.1s step-end infinite; }
   @keyframes blink { 50% { opacity: 0; } }

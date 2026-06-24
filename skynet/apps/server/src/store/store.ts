@@ -26,7 +26,7 @@ export interface Store {
   listAgents(workspaceId: string): Promise<Agent[]>;
   getAgent(id: string): Promise<Agent | undefined>;
   putAgent(agent: Agent): Promise<Agent>;
-  appendLog(agentId: string, at: number, line: string): Promise<void>;
+  appendLog(agentId: string, at: number, line: string, detail?: string): Promise<void>;
 
   // HITL queue
   listQueue(workspaceId: string): Promise<HitlItem[]>;

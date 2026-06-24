@@ -83,8 +83,9 @@ function buildRunnerEnv(): Record<string, string> {
   return env;
 }
 
-// A tool call the assistant requested: its name + the raw input args.
-type ToolCall = { name: string; input: Record<string, unknown> };
+// A tool call the assistant requested: its name, input args, and id (to pair
+// with the later tool_result that carries its output).
+type ToolCall = { name: string; input: Record<string, unknown>; id?: string };
 
 // Extract text + tool calls (with inputs) from an assistant message.
 function readAssistant(message: { content?: unknown }): { text: string; tools: ToolCall[] } {
@@ -94,13 +95,28 @@ function readAssistant(message: { content?: unknown }): { text: string; tools: T
   for (const b of blocks) {
     if (b.type === "text" && typeof b.text === "string") text += b.text;
     else if (b.type === "tool_use" && typeof b.name === "string") {
-      tools.push({ name: b.name, input: b.input && typeof b.input === "object" ? (b.input as Record<string, unknown>) : {} });
+      tools.push({
+        name: b.name,
+        input: b.input && typeof b.input === "object" ? (b.input as Record<string, unknown>) : {},
+        id: typeof b.id === "string" ? b.id : undefined,
+      });
     }
   }
   return { text: text.trim(), tools };
 }
 
 const clip = (s: string, n = 100) => (s.length > n ? `${s.slice(0, n)}…` : s);
+
+// Flatten a tool_result's content (string, or an array of text/blocks) to text.
+function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((c) => (c && typeof c === "object" && "text" in c ? String((c as { text: unknown }).text) : typeof c === "string" ? c : JSON.stringify(c)))
+      .join("");
+  }
+  return content == null ? "" : JSON.stringify(content);
+}
 
 // One-line summary for the activity log (▸ Edit README.md, ▸ Bash: pnpm test, …).
 function describeTool(name: string, input: Record<string, unknown>): string {
@@ -143,6 +159,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
   private gateTool: string | null = null; // name of the tool awaiting approval
   private lastRationale = ""; // the agent's most recent prose (its stated reasoning)
   private sdkEnv: Record<string, string> = {}; // resolved auth env, reused for side-queries
+  private pendingTools = new Map<string, string>(); // tool_use id → tool name, to pair outputs
   private pendingChat = false;
   private progress = 0;
   private finished = false;
@@ -248,7 +265,27 @@ class ClaudeRunnerHandle implements RunnerHandle {
             if (this.pendingChat) { this.pendingChat = false; this.events.onChatReply(this.agentId, text); }
             else { this.lastRationale = text; this.events.onLog(this.agentId, text); }
           }
-          for (const t of tools) { this.events.onLog(this.agentId, `▸ ${describeTool(t.name, t.input)}`); this.bump(); }
+          for (const t of tools) {
+            if (t.id) this.pendingTools.set(t.id, t.name);
+            // Log line carries the call's full input as expandable detail.
+            this.events.onLog(this.agentId, `▸ ${describeTool(t.name, t.input)}`, approvalText(t.name, t.input));
+            this.bump();
+          }
+        } else if (msg.type === "user") {
+          // Tool results come back as a user message; surface each tool's output
+          // as an expandable ↳ entry paired (by id) with the call above.
+          const mm = (msg as unknown as { message?: { content?: unknown } }).message;
+          const blocks: Array<Record<string, unknown>> = Array.isArray(mm?.content)
+            ? (mm!.content as Array<Record<string, unknown>>)
+            : [];
+          for (const b of blocks) {
+            if (b.type !== "tool_result") continue;
+            const id = typeof b.tool_use_id === "string" ? b.tool_use_id : "";
+            const name = (id && this.pendingTools.get(id)) || "tool";
+            if (id) this.pendingTools.delete(id);
+            const out = toolResultText(b.content);
+            this.events.onLog(this.agentId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)");
+          }
         } else if (msg.type === "result") {
           break;
         }

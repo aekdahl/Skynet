@@ -61,9 +61,9 @@ export class MemoryStore implements Store {
   async listAgents(ws: string) { return [...this.agents.values()].filter((a) => a.workspaceId === ws); }
   async getAgent(id: string) { return this.agents.get(id); }
   async putAgent(agent: Agent) { this.agents.set(agent.id, agent); return agent; }
-  async appendLog(agentId: string, at: number, line: string) {
+  async appendLog(agentId: string, at: number, line: string, detail?: string) {
     const a = this.agents.get(agentId);
-    if (a) a.log.push({ at, line });
+    if (a) a.log.push(detail ? { at, line, detail } : { at, line });
   }
 
   async listQueue(ws: string) { return [...this.queue.values()].filter((q) => q.workspaceId === ws); }

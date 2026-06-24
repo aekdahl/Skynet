@@ -53,11 +53,11 @@ export class Hub {
     return agent;
   }
 
-  async agentLog(agentId: string, line: string): Promise<void> {
+  async agentLog(agentId: string, line: string, detail?: string): Promise<void> {
     const at = now();
-    await this.store.appendLog(agentId, at, line);
+    await this.store.appendLog(agentId, at, line, detail);
     const ws = await this.wsOf(agentId);
-    if (ws) this.bus.publish(ws, { type: "agent.log", agentId, at, line });
+    if (ws) this.bus.publish(ws, { type: "agent.log", agentId, at, line, detail });
   }
 
   async agentProgress(agentId: string, progress: number, plan: PlanStep[]): Promise<void> {
