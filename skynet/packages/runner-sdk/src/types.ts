@@ -32,7 +32,8 @@ export interface StartSpec {
  * `ServerEvent` union and persists as it goes.
  */
 export interface RunnerEvents {
-  onLog(agentId: string, line: string): void;
+  /** A log line. `detail` is optional expandable content (e.g. a tool's full input/output). */
+  onLog(agentId: string, line: string, detail?: string): void;
   onProgress(agentId: string, progress: number, plan: PlanStep[]): void;
   onHeartbeat(agentId: string): void;
   onStatus(agentId: string, status: AgentStatus): void;

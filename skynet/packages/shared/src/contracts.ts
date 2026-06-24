@@ -57,6 +57,9 @@ export type PlanStep = z.infer<typeof PlanStep>;
 export const LogLine = z.object({
   at: Timestamp,
   line: z.string(),
+  // Optional expandable detail (e.g. a tool call's full input or output). When
+  // present, the UI renders the line as a fold/unfold entry.
+  detail: z.string().optional(),
 });
 export type LogLine = z.infer<typeof LogLine>;
 

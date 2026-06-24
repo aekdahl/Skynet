@@ -86,7 +86,7 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
         ...state,
         agents: state.agents.map((a) =>
           a.id === ev.agentId
-            ? { ...a, log: [...a.log, { at: ev.at, line: ev.line }] }
+            ? { ...a, log: [...a.log, { at: ev.at, line: ev.line, detail: ev.detail }] }
             : a,
         ),
       };

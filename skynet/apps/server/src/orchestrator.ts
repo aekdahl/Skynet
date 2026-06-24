@@ -102,7 +102,7 @@ export class Orchestrator {
 
   private events(): RunnerEvents {
     return {
-      onLog: (agentId, line) => void this.hub.agentLog(agentId, line),
+      onLog: (agentId, line, detail) => void this.hub.agentLog(agentId, line, detail),
       onProgress: (agentId, progress, plan) => void this.hub.agentProgress(agentId, progress, plan),
       onHeartbeat: (agentId) => void this.hub.agentHeartbeat(agentId),
       onStatus: (agentId, status) => void this.hub.agentStatus(agentId, status),

@@ -324,21 +324,26 @@ export function AgentDetail({
           <div className="panel panel-log">
             <div className="panel-head">LIVE LOG</div>
             <div className="log">
-              {agent.log.map((l, i) => (
-                <div
-                  key={i}
-                  className={
-                    "log-line" +
-                    (l.line.includes("⏸")
-                      ? " log-hitl"
-                      : l.line.includes("⚠")
-                        ? " log-warn"
-                        : "")
-                  }
-                >
-                  {l.line}
-                </div>
-              ))}
+              {agent.log.map((l, i) => {
+                const cls =
+                  "log-line" +
+                  (l.line.includes("⏸")
+                    ? " log-hitl"
+                    : l.line.includes("⚠")
+                      ? " log-warn"
+                      : "");
+                // Entries with detail (tool input/output) fold open on click.
+                return l.detail ? (
+                  <details key={i} className={cls + " log-foldable"}>
+                    <summary>{l.line}</summary>
+                    <pre className="log-detail">{l.detail}</pre>
+                  </details>
+                ) : (
+                  <div key={i} className={cls}>
+                    {l.line}
+                  </div>
+                );
+              })}
               {agent.status === "running" && <div className="log-line log-cursor">▌</div>}
             </div>
           </div>

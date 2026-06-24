@@ -39,7 +39,7 @@ export type Snapshot = z.infer<typeof Snapshot>;
 export const ServerEvent = z.discriminatedUnion("type", [
   // agent lifecycle
   z.object({ type: z.literal("agent.started"), agent: Agent }),
-  z.object({ type: z.literal("agent.log"), agentId: z.string(), at: Timestamp, line: z.string() }),
+  z.object({ type: z.literal("agent.log"), agentId: z.string(), at: Timestamp, line: z.string(), detail: z.string().optional() }),
   z.object({
     type: z.literal("agent.progress"),
     agentId: z.string(),

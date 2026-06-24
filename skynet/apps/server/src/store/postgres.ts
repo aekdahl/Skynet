@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS tasks      (id text PRIMARY KEY, workspace_id text NO
 CREATE TABLE IF NOT EXISTS runners    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS modules    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS deps       (id bigserial PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
-CREATE TABLE IF NOT EXISTS agent_log  (id bigserial PRIMARY KEY, agent_id text NOT NULL, at bigint NOT NULL, line text NOT NULL);
+CREATE TABLE IF NOT EXISTS agent_log  (id bigserial PRIMARY KEY, agent_id text NOT NULL, at bigint NOT NULL, line text NOT NULL, detail text);
+ALTER TABLE agent_log ADD COLUMN IF NOT EXISTS detail text;
 CREATE TABLE IF NOT EXISTS hitl_audit (id bigserial PRIMARY KEY, workspace_id text NOT NULL, hitl_id text NOT NULL,
                                        agent_id text NOT NULL, action text NOT NULL, operator_id text NOT NULL,
                                        at bigint NOT NULL, payload jsonb);
@@ -72,22 +73,22 @@ export class PostgresStore implements Store {
   }
 
   // ── agents (log lives in the append-only agent_log table) ─────────────────
-  private async logsFor(agentIds: string[]): Promise<Map<string, { at: number; line: string }[]>> {
-    const map = new Map<string, { at: number; line: string }[]>();
+  private async logsFor(agentIds: string[]): Promise<Map<string, { at: number; line: string; detail?: string }[]>> {
+    const map = new Map<string, { at: number; line: string; detail?: string }[]>();
     if (!agentIds.length) return map;
-    const { rows } = await this.pool.query<{ agent_id: string; at: string; line: string }>(
-      "SELECT agent_id, at, line FROM agent_log WHERE agent_id = ANY($1) ORDER BY at ASC, id ASC",
+    const { rows } = await this.pool.query<{ agent_id: string; at: string; line: string; detail: string | null }>(
+      "SELECT agent_id, at, line, detail FROM agent_log WHERE agent_id = ANY($1) ORDER BY at ASC, id ASC",
       [agentIds],
     );
     for (const r of rows) {
       const list = map.get(r.agent_id) ?? [];
-      list.push({ at: Number(r.at), line: r.line });
+      list.push(r.detail != null ? { at: Number(r.at), line: r.line, detail: r.detail } : { at: Number(r.at), line: r.line });
       map.set(r.agent_id, list);
     }
     return map;
   }
 
-  private hydrate(data: Agent, logs: Map<string, { at: number; line: string }[]>): Agent {
+  private hydrate(data: Agent, logs: Map<string, { at: number; line: string; detail?: string }[]>): Agent {
     return { ...data, log: logs.get(data.id) ?? [] };
   }
 
@@ -113,8 +114,8 @@ export class PostgresStore implements Store {
     for (const l of log) await this.appendLog(agent.id, l.at, l.line);
     return agent;
   }
-  async appendLog(agentId: string, at: number, line: string): Promise<void> {
-    await this.pool.query("INSERT INTO agent_log(agent_id,at,line) VALUES($1,$2,$3)", [agentId, at, line]);
+  async appendLog(agentId: string, at: number, line: string, detail?: string): Promise<void> {
+    await this.pool.query("INSERT INTO agent_log(agent_id,at,line,detail) VALUES($1,$2,$3,$4)", [agentId, at, line, detail ?? null]);
   }
 
   // ── generic JSONB collections ─────────────────────────────────────────────
