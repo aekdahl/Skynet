@@ -140,6 +140,9 @@ class ClaudeRunnerHandle implements RunnerHandle {
   // the allow result's `updatedInput` as the input to run — omitting it stalls
   // the session, so we always pass the tool's own input through).
   private gateInput: Record<string, unknown> | null = null;
+  private gateTool: string | null = null; // name of the tool awaiting approval
+  private lastRationale = ""; // the agent's most recent prose (its stated reasoning)
+  private sdkEnv: Record<string, string> = {}; // resolved auth env, reused for side-queries
   private pendingChat = false;
   private progress = 0;
   private finished = false;
@@ -169,6 +172,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
         // if the resolver isn't stored yet it would miss the gate → permanent stall.
         this.gate = resolve;
         this.gateInput = input;
+        this.gateTool = toolName;
         this.events.onStatus(this.agentId, "waiting");
         this.events.onHitl(this.agentId, this.buildRaise(toolName, input));
       });
@@ -182,6 +186,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     // server has no such host, so those credentials 401. Fast-fail with a clear
     // reason instead of spinning up an agent that immediately 401s.
     const env = buildRunnerEnv();
+    this.sdkEnv = spec.apiKey ? { ...env, ANTHROPIC_API_KEY: spec.apiKey } : env;
     if (!env.ANTHROPIC_API_KEY && !spec.apiKey) {
       this.events.onLog(
         this.agentId,
@@ -199,7 +204,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
       maxTurns: 60,
       // Scrubbed env (drops the nested-session OAuth path); a per-workspace key
       // (orchestrator-injected) overrides ANTHROPIC_API_KEY for this session only.
-      env: spec.apiKey ? { ...env, ANTHROPIC_API_KEY: spec.apiKey } : env,
+      env: this.sdkEnv,
       ...(resumeSessionId ? { resume: resumeSessionId, forkSession: true } : {}),
     };
 
@@ -239,7 +244,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
           const { text, tools } = readAssistant((msg as { message: { content?: unknown } }).message);
           if (text) {
             if (this.pendingChat) { this.pendingChat = false; this.events.onChatReply(this.agentId, text); }
-            else this.events.onLog(this.agentId, text);
+            else { this.lastRationale = text; this.events.onLog(this.agentId, text); }
           }
           for (const t of tools) { this.events.onLog(this.agentId, `▸ ${describeTool(t.name, t.input)}`); this.bump(); }
         } else if (msg.type === "result") {
@@ -272,6 +277,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
       const input = this.gateInput ?? {};
       this.gate = null;
       this.gateInput = null;
+      this.gateTool = null;
       this.events.onStatus(this.agentId, "running");
       if (decision?.action === "reject") {
         gate({ behavior: "deny", message: "Operator rejected this action — revise your approach." });
@@ -289,18 +295,62 @@ class ClaudeRunnerHandle implements RunnerHandle {
 
   async message(text: string) {
     // While a permission gate is open the SDK turn is parked inside canUseTool —
-    // it won't read a new user message until the gate is resolved, so a pushed
-    // chat would hang. Answer from the gate context instead of going silent.
+    // it won't read a new user message until the gate is resolved. So to let the
+    // operator ask about the pending action, answer via a separate one-shot
+    // side-query seeded with the gate context, instead of the frozen session.
     if (this.gate) {
-      this.events.onChatReply(
-        this.agentId,
-        "I'm paused waiting on your decision for the command above. Approve to run it, " +
-          "Reject to skip it, or use Modify to tell me what to do differently — then I'll continue and can answer follow-ups.",
-      );
+      void this.consultAboutGate(text);
       return;
     }
     this.pendingChat = true;
     this.input.push(text);
+  }
+
+  /**
+   * Answer an operator's question about the action awaiting approval, using a
+   * fresh non-agentic query (no tools) seeded with the task, the pending tool +
+   * its input, and the agent's stated reasoning. Runs alongside the frozen main
+   * session; never touches it.
+   */
+  private async consultAboutGate(question: string): Promise<void> {
+    const prompt =
+      "You are helping a human operator decide whether to approve an action that an AI coding agent wants to take. " +
+      "Answer the operator's question directly and concisely. Do NOT use any tools — just explain.\n\n" +
+      `Agent's task: ${this.spec.task}\n` +
+      `Working directory: ${this.spec.cwd ?? process.cwd()}\n` +
+      (this.lastRationale ? `Agent's stated reasoning: ${this.lastRationale}\n` : "") +
+      `Pending action: ${this.gateTool ?? "tool"} with input:\n${JSON.stringify(this.gateInput ?? {}, null, 2)}\n\n` +
+      `Operator's question: ${question}`;
+    try {
+      const q = query({
+        prompt,
+        options: {
+          cwd: this.spec.cwd ?? process.cwd(),
+          model: mapModel(this.spec.model),
+          permissionMode: "default",
+          // Deny every tool so this stays a pure text answer about the pending action.
+          canUseTool: () => Promise.resolve({ behavior: "deny", message: "Answer in text only; do not use tools." } as PermissionResult),
+          maxTurns: 4,
+          env: this.sdkEnv,
+        },
+      });
+      let answer = "";
+      for await (const msg of q as AsyncIterable<SDKMessage>) {
+        if (msg.type === "assistant") {
+          const { text } = readAssistant((msg as { message: { content?: unknown } }).message);
+          if (text) answer += (answer ? "\n" : "") + text;
+        } else if (msg.type === "result") {
+          break;
+        }
+      }
+      this.events.onChatReply(
+        this.agentId,
+        answer.trim() ||
+          "I'm paused on the command above — Approve to run it, Reject to skip, or Modify to redirect me.",
+      );
+    } catch (err) {
+      this.events.onChatReply(this.agentId, `couldn't look into that right now (${(err as Error).message}).`);
+    }
   }
 
   async stop() {
