@@ -83,16 +83,51 @@ function buildRunnerEnv(): Record<string, string> {
   return env;
 }
 
-// Extract text + tool names from an assistant message's content blocks.
-function readAssistant(message: { content?: unknown }): { text: string; tools: string[] } {
+// A tool call the assistant requested: its name + the raw input args.
+type ToolCall = { name: string; input: Record<string, unknown> };
+
+// Extract text + tool calls (with inputs) from an assistant message.
+function readAssistant(message: { content?: unknown }): { text: string; tools: ToolCall[] } {
   const blocks = Array.isArray(message.content) ? (message.content as Array<Record<string, unknown>>) : [];
   let text = "";
-  const tools: string[] = [];
+  const tools: ToolCall[] = [];
   for (const b of blocks) {
     if (b.type === "text" && typeof b.text === "string") text += b.text;
-    else if (b.type === "tool_use" && typeof b.name === "string") tools.push(b.name);
+    else if (b.type === "tool_use" && typeof b.name === "string") {
+      tools.push({ name: b.name, input: b.input && typeof b.input === "object" ? (b.input as Record<string, unknown>) : {} });
+    }
   }
   return { text: text.trim(), tools };
+}
+
+const clip = (s: string, n = 100) => (s.length > n ? `${s.slice(0, n)}…` : s);
+
+// One-line summary for the activity log (▸ Edit README.md, ▸ Bash: pnpm test, …).
+function describeTool(name: string, input: Record<string, unknown>): string {
+  const fp = typeof input.file_path === "string" ? input.file_path.split("/").pop() : undefined;
+  if (name === "Bash" && typeof input.command === "string") return `Bash: ${clip(input.command)}`;
+  if (fp && /^(Read|Write|Edit|NotebookRead|NotebookEdit)$/.test(name)) return `${name} ${fp}`;
+  if (typeof input.pattern === "string" && /^(Glob|Grep)$/.test(name)) return `${name} ${clip(String(input.pattern), 60)}`;
+  return name;
+}
+
+// Human-readable detail shown in the approval gate (the box the operator reads).
+function approvalText(name: string, input: Record<string, unknown>): string {
+  if (name === "Bash" && typeof input.command === "string") return input.command;
+  const fp = typeof input.file_path === "string" ? input.file_path : undefined;
+  if (name === "Edit" && fp) {
+    const o = String(input.old_string ?? "");
+    const n = String(input.new_string ?? "");
+    return (
+      `Edit ${fp}\n\n` +
+      o.split("\n").map((l) => `- ${l}`).join("\n") +
+      "\n" +
+      n.split("\n").map((l) => `+ ${l}`).join("\n")
+    );
+  }
+  if (name === "Write" && fp) return `Write ${fp}\n\n${clip(String(input.content ?? ""), 800)}`;
+  if (fp) return `${name} ${fp}`;
+  return JSON.stringify(input, null, 2);
 }
 
 class ClaudeRunnerHandle implements RunnerHandle {
@@ -174,7 +209,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
   }
 
   private buildRaise(toolName: string, input: Record<string, unknown>): HitlRaise {
-    const command = typeof input.command === "string" ? input.command : JSON.stringify(input);
+    const command = approvalText(toolName, input);
     return {
       kind: "approval",
       title: `Approve: ${toolName}`,
@@ -206,7 +241,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
             if (this.pendingChat) { this.pendingChat = false; this.events.onChatReply(this.agentId, text); }
             else this.events.onLog(this.agentId, text);
           }
-          for (const t of tools) { this.events.onLog(this.agentId, `▸ ${t}`); this.bump(); }
+          for (const t of tools) { this.events.onLog(this.agentId, `▸ ${describeTool(t.name, t.input)}`); this.bump(); }
         } else if (msg.type === "result") {
           break;
         }
