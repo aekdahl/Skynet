@@ -158,8 +158,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.events.onStatus(this.agentId, "running");
     this.events.onLog(this.agentId, `picked up "${spec.task}" on ${spec.branch}`);
     this.input.push(
-      `You are a Skynet unit working in this repository on branch ${spec.branch}. ` +
-        `Task: ${spec.task}. Make the change, run any relevant checks, then stop when done. ` +
+      `You are a Skynet coding agent on branch ${spec.branch} in this repository. ` +
+        `Task: ${spec.task}. ` +
+        `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
+        `Only if it requires code changes, make them and run any relevant checks. Then stop when done. ` +
         `Ask before running destructive or irreversible commands.`,
     );
 
