@@ -195,6 +195,9 @@ export const ProviderInfo = z.object({
   glyph: z.string(),
   color: z.string(),
   models: z.array(z.string()),
+  // Whether a credential is configured server-side. Undefined = treat as
+  // available (back-compat); the create-agent UI disables providers set to false.
+  available: z.boolean().optional(),
 });
 export type ProviderInfo = z.infer<typeof ProviderInfo>;
 

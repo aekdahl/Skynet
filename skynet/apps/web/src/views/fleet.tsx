@@ -13,9 +13,12 @@ function ConfigForm({
   onCancel: () => void;
 }) {
   const { providers } = useStore();
+  const isConfigured = (p: { available?: boolean }) => p.available !== false;
   const [name, setName] = useState(initial ? initial.name : "");
   const [provider, setProvider] = useState<ProviderId>(
-    initial ? initial.provider : (providers[0]?.id ?? "claude"),
+    initial
+      ? initial.provider
+      : (providers.find(isConfigured)?.id ?? providers[0]?.id ?? "claude"),
   );
   const models = providerInfo(providers, provider).models;
   const [model, setModel] = useState(initial ? initial.model : (models[0] ?? ""));
@@ -39,16 +42,28 @@ function ConfigForm({
       <div className="cfg-row">
         <label className="cfg-label">Provider</label>
         <div className="cfg-prov">
-          {providers.map((p) => (
-            <button
-              key={p.id}
-              className={"cfg-prov-btn" + (provider === p.id ? " on" : "")}
-              style={provider === p.id ? { borderColor: p.color, color: p.color } : undefined}
-              onClick={() => setProvider(p.id)}
-            >
-              <span style={{ color: p.color }}>{p.glyph}</span> {p.name}
-            </button>
-          ))}
+          {providers.map((p) => {
+            const configured = isConfigured(p);
+            return (
+              <button
+                key={p.id}
+                className={"cfg-prov-btn" + (provider === p.id ? " on" : "")}
+                style={
+                  provider === p.id
+                    ? { borderColor: p.color, color: p.color }
+                    : configured
+                      ? undefined
+                      : { opacity: 0.4, cursor: "not-allowed" }
+                }
+                disabled={!configured}
+                title={configured ? undefined : `${p.name} isn't set up — add its API key to enable it`}
+                onClick={() => setProvider(p.id)}
+              >
+                <span style={{ color: p.color }}>{p.glyph}</span> {p.name}
+                {!configured && " · not set up"}
+              </button>
+            );
+          })}
         </div>
       </div>
       <div className="cfg-row">

@@ -353,4 +353,18 @@ export function buildSeed(now: number): SeedData {
   return { agents, queue, projects, tasks, fleet, modules, deps };
 }
 
-export const PROVIDERS = DEFAULT_PROVIDERS;
+// A provider is "available" when its credential is configured server-side
+// (env var here; per-workspace secrets can override at run time). The
+// create-agent UI disables providers that aren't available.
+const PROVIDER_ENV_KEY: Record<ProviderId, string | undefined> = {
+  claude: process.env.ANTHROPIC_API_KEY,
+  codex: process.env.OPENAI_API_KEY,
+  gemini: process.env.GEMINI_API_KEY,
+  cursor: process.env.CURSOR_API_KEY,
+  copilot: process.env.GITHUB_TOKEN,
+};
+
+export const PROVIDERS = DEFAULT_PROVIDERS.map((p) => ({
+  ...p,
+  available: Boolean(PROVIDER_ENV_KEY[p.id]),
+}));

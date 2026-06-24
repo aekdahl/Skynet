@@ -19,9 +19,8 @@ export function TitleBar() {
         <i className="y" />
         <i className="g" />
       </div>
-      <div className="op-title">Skynet — Defense Network</div>
+      <div className="op-title">Skynet — Agent Network</div>
       <div className="op-titleright">
-        <span className="op-search">Search or run a command</span>
         <span className="op-avatar">JD</span>
       </div>
     </header>

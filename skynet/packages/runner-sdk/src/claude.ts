@@ -59,7 +59,11 @@ function createInputStream() {
 const AUTO_ALLOW = new Set(["Read", "LS", "Glob", "Grep", "NotebookRead", "TodoWrite"]);
 
 const mapModel = (m: string): string | undefined =>
-  m.startsWith("opus") ? "opus" : m.startsWith("sonnet") ? "sonnet" : m.startsWith("haiku") ? "haiku" : undefined;
+  m.startsWith("fable") ? "claude-fable-5"
+    : m.startsWith("opus") ? "opus"
+    : m.startsWith("sonnet") ? "sonnet"
+    : m.startsWith("haiku") ? "haiku"
+    : undefined;
 
 // Build the env handed to the Agent SDK subprocess. `Options.env` REPLACES the
 // subprocess environment, so we spread the ambient env (PATH/HOME/…) and then
