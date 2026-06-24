@@ -47,8 +47,8 @@ function GetStarted({
     <div className="getstarted">
       <div className="gs-inner">
         <svg className="gs-mark" width="46" height="46" viewBox="0 0 18 18" aria-hidden="true">
-          <rect x="1" y="1" width="16" height="16" rx="3" fill="none" stroke="var(--accent)" strokeWidth="1.4" />
-          <path d="M5 6h8M9 6v7" stroke="var(--accent)" strokeWidth="1.4" strokeLinecap="round" />
+          <rect x="1" y="1" width="16" height="16" rx="4" fill="var(--accent)" />
+          <text x="9" y="9.6" textAnchor="middle" dominantBaseline="central" fontFamily="var(--font-ui)" fontWeight="700" fontSize="11" fill="var(--bg)">S</text>
         </svg>
         <h1 className="gs-title">Skynet is online.</h1>
         <p className="gs-sub">
