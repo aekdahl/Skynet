@@ -52,7 +52,7 @@ function GetStarted({
         </svg>
         <h1 className="gs-title">Skynet is online.</h1>
         <p className="gs-sub">
-          The Defense Network for a fleet of coding agents. Start with a project
+          The Agent Network for a fleet of coding agents. Start with a project
           — a goal you want the fleet to deliver — then break it into tasks and
           assign them to runners. The machines do the rest; progress shows up
           here on the home map.
