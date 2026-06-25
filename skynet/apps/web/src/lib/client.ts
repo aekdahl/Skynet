@@ -4,6 +4,7 @@ import {
   WsMessage,
   type Agent,
   type ResolveAction,
+  type SecretMeta,
 } from "@skynet/shared";
 
 // ─── auth ───────────────────────────────────────────────────────────────────
@@ -66,6 +67,17 @@ export function forkAgent(id: string) {
 }
 export function archiveAgent(id: string, archived: boolean) {
   return req<unknown>("POST", `/api/agents/${id}/archive`, { archived });
+}
+
+// Provider secrets (Settings)
+export function fetchSecrets() {
+  return req<{ secrets: SecretMeta[] }>("GET", "/api/secrets");
+}
+export function setSecret(provider: string, apiKey: string) {
+  return req<{ secret: SecretMeta }>("PUT", `/api/secrets/${provider}`, { apiKey });
+}
+export function deleteSecret(provider: string) {
+  return req<unknown>("DELETE", `/api/secrets/${provider}`);
 }
 
 // Projects

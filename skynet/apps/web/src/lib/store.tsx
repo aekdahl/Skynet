@@ -47,6 +47,9 @@ export interface Store extends StoreState {
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   forkAgent: (id: string) => Promise<void>;
   archiveAgent: (id: string, archived: boolean) => Promise<void>;
+  // Local optimistic flip after a key is set/cleared in Settings (the snapshot
+  // recomputes availability from the secret store on next load).
+  setProviderAvailable: (id: string, available: boolean) => void;
   createProject: (name: string, goal: string) => Promise<void>;
   updateProject: (
     id: string,
@@ -234,6 +237,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       archiveAgent: async (id, archived) => {
         await api.archiveAgent(id, archived);
+      },
+      setProviderAvailable: (id, available) => {
+        setState((s) => ({
+          ...s,
+          providers: s.providers.map((p) => (p.id === id ? { ...p, available } : p)),
+        }));
       },
       createProject: async (name, goal) => {
         await api.createProject({ name, goal });

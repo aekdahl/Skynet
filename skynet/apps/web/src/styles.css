@@ -698,6 +698,20 @@ button.kb-done:hover { opacity: 1; }
 .kb-archive-name:hover { text-decoration: underline; }
 .kb-archive-branch { font-size: 10px; color: var(--faint); flex: none; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+/* ===== settings (provider keys) ===== */
+.settings-warn { background: color-mix(in oklch, var(--warn), transparent 82%); border: 1px solid color-mix(in oklch, var(--warn), transparent 55%); color: var(--text); border-radius: 9px; padding: 12px 14px; font-size: 13px; line-height: 1.5; margin-bottom: var(--sp); }
+.settings-warn code { font-family: var(--font-mono); font-size: 12px; background: var(--bg); border: 1px solid var(--line-soft); border-radius: 4px; padding: 1px 5px; }
+.settings-list { display: flex; flex-direction: column; gap: 10px; max-width: 720px; }
+.settings-row { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 14px 16px; display: flex; flex-direction: column; gap: 11px; }
+.settings-prov { display: flex; align-items: center; gap: 10px; }
+.settings-glyph { font-size: 16px; flex: none; }
+.settings-name { font-size: 14px; font-weight: 600; }
+.settings-ok { font-size: 11px; color: var(--ok); margin-left: auto; }
+.settings-off { font-size: 11px; color: var(--faint); margin-left: auto; }
+.settings-key { display: flex; align-items: center; gap: 8px; }
+.settings-input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; color: var(--text); font-family: var(--font-mono); font-size: 12px; }
+.settings-input:focus { outline: none; border-color: var(--accent); }
 .proj-backlog { font-size: 11px; color: var(--faint); padding-top: 2px; }
 
 /* ===== agent result / answer ===== */

@@ -12,6 +12,7 @@
 
 const { app, BrowserWindow, shell, dialog, nativeImage } = require("electron");
 const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const path = require("node:path");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -63,6 +64,29 @@ function loadUserEnv() {
   return env;
 }
 
+/**
+ * A stable per-install master key (32 bytes, base64) for the encrypted secret
+ * store, persisted in the user-data dir. Without it the in-app key Settings
+ * can't store anything. Generated once on first run.
+ */
+function ensureMasterKey() {
+  const file = path.join(app.getPath("userData"), "skynet-master.key");
+  try {
+    const existing = fs.readFileSync(file, "utf8").trim();
+    if (existing) return existing;
+  } catch {
+    /* first run */
+  }
+  const key = crypto.randomBytes(32).toString("base64");
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, key, { mode: 0o600 });
+  } catch {
+    /* non-fatal: secrets just won't persist this run */
+  }
+  return key;
+}
+
 function startServer() {
   const { serverEntry, webDist } = resolvePaths();
   const userEnv = loadUserEnv();
@@ -75,6 +99,8 @@ function startServer() {
     NODE_ENV: "production",
     STORE: "file", // zero-dependency JSON persistence
     SKYNET_DB_PATH: userEnv.SKYNET_DB_PATH || dbPath,
+    // Enable the encrypted secret store so in-app key Settings work.
+    SKYNET_MASTER_KEY: process.env.SKYNET_MASTER_KEY || userEnv.SKYNET_MASTER_KEY || ensureMasterKey(),
     WEB_DIST: webDist, // tell the server where the built SPA is
     PORT: String(PORT),
     HOST,
