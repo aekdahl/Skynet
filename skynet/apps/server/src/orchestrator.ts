@@ -317,6 +317,7 @@ export class Orchestrator {
       dependsOn: [],
       parentId: null,
       branchFromStep: null,
+      archived: false,
     };
 
     await this.hub.createAgent(agent);

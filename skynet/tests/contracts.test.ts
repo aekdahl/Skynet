@@ -36,6 +36,7 @@ const agent: Agent = {
   dependsOn: [],
   parentId: null,
   branchFromStep: null,
+  archived: false,
 };
 
 const wire = <T>(v: T): unknown => JSON.parse(JSON.stringify(v));

@@ -46,6 +46,7 @@ export interface Store extends StoreState {
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   forkAgent: (id: string) => Promise<void>;
+  archiveAgent: (id: string, archived: boolean) => Promise<void>;
   createProject: (name: string, goal: string) => Promise<void>;
   updateProject: (
     id: string,
@@ -118,6 +119,13 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
           a.id === ev.agentId
             ? { ...a, status: "done", branch: ev.branch, progress: 1 }
             : a,
+        ),
+      };
+    case "agent.archived":
+      return {
+        ...state,
+        agents: state.agents.map((a) =>
+          a.id === ev.agentId ? { ...a, archived: ev.archived } : a,
         ),
       };
     case "hitl.raised":
@@ -223,6 +231,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       forkAgent: async (id) => {
         await api.forkAgent(id);
+      },
+      archiveAgent: async (id, archived) => {
+        await api.archiveAgent(id, archived);
       },
       createProject: async (name, goal) => {
         await api.createProject({ name, goal });

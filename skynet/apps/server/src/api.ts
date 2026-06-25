@@ -109,6 +109,14 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Archive / restore an agent (hidden from the board, kept in the store).
+  app.post<{ Params: { id: string }; Body: { archived?: boolean } }>("/api/agents/:id/archive", async (req, reply) => {
+    const agent = await store.getAgent(req.params.id);
+    if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
+    const archived = req.body?.archived ?? true;
+    return (await hub.setAgentArchived(req.params.id, archived)) ?? reply.code(404).send({ error: "Agent not found" });
+  });
+
   // ── projects ───────────────────────────────────────────────────────────
   app.post("/api/projects", async (req, reply) => {
     const body = CreateProjectRequest.safeParse(req.body);

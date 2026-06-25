@@ -64,6 +64,9 @@ export function sendAgentMessage(id: string, text: string) {
 export function forkAgent(id: string) {
   return req<unknown>("POST", `/api/agents/${id}/fork`);
 }
+export function archiveAgent(id: string, archived: boolean) {
+  return req<unknown>("POST", `/api/agents/${id}/archive`, { archived });
+}
 
 // Projects
 export function createProject(body: { name: string; goal: string }) {

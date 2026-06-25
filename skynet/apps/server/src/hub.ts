@@ -87,6 +87,15 @@ export class Hub {
     if (ws) this.bus.publish(ws, { type: "agent.completed", agentId, branch });
   }
 
+  async setAgentArchived(agentId: string, archived: boolean): Promise<Agent | undefined> {
+    const a = await this.store.getAgent(agentId);
+    if (!a) return undefined;
+    const updated = { ...a, archived };
+    await this.store.putAgent(updated);
+    this.bus.publish(a.workspaceId, { type: "agent.archived", agentId, archived });
+    return updated;
+  }
+
   // ── HITL ────────────────────────────────────────────────────────────────
   async raiseHitl(item: HitlItem): Promise<HitlItem> {
     await this.store.putHitl(item);
