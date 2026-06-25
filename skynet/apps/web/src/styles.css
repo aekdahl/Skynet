@@ -891,8 +891,9 @@ button.kb-done:hover { opacity: 1; }
    the window drag region. The OS draws real window controls over it. */
 .op-titlebar.is-desktop { background: #000; -webkit-app-region: drag; }
 .op-titlebar.is-desktop .op-avatar { -webkit-app-region: no-drag; }
-.op-titlebar.is-mac { padding-left: 84px; }   /* clear the macOS traffic lights */
-.op-titlebar.is-win { padding-right: 145px; }  /* clear the Windows control overlay */
+/* The empty 1fr column 1 already reserves space for the macOS traffic lights;
+   on Windows the control overlay sits top-right, so clear the avatar from it. */
+.op-titlebar.is-win { padding-right: 130px; }
 .op-titleright { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
 .op-search { display: flex; align-items: center; gap: 8px; background: var(--raised); border: 1px solid var(--line); border-radius: 7px; padding: 6px 11px; color: var(--faint); font-size: 12px; }
 .op-search kbd { font-family: var(--font-mono); font-size: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; color: var(--muted); }

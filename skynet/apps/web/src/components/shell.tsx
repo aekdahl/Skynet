@@ -26,13 +26,18 @@ export function TitleBar() {
     (isDesktop && isWin ? " is-win" : "");
   return (
     <header className={cls}>
-      {!isDesktop && (
-        <div className="op-tl">
-          <i className="r" />
-          <i className="y" />
-          <i className="g" />
-        </div>
-      )}
+      {/* Column 1: our traffic-light dots in the browser; left empty in the
+          desktop app where the OS draws the real controls here. Keep the div
+          so the 3-column grid (1fr auto 1fr) stays balanced. */}
+      <div className="op-tl">
+        {!isDesktop && (
+          <>
+            <i className="r" />
+            <i className="y" />
+            <i className="g" />
+          </>
+        )}
+      </div>
       <div className="op-title">Skynet — Agent Network</div>
       <div className="op-titleright">
         <span className="op-avatar">JD</span>
