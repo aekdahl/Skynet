@@ -108,7 +108,16 @@ export class Hub {
       action: resolution.action,
       operatorId: resolution.by,
       at: resolution.at,
-      payload: { optionIndex: resolution.optionIndex, guidance: resolution.guidance },
+      // Snapshot what was decided so the audit is self-contained — the live HITL
+      // item leaves the queue once resolved, so the view can't re-derive it.
+      payload: {
+        optionIndex: resolution.optionIndex,
+        guidance: resolution.guidance,
+        kind: item.kind,
+        title: item.title,
+        why: item.why,
+        command: item.command,
+      },
     });
     this.bus.publish(item.workspaceId, { type: "hitl.resolved", id, resolution });
     return resolved;

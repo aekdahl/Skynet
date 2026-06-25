@@ -81,7 +81,9 @@ function finalAnswer(agent: Agent): string | null {
     const line = (agent.log[i]?.line ?? "").trim();
     if (!line) continue;
     if (LOG_MARKERS.some((m) => line.startsWith(m))) continue;
-    if (/^(picked up|worktree|runner error|commit|no changes|re: ")/i.test(line)) continue;
+    // Skip chat noise (your questions, decision records) — they come after the
+    // task's own answer, which is what we want to surface.
+    if (/^(picked up|worktree|runner error|commit|no changes|re: "|you:|decision delivered)/i.test(line)) continue;
     return line;
   }
   return null;
