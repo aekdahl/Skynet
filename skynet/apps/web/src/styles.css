@@ -590,6 +590,7 @@ button.ct-seg { cursor: pointer; }
 .pv-label { font-size: 10px; color: var(--muted); }
 .pv-fresh { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 9px; color: var(--ok); }
 .pv-live { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); animation: pvpulse 2s ease-in-out infinite; }
+.pv-live.pv-live-done { background: var(--faint); animation: none; }
 @keyframes pvpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .pv-live { animation: none; } }
 .pv-body { padding: 14px; }
@@ -680,6 +681,11 @@ button.kb-done:hover { opacity: 1; }
 .kb-done .kb-task { font-weight: 500; color: var(--muted); }
 .kb-done-meta { font-size: 10px; color: var(--faint); }
 .proj-backlog { font-size: 11px; color: var(--faint); padding-top: 2px; }
+
+/* ===== agent result / answer ===== */
+.detail-result { margin: var(--sp) 0 0; background: var(--panel); border: 1px solid color-mix(in oklch, var(--ok), transparent 60%); border-left: 3px solid var(--ok); border-radius: 10px; padding: 14px 16px; }
+.detail-result-label { font-size: 10px; font-weight: 600; letter-spacing: 0.16em; color: var(--ok); margin-bottom: 6px; }
+.detail-result-body { font-size: 14px; line-height: 1.5; color: var(--text); white-space: pre-wrap; word-break: break-word; }
 
 /* ===== agent chat ===== */
 .detail-blocked-hint { font-size: 11px; color: var(--faint); padding: 8px 2px 0; }
