@@ -98,7 +98,7 @@ kbd {
 }
 
 /* ---------- layout ---------- */
-.main { flex: 1; display: flex; min-height: 0; }
+.main { flex: 1; display: flex; min-height: 0; min-width: 0; }
 .content { flex: 1; min-width: 0; overflow-y: auto; position: relative; }
 .content::before {
   content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
@@ -655,7 +655,7 @@ button.ct-seg { cursor: pointer; }
 .tl-legend-dep { color: var(--violet); }
 
 /* ===== kanban ===== */
-.kb-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp); align-items: start; }
+.kb-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp); align-items: start; }
 .kb-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .kb-head { font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.14em; color: var(--faint); padding: 2px 2px 4px; }
 .kb-head-active { color: var(--ok); }
