@@ -78,9 +78,11 @@ function startServer() {
     WEB_DIST: webDist, // tell the server where the built SPA is
     PORT: String(PORT),
     HOST,
-    // Default to the mock runner until the user configures a provider key; a
-    // real runner is opt-in via skynet.env (RUNNER=claude + ANTHROPIC_API_KEY).
-    RUNNER: userEnv.RUNNER || process.env.RUNNER || "mock",
+    // RUNNER is intentionally NOT set here: the backend is chosen per agent from
+    // the fleet runner's provider. A provider key comes from the in-app secret
+    // store or skynet.env (e.g. ANTHROPIC_API_KEY). skynet.env may still set
+    // RUNNER as a global override (e.g. RUNNER=mock for a no-key demo); spread
+    // above carries it through.
   };
 
   serverProc = spawn(process.execPath, [serverEntry], { env, stdio: "inherit" });

@@ -13,7 +13,11 @@ export const config = {
   bus: (process.env.BUS ?? "memory") as "memory" | "redis",
   // Session backend: in-memory (default), durable Postgres, or multi-replica Redis.
   sessions: (process.env.SESSIONS ?? "memory") as "memory" | "postgres" | "redis",
-  runner: (process.env.RUNNER ?? "mock") as "mock" | "claude" | "codex" | "gemini" | "cursor" | "copilot",
+  // Optional GLOBAL override of the execution backend, for demos/dev. Unset (the
+  // default) → honor each fleet runner's own provider, chosen at agent creation.
+  // Set RUNNER=mock to force the canned mock runner everywhere (no keys needed).
+  runner: (process.env.RUNNER || undefined) as
+    | "mock" | "claude" | "codex" | "gemini" | "cursor" | "copilot" | undefined,
   // Working directory for a real runner (the target repo / agent worktree).
   runnerCwd: process.env.SKYNET_RUNNER_CWD || undefined,
   databaseUrl: process.env.DATABASE_URL ?? "",

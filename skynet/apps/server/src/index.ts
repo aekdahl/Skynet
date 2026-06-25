@@ -63,7 +63,7 @@ async function main() {
   await app.register(cors, { origin: true });
   await app.register(websocket);
 
-  app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: config.runner, sessions: config.sessions }));
+  app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: config.runner ?? "per-runner", sessions: config.sessions }));
 
   await registerAuthRoutes(app, { sessions, operators });
   await registerApi(app, { store, hub, orchestrator });
@@ -81,7 +81,7 @@ async function main() {
 
   await app.listen({ port: config.port, host: "0.0.0.0" });
   if (servingSpa) app.log.info("serving built web SPA from this server");
-  app.log.info(`Skynet server up on :${config.port}  (store=${config.store} bus=${config.bus} runner=${config.runner} sessions=${config.sessions})`);
+  app.log.info(`Skynet server up on :${config.port}  (store=${config.store} bus=${config.bus} runner=${config.runner ?? "per-runner"} sessions=${config.sessions})`);
 }
 
 main().catch((err) => {

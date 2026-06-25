@@ -42,7 +42,8 @@ export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   private chatWaiters = new Map<string, (reply: string) => void>();
   private seq = 0;
-  private providerPromise?: Promise<RunnerProvider>;
+  // One lazily-loaded provider backend per provider id (real backends are heavy).
+  private providers = new Map<string, Promise<RunnerProvider>>();
   private merge?: MergeEngine;
   private moduleMap: ModuleMap = loadModuleMap(config.integrationRepo);
   private worktrees?: WorktreeProvisioner;
@@ -72,12 +73,19 @@ export class Orchestrator {
     }
   }
 
-  // Lazily resolve the runner provider. Real providers load on demand (heavy);
-  // the default mock path never imports them.
-  private getProvider(): Promise<RunnerProvider> {
-    if (!this.providerPromise) {
-      this.providerPromise = (() => {
-        switch (config.runner) {
+  // Resolve the backend for an agent. The provider is chosen per fleet runner at
+  // agent creation (runner.provider); config.runner is an optional GLOBAL override
+  // for demos/dev (e.g. RUNNER=mock). Real backends load on demand (heavy) and are
+  // cached per id; the mock path never imports them.
+  private resolveProviderId(runnerProvider: string): string {
+    return config.runner ?? runnerProvider;
+  }
+
+  private getProvider(id: string): Promise<RunnerProvider> {
+    let p = this.providers.get(id);
+    if (!p) {
+      p = (() => {
+        switch (id) {
           case "claude":
             return import("@skynet/runner-sdk/claude").then((m) => new m.ClaudeRunnerProvider());
           case "codex":
@@ -92,8 +100,9 @@ export class Orchestrator {
             return Promise.resolve(new MockRunnerProvider());
         }
       })();
+      this.providers.set(id, p);
     }
-    return this.providerPromise;
+    return p;
   }
 
   private slug(text: string): string {
@@ -305,7 +314,7 @@ export class Orchestrator {
       this.merge?.integrationBranch(projectId),
     );
 
-    const provider = await this.getProvider();
+    const provider = await this.getProvider(this.resolveProviderId(runner.provider));
     // Inject this workspace's provider key (env fallback when none is stored).
     const apiKey = await secretService.resolve(project.workspaceId, runner.provider);
     const handle = await provider.start(
@@ -362,7 +371,7 @@ export class Orchestrator {
     // A fork branches from its parent (family-internal integration, §7).
     const { cwd, baseRef } = await this.provisionCwd(agentId, agent.branch, parent.branch);
 
-    const provider = await this.getProvider();
+    const provider = await this.getProvider(this.resolveProviderId(runner.provider));
     const apiKey = await secretService.resolve(parent.workspaceId, runner.provider);
     const handle = await provider.start(
       { agentId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex, apiKey },
