@@ -41,6 +41,10 @@ export class NoCapacityError extends Error {
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   private chatWaiters = new Map<string, (reply: string) => void>();
+  // Handles of finished agents, kept so the operator can still chat about the
+  // completed work (the runner answers via a fresh side-query). Capped to avoid
+  // unbounded growth on long-running servers.
+  private chatHandles = new Map<string, RunnerHandle>();
   private seq = 0;
   // One lazily-loaded provider backend per provider id (real backends are heavy).
   private providers = new Map<string, Promise<RunnerProvider>>();
@@ -151,6 +155,16 @@ export class Orchestrator {
     await this.hub.raiseHitl(item);
   }
 
+  /** Keep a finished agent's handle (capped) so chat-about-completed-work works. */
+  private retainForChat(agentId: string, handle?: RunnerHandle): void {
+    if (!handle) return;
+    this.chatHandles.set(agentId, handle);
+    if (this.chatHandles.size > 50) {
+      const oldest = this.chatHandles.keys().next().value;
+      if (oldest !== undefined) this.chatHandles.delete(oldest);
+    }
+  }
+
   private async complete(agentId: string, branch: string): Promise<void> {
     const live = this.live.get(agentId);
 
@@ -171,6 +185,7 @@ export class Orchestrator {
         await this.freeRunner(live.runnerId); // compute is done; awaiting review
         await this.hub.agentStatus(agentId, "review");
         await this.raiseDiffReview(agentId, stat);
+        this.retainForChat(agentId, live?.handle);
         this.live.delete(agentId);
         return;
       }
@@ -189,6 +204,7 @@ export class Orchestrator {
       if (task) await this.hub.upsertTask({ ...task, state: "done" });
     }
     await this.hub.agentCompleted(agentId, branch);
+    this.retainForChat(agentId, live?.handle);
     this.live.delete(agentId);
   }
 
@@ -419,6 +435,7 @@ export class Orchestrator {
     await this.hub.agentStatus(agentId, "done");
     await this.hub.agentCompleted(agentId, branch);
     const live = this.live.get(agentId);
+    this.retainForChat(agentId, live?.handle);
     if (live) {
       await live.handle.stop().catch(() => undefined);
       this.live.delete(agentId);
@@ -454,8 +471,9 @@ export class Orchestrator {
   // ── chat ────────────────────────────────────────────────────────────────────
   async chat(agentId: string, text: string): Promise<string> {
     await this.hub.agentLog(agentId, `you: ${text}`);
-    const live = this.live.get(agentId);
-    if (!live) {
+    // A live agent, or a finished one we kept around for follow-up questions.
+    const handle = this.live.get(agentId)?.handle ?? this.chatHandles.get(agentId);
+    if (!handle) {
       const reply = `(${agentId}) noted — I'll factor that in.`;
       await this.hub.agentLog(agentId, `↳ ${reply}`);
       return reply;
@@ -470,7 +488,7 @@ export class Orchestrator {
         clearTimeout(timer);
         resolve(reply);
       });
-      void live.handle.message(text);
+      void handle.message(text);
     });
   }
 

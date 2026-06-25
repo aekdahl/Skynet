@@ -151,13 +151,17 @@ export function AgentDetail({
           <span className="mono">{agent.branch}</span>
           <span>{agent.model}</span>
           <span>{fmtElapsed(agent, now)}</span>
-          <span className="hb">
-            ♥ heartbeat{" "}
-            {q
-              ? fmtWait(waitedSecs(q, now))
-              : Math.floor(heartbeatSecs(agent, now)) + "s"}{" "}
-            ago
-          </span>
+          {agent.status === "done" ? (
+            <span className="hb hb-done">♥ finished</span>
+          ) : (
+            <span className="hb">
+              ♥ heartbeat{" "}
+              {q
+                ? fmtWait(waitedSecs(q, now))
+                : Math.floor(heartbeatSecs(agent, now)) + "s"}{" "}
+              ago
+            </span>
+          )}
           {agent.parentId && (
             <span className="fork-tag">
               ⑂ fork of {parent ? runnerName(parent, fleet) : agent.parentId} — shared

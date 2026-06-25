@@ -341,6 +341,13 @@ class ClaudeRunnerHandle implements RunnerHandle {
       void this.consultAboutGate(text);
       return;
     }
+    // After the agent has finished, its main session is closed — answer
+    // follow-up questions ("what did you do?") via a fresh side-query seeded
+    // with the task and the agent's final summary.
+    if (this.finished) {
+      void this.consultAboutWork(text);
+      return;
+    }
     this.pendingChat = true;
     this.input.push(text);
   }
@@ -351,7 +358,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
    * its input, and the agent's stated reasoning. Runs alongside the frozen main
    * session; never touches it.
    */
-  private async consultAboutGate(question: string): Promise<void> {
+  private consultAboutGate(question: string): Promise<void> {
     const prompt =
       "You are helping a human operator decide whether to approve an action that an AI coding agent wants to take. " +
       "Answer the operator's question directly and concisely. Do NOT use any tools — just explain.\n\n" +
@@ -360,6 +367,31 @@ class ClaudeRunnerHandle implements RunnerHandle {
       (this.lastRationale ? `Agent's stated reasoning: ${this.lastRationale}\n` : "") +
       `Pending action: ${this.gateTool ?? "tool"} with input:\n${JSON.stringify(this.gateInput ?? {}, null, 2)}\n\n` +
       `Operator's question: ${question}`;
+    return this.runConsult(
+      prompt,
+      "I'm paused on the command above — Approve to run it, Reject to skip, or Modify to redirect me.",
+    );
+  }
+
+  /**
+   * Answer a follow-up about already-finished work. The main session is closed,
+   * so this is a fresh non-agentic query seeded with the task and the agent's
+   * final summary — lets the operator ask "what did you do?" after completion.
+   */
+  private consultAboutWork(question: string): Promise<void> {
+    const prompt =
+      "You are an AI coding agent that has FINISHED a task. Answer the operator's follow-up question " +
+      "directly and concisely, based on what you did. Do NOT use any tools — just explain.\n\n" +
+      `Task: ${this.spec.task}\n` +
+      `Working directory: ${this.spec.cwd ?? process.cwd()}\n` +
+      `Branch: ${this.spec.branch}\n` +
+      (this.lastRationale ? `Your final summary/answer was:\n${this.lastRationale}\n` : "") +
+      `\nOperator's question: ${question}`;
+    return this.runConsult(prompt, "The task is complete — ask me anything about what I did.");
+  }
+
+  /** Run a one-shot, tool-less query and emit its text as a chat reply. */
+  private async runConsult(prompt: string, fallback: string): Promise<void> {
     try {
       const q = query({
         prompt,
@@ -367,7 +399,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
           cwd: this.spec.cwd ?? process.cwd(),
           model: mapModel(this.spec.model),
           permissionMode: "default",
-          // Deny every tool so this stays a pure text answer about the pending action.
+          // Deny every tool so this stays a pure text answer.
           canUseTool: () => Promise.resolve({ behavior: "deny", message: "Answer in text only; do not use tools." } as PermissionResult),
           maxTurns: 4,
           env: this.sdkEnv,
@@ -382,11 +414,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
           break;
         }
       }
-      this.events.onChatReply(
-        this.agentId,
-        answer.trim() ||
-          "I'm paused on the command above — Approve to run it, Reject to skip, or Modify to redirect me.",
-      );
+      this.events.onChatReply(this.agentId, answer.trim() || fallback);
     } catch (err) {
       this.events.onChatReply(this.agentId, `couldn't look into that right now (${(err as Error).message}).`);
     }

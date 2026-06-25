@@ -577,6 +577,7 @@ button.ct-seg { cursor: pointer; }
 
 /* ===== agent detail: heartbeat, modules, preview ===== */
 .hb { color: var(--ok); }
+.hb-done { color: var(--faint); }
 .modlist { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0 8px; }
 .modchip {
   font-size: 12px; font-weight: 500; color: var(--text);
