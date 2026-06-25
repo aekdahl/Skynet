@@ -10,11 +10,16 @@
 // (ELECTRON_RUN_AS_NODE=1) for crash isolation and so we don't ship a second
 // Node runtime. We wait for /health, then load the SPA it serves.
 
-const { app, BrowserWindow, shell, dialog } = require("electron");
+const { app, BrowserWindow, shell, dialog, nativeImage } = require("electron");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 const http = require("node:http");
+
+// Name the app before anything reads it — fixes notifications and the per-user
+// data dir (…/Skynet instead of …/Electron) in dev. The packaged build already
+// gets "Skynet" from electron-builder's productName.
+app.setName("Skynet");
 
 // A fixed loopback port keeps the SPA's same-origin API/WS calls simple. If you
 // run two copies at once the second will fail to bind — acceptable for a
@@ -165,6 +170,16 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    // Dev only: show our icon in the dock (packaged builds carry the real icon).
+    if (!app.isPackaged && process.platform === "darwin" && app.dock) {
+      try {
+        const img = nativeImage.createFromPath(path.join(__dirname, "build-assets", "icon.png"));
+        if (!img.isEmpty()) app.dock.setIcon(img);
+      } catch {
+        /* non-fatal */
+      }
+    }
+
     startServer();
     try {
       await waitForServer();
