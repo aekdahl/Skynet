@@ -11,14 +11,28 @@ import {
 import { StatusDot } from "./common";
 import type { ViewName, Lens } from "../App";
 
+// In the desktop app the OS draws the real window controls over this bar, so we
+// drop our decorative traffic lights and let it act as the window drag region.
+const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+const isDesktop = /Electron/i.test(ua);
+const isMac = /Mac/i.test(ua);
+const isWin = /Windows/i.test(ua);
+
 export function TitleBar() {
+  const cls =
+    "op-titlebar" +
+    (isDesktop ? " is-desktop" : "") +
+    (isDesktop && isMac ? " is-mac" : "") +
+    (isDesktop && isWin ? " is-win" : "");
   return (
-    <header className="op-titlebar">
-      <div className="op-tl">
-        <i className="r" />
-        <i className="y" />
-        <i className="g" />
-      </div>
+    <header className={cls}>
+      {!isDesktop && (
+        <div className="op-tl">
+          <i className="r" />
+          <i className="y" />
+          <i className="g" />
+        </div>
+      )}
       <div className="op-title">Skynet — Agent Network</div>
       <div className="op-titleright">
         <span className="op-avatar">JD</span>

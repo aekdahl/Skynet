@@ -887,6 +887,12 @@ button.kb-done:hover { opacity: 1; }
 .op-tl i { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
 .op-tl .r { background: #FF5F57; } .op-tl .y { background: #FEBC2E; } .op-tl .g { background: #28C840; }
 .op-title { text-align: center; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em; white-space: nowrap; }
+/* Desktop (Electron): this is the only title bar — paint it black and make it
+   the window drag region. The OS draws real window controls over it. */
+.op-titlebar.is-desktop { background: #000; -webkit-app-region: drag; }
+.op-titlebar.is-desktop .op-avatar { -webkit-app-region: no-drag; }
+.op-titlebar.is-mac { padding-left: 84px; }   /* clear the macOS traffic lights */
+.op-titlebar.is-win { padding-right: 145px; }  /* clear the Windows control overlay */
 .op-titleright { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
 .op-search { display: flex; align-items: center; gap: 8px; background: var(--raised); border: 1px solid var(--line); border-radius: 7px; padding: 6px 11px; color: var(--faint); font-size: 12px; }
 .op-search kbd { font-family: var(--font-mono); font-size: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; color: var(--muted); }

@@ -110,14 +110,22 @@ function waitForServer() {
 }
 
 function createWindow() {
+  const mac = process.platform === "darwin";
   win = new BrowserWindow({
     width: 1320,
     height: 880,
     minWidth: 940,
     minHeight: 600,
-    backgroundColor: "#0b0d11",
+    backgroundColor: "#000000",
     title: "Skynet",
     autoHideMenuBar: true,
+    // Drop the native title bar so the app's own bar is the only one. Keep the
+    // real, working window controls: traffic lights on macOS (overlaid on our
+    // bar), an overlaid control strip on Windows. The app's bar is 40px tall.
+    titleBarStyle: mac ? "hiddenInset" : "hidden",
+    ...(mac
+      ? { trafficLightPosition: { x: 14, y: 13 } }
+      : { titleBarOverlay: { color: "#000000", symbolColor: "#9aa4b2", height: 40 } }),
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
 
