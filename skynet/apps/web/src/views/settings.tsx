@@ -9,6 +9,7 @@ import * as api from "../lib/client";
 export function SettingsView() {
   const { providers, setProviderAvailable } = useStore();
   const [metas, setMetas] = useState<SecretMeta[] | null>(null);
+  const [envSet, setEnvSet] = useState<Set<string>>(new Set());
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -16,8 +17,9 @@ export function SettingsView() {
 
   const load = useCallback(async () => {
     try {
-      const { secrets } = await api.fetchSecrets();
+      const { secrets, env } = await api.fetchSecrets();
       setMetas(secrets);
+      setEnvSet(new Set(env));
     } catch {
       setMetas([]);
     }
@@ -51,7 +53,8 @@ export function SettingsView() {
     setErr(null);
     try {
       await api.deleteSecret(id);
-      setProviderAvailable(id, false);
+      // Removing the stored key falls back to the env var, if one exists.
+      setProviderAvailable(id, envSet.has(id));
       await load();
     } catch (e) {
       setErr(`Couldn't remove the key: ${(e as Error).message}`);
@@ -66,7 +69,9 @@ export function SettingsView() {
         <h1>Settings</h1>
         <p>
           Provider API keys, stored encrypted on this machine and never shown again.
-          A vendor's agents become selectable only once its key is set.
+          A vendor's agents become selectable once its key is set. A key set here
+          overrides one from an environment variable; the env key is used as a
+          fallback when nothing is set here.
         </p>
       </div>
 
@@ -82,6 +87,7 @@ export function SettingsView() {
       <div className="settings-list">
         {providers.map((p) => {
           const meta = configured.get(p.id);
+          const envBacked = envSet.has(p.id);
           const draft = drafts[p.id] ?? "";
           return (
             <div className="settings-row" key={p.id}>
@@ -91,7 +97,9 @@ export function SettingsView() {
                 </span>
                 <span className="settings-name">{p.name}</span>
                 {meta ? (
-                  <span className="settings-ok mono">key set ····{meta.last4}</span>
+                  <span className="settings-ok mono">via Settings ····{meta.last4}</span>
+                ) : envBacked ? (
+                  <span className="settings-env mono">via environment</span>
                 ) : (
                   <span className="settings-off mono">not set</span>
                 )}
@@ -101,7 +109,9 @@ export function SettingsView() {
                   type="password"
                   className="settings-input"
                   autoComplete="off"
-                  placeholder={meta ? "Replace key…" : "Paste API key…"}
+                  placeholder={
+                    meta ? "Replace key…" : envBacked ? "Override env key…" : "Paste API key…"
+                  }
                   value={draft}
                   onChange={(e) => setDrafts((d) => ({ ...d, [p.id]: e.target.value }))}
                   onKeyDown={(e) => e.key === "Enter" && save(p.id)}
@@ -111,7 +121,7 @@ export function SettingsView() {
                   disabled={busy === p.id || !draft.trim()}
                   onClick={() => save(p.id)}
                 >
-                  {meta ? "Replace" : "Save"}
+                  {meta ? "Replace" : envBacked ? "Override" : "Save"}
                 </button>
                 {meta && (
                   <button

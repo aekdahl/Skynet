@@ -69,9 +69,10 @@ export function archiveAgent(id: string, archived: boolean) {
   return req<unknown>("POST", `/api/agents/${id}/archive`, { archived });
 }
 
-// Provider secrets (Settings)
+// Provider secrets (Settings). `env` = providers a server env var supplies a
+// key for (a stored key overrides it).
 export function fetchSecrets() {
-  return req<{ secrets: SecretMeta[] }>("GET", "/api/secrets");
+  return req<{ secrets: SecretMeta[]; env: string[] }>("GET", "/api/secrets");
 }
 export function setSecret(provider: string, apiKey: string) {
   return req<{ secret: SecretMeta }>("PUT", `/api/secrets/${provider}`, { apiKey });

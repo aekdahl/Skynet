@@ -708,6 +708,7 @@ button.kb-done:hover { opacity: 1; }
 .settings-glyph { font-size: 16px; flex: none; }
 .settings-name { font-size: 14px; font-weight: 600; }
 .settings-ok { font-size: 11px; color: var(--ok); margin-left: auto; }
+.settings-env { font-size: 11px; color: var(--accent); margin-left: auto; }
 .settings-off { font-size: 11px; color: var(--faint); margin-left: auto; }
 .settings-key { display: flex; align-items: center; gap: 8px; }
 .settings-input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; color: var(--text); font-family: var(--font-mono); font-size: 12px; }
