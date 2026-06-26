@@ -27,18 +27,29 @@ The app is intentionally **excluded from the pnpm workspace** (`!apps/desktop`
 in `pnpm-workspace.yaml`) so its heavy Electron toolchain stays out of the main
 CI install. Install it standalone with `--ignore-workspace`.
 
-## Run in development
+## Run in development (hot reload — recommended)
 
-From the repo root (`skynet/`), build what the shell loads, then launch it:
+One-time: `cd apps/desktop && pnpm install --ignore-workspace`. Then from the
+repo root (`skynet/`):
+
+```bash
+pnpm desktop:dev
+```
+
+This runs the server in watch mode (:8099, file store + a dev master key), Vite
+with HMR (:5173, proxying `/api` + `/ws` → :8099), and Electron pointed at Vite.
+**Edit web → instant HMR in the window; edit server → it restarts automatically.**
+No rebuilds, no relaunch. Dev state lives in a gitignored `.skynet-dev/`.
+
+## Run the built shell (production-like)
+
+Loads the *built* SPA from the in-process server (no HMR — rebuild to see changes):
 
 ```bash
 pnpm -r --filter "./packages/**" build
 pnpm --filter @skynet/server build
 pnpm --filter @skynet/web build
-
-cd apps/desktop
-pnpm install --ignore-workspace
-pnpm dev
+cd apps/desktop && pnpm dev
 ```
 
 ## Configuring a real runner

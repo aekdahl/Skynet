@@ -28,6 +28,13 @@ app.setName("Skynet");
 const PORT = Number(process.env.SKYNET_DESKTOP_PORT) || 8099;
 const HOST = "127.0.0.1";
 
+// Dev (hot reload): the `desktop:dev` launcher runs the server (watch) + Vite
+// (HMR) externally, so the window loads Vite and we don't spawn/serve anything.
+const DEV = process.env.SKYNET_DEV === "1";
+// Match Vite's default bind (localhost) so the window connects on macOS where
+// `localhost` may resolve to IPv6.
+const DEV_URL = process.env.SKYNET_DEV_URL || "http://localhost:5173";
+
 let serverProc = null;
 let win = null;
 
@@ -163,15 +170,16 @@ function createWindow() {
   });
 
   // Open external links (docs, provider sites) in the real browser, not in-app.
+  // Anything on our own loopback host (server or the dev Vite port) stays in-app.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("http") && !url.includes(`${HOST}:${PORT}`)) {
+    if (url.startsWith("http") && !url.includes("127.0.0.1") && !url.includes("localhost")) {
       shell.openExternal(url);
       return { action: "deny" };
     }
     return { action: "allow" };
   });
 
-  win.loadURL(`http://${HOST}:${PORT}/`);
+  win.loadURL(DEV ? DEV_URL : `http://${HOST}:${PORT}/`);
 }
 
 function checkForUpdates() {
@@ -208,14 +216,19 @@ if (!app.requestSingleInstanceLock()) {
       }
     }
 
-    startServer();
-    try {
-      await waitForServer();
+    if (DEV) {
+      // Server + Vite are run by the `desktop:dev` launcher; just open the window.
       createWindow();
-      checkForUpdates();
-    } catch (err) {
-      dialog.showErrorBox("Skynet failed to start", String((err && err.message) || err));
-      app.quit();
+    } else {
+      startServer();
+      try {
+        await waitForServer();
+        createWindow();
+        checkForUpdates();
+      } catch (err) {
+        dialog.showErrorBox("Skynet failed to start", String((err && err.message) || err));
+        app.quit();
+      }
     }
 
     app.on("activate", () => {
