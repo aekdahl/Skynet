@@ -25,6 +25,8 @@ function App() {
   const [projects, setProjects] = React.useState(boot && boot.demo ? PROJECTS : []);
   const [fleet, setFleet] = React.useState(
     boot ? (boot.demo ? FLEET : buildFleet(boot.providers)) : []);
+  // GitHub App connection + safety policy (see github.jsx). Persisted separately from the workspace.
+  const [github, setGithub] = React.useState(loadGithub);
   // Router state (view | queue | projects | fleet | project | agent) and the home lens
   // (subway | timeline | ledger | roster) are synced to the URL hash for shareable
   // deep links + browser back/forward; reloading a link restores the view. See routing.jsx.
@@ -85,9 +87,9 @@ function App() {
   };
 
   /* ----- CRUD: projects ----- */
-  const createProject = ({ name, goal }) => {
+  const createProject = ({ name, goal, repo }) => {
     const id = 'p' + (seq.current++);
-    setProjects(ps => [{ id, name, goal, agentIds: [], backlog: [] }, ...ps]);
+    setProjects(ps => [{ id, name, goal, repo: repo || null, agentIds: [], backlog: [] }, ...ps]);
     setProjectId(id); setFromP('projects'); setView('project');
   };
   const updateProject = (id, patch) => setProjects(ps => ps.map(p => p.id === id ? { ...p, ...patch } : p));
@@ -130,6 +132,7 @@ function App() {
   const completeOnboarding = (cfg) => {
     const full = { ...cfg, onboarded: true, demo: false };
     saveWorkspace(full); setWs(full);
+    if (cfg.github) { saveGithub(cfg.github); setGithub(cfg.github); }   // GitHub connected during onboarding
     setFleet(buildFleet(cfg.providers));
     setView('home'); setLens('subway');   // land on an empty Home → GetStarted takes over
   };
@@ -137,19 +140,34 @@ function App() {
     const full = { workspace: 'Demo workspace', operator: 'Operator', repo: 'acme/monolith',
                    modules: DEFAULT_MODULES, providers: Object.keys(window.PROVIDERS || {}), onboarded: true, demo: true };
     saveWorkspace(full); setWs(full);
+    const demoGh = { connected: true, installation: { id: 42, account: 'acme', type: 'Organization', glyph: '▣', app: 'skynet' },
+                     repos: [
+                       { id: 1, name: 'acme/monolith', default_branch: 'main', private: true, selected: true },
+                       { id: 2, name: 'acme/web', default_branch: 'main', private: true, selected: true },
+                       { id: 3, name: 'acme/infra', default_branch: 'main', private: true, selected: true },
+                       { id: 4, name: 'acme/docs', default_branch: 'main', private: false, selected: true },
+                     ],
+                     safety: { ...SAFETY_DEFAULTS } };
+    saveGithub(demoGh); setGithub(demoGh);
     setAgents(AGENTS); setQueue(QUEUE); setProjects(PROJECTS); setFleet(FLEET);
     setView('home'); setLens('subway');
   };
   const resetWorkspace = () => {
-    clearWorkspace(); setWs(null);
+    clearWorkspace(); setWs(null); clearGithub(); setGithub(null);
     setAgents([]); setQueue([]); setProjects([]); setFleet([]);
   };
+
+  /* ----- GitHub integration: connect, tune safety, disconnect ----- */
+  const connectGithub = (conn) => { saveGithub(conn); setGithub(conn); };
+  const updateSafety = (safety) => setGithub(g => { const next = { ...(g || emptyGithub()), safety }; saveGithub(next); return next; });
+  const disconnectGithub = () => { clearGithub(); setGithub(null); };
 
   const openAgent = (id) => { setFrom(view === 'agent' ? from : view); setAgentId(id); setView('agent'); };
   const openProject = (id) => { setFromP(view === 'project' || view === 'agent' ? fromP : view); setProjectId(id); setView('project'); };
 
   const agent = agents.find(a => a.id === agentId);
   const project = projects.find(p => p.id === projectId);
+  const repos = selectedRepos(github);   // repos a project may bind to (one per project)
   const VIEW_LABEL = { home: 'Home', projects: 'Projects', fleet: 'Fleet', queue: 'Inbox', project: 'Project' };
 
   // First run: no workspace yet → show the onboarding wizard instead of the app shell.
@@ -168,11 +186,15 @@ function App() {
             <HomeView projects={projects} agents={agents} queue={liveQueue} fleet={fleet}
                       lens={lens} setLens={setLens} onResolve={resolve}
                       onOpenAgent={openAgent} onOpenProject={openProject} onCreate={createProject}
-                      onGoInbox={() => setView('queue')} onConfigureFleet={() => setView('fleet')} />
+                      onGoInbox={() => setView('queue')} onConfigureFleet={() => setView('fleet')} repos={repos} />
           )}
           {view === 'projects' && (
             <OverviewView projects={projects} agents={agents} queue={liveQueue}
-                          onOpenProject={openProject} onCreate={createProject} />
+                          onOpenProject={openProject} onCreate={createProject} repos={repos} />
+          )}
+          {view === 'integrations' && (
+            <IntegrationsView github={github} onConnect={connectGithub}
+                              onUpdateSafety={updateSafety} onDisconnect={disconnectGithub} />
           )}
           {view === 'fleet' && (
             <FleetView agents={agents} fleet={fleet}

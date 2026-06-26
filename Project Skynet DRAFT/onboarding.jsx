@@ -122,15 +122,15 @@
     const [step, setStep] = React.useState(0);
     const [workspace, setWorkspace] = React.useState('');
     const [operator, setOperator] = React.useState('');
-    const [repo, setRepo] = React.useState('');
-    const [connected, setConnected] = React.useState(false);
+    const [github, setGithub] = React.useState(null);   // GitHub App connection (see github.jsx)
     const [mods, setMods] = React.useState(DEFAULT_MODULES.map(m => ({ ...m })));
     const [providers, setProviders] = React.useState(['claude']);
 
+    const repos = window.selectedRepos ? window.selectedRepos(github) : [];
     const STEPS = ['Workspace', 'Repository', 'Module map', 'Providers'];
     const valid = [
       workspace.trim().length > 0,
-      connected,
+      !!(github && github.connected && repos.length > 0),
       mods.some(m => m.glob.trim() && m.name.trim()),
       providers.length > 0,
     ];
@@ -145,7 +145,8 @@
     const finish = () => onComplete({
       workspace: workspace.trim(),
       operator: operator.trim() || 'Operator',
-      repo: repo.trim(),
+      github,
+      repo: (repos[0] && repos[0].name) || '',
       modules: mods.filter(m => m.glob.trim() && m.name.trim()),
       providers,
     });
@@ -185,20 +186,10 @@
 
           {step === 1 && (
             <React.Fragment>
-              <h1 className="ob-h">Connect a repository</h1>
-              <p className="ob-sub">Point Tower at the codebase the fleet will work in. Agents branch from here and open PRs back into it.</p>
-              <div className="ob-field">
-                <label className="ob-label">Repository</label>
-                <input className="qx-input" autoFocus placeholder="git@github.com:acme/monolith.git" value={repo}
-                       onChange={e => { setRepo(e.target.value); setConnected(false); }}
-                       onKeyDown={e => e.key === 'Enter' && repo.trim() && setConnected(true)} />
-                <div className="ob-hint">SSH or HTTPS URL, or <span className="mono">org/repo</span>.</div>
-              </div>
-              {connected ? (
-                <div className="ob-connected">✓ Connected — {repo.trim()}</div>
-              ) : (
-                <button className="btn btn-ghost" disabled={!repo.trim()} onClick={() => setConnected(true)}>Connect repository</button>
-              )}
+              <h1 className="ob-h">Connect GitHub</h1>
+              <p className="ob-sub">Install the Tower GitHub App on the repos your fleet will work in. Agents branch, push, and open PRs through least-privilege, short-lived tokens — you set the guardrails next.</p>
+              <window.GithubConnect github={github} onConnected={setGithub} />
+              {repos.length > 0 && <div className="ob-connected">✓ {repos.length} repo{repos.length === 1 ? '' : 's'} connected — {repos.map(r => r.name).join(', ')}</div>}
             </React.Fragment>
           )}
 
