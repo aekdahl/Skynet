@@ -190,7 +190,7 @@ kbd {
 /* ---------- queue ---------- */
 .queue { position: relative; z-index: 1; max-width: 860px; margin: 0 auto; padding: calc(var(--sp) * 1.6) calc(var(--sp) * 2) 60px; }
 .queue-readout {
-  display: flex; align-items: flex-end; gap: calc(var(--sp) * 2.4);
+  display: flex; align-items: flex-end; justify-content: center; gap: calc(var(--sp) * 2.4);
   padding: calc(var(--sp) * 1.2) 0 calc(var(--sp) * 1.4);
   border-bottom: 1px solid var(--line); margin-bottom: calc(var(--sp) * 1.4);
 }
@@ -202,7 +202,6 @@ kbd {
 .readout-warn { color: var(--warn); }
 .readout-ok { color: var(--ok); }
 .readout-label { font-size: 11px; line-height: 1.35; color: var(--faint); letter-spacing: 0.06em; text-transform: uppercase; }
-.readout-hint { margin-left: auto; font-size: 11px; color: var(--faint); display: flex; align-items: center; gap: 5px; padding-bottom: 4px; }
 
 .queue-list { display: flex; flex-direction: column; gap: var(--sp); }
 .qcard {
