@@ -100,6 +100,9 @@ export const Project = z.object({
   goal: z.string(),
   agentIds: z.array(z.string()),
   status: ProjectStatus,
+  // The single repository this project's agents branch & PR within (one repo per
+  // project). "owner/repo". Optional until GitHub is connected.
+  repo: z.string().optional(),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -219,6 +222,7 @@ export type ChatRequest = z.infer<typeof ChatRequest>;
 export const CreateProjectRequest = z.object({
   name: z.string().min(1),
   goal: z.string().default(""),
+  repo: z.string().optional(), // bind the project to one repo at creation
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 
@@ -226,6 +230,7 @@ export const UpdateProjectRequest = z.object({
   name: z.string().min(1).optional(),
   goal: z.string().optional(),
   status: ProjectStatus.optional(),
+  repo: z.string().optional(),
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 
@@ -270,3 +275,64 @@ export const SetSecretRequest = z.object({
   apiKey: z.string().min(1),
 });
 export type SetSecretRequest = z.infer<typeof SetSecretRequest>;
+
+// ─── GitHub integration ─────────────────────────────────────────────────────
+// A workspace connects via a GitHub *App* installation (least-privilege,
+// short-lived installation tokens, PR-first). The connection record below is
+// non-sensitive metadata — the App private key lives server-side only, never
+// per-workspace. See docs/github-integration.md for the full contract.
+
+/** Safety guardrails, enforced server-side before any write reaches GitHub. */
+export const SafetyPolicy = z.object({
+  prOnly: z.boolean().default(true), // never push to the default branch directly
+  noForcePush: z.boolean().default(true), // block force-push / history rewrite
+  moduleAllowlist: z.boolean().default(true), // only touch the agent's assigned modules
+  approveBeforePush: z.boolean().default(true), // HITL gate before push/merge
+});
+export type SafetyPolicy = z.infer<typeof SafetyPolicy>;
+
+/** Every guardrail on — the default posture for a new connection. */
+export const SAFETY_DEFAULTS: SafetyPolicy = {
+  prOnly: true,
+  noForcePush: true,
+  moduleAllowlist: true,
+  approveBeforePush: true,
+};
+
+export const GithubInstallation = z.object({
+  id: z.number().int(), // GitHub installation id
+  account: z.string(), // org or user login the app is installed on
+  type: z.enum(["Organization", "User"]),
+  appSlug: z.string(),
+});
+export type GithubInstallation = z.infer<typeof GithubInstallation>;
+
+export const GithubRepo = z.object({
+  id: z.number().int(),
+  name: z.string(), // "owner/repo"
+  defaultBranch: z.string(),
+  private: z.boolean(),
+  selected: z.boolean().default(true), // included in the installation's selection
+});
+export type GithubRepo = z.infer<typeof GithubRepo>;
+
+/** A workspace's GitHub connection — installation + selected repos + policy. */
+export const GithubConnection = z.object({
+  workspaceId: z.string(),
+  connected: z.boolean(),
+  installation: GithubInstallation.nullable().default(null),
+  repos: z.array(GithubRepo).default([]),
+  safety: SafetyPolicy,
+});
+export type GithubConnection = z.infer<typeof GithubConnection>;
+
+/** Body to record/refresh an installation after the App is installed on GitHub. */
+export const ConnectGithubRequest = z.object({
+  installation: GithubInstallation,
+  repos: z.array(GithubRepo).default([]),
+});
+export type ConnectGithubRequest = z.infer<typeof ConnectGithubRequest>;
+
+/** Partial update to the safety policy — any subset of guardrails. */
+export const UpdateSafetyRequest = SafetyPolicy.partial();
+export type UpdateSafetyRequest = z.infer<typeof UpdateSafetyRequest>;

@@ -113,7 +113,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post("/api/projects", async (req, reply) => {
     const body = CreateProjectRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
-    const project: Project = { id: uid("p"), workspaceId: ws(req), name: body.data.name, goal: body.data.goal, agentIds: [], status: "active" };
+    const project: Project = { id: uid("p"), workspaceId: ws(req), name: body.data.name, goal: body.data.goal, agentIds: [], status: "active", repo: body.data.repo };
     return hub.upsertProject(project);
   });
 

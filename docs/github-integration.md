@@ -1,8 +1,12 @@
 # GitHub Integration — Contract & Architecture
 
-> Status: **design / contract**. The FE surface (connect flow + safety panel +
-> Integrations view) ships in the prototype (`github.jsx`); the server pieces
-> described here are the contract for the backend lanes (Core / Lane A) to build.
+> Status: **implemented (server) + design (webhooks/persistence)**. The FE surface
+> (connect flow + safety panel + Integrations view) ships in the prototype
+> (`github.jsx`). The server pieces — GitProvider (App token + push + PR + merge),
+> the safety preflight, the connection store, REST routes, and the orchestrator
+> wiring — live in `skynet/apps/server/src/github/` and are exercised by
+> `skynet/tests/github-safety.test.ts`. Still design-only: durable connection
+> persistence (Postgres adapter) and inbound webhook handling (§6).
 > Companion: `docs/vcs-and-conflict-model.md` (branch-per-agent + merge engine).
 
 ## 1. Principles
@@ -121,6 +125,75 @@ export interface GitProvider {
 `PushRequest` carries `{ workspaceId, agentId, repo, branch, files }` so the
 preflight has everything it needs to evaluate policy.
 
+## 4a. Agent integration flow (how an agent actually uses GitHub)
+
+**The principle: agents work locally; Skynet brokers the remote.** A runner (e.g.
+the Claude Code agent) executes in an isolated git **worktree** Skynet provisions
+for it. There it edits files and makes *local* commits on `agent/<id>`. It has
+**no GitHub credentials** and no copy of the App key — so it physically cannot
+push, and the safety guardrails (§5) can't be bypassed. Every remote operation
+(push / PR / merge) runs in Skynet's server code (`github/service.ts` →
+`GitProvider`), authenticated with a short-lived installation token.
+
+Lifecycle of one agent:
+
+```
+1. Provision   Orchestrator cuts a worktree on agent/<id> from the integration
+               tip (worktrees.ts). Runner starts in that cwd — no remote creds.
+2. Work        Claude Code edits + commits locally. It cannot reach github.com.
+3. Complete    Orchestrator commits any uncommitted diff, computes the diff stat,
+               and raises a `diff` HITL review (the approveBeforePush gate).
+4. Approve     Operator approves in the Inbox → orchestrator.deliver().
+5. Preflight   githubService.pushAndOpenPr() loads the workspace policy and runs
+               evaluateSafety() — PR-only / no-force / module-allowlist. Any
+               violation ⇒ blocked, nothing is pushed, the reason is logged.
+6. Push + PR   If clean: mint installation token → git push agent/<id> → open PR
+               against the default branch (GitHubProvider).
+7. Checks      CI runs on GitHub; check/PR webhooks stream back as agent.log (§6).
+8. Merge       Merge via the Pulls API, respecting branch protection + reviews.
+               PR-merged webhook → agent.completed.
+```
+
+Sequence (the broker sits between the agent and GitHub):
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator (Inbox)
+    participant Orch as Orchestrator
+    participant WT as Worktree (agent/<id>)
+    participant Agent as Claude Code runner
+    participant Svc as GithubService + GitProvider
+    participant GH as GitHub (App API)
+
+    Orch->>WT: provision worktree from integration tip
+    Orch->>Agent: start(task, cwd=worktree)  %% no credentials
+    Agent->>WT: edit files + local commits
+    Agent-->>Orch: onCompleted
+    Orch->>WT: commitAll + diffStat
+    Orch->>Op: raise `diff` review (approveBeforePush gate)
+    Op-->>Orch: approve
+    Orch->>Svc: pushAndOpenPr(PushRequest)
+    Svc->>Svc: evaluateSafety(policy, req)
+    alt violation (PR-only / force / out-of-scope module)
+        Svc-->>Orch: { ok:false, violations }
+        Orch->>Op: log "push blocked by safety policy: …"
+    else clean
+        Svc->>GH: mint installation token (App JWT → access_tokens)
+        Svc->>GH: git push agent/<id>  (token-auth HTTPS)
+        Svc->>GH: open PR (head=agent/<id>, base=main)
+        GH-->>Op: checks + review (webhooks → agent.log)
+        Op->>GH: merge PR (respects branch protection)
+        GH-->>Orch: pull_request merged → agent.completed
+    end
+```
+
+**Why not hand the agent a token?** Claude Code *can* run `git push` itself — if it
+held a credential the guardrails would be advisory, not enforced. Two models keep
+the broker in control: the **broker model** above (default — Skynet performs the
+push/PR), or a **credential-helper model** where Skynet injects a just-in-time,
+branch-scoped token into the agent's git and leans on GitHub branch protection +
+a pre-receive check. The default is the broker.
+
 ## 5. Safety policy — enforcement
 
 Evaluated in `push()` / `merge()` **before** any GitHub write. Returns a typed
@@ -179,11 +252,26 @@ All workspace-scoped via the existing `resolvePrincipal`/token auth. The connect
 
 ## 9. Lane handoffs
 
-- **Core** — pre-land the §3 contract types in `packages/shared`; add
-  `Store.get/putGithubConnection`.
-- **Lane A (Auth)** — installation ↔ workspace mapping lives next to the workspace
-  store; webhook signature verification alongside `auth.ts`.
-- **Lane D (Module map)** — `moduleAllowlist` reuses `modules-map.ts`
-  (glob → module id) to classify changed paths.
-- **Runner SDK** — runners call `GitProvider`, not raw git, so the preflight always
-  runs.
+Done (this change):
+
+- **Core** — §3 contract types live in `packages/shared` (`SafetyPolicy`,
+  `GithubConnection`, …); `Project.repo` binds one repo per project.
+- **GitProvider + preflight** — `github/{provider,safety,service}.ts`: App-JWT
+  token mint, push (git-over-HTTPS), PR/merge (REST), and `evaluateSafety()`.
+- **Module allowlist** — reuses `modules-map.ts` (glob → module id) to classify an
+  agent's changed files before push.
+- **Orchestrator wiring** — `deliver()` routes an approved diff through
+  `githubService.pushAndOpenPr()` when the workspace is connected and the project
+  is bound to a repo; otherwise the local merge engine handles it (default path
+  unchanged). Runners still never touch git — the orchestrator brokers it.
+- **REST** — `GET/PUT/DELETE /api/github` + `PUT /api/github/safety` (workspace-scoped).
+
+Still pending:
+
+- **Lane A (Auth)** — durable connection persistence (Postgres adapter behind
+  `GithubConnectionStore`; memory-only today) + inbound webhook signature
+  verification alongside `auth.ts`.
+- **Webhooks (§6)** — the push/PR/check → event-stream mapping (PR-merged →
+  `agent.completed`) is specified but not yet wired.
+- **Install/callback** — the App install redirect + OAuth-style callback that
+  records the installation id (the FE connect flow currently posts it directly).

@@ -12,6 +12,7 @@ import {
   type RunnerProvider,
 } from "@skynet/runner-sdk";
 import { config, now } from "./config.js";
+import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
 import { MergeEngine, type MergeRequest } from "./merge.js";
 import { loadModuleMap, type ModuleMap } from "./modules-map.js";
@@ -376,14 +377,26 @@ export class Orchestrator {
   async deliver(item: HitlItem, resolution: Resolution): Promise<void> {
     const agentId = item.agentId;
 
-    // diff-approve / merge-retry → enqueue onto the merge queue (when enabled).
-    if (this.merge && resolution.action === "approve" && (item.kind === "diff" || item.kind === "merge")) {
+    // diff-approve / merge-retry → integrate the agent's branch. This is the
+    // post-approval half of the `approveBeforePush` guardrail: the diff review
+    // gated here, so reaching this point means an operator approved the push.
+    if (resolution.action === "approve" && (item.kind === "diff" || item.kind === "merge")) {
       const agent = await this.store.getAgent(agentId);
       if (agent) {
-        await this.hub.agentStatus(agentId, "review");
-        await this.hub.agentLog(agentId, item.kind === "merge" ? "retrying merge after reconciliation" : "diff approved — queued for merge");
-        this.merge.enqueue({ agentId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId });
-        return;
+        const project = await this.store.getProject(agent.projectId);
+        const conn = await githubService.get(agent.workspaceId);
+        // GitHub PR flow: workspace connected, project bound to one repo, and a
+        // worktree to push from. Otherwise fall back to the local merge queue.
+        if (conn?.connected && project?.repo && this.worktrees) {
+          await this.pushToGithub(agent, project.repo);
+          return;
+        }
+        if (this.merge) {
+          await this.hub.agentStatus(agentId, "review");
+          await this.hub.agentLog(agentId, item.kind === "merge" ? "retrying merge after reconciliation" : "diff approved — queued for merge");
+          this.merge.enqueue({ agentId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId });
+          return;
+        }
       }
     }
 
@@ -416,6 +429,42 @@ export class Orchestrator {
     }
     // Integrated — retire the agent's worktree (the branch is kept in history).
     if (this.worktrees) await this.worktrees.retire(agentId).catch(() => undefined);
+  }
+
+  /**
+   * Integrate an approved agent branch via GitHub: run the safety preflight,
+   * then (if clean) mint an installation token, push the branch, and open a PR.
+   * The agent stays in `review` until the PR is merged on GitHub. Enforcement is
+   * server-side here — the runner never had credentials to push around it.
+   */
+  private async pushToGithub(agent: Agent, repo: string): Promise<void> {
+    const worktreePath = this.worktrees!.pathFor(agent.id);
+    const stat = await this.worktrees!.diffStat(agent.id, config.baseBranch);
+    const modules = this.moduleMap.modulesForFiles(stat.files);
+    await this.hub.agentStatus(agent.id, "review");
+    try {
+      const result = await githubService.pushAndOpenPr({
+        workspaceId: agent.workspaceId,
+        agentId: agent.id,
+        repo,
+        branch: agent.branch,
+        baseBranch: config.baseBranch,
+        worktreePath,
+        changedFiles: stat.files,
+        modules,
+        allowedModules: agent.modules, // [] = unconstrained (no scope declared)
+        force: false,
+        title: agent.name,
+        body: `Automated by Skynet agent \`${agent.id}\`.\n\n${stat.add}+/${stat.del}- across ${stat.files.length} file(s).`,
+      });
+      if (!result.ok) {
+        await this.hub.agentLog(agent.id, `push blocked by safety policy: ${result.violations.map((v) => v.message).join("; ")}`);
+        return;
+      }
+      await this.hub.agentLog(agent.id, `pushed ${agent.branch} → opened PR ${result.pr?.url ?? "(opened)"}`);
+    } catch (err) {
+      await this.hub.agentLog(agent.id, `GitHub push failed: ${(err as Error).message}`);
+    }
   }
 
   /** Textual merge conflict → raise a `merge` HITL for an operator to reconcile. */
