@@ -3,10 +3,10 @@
   "configurations": [
     {
       "name": "skynet",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["-C", "skynet", "--filter", "@skynet/server", "dev"],
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "SKYNET_SEED=true pnpm -C skynet --filter @skynet/server dev"],
       "port": 8080,
-      "autoPort": true
+      "autoPort": false
     },
     {
       "name": "skynet-web",

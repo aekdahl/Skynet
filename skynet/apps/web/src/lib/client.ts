@@ -1,9 +1,13 @@
 import {
   AuditRecord,
+  GithubConnection,
   Snapshot,
   WsMessage,
   type Agent,
+  type GithubInstallation,
+  type GithubRepo,
   type ResolveAction,
+  type SafetyPolicy,
   type SecretMeta,
 } from "@skynet/shared";
 
@@ -122,6 +126,27 @@ export function updateRunner(id: string, body: { model?: string; name?: string }
 }
 export function deleteRunner(id: string) {
   return req<unknown>("DELETE", `/api/fleet/runners/${id}`);
+}
+
+// GitHub integration (connection + safety policy). Non-secret; the App key lives
+// server-side only. See docs/github-integration.md.
+export async function fetchGithub(): Promise<{ connection: GithubConnection; appConfigured: boolean }> {
+  const raw = await req<{ connection: unknown; appConfigured: boolean }>("GET", "/api/github");
+  return { connection: GithubConnection.parse(raw.connection), appConfigured: !!raw.appConfigured };
+}
+export async function connectGithub(body: {
+  installation: GithubInstallation;
+  repos: GithubRepo[];
+}): Promise<GithubConnection> {
+  const raw = await req<{ connection: unknown }>("PUT", "/api/github", body);
+  return GithubConnection.parse(raw.connection);
+}
+export async function updateGithubSafety(patch: Partial<SafetyPolicy>): Promise<GithubConnection> {
+  const raw = await req<{ connection: unknown }>("PUT", "/api/github/safety", patch);
+  return GithubConnection.parse(raw.connection);
+}
+export async function disconnectGithub(): Promise<void> {
+  await req<unknown>("DELETE", "/api/github");
 }
 
 // ─── WebSocket with auto-reconnect ─────────────────────────────────────────
