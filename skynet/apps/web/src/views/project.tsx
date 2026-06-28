@@ -276,6 +276,9 @@ export function ProjectView({
           <div className="projview-head-main">
             <h2>{project.name}</h2>
             <p>{project.goal}</p>
+            {project.repo && (
+              <div className="mono proj-repo-line">⑂ {project.repo} · agents branch &amp; PR here</div>
+            )}
           </div>
           <div className="projview-head-tools">
             <button className="btn btn-ghost" onClick={() => setEditing(true)}>

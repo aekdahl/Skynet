@@ -11,6 +11,7 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
+import { RepoPicker, useConnectedRepos } from "../components/repo-picker";
 
 function ProjectCard({
   project,
@@ -50,6 +51,7 @@ function ProjectCard({
         {empty && <span className="shipped-pill">new</span>}
       </div>
       <p className="proj-goal">{project.goal}</p>
+      {project.repo && <div className="proj-repo mono">⑂ {project.repo}</div>}
       <Bar
         value={prog}
         status={waiting.length > 0 ? "waiting" : allDone ? "done" : "running"}
@@ -90,11 +92,14 @@ function ProjectCard({
 export function NewProjectCard({
   onCreate,
 }: {
-  onCreate: (name: string, goal: string) => void;
+  onCreate: (name: string, goal: string, repo?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
+  const [repo, setRepo] = useState("");
+  const repos = useConnectedRepos();
+  const hasRepos = (repos?.length ?? 0) > 0;
   if (!open)
     return (
       <button className="proj proj-new" onClick={() => setOpen(true)}>
@@ -117,15 +122,17 @@ export function NewProjectCard({
         value={goal}
         onChange={(e) => setGoal(e.target.value)}
       />
+      <RepoPicker repos={repos} value={repo} onChange={setRepo} />
       <div className="qx-row">
         <button
           className="btn btn-primary"
-          disabled={!name.trim()}
+          disabled={!name.trim() || (hasRepos && !repo)}
           onClick={() => {
-            onCreate(name.trim(), goal.trim() || "No goal set yet.");
+            onCreate(name.trim(), goal.trim() || "No goal set yet.", repo || undefined);
             setOpen(false);
             setName("");
             setGoal("");
+            setRepo("");
           }}
         >
           Create project
@@ -145,7 +152,7 @@ export function OverviewView({
 }: {
   now: number;
   onOpenProject: (id: string) => void;
-  onCreate: (name: string, goal: string) => void;
+  onCreate: (name: string, goal: string, repo?: string) => void;
 }) {
   const { projects, agents, queue } = useStore();
   const oq = openQueue(queue);

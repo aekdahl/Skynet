@@ -50,7 +50,7 @@ export interface Store extends StoreState {
   // Local optimistic flip after a key is set/cleared in Settings (the snapshot
   // recomputes availability from the secret store on next load).
   setProviderAvailable: (id: string, available: boolean) => void;
-  createProject: (name: string, goal: string) => Promise<void>;
+  createProject: (name: string, goal: string, repo?: string) => Promise<void>;
   updateProject: (
     id: string,
     patch: { name?: string; goal?: string; status?: string },
@@ -244,8 +244,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           providers: s.providers.map((p) => (p.id === id ? { ...p, available } : p)),
         }));
       },
-      createProject: async (name, goal) => {
-        await api.createProject({ name, goal });
+      createProject: async (name, goal, repo) => {
+        await api.createProject({ name, goal, repo });
       },
       updateProject: async (id, patch) => {
         await api.updateProject(id, patch);

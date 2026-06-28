@@ -99,8 +99,8 @@ export function App() {
     setView("project");
   };
 
-  const createProject = async (name: string, goal: string) => {
-    await store.createProject(name, goal);
+  const createProject = async (name: string, goal: string, repo?: string) => {
+    await store.createProject(name, goal, repo);
     setFromP("projects");
     setView("projects");
   };
