@@ -113,15 +113,6 @@ export function OpSidebar({
         )}
         {item("Fleet", "◇", () => setView("fleet"), view === "fleet")}
         {item("Integrations", "⑂", () => setView("integrations"), view === "integrations")}
-        {item(
-          "Timeline",
-          "▭",
-          () => {
-            setLens("timeline");
-            setView("home");
-          },
-          view === "home" && lens === "timeline",
-        )}
         {item("Settings", "⚙", () => setView("settings"), view === "settings")}
       </nav>
       <div className="op-navsec">PROJECTS</div>
