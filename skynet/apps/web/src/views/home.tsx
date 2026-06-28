@@ -140,6 +140,7 @@ export function HomeView({
   onCreate,
   onGoInbox,
   onConfigureFleet,
+  onAssign,
 }: {
   lens: Lens;
   setLens: (l: Lens) => void;
@@ -149,6 +150,7 @@ export function HomeView({
   onCreate: (name: string, goal: string) => void;
   onGoInbox: () => void;
   onConfigureFleet: () => void;
+  onAssign: () => void;
 }) {
   const { projects, agents, queue, modules, fleet } = useStore();
 
@@ -248,9 +250,16 @@ export function HomeView({
           <SubwayView now={now} onOpenAgent={onOpenAgent} onOpenProject={onOpenProject} />
         )}
         {lens === "timeline" && <TimelineView now={now} onOpenAgent={onOpenAgent} />}
-        {lens === "ledger" && <LedgerView now={now} onOpenAgent={onOpenAgent} />}
+        {lens === "ledger" && (
+          <LedgerView now={now} onOpenAgent={onOpenAgent} onAssign={onAssign} />
+        )}
         {lens === "roster" && (
-          <RosterView now={now} onOpenAgent={onOpenAgent} onOpenProject={onOpenProject} />
+          <RosterView
+            now={now}
+            onOpenAgent={onOpenAgent}
+            onOpenProject={onOpenProject}
+            onAssign={onAssign}
+          />
         )}
       </div>
     </div>
@@ -262,9 +271,11 @@ export function HomeView({
 function LedgerView({
   now,
   onOpenAgent,
+  onAssign,
 }: {
   now: number;
   onOpenAgent: (id: string) => void;
+  onAssign: () => void;
 }) {
   const { agents, queue, fleet, projects, providers } = useStore();
   const idle = idleRunners(fleet, agents);
@@ -342,7 +353,9 @@ function LedgerView({
                 <Prov info={providerInfo(providers, r.provider)} /> {r.model}
               </span>
               <span className="lg-step">idle — available for work</span>
-              <span className="lg-assign">Assign task →</span>
+              <button className="lg-assign" onClick={onAssign}>
+                Assign task →
+              </button>
               <span className="lg-state lg-state-idle">{runnerIdleLabel(r, now)}</span>
             </div>
           ))}
@@ -560,10 +573,12 @@ function RosterView({
   now,
   onOpenAgent,
   onOpenProject,
+  onAssign,
 }: {
   now: number;
   onOpenAgent: (id: string) => void;
   onOpenProject: (id: string) => void;
+  onAssign: () => void;
 }) {
   const { agents, queue, fleet, projects, providers } = useStore();
   const busy = agents.filter((a) => a.status !== "done");
@@ -612,7 +627,9 @@ function RosterView({
                 </span>
                 <span className="rs-idle-row">
                   <span>idle {runnerIdleLabel(r, now)}</span>
-                  <span className="rs-assign">Assign task →</span>
+                  <button className="rs-assign" onClick={onAssign}>
+                    Assign task →
+                  </button>
                 </span>
               </div>
             ))}

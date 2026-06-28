@@ -395,7 +395,8 @@ button.lg-arow:hover { background: var(--raised); }
 .lg-agent-id { font-size: 12px; font-weight: 600; }
 .lg-arow-idle .lg-agent-id { color: var(--faint); }
 .lg-model { font-size: 11px; color: var(--faint); }
-.lg-assign { font-size: 12px; color: var(--accent); font-weight: 500; text-align: right; }
+.lg-assign { font-size: 12px; color: var(--accent); font-weight: 500; text-align: right; background: none; border: none; padding: 0; font-family: inherit; cursor: pointer; }
+.lg-assign:hover { text-decoration: underline; }
 
 /* ===== subway ===== */
 .sw-list { display: flex; flex-direction: column; gap: 14px; }
@@ -471,7 +472,8 @@ button.rs-card:hover { border-color: var(--faint); }
 .rs-model { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--faint); white-space: nowrap; }
 .rs-task { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rs-idle-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--faint); }
-.rs-assign { color: var(--accent); font-weight: 500; }
+.rs-assign { color: var(--accent); font-weight: 500; font-size: 12px; background: none; border: none; padding: 0; font-family: inherit; cursor: pointer; }
+.rs-assign:hover { text-decoration: underline; }
 .rs-tasks { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
 .rs-proj { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; }
 .rs-proj-name { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px; padding: 0; text-align: left; }

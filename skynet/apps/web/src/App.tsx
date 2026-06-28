@@ -135,6 +135,7 @@ export function App() {
                 onCreate={createProject}
                 onGoInbox={() => setView("queue")}
                 onConfigureFleet={() => setView("fleet")}
+                onAssign={() => setView("projects")}
               />
             )}
             {store.loaded && view === "projects" && (
