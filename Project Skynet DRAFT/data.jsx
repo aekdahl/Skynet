@@ -209,18 +209,19 @@ const AGENTS = [
 ];
 
 // Projects — high-level workstreams that group agents. backlog = tasks not yet assigned.
+// repo: each project binds to exactly one repository (one repo per project).
 const PROJECTS = [
-  { id: 'payments', name: 'Payments reliability', goal: 'Stripe webhooks reconcile cleanly — zero dropped events.', agentIds: ['billing', 'billing-replay'],
+  { id: 'payments', name: 'Payments reliability', goal: 'Stripe webhooks reconcile cleanly — zero dropped events.', repo: 'acme/monolith', agentIds: ['billing', 'billing-replay'],
     backlog: ['Alerting on reconciliation drift', 'Dunning email retries'] },
-  { id: 'apihard',  name: 'API hardening',        goal: 'Rate limiting and token rotation across the public API.', agentIds: ['ratelimit', 'auth', 'auth-audit'],
+  { id: 'apihard',  name: 'API hardening',        goal: 'Rate limiting and token rotation across the public API.', repo: 'acme/monolith', agentIds: ['ratelimit', 'auth', 'auth-audit'],
     backlog: ['API key scoping', 'Audit log export'] },
-  { id: 'onboardp', name: 'Onboarding revamp',    goal: 'New 4-step flow; targeting +15% activation.', agentIds: ['onboard'],
+  { id: 'onboardp', name: 'Onboarding revamp',    goal: 'New 4-step flow; targeting +15% activation.', repo: 'acme/web', agentIds: ['onboard'],
     backlog: ['Mobile onboarding parity'] },
-  { id: 'infra',    name: 'Deploy pipeline',      goal: 'Zero-downtime blue-green deploys with auto-rollback.', agentIds: ['deploy'],
+  { id: 'infra',    name: 'Deploy pipeline',      goal: 'Zero-downtime blue-green deploys with auto-rollback.', repo: 'acme/infra', agentIds: ['deploy'],
     backlog: ['Canary deploys'] },
-  { id: 'feplat',   name: 'Frontend platform',    goal: 'Design tokens everywhere; dashboard p95 under 300ms.', agentIds: ['tokens', 'dashperf'],
+  { id: 'feplat',   name: 'Frontend platform',    goal: 'Design tokens everywhere; dashboard p95 under 300ms.', repo: 'acme/web', agentIds: ['tokens', 'dashperf'],
     backlog: ['Dark-mode tokens', 'Chart kit migration'] },
-  { id: 'docsauto', name: 'Docs automation',      goal: 'Weekly changelog digest, hands-free.', agentIds: ['changelog'],
+  { id: 'docsauto', name: 'Docs automation',      goal: 'Weekly changelog digest, hands-free.', repo: 'acme/docs', agentIds: ['changelog'],
     backlog: [] },
 ];
 

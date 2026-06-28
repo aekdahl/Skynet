@@ -57,6 +57,7 @@ function OpSidebar({ view, lens, setView, setLens, projects, agents, queueCount,
         {item('Inbox', '⊙', () => setView('queue'), view === 'queue', queueCount)}
         {item('Projects', '▤', () => setView('projects'), view === 'projects' || view === 'project')}
         {item('Fleet', '◇', () => setView('fleet'), view === 'fleet')}
+        {item('Integrations', '⑂', () => setView('integrations'), view === 'integrations')}
         {item('Timeline', '▭', () => { setLens('timeline'); setView('home'); }, view === 'home' && lens === 'timeline')}
       </nav>
       <div className="op-navsec">PROJECTS</div>
@@ -165,6 +166,7 @@ function ProjectCard({ project, agents, queue, onOpen }) {
         {empty && <span className="shipped-pill">new</span>}
       </div>
       <p className="proj-goal">{project.goal}</p>
+      {project.repo && <div className="proj-repo mono" style={{ color: 'var(--faint)', fontSize: 11, margin: '2px 0 8px' }}>⑂ {project.repo}</div>}
       <Bar value={prog} status={waiting.length > 0 ? 'waiting' : allDone ? 'done' : 'running'} />
       <div className="proj-agents">
         {pa.map(a => {
@@ -190,25 +192,28 @@ function ProjectCard({ project, agents, queue, onOpen }) {
   );
 }
 
-function NewProjectCard({ onCreate }) {
+function NewProjectCard({ onCreate, repos }) {
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState('');
   const [goal, setGoal] = React.useState('');
+  const [repo, setRepo] = React.useState('');
+  const hasRepos = (repos || []).length > 0;
   if (!open) return <button className="proj proj-new" onClick={() => setOpen(true)}><span className="proj-new-plus">+</span> New project</button>;
   return (
     <div className="proj proj-new-form">
       <input className="qx-input" autoFocus placeholder="Project name" value={name} onChange={e => setName(e.target.value)}></input>
       <textarea className="qx-input" rows="2" placeholder="Goal — what does done look like?" value={goal} onChange={e => setGoal(e.target.value)}></textarea>
+      <window.RepoSelect repos={repos} value={repo} onChange={setRepo} />
       <div className="qx-row">
-        <button className="btn btn-primary" disabled={!name.trim()}
-                onClick={() => { onCreate({ name: name.trim(), goal: goal.trim() || 'No goal set yet.' }); setOpen(false); setName(''); setGoal(''); }}>Create project</button>
+        <button className="btn btn-primary" disabled={!name.trim() || (hasRepos && !repo)}
+                onClick={() => { onCreate({ name: name.trim(), goal: goal.trim() || 'No goal set yet.', repo }); setOpen(false); setName(''); setGoal(''); setRepo(''); }}>Create project</button>
         <button className="btn btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
       </div>
     </div>
   );
 }
 
-function OverviewView({ projects, agents, queue, onOpenProject, onCreate }) {
+function OverviewView({ projects, agents, queue, onOpenProject, onCreate, repos }) {
   const running = agents.filter(a => a.status === 'running').length;
   const longest = queue.length ? Math.max(...queue.map(q => q.waited)) : 0;
   const sorted = [...projects].sort((a, b) => {
@@ -227,7 +232,7 @@ function OverviewView({ projects, agents, queue, onOpenProject, onCreate }) {
         </p>
       </div>
       <div className="ov-grid">
-        <NewProjectCard onCreate={onCreate} />
+        <NewProjectCard onCreate={onCreate} repos={repos} />
         {sorted.map(p => (
           <ProjectCard key={p.id} project={p} agents={agents} queue={queue} onOpen={() => onOpenProject(p.id)} />
         ))}
@@ -335,6 +340,7 @@ function ProjectView({ project, agents, queue, onResolve, onOpenAgent, onBack,
           <div className="projview-head-main">
             <h2>{project.name}</h2>
             <p>{project.goal}</p>
+            {project.repo && <div className="mono" style={{ color: 'var(--faint)', fontSize: 12, marginTop: 4 }}>⑂ {project.repo} · agents branch &amp; PR here</div>}
           </div>
           <div className="projview-head-tools">
             <button className="btn btn-ghost" onClick={() => setEditing(true)}>Edit</button>

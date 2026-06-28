@@ -22,8 +22,8 @@
   const DEFAULTS = { view: 'home', lens: 'subway', projectId: null, agentId: null };
 
   // The 'queue' view is presented as the Inbox; everything else maps 1:1.
-  const VIEW_TO_SLUG = { home: 'home', projects: 'projects', fleet: 'fleet', queue: 'inbox', project: 'project', agent: 'agent' };
-  const SLUG_TO_VIEW = { home: 'home', projects: 'projects', fleet: 'fleet', inbox: 'queue', project: 'project', agent: 'agent' };
+  const VIEW_TO_SLUG = { home: 'home', projects: 'projects', fleet: 'fleet', queue: 'inbox', project: 'project', agent: 'agent', integrations: 'integrations' };
+  const SLUG_TO_VIEW = { home: 'home', projects: 'projects', fleet: 'fleet', inbox: 'queue', project: 'project', agent: 'agent', integrations: 'integrations' };
 
   function encode({ view, lens, projectId, agentId }) {
     if (view === 'home') return '#/home/' + (HOME_LENSES.includes(lens) ? lens : 'subway');

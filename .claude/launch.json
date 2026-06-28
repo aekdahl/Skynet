@@ -14,6 +14,12 @@
       "runtimeArgs": ["-C", "skynet", "--filter", "@skynet/web", "dev"],
       "port": 5173,
       "autoPort": true
+    },
+    {
+      "name": "tower",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8231", "--directory", "Project Skynet DRAFT"],
+      "port": 8231
     }
   ]
 }

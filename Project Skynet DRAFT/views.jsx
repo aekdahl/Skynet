@@ -35,10 +35,12 @@ function ViewHead({ title, sub }) {
 const VIEW_HELPERS_READY = true;
 
 /* ===== 0 · Home (monitor) — needs-you strip + conflicts + lens switcher ===== */
-function GetStarted({ onCreate, onConfigureFleet }) {
+function GetStarted({ onCreate, onConfigureFleet, repos }) {
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState('');
   const [goal, setGoal] = React.useState('');
+  const [repo, setRepo] = React.useState('');
+  const hasRepos = (repos || []).length > 0;
   return (
     <div className="getstarted" data-screen-label="Get started">
       <div className="gs-inner">
@@ -57,9 +59,10 @@ function GetStarted({ onCreate, onConfigureFleet }) {
           <div className="gs-form">
             <input className="qx-input" autoFocus placeholder="Project name" value={name} onChange={e => setName(e.target.value)}></input>
             <textarea className="qx-input" rows="2" placeholder="Goal — what does done look like?" value={goal} onChange={e => setGoal(e.target.value)}></textarea>
+            <window.RepoSelect repos={repos} value={repo} onChange={setRepo} />
             <div className="qx-row">
-              <button className="btn btn-primary" disabled={!name.trim()}
-                      onClick={() => onCreate({ name: name.trim(), goal: goal.trim() || 'No goal set yet.' })}>Create project</button>
+              <button className="btn btn-primary" disabled={!name.trim() || (hasRepos && !repo)}
+                      onClick={() => onCreate({ name: name.trim(), goal: goal.trim() || 'No goal set yet.', repo })}>Create project</button>
               <button className="btn btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
             </div>
           </div>
@@ -72,8 +75,8 @@ function GetStarted({ onCreate, onConfigureFleet }) {
   );
 }
 
-function HomeView({ projects, agents, queue, fleet, lens, setLens, onResolve, onOpenAgent, onOpenProject, onCreate, onGoInbox, onConfigureFleet }) {
-  if (projects.length === 0) return <GetStarted onCreate={onCreate} onConfigureFleet={onConfigureFleet} />;
+function HomeView({ projects, agents, queue, fleet, lens, setLens, onResolve, onOpenAgent, onOpenProject, onCreate, onGoInbox, onConfigureFleet, repos }) {
+  if (projects.length === 0) return <GetStarted onCreate={onCreate} onConfigureFleet={onConfigureFleet} repos={repos} />;
 
   const blockers = [...queue].sort((a, b) => b.waited - a.waited);
   const areaMap = {};
