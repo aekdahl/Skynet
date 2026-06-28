@@ -49,6 +49,7 @@ export const ServerEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("agent.heartbeat"), agentId: z.string(), at: Timestamp }),
   z.object({ type: z.literal("agent.status"), agentId: z.string(), status: AgentStatus }),
   z.object({ type: z.literal("agent.completed"), agentId: z.string(), branch: z.string() }),
+  z.object({ type: z.literal("agent.archived"), agentId: z.string(), archived: z.boolean() }),
 
   // HITL round-trip
   z.object({ type: z.literal("hitl.raised"), item: HitlItem }),

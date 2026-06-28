@@ -44,6 +44,7 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
 - Real **live-preview** pipeline (sandboxed per-branch URLs).
 - **Scale:** Redis multi-replica fan-out; GKE Jobs for runners.
 - Command-safety hardening; secrets at rest; **observability** (metrics/logging/tracing).
+- **Runner session-map cleanup** — `ClaudeRunnerProvider.sessions` (agentId→sessionId, kept for fork resume) grows one entry per agent for the server-process lifetime. Evict on agent completion (retain only entries an active fork could resume). Small RAM/tech-debt fix; no behavior change.
 - Auth: **SSO/OIDC**.
 - 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap, additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
 

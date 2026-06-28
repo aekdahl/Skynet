@@ -71,6 +71,24 @@ function AgentChat({ agent }: { agent: Agent }) {
   );
 }
 
+// The runner logs its final prose answer as a plain log line (no ▸/↳/marker).
+// For a finished agent, surface the last such line as a headline result —
+// otherwise a question task's answer stays buried in the live log.
+const LOG_MARKERS = ["▸", "↳", "✓", "⏸", "⚠", "❑", "●", "$"];
+function finalAnswer(agent: Agent): string | null {
+  if (agent.status !== "done") return null;
+  for (let i = agent.log.length - 1; i >= 0; i--) {
+    const line = (agent.log[i]?.line ?? "").trim();
+    if (!line) continue;
+    if (LOG_MARKERS.some((m) => line.startsWith(m))) continue;
+    // Skip chat noise (your questions, decision records) — they come after the
+    // task's own answer, which is what we want to surface.
+    if (/^(picked up|worktree|runner error|commit|no changes|re: "|you:|decision delivered)/i.test(line)) continue;
+    return line;
+  }
+  return null;
+}
+
 export function AgentDetail({
   agent,
   now,
@@ -92,6 +110,7 @@ export function AgentDetail({
 
   const conflictMods = conflictModulesForAgent(agent, agents);
   const conflictMod = conflictMods[0];
+  const answer = finalAnswer(agent);
 
   const send = async () => {
     if (!draft.trim()) return;
@@ -134,13 +153,17 @@ export function AgentDetail({
           <span className="mono">{agent.branch}</span>
           <span>{agent.model}</span>
           <span>{fmtElapsed(agent, now)}</span>
-          <span className="hb">
-            ♥ heartbeat{" "}
-            {q
-              ? fmtWait(waitedSecs(q, now))
-              : Math.floor(heartbeatSecs(agent, now)) + "s"}{" "}
-            ago
-          </span>
+          {agent.status === "done" ? (
+            <span className="hb hb-done">♥ finished</span>
+          ) : (
+            <span className="hb">
+              ♥ heartbeat{" "}
+              {q
+                ? fmtWait(waitedSecs(q, now))
+                : Math.floor(heartbeatSecs(agent, now)) + "s"}{" "}
+              ago
+            </span>
+          )}
           {agent.parentId && (
             <span className="fork-tag">
               ⑂ fork of {parent ? runnerName(parent, fleet) : agent.parentId} — shared
@@ -149,6 +172,13 @@ export function AgentDetail({
           )}
         </div>
       </div>
+
+      {answer && (
+        <div className="detail-result">
+          <div className="detail-result-label mono">ANSWER</div>
+          <div className="detail-result-body">{answer}</div>
+        </div>
+      )}
 
       {q && (
         <div className="detail-blocked-wrap">

@@ -87,6 +87,15 @@ export class Hub {
     if (ws) this.bus.publish(ws, { type: "agent.completed", agentId, branch });
   }
 
+  async setAgentArchived(agentId: string, archived: boolean): Promise<Agent | undefined> {
+    const a = await this.store.getAgent(agentId);
+    if (!a) return undefined;
+    const updated = { ...a, archived };
+    await this.store.putAgent(updated);
+    this.bus.publish(a.workspaceId, { type: "agent.archived", agentId, archived });
+    return updated;
+  }
+
   // ── HITL ────────────────────────────────────────────────────────────────
   async raiseHitl(item: HitlItem): Promise<HitlItem> {
     await this.store.putHitl(item);
@@ -108,7 +117,16 @@ export class Hub {
       action: resolution.action,
       operatorId: resolution.by,
       at: resolution.at,
-      payload: { optionIndex: resolution.optionIndex, guidance: resolution.guidance },
+      // Snapshot what was decided so the audit is self-contained — the live HITL
+      // item leaves the queue once resolved, so the view can't re-derive it.
+      payload: {
+        optionIndex: resolution.optionIndex,
+        guidance: resolution.guidance,
+        kind: item.kind,
+        title: item.title,
+        why: item.why,
+        command: item.command,
+      },
     });
     this.bus.publish(item.workspaceId, { type: "hitl.resolved", id, resolution });
     return resolved;

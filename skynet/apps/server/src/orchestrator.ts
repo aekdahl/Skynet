@@ -43,7 +43,8 @@ export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   private chatWaiters = new Map<string, (reply: string) => void>();
   private seq = 0;
-  private providerPromise?: Promise<RunnerProvider>;
+  // One lazily-loaded provider backend per provider id (real backends are heavy).
+  private providers = new Map<string, Promise<RunnerProvider>>();
   private merge?: MergeEngine;
   private moduleMap: ModuleMap = loadModuleMap(config.integrationRepo);
   private worktrees?: WorktreeProvisioner;
@@ -75,19 +76,21 @@ export class Orchestrator {
     }
   }
 
-  // Lazily resolve the runner provider. Real providers load on demand (heavy);
-  // the default mock path never imports them.
-  private getProvider(): Promise<RunnerProvider> {
+  // Resolve the backend for an agent. The provider is chosen per fleet runner at
+  // agent creation (runner.provider); config.runner is an optional GLOBAL override
+  // for demos/dev (e.g. RUNNER=mock). Real backends load on demand (heavy) and are
+  // cached per id; the mock path never imports them.
+  private resolveProviderId(runnerProvider: string): string {
+    return config.runner ?? runnerProvider;
+  }
+
+  private getProvider(id: string): Promise<RunnerProvider> {
+    // Test seam: an injected provider short-circuits resolution.
     if (this.providerOverride) return Promise.resolve(this.providerOverride);
-    // No silent mock: an unset RUNNER is an explicit, loud error — not a fake run.
-    if (!config.runner) {
-      return Promise.reject(
-        new Error("No runner configured. Set RUNNER=mock for dev/tests, or a real provider (claude|codex|gemini|cursor|copilot)."),
-      );
-    }
-    if (!this.providerPromise) {
-      this.providerPromise = (() => {
-        switch (config.runner) {
+    let p = this.providers.get(id);
+    if (!p) {
+      p = (() => {
+        switch (id) {
           case "claude":
             return import("@skynet/runner-sdk/claude").then((m) => new m.ClaudeRunnerProvider());
           case "codex":
@@ -102,11 +105,13 @@ export class Orchestrator {
             // Explicit opt-in only — a deterministic test double, never the default.
             return Promise.resolve(new MockRunnerProvider());
           default:
-            return Promise.reject(new Error(`Unknown RUNNER "${config.runner}" (expected mock|claude|codex|gemini|cursor|copilot).`));
+            // No silent mock fallback: an unresolvable provider is a loud error.
+            return Promise.reject(new Error(`Unknown runner provider "${id}" (expected mock|claude|codex|gemini|cursor|copilot).`));
         }
       })();
+      this.providers.set(id, p);
     }
-    return this.providerPromise;
+    return p;
   }
 
   private slug(text: string): string {
@@ -323,11 +328,12 @@ export class Orchestrator {
       dependsOn: [],
       parentId: null,
       branchFromStep: null,
+      archived: false,
     };
 
     // Resolve the runner provider first — fail fast (before mutating state) if
-    // none is configured, rather than silently running a fake one.
-    const provider = await this.getProvider();
+    // it can't be resolved, rather than silently running a fake one.
+    const provider = await this.getProvider(this.resolveProviderId(runner.provider));
 
     await this.hub.createAgent(agent);
     await this.hub.upsertTask({ ...task, state: "assigned", agentId });
@@ -390,7 +396,7 @@ export class Orchestrator {
       branchFromStep: stepIndex,
     };
 
-    const provider = await this.getProvider(); // fail fast if no runner configured
+    const provider = await this.getProvider(this.resolveProviderId(runner.provider)); // fail fast if it can't resolve
 
     await this.hub.createAgent(agent);
     if (project) await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
@@ -533,12 +539,15 @@ export class Orchestrator {
   async chat(agentId: string, text: string): Promise<string> {
     await this.hub.agentLog(agentId, `you: ${text}`);
     const live = this.live.get(agentId);
+
+    // No live session (finished, in review, or the server restarted since it ran)
+    // → answer statelessly via the provider, grounded in the agent's stored log.
     if (!live) {
-      // No live runner — don't fabricate a reply in the agent's voice. Say so.
-      const reply = "This agent isn't running, so there's no live session to reply. Re-assign or fork it to continue.";
-      await this.hub.agentLog(agentId, `(system) ${reply}`);
+      const reply = await this.consultFinished(agentId, text);
+      await this.hub.agentLog(agentId, `↳ ${reply}`);
       return reply;
     }
+
     return new Promise<string>((resolve) => {
       // A real model turn can take well over 5s; give it room before giving up.
       const timer = setTimeout(() => {
@@ -551,6 +560,27 @@ export class Orchestrator {
       });
       void live.handle.message(text);
     });
+  }
+
+  /** Answer a follow-up about a finished agent via its provider's stateless
+   *  consult, grounded in the stored log — works even across a server restart. */
+  private async consultFinished(agentId: string, question: string): Promise<string> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent) return `(${agentId}) no such agent.`;
+    const provider = await this.getProvider(this.resolveProviderId(agent.provider));
+    if (!provider.consult) {
+      return "This agent has finished; follow-up chat isn't supported for its runner.";
+    }
+    const apiKey = await secretService.resolve(agent.workspaceId, agent.provider);
+    const context = agent.log.slice(-40).map((l) => l.line).join("\n").slice(-4000);
+    try {
+      return await provider.consult(
+        { task: agent.name, model: agent.model, cwd: config.runnerCwd, apiKey, context },
+        question,
+      );
+    } catch (err) {
+      return `couldn't look into that right now (${(err as Error).message}).`;
+    }
   }
 
   async stopAgent(agentId: string): Promise<void> {

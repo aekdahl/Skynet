@@ -17,6 +17,22 @@ export class SecretsDisabledError extends Error {
   }
 }
 
+/** Server env var that supplies each provider's key when no stored key exists. */
+export const PROVIDER_ENV_VAR: Record<ProviderId, string> = {
+  claude: "ANTHROPIC_API_KEY",
+  codex: "OPENAI_API_KEY",
+  gemini: "GEMINI_API_KEY",
+  cursor: "CURSOR_API_KEY",
+  copilot: "GITHUB_TOKEN",
+};
+
+/** Providers that currently have a key in the server environment (live). */
+export function envBackedProviders(): ProviderId[] {
+  return (Object.keys(PROVIDER_ENV_VAR) as ProviderId[]).filter(
+    (p) => !!process.env[PROVIDER_ENV_VAR[p]],
+  );
+}
+
 const toMeta = (r: SecretRecord): SecretMeta => ({
   workspaceId: r.workspaceId,
   provider: r.provider,
@@ -70,22 +86,26 @@ export class SecretService {
    * Server-internal only; never expose the result over the wire.
    */
   async resolve(workspaceId: string, provider: ProviderId): Promise<string | undefined> {
+    // Precedence: a stored key (set in Settings) overrides the server env var;
+    // the env var is the fallback when no key is stored.
     const key = masterKey();
-    if (!key) return undefined;
-    const record = await this.store.get(workspaceId, provider);
-    if (!record) return undefined;
-    try {
-      return open(record.ciphertext, key);
-    } catch {
-      // A key IS stored but won't decrypt (tampered, or the master key rotated).
-      // Don't silently use a different (env) credential — say so loudly. We still
-      // fall back to env so the agent can run, but the operator must see this.
-      console.warn(
-        `[secrets] stored ${provider} key for workspace "${workspaceId}" failed to decrypt ` +
-          `(wrong/rotated SKYNET_MASTER_KEY?) — falling back to ambient env. Re-set the key.`,
-      );
-      return undefined;
+    if (key) {
+      const record = await this.store.get(workspaceId, provider);
+      if (record) {
+        try {
+          return open(record.ciphertext, key);
+        } catch {
+          // A key IS stored but won't decrypt (tampered, or the master key rotated).
+          // Don't silently use a different (env) credential without saying so. We
+          // still fall back to env so the agent can run, but the operator must see this.
+          console.warn(
+            `[secrets] stored ${provider} key for workspace "${workspaceId}" failed to decrypt ` +
+              `(wrong/rotated SKYNET_MASTER_KEY?) — falling back to ambient env. Re-set the key.`,
+          );
+        }
+      }
     }
+    return process.env[PROVIDER_ENV_VAR[provider]] || undefined;
   }
 }
 
