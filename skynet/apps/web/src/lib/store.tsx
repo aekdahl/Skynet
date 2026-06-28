@@ -46,7 +46,7 @@ export interface Store extends StoreState {
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   forkAgent: (id: string) => Promise<void>;
-  createProject: (name: string, goal: string) => Promise<void>;
+  createProject: (name: string, goal: string, repo?: string) => Promise<void>;
   updateProject: (
     id: string,
     patch: { name?: string; goal?: string; status?: string },
@@ -224,8 +224,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       forkAgent: async (id) => {
         await api.forkAgent(id);
       },
-      createProject: async (name, goal) => {
-        await api.createProject({ name, goal });
+      createProject: async (name, goal, repo) => {
+        await api.createProject({ name, goal, repo });
       },
       updateProject: async (id, patch) => {
         await api.updateProject(id, patch);

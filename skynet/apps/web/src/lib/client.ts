@@ -70,7 +70,7 @@ export function forkAgent(id: string) {
 }
 
 // Projects
-export function createProject(body: { name: string; goal: string }) {
+export function createProject(body: { name: string; goal: string; repo?: string }) {
   return req<unknown>("POST", "/api/projects", body);
 }
 export function updateProject(

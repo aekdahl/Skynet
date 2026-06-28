@@ -20,6 +20,7 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { Bar, Prov, StatusDot } from "../components/common";
+import { RepoPicker, useConnectedRepos } from "../components/repo-picker";
 import type { Lens } from "../App";
 
 function ViewHead({ title, sub }: { title: string; sub: string }) {
@@ -37,12 +38,15 @@ function GetStarted({
   onCreate,
   onConfigureFleet,
 }: {
-  onCreate: (name: string, goal: string) => void;
+  onCreate: (name: string, goal: string, repo?: string) => void;
   onConfigureFleet: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
+  const [repo, setRepo] = useState("");
+  const repos = useConnectedRepos();
+  const hasRepos = (repos?.length ?? 0) > 0;
   return (
     <div className="getstarted">
       <div className="gs-inner">
@@ -96,11 +100,12 @@ function GetStarted({
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
             />
+            <RepoPicker repos={repos} value={repo} onChange={setRepo} />
             <div className="qx-row">
               <button
                 className="btn btn-primary"
-                disabled={!name.trim()}
-                onClick={() => onCreate(name.trim(), goal.trim() || "No goal set yet.")}
+                disabled={!name.trim() || (hasRepos && !repo)}
+                onClick={() => onCreate(name.trim(), goal.trim() || "No goal set yet.", repo || undefined)}
               >
                 Create project
               </button>
@@ -146,7 +151,7 @@ export function HomeView({
   now: number;
   onOpenAgent: (id: string) => void;
   onOpenProject: (id: string) => void;
-  onCreate: (name: string, goal: string) => void;
+  onCreate: (name: string, goal: string, repo?: string) => void;
   onGoInbox: () => void;
   onConfigureFleet: () => void;
 }) {
