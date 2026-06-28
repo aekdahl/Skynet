@@ -1032,3 +1032,33 @@ button.kb-done:hover { opacity: 1; }
 .rp-note { font-family: var(--font-mono); font-size: 11.5px; color: var(--faint); }
 .proj-repo { color: var(--faint); font-size: 11px; margin: 2px 0 8px; }
 .proj-repo-line { color: var(--faint); font-size: 12px; margin-top: 4px; }
+
+/* ─── First-run onboarding ──────────────────────────────────────────────── */
+.ob { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 32px; overflow-y: auto; }
+.ob-card { width: 100%; max-width: 560px; }
+.ob-mark { display: block; margin: 0 auto 18px; }
+.ob-progress { display: flex; gap: 8px; justify-content: center; margin-bottom: 28px; }
+.ob-pip { width: 30px; height: 3px; border-radius: 2px; background: var(--line); transition: background .2s; }
+.ob-pip.on { background: var(--accent); }
+.ob-pip.done { background: var(--ok); }
+.ob-step-tag { font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); text-align: center; }
+.ob-h { font-size: 22px; font-weight: 600; text-align: center; margin: 8px 0 6px; }
+.ob-sub { color: var(--muted); text-align: center; font-size: 13px; line-height: 1.6; margin: 0 auto 26px; max-width: 460px; }
+.ob-field { margin-bottom: 16px; }
+.ob-label { display: block; font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.ob-hint { font-family: var(--font-mono); font-size: 11px; color: var(--faint); margin-top: 6px; }
+.ob-mods { display: flex; flex-wrap: wrap; gap: 8px; }
+.ob-mod-chip { font-size: 11px; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 16px; padding: 5px 12px; }
+.ob-prov-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.ob-prov { display: flex; align-items: center; gap: 10px; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--text); font-family: var(--font-ui); font-size: 13px; transition: border-color .15s, background .15s; }
+.ob-prov:hover:not(:disabled) { border-color: var(--faint); }
+.ob-prov.on { background: var(--raised); }
+.ob-prov:disabled { opacity: 0.4; cursor: not-allowed; }
+.ob-prov-glyph { font-size: 16px; width: 18px; text-align: center; }
+.ob-prov-models { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--faint); margin-top: 2px; }
+.ob-prov-check { margin-left: auto; font-family: var(--font-mono); font-size: 12px; color: var(--ok); opacity: 0; }
+.ob-prov.on .ob-prov-check { opacity: 1; }
+.ob-nav { display: flex; align-items: center; gap: 10px; margin-top: 28px; }
+.ob-nav .ob-spacer { flex: 1; }
+.ob-skip { display: block; margin: 22px auto 0; background: none; border: none; color: var(--faint); font-family: var(--font-ui); font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.ob-skip:hover { color: var(--muted); }

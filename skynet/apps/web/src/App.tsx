@@ -18,6 +18,8 @@ import { QueueView } from "./views/queue";
 import { AuditView } from "./views/audit";
 import { AgentDetail } from "./views/agent";
 import { IntegrationsView } from "./views/integrations";
+import { Onboarding } from "./views/onboarding";
+import { isOnboarded } from "./lib/firstrun";
 
 export type ViewName =
   | "home"
@@ -54,6 +56,7 @@ export function App() {
   const [from, setFrom] = useState<ViewName>("home");
   const [fromP, setFromP] = useState<ViewName>("home");
   const [selIdx] = useState(0);
+  const [onboarded, setOnboarded] = useState(isOnboarded);
 
   // [pwa] A push / notification click (relayed by the service worker) or a
   // manifest shortcut navigates the app in-place — usually to the Inbox.
@@ -110,6 +113,13 @@ export function App() {
 
   const agent = store.agents.find((a) => a.id === agentId);
   const project = store.projects.find((p) => p.id === projectId);
+
+  // First run: a loaded, empty workspace that hasn't been set up yet → the
+  // onboarding wizard (sets up GitHub + fleet against the real backend). All
+  // hooks above run unconditionally; only the render branches here.
+  if (store.loaded && !onboarded && store.projects.length === 0 && store.fleet.length === 0) {
+    return <Onboarding onDone={() => setOnboarded(true)} />;
+  }
 
   return (
     <div className="app" style={{ "--accent": t.accent } as React.CSSProperties} data-density={t.density}>
