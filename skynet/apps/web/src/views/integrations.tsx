@@ -12,6 +12,7 @@ import {
   type SafetyPolicy,
 } from "@skynet/shared";
 import * as api from "../lib/client";
+import { PlaceholderNote } from "../components/common";
 
 // Least-privilege permissions the Skynet GitHub App requests.
 const APP_PERMISSIONS: { scope: string; level: string; why: string }[] = [
@@ -145,6 +146,10 @@ export function GithubConnect({
           Install the Skynet GitHub App on the account that owns your repositories. Skynet acts through
           least-privilege, short-lived installation tokens — never your personal credentials.
         </p>
+        <PlaceholderNote>
+          The GitHub App install flow isn't wired yet — this simulates it locally so you can try
+          the rest of the loop. No app is actually installed on GitHub.
+        </PlaceholderNote>
         <div className="gh-perm">
           {APP_PERMISSIONS.map((p) => (
             <div key={p.scope} className="gh-perm-row">
@@ -171,6 +176,10 @@ export function GithubConnect({
           <span className="gh-card-title">Choose where to install</span>
         </div>
         <p className="gh-card-sub">Pick the organization or account to install the Skynet App on.</p>
+        <PlaceholderNote>
+          These GitHub accounts are sample data — not your real GitHub. The App-install
+          redirect isn't wired yet; picking one records a stub connection.
+        </PlaceholderNote>
         {MOCK_ACCOUNTS.map((a) => (
           <button
             key={a.login}
@@ -215,6 +224,7 @@ export function GithubConnect({
       <p className="gh-card-sub">
         Grant the Skynet App access to the repos the fleet will work in. You can change this anytime.
       </p>
+      <PlaceholderNote>Sample repositories — not fetched from GitHub yet.</PlaceholderNote>
       {repos.map((r) => (
         <div key={r.id} className="gh-repo" onClick={() => setPicked((p) => ({ ...p, [r.id]: !p[r.id] }))}>
           <span className={"gh-check" + (picked[r.id] ? " on" : "")}>{picked[r.id] ? "✓" : ""}</span>
