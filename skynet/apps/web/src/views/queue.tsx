@@ -241,7 +241,6 @@ export function QueueView({
             this session
           </span>
         </div>
-        <div className="readout-hint" />
       </div>
       {open.length === 0 ? (
         <div className="queue-empty">
