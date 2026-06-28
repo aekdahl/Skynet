@@ -64,6 +64,8 @@ process.on("SIGTERM", shutdown);
 // 1. server (hot reload) with desktop-like env
 run("server", ["--filter", "@skynet/server", "dev"], {
   STORE: "file",
+  BUS: "memory",
+  SESSIONS: "memory",
   SKYNET_DB_PATH: `${devDir}/skynet-data.json`,
   SKYNET_MASTER_KEY: masterKey,
   PORT: String(PORT),

@@ -103,8 +103,13 @@ function startServer() {
     ...process.env,
     ...userEnv,
     ELECTRON_RUN_AS_NODE: "1", // run the Electron binary as plain Node
-    NODE_ENV: "production",
+    // The local app has no login UI, so run in dev-auth mode (open + dev tokens).
+    // In production the server requires real sessions and rejects the dev token.
+    NODE_ENV: "development",
     STORE: "file", // zero-dependency JSON persistence
+    // Single-process desktop: explicit backends (the server requires these).
+    BUS: userEnv.BUS || "memory",
+    SESSIONS: userEnv.SESSIONS || "memory",
     SKYNET_DB_PATH: userEnv.SKYNET_DB_PATH || dbPath,
     // Enable the encrypted secret store so in-app key Settings work.
     SKYNET_MASTER_KEY: process.env.SKYNET_MASTER_KEY || userEnv.SKYNET_MASTER_KEY || ensureMasterKey(),
