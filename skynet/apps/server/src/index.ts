@@ -41,13 +41,15 @@ async function main() {
   if (config.bus === "redis") {
     const { RedisBus } = await import("./bus.redis.js");
     bus = await RedisBus.create(config.redisUrl);
-  } else {
+  } else if (config.bus === "memory") {
     bus = new InProcessBus();
+  } else {
+    throw new Error("No bus configured. Set BUS=memory for single-process dev/tests, or BUS=redis for multi-replica.");
   }
   const hub = new Hub(store, bus);
   const orchestrator = new Orchestrator(store, hub);
 
-  // Auth: dev tokens always resolve; real login issues sessions (W6). The
+  // Auth: real login issues sessions (W6); dev tokens resolve in dev only. The
   // session backend is durable (Postgres) or multi-replica (Redis) when
   // selected, else in-memory. Adapters connect lazily, so no await here.
   let sessions: SessionStore;
@@ -57,13 +59,19 @@ async function main() {
   } else if (config.sessions === "redis") {
     const { RedisSessionStore } = await import("./auth/sessions.redis.js");
     sessions = new RedisSessionStore(config.redisUrl);
-  } else {
+  } else if (config.sessions === "memory") {
     sessions = new MemorySessionStore();
+  } else {
+    throw new Error("No session store configured. Set SESSIONS=memory for dev/tests, or SESSIONS=postgres / SESSIONS=redis.");
   }
   const operators = new MemoryOperatorDirectory(seedOperators());
   configureAuth({ sessions });
 
   const app = Fastify({ logger: { level: config.nodeEnv === "development" ? "info" : "warn" } });
+  // Loud guardrail: an explicit AUTH_REQUIRED=false in production opens the API.
+  if (config.nodeEnv === "production" && !config.authRequired) {
+    app.log.warn("AUTH_REQUIRED=false in production — the API accepts UNAUTHENTICATED requests. Set AUTH_REQUIRED=true.");
+  }
   await app.register(cors, { origin: true });
   await app.register(websocket);
 

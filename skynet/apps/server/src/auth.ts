@@ -1,10 +1,13 @@
 // ─── Auth (pluggable: dev tokens + sessions/SSO) ──────────────────────────
 // Maps a bearer token, ?token=, or session cookie to a Principal
 // { workspaceId, operatorId }. Resolution order:
-//   1. dev token map  — always on, for local dev + tests
+//   1. dev token map  — DEV ONLY (never resolves in production)
 //   2. session store   — tokens issued by real login (W6, see auth/)
-//   3. AUTH_REQUIRED   — off → fall back to the dev default (open local flow);
+//   3. AUTH_REQUIRED   — off → fall back to the dev default (DEV ONLY);
 //                        on  → unknown/expired resolves to undefined → 401.
+// In production the dev tokens and the open default are BOTH disabled: only a
+// real session passes. Combined with AUTH_REQUIRED defaulting on in production
+// (config.ts), a prod deploy never silently accepts unauthenticated requests.
 // The session store is injected via configureAuth() so this module stays free
 // of a hard dependency on any particular backend (memory/Redis/Postgres).
 
@@ -26,6 +29,9 @@ const TOKENS: Record<string, Principal> = {
 };
 
 const DEV_DEFAULT: Principal = { workspaceId: DEFAULT_WORKSPACE, operatorId: "operator" };
+
+/** Dev conveniences (token map + open default) are disabled in production. */
+const devAuthAllowed = (): boolean => config.nodeEnv !== "production";
 
 /** Cookie that carries a session token (set by the login route). */
 export const SESSION_COOKIE = "skynet_session";
@@ -64,12 +70,15 @@ export function cookieToken(cookieHeader?: string): string | undefined {
  * default (keeps local dev open). When on, only a valid token/session passes.
  */
 export async function resolvePrincipal(token?: string): Promise<Principal | undefined> {
+  const dev = devAuthAllowed();
   if (token) {
-    if (TOKENS[token]) return TOKENS[token];
+    if (dev && TOKENS[token]) return TOKENS[token]; // dev tokens never resolve in prod
     const fromSession = await sessions?.resolve(token);
     if (fromSession) return fromSession;
   }
-  if (config.authRequired) return undefined;
+  // Fail closed unless dev explicitly allows the open default. In production this
+  // is never reached as open (authRequired defaults on; dev=false here anyway).
+  if (config.authRequired || !dev) return undefined;
   return DEV_DEFAULT;
 }
 

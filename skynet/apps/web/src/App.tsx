@@ -8,7 +8,6 @@ import {
   TweakSection,
   TweakColor,
   TweakRadio,
-  TweakToggle,
   useTweaks,
 } from "./components/tweaks";
 import { HomeView } from "./views/home";
@@ -210,12 +209,6 @@ export function App() {
           value={t.density}
           options={["compact", "regular", "comfy"] as const}
           onChange={(v) => setTweak("density", v)}
-        />
-        <TweakSection label="Simulation" />
-        <TweakToggle
-          label="Live activity"
-          value={t.live}
-          onChange={(v) => setTweak("live", v)}
         />
       </TweaksPanel>
     </div>
