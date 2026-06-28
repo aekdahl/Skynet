@@ -78,19 +78,24 @@ describe("runner failure is loud, not a fake completion", () => {
     expect(bus.events.some((e) => e.type === "agent.completed")).toBe(false);
   });
 
-  it("errors loudly when no runner is configured (no silent mock)", async () => {
+  it("errors loudly for an unresolvable provider (no silent mock fallback)", async () => {
+    // The backend is chosen per fleet runner (config.runner is only a global
+    // override). A runner whose provider doesn't resolve to a real backend must
+    // reject loudly — never quietly fall back to the mock and look like a real run.
     const store = new MemoryStore({ seed: false });
     const hub = new Hub(store, new NullBus());
-    // No providerOverride and RUNNER unset in the test env → must reject.
-    const orchestrator = new Orchestrator(store, hub);
+    const orchestrator = new Orchestrator(store, hub); // no providerOverride; RUNNER unset
 
     const project: Project = { id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", agentIds: [], status: "active" };
-    const runner: Runner = { id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 };
+    const runner: Runner = {
+      id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1",
+      provider: "bogus" as ProviderId, model: "x", status: "idle", idleSince: 0,
+    };
     const task: Task = { id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "x", state: "backlog", agentId: null };
     await store.putProject(project);
     await store.putRunner(runner);
     await store.putTask(task);
 
-    await expect(orchestrator.assignTask("p1", "t1")).rejects.toThrow(/no runner configured/i);
+    await expect(orchestrator.assignTask("p1", "t1")).rejects.toThrow(/unknown runner provider/i);
   });
 });

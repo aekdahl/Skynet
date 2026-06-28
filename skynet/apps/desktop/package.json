@@ -1,0 +1,57 @@
+{
+  "name": "@skynet/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Skynet desktop app — runs the Skynet server locally and opens it in a window.",
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "bundle": "node scripts/bundle-server.mjs",
+    "dist": "pnpm bundle && electron-builder",
+    "dist:mac": "pnpm bundle && electron-builder --mac",
+    "dist:win": "pnpm bundle && electron-builder --win",
+    "publish": "pnpm bundle && electron-builder --publish always"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "build": {
+    "appId": "ai.skynet.desktop",
+    "productName": "Skynet",
+    "copyright": "Skynet",
+    "directories": {
+      "output": "release",
+      "buildResources": "build-assets"
+    },
+    "files": [
+      "main.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "build/server.cjs", "to": "server.cjs" },
+      { "from": "../web/dist", "to": "web" }
+    ],
+    "mac": {
+      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
+      "category": "public.app-category.developer-tools",
+      "icon": "build-assets/icon.png"
+    },
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "build-assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": [
+      { "provider": "github", "owner": "aekdahl", "repo": "Skynet" }
+    ]
+  }
+}

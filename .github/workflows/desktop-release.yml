@@ -1,0 +1,61 @@
+name: Desktop release
+
+# Build the macOS + Windows desktop installers and publish them to the GitHub
+# Release for the pushed tag. electron-updater reads these same releases, so a
+# new tag → installed apps self-update on next launch.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: skynet
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: skynet/pnpm-lock.yaml
+
+      # Build the server + SPA the desktop app bundles (packages first so apps'
+      # typecheck/build resolves the emitted .d.ts).
+      - name: Install workspace deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm -r --filter "./packages/**" build
+
+      - name: Build server + web
+        run: pnpm --filter @skynet/server build && pnpm --filter @skynet/web build
+
+      # The desktop app is excluded from the workspace; install its Electron
+      # toolchain standalone, then bundle the server and build/publish installers.
+      - name: Install desktop deps
+        working-directory: skynet/apps/desktop
+        run: pnpm install --ignore-workspace --no-frozen-lockfile
+
+      - name: Build & publish installer
+        working-directory: skynet/apps/desktop
+        run: pnpm run publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
