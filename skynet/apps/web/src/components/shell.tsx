@@ -92,6 +92,7 @@ export function OpSidebar({
           view === "projects" || view === "project",
         )}
         {item("Fleet", "◇", () => setView("fleet"), view === "fleet")}
+        {item("Integrations", "⑂", () => setView("integrations"), view === "integrations")}
         {item(
           "Timeline",
           "▭",
