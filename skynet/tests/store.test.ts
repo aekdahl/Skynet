@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Snapshot, DEFAULT_WORKSPACE, type AuditRecord, type Project } from "@skynet/shared";
+import { Snapshot, DEFAULT_WORKSPACE, SAFETY_DEFAULTS, type AuditRecord, type GithubConnection, type Project } from "@skynet/shared";
 import type { Store } from "../apps/server/src/store/store.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
 import { FileStore } from "../apps/server/src/store/file.js";
@@ -64,6 +64,23 @@ function storeContract(name: string, make: () => Promise<Store>) {
       const ours = trail.filter((e) => e.hitlId.startsWith("audit-"));
       expect(ours.map((e) => e.hitlId)).toEqual(["audit-b", "audit-a"]); // newest first
       expect(trail.some((e) => e.workspaceId === "other-ws")).toBe(false);
+    });
+
+    it("put → get → delete round-trips a GitHub connection (one per workspace)", async () => {
+      expect(await store.getGithubConnection("ws-gh")).toBeUndefined();
+      const conn: GithubConnection = {
+        workspaceId: "ws-gh", connected: true,
+        installation: { id: 42, account: "acme", type: "Organization", appSlug: "skynet" },
+        repos: [{ id: 1, name: "acme/monolith", defaultBranch: "main", private: true, selected: true }],
+        safety: { ...SAFETY_DEFAULTS },
+      };
+      await store.putGithubConnection(conn);
+      expect(await store.getGithubConnection("ws-gh")).toEqual(conn);
+      // Upsert (one per workspace): a second put replaces, not duplicates.
+      await store.putGithubConnection({ ...conn, safety: { ...SAFETY_DEFAULTS, prOnly: false } });
+      expect((await store.getGithubConnection("ws-gh"))?.safety.prOnly).toBe(false);
+      await store.deleteGithubConnection("ws-gh");
+      expect(await store.getGithubConnection("ws-gh")).toBeUndefined();
     });
   });
 }

@@ -5,8 +5,10 @@
 > (`github.jsx`). The server pieces — GitProvider (App token + push + PR + merge),
 > the safety preflight, the connection store, REST routes, and the orchestrator
 > wiring — live in `skynet/apps/server/src/github/` and are exercised by
-> `skynet/tests/github-safety.test.ts`. Still design-only: durable connection
-> persistence (Postgres adapter) and inbound webhook handling (§6).
+> `skynet/tests/github-safety.test.ts`. The connection persists through the main
+> `Store` (memory / file / Postgres) — durable wherever the deployment persists,
+> including the desktop app's local file. Still design-only: inbound webhook
+> handling (§6).
 > Companion: `docs/vcs-and-conflict-model.md` (branch-per-agent + merge engine).
 
 ## 1. Principles
@@ -265,12 +267,13 @@ Done (this change):
   is bound to a repo; otherwise the local merge engine handles it (default path
   unchanged). Runners still never touch git — the orchestrator brokers it.
 - **REST** — `GET/PUT/DELETE /api/github` + `PUT /api/github/safety` (workspace-scoped).
+- **Durable persistence** — the connection lives in the main `Store`
+  (`get/put/deleteGithubConnection` on memory / file / Postgres), so it survives
+  restarts wherever the deployment persists, including the desktop app's file.
 
 Still pending:
 
-- **Lane A (Auth)** — durable connection persistence (Postgres adapter behind
-  `GithubConnectionStore`; memory-only today) + inbound webhook signature
-  verification alongside `auth.ts`.
+- **Lane A (Auth)** — inbound webhook signature verification alongside `auth.ts`.
 - **Webhooks (§6)** — the push/PR/check → event-stream mapping (PR-merged →
   `agent.completed`) is specified but not yet wired.
 - **Install/callback** — the App install redirect + OAuth-style callback that

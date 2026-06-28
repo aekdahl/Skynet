@@ -5,5 +5,5 @@
 
 export type { GitProvider, GithubConnectionStore, PushRequest, PushResult, SafetyViolation } from "./types.js";
 export { evaluateSafety, requiresApproval } from "./safety.js";
-export { GithubService, githubService } from "./service.js";
+export { GithubService, githubService, configureGithub } from "./service.js";
 export { registerGithubRoutes } from "./routes.js";

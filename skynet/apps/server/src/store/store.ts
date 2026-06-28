@@ -7,6 +7,7 @@ import type {
   Agent,
   AuditRecord,
   Dependency,
+  GithubConnection,
   HitlItem,
   Module,
   Project,
@@ -60,4 +61,11 @@ export interface Store {
   recordAudit(entry: AuditRecord): Promise<void>;
   /** Read the workspace's decision audit trail, newest first (W8). */
   listAudit(workspaceId: string): Promise<AuditRecord[]>;
+
+  // GitHub connection (one per workspace) — non-secret metadata, so it persists
+  // through the same Store the deployment uses (file for the desktop app,
+  // Postgres for hosted, memory for dev). The App private key is NOT here.
+  getGithubConnection(workspaceId: string): Promise<GithubConnection | undefined>;
+  putGithubConnection(connection: GithubConnection): Promise<void>;
+  deleteGithubConnection(workspaceId: string): Promise<void>;
 }
