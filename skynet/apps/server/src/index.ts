@@ -31,8 +31,11 @@ async function main() {
   } else if (config.store === "file") {
     const { FileStore } = await import("./store/file.js");
     store = FileStore.create(config.dbPath, config.seedDemo);
-  } else {
+  } else if (config.store === "memory") {
     store = new MemoryStore({ seed: config.seedDemo });
+  } else {
+    // No silent default: choosing persistence is explicit so data loss is never a surprise.
+    throw new Error("No store configured. Set STORE=memory for dev/tests, or STORE=file / STORE=postgres for durability.");
   }
   let bus: Bus;
   if (config.bus === "redis") {

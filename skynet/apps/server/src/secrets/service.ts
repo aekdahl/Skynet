@@ -77,7 +77,14 @@ export class SecretService {
     try {
       return open(record.ciphertext, key);
     } catch {
-      return undefined; // tampered or wrong master key — fail closed to env
+      // A key IS stored but won't decrypt (tampered, or the master key rotated).
+      // Don't silently use a different (env) credential — say so loudly. We still
+      // fall back to env so the agent can run, but the operator must see this.
+      console.warn(
+        `[secrets] stored ${provider} key for workspace "${workspaceId}" failed to decrypt ` +
+          `(wrong/rotated SKYNET_MASTER_KEY?) — falling back to ambient env. Re-set the key.`,
+      );
+      return undefined;
     }
   }
 }

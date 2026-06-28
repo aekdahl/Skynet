@@ -163,12 +163,15 @@ class CliRunnerHandle implements RunnerHandle {
     this.events.onProgress(this.agentId, this.progress, [] as PlanStep[]);
   }
 
-  // Binary missing or process died before completing — log why and complete
-  // gracefully so the orchestrator's merge queue isn't left waiting forever.
+  // Binary missing, process died, or auth failed — this is a FAILURE, not a
+  // completion. Surface it (orchestrator marks the agent needs-attention) and
+  // never report success: a broken runner must not look like a done agent.
   private fallback(message: string) {
     if (this.finished) return;
-    this.events.onLog(this.agentId, `runner: ${message} — completing without changes.`);
-    this.finish();
+    this.finished = true;
+    if (this.hb) clearInterval(this.hb);
+    this.events.onFailed(this.agentId, message);
+    this.kill();
   }
 
   private finish() {

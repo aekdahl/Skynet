@@ -3,7 +3,9 @@
 export const config = {
   port: Number(process.env.PORT ?? 8080),
   nodeEnv: process.env.NODE_ENV ?? "development",
-  store: (process.env.STORE ?? "memory") as "memory" | "file" | "postgres",
+  // No silent default: an unset STORE errors at boot rather than quietly using
+  // an ephemeral in-memory store. Opt in explicitly (STORE=memory for dev/tests).
+  store: (process.env.STORE || undefined) as "memory" | "file" | "postgres" | undefined,
   // Path for STORE=file (zero-dependency JSON persistence; default cwd-relative).
   // The desktop app points this at its per-user data directory.
   dbPath: process.env.SKYNET_DB_PATH || "skynet-data.json",
@@ -13,7 +15,10 @@ export const config = {
   bus: (process.env.BUS ?? "memory") as "memory" | "redis",
   // Session backend: in-memory (default), durable Postgres, or multi-replica Redis.
   sessions: (process.env.SESSIONS ?? "memory") as "memory" | "postgres" | "redis",
-  runner: (process.env.RUNNER ?? "mock") as "mock" | "claude" | "codex" | "gemini" | "cursor" | "copilot",
+  // No silent default: an unset RUNNER errors when you try to assign a task,
+  // rather than quietly running the mock and looking like real execution. Set
+  // RUNNER=mock explicitly for dev/tests, or a real provider.
+  runner: (process.env.RUNNER || undefined) as "mock" | "claude" | "codex" | "gemini" | "cursor" | "copilot" | undefined,
   // Working directory for a real runner (the target repo / agent worktree).
   runnerCwd: process.env.SKYNET_RUNNER_CWD || undefined,
   databaseUrl: process.env.DATABASE_URL ?? "",

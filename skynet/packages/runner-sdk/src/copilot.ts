@@ -248,11 +248,13 @@ class CopilotRunnerHandle implements RunnerHandle {
     this.killChild();
   }
 
+  /** Live execution is unavailable — surface it as a FAILURE, not a completion. */
   private degrade(reason: string, primary: boolean) {
     if (this.finished || !primary) return;
-    this.events.onLog(this.agentId, `copilot runner unavailable — ${reason}`);
-    this.events.onLog(this.agentId, "completing without live execution (fallback)");
-    this.finish();
+    this.finished = true;
+    if (this.hb) clearInterval(this.hb);
+    this.events.onFailed(this.agentId, `copilot runner unavailable — ${reason}`);
+    this.killChild();
   }
 
   private childAlive(): boolean {
