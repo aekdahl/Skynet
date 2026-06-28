@@ -76,7 +76,7 @@ function Octicon() {
   );
 }
 
-function GithubConnect({
+export function GithubConnect({
   github,
   onConnected,
   onDisconnect,
@@ -275,7 +275,7 @@ function SafetySettings({
   );
 }
 
-const emptyConnection = (): GithubConnection => ({
+export const emptyConnection = (): GithubConnection => ({
   workspaceId: "",
   connected: false,
   installation: null,

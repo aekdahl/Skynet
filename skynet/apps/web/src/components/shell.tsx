@@ -9,6 +9,7 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { StatusDot } from "./common";
+import { workspaceName } from "../lib/firstrun";
 import type { ViewName, Lens } from "../App";
 
 // In the desktop app the OS draws the real window controls over this bar, so we
@@ -89,7 +90,7 @@ export function OpSidebar({
     <aside className="op-side">
       <div className="op-ws">
         <span className="op-ws-logo">S</span>
-        <span className="op-ws-name">Skynet</span>
+        <span className="op-ws-name">{workspaceName() || "Skynet"}</span>
         <span className="op-ws-caret">▾</span>
       </div>
       <nav className="op-nav">
