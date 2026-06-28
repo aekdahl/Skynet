@@ -6,7 +6,7 @@ import * as api from "../lib/client";
 // Provider keys live in the encrypted secret store, scoped to this workspace.
 // A vendor's runners are only selectable in create-agent once its key is set
 // (the snapshot recomputes provider availability from the secret store).
-export function SettingsView() {
+export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
   const { providers, setProviderAvailable } = useStore();
   const [metas, setMetas] = useState<SecretMeta[] | null>(null);
   const [envSet, setEnvSet] = useState<Set<string>>(new Set());
@@ -137,6 +137,20 @@ export function SettingsView() {
           );
         })}
       </div>
+
+      {onRerunSetup && (
+        <div className="settings-setup">
+          <div className="settings-setup-text">
+            <div className="settings-setup-title">First-time setup</div>
+            <div className="settings-setup-sub">
+              Re-run the onboarding wizard (connect GitHub, add a fleet runner).
+            </div>
+          </div>
+          <button className="btn btn-ghost" onClick={onRerunSetup}>
+            Run setup again
+          </button>
+        </div>
+      )}
     </section>
   );
 }
