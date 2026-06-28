@@ -54,6 +54,8 @@ export function App() {
   const [fromP, setFromP] = useState<ViewName>("home");
   const [selIdx] = useState(0);
   const [onboarded, setOnboarded] = useState(isOnboarded);
+  // Re-run setup on demand (from Settings), even after it's been completed/skipped.
+  const [rerunSetup, setRerunSetup] = useState(false);
 
   // [pwa] A push / notification click (relayed by the service worker) or a
   // manifest shortcut navigates the app in-place — usually to the Inbox.
@@ -114,8 +116,19 @@ export function App() {
   // First run: a loaded, empty workspace that hasn't been set up yet → the
   // onboarding wizard (sets up GitHub + fleet against the real backend). All
   // hooks above run unconditionally; only the render branches here.
-  if (store.loaded && !onboarded && store.projects.length === 0 && store.fleet.length === 0) {
-    return <Onboarding onDone={() => setOnboarded(true)} />;
+  if (
+    store.loaded &&
+    (rerunSetup ||
+      (!onboarded && store.projects.length === 0 && store.fleet.length === 0))
+  ) {
+    return (
+      <Onboarding
+        onDone={() => {
+          setOnboarded(true);
+          setRerunSetup(false);
+        }}
+      />
+    );
   }
 
   return (
@@ -184,7 +197,9 @@ export function App() {
             {store.loaded && view === "audit" && (
               <AuditView now={now} onOpenAgent={openAgent} />
             )}
-            {store.loaded && view === "settings" && <SettingsView />}
+            {store.loaded && view === "settings" && (
+              <SettingsView onRerunSetup={() => setRerunSetup(true)} />
+            )}
             {store.loaded && view === "agent" && agent && (
               <AgentDetail
                 agent={agent}
