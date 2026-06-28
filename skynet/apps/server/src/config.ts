@@ -36,6 +36,17 @@ export const config = {
   // integration repo (.skynet-worktrees) so working copies never show as
   // untracked inside the repo.
   worktreesDir: process.env.SKYNET_WORKTREES_DIR || undefined,
+
+  // ── GitHub App (server-side credentials; never per-workspace) ──────────────
+  // When the App id + private key are set, the GitProvider can mint short-lived
+  // installation tokens and push/PR/merge on the fleet's behalf. Unset → the
+  // GitHub flow is disabled and the local merge engine handles integration.
+  githubAppId: process.env.GITHUB_APP_ID || undefined,
+  // PEM private key (or a \n-escaped single line, which we unescape).
+  githubPrivateKey: (process.env.GITHUB_APP_PRIVATE_KEY || "").replace(/\\n/g, "\n") || undefined,
+  githubApiBase: process.env.GITHUB_API_URL || "https://api.github.com",
+  // HMAC secret to verify inbound webhooks (push/PR/check events).
+  githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET || undefined,
 };
 
 export const now = (): number => Date.now();
