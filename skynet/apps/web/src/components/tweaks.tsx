@@ -7,13 +7,11 @@ import { useEffect, useState, type ReactNode } from "react";
 export interface Tweaks {
   accent: string;
   density: "compact" | "regular" | "comfy";
-  live: boolean;
 }
 
 export const TWEAK_DEFAULTS: Tweaks = {
   accent: "#FFB224",
   density: "regular",
-  live: true,
 };
 
 export function useTweaks(): [Tweaks, <K extends keyof Tweaks>(k: K, v: Tweaks[K]) => void] {

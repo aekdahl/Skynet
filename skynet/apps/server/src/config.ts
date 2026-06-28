@@ -1,8 +1,10 @@
 // Environment config — see .env.example for the full list.
 
+const nodeEnv = process.env.NODE_ENV ?? "development";
+
 export const config = {
   port: Number(process.env.PORT ?? 8080),
-  nodeEnv: process.env.NODE_ENV ?? "development",
+  nodeEnv,
   // No silent default: an unset STORE errors at boot rather than quietly using
   // an ephemeral in-memory store. Opt in explicitly (STORE=memory for dev/tests).
   store: (process.env.STORE || undefined) as "memory" | "file" | "postgres" | undefined,
@@ -12,9 +14,12 @@ export const config = {
   // Prefill the store with demo fixtures (sample projects/agents/queue/fleet).
   // Off by default — a fresh deploy starts empty; opt in with SKYNET_SEED=true.
   seedDemo: process.env.SKYNET_SEED === "true",
-  bus: (process.env.BUS ?? "memory") as "memory" | "redis",
-  // Session backend: in-memory (default), durable Postgres, or multi-replica Redis.
-  sessions: (process.env.SESSIONS ?? "memory") as "memory" | "postgres" | "redis",
+  // No silent default: pick the fan-out backbone explicitly (BUS=memory for
+  // single-process dev/tests; BUS=redis to fan out across replicas).
+  bus: (process.env.BUS || undefined) as "memory" | "redis" | undefined,
+  // No silent default: pick the session backend explicitly (memory for dev/tests;
+  // postgres for durable, redis for multi-replica).
+  sessions: (process.env.SESSIONS || undefined) as "memory" | "postgres" | "redis" | undefined,
   // Optional GLOBAL override of the execution backend, for demos/dev. Unset (the
   // default) → honor each fleet runner's own provider, chosen at agent creation.
   // Set RUNNER=mock to force the canned mock runner everywhere (no keys needed).
@@ -24,8 +29,11 @@ export const config = {
   runnerCwd: process.env.SKYNET_RUNNER_CWD || undefined,
   databaseUrl: process.env.DATABASE_URL ?? "",
   redisUrl: process.env.REDIS_URL ?? "",
-  // When true, requests without a valid token are rejected (401).
-  authRequired: process.env.AUTH_REQUIRED === "true",
+  // When true, requests without a valid token are rejected (401). Secure by
+  // default: if AUTH_REQUIRED is unset, it's ON in production and OFF in dev —
+  // so a prod deploy never silently accepts unauthenticated requests. Explicit
+  // AUTH_REQUIRED=true/false always wins.
+  authRequired: process.env.AUTH_REQUIRED != null ? process.env.AUTH_REQUIRED === "true" : nodeEnv === "production",
   // Lifetime of a login session before it expires (→ 401). Default 12h.
   sessionTtlMs: Number(process.env.SESSION_TTL_MS ?? 12 * 60 * 60 * 1000),
   // Target repo the merge queue integrates into. Unset → merge engine disabled
