@@ -17,6 +17,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
 import type {
+  ConsultSpec,
   HitlRaise,
   RunnerEvents,
   RunnerHandle,
@@ -81,6 +82,43 @@ function buildRunnerEnv(): Record<string, string> {
     env[k] = v;
   }
   return env;
+}
+
+/** A one-shot, tool-less query — used for consults (gate questions, follow-ups
+ *  about finished work). Returns the answer text, or `fallback` if empty. */
+async function oneShotConsult(opts: {
+  prompt: string;
+  cwd: string;
+  model: string;
+  env: Record<string, string>;
+  fallback: string;
+}): Promise<string> {
+  try {
+    const q = query({
+      prompt: opts.prompt,
+      options: {
+        cwd: opts.cwd,
+        model: mapModel(opts.model),
+        permissionMode: "default",
+        // Deny every tool so this stays a pure text answer.
+        canUseTool: () => Promise.resolve({ behavior: "deny", message: "Answer in text only; do not use tools." } as PermissionResult),
+        maxTurns: 4,
+        env: opts.env,
+      },
+    });
+    let answer = "";
+    for await (const msg of q as AsyncIterable<SDKMessage>) {
+      if (msg.type === "assistant") {
+        const { text } = readAssistant((msg as { message: { content?: unknown } }).message);
+        if (text) answer += (answer ? "\n" : "") + text;
+      } else if (msg.type === "result") {
+        break;
+      }
+    }
+    return answer.trim() || opts.fallback;
+  } catch (err) {
+    return `couldn't look into that right now (${(err as Error).message}).`;
+  }
 }
 
 // A tool call the assistant requested: its name, input args, and id (to pair
@@ -353,6 +391,13 @@ class ClaudeRunnerHandle implements RunnerHandle {
       void this.consultAboutGate(text);
       return;
     }
+    // After the agent has finished, its main session is closed — answer
+    // follow-up questions ("what did you do?") via a fresh side-query seeded
+    // with the task and the agent's final summary.
+    if (this.finished) {
+      void this.consultAboutWork(text);
+      return;
+    }
     this.pendingChat = true;
     this.input.push(text);
   }
@@ -363,7 +408,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
    * its input, and the agent's stated reasoning. Runs alongside the frozen main
    * session; never touches it.
    */
-  private async consultAboutGate(question: string): Promise<void> {
+  private consultAboutGate(question: string): Promise<void> {
     const prompt =
       "You are helping a human operator decide whether to approve an action that an AI coding agent wants to take. " +
       "Answer the operator's question directly and concisely. Do NOT use any tools — just explain.\n\n" +
@@ -372,36 +417,39 @@ class ClaudeRunnerHandle implements RunnerHandle {
       (this.lastRationale ? `Agent's stated reasoning: ${this.lastRationale}\n` : "") +
       `Pending action: ${this.gateTool ?? "tool"} with input:\n${JSON.stringify(this.gateInput ?? {}, null, 2)}\n\n` +
       `Operator's question: ${question}`;
-    try {
-      const q = query({
-        prompt,
-        options: {
-          cwd: this.spec.cwd ?? process.cwd(),
-          model: mapModel(this.spec.model),
-          permissionMode: "default",
-          // Deny every tool so this stays a pure text answer about the pending action.
-          canUseTool: () => Promise.resolve({ behavior: "deny", message: "Answer in text only; do not use tools." } as PermissionResult),
-          maxTurns: 4,
-          env: this.sdkEnv,
-        },
-      });
-      let answer = "";
-      for await (const msg of q as AsyncIterable<SDKMessage>) {
-        if (msg.type === "assistant") {
-          const { text } = readAssistant((msg as { message: { content?: unknown } }).message);
-          if (text) answer += (answer ? "\n" : "") + text;
-        } else if (msg.type === "result") {
-          break;
-        }
-      }
-      this.events.onChatReply(
-        this.agentId,
-        answer.trim() ||
-          "I'm paused on the command above — Approve to run it, Reject to skip, or Modify to redirect me.",
-      );
-    } catch (err) {
-      this.events.onChatReply(this.agentId, `couldn't look into that right now (${(err as Error).message}).`);
-    }
+    return this.runConsult(
+      prompt,
+      "I'm paused on the command above — Approve to run it, Reject to skip, or Modify to redirect me.",
+    );
+  }
+
+  /**
+   * Answer a follow-up about already-finished work. The main session is closed,
+   * so this is a fresh non-agentic query seeded with the task and the agent's
+   * final summary — lets the operator ask "what did you do?" after completion.
+   */
+  private consultAboutWork(question: string): Promise<void> {
+    const prompt =
+      "You are an AI coding agent that has FINISHED a task. Answer the operator's follow-up question " +
+      "directly and concisely, based on what you did. Do NOT use any tools — just explain.\n\n" +
+      `Task: ${this.spec.task}\n` +
+      `Working directory: ${this.spec.cwd ?? process.cwd()}\n` +
+      `Branch: ${this.spec.branch}\n` +
+      (this.lastRationale ? `Your final summary/answer was:\n${this.lastRationale}\n` : "") +
+      `\nOperator's question: ${question}`;
+    return this.runConsult(prompt, "The task is complete — ask me anything about what I did.");
+  }
+
+  /** Run a one-shot, tool-less query and emit its text as a chat reply. */
+  private async runConsult(prompt: string, fallback: string): Promise<void> {
+    const answer = await oneShotConsult({
+      prompt,
+      cwd: this.spec.cwd ?? process.cwd(),
+      model: this.spec.model,
+      env: this.sdkEnv,
+      fallback,
+    });
+    this.events.onChatReply(this.agentId, answer);
   }
 
   async stop() {
@@ -425,5 +473,25 @@ export class ClaudeRunnerProvider implements RunnerProvider {
       (agentId, sessionId) => this.sessions.set(agentId, sessionId),
       resumeSessionId,
     );
+  }
+
+  /** Answer a follow-up about a finished agent with no live handle (e.g. after a
+   *  server restart) — a fresh tool-less query grounded in the agent's state. */
+  async consult(spec: ConsultSpec, question: string): Promise<string> {
+    const base = buildRunnerEnv();
+    const env = spec.apiKey ? { ...base, ANTHROPIC_API_KEY: spec.apiKey } : base;
+    const prompt =
+      "You are an AI coding agent that has FINISHED a task. Answer the operator's follow-up " +
+      "question directly and concisely, based on what you did. Do NOT use any tools — just explain.\n\n" +
+      `Task: ${spec.task}\n` +
+      (spec.context ? `What you did (your log / final answer):\n${spec.context}\n` : "") +
+      `\nOperator's question: ${question}`;
+    return oneShotConsult({
+      prompt,
+      cwd: spec.cwd ?? process.cwd(),
+      model: spec.model,
+      env,
+      fallback: "The task is complete — ask me anything about what I did.",
+    });
   }
 }

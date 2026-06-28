@@ -21,6 +21,7 @@ import {
 } from "@skynet/shared";
 import { now } from "./config.js";
 import { authenticate, type Principal } from "./auth.js";
+import { withSecretAvailability } from "./secrets/index.js";
 import type { Hub } from "./hub.js";
 import { NoCapacityError, type Orchestrator } from "./orchestrator.js";
 import type { Store } from "./store/store.js";
@@ -58,8 +59,12 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   });
 
   // ── reads (workspace-scoped) ──────────────────────────────────────────────
-  app.get("/api/snapshot", async (req) => store.snapshot(ws(req)));
-  app.get("/api/providers", async () => store.listProviders());
+  app.get("/api/snapshot", async (req) => {
+    const snap = await store.snapshot(ws(req));
+    snap.providers = await withSecretAvailability(snap.providers, ws(req));
+    return snap;
+  });
+  app.get("/api/providers", async (req) => withSecretAvailability(await store.listProviders(), ws(req)));
   app.get("/api/projects", async (req) => store.listProjects(ws(req)));
   app.get("/api/fleet/runners", async (req) => store.listRunners(ws(req)));
   // Decision audit trail — resolved HITL items, newest first (W8, Backend Brief §11).
@@ -107,6 +112,14 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       if (err instanceof NoCapacityError) return reply.code(409).send({ error: err.message });
       return reply.code(400).send({ error: (err as Error).message });
     }
+  });
+
+  // Archive / restore an agent (hidden from the board, kept in the store).
+  app.post<{ Params: { id: string }; Body: { archived?: boolean } }>("/api/agents/:id/archive", async (req, reply) => {
+    const agent = await store.getAgent(req.params.id);
+    if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
+    const archived = req.body?.archived ?? true;
+    return (await hub.setAgentArchived(req.params.id, archived)) ?? reply.code(404).send({ error: "Agent not found" });
   });
 
   // ── projects ───────────────────────────────────────────────────────────

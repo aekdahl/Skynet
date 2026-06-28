@@ -290,6 +290,7 @@ export function buildSeed(now: number): SeedData {
     dependsOn: [],
     parentId: ra.parentId ?? null,
     branchFromStep: ra.branchFromStep ?? null,
+    archived: false,
   }));
 
   const queue: HitlItem[] = RAW_QUEUE.map((rq) => {
