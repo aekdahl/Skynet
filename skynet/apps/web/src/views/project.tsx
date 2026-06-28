@@ -17,24 +17,40 @@ import { QueueCard } from "./queue";
 
 function ProjectAgentCard({
   agent,
-  now,
   onOpen,
+  onArchive,
 }: {
   agent: Agent;
-  now: number;
   onOpen: () => void;
+  onArchive: () => void;
 }) {
   const { queue } = useStore();
   const q = openQueue(queue).find((it) => it.agentId === agent.id);
   const done = planDone(agent);
   return (
-    <button className="pa-card" onClick={onOpen}>
+    <div
+      className="pa-card"
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onOpen()}
+    >
       <div className="pa-top">
         <StatusDot status={agent.status} />
         <span className="pa-name">{agent.name}</span>
         <span className="status-word" style={{ color: STATUS_META[agent.status].color }}>
           {STATUS_META[agent.status].label}
         </span>
+        <button
+          className="kb-archive"
+          title="Archive — hide from the board (kept in Archived)"
+          onClick={(e) => {
+            e.stopPropagation();
+            onArchive();
+          }}
+        >
+          ⤓
+        </button>
       </div>
       <Bar value={agent.progress} status={agent.status} />
       <div className="pa-step">
@@ -49,7 +65,7 @@ function ProjectAgentCard({
       <div className="pa-meta mono">
         {done}/{agent.plan.length} steps · {agent.branch}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -186,17 +202,21 @@ export function ProjectView({
     deleteProject,
     createTask,
     assignTask,
+    archiveAgent,
   } = useStore();
   const pa = agentsForProject(agents, project.id);
   const items = openQueue(queue).filter((q) =>
     pa.some((a) => a.id === q.agentId),
   );
-  const inProgress = pa.filter((a) => a.status !== "done");
-  const doneList = pa.filter((a) => a.status === "done");
+  const live = pa.filter((a) => !a.archived);
+  const inProgress = live.filter((a) => a.status !== "done");
+  const doneList = live.filter((a) => a.status === "done");
+  const archived = pa.filter((a) => a.archived);
   const backlog = backlogTasks(tasks, project.id);
   const lead = visualLeadOf(project, agents);
 
   const [folded, setFolded] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const [name, setName] = useState(project.name);
@@ -345,8 +365,8 @@ export function ProjectView({
             <ProjectAgentCard
               key={a.id}
               agent={a}
-              now={now}
               onOpen={() => onOpenAgent(a.id)}
+              onArchive={() => archiveAgent(a.id, true)}
             />
           ))}
         </div>
@@ -354,13 +374,65 @@ export function ProjectView({
           <div className="kb-head kb-head-done">DONE · {doneList.length}</div>
           {doneList.length === 0 && <div className="kb-empty">Nothing merged yet.</div>}
           {doneList.map((a) => (
-            <button key={a.id} className="kb-card kb-done" onClick={() => onOpenAgent(a.id)}>
+            <div
+              key={a.id}
+              className="kb-card kb-done"
+              role="button"
+              tabIndex={0}
+              onClick={() => onOpenAgent(a.id)}
+              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onOpenAgent(a.id)}
+            >
               <span className="kb-task">✓ {a.name}</span>
-              <span className="kb-done-meta mono">merged · {a.branch}</span>
-            </button>
+              <span className="kb-done-row">
+                <span className="kb-done-meta mono">merged · {a.branch}</span>
+                <button
+                  className="kb-archive"
+                  title="Archive — hide from the board (kept in Archived)"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    archiveAgent(a.id, true);
+                  }}
+                >
+                  ⤓
+                </button>
+              </span>
+            </div>
           ))}
         </div>
       </div>
+
+      {archived.length > 0 && (
+        <div className="kb-archive-sec">
+          <button
+            className="kb-archive-head"
+            onClick={() => setShowArchived((s) => !s)}
+          >
+            {showArchived ? "▾" : "▸"} ARCHIVED · {archived.length}
+          </button>
+          {showArchived && (
+            <div className="kb-archive-list">
+              {archived.map((a) => (
+                <div key={a.id} className="kb-archive-row">
+                  <button
+                    className="kb-archive-name"
+                    onClick={() => onOpenAgent(a.id)}
+                  >
+                    {a.status === "done" ? "✓ " : ""}
+                    {a.name}
+                  </button>
+                  <span className="kb-archive-branch mono">{a.branch}</span>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => archiveAgent(a.id, false)}
+                  >
+                    Restore
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }

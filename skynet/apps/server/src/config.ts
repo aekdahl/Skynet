@@ -20,10 +20,11 @@ export const config = {
   // No silent default: pick the session backend explicitly (memory for dev/tests;
   // postgres for durable, redis for multi-replica).
   sessions: (process.env.SESSIONS || undefined) as "memory" | "postgres" | "redis" | undefined,
-  // No silent default: an unset RUNNER errors when you try to assign a task,
-  // rather than quietly running the mock and looking like real execution. Set
-  // RUNNER=mock explicitly for dev/tests, or a real provider.
-  runner: (process.env.RUNNER || undefined) as "mock" | "claude" | "codex" | "gemini" | "cursor" | "copilot" | undefined,
+  // Optional GLOBAL override of the execution backend, for demos/dev. Unset (the
+  // default) → honor each fleet runner's own provider, chosen at agent creation.
+  // Set RUNNER=mock to force the canned mock runner everywhere (no keys needed).
+  runner: (process.env.RUNNER || undefined) as
+    | "mock" | "claude" | "codex" | "gemini" | "cursor" | "copilot" | undefined,
   // Working directory for a real runner (the target repo / agent worktree).
   runnerCwd: process.env.SKYNET_RUNNER_CWD || undefined,
   databaseUrl: process.env.DATABASE_URL ?? "",

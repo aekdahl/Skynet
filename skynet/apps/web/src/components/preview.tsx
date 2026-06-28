@@ -11,11 +11,13 @@ function PvShell({
   label,
   fresh,
   tone,
+  done,
   children,
 }: {
   label: string;
   fresh: string;
   tone?: "light";
+  done?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -23,8 +25,8 @@ function PvShell({
       <div className="pv-bar">
         <span className="pv-label mono">{label}</span>
         <span className="pv-fresh">
-          <span className="pv-live" />
-          live · {fresh}
+          <span className={"pv-live" + (done ? " pv-live-done" : "")} />
+          {done ? "done" : "live · " + fresh}
         </span>
       </div>
       <div className={"pv-body" + (tone === "light" ? " pv-light" : "")}>
@@ -34,7 +36,7 @@ function PvShell({
   );
 }
 
-function PvTerm({ lines }: { lines: string[] }) {
+function PvTerm({ lines, done }: { lines: string[]; done?: boolean }) {
   return (
     <div className="pv-term">
       {lines.map((l, i) => (
@@ -48,7 +50,7 @@ function PvTerm({ lines }: { lines: string[] }) {
           {l}
         </div>
       ))}
-      <div className="pv-tline pv-cursor">▌</div>
+      {!done && <div className="pv-tline pv-cursor">▌</div>}
     </div>
   );
 }
@@ -77,7 +79,7 @@ export function PreviewFor({ agent }: { agent: Agent }) {
 
   if (agent.visual) {
     return (
-      <PvShell label={agent.name + " · live UI"} fresh="just now" tone="light">
+      <PvShell label={agent.name + " · live UI"} fresh="just now" tone="light" done={agent.status === "done"}>
         <div className="dlv-app">
           <div className="dlv-appbar">
             <span className="dlv-dotrow">
@@ -107,16 +109,18 @@ export function PreviewFor({ agent }: { agent: Agent }) {
     );
   }
 
+  const isDone = agent.status === "done";
   return (
-    <PvShell label={agent.name} fresh="just now">
+    <PvShell label={agent.name} fresh="just now" done={isDone}>
       <PvTerm
+        done={isDone}
         lines={[
           '$ skynet run "' + agent.name + '"',
           "✓ workspace ready on " + (agent.branch || "agent branch"),
           done > 0
             ? "✓ " + done + " step" + (done > 1 ? "s" : "") + " complete"
             : "▸ planning approach",
-          "▸ " + (now ? now.text : "working…"),
+          isDone ? "✓ done" : "▸ " + (now ? now.text : "working…"),
         ]}
       />
     </PvShell>

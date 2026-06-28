@@ -9,13 +9,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ProviderId, SetSecretRequest } from "@skynet/shared";
 import { now } from "../config.js";
-import { SecretsDisabledError, secretService } from "./service.js";
+import { SecretsDisabledError, secretService, envBackedProviders } from "./service.js";
 
 export async function registerSecretsRoutes(app: FastifyInstance): Promise<void> {
-  // List configured providers (metadata only — provider, last4, updatedAt/by).
+  // List configured providers (stored-key metadata — never the keys) plus the
+  // providers currently backed by a server env var (the fallback a stored key
+  // would override). Lets Settings show "via env" vs "via Settings" vs "not set".
   app.get("/api/secrets", async (req: FastifyRequest) => {
     const { workspaceId } = req.principal!;
-    return { secrets: await secretService.list(workspaceId) };
+    return { secrets: await secretService.list(workspaceId), env: envBackedProviders() };
   });
 
   // Set or rotate a provider key.

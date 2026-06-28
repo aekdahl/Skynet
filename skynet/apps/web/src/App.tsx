@@ -3,13 +3,7 @@ import { useNow, useStore } from "./lib/store";
 import { initialView, onNavigate } from "./pwa/launch"; // [pwa] Inbox-first launch + push deep-link
 import { parseHash, toHash } from "./lib/routing"; // [w7] deep links
 import { TitleBar, OpSidebar, OpStatusBar } from "./components/shell";
-import {
-  TweaksPanel,
-  TweakSection,
-  TweakColor,
-  TweakRadio,
-  useTweaks,
-} from "./components/tweaks";
+import { useTweaks } from "./components/tweaks";
 import { HomeView } from "./views/home";
 import { OverviewView } from "./views/overview";
 import { FleetView } from "./views/fleet";
@@ -20,6 +14,7 @@ import { AgentDetail } from "./views/agent";
 import { IntegrationsView } from "./views/integrations";
 import { Onboarding } from "./views/onboarding";
 import { isOnboarded } from "./lib/firstrun";
+import { SettingsView } from "./views/settings";
 
 export type ViewName =
   | "home"
@@ -29,7 +24,8 @@ export type ViewName =
   | "fleet"
   | "integrations"
   | "project"
-  | "agent";
+  | "agent"
+  | "settings";
 export type Lens = "subway" | "timeline" | "ledger" | "roster";
 
 const VIEW_LABEL: Record<string, string> = {
@@ -40,12 +36,13 @@ const VIEW_LABEL: Record<string, string> = {
   audit: "Audit",
   integrations: "Integrations",
   project: "Project",
+  settings: "Settings",
 };
 
 export function App() {
   const store = useStore();
   const now = useNow(1000);
-  const [t, setTweak] = useTweaks();
+  const [t] = useTweaks();
 
   // [w7] A URL hash deep-link wins over the PWA launch default.
   const route0 = parseHash();
@@ -151,6 +148,7 @@ export function App() {
                 onCreate={createProject}
                 onGoInbox={() => setView("queue")}
                 onConfigureFleet={() => setView("fleet")}
+                onAssign={() => setView("projects")}
               />
             )}
             {store.loaded && view === "projects" && (
@@ -186,6 +184,7 @@ export function App() {
             {store.loaded && view === "audit" && (
               <AuditView now={now} onOpenAgent={openAgent} />
             )}
+            {store.loaded && view === "settings" && <SettingsView />}
             {store.loaded && view === "agent" && agent && (
               <AgentDetail
                 agent={agent}
@@ -208,23 +207,6 @@ export function App() {
         </main>
       </div>
       <OpStatusBar onOpenAgent={openAgent} />
-
-      <TweaksPanel>
-        <TweakSection label="Theme" />
-        <TweakColor
-          label="Signal accent"
-          value={t.accent}
-          options={["#FFB224", "#FF6B4A", "#5EA2FF", "#3DD68C"]}
-          onChange={(v) => setTweak("accent", v)}
-        />
-        <TweakSection label="Layout" />
-        <TweakRadio
-          label="Density"
-          value={t.density}
-          options={["compact", "regular", "comfy"] as const}
-          onChange={(v) => setTweak("density", v)}
-        />
-      </TweaksPanel>
     </div>
   );
 }

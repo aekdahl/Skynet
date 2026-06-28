@@ -6,3 +6,6 @@ dist/
 .DS_Store
 *.log
 coverage/
+
+# desktop dev (hot-reload) scratch state
+.skynet-dev/

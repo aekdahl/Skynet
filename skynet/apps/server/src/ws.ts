@@ -7,6 +7,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
 import type { WsMessage } from "@skynet/shared";
 import { authenticate } from "./auth.js";
+import { withSecretAvailability } from "./secrets/index.js";
 import type { Bus } from "./bus.js";
 import type { Hub } from "./hub.js";
 import type { Store } from "./store/store.js";
@@ -32,8 +33,10 @@ export async function registerWs(app: FastifyInstance, deps: WsDeps): Promise<vo
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
     };
 
-    // 1. connect-time snapshot of this workspace
-    send({ type: "snapshot", state: await store.snapshot(ws) });
+    // 1. connect-time snapshot of this workspace (with live provider availability)
+    const snap = await store.snapshot(ws);
+    snap.providers = await withSecretAvailability(snap.providers, ws);
+    send({ type: "snapshot", state: snap });
 
     // 2. forward this workspace's deltas for the life of the connection
     const unsubscribe = bus.subscribe(ws, (event) => send(event));

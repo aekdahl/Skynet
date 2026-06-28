@@ -46,6 +46,10 @@ export interface Store extends StoreState {
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   forkAgent: (id: string) => Promise<void>;
+  archiveAgent: (id: string, archived: boolean) => Promise<void>;
+  // Local optimistic flip after a key is set/cleared in Settings (the snapshot
+  // recomputes availability from the secret store on next load).
+  setProviderAvailable: (id: string, available: boolean) => void;
   createProject: (name: string, goal: string, repo?: string) => Promise<void>;
   updateProject: (
     id: string,
@@ -118,6 +122,13 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
           a.id === ev.agentId
             ? { ...a, status: "done", branch: ev.branch, progress: 1 }
             : a,
+        ),
+      };
+    case "agent.archived":
+      return {
+        ...state,
+        agents: state.agents.map((a) =>
+          a.id === ev.agentId ? { ...a, archived: ev.archived } : a,
         ),
       };
     case "hitl.raised":
@@ -223,6 +234,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       forkAgent: async (id) => {
         await api.forkAgent(id);
+      },
+      archiveAgent: async (id, archived) => {
+        await api.archiveAgent(id, archived);
+      },
+      setProviderAvailable: (id, available) => {
+        setState((s) => ({
+          ...s,
+          providers: s.providers.map((p) => (p.id === id ? { ...p, available } : p)),
+        }));
       },
       createProject: async (name, goal, repo) => {
         await api.createProject({ name, goal, repo });
