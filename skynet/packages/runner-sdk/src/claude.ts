@@ -329,9 +329,21 @@ class ClaudeRunnerHandle implements RunnerHandle {
         }
       }
     } catch (err) {
-      this.events.onLog(this.agentId, `runner error: ${(err as Error).message}`);
+      // The query crashed (auth, network, SDK) — this is a FAILURE, not a
+      // completion. Surface it; never report the agent as done with no work.
+      this.fail((err as Error).message);
+      return;
     }
     this.finish();
+  }
+
+  /** Could-not-run path: mark needs-attention, never onCompleted. */
+  private fail(reason: string) {
+    if (this.finished) return;
+    this.finished = true;
+    if (this.hb) clearInterval(this.hb);
+    this.events.onFailed(this.agentId, reason);
+    this.input.close();
   }
 
   private finish() {

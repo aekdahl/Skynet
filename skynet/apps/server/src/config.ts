@@ -3,7 +3,9 @@
 export const config = {
   port: Number(process.env.PORT ?? 8080),
   nodeEnv: process.env.NODE_ENV ?? "development",
-  store: (process.env.STORE ?? "memory") as "memory" | "file" | "postgres",
+  // No silent default: an unset STORE errors at boot rather than quietly using
+  // an ephemeral in-memory store. Opt in explicitly (STORE=memory for dev/tests).
+  store: (process.env.STORE || undefined) as "memory" | "file" | "postgres" | undefined,
   // Path for STORE=file (zero-dependency JSON persistence; default cwd-relative).
   // The desktop app points this at its per-user data directory.
   dbPath: process.env.SKYNET_DB_PATH || "skynet-data.json",

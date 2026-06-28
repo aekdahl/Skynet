@@ -49,7 +49,9 @@ export class Orchestrator {
   private moduleMap: ModuleMap = loadModuleMap(config.integrationRepo);
   private worktrees?: WorktreeProvisioner;
 
-  constructor(private store: Store, private hub: Hub) {
+  // `providerOverride` is a test seam — inject a runner provider directly instead
+  // of resolving one from RUNNER. Production always passes (store, hub) only.
+  constructor(private store: Store, private hub: Hub, private providerOverride?: RunnerProvider) {
     if (config.integrationRepo) {
       // One worktree per agent feeds real branches to the merge queue (§2).
       this.worktrees = new WorktreeProvisioner(
@@ -83,6 +85,8 @@ export class Orchestrator {
   }
 
   private getProvider(id: string): Promise<RunnerProvider> {
+    // Test seam: an injected provider short-circuits resolution.
+    if (this.providerOverride) return Promise.resolve(this.providerOverride);
     let p = this.providers.get(id);
     if (!p) {
       p = (() => {
@@ -97,8 +101,12 @@ export class Orchestrator {
             return import("@skynet/runner-sdk/cursor").then((m) => new m.CursorRunnerProvider());
           case "copilot":
             return import("@skynet/runner-sdk/copilot").then((m) => new m.CopilotRunnerProvider());
-          default:
+          case "mock":
+            // Explicit opt-in only — a deterministic test double, never the default.
             return Promise.resolve(new MockRunnerProvider());
+          default:
+            // No silent mock fallback: an unresolvable provider is a loud error.
+            return Promise.reject(new Error(`Unknown runner provider "${id}" (expected mock|claude|codex|gemini|cursor|copilot).`));
         }
       })();
       this.providers.set(id, p);
@@ -118,6 +126,7 @@ export class Orchestrator {
       onStatus: (agentId, status) => void this.hub.agentStatus(agentId, status),
       onHitl: (agentId, raise) => void this.raise(agentId, raise),
       onCompleted: (agentId, branch) => void this.complete(agentId, branch),
+      onFailed: (agentId, reason) => void this.fail(agentId, reason),
       onChatReply: (agentId, text) => {
         const waiter = this.chatWaiters.get(agentId);
         if (waiter) {
@@ -193,6 +202,31 @@ export class Orchestrator {
     this.live.delete(agentId);
   }
 
+  /**
+   * A runner could not execute (binary missing, auth failure, crash). Surface it
+   * loudly and free the runner — but never mark the agent done, complete the
+   * task, or integrate a branch. A broken runner must not look like success.
+   */
+  private async fail(agentId: string, reason: string): Promise<void> {
+    const live = this.live.get(agentId);
+    await this.freeRunner(live?.runnerId ?? null);
+    await this.hub.agentLog(agentId, `runner failed — ${reason}. Not completed; needs attention.`);
+    await this.hub.agentStatus(agentId, "review"); // visible needs-attention, NOT "done"
+    if (this.worktrees) await this.worktrees.retire(agentId).catch(() => undefined);
+    this.live.delete(agentId);
+  }
+
+  /** Startup failed (no runner configured, worktree provisioning, runner.start
+   *  threw): free the runner, surface it, and leave the agent visibly errored —
+   *  never silently degraded. The caller rethrows so the API returns the error. */
+  private async failStartup(agentId: string, runnerId: string, reason: string): Promise<void> {
+    await this.freeRunner(runnerId);
+    await this.hub.agentLog(agentId, `failed to start — ${reason}. Needs attention.`);
+    await this.hub.agentStatus(agentId, "review");
+    if (this.worktrees) await this.worktrees.retire(agentId).catch(() => undefined);
+    this.live.delete(agentId);
+  }
+
   /** Return a runner to the idle pool (no-op if it's already gone). */
   private async freeRunner(runnerId: string | null): Promise<void> {
     if (!runnerId) return;
@@ -233,11 +267,11 @@ export class Orchestrator {
   }
 
   /**
-   * Provision the runner's working directory. With an integration repo
-   * configured this is a fresh isolated git worktree on `branch` (cut from
-   * `baseRef` when it exists, else the base branch); otherwise the shared
-   * config.runnerCwd (Phase 0). Falls back to runnerCwd if worktree creation
-   * fails, so a misconfigured repo never blocks the agent from running.
+   * Provision the runner's working directory. Without an integration repo this
+   * is the shared config.runnerCwd (Phase 0). With one configured, isolation is
+   * REQUIRED: a fresh worktree on `branch`. If that fails we throw rather than
+   * silently dropping agents into a shared dir where their branches would
+   * collide — the caller surfaces it as a failed agent.
    */
   private async provisionCwd(
     agentId: string,
@@ -245,17 +279,9 @@ export class Orchestrator {
     baseRef?: string,
   ): Promise<{ cwd: string | undefined; baseRef?: string }> {
     if (!this.worktrees) return { cwd: config.runnerCwd };
-    try {
-      const prov = await this.worktrees.provision(agentId, branch, { baseRef });
-      await this.hub.agentLog(agentId, `worktree ready on ${branch} (from ${prov.baseRef})`);
-      return { cwd: prov.cwd, baseRef: prov.baseRef };
-    } catch (err) {
-      await this.hub.agentLog(
-        agentId,
-        `worktree provisioning failed (${(err as Error).message}) — running without isolation`,
-      );
-      return { cwd: config.runnerCwd };
-    }
+    const prov = await this.worktrees.provision(agentId, branch, { baseRef });
+    await this.hub.agentLog(agentId, `worktree ready on ${branch} (from ${prov.baseRef})`);
+    return { cwd: prov.cwd, baseRef: prov.baseRef };
   }
 
   // ── assignTask ────────────────────────────────────────────────────────────
@@ -305,25 +331,28 @@ export class Orchestrator {
       archived: false,
     };
 
+    // Resolve the runner provider first — fail fast (before mutating state) if
+    // it can't be resolved, rather than silently running a fake one.
+    const provider = await this.getProvider(this.resolveProviderId(runner.provider));
+
     await this.hub.createAgent(agent);
     await this.hub.upsertTask({ ...task, state: "assigned", agentId });
     await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 
-    // Isolated worktree cut from the project's integration tip (or base).
-    const { cwd, baseRef } = await this.provisionCwd(
-      agentId,
-      branch,
-      this.merge?.integrationBranch(projectId),
-    );
-
-    const provider = await this.getProvider(this.resolveProviderId(runner.provider));
-    // Inject this workspace's provider key (env fallback when none is stored).
-    const apiKey = await secretService.resolve(project.workspaceId, runner.provider);
-    const handle = await provider.start(
-      { agentId, projectId, task: task.text, model: runner.model, branch, cwd, apiKey },
-      this.events(),
-    );
-    this.live.set(agentId, { handle, runnerId: runner.id, taskId, branch, baseRef });
+    try {
+      // Isolated worktree cut from the project's integration tip (or base).
+      const { cwd, baseRef } = await this.provisionCwd(agentId, branch, this.merge?.integrationBranch(projectId));
+      // Inject this workspace's provider key (env fallback when none is stored).
+      const apiKey = await secretService.resolve(project.workspaceId, runner.provider);
+      const handle = await provider.start(
+        { agentId, projectId, task: task.text, model: runner.model, branch, cwd, apiKey },
+        this.events(),
+      );
+      this.live.set(agentId, { handle, runnerId: runner.id, taskId, branch, baseRef });
+    } catch (err) {
+      await this.failStartup(agentId, runner.id, (err as Error).message);
+      throw err;
+    }
     return agent;
   }
 
@@ -367,19 +396,24 @@ export class Orchestrator {
       branchFromStep: stepIndex,
     };
 
+    const provider = await this.getProvider(this.resolveProviderId(runner.provider)); // fail fast if it can't resolve
+
     await this.hub.createAgent(agent);
     if (project) await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 
-    // A fork branches from its parent (family-internal integration, §7).
-    const { cwd, baseRef } = await this.provisionCwd(agentId, agent.branch, parent.branch);
-
-    const provider = await this.getProvider(this.resolveProviderId(runner.provider));
-    const apiKey = await secretService.resolve(parent.workspaceId, runner.provider);
-    const handle = await provider.start(
-      { agentId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex, apiKey },
-      this.events(),
-    );
-    this.live.set(agentId, { handle, runnerId: runner.id, taskId: null, branch: agent.branch, baseRef });
+    try {
+      // A fork branches from its parent (family-internal integration, §7).
+      const { cwd, baseRef } = await this.provisionCwd(agentId, agent.branch, parent.branch);
+      const apiKey = await secretService.resolve(parent.workspaceId, runner.provider);
+      const handle = await provider.start(
+        { agentId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex, apiKey },
+        this.events(),
+      );
+      this.live.set(agentId, { handle, runnerId: runner.id, taskId: null, branch: agent.branch, baseRef });
+    } catch (err) {
+      await this.failStartup(agentId, runner.id, (err as Error).message);
+      throw err;
+    }
     return agent;
   }
 
@@ -414,10 +448,10 @@ export class Orchestrator {
     if (live) {
       await live.handle.resume(resolution);
     } else {
-      // Seeded agent with no live runner — record the decision in the log so the
-      // round-trip is still observable end-to-end.
-      await this.hub.agentLog(agentId, `decision delivered: ${resolution.action}`);
-      await this.hub.agentStatus(agentId, "running");
+      // No live runner to receive the decision (e.g. a seeded/demo agent or one
+      // whose runner already exited). Be honest: record that it couldn't be
+      // delivered — don't fake a resume by flipping the agent back to "running".
+      await this.hub.agentLog(agentId, `decision "${resolution.action}" recorded, but no live runner is attached — not delivered to an agent`);
     }
   }
 

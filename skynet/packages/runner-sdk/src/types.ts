@@ -40,6 +40,14 @@ export interface RunnerEvents {
   /** Agent blocked on a human — orchestrator turns this into a HitlItem. */
   onHitl(agentId: string, raise: HitlRaise): void;
   onCompleted(agentId: string, branch: string): void;
+  /**
+   * The runner could NOT execute (binary missing, auth failure, crash). This is
+   * a real failure — distinct from onCompleted. The orchestrator surfaces it
+   * loudly (error log + needs-attention status) and never marks the agent done
+   * or merges its branch. A runner must call this, not onCompleted, when it
+   * could not actually do the work.
+   */
+  onFailed(agentId: string, reason: string): void;
   /** Reply to a `message()` (chat) — does not resolve a HITL item. */
   onChatReply(agentId: string, text: string): void;
 }
