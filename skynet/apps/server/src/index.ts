@@ -15,7 +15,7 @@ import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
 import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
 import { registerSecretsRoutes } from "./secrets/index.js";
-import { registerGithubRoutes } from "./github/index.js";
+import { registerGithubRoutes, configureGithub } from "./github/index.js";
 import { configureAuth } from "./auth.js";
 import { MemorySessionStore, type SessionStore } from "./auth/sessions.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
@@ -48,6 +48,9 @@ async function main() {
   }
   const hub = new Hub(store, bus);
   const orchestrator = new Orchestrator(store, hub);
+  // Persist the GitHub connection in the same Store as the rest of the domain
+  // (file for the desktop app, Postgres for hosted) — durable, no side-store.
+  configureGithub(store);
 
   // Auth: real login issues sessions (W6); dev tokens resolve in dev only. The
   // session backend is durable (Postgres) or multi-replica (Redis) when

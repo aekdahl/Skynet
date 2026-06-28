@@ -6,6 +6,7 @@
 import type {
   Agent,
   Dependency,
+  GithubConnection,
   HitlItem,
   Module,
   Project,
@@ -29,6 +30,7 @@ export class MemoryStore implements Store {
   protected modules: Module[] = [];
   protected deps: Dependency[] = [];
   protected audit: AuditRecord[] = [];
+  protected github = new Map<string, GithubConnection>(); // keyed by workspaceId
   private providers: ProviderInfo[] = PROVIDERS;
 
   /** Hook called after every mutation. No-op in memory; FileStore overrides it
@@ -96,4 +98,8 @@ export class MemoryStore implements Store {
 
   async recordAudit(entry: AuditRecord) { this.audit.push(entry); this.persist(); }
   async listAudit(ws: string) { return this.audit.filter((e) => e.workspaceId === ws).reverse(); }
+
+  async getGithubConnection(ws: string) { return this.github.get(ws); }
+  async putGithubConnection(connection: GithubConnection) { this.github.set(connection.workspaceId, connection); this.persist(); }
+  async deleteGithubConnection(ws: string) { this.github.delete(ws); this.persist(); }
 }

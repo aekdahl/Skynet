@@ -8,7 +8,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AuditRecord, Dependency, Module } from "@skynet/shared";
+import type { AuditRecord, Dependency, GithubConnection, Module } from "@skynet/shared";
 import { MemoryStore } from "./memory.js";
 
 interface HasId { id: string }
@@ -47,6 +47,8 @@ export class FileStore extends MemoryStore {
       if (Array.isArray(d.modules)) this.modules = d.modules as Module[];
       if (Array.isArray(d.deps)) this.deps = d.deps as Dependency[];
       if (Array.isArray(d.audit)) this.audit = d.audit as AuditRecord[];
+      // GitHub connections are keyed by workspaceId (not id), so fill directly.
+      if (Array.isArray(d.github)) for (const c of d.github as GithubConnection[]) this.github.set(c.workspaceId, c);
     } catch {
       // Corrupt or empty file → start fresh; the next flush rewrites it cleanly.
     }
@@ -72,6 +74,7 @@ export class FileStore extends MemoryStore {
       modules: this.modules,
       deps: this.deps,
       audit: this.audit,
+      github: [...this.github.values()],
     };
     try {
       const tmp = `${this.path}.tmp`;

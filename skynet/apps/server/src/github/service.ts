@@ -6,6 +6,7 @@
 
 import { SAFETY_DEFAULTS, type GithubConnection, type GithubInstallation, type GithubRepo, type SafetyPolicy } from "@skynet/shared";
 import { config } from "../config.js";
+import type { Store } from "../store/store.js";
 import { MemoryGithubStore } from "./memory.js";
 import { GitHubProvider } from "./provider.js";
 import { evaluateSafety } from "./safety.js";
@@ -16,6 +17,13 @@ export class GithubService {
     private store: GithubConnectionStore,
     private provider?: GitProvider,
   ) {}
+
+  /** Swap the persistence backend. Called at bootstrap to back the connection
+   *  with the deployment's Store (file for desktop, Postgres for hosted), so it's
+   *  durable wherever the rest of the domain state is. */
+  useStore(store: GithubConnectionStore): void {
+    this.store = store;
+  }
 
   /** True once a GitHub App is configured server-side (push/PR is possible). */
   get appConfigured(): boolean {
@@ -85,5 +93,17 @@ function makeProvider(): GitProvider | undefined {
   return undefined;
 }
 
-/** Process-wide singleton, configured from the environment. */
+/** Process-wide singleton, configured from the environment. Persistence starts
+ *  in-memory and is upgraded to the deployment's Store via configureGithub(). */
 export const githubService = new GithubService(new MemoryGithubStore(), makeProvider());
+
+/** Back the connection with the main Store (called once at bootstrap). The
+ *  GitHub connection is non-secret, so it lives in the same place as the rest of
+ *  the workspace's data — the desktop file, Postgres, or memory. */
+export function configureGithub(store: Store): void {
+  githubService.useStore({
+    get: (ws) => store.getGithubConnection(ws),
+    put: (c) => store.putGithubConnection(c),
+    delete: (ws) => store.deleteGithubConnection(ws),
+  });
+}
