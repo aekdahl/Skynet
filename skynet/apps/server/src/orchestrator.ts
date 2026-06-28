@@ -42,7 +42,8 @@ export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   private chatWaiters = new Map<string, (reply: string) => void>();
   private seq = 0;
-  private providerPromise?: Promise<RunnerProvider>;
+  // One lazily-loaded provider backend per provider id (real backends are heavy).
+  private providers = new Map<string, Promise<RunnerProvider>>();
   private merge?: MergeEngine;
   private moduleMap: ModuleMap = loadModuleMap(config.integrationRepo);
   private worktrees?: WorktreeProvisioner;
@@ -72,12 +73,19 @@ export class Orchestrator {
     }
   }
 
-  // Lazily resolve the runner provider. Real providers load on demand (heavy);
-  // the default mock path never imports them.
-  private getProvider(): Promise<RunnerProvider> {
-    if (!this.providerPromise) {
-      this.providerPromise = (() => {
-        switch (config.runner) {
+  // Resolve the backend for an agent. The provider is chosen per fleet runner at
+  // agent creation (runner.provider); config.runner is an optional GLOBAL override
+  // for demos/dev (e.g. RUNNER=mock). Real backends load on demand (heavy) and are
+  // cached per id; the mock path never imports them.
+  private resolveProviderId(runnerProvider: string): string {
+    return config.runner ?? runnerProvider;
+  }
+
+  private getProvider(id: string): Promise<RunnerProvider> {
+    let p = this.providers.get(id);
+    if (!p) {
+      p = (() => {
+        switch (id) {
           case "claude":
             return import("@skynet/runner-sdk/claude").then((m) => new m.ClaudeRunnerProvider());
           case "codex":
@@ -92,8 +100,9 @@ export class Orchestrator {
             return Promise.resolve(new MockRunnerProvider());
         }
       })();
+      this.providers.set(id, p);
     }
-    return this.providerPromise;
+    return p;
   }
 
   private slug(text: string): string {
@@ -292,6 +301,7 @@ export class Orchestrator {
       dependsOn: [],
       parentId: null,
       branchFromStep: null,
+      archived: false,
     };
 
     await this.hub.createAgent(agent);
@@ -305,7 +315,7 @@ export class Orchestrator {
       this.merge?.integrationBranch(projectId),
     );
 
-    const provider = await this.getProvider();
+    const provider = await this.getProvider(this.resolveProviderId(runner.provider));
     // Inject this workspace's provider key (env fallback when none is stored).
     const apiKey = await secretService.resolve(project.workspaceId, runner.provider);
     const handle = await provider.start(
@@ -362,7 +372,7 @@ export class Orchestrator {
     // A fork branches from its parent (family-internal integration, §7).
     const { cwd, baseRef } = await this.provisionCwd(agentId, agent.branch, parent.branch);
 
-    const provider = await this.getProvider();
+    const provider = await this.getProvider(this.resolveProviderId(runner.provider));
     const apiKey = await secretService.resolve(parent.workspaceId, runner.provider);
     const handle = await provider.start(
       { agentId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex, apiKey },
@@ -446,11 +456,15 @@ export class Orchestrator {
   async chat(agentId: string, text: string): Promise<string> {
     await this.hub.agentLog(agentId, `you: ${text}`);
     const live = this.live.get(agentId);
+
+    // No live session (finished, in review, or the server restarted since it ran)
+    // → answer statelessly via the provider, grounded in the agent's stored log.
     if (!live) {
-      const reply = `(${agentId}) noted — I'll factor that in.`;
+      const reply = await this.consultFinished(agentId, text);
       await this.hub.agentLog(agentId, `↳ ${reply}`);
       return reply;
     }
+
     return new Promise<string>((resolve) => {
       // A real model turn can take well over 5s; give it room before giving up.
       const timer = setTimeout(() => {
@@ -463,6 +477,27 @@ export class Orchestrator {
       });
       void live.handle.message(text);
     });
+  }
+
+  /** Answer a follow-up about a finished agent via its provider's stateless
+   *  consult, grounded in the stored log — works even across a server restart. */
+  private async consultFinished(agentId: string, question: string): Promise<string> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent) return `(${agentId}) no such agent.`;
+    const provider = await this.getProvider(this.resolveProviderId(agent.provider));
+    if (!provider.consult) {
+      return "This agent has finished; follow-up chat isn't supported for its runner.";
+    }
+    const apiKey = await secretService.resolve(agent.workspaceId, agent.provider);
+    const context = agent.log.slice(-40).map((l) => l.line).join("\n").slice(-4000);
+    try {
+      return await provider.consult(
+        { task: agent.name, model: agent.model, cwd: config.runnerCwd, apiKey, context },
+        question,
+      );
+    } catch (err) {
+      return `couldn't look into that right now (${(err as Error).message}).`;
+    }
   }
 
   async stopAgent(agentId: string): Promise<void> {

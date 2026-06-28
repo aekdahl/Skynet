@@ -63,7 +63,23 @@ export interface RunnerHandle {
 }
 
 /** A provider backend. One per vendor; all share this shape. */
+/** Context for a stateless follow-up about a finished agent (no live session). */
+export interface ConsultSpec {
+  task: string;
+  model: string;
+  cwd?: string;
+  apiKey?: string | null;
+  /** What the agent did — its final summary and/or recent log, for grounding. */
+  context?: string;
+}
+
 export interface RunnerProvider {
   readonly id: ProviderId;
   start(spec: StartSpec, events: RunnerEvents): Promise<RunnerHandle>;
+  /**
+   * Optional: answer an operator's follow-up about an already-finished agent
+   * whose live handle is gone (e.g. after a server restart). A fresh one-shot,
+   * tool-less query seeded from stored state — returns the answer text.
+   */
+  consult?(spec: ConsultSpec, question: string): Promise<string>;
 }

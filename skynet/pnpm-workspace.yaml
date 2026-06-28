@@ -1,3 +1,6 @@
 packages:
   - "apps/*"
   - "packages/*"
+  # The desktop app (Electron) installs its own heavy toolchain on demand in the
+  # desktop-release CI job — keep it out of the main workspace install.
+  - "!apps/desktop"

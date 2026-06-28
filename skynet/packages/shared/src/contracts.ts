@@ -88,6 +88,9 @@ export const Agent = z.object({
   // Set when forked — shares context with its parent (same conflict "family"):
   parentId: z.string().nullable().default(null),
   branchFromStep: z.number().int().nullable().default(null),
+  // Archived agents are hidden from the project board but kept in the store and
+  // reachable via the project's Archive section.
+  archived: z.boolean().default(false),
 });
 export type Agent = z.infer<typeof Agent>;
 
