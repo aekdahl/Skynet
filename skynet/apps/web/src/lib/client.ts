@@ -141,6 +141,10 @@ export async function connectGithub(body: {
   const raw = await req<{ connection: unknown }>("PUT", "/api/github", body);
   return GithubConnection.parse(raw.connection);
 }
+export async function connectGithubPat(token: string): Promise<GithubConnection> {
+  const raw = await req<{ connection: unknown }>("PUT", "/api/github/pat", { token });
+  return GithubConnection.parse(raw.connection);
+}
 export async function updateGithubSafety(patch: Partial<SafetyPolicy>): Promise<GithubConnection> {
   const raw = await req<{ connection: unknown }>("PUT", "/api/github/safety", patch);
   return GithubConnection.parse(raw.connection);

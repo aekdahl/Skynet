@@ -49,6 +49,8 @@ export class FileStore extends MemoryStore {
       if (Array.isArray(d.audit)) this.audit = d.audit as AuditRecord[];
       // GitHub connections are keyed by workspaceId (not id), so fill directly.
       if (Array.isArray(d.github)) for (const c of d.github as GithubConnection[]) this.github.set(c.workspaceId, c);
+      if (d.githubTokens && typeof d.githubTokens === "object")
+        for (const [ws, ct] of Object.entries(d.githubTokens as Record<string, string>)) this.githubTokens.set(ws, ct);
     } catch {
       // Corrupt or empty file → start fresh; the next flush rewrites it cleanly.
     }
@@ -75,6 +77,7 @@ export class FileStore extends MemoryStore {
       deps: this.deps,
       audit: this.audit,
       github: [...this.github.values()],
+      githubTokens: Object.fromEntries(this.githubTokens),
     };
     try {
       const tmp = `${this.path}.tmp`;

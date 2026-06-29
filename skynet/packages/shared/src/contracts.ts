@@ -319,11 +319,22 @@ export const GithubRepo = z.object({
 });
 export type GithubRepo = z.infer<typeof GithubRepo>;
 
-/** A workspace's GitHub connection — installation + selected repos + policy. */
+/** How the connection authenticates to GitHub. `app` = GitHub App installation
+ *  (least-privilege, server-minted tokens); `pat` = a personal access token the
+ *  user supplied (stored encrypted server-side; used directly as the git token —
+ *  the local/desktop path that needs no cloud). */
+export const GithubAuthMode = z.enum(["app", "pat"]);
+export type GithubAuthMode = z.infer<typeof GithubAuthMode>;
+
+/** A workspace's GitHub connection — auth mode + selected repos + policy.
+ *  Non-secret: a PAT's plaintext never lands here (only its last4); the
+ *  ciphertext lives in the server-side token store. */
 export const GithubConnection = z.object({
   workspaceId: z.string(),
   connected: z.boolean(),
-  installation: GithubInstallation.nullable().default(null),
+  auth: GithubAuthMode.default("app"),
+  installation: GithubInstallation.nullable().default(null), // app mode
+  tokenLast4: z.string().nullable().default(null), // pat mode — for recognition
   repos: z.array(GithubRepo).default([]),
   safety: SafetyPolicy,
 });
@@ -335,6 +346,14 @@ export const ConnectGithubRequest = z.object({
   repos: z.array(GithubRepo).default([]),
 });
 export type ConnectGithubRequest = z.infer<typeof ConnectGithubRequest>;
+
+/** Body to connect via a personal access token (the local/desktop path). The
+ *  token is validated, sealed, and stored server-side — never returned. */
+export const ConnectPatRequest = z.object({
+  token: z.string().min(1),
+  repos: z.array(GithubRepo).default([]),
+});
+export type ConnectPatRequest = z.infer<typeof ConnectPatRequest>;
 
 /** Partial update to the safety policy — any subset of guardrails. */
 export const UpdateSafetyRequest = SafetyPolicy.partial();

@@ -8,6 +8,7 @@ import type { GithubConnectionStore } from "./types.js";
 
 export class MemoryGithubStore implements GithubConnectionStore {
   private byWorkspace = new Map<string, GithubConnection>();
+  private tokens = new Map<string, string>(); // workspaceId → sealed ciphertext
 
   async get(workspaceId: string): Promise<GithubConnection | undefined> {
     return this.byWorkspace.get(workspaceId);
@@ -19,5 +20,17 @@ export class MemoryGithubStore implements GithubConnectionStore {
 
   async delete(workspaceId: string): Promise<void> {
     this.byWorkspace.delete(workspaceId);
+  }
+
+  async getToken(workspaceId: string): Promise<string | undefined> {
+    return this.tokens.get(workspaceId);
+  }
+
+  async putToken(workspaceId: string, ciphertext: string): Promise<void> {
+    this.tokens.set(workspaceId, ciphertext);
+  }
+
+  async deleteToken(workspaceId: string): Promise<void> {
+    this.tokens.delete(workspaceId);
   }
 }

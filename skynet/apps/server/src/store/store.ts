@@ -68,4 +68,9 @@ export interface Store {
   getGithubConnection(workspaceId: string): Promise<GithubConnection | undefined>;
   putGithubConnection(connection: GithubConnection): Promise<void>;
   deleteGithubConnection(workspaceId: string): Promise<void>;
+  // A PAT's sealed ciphertext (pat auth mode). Server-side only; never part of
+  // the GithubConnection contract. Sealed/opened by the GithubService.
+  getGithubToken(workspaceId: string): Promise<string | undefined>;
+  putGithubToken(workspaceId: string, ciphertext: string): Promise<void>;
+  deleteGithubToken(workspaceId: string): Promise<void>;
 }
