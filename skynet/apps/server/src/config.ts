@@ -57,6 +57,12 @@ export const config = {
   githubApiBase: process.env.GITHUB_API_URL || "https://api.github.com",
   // HMAC secret to verify inbound webhooks (push/PR/check events).
   githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET || undefined,
+  // ── GitHub App via cloud token-broker (Phase 2; desktop has no App key) ────
+  // When set (and no local App key), installation tokens are minted by the
+  // broker function from a user token obtained via Device Flow. The client id is
+  // public (Device Flow needs no secret).
+  githubBrokerUrl: process.env.SKYNET_GITHUB_BROKER_URL || undefined,
+  githubClientId: process.env.GITHUB_CLIENT_ID || undefined,
 };
 
 export const now = (): number => Date.now();

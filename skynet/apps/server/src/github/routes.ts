@@ -6,7 +6,9 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ConnectGithubRequest, ConnectPatRequest, SAFETY_DEFAULTS, UpdateSafetyRequest, type GithubConnection } from "@skynet/shared";
+import { config } from "../config.js";
 import { githubService } from "./service.js";
+import { pollDeviceToken, startDeviceFlow } from "./device-flow.js";
 
 // The connection a workspace sees when nothing is configured yet.
 const empty = (workspaceId: string): GithubConnection => ({
@@ -43,6 +45,34 @@ export async function registerGithubRoutes(app: FastifyInstance): Promise<void> 
     try {
       const conn = await githubService.connectViaPat(req.principal!.workspaceId, body.data.token);
       return reply.code(200).send({ connection: conn });
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
+  // ── Device Flow (Phase 2: GitHub App via cloud broker) ────────────────────
+  // Start: get a user code to show + a device code to poll with.
+  app.post("/api/github/device/start", async (_req: FastifyRequest, reply: FastifyReply) => {
+    if (!config.githubClientId) return reply.code(501).send({ error: "GitHub Device Flow is not configured (GITHUB_CLIENT_ID unset)" });
+    try {
+      const code = await startDeviceFlow(config.githubClientId);
+      return reply.code(200).send(code);
+    } catch (err) {
+      return reply.code(502).send({ error: (err as Error).message });
+    }
+  });
+
+  // Poll: when authorized, seal the user token server-side. The caller then
+  // selects an installation and records it via PUT /api/github.
+  app.post<{ Body: { device_code?: string } }>("/api/github/device/poll", async (req, reply) => {
+    if (!config.githubClientId) return reply.code(501).send({ error: "GitHub Device Flow is not configured" });
+    const deviceCode = req.body?.device_code;
+    if (!deviceCode) return reply.code(400).send({ error: "device_code is required" });
+    try {
+      const token = await pollDeviceToken(config.githubClientId, deviceCode);
+      if (!token) return reply.code(200).send({ authorized: false });
+      await githubService.storeUserToken(req.principal!.workspaceId, token);
+      return reply.code(200).send({ authorized: true });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
