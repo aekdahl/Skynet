@@ -26,7 +26,27 @@ export async function registerGithubRoutes(app: FastifyInstance): Promise<void> 
   app.get("/api/github", async (req: FastifyRequest) => {
     const { workspaceId } = req.principal!;
     const connection = (await githubService.get(workspaceId)) ?? empty(workspaceId);
-    return { connection, appConfigured: githubService.appConfigured };
+    // appConfigured = local App key; brokerConfigured = cloud broker + device flow.
+    return { connection, appConfigured: githubService.appConfigured, brokerConfigured: !!config.githubClientId };
+  });
+
+  // Broker mode: list the user's App installations, then a chosen installation's
+  // repos (both via the sealed Device-Flow user token).
+  app.get("/api/github/installations", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      return { installations: await githubService.listInstallations(req.principal!.workspaceId) };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+  app.get<{ Params: { id: string } }>("/api/github/installations/:id/repos", async (req, reply) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return reply.code(400).send({ error: "bad installation id" });
+    try {
+      return { repos: await githubService.listInstallationRepos(req.principal!.workspaceId, id) };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
   });
 
   // Record an installation after the App is installed on GitHub.

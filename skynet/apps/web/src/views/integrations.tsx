@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import {
   SAFETY_DEFAULTS,
   type GithubConnection,
+  type GithubInstallation,
   type GithubRepo,
   type SafetyPolicy,
 } from "@skynet/shared";
@@ -79,11 +80,14 @@ function Octicon() {
 
 export function GithubConnect({
   github,
+  brokerConfigured,
   onConnected,
   onChanged,
   onDisconnect,
 }: {
   github: GithubConnection;
+  // Cloud token-broker + Device Flow available → the real App-install path.
+  brokerConfigured?: boolean;
   onConnected: (installation: GithubConnection["installation"], repos: GithubRepo[]) => void;
   // The PAT path connects server-side and returns the full connection directly.
   onChanged?: (connection: GithubConnection) => void;
@@ -95,6 +99,15 @@ export function GithubConnect({
   const [pat, setPat] = useState("");
   const [patBusy, setPatBusy] = useState(false);
   const [patErr, setPatErr] = useState<string | null>(null);
+
+  // ── broker mode (Device Flow → install picker → repo picker) ──────────────
+  const [bphase, setBphase] = useState<null | "device" | "installs" | "brepos">(null);
+  const [device, setDevice] = useState<api.DeviceCode | null>(null);
+  const [installs, setInstalls] = useState<GithubInstallation[]>([]);
+  const [binst, setBinst] = useState<GithubInstallation | null>(null);
+  const [brepos, setBrepos] = useState<GithubRepo[]>([]);
+  const [bpicked, setBpicked] = useState<Record<number, boolean>>({});
+  const [berr, setBerr] = useState<string | null>(null);
 
   const connectPat = async () => {
     const token = pat.trim();
@@ -110,6 +123,62 @@ export function GithubConnect({
     } finally {
       setPatBusy(false);
     }
+  };
+
+  const beginDevice = async () => {
+    setBerr(null);
+    try {
+      const code = await api.startGithubDevice();
+      setDevice(code);
+      setBphase("device");
+    } catch (e) {
+      setBerr((e as Error).message);
+    }
+  };
+
+  // Poll for authorization while the device card is open, then load installs.
+  useEffect(() => {
+    if (bphase !== "device" || !device) return;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const { authorized } = await api.pollGithubDevice(device.device_code);
+        if (stop) return;
+        if (authorized) {
+          const list = await api.fetchGithubInstallations();
+          if (stop) return;
+          setInstalls(list);
+          setBphase("installs");
+        }
+      } catch (e) {
+        if (!stop) setBerr((e as Error).message);
+      }
+    };
+    const id = setInterval(tick, Math.max(2, device.interval) * 1000);
+    return () => {
+      stop = true;
+      clearInterval(id);
+    };
+  }, [bphase, device]);
+
+  const pickInstall = async (inst: GithubInstallation) => {
+    setBerr(null);
+    setBinst(inst);
+    try {
+      const repos = await api.fetchGithubInstallationRepos(inst.id);
+      setBrepos(repos);
+      setBpicked({});
+      setBphase("brepos");
+    } catch (e) {
+      setBerr((e as Error).message);
+    }
+  };
+
+  const confirmBroker = () => {
+    if (!binst) return;
+    onConnected(binst, brepos.map((r) => ({ ...r, selected: !!bpicked[r.id] })));
+    setBphase(null);
+    setDevice(null);
   };
 
   if (github.connected && github.auth === "pat" && phase === "idle") {
@@ -137,6 +206,84 @@ export function GithubConnect({
           <span className="gh-spacer" />
           <button className="btn btn-danger" onClick={onDisconnect}>
             Disconnect
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── broker mode: device-flow auth, then real install + repo pickers ───────
+  if (bphase === "device" && device) {
+    return (
+      <div className="gh-card">
+        <div className="gh-card-head">
+          <Octicon />
+          <span className="gh-card-title">Authorize on GitHub</span>
+        </div>
+        <p className="gh-card-sub">Open GitHub, enter this code, and approve. Waiting for authorization…</p>
+        <div className="gh-device">
+          <span className="gh-device-code mono">{device.user_code}</span>
+          <a className="btn btn-primary" href={device.verification_uri} target="_blank" rel="noreferrer">
+            Open GitHub →
+          </a>
+        </div>
+        {berr && <div className="gh-pat-err">{berr}</div>}
+        <div className="gh-row">
+          <button className="gh-back" onClick={() => { setBphase(null); setDevice(null); }}>← Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (bphase === "installs") {
+    return (
+      <div className="gh-card">
+        <div className="gh-card-head">
+          <Octicon />
+          <span className="gh-card-title">Choose an installation</span>
+        </div>
+        <p className="gh-card-sub">Where the Skynet App is installed. Don't see it? Install it on GitHub, then retry.</p>
+        {installs.length === 0 && <p className="gh-card-sub">No installations found for your account.</p>}
+        {installs.map((i) => (
+          <button key={i.id} className="gh-acct" onClick={() => pickInstall(i)}>
+            <span className="gh-acct-glyph">{i.type === "Organization" ? "▣" : "◍"}</span> {i.account}
+            <span className="gh-acct-type">{i.type}</span>
+          </button>
+        ))}
+        {berr && <div className="gh-pat-err">{berr}</div>}
+        <div className="gh-row">
+          <button className="gh-back" onClick={() => setBphase(null)}>← Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (bphase === "brepos") {
+    const count = Object.values(bpicked).filter(Boolean).length;
+    return (
+      <div className="gh-card">
+        <div className="gh-card-head">
+          <Octicon />
+          <span className="gh-card-title">Select repositories</span>
+        </div>
+        <p className="gh-card-sub">The repos the fleet may work in. You can change this anytime.</p>
+        {brepos.length === 0 && <p className="gh-card-sub">This installation has no repositories selected on GitHub.</p>}
+        {brepos.map((r) => (
+          <div key={r.id} className="gh-repo" onClick={() => setBpicked((p) => ({ ...p, [r.id]: !p[r.id] }))}>
+            <span className={"gh-check" + (bpicked[r.id] ? " on" : "")}>{bpicked[r.id] ? "✓" : ""}</span>
+            <span className="gh-repo-name">{r.name}</span>
+            <span className="gh-repo-tags">
+              <span>{r.private ? "private" : "public"}</span>
+              <span>{r.defaultBranch}</span>
+            </span>
+          </div>
+        ))}
+        {berr && <div className="gh-pat-err">{berr}</div>}
+        <div className="gh-row">
+          <button className="gh-back" onClick={() => setBphase("installs")}>← Back</button>
+          <span className="gh-spacer" />
+          <button className="btn btn-primary" disabled={count === 0} onClick={confirmBroker}>
+            Connect {count} repo{count === 1 ? "" : "s"}
           </button>
         </div>
       </div>
@@ -199,10 +346,13 @@ export function GithubConnect({
           Install the Skynet GitHub App on the account that owns your repositories. Skynet acts through
           least-privilege, short-lived installation tokens — never your personal credentials.
         </p>
-        <PlaceholderNote>
-          The GitHub App install flow isn't wired yet — this simulates it locally so you can try
-          the rest of the loop. No app is actually installed on GitHub.
-        </PlaceholderNote>
+        {!brokerConfigured && (
+          <PlaceholderNote>
+            The GitHub App install flow isn't wired yet — this simulates it locally so you can try
+            the rest of the loop. No app is actually installed on GitHub. (Set up the token broker to
+            enable the real install.)
+          </PlaceholderNote>
+        )}
         <div className="gh-perm">
           {APP_PERMISSIONS.map((p) => (
             <div key={p.scope} className="gh-perm-row">
@@ -213,10 +363,11 @@ export function GithubConnect({
           ))}
         </div>
         <div className="gh-row">
-          <button className="btn btn-primary" onClick={() => setPhase("account")}>
+          <button className="btn btn-primary" onClick={() => (brokerConfigured ? beginDevice() : setPhase("account"))}>
             <Octicon /> &nbsp;Install Skynet GitHub App
           </button>
         </div>
+        {berr && <div className="gh-pat-err">{berr}</div>}
 
         <div className="gh-pat">
           <div className="gh-pat-or">— or connect with a token (works locally, no cloud) —</div>
@@ -374,16 +525,18 @@ export const emptyConnection = (): GithubConnection => ({
 export function IntegrationsView() {
   const [github, setGithub] = useState<GithubConnection>(emptyConnection);
   const [appConfigured, setAppConfigured] = useState(false);
+  const [brokerConfigured, setBrokerConfigured] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     api
       .fetchGithub()
-      .then(({ connection, appConfigured }) => {
+      .then(({ connection, appConfigured, brokerConfigured }) => {
         if (cancelled) return;
         setGithub(connection);
         setAppConfigured(appConfigured);
+        setBrokerConfigured(brokerConfigured);
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
@@ -422,12 +575,12 @@ export function IntegrationsView() {
           <p className="gs-sub">Loading…</p>
         ) : (
           <>
-            <GithubConnect github={github} onConnected={onConnected} onChanged={setGithub} onDisconnect={onDisconnect} />
+            <GithubConnect github={github} brokerConfigured={brokerConfigured} onConnected={onConnected} onChanged={setGithub} onDisconnect={onDisconnect} />
             <SafetySettings safety={github.safety} onChange={onUpdateSafety} />
-            {github.connected && !appConfigured && (
+            {github.connected && github.auth === "app" && !appConfigured && !brokerConfigured && (
               <div className="gh-warn">
-                The GitHub App isn't configured on this server yet (set GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY),
-                so pushes/PRs won't run until it is. The connection + policy are saved.
+                The GitHub App isn't configured on this server yet (set GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY,
+                or the token broker), so pushes/PRs won't run until it is. The connection + policy are saved.
               </div>
             )}
             {!github.connected && (

@@ -110,6 +110,24 @@ export class GithubService {
     await this.store.putToken(workspaceId, seal(userToken, key));
   }
 
+  /** Open the stored Device-Flow user token (broker mode). */
+  private async userToken(workspaceId: string): Promise<string> {
+    const key = masterKey();
+    const ct = await this.store.getToken(workspaceId);
+    if (!key || !ct) throw new Error("Not authenticated with GitHub — connect first");
+    return open(ct, key);
+  }
+
+  /** App installations the user can see (broker-mode install picker). */
+  async listInstallations(workspaceId: string): Promise<GithubInstallation[]> {
+    return this.provider.listInstallations(await this.userToken(workspaceId));
+  }
+
+  /** Repos within one installation (broker-mode repo picker). */
+  async listInstallationRepos(workspaceId: string, installationId: number): Promise<GithubRepo[]> {
+    return this.provider.listInstallationRepos(await this.userToken(workspaceId), installationId);
+  }
+
   /** Patch the safety policy. Returns undefined if the workspace isn't connected. */
   async updateSafety(workspaceId: string, patch: Partial<SafetyPolicy>): Promise<GithubConnection | undefined> {
     const existing = await this.store.get(workspaceId);

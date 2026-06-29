@@ -4,7 +4,7 @@
 // agents never hold credentials, so the safety preflight (safety.ts) cannot be
 // bypassed. A GithubConnectionStore persists the per-workspace connection.
 
-import type { GithubConnection, GithubRepo, SafetyPolicy } from "@skynet/shared";
+import type { GithubConnection, GithubInstallation, GithubRepo, SafetyPolicy } from "@skynet/shared";
 
 /** A single guardrail that failed the preflight. */
 export interface SafetyViolation {
@@ -63,6 +63,10 @@ export interface GitProvider {
   viewer(token: string): Promise<{ login: string }>;
   /** Repos a token can access (PAT mode), as selectable GithubRepo records. */
   listRepos(token: string): Promise<GithubRepo[]>;
+  /** App installations the user token can see (broker mode — install picker). */
+  listInstallations(token: string): Promise<GithubInstallation[]>;
+  /** Repos within one installation the user token can see (broker mode). */
+  listInstallationRepos(token: string, installationId: number): Promise<GithubRepo[]>;
   /** Push the agent branch from its worktree to the remote. */
   pushBranch(token: string, repo: string, worktreePath: string, branch: string, force: boolean): Promise<void>;
   openPr(token: string, repo: string, head: string, base: string, title: string, body: string): Promise<PrRef>;

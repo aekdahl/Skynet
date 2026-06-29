@@ -10,7 +10,7 @@
 import { execFile } from "node:child_process";
 import { createSign } from "node:crypto";
 import { promisify } from "node:util";
-import type { GithubRepo } from "@skynet/shared";
+import type { GithubInstallation, GithubRepo } from "@skynet/shared";
 import type { GitProvider, MergeResult, PrRef, PrStatus } from "./types.js";
 
 const exec = promisify(execFile);
@@ -86,6 +86,29 @@ export class GitHubProvider implements GitProvider {
       "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member",
     );
     return repos.map((r) => ({ id: r.id, name: r.full_name, defaultBranch: r.default_branch, private: r.private, selected: false }));
+  }
+
+  async listInstallations(token: string): Promise<GithubInstallation[]> {
+    const data = await this.api<{ installations: Array<{ id: number; account: { login: string; type: string }; app_slug: string }> }>(
+      token,
+      "GET",
+      "/user/installations?per_page=100",
+    );
+    return (data.installations ?? []).map((i) => ({
+      id: i.id,
+      account: i.account.login,
+      type: i.account.type === "Organization" ? "Organization" : "User",
+      appSlug: i.app_slug,
+    }));
+  }
+
+  async listInstallationRepos(token: string, installationId: number): Promise<GithubRepo[]> {
+    const data = await this.api<{ repositories: Array<{ id: number; full_name: string; default_branch: string; private: boolean }> }>(
+      token,
+      "GET",
+      `/user/installations/${installationId}/repositories?per_page=100`,
+    );
+    return (data.repositories ?? []).map((r) => ({ id: r.id, name: r.full_name, defaultBranch: r.default_branch, private: r.private, selected: false }));
   }
 
   async pushBranch(token: string, repo: string, worktreePath: string, branch: string, force: boolean): Promise<void> {
