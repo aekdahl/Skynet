@@ -7,7 +7,7 @@
   "main": "index.mjs",
   "scripts": {
     "start": "functions-framework --target=token",
-    "deploy": "gcloud functions deploy github-token-broker --gen2 --region=${REGION:-europe-west1} --runtime=nodejs20 --trigger-http --entry-point=token --no-allow-unauthenticated --set-secrets=GITHUB_APP_ID=github-app-id:latest,GITHUB_APP_PRIVATE_KEY=github-app-private-key:latest"
+    "deploy": "gcloud functions deploy github-token-broker --gen2 --region=${REGION:-europe-west1} --runtime=nodejs20 --trigger-http --entry-point=token --allow-unauthenticated --max-instances=5 --set-secrets=GITHUB_APP_ID=github-app-id:latest,GITHUB_APP_PRIVATE_KEY=github-app-private-key:latest"
   },
   "dependencies": {
     "@google-cloud/functions-framework": "^3.4.0"
