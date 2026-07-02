@@ -145,6 +145,36 @@ export function AuditView({
     void load();
   }, [load, resolvedCount]);
 
+  // Merge the fetched history with decisions resolved live in this session
+  // (kept current by the WS stream). This closes DEF-001: a just-resolved
+  // decision is in the store queue the instant its `hitl.resolved` event lands
+  // — before/independent of the /api/audit fetch — so the trail never shows a
+  // stale gap while the mount-fetch is in flight. Deduped by hitlId, newest first.
+  const merged = useMemo<AuditRecord[]>(() => {
+    const byId = new Map<string, AuditRecord>();
+    for (const r of records ?? []) byId.set(r.hitlId, r);
+    for (const q of queue) {
+      if (q.resolvedAt == null || !q.resolution || byId.has(q.id)) continue;
+      byId.set(q.id, {
+        workspaceId: q.workspaceId,
+        hitlId: q.id,
+        agentId: q.agentId,
+        action: q.resolution.action,
+        operatorId: q.resolution.by,
+        at: q.resolvedAt,
+        payload: {
+          optionIndex: q.resolution.optionIndex,
+          guidance: q.resolution.guidance,
+          kind: q.kind,
+          title: q.title,
+          why: q.why,
+          command: q.command,
+        },
+      });
+    }
+    return [...byId.values()].sort((a, b) => b.at - a.at);
+  }, [records, queue]);
+
   return (
     <section className="audit">
       <div className="vw-head">
@@ -164,16 +194,16 @@ export function AuditView({
         </div>
       )}
 
-      {!error && records != null && records.length === 0 && (
+      {!error && records != null && merged.length === 0 && (
         <div className="audit-empty">
           <span className="audit-empty-mark">⊙</span>
           <p>No decisions resolved yet — the trail fills as you clear the Inbox.</p>
         </div>
       )}
 
-      {!error && records != null && records.length > 0 && (
+      {!error && merged.length > 0 && (
         <div className="audit-list">
-          {records.map((rec, i) => (
+          {merged.map((rec, i) => (
             <AuditRow
               key={`${rec.hitlId}-${rec.at}-${i}`}
               rec={rec}
