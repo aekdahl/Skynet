@@ -12,3 +12,23 @@ export const DEFAULT_PROVIDERS: ProviderInfo[] = [
   { id: "cursor", name: "Cursor Agent", glyph: "▎", color: "#A78BFA", models: ["composer-2"] },
   { id: "copilot", name: "GitHub Copilot", glyph: "◈", color: "#8B93A5", models: ["copilot-workspace"] },
 ];
+
+/**
+ * Validate that a model belongs to a provider's catalog (DEF-004). The catalog
+ * is passed in so callers reuse their live source of truth (e.g. the server's
+ * store.listProviders()) rather than hard-coding a second copy. Returns a
+ * human-readable error string when the pairing is invalid, or `undefined` when
+ * it is valid.
+ */
+export function modelValidForProvider(
+  catalog: ProviderInfo[],
+  provider: string,
+  model: string,
+): string | undefined {
+  const entry = catalog.find((p) => p.id === provider);
+  if (!entry) return `Unknown provider "${provider}"`;
+  if (!entry.models.includes(model)) {
+    return `Model "${model}" is not valid for provider "${provider}" (expected one of: ${entry.models.join(", ")})`;
+  }
+  return undefined;
+}
