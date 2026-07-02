@@ -1,0 +1,60 @@
+name: LLM-E2E (nightly)
+
+# Non-deterministic, LLM-driven exploratory E2E — a complement to the deterministic
+# Vitest suite in ci.yml, NOT a PR merge gate. Runs nightly (and on demand). Boots a
+# seeded server and lets Claude driver/judge agents exercise it (docs/qa/llm-e2e/).
+# Requires the ANTHROPIC_API_KEY repo secret; without it the harness skips (exit 0),
+# so this workflow stays green until the secret is configured.
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC daily
+  workflow_dispatch: {} # manual "Run workflow" button
+
+concurrency:
+  group: llm-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  llm-e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: skynet
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: skynet/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (packages + server)
+        run: |
+          pnpm -r --filter "./packages/**" build
+          pnpm --filter @skynet/server build
+
+      - name: Boot seeded server
+        run: |
+          STORE=memory BUS=memory SESSIONS=memory AUTH_REQUIRED=true SKYNET_SEED=true PORT=8093 \
+            node apps/server/dist/index.js &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8093/health >/dev/null && { echo "server up"; break; }
+            sleep 1
+          done
+
+      - name: Run LLM-driven E2E (skips cleanly without ANTHROPIC_API_KEY)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE: http://localhost:8093
+        run: pnpm test:llm-e2e

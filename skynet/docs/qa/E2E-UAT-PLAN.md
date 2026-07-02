@@ -79,6 +79,20 @@ Home, Inbox, and Audit views render.
 
 ## 5. Defect log
 
+**Resolution status — all fixed & integration-verified (see §8):**
+
+| Defect | Sev | Fix PR |
+|---|---|---|
+| DEF-001 audit view stale | Med | [#50](https://github.com/aekdahl/Skynet/pull/50) ✅ |
+| DEF-002 chat reply for running agents | Med | [#51](https://github.com/aekdahl/Skynet/pull/51) ✅ |
+| DEF-003 double-assign orphans agent | **High** | [#51](https://github.com/aekdahl/Skynet/pull/51) ✅ |
+| DEF-004 runner model ≠ provider | Med | [#53](https://github.com/aekdahl/Skynet/pull/53) ✅ |
+| DEF-005 assign a done task | Low | [#51](https://github.com/aekdahl/Skynet/pull/51) ✅ |
+| DEF-006 `?token=` on REST | Low | [#52](https://github.com/aekdahl/Skynet/pull/52) ✅ |
+| DEF-007 case-sensitive `/api` guard | Low | [#52](https://github.com/aekdahl/Skynet/pull/52) ✅ |
+
+Each fix ships with a deterministic Vitest regression. Details below.
+
 ### DEF-001 — Decision Audit view stale after in-session resolves — **Sev: Medium — ✅ FIXED (PR #50)**
 - **Feature:** #6 Decision audit trail (`apps/web/src/views/audit.tsx`).
 - **Repro:** boot seeded; open Inbox; Approve an item; open Audit within ~1s.
@@ -151,14 +165,31 @@ live seeded server (`:8093`, auth on):
 Net new defects from Day 2: 1 High, 2 Med, 2 Low (see §5). The LLM run found interaction
 bugs (double-assign orphaning; stale chat state) that the deterministic suite did not.
 
-## 7. Coverage gaps / next up (Day 3+)
+## 7. Coverage gaps / next up
 
-1. **Fix + regress DEF-003 (High)** double-assign, then DEF-002/004; add deterministic
-   Vitest cases mirroring the LLM findings.
-2. **Secrets** set/rotate/encryption E2E (needs `SKYNET_SECRET_KEY`).
-3. **Real agent → diff → merge → PR** E2E with `SKYNET_INTEGRATION_REPO` (+ GitHub App).
-4. **Redis bus** cross-replica fan-out; **Postgres** store + sessions E2E (docker compose).
-5. **Onboarding, PWA install/offline, Desktop** smoke passes.
-6. **Real provider runners** (Claude/Codex/Gemini/Cursor/Copilot) with credentials.
-7. Per-view SPA smoke for Projects/Fleet/Integrations/Settings.
-8. Wire `test:llm-e2e` into a **credentialed nightly** job (non-blocking).
+Addressed on Day 3 (below): items 1, 2, 4-Postgres, 7, 8. Still open (need external
+infra/credentials): **Redis** fan-out (no local Redis); **real agent → diff → merge → PR**
+(needs a provider credential + `SKYNET_INTEGRATION_REPO`; merge engine itself is unit-covered
+in `tests/merge.test.ts`); **real provider runners**; **Desktop/PWA install/offline** interactive
+passes; **onboarding wizard** UI flow.
+
+## 8. Day-3 execution results
+
+All fixes (DEF-001…007, PRs #50–#53) merged onto a scratch branch and verified **together**:
+- Clean 4-way merge (no conflicts); `pnpm -r typecheck` clean; **`pnpm test` 54 passed / 4 skipped**.
+- Runtime smoke on the merged build — **6/6 PASS**: DEF-004 (invalid model→400, valid→200),
+  DEF-006 (`?token=`→401, header→200), DEF-007 (`/API/…`→401), DEF-002 (running-agent chat reply
+  is truthful, not "finished").
+
+New coverage this pass:
+- **Secrets lifecycle E2E — 10/10 PASS** (`SKYNET_MASTER_KEY` set): set key → provider availability
+  flips true; raw key never echoed (only `last4` metadata); rotate; workspace-isolated; delete →
+  unavailable; empty/unknown → 400.
+- **Postgres (docker) — durable adapters verified:** store-contract suite runs against real PG
+  (suite goes 54/4→**57 passed / 1 skipped**). Runtime durability across a **server restart** —
+  3/3 PASS: `SESSIONS=postgres` token still valid, `STORE=postgres` audit record + seeded projects
+  survived.
+- **Per-view SPA smoke — all 7 views** (Home/Inbox/Audit/Projects/Fleet/Integrations/Settings)
+  render with content, **no console errors**.
+- **Nightly LLM-E2E CI** wired: `.github/workflows/llm-e2e-nightly.yml` (cron + manual; boots a
+  seeded server, runs `pnpm test:llm-e2e`; skips cleanly without the `ANTHROPIC_API_KEY` secret).
