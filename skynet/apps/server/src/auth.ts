@@ -82,9 +82,22 @@ export async function resolvePrincipal(token?: string): Promise<Principal | unde
   return DEV_DEFAULT;
 }
 
-/** Resolve a principal from a request (header → query → cookie). */
-export async function authenticate(req: FastifyRequest): Promise<Principal | undefined> {
-  const queryToken = (req.query as { token?: string } | undefined)?.token;
+/**
+ * Resolve a principal from a request (header → query → cookie).
+ *
+ * `allowQueryToken` gates the `?token=` query param: it is accepted ONLY for the
+ * WebSocket upgrade handshake (browsers can't set an Authorization header on a
+ * WS connection). REST callers must omit it — query-string tokens leak via
+ * access logs, browser history, and Referer headers (DEF-006), so REST requests
+ * prefer the Authorization header, then the session cookie.
+ */
+export async function authenticate(
+  req: FastifyRequest,
+  opts: { allowQueryToken?: boolean } = {},
+): Promise<Principal | undefined> {
+  const queryToken = opts.allowQueryToken
+    ? (req.query as { token?: string } | undefined)?.token
+    : undefined;
   const token = tokenFrom(req.headers.authorization, queryToken) ?? cookieToken(req.headers.cookie);
   return resolvePrincipal(token);
 }
