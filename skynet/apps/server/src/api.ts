@@ -14,6 +14,7 @@ import {
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
+  modelValidForProvider,
   type Project,
   type Resolution,
   type Runner,
@@ -192,9 +193,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   });
 
   // ── fleet ──────────────────────────────────────────────────────────────
+  // A runner's model must be one the chosen provider actually offers — the
+  // provider catalog (GET /api/providers) is the single source of truth, so we
+  // reuse it here rather than hard-code a second copy (DEF-004).
+  const validateModelForProvider = async (provider: string, model: string): Promise<string | undefined> =>
+    modelValidForProvider(await store.listProviders(), provider, model);
+
   app.post("/api/fleet/runners", async (req, reply) => {
     const body = ConfigureRunnerRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    const invalid = await validateModelForProvider(body.data.provider, body.data.model);
+    if (invalid) return reply.code(400).send({ error: invalid });
     const id = body.data.name ?? uid("runner");
     const runner: Runner = { id, workspaceId: ws(req), name: id, provider: body.data.provider, model: body.data.model, status: "idle", idleSince: now() };
     return hub.upsertRunner(runner);
@@ -205,6 +214,11 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     const existing = await store.getRunner(req.params.id);
     if (!existing || existing.workspaceId !== ws(req)) return reply.code(404).send({ error: "Runner not found" });
+    // A model change is validated against the runner's existing provider.
+    if (body.data.model !== undefined) {
+      const invalid = await validateModelForProvider(existing.provider, body.data.model);
+      if (invalid) return reply.code(400).send({ error: invalid });
+    }
     return hub.upsertRunner({ ...existing, ...body.data });
   });
 
