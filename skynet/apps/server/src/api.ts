@@ -23,7 +23,7 @@ import { now } from "./config.js";
 import { authenticate, type Principal } from "./auth.js";
 import { withSecretAvailability } from "./secrets/index.js";
 import type { Hub } from "./hub.js";
-import { NoCapacityError, type Orchestrator } from "./orchestrator.js";
+import { NoCapacityError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import type { Store } from "./store/store.js";
 
 declare module "fastify" {
@@ -177,7 +177,10 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     try {
       return await orchestrator.assignTask(req.params.id, req.params.tid);
     } catch (err) {
-      if (err instanceof NoCapacityError) return reply.code(409).send({ error: err.message });
+      // DEF-003/005: a done or already-assigned task is a conflict, not a retry.
+      if (err instanceof NoCapacityError || err instanceof TaskAlreadyAssignedError) {
+        return reply.code(409).send({ error: err.message });
+      }
       return reply.code(400).send({ error: (err as Error).message });
     }
   });

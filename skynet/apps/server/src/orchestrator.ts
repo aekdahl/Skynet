@@ -39,6 +39,15 @@ export class NoCapacityError extends Error {
   }
 }
 
+/** A task can't be assigned because it's already handled (assigned or done). The
+ *  route maps this to 409 so a double-assign is rejected, never double-spawned. */
+export class TaskAlreadyAssignedError extends Error {
+  constructor(message: string, readonly agent?: Agent) {
+    super(message);
+    this.name = "TaskAlreadyAssignedError";
+  }
+}
+
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   private chatWaiters = new Map<string, (reply: string) => void>();
@@ -290,6 +299,22 @@ export class Orchestrator {
     if (!task || task.projectId !== projectId) throw new Error("Task not found");
     const project = await this.store.getProject(projectId);
     if (!project) throw new Error("Project not found");
+
+    // DEF-005: a completed task has nothing to (re)assign — refuse rather than
+    // spawn an agent on already-finished work.
+    if (task.state === "done") {
+      throw new TaskAlreadyAssignedError("Task is already done");
+    }
+
+    // DEF-003: re-assigning a task that already owns a live agent must be
+    // idempotent — return the existing agent instead of acquiring a second
+    // runner and spawning a duplicate (which orphaned the first agent and left
+    // its runner stuck "busy"). Only a done/missing agent frees the task to be
+    // (re)assigned.
+    if (task.agentId) {
+      const existing = await this.store.getAgent(task.agentId);
+      if (existing && existing.status !== "done") return existing;
+    }
 
     const runner = await this.acquireRunner(project.workspaceId);
     const agentId = `${this.slug(task.text)}-${++this.seq}`;
@@ -562,14 +587,22 @@ export class Orchestrator {
     });
   }
 
-  /** Answer a follow-up about a finished agent via its provider's stateless
-   *  consult, grounded in the stored log — works even across a server restart. */
+  /** Answer a follow-up when there's no live session, via the provider's
+   *  stateless consult, grounded in the stored log — works even across a server
+   *  restart. The reply is truthful about the agent's actual status (DEF-002):
+   *  we only say "finished" when the agent is really done. */
   private async consultFinished(agentId: string, question: string): Promise<string> {
     const agent = await this.store.getAgent(agentId);
     if (!agent) return `(${agentId}) no such agent.`;
     const provider = await this.getProvider(this.resolveProviderId(agent.provider));
     if (!provider.consult) {
-      return "This agent has finished; follow-up chat isn't supported for its runner.";
+      // No stateless consult available. Don't claim the agent "finished" unless
+      // it actually did — otherwise chatting a running/waiting agent gets a
+      // misleading canned reply.
+      if (agent.status === "done") {
+        return "This agent has finished; follow-up chat isn't supported for its runner.";
+      }
+      return `This agent is ${agent.status}, but chat isn't wired to a live runner in this config, so I can't relay your message to it right now.`;
     }
     const apiKey = await secretService.resolve(agent.workspaceId, agent.provider);
     const context = agent.log.slice(-40).map((l) => l.line).join("\n").slice(-4000);
