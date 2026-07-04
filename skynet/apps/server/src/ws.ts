@@ -22,7 +22,9 @@ export async function registerWs(app: FastifyInstance, deps: WsDeps): Promise<vo
   const { store, bus, hub } = deps;
 
   app.get("/ws", { websocket: true }, async (socket: WebSocket, req: FastifyRequest) => {
-    const principal = await authenticate(req);
+    // WS upgrade can't carry an Authorization header, so the ?token= query
+    // param is accepted here (and only here — REST rejects it, DEF-006).
+    const principal = await authenticate(req, { allowQueryToken: true });
     if (!principal) {
       socket.close(1008, "Unauthorized");
       return;

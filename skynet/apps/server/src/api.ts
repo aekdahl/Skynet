@@ -49,10 +49,16 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
 
   // ── auth: every /api route resolves a workspace-scoped principal ──────────
   app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
-    if (!req.url.startsWith("/api")) return;
+    // Lowercase the path before every prefix check — the match must be
+    // case-insensitive so an uppercase /API/... can't skip the guard (DEF-007).
+    const path = req.url.toLowerCase();
+    if (!path.startsWith("/api")) return;
     // Login is the one public /api route — it issues the token, so it can't
     // require one. (Path may carry a query string; match the prefix.)
-    if (req.url === "/api/auth/login" || req.url.startsWith("/api/auth/login?")) return;
+    if (path === "/api/auth/login" || path.startsWith("/api/auth/login?")) return;
+    // REST does NOT accept a ?token= query param (leaks via logs/history/Referer,
+    // DEF-006): prefer the Authorization header, then the session cookie. The
+    // query token is reserved for the WS handshake alone.
     const principal = await authenticate(req);
     if (!principal) return reply.code(401).send({ error: "Unauthorized" });
     req.principal = principal;
