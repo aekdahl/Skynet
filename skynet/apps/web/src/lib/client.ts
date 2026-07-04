@@ -130,9 +130,32 @@ export function deleteRunner(id: string) {
 
 // GitHub integration (connection + safety policy). Non-secret; the App key lives
 // server-side only. See docs/github-integration.md.
-export async function fetchGithub(): Promise<{ connection: GithubConnection; appConfigured: boolean }> {
-  const raw = await req<{ connection: unknown; appConfigured: boolean }>("GET", "/api/github");
-  return { connection: GithubConnection.parse(raw.connection), appConfigured: !!raw.appConfigured };
+export async function fetchGithub(): Promise<{ connection: GithubConnection; appConfigured: boolean; brokerConfigured: boolean }> {
+  const raw = await req<{ connection: unknown; appConfigured: boolean; brokerConfigured?: boolean }>("GET", "/api/github");
+  return { connection: GithubConnection.parse(raw.connection), appConfigured: !!raw.appConfigured, brokerConfigured: !!raw.brokerConfigured };
+}
+
+// Broker mode (GitHub App via cloud token-broker): device-flow login + pickers.
+export interface DeviceCode {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  interval: number;
+  expires_in: number;
+}
+export function startGithubDevice() {
+  return req<DeviceCode>("POST", "/api/github/device/start");
+}
+export function pollGithubDevice(deviceCode: string) {
+  return req<{ authorized: boolean }>("POST", "/api/github/device/poll", { device_code: deviceCode });
+}
+export async function fetchGithubInstallations(): Promise<GithubInstallation[]> {
+  const raw = await req<{ installations: GithubInstallation[] }>("GET", "/api/github/installations");
+  return raw.installations;
+}
+export async function fetchGithubInstallationRepos(installationId: number): Promise<GithubRepo[]> {
+  const raw = await req<{ repos: GithubRepo[] }>("GET", `/api/github/installations/${installationId}/repos`);
+  return raw.repos;
 }
 export async function connectGithub(body: {
   installation: GithubInstallation;

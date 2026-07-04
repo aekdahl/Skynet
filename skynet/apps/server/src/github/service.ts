@@ -7,6 +7,7 @@
 import { SAFETY_DEFAULTS, type GithubConnection, type GithubInstallation, type GithubRepo, type SafetyPolicy } from "@skynet/shared";
 import { config } from "../config.js";
 import { masterKey, open, seal } from "../secrets/crypto.js";
+import { mintViaBroker } from "./broker.js";
 import type { Store } from "../store/store.js";
 import { MemoryGithubStore } from "./memory.js";
 import { GitHubProvider } from "./provider.js";
@@ -89,7 +90,42 @@ export class GithubService {
       return open(ct, key);
     }
     if (!conn.installation) throw new Error("GitHub App installation is missing");
+    // Phase 2: with a broker configured (and no local App key), mint remotely
+    // from the stored user token (Device Flow). Otherwise mint locally.
+    if (config.githubBrokerUrl && !this.appHasCreds) {
+      const key = masterKey();
+      const ct = await this.store.getToken(conn.workspaceId);
+      if (!key || !ct) throw new Error("GitHub user token is unavailable");
+      const { token } = await mintViaBroker(config.githubBrokerUrl, open(ct, key), conn.installation.id);
+      return token;
+    }
     return this.provider.installationToken(conn.installation.id);
+  }
+
+  /** Seal + store a Device-Flow user token (broker mode). The plaintext is never
+   *  persisted elsewhere or returned. */
+  async storeUserToken(workspaceId: string, userToken: string): Promise<void> {
+    const key = masterKey();
+    if (!key) throw new Error("Secret store is disabled — set SKYNET_MASTER_KEY");
+    await this.store.putToken(workspaceId, seal(userToken, key));
+  }
+
+  /** Open the stored Device-Flow user token (broker mode). */
+  private async userToken(workspaceId: string): Promise<string> {
+    const key = masterKey();
+    const ct = await this.store.getToken(workspaceId);
+    if (!key || !ct) throw new Error("Not authenticated with GitHub — connect first");
+    return open(ct, key);
+  }
+
+  /** App installations the user can see (broker-mode install picker). */
+  async listInstallations(workspaceId: string): Promise<GithubInstallation[]> {
+    return this.provider.listInstallations(await this.userToken(workspaceId));
+  }
+
+  /** Repos within one installation (broker-mode repo picker). */
+  async listInstallationRepos(workspaceId: string, installationId: number): Promise<GithubRepo[]> {
+    return this.provider.listInstallationRepos(await this.userToken(workspaceId), installationId);
   }
 
   /** Patch the safety policy. Returns undefined if the workspace isn't connected. */
