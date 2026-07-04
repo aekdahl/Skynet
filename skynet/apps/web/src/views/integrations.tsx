@@ -12,6 +12,7 @@ import {
   type SafetyPolicy,
 } from "@skynet/shared";
 import * as api from "../lib/client";
+import { PlaceholderNote } from "../components/common";
 
 // Least-privilege permissions the Skynet GitHub App requests.
 const APP_PERMISSIONS: { scope: string; level: string; why: string }[] = [
@@ -79,15 +80,68 @@ function Octicon() {
 export function GithubConnect({
   github,
   onConnected,
+  onChanged,
   onDisconnect,
 }: {
   github: GithubConnection;
   onConnected: (installation: GithubConnection["installation"], repos: GithubRepo[]) => void;
+  // The PAT path connects server-side and returns the full connection directly.
+  onChanged?: (connection: GithubConnection) => void;
   onDisconnect: () => void;
 }) {
   const [phase, setPhase] = useState<"idle" | "account" | "repos">("idle");
   const [account, setAccount] = useState<(typeof MOCK_ACCOUNTS)[number] | null>(null);
   const [picked, setPicked] = useState<Record<number, boolean>>({});
+  const [pat, setPat] = useState("");
+  const [patBusy, setPatBusy] = useState(false);
+  const [patErr, setPatErr] = useState<string | null>(null);
+
+  const connectPat = async () => {
+    const token = pat.trim();
+    if (!token) return;
+    setPatBusy(true);
+    setPatErr(null);
+    try {
+      const conn = await api.connectGithubPat(token);
+      setPat("");
+      onChanged?.(conn);
+    } catch (e) {
+      setPatErr((e as Error).message);
+    } finally {
+      setPatBusy(false);
+    }
+  };
+
+  if (github.connected && github.auth === "pat" && phase === "idle") {
+    const repos = github.repos.filter((r) => r.selected);
+    return (
+      <div className="gh-card">
+        <div className="gh-card-head">
+          <Octicon />
+          <span className="gh-card-title">GitHub</span>
+          <span className="gh-pill gh-pill-ok">Connected</span>
+        </div>
+        <div className="gh-conn">
+          <span className="gh-conn-glyph">◍</span>
+          <div>
+            <div style={{ fontWeight: 600 }}>
+              Personal access token{" "}
+              <span style={{ color: "var(--faint)", fontWeight: 400, fontSize: 12 }}>· ····{github.tokenLast4}</span>
+            </div>
+            <div className="gh-conn-meta">
+              {repos.length} repo{repos.length === 1 ? "" : "s"} · stored encrypted on this machine
+            </div>
+          </div>
+        </div>
+        <div className="gh-row">
+          <span className="gh-spacer" />
+          <button className="btn btn-danger" onClick={onDisconnect}>
+            Disconnect
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (github.connected && github.installation && phase === "idle") {
     const inst = github.installation;
@@ -145,6 +199,10 @@ export function GithubConnect({
           Install the Skynet GitHub App on the account that owns your repositories. Skynet acts through
           least-privilege, short-lived installation tokens — never your personal credentials.
         </p>
+        <PlaceholderNote>
+          The GitHub App install flow isn't wired yet — this simulates it locally so you can try
+          the rest of the loop. No app is actually installed on GitHub.
+        </PlaceholderNote>
         <div className="gh-perm">
           {APP_PERMISSIONS.map((p) => (
             <div key={p.scope} className="gh-perm-row">
@@ -159,6 +217,29 @@ export function GithubConnect({
             <Octicon /> &nbsp;Install Skynet GitHub App
           </button>
         </div>
+
+        <div className="gh-pat">
+          <div className="gh-pat-or">— or connect with a token (works locally, no cloud) —</div>
+          <p className="gh-card-sub">
+            Paste a GitHub fine-grained personal access token (Contents + Pull requests:
+            read/write on the repos you want). Stored encrypted on this machine; never shown again.
+          </p>
+          <div className="gh-row">
+            <input
+              type="password"
+              className="settings-input"
+              autoComplete="off"
+              placeholder="github_pat_… or ghp_…"
+              value={pat}
+              onChange={(e) => setPat(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && connectPat()}
+            />
+            <button className="btn btn-primary" disabled={patBusy || !pat.trim()} onClick={connectPat}>
+              {patBusy ? "Connecting…" : "Connect token"}
+            </button>
+          </div>
+          {patErr && <div className="gh-pat-err">{patErr}</div>}
+        </div>
       </div>
     );
   }
@@ -171,6 +252,10 @@ export function GithubConnect({
           <span className="gh-card-title">Choose where to install</span>
         </div>
         <p className="gh-card-sub">Pick the organization or account to install the Skynet App on.</p>
+        <PlaceholderNote>
+          These GitHub accounts are sample data — not your real GitHub. The App-install
+          redirect isn't wired yet; picking one records a stub connection.
+        </PlaceholderNote>
         {MOCK_ACCOUNTS.map((a) => (
           <button
             key={a.login}
@@ -215,6 +300,7 @@ export function GithubConnect({
       <p className="gh-card-sub">
         Grant the Skynet App access to the repos the fleet will work in. You can change this anytime.
       </p>
+      <PlaceholderNote>Sample repositories — not fetched from GitHub yet.</PlaceholderNote>
       {repos.map((r) => (
         <div key={r.id} className="gh-repo" onClick={() => setPicked((p) => ({ ...p, [r.id]: !p[r.id] }))}>
           <span className={"gh-check" + (picked[r.id] ? " on" : "")}>{picked[r.id] ? "✓" : ""}</span>
@@ -278,7 +364,9 @@ function SafetySettings({
 export const emptyConnection = (): GithubConnection => ({
   workspaceId: "",
   connected: false,
+  auth: "app",
   installation: null,
+  tokenLast4: null,
   repos: [],
   safety: { ...SAFETY_DEFAULTS },
 });
@@ -334,7 +422,7 @@ export function IntegrationsView() {
           <p className="gs-sub">Loading…</p>
         ) : (
           <>
-            <GithubConnect github={github} onConnected={onConnected} onDisconnect={onDisconnect} />
+            <GithubConnect github={github} onConnected={onConnected} onChanged={setGithub} onDisconnect={onDisconnect} />
             <SafetySettings safety={github.safety} onChange={onUpdateSafety} />
             {github.connected && !appConfigured && (
               <div className="gh-warn">

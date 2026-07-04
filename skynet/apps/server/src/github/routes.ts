@@ -5,14 +5,16 @@
 // is server-side only; this stores installation metadata + the policy.
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { ConnectGithubRequest, SAFETY_DEFAULTS, UpdateSafetyRequest, type GithubConnection } from "@skynet/shared";
+import { ConnectGithubRequest, ConnectPatRequest, SAFETY_DEFAULTS, UpdateSafetyRequest, type GithubConnection } from "@skynet/shared";
 import { githubService } from "./service.js";
 
 // The connection a workspace sees when nothing is configured yet.
 const empty = (workspaceId: string): GithubConnection => ({
   workspaceId,
   connected: false,
+  auth: "app",
   installation: null,
+  tokenLast4: null,
   repos: [],
   safety: { ...SAFETY_DEFAULTS },
 });
@@ -31,6 +33,19 @@ export async function registerGithubRoutes(app: FastifyInstance): Promise<void> 
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     const conn = await githubService.connect(req.principal!.workspaceId, body.data.installation, body.data.repos);
     return reply.code(200).send({ connection: conn });
+  });
+
+  // Connect via a personal access token (local/desktop path — no App needed).
+  // Validates + seals the token server-side and lists the repos it can access.
+  app.put("/api/github/pat", async (req: FastifyRequest, reply: FastifyReply) => {
+    const body = ConnectPatRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      const conn = await githubService.connectViaPat(req.principal!.workspaceId, body.data.token);
+      return reply.code(200).send({ connection: conn });
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
   });
 
   // Update the safety guardrails (any subset).

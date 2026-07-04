@@ -4,7 +4,7 @@
 // agents never hold credentials, so the safety preflight (safety.ts) cannot be
 // bypassed. A GithubConnectionStore persists the per-workspace connection.
 
-import type { GithubConnection, SafetyPolicy } from "@skynet/shared";
+import type { GithubConnection, GithubRepo, SafetyPolicy } from "@skynet/shared";
 
 /** A single guardrail that failed the preflight. */
 export interface SafetyViolation {
@@ -57,8 +57,12 @@ export interface PushResult {
  */
 export interface GitProvider {
   readonly id: string;
-  /** Mint (and cache) a short-lived installation access token. */
+  /** Mint (and cache) a short-lived installation access token (App mode). */
   installationToken(installationId: number): Promise<string>;
+  /** Validate a token and return the authenticated account (PAT mode). Throws on a bad token. */
+  viewer(token: string): Promise<{ login: string }>;
+  /** Repos a token can access (PAT mode), as selectable GithubRepo records. */
+  listRepos(token: string): Promise<GithubRepo[]>;
   /** Push the agent branch from its worktree to the remote. */
   pushBranch(token: string, repo: string, worktreePath: string, branch: string, force: boolean): Promise<void>;
   openPr(token: string, repo: string, head: string, base: string, title: string, body: string): Promise<PrRef>;
@@ -73,4 +77,8 @@ export interface GithubConnectionStore {
   get(workspaceId: string): Promise<GithubConnection | undefined>;
   put(connection: GithubConnection): Promise<void>;
   delete(workspaceId: string): Promise<void>;
+  /** Sealed PAT ciphertext (pat mode). Server-side only; never the plaintext. */
+  getToken(workspaceId: string): Promise<string | undefined>;
+  putToken(workspaceId: string, ciphertext: string): Promise<void>;
+  deleteToken(workspaceId: string): Promise<void>;
 }

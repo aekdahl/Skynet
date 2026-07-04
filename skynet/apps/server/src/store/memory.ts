@@ -31,6 +31,7 @@ export class MemoryStore implements Store {
   protected deps: Dependency[] = [];
   protected audit: AuditRecord[] = [];
   protected github = new Map<string, GithubConnection>(); // keyed by workspaceId
+  protected githubTokens = new Map<string, string>(); // workspaceId → sealed PAT ciphertext
   private providers: ProviderInfo[] = PROVIDERS;
 
   /** Hook called after every mutation. No-op in memory; FileStore overrides it
@@ -102,4 +103,8 @@ export class MemoryStore implements Store {
   async getGithubConnection(ws: string) { return this.github.get(ws); }
   async putGithubConnection(connection: GithubConnection) { this.github.set(connection.workspaceId, connection); this.persist(); }
   async deleteGithubConnection(ws: string) { this.github.delete(ws); this.persist(); }
+
+  async getGithubToken(ws: string) { return this.githubTokens.get(ws); }
+  async putGithubToken(ws: string, ciphertext: string) { this.githubTokens.set(ws, ciphertext); this.persist(); }
+  async deleteGithubToken(ws: string) { this.githubTokens.delete(ws); this.persist(); }
 }

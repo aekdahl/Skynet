@@ -121,7 +121,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           <>
             <h1 className="ob-h">Connect GitHub</h1>
             <p className="ob-sub">Install the Skynet App on the repos your fleet will work in — agents branch, push, and open PRs through least-privilege tokens. You can also do this later from Integrations.</p>
-            <GithubConnect github={github} onConnected={onConnected} onDisconnect={onDisconnect} />
+            <GithubConnect github={github} onConnected={onConnected} onChanged={setGithub} onDisconnect={onDisconnect} />
           </>
         )}
 

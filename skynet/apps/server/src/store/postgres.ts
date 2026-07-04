@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS hitl_audit (id bigserial PRIMARY KEY, workspace_id te
                                        agent_id text NOT NULL, action text NOT NULL, operator_id text NOT NULL,
                                        at bigint NOT NULL, payload jsonb);
 CREATE TABLE IF NOT EXISTS github_connections (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS github_tokens      (workspace_id text PRIMARY KEY, ciphertext text NOT NULL);
 CREATE INDEX IF NOT EXISTS agents_ws   ON agents(workspace_id);
 CREATE INDEX IF NOT EXISTS hitl_ws     ON hitl_queue(workspace_id);
 CREATE INDEX IF NOT EXISTS projects_ws ON projects(workspace_id);
@@ -197,6 +198,23 @@ export class PostgresStore implements Store {
   }
   async deleteGithubConnection(ws: string): Promise<void> {
     await this.pool.query("DELETE FROM github_connections WHERE workspace_id=$1", [ws]);
+  }
+
+  async getGithubToken(ws: string): Promise<string | undefined> {
+    const { rows } = await this.pool.query<{ ciphertext: string }>(
+      "SELECT ciphertext FROM github_tokens WHERE workspace_id=$1",
+      [ws],
+    );
+    return rows[0]?.ciphertext;
+  }
+  async putGithubToken(ws: string, ciphertext: string): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO github_tokens(workspace_id,ciphertext) VALUES($1,$2) ON CONFLICT(workspace_id) DO UPDATE SET ciphertext=$2",
+      [ws, ciphertext],
+    );
+  }
+  async deleteGithubToken(ws: string): Promise<void> {
+    await this.pool.query("DELETE FROM github_tokens WHERE workspace_id=$1", [ws]);
   }
 
   async snapshot(ws: string): Promise<Snapshot> {

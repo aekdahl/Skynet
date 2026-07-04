@@ -10,6 +10,7 @@
 import { execFile } from "node:child_process";
 import { createSign } from "node:crypto";
 import { promisify } from "node:util";
+import type { GithubRepo } from "@skynet/shared";
 import type { GitProvider, MergeResult, PrRef, PrStatus } from "./types.js";
 
 const exec = promisify(execFile);
@@ -72,6 +73,19 @@ export class GitHubProvider implements GitProvider {
     );
     this.tokens.set(installationId, { token: minted.token, expiresAt: Date.parse(minted.expires_at) });
     return minted.token;
+  }
+
+  async viewer(token: string): Promise<{ login: string }> {
+    return this.api<{ login: string }>(token, "GET", "/user");
+  }
+
+  async listRepos(token: string): Promise<GithubRepo[]> {
+    const repos = await this.api<Array<{ id: number; full_name: string; default_branch: string; private: boolean }>>(
+      token,
+      "GET",
+      "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member",
+    );
+    return repos.map((r) => ({ id: r.id, name: r.full_name, defaultBranch: r.default_branch, private: r.private, selected: false }));
   }
 
   async pushBranch(token: string, repo: string, worktreePath: string, branch: string, force: boolean): Promise<void> {
