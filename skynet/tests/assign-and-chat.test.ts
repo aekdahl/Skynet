@@ -76,7 +76,7 @@ describe("DEF-003/005: assign is idempotent and refuses done tasks", () => {
   let orchestrator: Orchestrator;
 
   beforeEach(async () => {
-    store = new MemoryStore({ seed: false });
+    store = new MemoryStore();
     bus = new NullBus();
     hub = new Hub(store, bus);
     provider = new QuietProvider();
@@ -143,7 +143,7 @@ describe("DEF-002: chat reply reflects the agent's actual status", () => {
   let orchestrator: Orchestrator;
 
   beforeEach(async () => {
-    store = new MemoryStore({ seed: false });
+    store = new MemoryStore();
     hub = new Hub(store, new NullBus());
     orchestrator = new Orchestrator(store, hub, new QuietProvider());
     await mkFixtures(store);

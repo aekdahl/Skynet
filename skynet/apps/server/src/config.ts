@@ -11,9 +11,6 @@ export const config = {
   // Path for STORE=file (zero-dependency JSON persistence; default cwd-relative).
   // The desktop app points this at its per-user data directory.
   dbPath: process.env.SKYNET_DB_PATH || "skynet-data.json",
-  // Prefill the store with demo fixtures (sample projects/agents/queue/fleet).
-  // Off by default — a fresh deploy starts empty; opt in with SKYNET_SEED=true.
-  seedDemo: process.env.SKYNET_SEED === "true",
   // No silent default: pick the fan-out backbone explicitly (BUS=memory for
   // single-process dev/tests; BUS=redis to fan out across replicas).
   bus: (process.env.BUS || undefined) as "memory" | "redis" | undefined,
