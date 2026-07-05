@@ -20,7 +20,9 @@ import {
   type Runner,
   type Task,
 } from "@skynet/shared";
-import { now } from "./config.js";
+import { resolve as resolvePath } from "node:path";
+import { now, config } from "./config.js";
+import { listDir, isGitRepo } from "./fs-browse.js";
 import { authenticate, type Principal } from "./auth.js";
 import { withSecretAvailability } from "./secrets/index.js";
 import type { Hub } from "./hub.js";
@@ -76,6 +78,14 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.get("/api/fleet/runners", async (req) => store.listRunners(ws(req)));
   // Decision audit trail — resolved HITL items, newest first (W8, Backend Brief §11).
   app.get("/api/audit", async (req) => store.listAudit(ws(req)));
+
+  // Local folder browser powering the connect-a-folder picker. Local-only and
+  // gated (config.allowLocalFs) — reveals the server machine's filesystem, so
+  // it's disabled on hosted deploys. Returns 403 when off.
+  app.get<{ Querystring: { path?: string } }>("/api/fs/list", async (req, reply) => {
+    if (!config.allowLocalFs) return reply.code(403).send({ error: "Local folder browsing is disabled on this server" });
+    return listDir(req.query.path);
+  });
 
   // ── HITL ───────────────────────────────────────────────────────────────
   app.post<{ Params: { id: string } }>("/api/hitl/:id/resolve", async (req, reply) => {
@@ -133,7 +143,15 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post("/api/projects", async (req, reply) => {
     const body = CreateProjectRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
-    const project: Project = { id: uid("p"), workspaceId: ws(req), name: body.data.name, goal: body.data.goal, agentIds: [], status: "active", repo: body.data.repo };
+    // A local repoPath that contains a .git is git-backed → Skynet auto-manages a
+    // worktree per agent + the merge queue against it (desktop-first default).
+    const repoPath = body.data.repoPath ? resolvePath(body.data.repoPath) : null;
+    const project: Project = {
+      id: uid("p"), workspaceId: ws(req), name: body.data.name, goal: body.data.goal,
+      agentIds: [], status: "active",
+      repoPath, gitBacked: repoPath ? isGitRepo(repoPath) : false,
+      repo: body.data.repo,
+    };
     return hub.upsertProject(project);
   });
 
@@ -142,7 +160,15 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     const existing = await store.getProject(req.params.id);
     if (!existing || existing.workspaceId !== ws(req)) return reply.code(404).send({ error: "Project not found" });
-    return hub.upsertProject({ ...existing, ...body.data });
+    // Rebinding the local folder recomputes git-backing (null clears it).
+    const rebind =
+      body.data.repoPath !== undefined
+        ? (() => {
+            const rp = body.data.repoPath ? resolvePath(body.data.repoPath) : null;
+            return { repoPath: rp, gitBacked: rp ? isGitRepo(rp) : false };
+          })()
+        : {};
+    return hub.upsertProject({ ...existing, ...body.data, ...rebind });
   });
 
   app.delete<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {
