@@ -4,7 +4,7 @@
 // persists in the workspace's Store). The App private key is server-side only;
 // this screen never sees a secret. See docs/github-integration.md.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   SAFETY_DEFAULTS,
   type GithubConnection,
@@ -84,6 +84,7 @@ export function GithubConnect({
   onConnected,
   onChanged,
   onDisconnect,
+  embedded = false,
 }: {
   github: GithubConnection;
   // Cloud token-broker + Device Flow available → the real App-install path.
@@ -92,6 +93,9 @@ export function GithubConnect({
   // The PAT path connects server-side and returns the full connection directly.
   onChanged?: (connection: GithubConnection) => void;
   onDisconnect: () => void;
+  // When rendered inside an Integration section the section header already shows
+  // the "GitHub" identity + status, so suppress this card's own top head.
+  embedded?: boolean;
 }) {
   const [phase, setPhase] = useState<"idle" | "account" | "repos">("idle");
   const [account, setAccount] = useState<(typeof MOCK_ACCOUNTS)[number] | null>(null);
@@ -295,11 +299,13 @@ export function GithubConnect({
     const repos = github.repos.filter((r) => r.selected);
     return (
       <div className="gh-card">
-        <div className="gh-card-head">
-          <Octicon />
-          <span className="gh-card-title">GitHub</span>
-          <span className="gh-pill gh-pill-ok">Connected</span>
-        </div>
+        {!embedded && (
+          <div className="gh-card-head">
+            <Octicon />
+            <span className="gh-card-title">GitHub</span>
+            <span className="gh-pill gh-pill-ok">Connected</span>
+          </div>
+        )}
         <div className="gh-conn">
           <span className="gh-conn-glyph">{inst.type === "Organization" ? "▣" : "◍"}</span>
           <div>
@@ -338,10 +344,12 @@ export function GithubConnect({
   if (phase === "idle") {
     return (
       <div className="gh-card">
-        <div className="gh-card-head">
-          <Octicon />
-          <span className="gh-card-title">Connect GitHub</span>
-        </div>
+        {!embedded && (
+          <div className="gh-card-head">
+            <Octicon />
+            <span className="gh-card-title">Connect GitHub</span>
+          </div>
+        )}
         <p className="gh-card-sub">
           Install the Skynet GitHub App on the account that owns your repositories. Skynet acts through
           least-privilege, short-lived installation tokens — never your personal credentials.
@@ -522,6 +530,41 @@ export const emptyConnection = (): GithubConnection => ({
   safety: { ...SAFETY_DEFAULTS },
 });
 
+// A collapsible integration. Collapsed by default; the header shows identity +
+// status + a one-line summary; click to expand its setup + settings.
+function IntegrationSection({
+  icon,
+  title,
+  statusLabel,
+  statusOk,
+  summary,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  statusLabel: string;
+  statusOk: boolean;
+  summary: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="gh-int">
+      <button className="gh-int-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <span className="gh-int-icon">{icon}</span>
+        <span className="gh-int-title">{title}</span>
+        <span className={"gh-pill " + (statusOk ? "gh-pill-ok" : "gh-pill-off")}>{statusLabel}</span>
+        <span className="gh-int-spacer" />
+        {!open && <span className="gh-int-summary">{summary}</span>}
+        <span className={"gh-chev" + (open ? " open" : "")} aria-hidden>
+          ›
+        </span>
+      </button>
+      {open && <div className="gh-int-body">{children}</div>}
+    </div>
+  );
+}
+
 export function IntegrationsView() {
   const [github, setGithub] = useState<GithubConnection>(emptyConnection);
   const [appConfigured, setAppConfigured] = useState(false);
@@ -564,18 +607,30 @@ export function IntegrationsView() {
     setGithub(emptyConnection());
   };
 
+  const repoCount = github.repos.filter((r) => r.selected).length;
+  const summary =
+    github.connected && github.installation
+      ? `${github.installation.account} · ${repoCount} repo${repoCount === 1 ? "" : "s"}`
+      : "Connect to let agents branch, push & open PRs";
+
   return (
     <section className="vw" data-screen-label="Integrations">
       <div className="vw-head">
         <h1>Integrations</h1>
-        <p>Connect GitHub and set the guardrails your agents operate under.</p>
+        <p>Connect the services your agents work through, and set the guardrails.</p>
       </div>
       <div className="gh-wrap">
         {!loaded ? (
           <p className="gs-sub">Loading…</p>
         ) : (
-          <>
-            <GithubConnect github={github} brokerConfigured={brokerConfigured} onConnected={onConnected} onChanged={setGithub} onDisconnect={onDisconnect} />
+          <IntegrationSection
+            icon={<Octicon />}
+            title="GitHub"
+            statusLabel={github.connected ? "Connected" : "Not connected"}
+            statusOk={github.connected}
+            summary={summary}
+          >
+            <GithubConnect github={github} brokerConfigured={brokerConfigured} onConnected={onConnected} onChanged={setGithub} onDisconnect={onDisconnect} embedded />
             <SafetySettings safety={github.safety} onChange={onUpdateSafety} />
             {github.connected && github.auth === "app" && !appConfigured && !brokerConfigured && (
               <div className="gh-warn">
@@ -586,7 +641,7 @@ export function IntegrationsView() {
             {!github.connected && (
               <div className="gh-warn">Connect GitHub to let agents branch, push, and open PRs.</div>
             )}
-          </>
+          </IntegrationSection>
         )}
       </div>
     </section>

@@ -1125,3 +1125,16 @@ button.kb-done:hover { opacity: 1; }
 .ob-nav .ob-spacer { flex: 1; }
 .ob-skip { display: block; margin: 22px auto 0; background: none; border: none; color: var(--faint); font-family: var(--font-ui); font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 .ob-skip:hover { color: var(--muted); }
+
+/* ─── Collapsible integration section ───────────────────────────────────── */
+.gh-int + .gh-int { margin-top: 12px; }
+.gh-int-head { width: 100%; display: flex; align-items: center; gap: 10px; padding: 14px 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; cursor: pointer; color: var(--text); font-family: var(--font-ui); text-align: left; }
+.gh-int-head:hover { border-color: var(--faint); }
+.gh-int-icon { display: inline-flex; align-items: center; }
+.gh-int-title { font-size: 15px; font-weight: 600; }
+.gh-int-spacer { flex: 1; }
+.gh-int-summary { font-family: var(--font-mono); font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+.gh-chev { color: var(--faint); font-size: 17px; line-height: 1; transition: transform .18s; display: inline-block; }
+.gh-chev.open { transform: rotate(90deg); }
+.gh-int-body { margin-top: 12px; }
+.gh-pill-off { color: var(--faint); border-color: var(--line); }
