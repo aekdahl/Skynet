@@ -2,6 +2,7 @@
 // API + WebSocket gateway + orchestrator in one process (Architecture Brief
 // §03/§08). Phase 0: in-memory store, in-process bus, mock runner.
 
+import { loadedEnvFrom } from "./load-env.js"; // MUST be first — loads .env before config reads process.env
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
@@ -98,6 +99,7 @@ async function main() {
 
   await app.listen({ port: config.port, host: "0.0.0.0" });
   if (servingSpa) app.log.info("serving built web SPA from this server");
+  app.log.info(loadedEnvFrom ? `loaded env from ${loadedEnvFrom}` : "no .env file found (using process env only)");
   app.log.info(`Skynet server up on :${config.port}  (store=${config.store} bus=${config.bus} runner=${config.runner ?? "per-runner"} sessions=${config.sessions})`);
 }
 
