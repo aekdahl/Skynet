@@ -9,8 +9,8 @@
 // Edit web → instant HMR in the window. Edit server → tsx restarts it. Run from
 // the repo root (skynet/): `pnpm desktop:dev`. Uses only Node built-ins.
 
-import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import http from "node:http";
 
@@ -18,6 +18,24 @@ const PORT = 8099;
 const VITE_PORT = 5173;
 const devDir = ".skynet-dev";
 mkdirSync(devDir, { recursive: true });
+
+const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+
+// The server (tsx) and web (Vite) import @skynet/shared + runner-sdk from their
+// built dist/, and this launcher doesn't watch them — so build the packages up
+// front. Without this, a fresh checkout / a `git pull` that changed a package
+// shows STALE behavior (the #1 "my changes aren't showing" gotcha).
+console.log("[desktop:dev] building packages (shared, runner-sdk)…");
+const build = spawnSync(pnpmBin, ["-r", "--filter", "./packages/*", "build"], { stdio: "inherit" });
+if (build.status !== 0) {
+  console.error("[desktop:dev] package build failed — did you run `pnpm install`?");
+  process.exit(build.status ?? 1);
+}
+// Electron lives outside the workspace and installs standalone.
+if (!existsSync("apps/desktop/node_modules/.bin/electron")) {
+  console.error("[desktop:dev] Electron isn't installed. Run once:  cd apps/desktop && pnpm install --ignore-workspace");
+  process.exit(1);
+}
 
 // Stable dev master key (throwaway, gitignored) so the secret store works.
 const keyFile = `${devDir}/master.key`;
