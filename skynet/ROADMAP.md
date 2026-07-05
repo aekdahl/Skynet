@@ -33,6 +33,15 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
 ---
 
 ## v1 — Orchestration completeness & hardening
+- **⭐ Browser tools for coding agents (MCP)** — *near-term priority.* Equip the Claude runner (then the
+  CLI runners) with a Chrome/Playwright **MCP** server so an agent can drive a real browser *within* a
+  coding task: reproduce a bug, verify a UI change end-to-end, or read live docs before editing. Wrap,
+  don't rebuild — a scoped MCP tool on the existing `runner-sdk` seam, **not** our own browser
+  automation; the existing HITL gate already governs tool approvals, so a nav/click can be gated like any
+  other tool. Opt-in per runner/workspace, off by default. Claude first (Agent SDK `mcpServers`), CLI
+  runners after. *(Pulls the browser slice of v3's "Tools via MCP" forward — it's the highest-leverage
+  tool for the code loop; verification/repro is where it pays off, and it composes with the live-preview
+  pipeline below.)*
 - Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** — then breadth
   reactively from the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
 - **Agent labels / custom grouping** — rename agents and group them beyond project (small UX add).
@@ -67,6 +76,8 @@ supervision layer, it doesn't host or resell those services.
   whole category. (Cheap to design early so we don't foreclose it; build here.)
 - **Tools via MCP:** an agent gets scoped tools (GitHub / Sentry / Slack MCP) to act back into the
   user's services. A "Sentry agent" = a coding agent + Sentry MCP + a Sentry webhook trigger.
+  *(The browser/Chrome MCP tool is pulled forward to v1 — see above — since it serves the core code loop,
+  not inbound triggers; the rest of the tool catalog lands here.)*
 - **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
   fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
 - Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.
