@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { Agent, HitlItem, Resolution, Task } from "@skynet/shared";
+import type { Agent, HitlItem, Project, Resolution, Task } from "@skynet/shared";
 import {
   MockRunnerProvider,
   type HitlRaise,
@@ -30,6 +30,19 @@ interface LiveAgent {
   /** Set when the agent runs in a real worktree; enables the commit→review→merge
    *  loop. The ref the branch was cut from, for diffing. */
   baseRef?: string;
+  /** The git backend (worktrees + merge queue) this agent is integrating into,
+   *  resolved from its project's repo. Unset in the Phase 0 / no-repo flow. */
+  git?: GitContext;
+}
+
+/** The git integration backend bound to one repo: an isolated worktree per agent
+ *  feeding a serialized merge queue. Resolved per project (its own local repo
+ *  when git-backed, else the server-global integration repo) and cached by repo
+ *  path so each repo keeps exactly one worktree provisioner + one merge queue. */
+interface GitContext {
+  repo: string;
+  worktrees: WorktreeProvisioner;
+  merge: MergeEngine;
 }
 
 export class NoCapacityError extends Error {
@@ -54,22 +67,24 @@ export class Orchestrator {
   private seq = 0;
   // One lazily-loaded provider backend per provider id (real backends are heavy).
   private providers = new Map<string, Promise<RunnerProvider>>();
-  private merge?: MergeEngine;
   private moduleMap: ModuleMap = loadModuleMap(config.integrationRepo);
-  private worktrees?: WorktreeProvisioner;
+  // One git backend per repo path (worktrees + serialized merge queue), built on
+  // demand. Keyed by repo so a project's local repo and the global integration
+  // repo each get their own queue.
+  private gitCtx = new Map<string, GitContext>();
 
   // `providerOverride` is a test seam — inject a runner provider directly instead
   // of resolving one from RUNNER. Production always passes (store, hub) only.
-  constructor(private store: Store, private hub: Hub, private providerOverride?: RunnerProvider) {
-    if (config.integrationRepo) {
-      // One worktree per agent feeds real branches to the merge queue (§2).
-      this.worktrees = new WorktreeProvisioner(
-        config.integrationRepo,
-        config.baseBranch,
-        config.worktreesDir,
-      );
-      this.merge = new MergeEngine(
-        config.integrationRepo,
+  constructor(private store: Store, private hub: Hub, private providerOverride?: RunnerProvider) {}
+
+  /** Build (or reuse) the git backend for a repo path. Cached so each repo keeps
+   *  exactly one worktree provisioner and one serialized merge queue (§2). */
+  private gitContextForRepo(repo: string): GitContext {
+    let ctx = this.gitCtx.get(repo);
+    if (!ctx) {
+      const worktrees = new WorktreeProvisioner(repo, config.baseBranch, config.worktreesDir);
+      const merge = new MergeEngine(
+        repo,
         config.baseBranch,
         {
           onMerged: (req) => this.completeMerged(req.agentId, req.agentBranch),
@@ -82,7 +97,27 @@ export class Orchestrator {
         },
         config.checkCmd,
       );
+      ctx = { repo, worktrees, merge };
+      this.gitCtx.set(repo, ctx);
     }
+    return ctx;
+  }
+
+  /** Resolve the git backend for a project: its own local repo when git-backed,
+   *  else the server-global integration repo, else none (Phase 0 → runnerCwd). */
+  private gitContextFor(project?: Project | null): GitContext | undefined {
+    const repo = project?.gitBacked && project.repoPath ? project.repoPath : config.integrationRepo;
+    return repo ? this.gitContextForRepo(repo) : undefined;
+  }
+
+  /** Resolve the git backend for an existing agent (prefers the live entry, else
+   *  looks it up via the agent's project). Used by post-completion cleanup. */
+  private async gitContextForAgent(agentId: string): Promise<GitContext | undefined> {
+    const live = this.live.get(agentId);
+    if (live?.git) return live.git;
+    const agent = await this.store.getAgent(agentId);
+    const project = agent ? await this.store.getProject(agent.projectId) : null;
+    return this.gitContextFor(project);
   }
 
   // Resolve the backend for an agent. The provider is chosen per fleet runner at
@@ -176,9 +211,10 @@ export class Orchestrator {
     // Real loop: the agent ran in an isolated worktree → commit its diff onto
     // its branch and raise a review. Approving it enqueues the branch onto the
     // merge queue (deliver → merge.enqueue → completeMerged).
-    if (this.worktrees && this.merge && live?.baseRef !== undefined) {
+    if (live?.git && live.baseRef !== undefined) {
+      const wt = live.git.worktrees;
       const agent = await this.store.getAgent(agentId);
-      const res = await this.worktrees
+      const res = await wt
         .commitAll(agentId, `Skynet agent ${agentId}${agent ? `: ${agent.name}` : ""}`)
         .catch((err) => {
           void this.hub.agentLog(agentId, `commit failed: ${(err as Error).message}`);
@@ -186,7 +222,7 @@ export class Orchestrator {
         });
 
       if (res.committed) {
-        const stat = await this.worktrees.diffStat(agentId, live.baseRef);
+        const stat = await wt.diffStat(agentId, live.baseRef);
         await this.freeRunner(live.runnerId); // compute is done; awaiting review
         await this.hub.agentStatus(agentId, "review");
         await this.raiseDiffReview(agentId, stat);
@@ -196,9 +232,9 @@ export class Orchestrator {
 
       // Nothing to integrate — retire the worktree and complete plainly.
       await this.hub.agentLog(agentId, "no changes to integrate");
-      await this.worktrees.retire(agentId).catch(() => undefined);
-    } else if (this.worktrees) {
-      await this.worktrees.retire(agentId).catch(() => undefined);
+      await wt.retire(agentId).catch(() => undefined);
+    } else if (live?.git) {
+      await live.git.worktrees.retire(agentId).catch(() => undefined);
     }
 
     // Phase 0 / no-diff completion: free the runner, finish the task & agent.
@@ -221,7 +257,7 @@ export class Orchestrator {
     await this.freeRunner(live?.runnerId ?? null);
     await this.hub.agentLog(agentId, `runner failed — ${reason}. Not completed; needs attention.`);
     await this.hub.agentStatus(agentId, "review"); // visible needs-attention, NOT "done"
-    if (this.worktrees) await this.worktrees.retire(agentId).catch(() => undefined);
+    if (live?.git) await live.git.worktrees.retire(agentId).catch(() => undefined);
     this.live.delete(agentId);
   }
 
@@ -232,7 +268,9 @@ export class Orchestrator {
     await this.freeRunner(runnerId);
     await this.hub.agentLog(agentId, `failed to start — ${reason}. Needs attention.`);
     await this.hub.agentStatus(agentId, "review");
-    if (this.worktrees) await this.worktrees.retire(agentId).catch(() => undefined);
+    // A worktree may have been provisioned before start threw — retire it.
+    const ctx = await this.gitContextForAgent(agentId).catch(() => undefined);
+    if (ctx) await ctx.worktrees.retire(agentId).catch(() => undefined);
     this.live.delete(agentId);
   }
 
@@ -283,12 +321,13 @@ export class Orchestrator {
    * collide — the caller surfaces it as a failed agent.
    */
   private async provisionCwd(
+    git: GitContext | undefined,
     agentId: string,
     branch: string,
     baseRef?: string,
   ): Promise<{ cwd: string | undefined; baseRef?: string }> {
-    if (!this.worktrees) return { cwd: config.runnerCwd };
-    const prov = await this.worktrees.provision(agentId, branch, { baseRef });
+    if (!git) return { cwd: config.runnerCwd };
+    const prov = await git.worktrees.provision(agentId, branch, { baseRef });
     await this.hub.agentLog(agentId, `worktree ready on ${branch} (from ${prov.baseRef})`);
     return { cwd: prov.cwd, baseRef: prov.baseRef };
   }
@@ -364,16 +403,19 @@ export class Orchestrator {
     await this.hub.upsertTask({ ...task, state: "assigned", agentId });
     await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 
+    // Git backend for this project's repo (local repoPath, else global) — drives
+    // the isolated worktree + which merge queue this agent integrates into.
+    const git = this.gitContextFor(project);
     try {
       // Isolated worktree cut from the project's integration tip (or base).
-      const { cwd, baseRef } = await this.provisionCwd(agentId, branch, this.merge?.integrationBranch(projectId));
+      const { cwd, baseRef } = await this.provisionCwd(git, agentId, branch, git?.merge.integrationBranch(projectId));
       // Inject this workspace's provider key (env fallback when none is stored).
       const apiKey = await secretService.resolve(project.workspaceId, runner.provider);
       const handle = await provider.start(
         { agentId, projectId, task: task.text, model: runner.model, branch, cwd, apiKey },
         this.events(),
       );
-      this.live.set(agentId, { handle, runnerId: runner.id, taskId, branch, baseRef });
+      this.live.set(agentId, { handle, runnerId: runner.id, taskId, branch, baseRef, git });
     } catch (err) {
       await this.failStartup(agentId, runner.id, (err as Error).message);
       throw err;
@@ -426,15 +468,16 @@ export class Orchestrator {
     await this.hub.createAgent(agent);
     if (project) await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
 
+    const git = this.gitContextFor(project);
     try {
       // A fork branches from its parent (family-internal integration, §7).
-      const { cwd, baseRef } = await this.provisionCwd(agentId, agent.branch, parent.branch);
+      const { cwd, baseRef } = await this.provisionCwd(git, agentId, agent.branch, parent.branch);
       const apiKey = await secretService.resolve(parent.workspaceId, runner.provider);
       const handle = await provider.start(
         { agentId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex, apiKey },
         this.events(),
       );
-      this.live.set(agentId, { handle, runnerId: runner.id, taskId: null, branch: agent.branch, baseRef });
+      this.live.set(agentId, { handle, runnerId: runner.id, taskId: null, branch: agent.branch, baseRef, git });
     } catch (err) {
       await this.failStartup(agentId, runner.id, (err as Error).message);
       throw err;
@@ -453,17 +496,19 @@ export class Orchestrator {
       const agent = await this.store.getAgent(agentId);
       if (agent) {
         const project = await this.store.getProject(agent.projectId);
+        const git = this.gitContextFor(project);
         const conn = await githubService.get(agent.workspaceId);
         // GitHub PR flow: workspace connected, project bound to one repo, and a
-        // worktree to push from. Otherwise fall back to the local merge queue.
-        if (conn?.connected && project?.repo && this.worktrees) {
-          await this.pushToGithub(agent, project.repo);
+        // worktree to push from. Otherwise fall back to the local merge queue
+        // (against the project's own repo when git-backed, else the global one).
+        if (conn?.connected && project?.repo && git) {
+          await this.pushToGithub(git, agent, project.repo);
           return;
         }
-        if (this.merge) {
+        if (git) {
           await this.hub.agentStatus(agentId, "review");
           await this.hub.agentLog(agentId, item.kind === "merge" ? "retrying merge after reconciliation" : "diff approved — queued for merge");
-          this.merge.enqueue({ agentId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId });
+          git.merge.enqueue({ agentId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId });
           return;
         }
       }
@@ -497,7 +542,8 @@ export class Orchestrator {
       this.live.delete(agentId);
     }
     // Integrated — retire the agent's worktree (the branch is kept in history).
-    if (this.worktrees) await this.worktrees.retire(agentId).catch(() => undefined);
+    const ctx = await this.gitContextForAgent(agentId).catch(() => undefined);
+    if (ctx) await ctx.worktrees.retire(agentId).catch(() => undefined);
   }
 
   /**
@@ -506,9 +552,9 @@ export class Orchestrator {
    * The agent stays in `review` until the PR is merged on GitHub. Enforcement is
    * server-side here — the runner never had credentials to push around it.
    */
-  private async pushToGithub(agent: Agent, repo: string): Promise<void> {
-    const worktreePath = this.worktrees!.pathFor(agent.id);
-    const stat = await this.worktrees!.diffStat(agent.id, config.baseBranch);
+  private async pushToGithub(git: GitContext, agent: Agent, repo: string): Promise<void> {
+    const worktreePath = git.worktrees.pathFor(agent.id);
+    const stat = await git.worktrees.diffStat(agent.id, config.baseBranch);
     const modules = this.moduleMap.modulesForFiles(stat.files);
     await this.hub.agentStatus(agent.id, "review");
     try {
@@ -623,7 +669,8 @@ export class Orchestrator {
       this.live.delete(agentId);
     }
     // Retire the worktree so a stopped agent doesn't leave one behind.
-    if (this.worktrees) await this.worktrees.retire(agentId).catch(() => undefined);
+    const ctx = live?.git ?? (await this.gitContextForAgent(agentId).catch(() => undefined));
+    if (ctx) await ctx.worktrees.retire(agentId).catch(() => undefined);
   }
 
   isBusy(runnerId: string): boolean {

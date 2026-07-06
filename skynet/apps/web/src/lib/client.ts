@@ -85,13 +85,30 @@ export function deleteSecret(provider: string) {
   return req<unknown>("DELETE", `/api/secrets/${provider}`);
 }
 
+// ─── Local folder browser (connect-a-folder picker) ────────────────────────
+export interface FsEntry {
+  name: string;
+  path: string;
+  isGitRepo: boolean;
+}
+export interface FsListing {
+  path: string;
+  parent: string | null;
+  entries: FsEntry[];
+}
+/** List subfolders of `path` (default: home) on the server machine. */
+export function browseFolder(path?: string) {
+  const q = path ? `?path=${encodeURIComponent(path)}` : "";
+  return req<FsListing>("GET", `/api/fs/list${q}`);
+}
+
 // Projects
-export function createProject(body: { name: string; goal: string; repo?: string }) {
+export function createProject(body: { name: string; goal: string; repoPath?: string; repo?: string }) {
   return req<unknown>("POST", "/api/projects", body);
 }
 export function updateProject(
   id: string,
-  body: { name?: string; goal?: string; status?: string },
+  body: { name?: string; goal?: string; status?: string; repoPath?: string | null },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
 }

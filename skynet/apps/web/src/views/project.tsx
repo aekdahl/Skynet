@@ -276,6 +276,12 @@ export function ProjectView({
           <div className="projview-head-main">
             <h2>{project.name}</h2>
             <p>{project.goal}</p>
+            {project.repoPath && (
+              <div className="mono proj-repo-line" title={project.repoPath}>
+                {project.gitBacked ? "◈ git" : "📁"} {project.repoPath}
+                {project.gitBacked && " · agents work in auto worktrees here"}
+              </div>
+            )}
             {project.repo && (
               <div className="mono proj-repo-line">⑂ {project.repo} · agents branch &amp; PR here</div>
             )}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { SecretMeta } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
+import { InstallControls } from "../components/install-controls";
 
 // Provider keys live in the encrypted secret store, scoped to this workspace.
 // A vendor's runners are only selectable in create-agent once its key is set
@@ -136,6 +137,16 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
             </div>
           );
         })}
+      </div>
+
+      <div className="settings-setup">
+        <div className="settings-setup-text">
+          <div className="settings-setup-title">App</div>
+          <div className="settings-setup-sub">
+            Install Skynet as an app and get Inbox alerts when an agent needs you.
+          </div>
+        </div>
+        <InstallControls />
       </div>
 
       {onRerunSetup && (
