@@ -28,12 +28,12 @@ async function main() {
   let store: Store;
   if (config.store === "postgres") {
     const { PostgresStore } = await import("./store/postgres.js");
-    store = await PostgresStore.create(config.databaseUrl, config.seedDemo);
+    store = await PostgresStore.create(config.databaseUrl);
   } else if (config.store === "file") {
     const { FileStore } = await import("./store/file.js");
-    store = FileStore.create(config.dbPath, config.seedDemo);
+    store = FileStore.create(config.dbPath);
   } else if (config.store === "memory") {
-    store = new MemoryStore({ seed: config.seedDemo });
+    store = new MemoryStore();
   } else {
     // No silent default: choosing persistence is explicit so data loss is never a surprise.
     throw new Error("No store configured. Set STORE=memory for dev/tests, or STORE=file / STORE=postgres for durability.");

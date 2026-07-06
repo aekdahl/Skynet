@@ -16,19 +16,19 @@ interface HasId { id: string }
 export class FileStore extends MemoryStore {
   private saveTimer?: ReturnType<typeof setTimeout>;
 
-  private constructor(private path: string, opts: { seed?: boolean }) {
-    super(opts);
+  private constructor(private path: string) {
+    super();
   }
 
-  /** Load from `path` if it exists, else create it (seeding demo data when asked). */
-  static create(path: string, seed = false): FileStore {
+  /** Load from `path` if it exists, else create it as an empty store. */
+  static create(path: string): FileStore {
     const exists = existsSync(path);
-    const store = new FileStore(path, { seed: exists ? false : seed });
+    const store = new FileStore(path);
     if (exists) {
       store.load();
     } else {
       mkdirSync(dirname(path), { recursive: true });
-      store.flush(); // materialize the (possibly seeded) initial state
+      store.flush(); // materialize the initial (empty) state
     }
     return store;
   }

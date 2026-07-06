@@ -20,7 +20,7 @@ import type {
 } from "@skynet/shared";
 import { now } from "../config.js";
 import type { Store } from "./store.js";
-import { buildSeed, PROVIDERS } from "./seed.js";
+import { PROVIDERS } from "./providers.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents     (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
@@ -50,29 +50,11 @@ const J = (v: unknown) => JSON.stringify(v);
 export class PostgresStore implements Store {
   private constructor(private pool: Pool) {}
 
-  /** Connect, migrate, and (only when `seed` is set) seed fixtures into an empty DB. */
-  static async create(connectionString: string, seed = false): Promise<PostgresStore> {
+  /** Connect and migrate. The store starts empty — no demo fixtures. */
+  static async create(connectionString: string): Promise<PostgresStore> {
     const pool = new Pool({ connectionString });
     await pool.query(SCHEMA);
-    const store = new PostgresStore(pool);
-    if (seed) {
-      const { rows } = await pool.query<{ n: string }>("SELECT count(*) AS n FROM projects");
-      if (Number(rows[0]?.n ?? 0) === 0) await store.seed();
-    }
-    return store;
-  }
-
-  private async seed(): Promise<void> {
-    const s = buildSeed(now());
-    for (const a of s.agents) await this.putAgent(a); // putAgent also persists the log
-    for (const q of s.queue) await this.putHitl(q);
-    for (const p of s.projects) await this.putProject(p);
-    for (const t of s.tasks) await this.putTask(t);
-    for (const r of s.fleet) await this.putRunner(r);
-    for (const m of s.modules)
-      await this.pool.query("INSERT INTO modules(id,workspace_id,data) VALUES($1,$2,$3::jsonb) ON CONFLICT(id) DO NOTHING", [m.id, "cyberdyne", J(m)]);
-    for (const d of s.deps)
-      await this.pool.query("INSERT INTO deps(workspace_id,data) VALUES($1,$2::jsonb)", ["cyberdyne", J(d)]);
+    return new PostgresStore(pool);
   }
 
   // ── agents (log lives in the append-only agent_log table) ─────────────────

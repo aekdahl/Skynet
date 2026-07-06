@@ -18,7 +18,7 @@ import type {
 import type { AuditRecord } from "@skynet/shared";
 import { now } from "../config.js";
 import type { Store } from "./store.js";
-import { buildSeed, PROVIDERS } from "./seed.js";
+import { PROVIDERS } from "./providers.js";
 
 export class MemoryStore implements Store {
   // `protected` so a persistence subclass (FileStore) can load/serialize them.
@@ -38,19 +38,9 @@ export class MemoryStore implements Store {
    *  to schedule a debounced write to disk. */
   protected persist(): void {}
 
-  // `seed` defaults to true so direct `new MemoryStore()` (tests, scripts) keeps
-  // the demo fixtures; the server passes `config.seedDemo` to start clean.
-  constructor(opts: { seed?: boolean } = {}) {
-    if (opts.seed === false) return; // empty store — no prefilled demo data
-    const seed = buildSeed(now());
-    for (const a of seed.agents) this.agents.set(a.id, a);
-    for (const q of seed.queue) this.queue.set(q.id, q);
-    for (const p of seed.projects) this.projects.set(p.id, p);
-    for (const t of seed.tasks) this.tasks.set(t.id, t);
-    for (const r of seed.fleet) this.fleet.set(r.id, r);
-    this.modules = seed.modules;
-    this.deps = seed.deps;
-  }
+  // The store always starts empty — a fresh install has no projects/agents until
+  // the operator creates them. (No demo fixtures; the provider catalog is the
+  // only prefilled data, and it's live configuration.)
 
   async snapshot(workspaceId: string): Promise<Snapshot> {
     return {
