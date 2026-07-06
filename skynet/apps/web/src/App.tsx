@@ -104,8 +104,8 @@ export function App() {
     setView("project");
   };
 
-  const createProject = async (name: string, goal: string, repo?: string) => {
-    await store.createProject(name, goal, repo);
+  const createProject = async (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => {
+    await store.createProject(name, goal, opts);
     setFromP("projects");
     setView("projects");
   };

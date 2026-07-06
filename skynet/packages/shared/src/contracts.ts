@@ -103,8 +103,14 @@ export const Project = z.object({
   goal: z.string(),
   agentIds: z.array(z.string()),
   status: ProjectStatus,
-  // The single repository this project's agents branch & PR within (one repo per
-  // project). "owner/repo". Optional until GitHub is connected.
+  // A project binds to a repository one of two ways (they can coexist):
+  //  • repoPath — an absolute local folder the agents work in. When it contains
+  //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
+  //    + the merge queue against THAT repo. This is the desktop-first default.
+  //  • repo — a connected GitHub repository "owner/repo" the branches are pushed
+  //    to (PR flow). Optional; used for the cloud/publish path.
+  repoPath: z.string().nullable().default(null),
+  gitBacked: z.boolean().default(false),
   repo: z.string().optional(),
 });
 export type Project = z.infer<typeof Project>;
@@ -225,7 +231,8 @@ export type ChatRequest = z.infer<typeof ChatRequest>;
 export const CreateProjectRequest = z.object({
   name: z.string().min(1),
   goal: z.string().default(""),
-  repo: z.string().optional(), // bind the project to one repo at creation
+  repoPath: z.string().optional(), // absolute path to a local folder to work in
+  repo: z.string().optional(), // or bind to one connected GitHub repo at creation
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 
@@ -233,6 +240,7 @@ export const UpdateProjectRequest = z.object({
   name: z.string().min(1).optional(),
   goal: z.string().optional(),
   status: ProjectStatus.optional(),
+  repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;

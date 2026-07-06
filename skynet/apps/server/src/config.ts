@@ -46,6 +46,14 @@ export const config = {
   // integration repo (.skynet-worktrees) so working copies never show as
   // untracked inside the repo.
   worktreesDir: process.env.SKYNET_WORKTREES_DIR || undefined,
+  // Expose the local folder browser (/api/fs/list) so the desktop UI can offer a
+  // folder *picker* for connecting a project to a local repo. Local-only: it
+  // reveals the server machine's filesystem, so it's ON only outside production
+  // (desktop = server = same machine). MUST stay off for any hosted deploy.
+  allowLocalFs:
+    process.env.SKYNET_ALLOW_LOCAL_FS != null
+      ? process.env.SKYNET_ALLOW_LOCAL_FS === "true"
+      : nodeEnv !== "production",
 
   // ── GitHub App (server-side credentials; never per-workspace) ──────────────
   // When the App id + private key are set, the GitProvider can mint short-lived

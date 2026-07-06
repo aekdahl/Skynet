@@ -324,6 +324,8 @@ export function buildSeed(now: number): SeedData {
     name: p.name,
     goal: p.goal,
     repo: p.repo,
+    repoPath: null,
+    gitBacked: false,
     agentIds: p.agentIds,
     status: "active",
   }));
