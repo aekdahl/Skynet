@@ -713,12 +713,14 @@ button.kb-done:hover { opacity: 1; }
 .acc-row { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 13px 15px; }
 .acc-row.acc-pass { border-color: color-mix(in oklch, var(--ok), transparent 55%); }
 .acc-row.acc-fail { border-color: color-mix(in oklch, var(--danger), transparent 55%); }
+.acc-row.acc-skip { border-color: var(--line); opacity: 0.9; }
 .acc-row-head { display: flex; align-items: center; gap: 12px; }
 .acc-badge { flex: none; font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: 0.1em; border-radius: 5px; padding: 3px 7px; min-width: 42px; text-align: center; }
 .acc-badge-idle { color: var(--faint); background: var(--bg); }
 .acc-badge-running { color: var(--warn); background: color-mix(in oklch, var(--warn), transparent 85%); }
 .acc-badge-pass { color: var(--bg); background: var(--ok); }
 .acc-badge-fail { color: var(--bg); background: var(--danger); }
+.acc-badge-skip { color: var(--muted); background: var(--bg); border: 1px solid var(--line); }
 .acc-meta { flex: 1; min-width: 0; }
 .acc-name { font-size: 14px; font-weight: 600; }
 .acc-desc { font-size: 12px; color: var(--faint); margin-top: 1px; }
@@ -728,6 +730,9 @@ button.kb-done:hover { opacity: 1; }
 .acc-step-ok .acc-step-mark { color: var(--ok); }
 .acc-step-bad .acc-step-mark { color: var(--danger); }
 .acc-step-bad { color: var(--text); }
+.acc-step-skip .acc-step-mark { color: var(--faint); }
+.acc-step-skip { color: var(--muted); }
+.acc-tally-skip { color: var(--faint); }
 .acc-step-detail { color: var(--faint); font-size: 11px; }
 .settings-warn code { font-family: var(--font-mono); font-size: 12px; background: var(--bg); border: 1px solid var(--line-soft); border-radius: 4px; padding: 1px 5px; }
 .settings-list { display: flex; flex-direction: column; gap: 10px; max-width: 720px; }

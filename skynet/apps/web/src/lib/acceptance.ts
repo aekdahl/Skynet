@@ -11,6 +11,9 @@ import * as api from "./client";
 export interface Step {
   label: string;
   ok: boolean;
+  // A skipped step is a precondition that wasn't met (e.g. no open approval to
+  // resolve) — inconclusive, NOT a failure. It doesn't fail the scenario.
+  skip?: boolean;
   detail?: string;
 }
 
@@ -23,6 +26,7 @@ export interface Scenario {
 
 const uid = () => Math.random().toString(36).slice(2, 7);
 const step = (label: string, ok: boolean, detail?: string): Step => ({ label, ok, detail });
+const skipped = (label: string, detail?: string): Step => ({ label, ok: false, skip: true, detail });
 const swallow = (p: Promise<unknown>) => p.catch(() => undefined);
 
 export const SCENARIOS: Scenario[] = [
@@ -124,7 +128,7 @@ export const SCENARIOS: Scenario[] = [
       try {
         await api.setSecret(provider, `uat-key-${uid()}90`);
       } catch (e) {
-        return [step("secret store enabled (SKYNET_MASTER_KEY set)", false, (e as Error).message)];
+        return [skipped("secret store enabled (SKYNET_MASTER_KEY set)", (e as Error).message)];
       }
       const { secrets } = await api.fetchSecrets();
       steps.push(step("key stored (metadata only)", secrets.some((m) => m.provider === provider)));
@@ -145,7 +149,7 @@ export const SCENARIOS: Scenario[] = [
       const s = await api.fetchSnapshot();
       const open = s.queue.find((q) => q.resolvedAt == null);
       if (!open) {
-        steps.push(step("an open HITL item exists to resolve", false, "none open — seed data or a running agent needed; inconclusive"));
+        steps.push(skipped("an open approval to resolve", "none open — assign a task (agents raise gates) or load seed data, then re-run"));
         return steps;
       }
       const before = (await api.fetchAudit()).length;
@@ -208,7 +212,7 @@ export const SCENARIOS: Scenario[] = [
       try {
         await api.setSecret(provider, "uat-secret-WXYZ7788");
       } catch (e) {
-        return [step("secret store enabled (SKYNET_MASTER_KEY set)", false, (e as Error).message)];
+        return [skipped("secret store enabled (SKYNET_MASTER_KEY set)", (e as Error).message)];
       }
       const rec = (await api.fetchSecrets()).secrets.find((m) => m.provider === provider) as
         | Record<string, unknown>

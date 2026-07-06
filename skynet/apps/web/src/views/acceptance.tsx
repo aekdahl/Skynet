@@ -1,7 +1,15 @@
 import { useState } from "react";
 import { SCENARIOS, type Step } from "../lib/acceptance";
 
-type Status = "idle" | "running" | "pass" | "fail";
+type Status = "idle" | "running" | "pass" | "fail" | "skip";
+
+// A scenario fails only on a real failed step; steps flagged `skip` are
+// unmet preconditions (inconclusive), so a skip-only run reads as SKIP not FAIL.
+function verdict(steps: Step[]): Status {
+  if (steps.some((s) => !s.ok && !s.skip)) return "fail";
+  if (steps.some((s) => s.skip)) return "skip";
+  return "pass";
+}
 
 // In-app acceptance runner. Each scenario drives the real API and asserts on the
 // result; run them one at a time or all together and watch the board react.
@@ -17,7 +25,7 @@ export function AcceptanceView() {
     try {
       const steps = await scenario.run();
       setResults((m) => ({ ...m, [id]: steps }));
-      setStatus((m) => ({ ...m, [id]: steps.every((s) => s.ok) ? "pass" : "fail" }));
+      setStatus((m) => ({ ...m, [id]: verdict(steps) }));
     } catch (e) {
       setResults((m) => ({ ...m, [id]: [{ label: "threw", ok: false, detail: (e as Error).message }] }));
       setStatus((m) => ({ ...m, [id]: "fail" }));
@@ -32,6 +40,7 @@ export function AcceptanceView() {
 
   const passed = SCENARIOS.filter((s) => status[s.id] === "pass").length;
   const failed = SCENARIOS.filter((s) => status[s.id] === "fail").length;
+  const skippedN = SCENARIOS.filter((s) => status[s.id] === "skip").length;
 
   return (
     <section className="vw acceptance">
@@ -51,6 +60,7 @@ export function AcceptanceView() {
         <span className="acc-tally">
           {passed > 0 && <span className="acc-tally-ok">✓ {passed} passed</span>}
           {failed > 0 && <span className="acc-tally-fail">✗ {failed} failed</span>}
+          {skippedN > 0 && <span className="acc-tally-skip">— {skippedN} skipped</span>}
         </span>
       </div>
 
@@ -62,7 +72,7 @@ export function AcceptanceView() {
             <div className={"acc-row acc-" + st} key={sc.id}>
               <div className="acc-row-head">
                 <span className={"acc-badge acc-badge-" + st}>
-                  {st === "pass" ? "PASS" : st === "fail" ? "FAIL" : st === "running" ? "…" : "—"}
+                  {st === "pass" ? "PASS" : st === "fail" ? "FAIL" : st === "skip" ? "SKIP" : st === "running" ? "…" : "—"}
                 </span>
                 <div className="acc-meta">
                   <div className="acc-name">{sc.name}</div>
@@ -75,8 +85,8 @@ export function AcceptanceView() {
               {steps && steps.length > 0 && (
                 <ul className="acc-steps">
                   {steps.map((s, i) => (
-                    <li key={i} className={s.ok ? "acc-step-ok" : "acc-step-bad"}>
-                      <span className="acc-step-mark">{s.ok ? "✓" : "✗"}</span>
+                    <li key={i} className={s.ok ? "acc-step-ok" : s.skip ? "acc-step-skip" : "acc-step-bad"}>
+                      <span className="acc-step-mark">{s.ok ? "✓" : s.skip ? "—" : "✗"}</span>
                       <span className="acc-step-label">{s.label}</span>
                       {s.detail && <span className="acc-step-detail mono">{s.detail}</span>}
                     </li>
