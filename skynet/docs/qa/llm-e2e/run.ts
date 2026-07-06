@@ -55,14 +55,19 @@ const TOOLS = [
   }, ["hitlId", "action"]),
   tool("chat_agent", "Send a message to an agent.", { agentId: { type: "string" }, text: { type: "string" } }, ["agentId", "text"]),
   tool("fork_agent", "Fork an agent.", { agentId: { type: "string" } }, ["agentId"]),
-  tool("create_project", "Create a project.", { name: { type: "string" }, goal: { type: "string" } }, ["name"]),
+  tool("create_project", "Create a project. Optionally bind it to a local folder (repoPath, absolute path) and/or a connected GitHub repo (repo, 'owner/repo').", { name: { type: "string" }, goal: { type: "string" }, repoPath: { type: "string" }, repo: { type: "string" } }, ["name"]),
   tool("add_task", "Add a task to a project.", { projectId: { type: "string" }, text: { type: "string" } }, ["projectId", "text"]),
   tool("assign_task", "Assign a task (spins up an agent on an idle runner).", { projectId: { type: "string" }, taskId: { type: "string" } }, ["projectId", "taskId"]),
   tool("add_runner", "Add a fleet runner.", { provider: { type: "string" }, model: { type: "string" }, name: { type: "string" } }, ["provider", "model"]),
+  tool("archive_agent", "Archive (hide from the board) or restore an agent.", { agentId: { type: "string" }, archived: { type: "boolean" } }, ["agentId", "archived"]),
+  tool("get_github", "GitHub connection + safety policy + whether the App/broker are configured.", {}),
+  tool("set_secret", "Store a provider API key (write-only — only last4 is ever returned).", { provider: { type: "string" }, apiKey: { type: "string" } }, ["provider", "apiKey"]),
+  tool("list_secrets", "Configured provider keys (metadata only — provider + last4, never the key) + env-backed providers.", {}),
+  tool("delete_secret", "Remove a stored provider key.", { provider: { type: "string" } }, ["provider"]),
   tool("login", "POST /api/auth/login for a session token.", { email: { type: "string" }, password: { type: "string" } }, ["email", "password"]),
   tool("logout", "Invalidate the current session token.", {}),
-  tool("raw_request", "Escape hatch: any HTTP request to the API (for negative/edge probing). body is a JSON string.", {
-    method: { type: "string" }, path: { type: "string" }, body: { type: "string" },
+  tool("raw_request", "Escape hatch: any HTTP request to the API (for negative/edge probing). body is a JSON string. Optional token overrides the current auth token — e.g. pass 'dev-resistance' to probe cross-tenant access.", {
+    method: { type: "string" }, path: { type: "string" }, body: { type: "string" }, token: { type: "string" },
   }, ["method", "path"]),
   tool("finish", "Call when done; summarize what you exercised and anything suspicious.", { summary: { type: "string" } }, ["summary"]),
 ];
@@ -92,10 +97,20 @@ async function execTool(name: string, input: Json, state: { token: string }): Pr
     }
     case "chat_agent": return apiFetch("POST", `/api/agents/${input.agentId}/messages`, t, { text: input.text });
     case "fork_agent": return apiFetch("POST", `/api/agents/${input.agentId}/fork`, t);
-    case "create_project": return apiFetch("POST", "/api/projects", t, { name: input.name, goal: input.goal ?? "" });
+    case "create_project": {
+      const b: Json = { name: input.name, goal: input.goal ?? "" };
+      if (input.repoPath !== undefined) b.repoPath = input.repoPath;
+      if (input.repo !== undefined) b.repo = input.repo;
+      return apiFetch("POST", "/api/projects", t, b);
+    }
     case "add_task": return apiFetch("POST", `/api/projects/${input.projectId}/tasks`, t, { text: input.text });
     case "assign_task": return apiFetch("POST", `/api/projects/${input.projectId}/tasks/${input.taskId}/assign`, t);
     case "add_runner": return apiFetch("POST", "/api/fleet/runners", t, { provider: input.provider, model: input.model, name: input.name });
+    case "archive_agent": return apiFetch("POST", `/api/agents/${input.agentId}/archive`, t, { archived: input.archived });
+    case "get_github": return apiFetch("GET", "/api/github", t);
+    case "set_secret": return apiFetch("PUT", `/api/secrets/${input.provider}`, t, { apiKey: input.apiKey });
+    case "list_secrets": return apiFetch("GET", "/api/secrets", t);
+    case "delete_secret": return apiFetch("DELETE", `/api/secrets/${input.provider}`, t);
     case "login": {
       const r = await apiFetch("POST", "/api/auth/login", t, { email: input.email, password: input.password });
       const tok = (r.body as { token?: string })?.token;
@@ -106,7 +121,8 @@ async function execTool(name: string, input: Json, state: { token: string }): Pr
     case "raw_request": {
       let body: unknown;
       if (typeof input.body === "string" && input.body) { try { body = JSON.parse(input.body); } catch { body = input.body; } }
-      return apiFetch(String(input.method).toUpperCase(), String(input.path), t, body);
+      const tok = typeof input.token === "string" && input.token ? input.token : t;
+      return apiFetch(String(input.method).toUpperCase(), String(input.path), tok, body);
     }
     default: return { error: `unknown tool ${name}` };
   }
@@ -190,8 +206,15 @@ async function main() {
     process.exit(0);
   }
   console.log(`LLM-E2E · driver=${DRIVER_MODEL} judge=${JUDGE_MODEL} · target=${BASE}\n`);
+  // Optional focus: SCENARIO=<name substring> runs a subset (default: all).
+  const only = process.env.SCENARIO;
+  const scenarios = only ? SCENARIOS.filter((s) => s.name.includes(only)) : SCENARIOS;
+  if (only && scenarios.length === 0) {
+    console.error(`No scenario matches SCENARIO=${only}. Available: ${SCENARIOS.map((s) => s.name).join(", ")}`);
+    process.exit(1);
+  }
   let failed = 0;
-  for (const s of SCENARIOS) {
+  for (const s of scenarios) {
     process.stdout.write(`▶ ${s.name} … `);
     const log = await driveScenario(s);
     const finalState = {
@@ -206,7 +229,7 @@ async function main() {
     for (const d of v.defects) console.log(`    [${d.severity}] ${d.summary} — ${d.evidence}`);
     if (v.notes) console.log(`    notes: ${v.notes}`);
   }
-  console.log(`\n${failed === 0 ? "✅ all scenarios passed" : `❌ ${failed}/${SCENARIOS.length} scenario(s) failed`}`);
+  console.log(`\n${failed === 0 ? `✅ all ${scenarios.length} scenario(s) passed` : `❌ ${failed}/${scenarios.length} scenario(s) failed`}`);
   process.exit(failed === 0 ? 0 : 1);
 }
 
