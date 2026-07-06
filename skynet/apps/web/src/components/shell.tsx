@@ -204,9 +204,6 @@ export function OpStatusBar({
         )}
       </span>
       {open && <span className="stat-backdrop" onClick={() => setOpen(null)} />}
-      <span className="op-sb-r">
-        skynet-net · main · <span className="ok">✓ synced</span> · v2.18.0
-      </span>
     </footer>
   );
 }
