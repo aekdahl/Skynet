@@ -702,6 +702,32 @@ button.kb-done:hover { opacity: 1; }
 
 /* ===== settings (provider keys) ===== */
 .settings-warn { background: color-mix(in oklch, var(--warn), transparent 82%); border: 1px solid color-mix(in oklch, var(--warn), transparent 55%); color: var(--text); border-radius: 9px; padding: 12px 14px; font-size: 13px; line-height: 1.5; margin-bottom: var(--sp); }
+
+/* ===== acceptance checks ===== */
+.acc-bar { display: flex; align-items: center; gap: 14px; margin-bottom: var(--sp); }
+.acc-tally { display: flex; gap: 12px; font-size: 12px; font-family: var(--font-mono); }
+.acc-tally-ok { color: var(--ok); }
+.acc-tally-fail { color: var(--danger); }
+.acc-list { display: flex; flex-direction: column; gap: 10px; max-width: 820px; }
+.acc-row { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 13px 15px; }
+.acc-row.acc-pass { border-color: color-mix(in oklch, var(--ok), transparent 55%); }
+.acc-row.acc-fail { border-color: color-mix(in oklch, var(--danger), transparent 55%); }
+.acc-row-head { display: flex; align-items: center; gap: 12px; }
+.acc-badge { flex: none; font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: 0.1em; border-radius: 5px; padding: 3px 7px; min-width: 42px; text-align: center; }
+.acc-badge-idle { color: var(--faint); background: var(--bg); }
+.acc-badge-running { color: var(--warn); background: color-mix(in oklch, var(--warn), transparent 85%); }
+.acc-badge-pass { color: var(--bg); background: var(--ok); }
+.acc-badge-fail { color: var(--bg); background: var(--danger); }
+.acc-meta { flex: 1; min-width: 0; }
+.acc-name { font-size: 14px; font-weight: 600; }
+.acc-desc { font-size: 12px; color: var(--faint); margin-top: 1px; }
+.acc-steps { list-style: none; margin: 10px 0 2px; padding: 0 0 0 2px; display: flex; flex-direction: column; gap: 4px; }
+.acc-steps li { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; }
+.acc-step-mark { flex: none; font-weight: 700; }
+.acc-step-ok .acc-step-mark { color: var(--ok); }
+.acc-step-bad .acc-step-mark { color: var(--danger); }
+.acc-step-bad { color: var(--text); }
+.acc-step-detail { color: var(--faint); font-size: 11px; }
 .settings-warn code { font-family: var(--font-mono); font-size: 12px; background: var(--bg); border: 1px solid var(--line-soft); border-radius: 4px; padding: 1px 5px; }
 .settings-list { display: flex; flex-direction: column; gap: 10px; max-width: 720px; }
 .settings-row { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 14px 16px; display: flex; flex-direction: column; gap: 11px; }
