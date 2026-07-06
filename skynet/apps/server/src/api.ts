@@ -26,7 +26,7 @@ import { listDir, isGitRepo } from "./fs-browse.js";
 import { authenticate, type Principal } from "./auth.js";
 import { withSecretAvailability } from "./secrets/index.js";
 import type { Hub } from "./hub.js";
-import { NoCapacityError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
+import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import type { Store } from "./store/store.js";
 
 declare module "fastify" {
@@ -126,7 +126,9 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     try {
       return await orchestrator.fork(req.params.id);
     } catch (err) {
-      if (err instanceof NoCapacityError) return reply.code(409).send({ error: err.message });
+      if (err instanceof NoCapacityError || err instanceof RunnerNotConfiguredError) {
+        return reply.code(409).send({ error: err.message });
+      }
       return reply.code(400).send({ error: (err as Error).message });
     }
   });
@@ -211,7 +213,11 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return await orchestrator.assignTask(req.params.id, req.params.tid);
     } catch (err) {
       // DEF-003/005: a done or already-assigned task is a conflict, not a retry.
-      if (err instanceof NoCapacityError || err instanceof TaskAlreadyAssignedError) {
+      if (
+        err instanceof NoCapacityError ||
+        err instanceof TaskAlreadyAssignedError ||
+        err instanceof RunnerNotConfiguredError
+      ) {
         return reply.code(409).send({ error: err.message });
       }
       return reply.code(400).send({ error: (err as Error).message });
