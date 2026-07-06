@@ -174,7 +174,7 @@ export function App() {
                 onCreate={createProject}
               />
             )}
-            {store.loaded && view === "fleet" && <FleetView />}
+            {store.loaded && view === "fleet" && <FleetView onOpenAgent={openAgent} />}
             {store.loaded && view === "integrations" && <IntegrationsView />}
             {store.loaded && view === "project" && project && (
               <ProjectView

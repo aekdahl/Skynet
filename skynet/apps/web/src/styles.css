@@ -889,6 +889,12 @@ button.kb-done:hover { opacity: 1; }
 .fleet-pname { font-size: 13px; color: var(--muted); }
 .fleet-model { font-size: 11px; color: var(--faint); }
 .fleet-task { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 7px 10px; background: var(--raised); border-radius: 7px; }
+/* Clickable "what it's running" line → opens the agent's live activity. */
+button.fleet-task-link { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid transparent; font: inherit; text-align: left; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+button.fleet-task-link:hover { background: var(--hover, var(--raised)); border-color: var(--border); }
+.fleet-task-link .fleet-task-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fleet-task-link .fleet-task-cta { flex: none; font-size: 11px; color: var(--muted, var(--faint)); opacity: 0; transition: opacity 0.12s; }
+button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
 .fleet-actions { display: flex; gap: 8px; border-top: 1px solid var(--line-soft); padding-top: 11px; }
 .btn-retire { color: var(--danger); }
 .btn-retire:hover:not(:disabled) { border-color: color-mix(in oklch, var(--danger), transparent 50%); }
