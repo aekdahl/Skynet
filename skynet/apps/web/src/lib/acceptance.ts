@@ -168,4 +168,78 @@ export const SCENARIOS: Scenario[] = [
       ];
     },
   },
+
+  // ── GTM-claim coverage: each maps to a promotable "what's shipped" claim ───
+  {
+    id: "vendor-neutral",
+    name: "Vendor-neutral runner catalog",
+    desc: 'Backs “multi-vendor ready.” All provider runners sit behind one seam; a key gates each.',
+    run: async () => {
+      const s = await api.fetchSnapshot();
+      const ids = new Set<string>(s.providers.map((p) => p.id));
+      const want = ["claude", "codex", "gemini", "cursor", "copilot"];
+      return [
+        step("all vendor runners in the catalog", want.every((id) => ids.has(id)), [...ids].join(", ")),
+        step("each provider advertises models", s.providers.every((p) => (p.models?.length ?? 0) > 0)),
+      ];
+    },
+  },
+  {
+    id: "safety-defaults",
+    name: "Guardrails on by default",
+    desc: 'Backs “nothing risky without you.” Every write guardrail is on until an operator disables it.',
+    run: async () => {
+      const sp = (await api.fetchGithub()).connection.safety;
+      return [
+        step("PR-only (no direct default-branch push)", sp.prOnly === true),
+        step("no force-push / history rewrite", sp.noForcePush === true),
+        step("module allowlist enforced", sp.moduleAllowlist === true),
+        step("approve before push/merge", sp.approveBeforePush === true),
+      ];
+    },
+  },
+  {
+    id: "keys-private",
+    name: "Provider keys stay private (write-only)",
+    desc: 'Backs “local-first & private.” A stored key is never returned — only last4 — and the catalog carries no secret.',
+    run: async () => {
+      const steps: Step[] = [];
+      const provider = "codex";
+      try {
+        await api.setSecret(provider, "uat-secret-WXYZ7788");
+      } catch (e) {
+        return [step("secret store enabled (SKYNET_MASTER_KEY set)", false, (e as Error).message)];
+      }
+      const rec = (await api.fetchSecrets()).secrets.find((m) => m.provider === provider) as
+        | Record<string, unknown>
+        | undefined;
+      const noPlaintext = !!rec && !("apiKey" in rec) && !("key" in rec) && !("ciphertext" in rec) && !("token" in rec);
+      steps.push(step("only last4 returned, no plaintext", noPlaintext && rec!.last4 === "7788", rec?.last4 as string));
+      const cat = (await api.fetchSnapshot()).providers.find((p) => p.id === provider) as Record<string, unknown> | undefined;
+      steps.push(step("provider catalog carries no secret", !!cat && !("apiKey" in cat) && !("key" in cat) && !("token" in cat)));
+      await swallow(api.deleteSecret(provider));
+      return steps;
+    },
+  },
+  {
+    id: "project-repo-binding",
+    name: "Project binds to a folder or a GitHub repo",
+    desc: 'Backs “point it at any local folder — or connect a GitHub repo.” Both connect modes are recorded.',
+    run: async () => {
+      const steps: Step[] = [];
+      const localName = `UAT: local ${uid()}`;
+      await api.createProject({ name: localName, goal: "acceptance", repoPath: "/tmp/uat-acceptance-repo" });
+      let s = await api.fetchSnapshot();
+      const lp = s.projects.find((p) => p.name === localName);
+      steps.push(step("local folder path recorded (worktree-per-agent mode)", lp?.repoPath === "/tmp/uat-acceptance-repo", lp?.repoPath ?? "null"));
+      const ghName = `UAT: gh ${uid()}`;
+      await api.createProject({ name: ghName, goal: "acceptance", repo: "acme/demo" });
+      s = await api.fetchSnapshot();
+      const gp = s.projects.find((p) => p.name === ghName);
+      steps.push(step("GitHub repo recorded (branch + PR mode)", gp?.repo === "acme/demo", gp?.repo ?? "null"));
+      if (lp) await swallow(api.deleteProject(lp.id));
+      if (gp) await swallow(api.deleteProject(gp.id));
+      return steps;
+    },
+  },
 ];
