@@ -16,6 +16,7 @@ import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
 import { MergeEngine, type MergeRequest } from "./merge.js";
 import { loadModuleMap, type ModuleMap } from "./modules-map.js";
+import { assessRunnerReadiness, envKeyPresent, executorNeedsNoKey } from "./runner-readiness.js";
 import { secretService } from "./secrets/index.js";
 import { previewService } from "./preview/index.js";
 import type { Store } from "./store/store.js";
@@ -49,6 +50,16 @@ export class NoCapacityError extends Error {
   constructor() {
     super("No idle runner available");
     this.name = "NoCapacityError";
+  }
+}
+
+/** No runner can execute — the fleet is empty, or the executor has no API key.
+ *  The route maps this to 409 so agent creation is refused rather than spawning
+ *  an agent that can only fail. */
+export class RunnerNotConfiguredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunnerNotConfiguredError";
   }
 }
 
@@ -304,9 +315,27 @@ export class Orchestrator {
     });
   }
 
+  /**
+   * Refuse agent creation unless a runner can actually execute: the fleet has a
+   * runner AND the executor has a credential (mock / CLI-login providers need
+   * none). Throws {@link RunnerNotConfiguredError} otherwise.
+   */
+  private async assertRunnerReady(workspaceId: string, runnerCount: number): Promise<void> {
+    // Unset RUNNER falls through to the mock provider (see getProvider), which
+    // needs no credential — mirror that here so the dev default stays open.
+    const mode = config.runner ?? "mock";
+    const credentialPresent = executorNeedsNoKey(mode)
+      ? true
+      : envKeyPresent(mode) ||
+        (await secretService.resolve(workspaceId, mode as Agent["provider"])) !== undefined;
+    const readiness = assessRunnerReadiness({ runnerMode: mode, runnerCount, credentialPresent });
+    if (!readiness.ok) throw new RunnerNotConfiguredError(readiness.reason!);
+  }
+
   /** Acquire an idle runner in a workspace; mark it busy. Throws if none. */
   private async acquireRunner(workspaceId: string): Promise<{ id: string; provider: Agent["provider"]; model: string }> {
     const runners = await this.store.listRunners(workspaceId);
+    await this.assertRunnerReady(workspaceId, runners.length);
     const idle = runners.find((r) => r.status === "idle");
     if (!idle) throw new NoCapacityError();
     await this.hub.upsertRunner({ ...idle, status: "busy", idleSince: null });

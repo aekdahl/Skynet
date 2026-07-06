@@ -143,7 +143,12 @@ export function AgentDetail({
           </span>
           <button
             className="btn btn-ghost btn-fork"
-            title="Duplicate this agent with the same context to work on something else"
+            disabled={fleet.length === 0}
+            title={
+              fleet.length === 0
+                ? "Configure a runner in Fleet before forking agents."
+                : "Duplicate this agent with the same context to work on something else"
+            }
             onClick={() => forkAgent(agent.id)}
           >
             ⑂ Fork agent

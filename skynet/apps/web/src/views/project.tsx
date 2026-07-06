@@ -76,7 +76,8 @@ function BacklogCard({
   task: Task;
   onAssign: () => void;
 }) {
-  const { updateTask, deleteTask } = useStore();
+  const { updateTask, deleteTask, fleet } = useStore();
+  const noRunner = fleet.length === 0;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.text);
   if (editing) {
@@ -131,8 +132,13 @@ function BacklogCard({
           </button>
         </span>
       </div>
-      <button className="kb-assign" onClick={onAssign}>
-        Assign agent →
+      <button
+        className="kb-assign"
+        onClick={onAssign}
+        disabled={noRunner}
+        title={noRunner ? "Configure a runner in Fleet before assigning agents." : undefined}
+      >
+        {noRunner ? "Configure a runner to assign" : "Assign agent →"}
       </button>
     </div>
   );

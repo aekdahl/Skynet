@@ -675,7 +675,8 @@ button.ct-seg { cursor: pointer; }
   align-self: flex-start; background: none; border: none; padding: 0; cursor: pointer;
   font-family: var(--font-ui); font-size: 12px; font-weight: 500; color: var(--accent);
 }
-.kb-assign:hover { text-decoration: underline; }
+.kb-assign:hover:not(:disabled) { text-decoration: underline; }
+.kb-assign:disabled { color: var(--faint); cursor: not-allowed; }
 .kb-assigned { border-style: solid; border-color: color-mix(in oklch, var(--ok), transparent 65%); }
 .kb-assigned-tag { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--ok); }
 button.kb-done { cursor: pointer; opacity: 0.65; }

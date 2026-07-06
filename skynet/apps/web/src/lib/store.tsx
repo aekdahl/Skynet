@@ -22,6 +22,20 @@ import type {
 } from "@skynet/shared";
 import * as api from "./client";
 
+/** Pull the server's `{ error }` message out of an ApiError body, else fallback. */
+function serverMessage(e: unknown, fallback: string): string {
+  if (e instanceof api.ApiError) {
+    try {
+      const parsed = JSON.parse(e.message) as { error?: unknown };
+      if (typeof parsed.error === "string") return parsed.error;
+    } catch {
+      /* body wasn't JSON — fall through */
+    }
+    if (e.message) return e.message;
+  }
+  return fallback;
+}
+
 // ─── store shape ─────────────────────────────────────────────────────────────
 
 export interface StoreState {
@@ -233,7 +247,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return reply;
       },
       forkAgent: async (id) => {
-        await api.forkAgent(id);
+        try {
+          await api.forkAgent(id);
+        } catch (e) {
+          if (e instanceof api.ApiError && e.status === 409) {
+            alert(serverMessage(e, "Can't fork — no runner available. Configure one in Fleet."));
+            return;
+          }
+          throw e;
+        }
       },
       archiveAgent: async (id, archived) => {
         await api.archiveAgent(id, archived);
@@ -267,7 +289,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           return await api.assignTask(projectId, taskId);
         } catch (e) {
           if (e instanceof api.ApiError && e.status === 409) {
-            alert("No idle runner available — configure or free one in Fleet.");
+            alert(serverMessage(e, "No idle runner available — configure or free one in Fleet."));
             return null;
           }
           throw e;
