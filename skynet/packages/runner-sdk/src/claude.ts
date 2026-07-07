@@ -69,16 +69,30 @@ const mapModel = (m: string): string | undefined =>
 // Build the env handed to the Agent SDK subprocess. `Options.env` REPLACES the
 // subprocess environment, so we spread the ambient env (PATH/HOME/…) and then
 // drop the markers that would route a nested Claude Code child to host-managed
-// OAuth — a standalone server can't satisfy that path and would 401. When an
-// ANTHROPIC_API_KEY is present we also drop the inherited gateway
-// ANTHROPIC_BASE_URL and any ANTHROPIC_AUTH_TOKEN so the key isn't shadowed.
-function buildRunnerEnv(): Record<string, string> {
+// OAuth — a standalone server can't satisfy that path and would 401.
+//
+// Accepted credentials (any one authenticates the SDK): ANTHROPIC_API_KEY, a
+// subscription token from `claude setup-token` (CLAUDE_CODE_OAUTH_TOKEN), or a
+// gateway bearer token (ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL). We only
+// strip the gateway credentials when a static ANTHROPIC_API_KEY would shadow
+// them, or when a NESTED Claude Code session's host-managed gateway would 401 a
+// standalone server. CLAUDE_CODE_OAUTH_TOKEN is a real standalone credential, so
+// it is preserved while the other CLAUDE_CODE_* session markers are dropped.
+export function buildRunnerEnv(): Record<string, string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
+  // A nested Claude Code session is signalled by CLAUDE_CODE_* markers *other*
+  // than a deliberately-set OAuth token; its inherited gateway creds 401.
+  const nestedSession = Object.keys(process.env).some(
+    (k) => k.startsWith("CLAUDE_CODE_") && k !== "CLAUDE_CODE_OAUTH_TOKEN",
+  );
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v == null) continue;
-    if (k.startsWith("CLAUDE_CODE_")) continue; // nested child-session markers
-    if (apiKey && (k === "ANTHROPIC_BASE_URL" || k === "ANTHROPIC_AUTH_TOKEN")) continue;
+    // Drop nested child-session markers, but keep a real OAuth token.
+    if (k.startsWith("CLAUDE_CODE_") && k !== "CLAUDE_CODE_OAUTH_TOKEN") continue;
+    // Drop inherited gateway auth when a static key shadows it, or when a nested
+    // session's host-managed gateway would 401 standalone.
+    if ((apiKey || nestedSession) && (k === "ANTHROPIC_BASE_URL" || k === "ANTHROPIC_AUTH_TOKEN")) continue;
     env[k] = v;
   }
   return env;
@@ -235,19 +249,24 @@ class ClaudeRunnerHandle implements RunnerHandle {
       });
     };
 
-    // Auth: a self-hosted server authenticates the nested Agent SDK with a
-    // static ANTHROPIC_API_KEY. Without one we'd inherit this process's env —
-    // which, when Skynet itself runs under Claude Code, carries CLAUDE_CODE_*
-    // child-session markers + a gateway ANTHROPIC_BASE_URL that expect a host to
-    // refresh a short-lived OAuth token over the control channel. A standalone
-    // server has no such host, so those credentials 401. Fast-fail with a clear
-    // reason instead of spinning up an agent that immediately 401s.
+    // Auth: authenticate the nested Agent SDK with any accepted credential — a
+    // static ANTHROPIC_API_KEY (env or per-workspace, injected as spec.apiKey), a
+    // `claude setup-token` subscription token (CLAUDE_CODE_OAUTH_TOKEN), or a
+    // gateway bearer token (ANTHROPIC_AUTH_TOKEN). buildRunnerEnv() has already
+    // dropped the nested-session markers that would 401 a standalone server, so
+    // whatever survives here is usable. Fast-fail with a clear reason rather than
+    // spinning up an agent that immediately 401s.
     const env = buildRunnerEnv();
     this.sdkEnv = spec.apiKey ? { ...env, ANTHROPIC_API_KEY: spec.apiKey } : env;
-    if (!env.ANTHROPIC_API_KEY && !spec.apiKey) {
+    const authed =
+      !!spec.apiKey ||
+      !!this.sdkEnv.ANTHROPIC_API_KEY ||
+      !!this.sdkEnv.CLAUDE_CODE_OAUTH_TOKEN ||
+      !!this.sdkEnv.ANTHROPIC_AUTH_TOKEN;
+    if (!authed) {
       this.events.onLog(
         this.agentId,
-        "ANTHROPIC_API_KEY is not set — the Claude runner cannot authenticate (set it to enable live runs; RUNNER=mock needs no key).",
+        "No Claude credential found — set ANTHROPIC_API_KEY, run `claude setup-token` (CLAUDE_CODE_OAUTH_TOKEN), or configure a gateway (ANTHROPIC_AUTH_TOKEN). RUNNER=mock needs no key.",
       );
       this.events.onStatus(this.agentId, "review");
       return; // q stays unset; consume()/heartbeat never start
