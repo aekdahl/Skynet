@@ -18,7 +18,7 @@ export const ProviderId = z.enum([
 ]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
-export const AgentStatus = z.enum(["running", "waiting", "review", "done"]);
+export const AgentStatus = z.enum(["running", "waiting", "paused", "review", "done"]);
 export type AgentStatus = z.infer<typeof AgentStatus>;
 
 export const PlanStepState = z.enum(["done", "now", "todo"]);

@@ -702,6 +702,40 @@ export class Orchestrator {
     if (ctx) await ctx.worktrees.retire(agentId).catch(() => undefined);
   }
 
+  /** Pause a running/waiting agent — halts its runner but keeps the session. */
+  async pauseAgent(agentId: string): Promise<Agent | undefined> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent || agent.status === "done" || agent.status === "paused") return agent;
+    const live = this.live.get(agentId);
+    if (live) await live.handle.pause().catch(() => undefined);
+    await this.hub.agentStatus(agentId, "paused");
+    return this.store.getAgent(agentId);
+  }
+
+  /** Resume a paused agent back into the running state. */
+  async resumeAgent(agentId: string): Promise<Agent | undefined> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent || agent.status !== "paused") return agent;
+    const live = this.live.get(agentId);
+    if (live) await live.handle.resume().catch(() => undefined);
+    await this.hub.agentStatus(agentId, "running");
+    return this.store.getAgent(agentId);
+  }
+
+  /** Operator "stop / remove": halt execution, free the runner, mark the agent done. */
+  async haltAgent(agentId: string): Promise<Agent | undefined> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent) return undefined;
+    const live = this.live.get(agentId);
+    if (live?.runnerId) {
+      const runner = await this.store.getRunner(live.runnerId);
+      if (runner) await this.hub.upsertRunner({ ...runner, status: "idle", idleSince: now() });
+    }
+    await this.stopAgent(agentId); // stop the handle + retire the worktree + drop the session
+    if (agent.status !== "done") await this.hub.agentStatus(agentId, "done");
+    return this.store.getAgent(agentId);
+  }
+
   isBusy(runnerId: string): boolean {
     for (const l of this.live.values()) if (l.runnerId === runnerId) return true;
     return false;

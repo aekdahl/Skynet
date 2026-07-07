@@ -141,6 +141,25 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     return (await hub.setAgentArchived(req.params.id, archived)) ?? reply.code(404).send({ error: "Agent not found" });
   });
 
+  // Lifecycle controls (agent detail view): pause / resume / stop.
+  app.post<{ Params: { id: string } }>("/api/agents/:id/pause", async (req, reply) => {
+    const agent = await store.getAgent(req.params.id);
+    if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
+    return orchestrator.pauseAgent(req.params.id);
+  });
+
+  app.post<{ Params: { id: string } }>("/api/agents/:id/resume", async (req, reply) => {
+    const agent = await store.getAgent(req.params.id);
+    if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
+    return orchestrator.resumeAgent(req.params.id);
+  });
+
+  app.post<{ Params: { id: string } }>("/api/agents/:id/stop", async (req, reply) => {
+    const agent = await store.getAgent(req.params.id);
+    if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
+    return orchestrator.haltAgent(req.params.id);
+  });
+
   // ── projects ───────────────────────────────────────────────────────────
   app.post("/api/projects", async (req, reply) => {
     const body = CreateProjectRequest.safeParse(req.body);
