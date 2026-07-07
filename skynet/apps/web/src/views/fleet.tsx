@@ -95,7 +95,7 @@ function ConfigForm({
   );
 }
 
-export function FleetView() {
+export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }) {
   const { fleet, agents, providers, createRunner, updateRunner, deleteRunner } =
     useStore();
   const [adding, setAdding] = useState(false);
@@ -175,7 +175,16 @@ export function FleetView() {
                     <span className="fleet-pname">{p.name}</span>
                     <span className="fleet-model mono">{r.model}</span>
                   </div>
-                  {busy && <div className="fleet-task">▸ {busy.name}</div>}
+                  {busy && (
+                    <button
+                      className="fleet-task fleet-task-link"
+                      onClick={() => onOpenAgent(busy.id)}
+                      title="Open this agent's live activity"
+                    >
+                      <span className="fleet-task-name">▸ {busy.name}</span>
+                      <span className="fleet-task-cta">activity →</span>
+                    </button>
+                  )}
                   <div className="fleet-actions">
                     <button
                       className="btn btn-ghost"
