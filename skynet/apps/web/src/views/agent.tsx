@@ -100,7 +100,7 @@ export function AgentDetail({
   onBack: () => void;
   backLabel: string;
 }) {
-  const { queue, agents, fleet, modules, resolveHitl, forkAgent, sendAgentMessage } =
+  const { queue, agents, fleet, modules, resolveHitl, forkAgent, stopAgent, sendAgentMessage } =
     useStore();
   const q = openQueue(queue).find((it) => it.agentId === agent.id);
   const doneCount = planDone(agent);
@@ -153,6 +153,19 @@ export function AgentDetail({
           >
             ⑂ Fork agent
           </button>
+          {agent.status !== "done" && (
+            <button
+              className="btn btn-ghost btn-stop"
+              title="Terminate this agent and free the runner it holds"
+              onClick={() => {
+                if (confirm(`Stop "${agent.name}"? This frees its runner; the agent won't resume.`)) {
+                  void stopAgent(agent.id);
+                }
+              }}
+            >
+              ◼ Stop agent
+            </button>
+          )}
         </div>
         <div className="detail-meta">
           <span className="mono">{agent.branch}</span>
@@ -349,13 +362,15 @@ export function AgentDetail({
           <AgentChat agent={agent} />
         </div>
         <div className="detail-right">
-          <div className="panel panel-preview">
-            <div className="panel-head">
-              LIVE PREVIEW{" "}
-              <span className="panel-sub">what's actually built right now</span>
+          {agent.visual && (
+            <div className="panel panel-preview">
+              <div className="panel-head">
+                LIVE PREVIEW{" "}
+                <span className="panel-sub">what's actually built right now</span>
+              </div>
+              <PreviewFor agent={agent} />
             </div>
-            <PreviewFor agent={agent} />
-          </div>
+          )}
           <div className="panel panel-log">
             <div className="panel-head">LIVE LOG</div>
             <div className="log">

@@ -454,6 +454,8 @@ button.lg-arow:hover { background: var(--raised); }
 .fork-tag { color: var(--violet); }
 .btn-fork { margin-left: auto; color: var(--violet); }
 .btn-fork:hover { border-color: var(--violet); color: var(--violet); }
+.btn-stop { color: var(--danger); }
+.btn-stop:hover { border-color: color-mix(in oklch, var(--danger), transparent 50%); color: var(--danger); }
 
 /* ===== roster ===== */
 .rs-cols { display: grid; grid-template-columns: 360px 1fr; gap: 26px; align-items: start; }
@@ -597,6 +599,7 @@ button.ct-seg { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { .pv-live { animation: none; } }
 .pv-body { padding: 14px; }
 .pv-light { background: #EDEFF2; color: #1B1F27; border-radius: 0 0 9px 9px; }
+.pv-none { padding: 20px 16px; font-size: 12px; line-height: 1.5; color: var(--muted); }
 .pv-term { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.8; color: var(--muted); }
 .pv-tline.pv-ok { color: var(--ok); }
 .pv-tline.pv-act { color: var(--text); }

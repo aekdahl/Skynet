@@ -1,6 +1,6 @@
 import type { Agent, Project } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { agentsForProject, heartbeatSecs, planDone } from "../lib/derive";
+import { agentsForProject, heartbeatSecs } from "../lib/derive";
 
 // Live previews: the artifact each agent is building. The prototype keyed these
 // off fixed demo ids; here we render a faithful generic surface (terminal for
@@ -36,25 +36,6 @@ function PvShell({
   );
 }
 
-function PvTerm({ lines, done }: { lines: string[]; done?: boolean }) {
-  return (
-    <div className="pv-term">
-      {lines.map((l, i) => (
-        <div
-          key={i}
-          className={
-            "pv-tline" +
-            (l.startsWith("✓") ? " pv-ok" : l.startsWith("▸") ? " pv-act" : "")
-          }
-        >
-          {l}
-        </div>
-      ))}
-      {!done && <div className="pv-tline pv-cursor">▌</div>}
-    </div>
-  );
-}
-
 // The real, sandboxed preview the backend reserved for this branch (W5). The
 // iframe is sandboxed so previewed app code can't reach the console origin;
 // production should also serve previews from a separate origin (subdomain).
@@ -75,7 +56,6 @@ const hostPath = (url: string) => url.replace(/^https?:\/\//, "");
 
 export function PreviewFor({ agent }: { agent: Agent }) {
   const now = agent.plan.find((p) => p.state === "now");
-  const done = planDone(agent);
 
   if (agent.visual) {
     return (
@@ -109,20 +89,14 @@ export function PreviewFor({ agent }: { agent: Agent }) {
     );
   }
 
-  const isDone = agent.status === "done";
+  // Non-visual agent: no renderable delivery. Don't fabricate a terminal — the
+  // agent's real activity is in the LIVE LOG panel. Callers fold this panel away
+  // for non-visual agents; this is the defensive fallback if one renders it.
   return (
-    <PvShell label={agent.name} fresh="just now" done={isDone}>
-      <PvTerm
-        done={isDone}
-        lines={[
-          '$ skynet run "' + agent.name + '"',
-          "✓ workspace ready on " + (agent.branch || "agent branch"),
-          done > 0
-            ? "✓ " + done + " step" + (done > 1 ? "s" : "") + " complete"
-            : "▸ planning approach",
-          isDone ? "✓ done" : "▸ " + (now ? now.text : "working…"),
-        ]}
-      />
+    <PvShell label={agent.name} fresh="just now" done={agent.status === "done"}>
+      <div className="pv-none">
+        No live preview — this agent has no renderable delivery. Follow its work in the log.
+      </div>
     </PvShell>
   );
 }
