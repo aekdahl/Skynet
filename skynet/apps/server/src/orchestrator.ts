@@ -177,6 +177,7 @@ export class Orchestrator {
     return {
       onLog: (agentId, line, detail) => void this.hub.agentLog(agentId, line, detail),
       onProgress: (agentId, progress, plan) => void this.hub.agentProgress(agentId, progress, plan),
+      onUsage: (agentId, usage) => void this.hub.agentUsage(agentId, usage),
       onHeartbeat: (agentId) => void this.hub.agentHeartbeat(agentId),
       onStatus: (agentId, status) => void this.hub.agentStatus(agentId, status),
       onHitl: (agentId, raise) => void this.raise(agentId, raise),
@@ -412,6 +413,7 @@ export class Orchestrator {
       modules: [],
       progress: 0,
       plan: [],
+      usage: null,
       modifiedFiles: [],
       log: [],
       startedAt: now(),

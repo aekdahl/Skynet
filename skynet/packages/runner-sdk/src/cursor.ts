@@ -17,6 +17,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
+import { usageFromJson } from "./cli-runner.js";
 import type {
   HitlRaise,
   RunnerEvents,
@@ -240,6 +241,13 @@ class CursorRunnerHandle implements RunnerHandle {
       this.events.onLog(this.agentId, `▸ ${name}`);
       if (!READ_ONLY.has(name.toLowerCase())) this.bump();
       return;
+    }
+
+    // The stream carries token/cost totals on the final `result` (and sometimes
+    // interim usage/metadata events) — report best-effort when present.
+    if (type === "result" || /usage|metadata/i.test(type)) {
+      const usage = usageFromJson((isRecord(ev.usage) ? ev.usage : ev) as Record<string, unknown>);
+      if (usage) this.events.onUsage?.(this.agentId, usage);
     }
 
     if (type === "result") {

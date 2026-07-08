@@ -12,6 +12,7 @@ import type {
   Resolution,
   Runner,
   Task,
+  Usage,
 } from "@skynet/shared";
 import { now } from "./config.js";
 import type { Bus } from "./bus.js";
@@ -65,6 +66,13 @@ export class Hub {
     if (!a) return;
     await this.store.putAgent({ ...a, progress, plan });
     this.bus.publish(a.workspaceId, { type: "agent.progress", agentId, progress, plan });
+  }
+
+  async agentUsage(agentId: string, usage: Usage): Promise<void> {
+    const a = await this.store.getAgent(agentId);
+    if (!a) return;
+    await this.store.putAgent({ ...a, usage });
+    this.bus.publish(a.workspaceId, { type: "agent.usage", agentId, usage });
   }
 
   async agentHeartbeat(agentId: string): Promise<void> {

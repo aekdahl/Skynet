@@ -17,6 +17,7 @@ import {
   Runner,
   Task,
   Timestamp,
+  Usage,
 } from "./contracts.js";
 
 // ─── Connect-time snapshot ────────────────────────────────────────────────
@@ -47,6 +48,7 @@ export const ServerEvent = z.discriminatedUnion("type", [
     plan: z.array(PlanStep),
   }),
   z.object({ type: z.literal("agent.heartbeat"), agentId: z.string(), at: Timestamp }),
+  z.object({ type: z.literal("agent.usage"), agentId: z.string(), usage: Usage }),
   z.object({ type: z.literal("agent.status"), agentId: z.string(), status: AgentStatus }),
   z.object({ type: z.literal("agent.completed"), agentId: z.string(), branch: z.string() }),
   z.object({ type: z.literal("agent.archived"), agentId: z.string(), archived: z.boolean() }),
