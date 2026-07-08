@@ -9,11 +9,19 @@ import { z } from "zod";
 import { config, now } from "../config.js";
 import { cookieToken, tokenFrom, SESSION_COOKIE } from "../auth.js";
 import type { SessionStore } from "./sessions.js";
+import type { ServiceTokenStore } from "./service-tokens.js";
 import type { OperatorDirectory } from "./operators.js";
 
 const LoginRequest = z.object({
   email: z.string().min(1),
   password: z.string().min(1),
+});
+
+// Mirrors the Scope tuple in auth.ts. A minted token is narrowed to this subset.
+const CreateServiceTokenRequest = z.object({
+  label: z.string().min(1),
+  scopes: z.array(z.enum(["observe", "author", "approver", "admin"])).min(1),
+  ttlMs: z.number().int().positive().nullable().optional(),
 });
 
 export interface AuthRouteDeps {
@@ -59,4 +67,58 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
 
   // Authenticated — who am I? (the hook has already set req.principal or 401'd).
   app.get("/api/auth/me", async (req: FastifyRequest) => ({ principal: req.principal }));
+}
+
+/**
+ * Service-token administration (MCP / programmatic access). All routes run
+ * behind the workspace-auth hook and are restricted to full-authority principals
+ * (human logins) — a scoped token cannot mint or manage tokens, so it can never
+ * escalate its own privileges or those of its peers. Tokens are always scoped to
+ * the caller's own workspace.
+ */
+export async function registerServiceTokenRoutes(
+  app: FastifyInstance,
+  deps: { serviceTokens: ServiceTokenStore },
+): Promise<void> {
+  const { serviceTokens } = deps;
+
+  // Only a human operator (no scopes = full authority) may manage tokens.
+  const requireHuman = (req: FastifyRequest, reply: FastifyReply): boolean => {
+    if (req.principal!.scopes !== undefined) {
+      reply.code(403).send({ error: "Service tokens can only be managed by an operator" });
+      return false;
+    }
+    return true;
+  };
+
+  // Mint a token — the raw secret is returned ONCE here and never again.
+  app.post("/api/service-tokens", async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!requireHuman(req, reply)) return reply;
+    const body = CreateServiceTokenRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    const created = await serviceTokens.create({
+      workspaceId: req.principal!.workspaceId,
+      operatorId: `token:${body.data.label}`, // attribution in the audit trail
+      scopes: body.data.scopes,
+      label: body.data.label,
+      ttlMs: body.data.ttlMs ?? null,
+    });
+    // Return the secret token plus the metadata; callers must store it now.
+    return reply.code(201).send({ token: created.token, id: created.id, scopes: body.data.scopes, label: created.label, expiresAt: created.expiresAt });
+  });
+
+  // List this workspace's tokens as non-secret metadata.
+  app.get("/api/service-tokens", async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!requireHuman(req, reply)) return reply;
+    return serviceTokens.list(req.principal!.workspaceId);
+  });
+
+  // Revoke a token by id (scoped to the caller's workspace).
+  app.delete<{ Params: { id: string } }>("/api/service-tokens/:id", async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    if (!requireHuman(req, reply)) return reply;
+    const metas = await serviceTokens.list(req.principal!.workspaceId);
+    if (!metas.some((m) => m.id === req.params.id)) return reply.code(404).send({ error: "Token not found" });
+    await serviceTokens.revoke(req.params.id);
+    return { ok: true };
+  });
 }

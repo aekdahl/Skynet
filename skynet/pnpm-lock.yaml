@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@3.25.76)
       tsx:
         specifier: ^4.19.2
         version: 4.22.4
@@ -17,6 +20,19 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
+
+  apps/mcp-stdio:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@3.25.76)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.7
+        version: 22.19.21
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
 
   apps/server:
     dependencies:
@@ -29,6 +45,9 @@ importers:
       '@fastify/websocket':
         specifier: ^11.0.2
         version: 11.2.0
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@3.25.76)
       '@skynet/runner-sdk':
         specifier: workspace:*
         version: link:../../packages/runner-sdk

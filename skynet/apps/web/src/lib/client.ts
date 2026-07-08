@@ -94,6 +94,35 @@ export function deleteSecret(provider: string) {
   return req<unknown>("DELETE", `/api/secrets/${provider}`);
 }
 
+// ─── Service tokens (MCP / programmatic access) ────────────────────────────
+// Scoped API tokens for agents driving Skynet over MCP. The raw token is
+// returned ONCE at creation; list only ever yields non-secret metadata.
+export type McpScope = "observe" | "author" | "approver" | "admin";
+
+export interface ServiceTokenMeta {
+  id: string;
+  label: string;
+  scopes: McpScope[];
+  createdAt: number;
+  expiresAt: number | null;
+  lastUsedAt: number | null;
+  last4: string;
+}
+
+export function listServiceTokens() {
+  return req<ServiceTokenMeta[]>("GET", "/api/service-tokens");
+}
+export function createServiceToken(body: { label: string; scopes: McpScope[]; ttlMs?: number | null }) {
+  return req<{ token: string; id: string; scopes: McpScope[]; label: string; expiresAt: number | null }>(
+    "POST",
+    "/api/service-tokens",
+    body,
+  );
+}
+export function revokeServiceToken(id: string) {
+  return req<unknown>("DELETE", `/api/service-tokens/${id}`);
+}
+
 // ─── Local folder browser (connect-a-folder picker) ────────────────────────
 export interface FsEntry {
   name: string;
