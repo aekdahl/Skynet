@@ -75,6 +75,12 @@ export function stopAgent(id: string) {
 export function archiveAgent(id: string, archived: boolean) {
   return req<unknown>("POST", `/api/agents/${id}/archive`, { archived });
 }
+export function pauseAgent(id: string) {
+  return req<unknown>("POST", `/api/agents/${id}/pause`);
+}
+export function resumeAgent(id: string) {
+  return req<unknown>("POST", `/api/agents/${id}/resume`);
+}
 
 // Provider secrets (Settings). `env` = providers a server env var supplies a
 // key for (a stored key overrides it).

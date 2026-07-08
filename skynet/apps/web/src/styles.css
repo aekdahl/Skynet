@@ -92,6 +92,7 @@ kbd {
 .dot-running { background: var(--ok); box-shadow: 0 0 8px color-mix(in oklch, var(--ok), transparent 40%); }
 .dot-waiting { background: var(--warn); box-shadow: 0 0 8px color-mix(in oklch, var(--warn), transparent 40%); animation: pulse 1.6s ease-in-out infinite; }
 .dot-review  { background: var(--info); }
+.dot-paused  { background: var(--muted); }
 .dot-done    { background: var(--faint); }
 @media (prefers-reduced-motion: no-preference) {
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
@@ -135,6 +136,7 @@ kbd {
 .bar-running { background: var(--ok); }
 .bar-waiting { background: var(--warn); }
 .bar-review { background: var(--info); }
+.bar-paused { background: var(--muted); }
 .bar-done { background: var(--faint); }
 
 /* ---------- overview ---------- */

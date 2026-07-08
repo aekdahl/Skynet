@@ -133,22 +133,34 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
-  // Stop an agent — terminates it and frees the runner it holds, even if the
-  // agent is orphaned (no live handle after a restart). The escape hatch for a
-  // wedged agent that would otherwise pin its runner "busy" forever.
-  app.post<{ Params: { id: string } }>("/api/agents/:id/stop", async (req, reply) => {
-    const agent = await store.getAgent(req.params.id);
-    if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
-    await orchestrator.stopAgent(req.params.id);
-    return (await store.getAgent(req.params.id)) ?? agent;
-  });
-
   // Archive / restore an agent (hidden from the board, kept in the store).
   app.post<{ Params: { id: string }; Body: { archived?: boolean } }>("/api/agents/:id/archive", async (req, reply) => {
     const agent = await store.getAgent(req.params.id);
     if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
     const archived = req.body?.archived ?? true;
     return (await hub.setAgentArchived(req.params.id, archived)) ?? reply.code(404).send({ error: "Agent not found" });
+  });
+
+  // Lifecycle controls (agent detail view): pause / resume / stop.
+  app.post<{ Params: { id: string } }>("/api/agents/:id/pause", async (req, reply) => {
+    const agent = await store.getAgent(req.params.id);
+    if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
+    return orchestrator.pauseAgent(req.params.id);
+  });
+
+  app.post<{ Params: { id: string } }>("/api/agents/:id/resume", async (req, reply) => {
+    const agent = await store.getAgent(req.params.id);
+    if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
+    return orchestrator.resumeAgent(req.params.id);
+  });
+
+  // Stop terminates the agent and frees the runner it holds (marking it done),
+  // even if the agent is orphaned (no live handle after a restart) — the escape
+  // hatch for a wedged agent that would otherwise pin its runner "busy" forever.
+  app.post<{ Params: { id: string } }>("/api/agents/:id/stop", async (req, reply) => {
+    const agent = await store.getAgent(req.params.id);
+    if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
+    return orchestrator.haltAgent(req.params.id);
   });
 
   // ── projects ───────────────────────────────────────────────────────────

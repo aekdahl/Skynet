@@ -110,8 +110,19 @@ export function AgentDetail({
   onBack: () => void;
   backLabel: string;
 }) {
-  const { queue, agents, fleet, modules, resolveHitl, forkAgent, stopAgent, sendAgentMessage } =
-    useStore();
+  const {
+    queue,
+    agents,
+    fleet,
+    modules,
+    resolveHitl,
+    forkAgent,
+    sendAgentMessage,
+    pauseAgent,
+    resumeAgent,
+    stopAgent,
+    archiveAgent,
+  } = useStore();
   const q = openQueue(queue).find((it) => it.agentId === agent.id);
   const doneCount = planDone(agent);
   const [mode, setMode] = useState<null | "modify" | "chat">(null);
@@ -163,19 +174,46 @@ export function AgentDetail({
           >
             ⑂ Fork agent
           </button>
+
+          {/* Lifecycle controls */}
+          {agent.status === "paused" ? (
+            <button
+              className="btn btn-ghost"
+              title="Resume this agent"
+              onClick={() => resumeAgent(agent.id)}
+            >
+              ▶ Resume
+            </button>
+          ) : (
+            agent.status !== "done" && (
+              <button
+                className="btn btn-ghost"
+                title="Pause this agent — halts its runner; resume later"
+                onClick={() => pauseAgent(agent.id)}
+              >
+                ⏸ Pause
+              </button>
+            )
+          )}
           {agent.status !== "done" && (
             <button
               className="btn btn-ghost btn-stop"
-              title="Terminate this agent and free the runner it holds"
+              title="Stop this agent — halts execution and frees its runner"
               onClick={() => {
-                if (confirm(`Stop "${agent.name}"? This frees its runner; the agent won't resume.`)) {
+                if (confirm(`Stop “${agent.name}”? This frees its runner; the agent won't resume.`))
                   void stopAgent(agent.id);
-                }
               }}
             >
               ◼ Stop agent
             </button>
           )}
+          <button
+            className="btn btn-ghost"
+            title={agent.archived ? "Restore to the board" : "Archive — hide from the board (kept in history)"}
+            onClick={() => archiveAgent(agent.id, !agent.archived)}
+          >
+            {agent.archived ? "⊕ Unarchive" : "⊘ Archive"}
+          </button>
         </div>
         <div className="detail-meta">
           <span className="mono">{agent.branch}</span>
