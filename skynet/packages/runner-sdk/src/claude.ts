@@ -698,7 +698,11 @@ class ClaudeRunnerHandle implements RunnerHandle {
     // blanking it — the PLAN panel stays meaningful for a finished agent.
     const donePlan = this.plan.map((p) => ({ ...p, state: "done" as const }));
     this.events.onProgress(this.agentId, 1, donePlan);
-    this.events.onStatus(this.agentId, "done");
+    // NOTE: do NOT emit onStatus("done") here. Compute is finished, but the agent
+    // is not terminal until the orchestrator commits its worktree → review →
+    // merge (or confirms an empty diff). Signalling "done" now would race that
+    // integration and expose a premature "done" with uncommitted work. Hand off
+    // via onCompleted and let the orchestrator own the terminal transition.
     this.events.onCompleted(this.agentId, this.spec.branch);
     this.input.close();
   }

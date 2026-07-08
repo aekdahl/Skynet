@@ -218,7 +218,10 @@ class CliRunnerHandle implements RunnerHandle {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     this.events.onProgress(this.agentId, 1, [] as PlanStep[]);
-    this.events.onStatus(this.agentId, "done");
+    // Compute finished, but the orchestrator owns the terminal "done" (after it
+    // commits the worktree → review → merge). Emitting "done" here would race
+    // integration and expose a premature "done" with uncommitted work — hand off
+    // via onCompleted only.
     this.events.onCompleted(this.agentId, this.spec.branch);
     this.kill();
   }
