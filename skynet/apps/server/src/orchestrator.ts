@@ -764,6 +764,24 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Release runners that are persisted "busy" but held by no live agent —
+   * "orphaned busy" state. It happens across a restart (the in-memory live map
+   * is empty, but the file/pg store still says busy) or if a freeRunner was ever
+   * missed. Left alone, such a runner shows "busy" forever with no work, and the
+   * retire guard refuses to remove it. Runs once at startup, where nothing is
+   * live yet — so any busy runner is definitionally an orphan and safe to reset.
+   * `isBusy` (the live map) is the source of truth for "actually executing".
+   */
+  async reconcileRunners(): Promise<void> {
+    const runners = await this.store.listAllRunners().catch(() => [] as Runner[]);
+    for (const r of runners) {
+      if (r.status === "busy" && !this.isBusy(r.id)) {
+        await this.hub.upsertRunner({ ...r, status: "idle", idleSince: now() });
+      }
+    }
+  }
+
   /** Pause a running/waiting agent — halts its runner but keeps the session. */
   async pauseAgent(agentId: string): Promise<Agent | undefined> {
     const agent = await this.store.getAgent(agentId);

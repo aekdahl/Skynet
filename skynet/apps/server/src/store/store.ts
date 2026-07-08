@@ -50,6 +50,8 @@ export interface Store {
 
   // fleet
   listRunners(workspaceId: string): Promise<Runner[]>;
+  /** Every runner across all workspaces — for maintenance sweeps (reconcile). */
+  listAllRunners(): Promise<Runner[]>;
   getRunner(id: string): Promise<Runner | undefined>;
   putRunner(runner: Runner): Promise<Runner>;
   deleteRunner(id: string): Promise<void>;
