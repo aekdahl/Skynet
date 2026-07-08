@@ -408,7 +408,8 @@ class ClaudeRunnerHandle implements RunnerHandle {
       `Task: ${spec.task}. ` +
       `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
       `Only if it requires code changes, make them and run any relevant checks. Then stop when done. ` +
-      `Ask before running destructive or irreversible commands.`;
+      `Ask before running destructive or irreversible commands. ` +
+      `Be honest when you're blocked: if you cannot reproduce a reported problem, or the task lacks information you'd need to fix it correctly (a stack trace, reproduction steps, failing logs, expected vs actual behavior), do NOT guess or make a speculative edit. Use the AskUserQuestion tool to ask the operator for exactly what you need, or if no answer is possible, report plainly what you could and couldn't determine and stop WITHOUT changing code. Asking for the missing detail is the correct, honest outcome here — a fabricated fix is a failure, not progress.`;
     this.input.push(this.initialPrompt);
 
     const canUseTool: CanUseTool = (toolName, input) => {
