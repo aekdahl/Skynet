@@ -39,6 +39,14 @@ export class NoCapacityError extends Error {
   }
 }
 
+/** A task can't be assigned in its current state (e.g. already done). Maps to 409. */
+export class TaskNotAssignableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TaskNotAssignableError";
+  }
+}
+
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   private chatWaiters = new Map<string, (reply: string) => void>();
@@ -288,6 +296,20 @@ export class Orchestrator {
   async assignTask(projectId: string, taskId: string): Promise<Agent> {
     const task = await this.store.getTask(taskId);
     if (!task || task.projectId !== projectId) throw new Error("Task not found");
+
+    // Preconditions — check BEFORE acquiring a runner so a rejected assign never
+    // leaks a busy runner or a spawned agent (DEF-003 / DEF-005):
+    //  • done tasks are terminal — never spin up an agent for one.
+    //  • already-assigned tasks are idempotent — return the existing agent rather
+    //    than double-spawning (which orphaned the first agent and its runner).
+    if (task.state === "done") throw new TaskNotAssignableError("Task is already done");
+    if (task.agentId) {
+      const existing = await this.store.getAgent(task.agentId);
+      // Return the live assignment. Only fall through if the pointer is stale
+      // (agent was deleted) — then a fresh assign is the self-healing behaviour.
+      if (existing) return existing;
+    }
+
     const project = await this.store.getProject(projectId);
     if (!project) throw new Error("Project not found");
 
