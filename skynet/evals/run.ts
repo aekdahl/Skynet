@@ -132,20 +132,37 @@ async function main(): Promise<void> {
     const executor = await loadExecutor();
     const list = arg1 === "all" || !arg1 ? SCENARIOS : [find(arg1)];
     let passed = 0;
+    let judged = 0;
+    const skipped: string[] = [];
     // Resilient batch: one scenario erroring (git hiccup, judge parse, timeout)
     // must not abort the rest of the sweep.
     for (const scenario of list) {
       try {
-        const artifacts = await executor.run(scenario);
+        // A runner/infra failure (API 529, auth, crash) is not an agent verdict —
+        // retry it a couple times, and if it still fails, skip judging (don't let
+        // an outage manufacture a FAIL or skew the pass rate).
+        let artifacts = await executor.run(scenario);
+        for (let attempt = 2; artifacts.runnerError && attempt <= 3; attempt++) {
+          console.log(`   ⟳ ${scenario.id}: runner error — retry ${attempt}/3`);
+          artifacts = await executor.run(scenario);
+        }
+        if (artifacts.runnerError) {
+          console.log(`\n⚠ RUNNER  ${scenario.id} — ${scenario.title}\n   → not judged (runner/infra failure): ${artifacts.runnerError}`);
+          skipped.push(scenario.id);
+          continue;
+        }
         const v = await judge(scenario, artifacts);
         report(scenario, v);
+        judged++;
         if (v.pass) passed++;
       } catch (err) {
         console.log(`\n✗ ERROR  ${scenario.id} — ${scenario.title}\n   → ${(err as Error).message}`);
       }
     }
-    console.log(`\n${passed}/${list.length} passed.`);
-    process.exit(passed === list.length ? 0 : 1);
+    const tail = skipped.length ? ` · ${skipped.length} skipped (runner/infra): ${skipped.join(", ")}` : "";
+    console.log(`\n${passed}/${judged} judged passed${tail}.`);
+    // Clean exit only if everything ran and passed — skips/fails signal incomplete.
+    process.exit(skipped.length === 0 && judged === list.length && passed === judged ? 0 : 1);
   }
 
   throw new Error(`Unknown command "${cmd}". Try: list | catalog-json | judge | exec | run | run-json`);

@@ -54,6 +54,10 @@ export interface Artifacts {
   prOpened?: boolean;
   /** Final agent status: running | waiting | review | done | failed. */
   finalStatus?: string;
+  /** Set when the RUNNER itself failed (API 529/auth/crash) rather than the agent
+   *  producing a bad result. An infrastructure flake, not an agent verdict — the
+   *  runner should be re-run, not scored. `run` skips judging these. */
+  runnerError?: string;
   // Performance counters (undefined if the executor didn't measure them).
   turns?: number;
   tokens?: number;
