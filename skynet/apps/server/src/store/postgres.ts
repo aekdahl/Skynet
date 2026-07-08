@@ -82,6 +82,11 @@ export class PostgresStore implements Store {
     const logs = await this.logsFor(rows.map((r) => r.data.id));
     return rows.map((r) => this.hydrate(r.data, logs));
   }
+  async listAllAgents(): Promise<Agent[]> {
+    // Maintenance sweep (reaper): status/heartbeat/runner only — logs not hydrated.
+    const { rows } = await this.pool.query<{ data: Agent }>("SELECT data FROM agents");
+    return rows.map((r) => ({ ...r.data, log: [] }));
+  }
   async getAgent(id: string): Promise<Agent | undefined> {
     const { rows } = await this.pool.query<{ data: Agent }>("SELECT data FROM agents WHERE id=$1", [id]);
     if (!rows[0]) return undefined;

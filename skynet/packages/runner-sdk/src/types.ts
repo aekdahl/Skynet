@@ -4,6 +4,7 @@ import type {
   PlanStep,
   ProviderId,
   Resolution,
+  Usage,
 } from "@skynet/shared";
 
 /** What the orchestrator hands a provider to start an agent on a task. */
@@ -50,6 +51,13 @@ export interface RunnerEvents {
   onFailed(agentId: string, reason: string): void;
   /** Reply to a `message()` (chat) — does not resolve a HITL item. */
   onChatReply(agentId: string, text: string): void;
+  /**
+   * Token/cost telemetry, when the vendor reports it (Claude's result message
+   * gives exact numbers; some CLIs surface them best-effort). Optional so a
+   * provider that has no usage data — or a hand-rolled test harness — can skip
+   * it. Called with the cumulative totals for the run.
+   */
+  onUsage?(agentId: string, usage: Usage): void;
 }
 
 /** The kind-specific fields an agent supplies when it raises a HITL gate. */

@@ -154,6 +154,9 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     return orchestrator.resumeAgent(req.params.id);
   });
 
+  // Stop terminates the agent and frees the runner it holds (marking it done),
+  // even if the agent is orphaned (no live handle after a restart) — the escape
+  // hatch for a wedged agent that would otherwise pin its runner "busy" forever.
   app.post<{ Params: { id: string } }>("/api/agents/:id/stop", async (req, reply) => {
     const agent = await store.getAgent(req.params.id);
     if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });

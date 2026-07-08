@@ -89,6 +89,16 @@ function finalAnswer(agent: Agent): string | null {
   return null;
 }
 
+// Compact token/cost summary for the detail header, when the runner reported it.
+function fmtUsage(u: Agent["usage"]): string | null {
+  if (!u) return null;
+  const tok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const parts = [`${tok(u.inputTokens)}→${tok(u.outputTokens)} tok`];
+  if (u.costUsd != null) parts.push(`$${u.costUsd < 0.01 ? u.costUsd.toFixed(4) : u.costUsd.toFixed(2)}`);
+  if (u.turns) parts.push(`${u.turns} turns`);
+  return parts.join(" · ");
+}
+
 export function AgentDetail({
   agent,
   now,
@@ -187,14 +197,14 @@ export function AgentDetail({
           )}
           {agent.status !== "done" && (
             <button
-              className="btn btn-ghost btn-danger"
+              className="btn btn-ghost btn-stop"
               title="Stop this agent — halts execution and frees its runner"
               onClick={() => {
-                if (confirm(`Stop “${agent.name}”? This halts the agent and frees its runner.`))
+                if (confirm(`Stop “${agent.name}”? This frees its runner; the agent won't resume.`))
                   void stopAgent(agent.id);
               }}
             >
-              ■ Stop
+              ◼ Stop agent
             </button>
           )}
           <button
@@ -209,6 +219,7 @@ export function AgentDetail({
           <span className="mono">{agent.branch}</span>
           <span>{agent.model}</span>
           <span>{fmtElapsed(agent, now)}</span>
+          {fmtUsage(agent.usage) && <span className="usage-chip mono" title="Tokens · cost · turns reported by the runner">{fmtUsage(agent.usage)}</span>}
           {agent.status === "done" ? (
             <span className="hb hb-done">♥ finished</span>
           ) : (
@@ -400,13 +411,15 @@ export function AgentDetail({
           <AgentChat agent={agent} />
         </div>
         <div className="detail-right">
-          <div className="panel panel-preview">
-            <div className="panel-head">
-              LIVE PREVIEW{" "}
-              <span className="panel-sub">what's actually built right now</span>
+          {agent.visual && (
+            <div className="panel panel-preview">
+              <div className="panel-head">
+                LIVE PREVIEW{" "}
+                <span className="panel-sub">what's actually built right now</span>
+              </div>
+              <PreviewFor agent={agent} />
             </div>
-            <PreviewFor agent={agent} />
-          </div>
+          )}
           <div className="panel panel-log">
             <div className="panel-head">LIVE LOG</div>
             <div className="log">

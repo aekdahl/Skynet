@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { Agent, HitlItem, Project, Resolution, Task } from "@skynet/shared";
+import type { Agent, HitlItem, Project, Resolution, Runner, Task } from "@skynet/shared";
 import {
   MockRunnerProvider,
   type HitlRaise,
@@ -177,6 +177,7 @@ export class Orchestrator {
     return {
       onLog: (agentId, line, detail) => void this.hub.agentLog(agentId, line, detail),
       onProgress: (agentId, progress, plan) => void this.hub.agentProgress(agentId, progress, plan),
+      onUsage: (agentId, usage) => void this.hub.agentUsage(agentId, usage),
       onHeartbeat: (agentId) => void this.hub.agentHeartbeat(agentId),
       onStatus: (agentId, status) => void this.hub.agentStatus(agentId, status),
       onHitl: (agentId, raise) => void this.raise(agentId, raise),
@@ -343,6 +344,31 @@ export class Orchestrator {
   }
 
   /**
+   * Acquire an idle runner, or PROVISION a fresh one on demand when the fleet is
+   * fully occupied — used by fork so a family can branch even when every runner
+   * is busy (a fork shouldn't be blocked waiting for capacity). The new runner
+   * inherits the requested provider/model. Still gated by assertRunnerReady, so
+   * we never spin up a runner the executor has no credential for.
+   */
+  private async acquireOrProvisionRunner(
+    workspaceId: string,
+    provider: Agent["provider"],
+    model: string,
+  ): Promise<{ id: string; provider: Agent["provider"]; model: string }> {
+    const runners = await this.store.listRunners(workspaceId);
+    await this.assertRunnerReady(workspaceId, runners.length);
+    const idle = runners.find((r) => r.status === "idle");
+    if (idle) {
+      await this.hub.upsertRunner({ ...idle, status: "busy", idleSince: null });
+      return { id: idle.id, provider: idle.provider, model: idle.model };
+    }
+    const id = `runner-auto-${++this.seq}`;
+    const runner: Runner = { id, workspaceId, name: id, provider, model, status: "busy", idleSince: null };
+    await this.hub.upsertRunner(runner);
+    return { id, provider, model };
+  }
+
+  /**
    * Provision the runner's working directory. Without an integration repo this
    * is the shared config.runnerCwd (Phase 0). With one configured, isolation is
    * REQUIRED: a fresh worktree on `branch`. If that fails we throw rather than
@@ -412,6 +438,7 @@ export class Orchestrator {
       modules: [],
       progress: 0,
       plan: [],
+      usage: null,
       modifiedFiles: [],
       log: [],
       startedAt: now(),
@@ -457,7 +484,9 @@ export class Orchestrator {
     const parent = await this.store.getAgent(parentId);
     if (!parent) throw new Error("Parent agent not found");
 
-    const runner = await this.acquireRunner(parent.workspaceId);
+    // Fork provisions capacity on demand: if no runner is idle, spin one up
+    // (inheriting the parent's provider/model) rather than refusing the fork.
+    const runner = await this.acquireOrProvisionRunner(parent.workspaceId, parent.provider, parent.model);
     const agentId = `${this.slug(parent.name)}-fork-${++this.seq}`;
     const stepIndex = Math.max(0, parent.plan.findIndex((s) => s.state === "now"));
     const forkBranch = `${parent.branch}-fork`;
@@ -691,15 +720,48 @@ export class Orchestrator {
     }
   }
 
-  async stopAgent(agentId: string): Promise<void> {
+  /**
+   * Terminate an agent — operator "stop" or the reaper. Works even for an
+   * ORPHAN (no live handle after a restart): stop the runner if live, free the
+   * runner it holds (so a stuck "busy" runner is released), retire the worktree,
+   * mark the agent terminal, and record why. This is the escape hatch for a
+   * wedged agent that otherwise blocks its runner from being retired.
+   */
+  async stopAgent(agentId: string, reason = "stopped by operator"): Promise<void> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent || agent.status === "done") return;
     const live = this.live.get(agentId);
-    if (live) {
-      await live.handle.stop();
-      this.live.delete(agentId);
-    }
-    // Retire the worktree so a stopped agent doesn't leave one behind.
+    if (live) await live.handle.stop().catch(() => undefined);
+    // Free the runner using the live mapping OR the agent's recorded runnerId
+    // (an orphan has no live entry, so agent.runnerId is the only handle).
+    await this.freeRunner(live?.runnerId ?? agent.runnerId ?? null);
     const ctx = live?.git ?? (await this.gitContextForAgent(agentId).catch(() => undefined));
     if (ctx) await ctx.worktrees.retire(agentId).catch(() => undefined);
+    await this.hub.agentLog(agentId, reason);
+    await this.hub.agentStatus(agentId, "done");
+    await this.hub.agentCompleted(agentId, agent.branch);
+    this.live.delete(agentId);
+  }
+
+  /**
+   * Reap presumed-dead agents: a `running`/`waiting` agent whose heartbeat has
+   * been silent past `config.agentReapMs` (a live runner beats every few
+   * seconds, so prolonged silence means the runner crashed or the server
+   * restarted and orphaned it). `review` agents are intentionally parked with no
+   * runner awaiting operator approval, so they never beat and are NOT reaped.
+   * Runs periodically and once at startup (which clears restart orphans).
+   */
+  async reapStaleAgents(): Promise<void> {
+    const ms = config.agentReapMs;
+    if (!ms || ms <= 0) return; // disabled
+    const cutoff = now() - ms;
+    const agents = await this.store.listAllAgents().catch(() => [] as Agent[]);
+    for (const a of agents) {
+      if (a.status !== "running" && a.status !== "waiting") continue;
+      if (a.lastHeartbeatAt > cutoff) continue;
+      const silentSec = Math.round((now() - a.lastHeartbeatAt) / 1000);
+      await this.stopAgent(a.id, `reaped — no heartbeat for ${silentSec}s; runner freed`).catch(() => undefined);
+    }
   }
 
   /** Pause a running/waiting agent — halts its runner but keeps the session. */

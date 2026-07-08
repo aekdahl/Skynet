@@ -69,6 +69,9 @@ export function sendAgentMessage(id: string, text: string) {
 export function forkAgent(id: string) {
   return req<unknown>("POST", `/api/agents/${id}/fork`);
 }
+export function stopAgent(id: string) {
+  return req<Agent>("POST", `/api/agents/${id}/stop`);
+}
 export function archiveAgent(id: string, archived: boolean) {
   return req<unknown>("POST", `/api/agents/${id}/archive`, { archived });
 }
@@ -77,9 +80,6 @@ export function pauseAgent(id: string) {
 }
 export function resumeAgent(id: string) {
   return req<unknown>("POST", `/api/agents/${id}/resume`);
-}
-export function stopAgent(id: string) {
-  return req<unknown>("POST", `/api/agents/${id}/stop`);
 }
 
 // Provider secrets (Settings). `env` = providers a server env var supplies a

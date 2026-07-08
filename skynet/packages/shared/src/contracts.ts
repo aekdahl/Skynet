@@ -53,6 +53,19 @@ export const PlanStep = z.object({
 });
 export type PlanStep = z.infer<typeof PlanStep>;
 
+// ─── Token usage & cost ─────────────────────────────────────────────────────
+// What a runner has spent so far, reported by the vendor (Claude's result
+// message carries exact numbers; some CLIs surface them best-effort, others
+// not at all). `costUsd`/`durationMs` are nullable when the vendor omits them.
+export const Usage = z.object({
+  inputTokens: z.number().int().nonnegative().default(0),
+  outputTokens: z.number().int().nonnegative().default(0),
+  costUsd: z.number().nonnegative().nullable().default(null),
+  turns: z.number().int().nonnegative().default(0),
+  durationMs: z.number().int().nonnegative().nullable().default(null),
+});
+export type Usage = z.infer<typeof Usage>;
+
 /** Append-only activity log line. Streamed via the `agent.log` event. */
 export const LogLine = z.object({
   at: Timestamp,
@@ -78,6 +91,7 @@ export const Agent = z.object({
   modules: z.array(z.string()), // architectural module ids it touches
   progress: z.number().min(0).max(1),
   plan: z.array(PlanStep),
+  usage: Usage.nullable().default(null), // token/cost telemetry, when the vendor reports it
   modifiedFiles: z.array(z.string()), // surfaced to UI as modules, never raw paths
   log: z.array(LogLine),
   startedAt: Timestamp,
