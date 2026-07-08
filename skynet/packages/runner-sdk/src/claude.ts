@@ -135,6 +135,20 @@ async function oneShotConsult(opts: {
   }
 }
 
+/** A one-shot, tool-less text query authenticated exactly like a live runner
+ *  (via {@link buildRunnerEnv} — so it works standalone AND nested inside a
+ *  Claude Code session, where a raw `fetch` to the API has no egress). Used by
+ *  out-of-band callers such as the eval judge. Returns the model's text. */
+export async function oneShotText(opts: { prompt: string; model?: string; cwd?: string }): Promise<string> {
+  return oneShotConsult({
+    prompt: opts.prompt,
+    cwd: opts.cwd ?? process.cwd(),
+    model: opts.model ?? "opus",
+    env: buildRunnerEnv(),
+    fallback: "",
+  });
+}
+
 // A tool call the assistant requested: its name, input args, and id (to pair
 // with the later tool_result that carries its output).
 type ToolCall = { name: string; input: Record<string, unknown>; id?: string };

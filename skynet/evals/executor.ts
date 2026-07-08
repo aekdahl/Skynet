@@ -3,9 +3,11 @@
 // repo, auto-resolving HITL gates, and captures artifacts (diff / log / hitl /
 // status) for the judge. Boots the server stack in-process — no HTTP server.
 //
-// Smoke-test (no API key needed): RUNNER=mock exercises the whole loop with the
-// canned mock runner. Real scenarios: leave RUNNER unset (uses the runner's
-// provider, e.g. claude) with ANTHROPIC_API_KEY set. See README.md.
+// Real runs only: leave RUNNER unset so the fleet runner's own provider executes
+// (e.g. claude), with a Claude credential present (ANTHROPIC_API_KEY, or the
+// CLAUDE_CODE_OAUTH_TOKEN / gateway the runner-sdk understands). Do NOT point
+// this at RUNNER=mock — a canned runner produces a fake diff and a meaningless
+// verdict; mock belongs in the deterministic unit tests, never here. See README.
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -41,6 +43,13 @@ async function boot(): Promise<Booted> {
   git(repo, "config", "user.email", "eval@skynet.local");
   git(repo, "config", "user.name", "Skynet Eval");
   writeFileSync(join(repo, "README.md"), "# eval fixture\n");
+  // Realistic ignores so an agent's test/tooling runs (e.g. `npx vitest` writing
+  // node_modules/.vite caches) don't leak into the branch diff and swamp the
+  // minimality signal — every real repo ignores these.
+  writeFileSync(
+    join(repo, ".gitignore"),
+    ["node_modules/", "dist/", "*.log", ".DS_Store", ".vite/", "coverage/"].join("\n") + "\n",
+  );
   git(repo, "add", "-A");
   git(repo, "commit", "-m", "base");
   const baseSha = git(repo, "rev-parse", "HEAD");

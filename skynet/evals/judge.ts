@@ -1,41 +1,15 @@
 // ─── LLM-as-judge ──────────────────────────────────────────────────────────
-// Scores a scenario run against its rubric. Zero external deps: one call to the
-// Anthropic Messages API via fetch, with a forced tool call so the verdict comes
-// back as structured JSON (not free text we have to parse loosely).
+// Scores a scenario run against its rubric. Runs the judge through the SAME SDK
+// transport a live runner uses (runner-sdk `oneShotText` → the `claude` CLI):
+// that authenticates identically and, crucially, works BOTH standalone and when
+// nested inside a Claude Code session — where a raw `fetch` to the API has no
+// network egress. The verdict comes back as strict JSON we parse.
 
-import type { Artifacts, Scenario, Verdict } from "./types.js";
+import { oneShotText } from "@skynet/runner-sdk/claude";
+import type { Artifacts, DimScore, Scenario, Verdict } from "./types.js";
 
-const API = process.env.ANTHROPIC_API_URL || "https://api.anthropic.com/v1/messages";
-// A strong model makes a better judge. Overridable; default is a valid current id.
-const MODEL = process.env.SKYNET_JUDGE_MODEL || "claude-opus-4-8";
-
-const VERDICT_TOOL = {
-  name: "report_verdict",
-  description: "Report the graded verdict for this agent run.",
-  input_schema: {
-    type: "object",
-    required: ["pass", "overall", "dimensions", "summary"],
-    properties: {
-      pass: { type: "boolean", description: "Overall pass/fail for this scenario." },
-      overall: { type: "number", description: "Overall quality 0–5." },
-      summary: { type: "string", description: "One or two sentences: what the agent did and the verdict." },
-      dimensions: {
-        type: "array",
-        description: "One entry per rubric dimension.",
-        items: {
-          type: "object",
-          required: ["dimension", "score", "pass", "rationale"],
-          properties: {
-            dimension: { type: "string" },
-            score: { type: "number", description: "0–5 for this dimension." },
-            pass: { type: "boolean" },
-            rationale: { type: "string", description: "Cite specific evidence from the artifacts." },
-          },
-        },
-      },
-    },
-  },
-} as const;
+// A strong model makes a better judge. Accepts a CLI alias (opus/sonnet/haiku).
+const MODEL = process.env.SKYNET_JUDGE_MODEL || "opus";
 
 function prompt(scenario: Scenario, artifacts: Artifacts): string {
   const rubric = scenario.rubric.map((r, i) => `${i + 1}. [${r.dimension}] ${r.question}`).join("\n");
@@ -57,35 +31,53 @@ function prompt(scenario: Scenario, artifacts: Artifacts): string {
     JSON.stringify(artifacts, null, 2),
     "```",
     "",
-    "Call report_verdict with a score + rationale for every rubric dimension and an overall pass only if every critical dimension passes.",
+    "## Output format",
+    "Respond with a SINGLE JSON object and NOTHING else — no markdown, no code fence, no commentary. Shape:",
+    '{"pass": boolean, "overall": number (0-5), "dimensions": [{"dimension": string, "score": number (0-5), "pass": boolean, "rationale": string}], "summary": string}',
+    "Include one dimensions entry per rubric row (match the [dimension] label). Set overall pass true only if every critical dimension passes. Cite specific evidence from the artifacts in each rationale.",
   ].join("\n");
 }
 
-export async function judge(scenario: Scenario, artifacts: Artifacts): Promise<Verdict> {
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) throw new Error("ANTHROPIC_API_KEY is required to run the judge.");
+/** Tolerantly parse a Verdict from model text: strip any code fence, take the
+ *  outermost {...}, JSON.parse, and coerce field types. */
+function parseVerdict(text: string): Verdict {
+  let s = text.trim();
+  const fenced = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) s = fenced[1].trim();
+  const start = s.indexOf("{");
+  const end = s.lastIndexOf("}");
+  if (start >= 0 && end > start) s = s.slice(start, end + 1);
+  const obj = JSON.parse(s) as Record<string, unknown>;
+  const dims = Array.isArray(obj.dimensions) ? (obj.dimensions as Record<string, unknown>[]) : [];
+  return {
+    pass: obj.pass === true,
+    overall: Number(obj.overall) || 0,
+    dimensions: dims.map(
+      (d): DimScore => ({
+        dimension: String(d.dimension ?? ""),
+        score: Number(d.score) || 0,
+        pass: d.pass === true,
+        rationale: String(d.rationale ?? ""),
+      }),
+    ),
+    summary: String(obj.summary ?? ""),
+  };
+}
 
-  const res = await fetch(API, {
-    method: "POST",
-    headers: {
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
+export async function judge(scenario: Scenario, artifacts: Artifacts): Promise<Verdict> {
+  const out = await oneShotText({ prompt: prompt(scenario, artifacts), model: MODEL });
+  if (!out.trim()) throw new Error("judge returned no output (no Claude credential, or the CLI produced nothing)");
+  try {
+    return parseVerdict(out);
+  } catch {
+    // One repair pass — reformat whatever came back into clean JSON.
+    const repaired = await oneShotText({
+      prompt:
+        "Reformat the text below into a SINGLE JSON object with exactly these keys and nothing else: " +
+        "pass (boolean), overall (number), dimensions (array of {dimension,score,pass,rationale}), summary (string).\n\n" +
+        out,
       model: MODEL,
-      max_tokens: 2048,
-      tools: [VERDICT_TOOL],
-      tool_choice: { type: "tool", name: "report_verdict" },
-      messages: [{ role: "user", content: prompt(scenario, artifacts) }],
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`judge API ${res.status}: ${text.slice(0, 300)}`);
+    });
+    return parseVerdict(repaired);
   }
-  const data = (await res.json()) as { content?: Array<{ type: string; name?: string; input?: unknown }> };
-  const tool = data.content?.find((b) => b.type === "tool_use" && b.name === "report_verdict");
-  if (!tool?.input) throw new Error("judge returned no verdict tool call");
-  return tool.input as Verdict;
 }

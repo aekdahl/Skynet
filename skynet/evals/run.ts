@@ -78,11 +78,17 @@ async function main(): Promise<void> {
     const executor = await loadExecutor();
     const list = arg1 === "all" || !arg1 ? SCENARIOS : [find(arg1)];
     let passed = 0;
+    // Resilient batch: one scenario erroring (git hiccup, judge parse, timeout)
+    // must not abort the rest of the sweep.
     for (const scenario of list) {
-      const artifacts = await executor.run(scenario);
-      const v = await judge(scenario, artifacts);
-      report(scenario, v);
-      if (v.pass) passed++;
+      try {
+        const artifacts = await executor.run(scenario);
+        const v = await judge(scenario, artifacts);
+        report(scenario, v);
+        if (v.pass) passed++;
+      } catch (err) {
+        console.log(`\n✗ ERROR  ${scenario.id} — ${scenario.title}\n   → ${(err as Error).message}`);
+      }
     }
     console.log(`\n${passed}/${list.length} passed.`);
     process.exit(passed === list.length ? 0 : 1);
