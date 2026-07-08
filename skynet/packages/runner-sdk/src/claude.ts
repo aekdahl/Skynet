@@ -311,6 +311,11 @@ function answerForQuestion(q: ParsedQuestion, decision?: Resolution): string {
   if (decision?.action === "modify" && decision.guidance) {
     return `The human answered your question "${q.header}": ${decision.guidance}. Continue with this.`;
   }
+  // No operator answered in time (auto-resolved by the server's question
+  // timeout). Do NOT invite a guess — the honest outcome is to conclude.
+  if (decision?.by?.startsWith("system:")) {
+    return `No operator answered your question "${q.header}" in time. Do NOT guess or make a speculative change — state plainly what you could and couldn't determine and exactly what you'd need to proceed, then stop without editing.`;
+  }
   if (decision?.action === "reject") {
     return `The human declined to choose for "${q.header}" — use your best judgment and proceed.`;
   }

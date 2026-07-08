@@ -169,6 +169,10 @@ export const HitlItem = z.object({
   why: z.string(),
   risk: Risk,
   raisedAt: Timestamp, // UI derives "waited" from this
+  // When set, an unanswered `question` auto-resolves at this time (no-operator
+  // timeout) so a headless/idle run doesn't hang waiting on a human. Null = no
+  // deadline (interactive default). See SKYNET_HITL_QUESTION_TIMEOUT_MS.
+  expiresAt: Timestamp.nullable().default(null),
   resolvedAt: Timestamp.nullable().default(null),
   resolution: Resolution.nullable().default(null),
   // kind-specific payload (only the relevant field is populated):

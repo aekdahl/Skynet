@@ -34,6 +34,10 @@ interface LiveAgent {
   /** The git backend (worktrees + merge queue) this agent is integrating into,
    *  resolved from its project's repo. Unset in the Phase 0 / no-repo flow. */
   git?: GitContext;
+  /** Set when a question this agent raised went unanswered and was auto-resolved
+   *  by the no-operator-answer timeout. If it then finishes with no change, it's
+   *  surfaced as needs-attention rather than a silent "done". */
+  blockedUnanswered?: boolean;
 }
 
 /** The git integration backend bound to one repo: an isolated worktree per agent
@@ -75,6 +79,8 @@ export class TaskAlreadyAssignedError extends Error {
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   private chatWaiters = new Map<string, (reply: string) => void>();
+  // Pending no-operator-answer timers for open `question` HITLs, keyed by item id.
+  private questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private seq = 0;
   // One lazily-loaded provider backend per provider id (real backends are heavy).
   private providers = new Map<string, Promise<RunnerProvider>>();
@@ -208,6 +214,10 @@ export class Orchestrator {
   private async raise(agentId: string, raise: HitlRaise): Promise<void> {
     const agent = await this.store.getAgent(agentId);
     if (!agent) return;
+    // A clarifying `question` gets an optional no-operator-answer deadline so a
+    // headless/idle run doesn't hang forever waiting on a human (0 = disabled).
+    const timeout = config.hitlQuestionTimeoutMs;
+    const expiresAt = raise.kind === "question" && timeout > 0 ? now() + timeout : null;
     const item: HitlItem = {
       id: `q-${agentId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
@@ -217,6 +227,7 @@ export class Orchestrator {
       why: raise.why,
       risk: raise.risk,
       raisedAt: now(),
+      expiresAt,
       resolvedAt: null,
       resolution: null,
       command: raise.command ?? null,
@@ -226,6 +237,37 @@ export class Orchestrator {
       diff: raise.diff ?? null,
     };
     await this.hub.raiseHitl(item);
+    if (expiresAt != null) {
+      this.questionTimers.set(item.id, setTimeout(() => void this.expireQuestion(item), timeout));
+    }
+  }
+
+  /** No operator answered a `question` within its window: auto-resolve it as
+   *  "no answer" through the normal resolve→deliver path so the audit records it,
+   *  the Inbox clears, and the agent is told to conclude WITHOUT guessing. */
+  private async expireQuestion(item: HitlItem): Promise<void> {
+    this.questionTimers.delete(item.id);
+    const current = await this.store.getHitl(item.id);
+    if (!current || current.resolvedAt != null) return; // a human got there first
+    const resolution: Resolution = {
+      action: "reject",
+      optionIndex: null,
+      guidance: null,
+      by: "system:timeout",
+      at: now(),
+    };
+    const resolved = await this.hub.resolveHitl(item.id, resolution);
+    if (resolved && resolved.resolution?.at === resolution.at) {
+      // Remember the agent concluded only because its question went unanswered,
+      // so complete() can surface it as needs-attention instead of "done".
+      const live = this.live.get(item.agentId);
+      if (live) live.blockedUnanswered = true;
+      await this.hub.agentLog(
+        item.agentId,
+        `no operator answer within ${Math.round(config.hitlQuestionTimeoutMs / 1000)}s — asking the agent to conclude without guessing`,
+      );
+      await this.deliver(item, resolution);
+    }
   }
 
   private async complete(agentId: string, branch: string): Promise<void> {
@@ -270,6 +312,17 @@ export class Orchestrator {
       await wt.retire(agentId).catch(() => undefined);
     } else if (live?.git) {
       await live.git.worktrees.retire(agentId).catch(() => undefined);
+    }
+
+    // Reached here with no diff. If the agent only stopped because a question it
+    // raised went unanswered, it did no real work — surface it as needs-attention
+    // (never a silent "done"), leave its task open, and don't mark it completed.
+    if (live?.blockedUnanswered) {
+      await this.freeRunner(live.runnerId);
+      await this.hub.agentStatus(agentId, "review");
+      await this.hub.agentLog(agentId, "concluded without an answer to its question — needs attention (no change made)");
+      this.live.delete(agentId);
+      return;
     }
 
     // Phase 0 / no-diff completion: free the runner, finish the task & agent.
@@ -333,6 +386,7 @@ export class Orchestrator {
       why: `Finished on ${agent.branch} — ${stat.add}+/${stat.del}- across ${stat.files.length} file(s). Approve to integrate.`,
       risk: stat.del > 200 || stat.files.length > 40 ? "high" : "medium",
       raisedAt: now(),
+      expiresAt: null,
       resolvedAt: null,
       resolution: null,
       command: null,
@@ -574,6 +628,13 @@ export class Orchestrator {
   async deliver(item: HitlItem, resolution: Resolution): Promise<void> {
     const agentId = item.agentId;
 
+    // Answered (by a human or the timeout) — cancel any pending expiry timer.
+    const timer = this.questionTimers.get(item.id);
+    if (timer) {
+      clearTimeout(timer);
+      this.questionTimers.delete(item.id);
+    }
+
     // diff-approve / merge-retry → integrate the agent's branch. This is the
     // post-approval half of the `approveBeforePush` guardrail: the diff review
     // gated here, so reaching this point means an operator approved the push.
@@ -681,6 +742,7 @@ export class Orchestrator {
       why: `${files.length} file(s) conflict integrating ${req.agentBranch}. Reconcile, then approve to retry.`,
       risk: "high",
       raisedAt: now(),
+      expiresAt: null,
       resolvedAt: null,
       resolution: null,
       command: null,
