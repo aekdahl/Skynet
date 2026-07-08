@@ -55,6 +55,17 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (cmd === "exec") {
+    // Run a scenario through the executor and print its artifacts (no judge —
+    // works without a key; smoke-test with RUNNER=mock). Pipe to a file, then
+    // `judge <id> that-file.json` to score it.
+    if (!arg1) throw new Error("usage: tsx evals/run.ts exec <scenarioId>");
+    const scenario = find(arg1);
+    const executor = await loadExecutor();
+    console.log(JSON.stringify(await executor.run(scenario), null, 2));
+    return;
+  }
+
   if (cmd === "judge") {
     if (!arg1 || !arg2) throw new Error("usage: tsx evals/run.ts judge <scenarioId> <artifacts.json>");
     const scenario = find(arg1);

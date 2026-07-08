@@ -10,6 +10,8 @@ and `vitest` never touch it. It runs on demand, costs tokens, and is non-determi
 ## Layout
 - `scenarios.ts` — the 20 scenarios (task + rubric) for this release.
 - `judge.ts` — the LLM-as-judge (one Anthropic Messages call via `fetch`, structured verdict).
+- `executor.ts` — boots the real orchestrator in-process against a throwaway git repo,
+  assigns the scenario task, auto-resolves HITL gates, and captures artifacts.
 - `types.ts` — `Scenario` / `Artifacts` / `Verdict` / `Executor`.
 - `run.ts` — CLI.
 
@@ -18,35 +20,31 @@ and `vitest` never touch it. It runs on demand, costs tokens, and is non-determi
 # list the catalog
 tsx evals/run.ts list
 
-# judge a captured run — works today, only needs a key
-ANTHROPIC_API_KEY=sk-… tsx evals/run.ts judge bugfix-failing-test ./artifacts.json
+# smoke-test the executor end-to-end with the mock runner — NO key needed
+RUNNER=mock tsx evals/run.ts exec bugfix-failing-test
 
-# full auto-run (once an Executor is wired)
-ANTHROPIC_API_KEY=sk-… tsx evals/run.ts run all
+# run a scenario for real (executor drives the agent) and judge it
+ANTHROPIC_API_KEY=sk-… tsx evals/run.ts run bugfix-failing-test   # one, or `run all`
+
+# judge a previously-captured artifacts file
+ANTHROPIC_API_KEY=sk-… tsx evals/run.ts judge bugfix-failing-test ./artifacts.json
 ```
 
-`artifacts.json` is an [`Artifacts`](./types.ts) object — the branch diff, agent log,
-HITL items, final status, and perf counters captured from a run.
+`exec` prints an [`Artifacts`](./types.ts) object (branch diff, agent log, HITL items,
+final status, perf counters). Pipe it to a file, then `judge` it.
 
 Judge model: `SKYNET_JUDGE_MODEL` (default `claude-opus-4-8`).
 
-## Wiring the Executor (next step)
-`run` needs something that actually drives an agent. Add `evals/executor.ts`:
+## How the executor runs
+- Boots `MemoryStore` + `InProcessBus` + `Hub` + `Orchestrator` against a temp git repo
+  (fresh `main` base). Env is set before importing config (import-time capture).
+- Creates a fleet runner (`SKYNET_EVAL_PROVIDER`, default `claude`) + project + task, then
+  `assignTask`. `RUNNER=mock` overrides execution to the mock runner (keyless smoke test);
+  leave `RUNNER` unset for the runner's own provider (needs `ANTHROPIC_API_KEY`).
+- Subscribes to the bus and **auto-approves every HITL** (a richer per-scenario reply
+  script can key off `scenario.hitl` later), waits for a terminal `done` (or
+  `SKYNET_EVAL_TIMEOUT_MS`, default 180s), then captures the diff/log/HITL/status.
 
-```ts
-import type { Executor } from "./types.js";
-export function makeExecutor(): Executor {
-  return {
-    async run(scenario) {
-      // provision a runner → assignTask(scenario.task) → script HITL replies →
-      // collect: git diff of the agent branch, the agent log, HITL items, PR, status,
-      // and turns/tokens/wallMs. Return as Artifacts.
-      return { /* … */ };
-    },
-  };
-}
-```
-
-Run with `RUNNER` unset (per-fleet provider) or `RUNNER=claude`, against a throwaway git
-fixture per scenario. Non-deterministic — run N times and track a pass rate; don't gate a
-PR on a single run.
+**Smoke-tested** with `RUNNER=mock` (assign → gate → auto-approve → done → artifacts).
+Non-deterministic for real runs — run N times and track a pass rate; don't gate a PR on
+a single run.
