@@ -36,6 +36,18 @@ export const config = {
   authRequired: process.env.AUTH_REQUIRED != null ? process.env.AUTH_REQUIRED === "true" : nodeEnv === "production",
   // Lifetime of a login session before it expires (→ 401). Default 12h.
   sessionTtlMs: Number(process.env.SESSION_TTL_MS ?? 12 * 60 * 60 * 1000),
+
+  // ── MCP bootstrap token (headless / sandbox deploys) ───────────────────────
+  // In a sandbox (e.g. Daytona) there is no human to log in and mint a token,
+  // so the creating agent injects a strong random secret here at boot; Skynet
+  // registers it as a scoped service token the agent then uses to call /mcp.
+  // Unset (the default) → no bootstrap token; tokens are minted only via the UI.
+  mcpBootstrapToken: process.env.SKYNET_BOOTSTRAP_TOKEN || undefined,
+  // Comma-separated scopes for the bootstrap token (default: observe + author,
+  // NEVER approver by default — a human still gates HITL unless you opt in).
+  mcpBootstrapScopes: process.env.SKYNET_BOOTSTRAP_SCOPES || "observe,author",
+  // Workspace the bootstrap token is scoped to (default: the single-tenant one).
+  mcpBootstrapWorkspace: process.env.SKYNET_BOOTSTRAP_WORKSPACE || undefined,
   // Target repo the merge queue integrates into. Unset → merge engine disabled
   // (diff-approve just completes the agent, the Phase 0 behavior).
   integrationRepo: process.env.SKYNET_INTEGRATION_REPO || undefined,

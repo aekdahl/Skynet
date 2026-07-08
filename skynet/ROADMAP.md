@@ -67,6 +67,9 @@ supervision layer, it doesn't host or resell those services.
   whole category. (Cheap to design early so we don't foreclose it; build here.)
 - **Tools via MCP:** an agent gets scoped tools (GitHub / Sentry / Slack MCP) to act back into the
   user's services. A "Sentry agent" = a coding agent + Sentry MCP + a Sentry webhook trigger.
+- **Skynet *as* an MCP server (shipped):** the reverse direction — Skynet exposes its own surface
+  (projects/tasks/fleet/agents/HITL) as MCP tools so an agent can drive the fleet, incl. a headless
+  bootstrap token for sandbox deploys (e.g. Daytona). See [docs/mcp.md](docs/mcp.md).
 - **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
   fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
 - Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.
