@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { SecretMeta } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
+import type { McpScope, ServiceTokenMeta } from "../lib/client";
 
 // Provider keys live in the encrypted secret store, scoped to this workspace.
 // A vendor's runners are only selectable in create-agent once its key is set
@@ -138,6 +139,8 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
         })}
       </div>
 
+      <McpAccessSection />
+
       {onRerunSetup && (
         <div className="settings-setup">
           <div className="settings-setup-text">
@@ -152,5 +155,172 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
         </div>
       )}
     </section>
+  );
+}
+
+// ─── MCP access ─────────────────────────────────────────────────────────────
+// Mint scoped tokens that let agents drive Skynet over MCP. The raw token is
+// shown once, right after minting, alongside ready-to-paste client config.
+const SCOPE_INFO: { id: McpScope; label: string; hint: string }[] = [
+  { id: "observe", label: "Observe", hint: "read projects, agents, fleet, and the HITL queue" },
+  { id: "author", label: "Author", hint: "create & assign tasks, drive agents, manage runners" },
+  { id: "approver", label: "Approver", hint: "resolve HITL — approve diffs & pushes without a human" },
+];
+
+function McpAccessSection() {
+  const [tokens, setTokens] = useState<ServiceTokenMeta[] | null>(null);
+  const [label, setLabel] = useState("");
+  const [scopes, setScopes] = useState<Record<McpScope, boolean>>({ observe: true, author: true, approver: false, admin: false });
+  const [minted, setMinted] = useState<{ token: string; label: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setTokens(await api.listServiceTokens());
+    } catch {
+      setTokens([]);
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const selected = SCOPE_INFO.map((s) => s.id).filter((id) => scopes[id]);
+  const origin = typeof location !== "undefined" ? location.origin : "http://127.0.0.1:8080";
+
+  const copy = (key: string, text: string) => {
+    void navigator.clipboard?.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied((c) => (c === key ? null : c)), 1500);
+  };
+
+  const mint = async () => {
+    if (!label.trim() || selected.length === 0) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const created = await api.createServiceToken({ label: label.trim(), scopes: selected });
+      setMinted({ token: created.token, label: created.label });
+      setLabel("");
+      await load();
+    } catch (e) {
+      setErr(`Couldn't mint the token: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (id: string) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.revokeServiceToken(id);
+      await load();
+    } catch (e) {
+      setErr(`Couldn't revoke the token: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const httpSnippet = (token: string) =>
+    `claude mcp add --transport http skynet ${origin}/mcp --header "Authorization: Bearer ${token}"`;
+  const stdioSnippet = (token: string) =>
+    JSON.stringify(
+      { mcpServers: { skynet: { command: "skynet-mcp", env: { SKYNET_MCP_URL: `${origin}/mcp`, SKYNET_MCP_TOKEN: token } } } },
+      null,
+      2,
+    );
+
+  return (
+    <div className="mcp-access">
+      <div className="settings-setup-title">MCP access</div>
+      <div className="settings-setup-sub">
+        Scoped tokens let agents drive this workspace over MCP — the same tools you use, gated by scope.
+        Grant <span className="mono">approver</span> only to a token you trust to resolve gates without a human.
+      </div>
+
+      {err && <div className="settings-warn">{err}</div>}
+
+      <div className="settings-row mcp-mint">
+        <div className="mcp-mint-line">
+          <input
+            className="settings-input"
+            placeholder="Token label, e.g. research-agent"
+            value={label}
+            maxLength={48}
+            onChange={(e) => setLabel(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void mint()}
+          />
+          <button className="btn btn-primary" disabled={busy || !label.trim() || selected.length === 0} onClick={() => void mint()}>
+            Mint token
+          </button>
+        </div>
+        <div className="mcp-scopes">
+          {SCOPE_INFO.map((s) => (
+            <label key={s.id} className={`mcp-scope${s.id === "approver" && scopes.approver ? " mcp-scope-warn" : ""}`}>
+              <input type="checkbox" checked={scopes[s.id]} onChange={(e) => setScopes((v) => ({ ...v, [s.id]: e.target.checked }))} />
+              <span className="mcp-scope-name">{s.label}</span>
+              <span className="mcp-scope-hint">{s.hint}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {minted && (
+        <div className="mcp-reveal">
+          <div className="mcp-reveal-head">
+            <span className="detail-result-label">New token · {minted.label} · shown once</span>
+            <button className="btn btn-ghost" onClick={() => setMinted(null)}>
+              Done
+            </button>
+          </div>
+          <div className="mcp-token-line">
+            <code className="mcp-token mono">{minted.token}</code>
+            <button className="btn btn-ghost" onClick={() => copy("tok", minted.token)}>
+              {copied === "tok" ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <SnippetBlock title="Claude Code (remote HTTP)" text={httpSnippet(minted.token)} copied={copied === "http"} onCopy={() => copy("http", httpSnippet(minted.token))} />
+          <SnippetBlock title="Local stdio (mcp.json) — needs the skynet-mcp binary" text={stdioSnippet(minted.token)} copied={copied === "stdio"} onCopy={() => copy("stdio", stdioSnippet(minted.token))} />
+        </div>
+      )}
+
+      <div className="settings-list mcp-tok-list">
+        {tokens?.length === 0 && <div className="settings-setup-sub">No tokens yet.</div>}
+        {tokens?.map((t) => (
+          <div className="mcp-tok-row" key={t.id}>
+            <span className="settings-name">{t.label}</span>
+            <span className="mcp-tok-scopes">
+              {t.scopes.map((s) => (
+                <span className="mcp-badge mono" key={s}>
+                  {s}
+                </span>
+              ))}
+            </span>
+            <span className="mcp-tok-meta mono">····{t.last4}</span>
+            <button className="btn btn-ghost" disabled={busy} onClick={() => void revoke(t.id)}>
+              Revoke
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SnippetBlock({ title, text, copied, onCopy }: { title: string; text: string; copied: boolean; onCopy: () => void }) {
+  return (
+    <div className="mcp-snippet">
+      <div className="mcp-snippet-head">
+        <span className="mcp-snippet-title">{title}</span>
+        <button className="btn btn-ghost" onClick={onCopy}>
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <pre className="mcp-snippet-body mono">{text}</pre>
+    </div>
   );
 }
