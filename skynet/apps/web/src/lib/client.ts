@@ -251,3 +251,73 @@ export function connect(onMessage: (msg: WsMessage) => void): () => void {
     socket?.close();
   };
 }
+
+// ─── LLM-judged acceptance evals ───────────────────────────────────────────
+// The standalone evals/ suite surfaced in the Acceptance view. Unlike the
+// deterministic checks (client-side, instant), these are REAL runs the server
+// spawns as a subprocess: a live agent + an LLM judge, minutes per scenario. So
+// the flow is start → poll the job until it finishes.
+
+export interface EvalRubric {
+  dimension: string;
+  question: string;
+}
+export interface EvalScenarioMeta {
+  id: string;
+  title: string;
+  category: string;
+  task: string;
+  setup: string | null;
+  rubric: EvalRubric[];
+}
+export interface EvalDimScore {
+  dimension: string;
+  score: number; // 0–5
+  pass: boolean;
+  rationale: string;
+}
+export interface EvalVerdict {
+  pass: boolean;
+  overall: number; // 0–5
+  dimensions: EvalDimScore[];
+  summary: string;
+}
+export interface EvalArtifacts {
+  diff?: string;
+  log?: string[];
+  hitl?: { kind: string; title: string; why?: string; resolvedWith?: string }[];
+  prOpened?: boolean;
+  finalStatus?: string;
+  turns?: number;
+  tokens?: number;
+  wallMs?: number;
+  notes?: string;
+}
+export type EvalPhase = "queued" | "executing" | "judging" | "done" | "error";
+export interface EvalJob {
+  id: string;
+  scenarioId: string;
+  phase: EvalPhase;
+  logs: string[];
+  result?: { scenario: EvalScenarioMeta; artifacts: EvalArtifacts; verdict: EvalVerdict };
+  error?: string;
+  startedAt: number;
+  endedAt?: number;
+}
+
+export async function fetchEvals(): Promise<{
+  scenarios: EvalScenarioMeta[];
+  keyPresent: boolean;
+  available: boolean;
+  error?: string;
+}> {
+  return req("GET", "/api/evals");
+}
+
+export async function runEval(id: string): Promise<{ jobId: string }> {
+  return req("POST", `/api/evals/${encodeURIComponent(id)}/run`);
+}
+
+export async function fetchEvalJob(jobId: string): Promise<EvalJob> {
+  return req("GET", `/api/evals/jobs/${encodeURIComponent(jobId)}`);
+}

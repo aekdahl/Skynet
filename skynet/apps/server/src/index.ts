@@ -17,6 +17,7 @@ import { registerStatic } from "./static.js";
 import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
 import { registerSecretsRoutes } from "./secrets/index.js";
 import { registerGithubRoutes, configureGithub } from "./github/index.js";
+import { registerEvalsRoutes } from "./evals/index.js";
 import { configureAuth } from "./auth.js";
 import { MemorySessionStore, type SessionStore } from "./auth/sessions.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
@@ -87,6 +88,9 @@ async function main() {
   await registerSecretsRoutes(app);
   // GitHub App connection + safety policy (workspace-scoped); /api auth applies.
   await registerGithubRoutes(app);
+  // LLM-judged acceptance evals (real runs via the standalone evals/ suite,
+  // spawned as a subprocess); /api auth hook applies.
+  await registerEvalsRoutes(app);
   await registerWs(app, { store, bus, hub });
   // W5 live preview: mount the sandboxed /preview route, stamp visual/previewUrl
   // onto already-stored agents, then warm their builds. No-op unless PREVIEW != off.

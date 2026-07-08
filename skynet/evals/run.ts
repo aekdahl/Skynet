@@ -2,6 +2,11 @@
 //   tsx evals/run.ts list
 //   tsx evals/run.ts judge <scenarioId> <artifacts.json>   (works today, needs a key)
 //   tsx evals/run.ts run   <scenarioId|all>                (needs an Executor — see README)
+//
+// Machine-readable variants used by the in-app Acceptance view (see the server's
+// evals routes) — these emit JSON on stdout, never human prose:
+//   tsx evals/run.ts catalog-json           → the scenario catalog, one JSON array
+//   tsx evals/run.ts run-json <scenarioId>   → NDJSON: {type:"phase"} … {type:"result"|"error"}
 
 import { readFileSync } from "node:fs";
 import { SCENARIOS } from "./scenarios.js";
@@ -55,6 +60,55 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (cmd === "catalog-json") {
+    // Machine-readable scenario catalog for the in-app Acceptance view. One JSON
+    // array on a single line (no pretty-print) so the caller can grab it robustly.
+    const catalog = SCENARIOS.map((s) => ({
+      id: s.id,
+      title: s.title,
+      category: s.category,
+      task: s.task,
+      setup: s.setup ?? null,
+      rubric: s.rubric,
+    }));
+    process.stdout.write(JSON.stringify(catalog) + "\n");
+    return;
+  }
+
+  if (cmd === "run-json") {
+    // Run one scenario end-to-end (real agent → judge) and stream NDJSON so the
+    // server can surface live phase + a final verdict in the UI. Every line is a
+    // JSON object with a `type`; the runner's own stdout noise (if any) is
+    // ignored by the reader, which only trusts typed lines.
+    if (!arg1) throw new Error("usage: tsx evals/run.ts run-json <scenarioId>");
+    const scenario = find(arg1);
+    const emit = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
+    try {
+      const executor = await loadExecutor();
+      emit({ type: "phase", phase: "executing" });
+      const artifacts = await executor.run(scenario);
+      emit({ type: "phase", phase: "judging" });
+      const verdict = await judge(scenario, artifacts);
+      emit({
+        type: "result",
+        scenario: {
+          id: scenario.id,
+          title: scenario.title,
+          category: scenario.category,
+          task: scenario.task,
+          setup: scenario.setup ?? null,
+          rubric: scenario.rubric,
+        },
+        artifacts,
+        verdict,
+      });
+    } catch (err) {
+      emit({ type: "error", message: (err as Error).message });
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   if (cmd === "exec") {
     // Run a scenario through the executor and print its artifacts (no judge —
     // works without a key; smoke-test with RUNNER=mock). Pipe to a file, then
@@ -94,7 +148,7 @@ async function main(): Promise<void> {
     process.exit(passed === list.length ? 0 : 1);
   }
 
-  throw new Error(`Unknown command "${cmd}". Try: list | judge | run`);
+  throw new Error(`Unknown command "${cmd}". Try: list | catalog-json | judge | exec | run | run-json`);
 }
 
 main().catch((err) => {
