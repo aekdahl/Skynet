@@ -34,6 +34,10 @@ interface LiveAgent {
   /** The git backend (worktrees + merge queue) this agent is integrating into,
    *  resolved from its project's repo. Unset in the Phase 0 / no-repo flow. */
   git?: GitContext;
+  /** Set when a question this agent raised went unanswered and was auto-resolved
+   *  by the no-operator-answer timeout. If it then finishes with no change, it's
+   *  surfaced as needs-attention rather than a silent "done". */
+  blockedUnanswered?: boolean;
 }
 
 /** The git integration backend bound to one repo: an isolated worktree per agent
@@ -243,6 +247,10 @@ export class Orchestrator {
     };
     const resolved = await this.hub.resolveHitl(item.id, resolution);
     if (resolved && resolved.resolution?.at === resolution.at) {
+      // Remember the agent concluded only because its question went unanswered,
+      // so complete() can surface it as needs-attention instead of "done".
+      const live = this.live.get(item.agentId);
+      if (live) live.blockedUnanswered = true;
       await this.hub.agentLog(
         item.agentId,
         `no operator answer within ${Math.round(config.hitlQuestionTimeoutMs / 1000)}s — asking the agent to conclude without guessing`,
@@ -281,6 +289,17 @@ export class Orchestrator {
       await wt.retire(agentId).catch(() => undefined);
     } else if (live?.git) {
       await live.git.worktrees.retire(agentId).catch(() => undefined);
+    }
+
+    // Reached here with no diff. If the agent only stopped because a question it
+    // raised went unanswered, it did no real work — surface it as needs-attention
+    // (never a silent "done"), leave its task open, and don't mark it completed.
+    if (live?.blockedUnanswered) {
+      await this.freeRunner(live.runnerId);
+      await this.hub.agentStatus(agentId, "review");
+      await this.hub.agentLog(agentId, "concluded without an answer to its question — needs attention (no change made)");
+      this.live.delete(agentId);
+      return;
     }
 
     // Phase 0 / no-diff completion: free the runner, finish the task & agent.
