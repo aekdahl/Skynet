@@ -102,11 +102,36 @@ export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }
   const [editing, setEditing] = useState<string | null>(null);
   const now = Date.now();
 
+  // When the RUNNER env is set, it's a GLOBAL override: every agent executes on
+  // that provider regardless of its runner's configured provider (`/health`
+  // reports "per-runner" when it's unset). Surface it so the fleet's provider
+  // choices aren't silently ignored.
+  const [override, setOverride] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/health")
+      .then((r) => r.json())
+      .then((h: { runner?: string }) => {
+        if (!cancelled && h.runner && h.runner !== "per-runner") setOverride(h.runner);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const busyOf = (r: Runner) =>
     agents.find((a) => a.status !== "done" && a.runnerId === r.id);
 
   return (
     <section className="vw">
+      {override && (
+        <div className="settings-warn">
+          <b>Runner override active.</b> Every agent runs on <span className="mono">{override}</span> right
+          now (the <span className="mono">RUNNER</span> env is set), regardless of the provider a runner is
+          configured with below. Unset <span className="mono">RUNNER</span> to use each runner's own provider.
+        </div>
+      )}
       <div className="fleet-head">
         <div className="vw-head">
           <h1>Agent fleet</h1>
