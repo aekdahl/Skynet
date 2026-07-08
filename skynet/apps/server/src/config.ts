@@ -47,6 +47,13 @@ export const config = {
   // for longer than this (ms) is presumed dead — its runner is freed and the
   // agent terminated. Catches orphans left by a crash/restart. 0 disables.
   agentReapMs: Number(process.env.SKYNET_AGENT_REAP_MS ?? 180_000),
+  // Auto-resolve window for an unanswered `question` HITL (ms). When an agent
+  // asks the operator something (e.g. "I can't reproduce this — what's the
+  // stack trace?") and no one answers within this window, the question is
+  // auto-resolved as "no answer" so the agent concludes without guessing and the
+  // run doesn't hang. 0 (default) disables it — interactive workspaces wait for a
+  // human indefinitely; headless/eval runs set a bound (e.g. 120_000).
+  hitlQuestionTimeoutMs: Number(process.env.SKYNET_HITL_QUESTION_TIMEOUT_MS ?? 0),
   // Expose the local folder browser (/api/fs/list) so the desktop UI can offer a
   // folder *picker* for connecting a project to a local repo. Local-only: it
   // reveals the server machine's filesystem, so it's ON only outside production

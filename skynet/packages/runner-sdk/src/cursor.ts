@@ -341,7 +341,9 @@ class CursorRunnerHandle implements RunnerHandle {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     this.events.onProgress(this.agentId, 1, [] as PlanStep[]);
-    this.events.onStatus(this.agentId, "done");
+    // The orchestrator owns the terminal "done" (after committing the worktree →
+    // review → merge). Emitting it here would race integration and surface a
+    // premature "done" with uncommitted work — hand off via onCompleted only.
     this.events.onCompleted(this.agentId, this.spec.branch);
     this.killChild();
   }
