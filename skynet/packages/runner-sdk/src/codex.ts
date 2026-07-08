@@ -15,6 +15,7 @@
 import type { ProviderId, Resolution } from "@skynet/shared";
 import {
   CliRunnerProvider,
+  usageFromJson,
   type CliEvent,
   type CliVendor,
   type ParseCtx,
@@ -83,6 +84,13 @@ const codex: CliVendor = {
       return { kind: "log", line };
     }
     const type = String(obj.type ?? (obj.msg as Record<string, unknown>)?.type ?? "");
+
+    // Token-count / usage events (shape varies across Codex versions) — report
+    // best-effort. Prefer the nested `msg` scope when present.
+    if (/token|usage/i.test(type)) {
+      const usage = usageFromJson((obj.msg as Record<string, unknown>) ?? obj) ?? usageFromJson(obj);
+      if (usage) return { kind: "usage", usage };
+    }
 
     // Blocked on a human — capture the request id so `resume` can answer it.
     if (/approval|elicit|permission|confirm/i.test(type)) {

@@ -89,6 +89,16 @@ function finalAnswer(agent: Agent): string | null {
   return null;
 }
 
+// Compact token/cost summary for the detail header, when the runner reported it.
+function fmtUsage(u: Agent["usage"]): string | null {
+  if (!u) return null;
+  const tok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const parts = [`${tok(u.inputTokens)}→${tok(u.outputTokens)} tok`];
+  if (u.costUsd != null) parts.push(`$${u.costUsd < 0.01 ? u.costUsd.toFixed(4) : u.costUsd.toFixed(2)}`);
+  if (u.turns) parts.push(`${u.turns} turns`);
+  return parts.join(" · ");
+}
+
 export function AgentDetail({
   agent,
   now,
@@ -171,6 +181,7 @@ export function AgentDetail({
           <span className="mono">{agent.branch}</span>
           <span>{agent.model}</span>
           <span>{fmtElapsed(agent, now)}</span>
+          {fmtUsage(agent.usage) && <span className="usage-chip mono" title="Tokens · cost · turns reported by the runner">{fmtUsage(agent.usage)}</span>}
           {agent.status === "done" ? (
             <span className="hb hb-done">♥ finished</span>
           ) : (

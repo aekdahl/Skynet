@@ -123,6 +123,13 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
           a.id === ev.agentId ? { ...a, lastHeartbeatAt: ev.at } : a,
         ),
       };
+    case "agent.usage":
+      return {
+        ...state,
+        agents: state.agents.map((a) =>
+          a.id === ev.agentId ? { ...a, usage: ev.usage } : a,
+        ),
+      };
     case "agent.status":
       return {
         ...state,
