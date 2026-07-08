@@ -358,6 +358,20 @@ class ClaudeRunnerHandle implements RunnerHandle {
             this.events.onLog(this.agentId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)");
           }
         } else if (msg.type === "result") {
+          // The SDK reports API errors (e.g. 529 Overloaded, auth), tool-loop
+          // failures, and max-turns exhaustion as an ERROR *result* message
+          // (is_error / subtype != "success") — NOT a thrown exception, so the
+          // catch below never sees them. Only a clean "success" result is a real
+          // completion; anything else is a failure. Never launder a 529 or a
+          // stuck agent into "done" with no work.
+          const r = msg as { subtype?: string; is_error?: boolean };
+          if (r.is_error || (r.subtype && r.subtype !== "success")) {
+            // subtype can be "success" even when is_error is set (e.g. an API
+            // error after a partial turn) — don't echo a misleading "success".
+            const why = r.subtype && r.subtype !== "success" ? r.subtype : "api/runtime error";
+            this.fail(`runner did not complete cleanly (${why})`);
+            return;
+          }
           break;
         }
       }

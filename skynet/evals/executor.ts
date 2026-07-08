@@ -113,22 +113,48 @@ export function makeExecutor(): Executor {
       // (consumed in order; default approve once exhausted).
       const hitl: NonNullable<Artifacts["hitl"]> = [];
       let replyIdx = 0;
+      // The authoritative "what the agent produced" diff, captured at review time
+      // (see below). We must grab it BEFORE approving the integrate gate, because
+      // approving triggers the merge — which consumes the branch and leaves
+      // `git diff main...branch` empty afterward.
+      let reviewDiff = "";
+      // Set when the success path raises its integrate gate. Lets the wait loop
+      // tell a real "review" (changes awaiting merge) from a failure that also
+      // parks the agent at "review" (runner error / needs-attention).
+      let sawDiffReview = false;
       const unsub = bus.subscribe(WORKSPACE, (ev) => {
-        if (ev.type === "hitl.raised") {
-          const item = ev.item;
-          const reply = scenario.replies?.[replyIdx++] ?? { action: "approve" as const };
-          hitl.push({ kind: item.kind, title: item.title, why: item.why, resolvedWith: reply.action });
-          const resolution = {
-            action: reply.action,
-            optionIndex: reply.optionIndex ?? null,
-            guidance: reply.guidance ?? null,
-            by: "eval",
-            at: Date.now(),
-          };
-          void hub.resolveHitl(item.id, resolution).then((r) => {
-            if (r?.resolution?.at === resolution.at) void orchestrator.deliver(item, resolution);
-          });
-        }
+        if (ev.type !== "hitl.raised") return;
+        const item = ev.item;
+        // The final `diff` review gates the branch into the merge queue. It is NOT
+        // one of the agent's own decision gates, so always approve it and don't
+        // let it consume a scripted reply meant for a work gate.
+        const isDiffReview = item.kind === "diff";
+        if (isDiffReview) sawDiffReview = true;
+        const reply = isDiffReview
+          ? { action: "approve" as const }
+          : scenario.replies?.[replyIdx++] ?? { action: "approve" as const };
+        hitl.push({ kind: item.kind, title: item.title, why: item.why, resolvedWith: reply.action });
+        const resolution = {
+          action: reply.action,
+          optionIndex: reply.optionIndex ?? null,
+          guidance: reply.guidance ?? null,
+          by: "eval",
+          at: Date.now(),
+        };
+        void (async () => {
+          // Capture the branch diff at review time — the branch is committed but
+          // not yet merged, so this is the real proof of the agent's work.
+          if (isDiffReview) {
+            try {
+              const a = await store.getAgent(item.agentId);
+              if (a?.branch) reviewDiff = git(repo, "diff", `main...${a.branch}`);
+            } catch {
+              /* best-effort */
+            }
+          }
+          const r = await hub.resolveHitl(item.id, resolution);
+          if (r?.resolution?.at === resolution.at) await orchestrator.deliver(item, resolution);
+        })();
       });
 
       let agentId = "";
@@ -137,29 +163,49 @@ export function makeExecutor(): Executor {
         const agent = await orchestrator.assignTask(pid, tid);
         agentId = agent.id;
 
-        // Wait until the agent reaches a terminal state (done) or we time out.
+        // Wait for a terminal state: "done" (merged, or completed with no changes)
+        // or a failure. A runner failure parks the agent at "review" with no
+        // integrate gate pending — distinguish it from the transient "review" the
+        // success path passes through (which always has a diff gate) via a short
+        // grace window, so failed runs report promptly instead of timing out.
         const deadline = started + TIMEOUT_MS;
+        let reviewSince = 0;
         while (Date.now() < deadline) {
           const a = await store.getAgent(agentId);
           finalStatus = a?.status ?? "gone";
           if (finalStatus === "done") break;
+          if (finalStatus === "review" && !sawDiffReview) {
+            if (!reviewSince) reviewSince = Date.now();
+            else if (Date.now() - reviewSince > 2000) break; // failure / needs-attention, nothing to integrate
+          } else {
+            reviewSince = 0;
+          }
           await new Promise((r) => setTimeout(r, 500));
         }
 
         const a = await store.getAgent(agentId);
         const log = (a?.log ?? []).map((l) => l.line);
-        let diff = "";
-        try {
-          diff = git(repo, "diff", `main...${a?.branch ?? "HEAD"}`);
-        } catch {
-          /* branch may be gone after merge; diff is best-effort */
+        // Prefer the diff captured at review time (before the merge consumed the
+        // branch). Fall back to a post-hoc diff only if we never saw a review
+        // (e.g. the agent made no changes, or timed out mid-run).
+        let diff = reviewDiff;
+        if (!diff) {
+          try {
+            diff = git(repo, "diff", `main...${a?.branch ?? "HEAD"}`);
+          } catch {
+            /* branch may be gone after merge; diff is best-effort */
+          }
         }
+        // A runner (not agent) failure — API 529/auth/crash — is an infra flake,
+        // not an agent verdict. Flag it so `run` re-runs rather than scoring it.
+        const failLine = log.find((l) => /runner failed|did not complete cleanly|529|Overloaded/i.test(l));
         return {
           diff,
           log,
           hitl,
           prOpened: false,
           finalStatus,
+          ...(failLine ? { runnerError: failLine } : {}),
           wallMs: Date.now() - started,
           notes: `provider=${PROVIDER} runnerOverride=${process.env.RUNNER ?? "(none)"}`,
         };
