@@ -25,6 +25,8 @@ export interface Store {
 
   // agents — list is workspace-scoped; get/put/delete carry workspaceId on the entity
   listAgents(workspaceId: string): Promise<Agent[]>;
+  /** Every agent across all workspaces — for maintenance sweeps (e.g. the reaper). */
+  listAllAgents(): Promise<Agent[]>;
   getAgent(id: string): Promise<Agent | undefined>;
   putAgent(agent: Agent): Promise<Agent>;
   appendLog(agentId: string, at: number, line: string, detail?: string): Promise<void>;

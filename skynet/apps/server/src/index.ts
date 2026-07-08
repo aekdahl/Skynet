@@ -97,6 +97,17 @@ async function main() {
   if (queued) app.log.info(`preview: queued ${queued} agent build(s)`);
   const servingSpa = await registerStatic(app);
 
+  // Reap presumed-dead agents (frees runners orphaned by a crash/restart). Run
+  // once at boot to clear restart orphans, then on an interval. Bounded to a
+  // sane minimum so it can't spin hot; disabled when agentReapMs <= 0.
+  if (config.agentReapMs > 0) {
+    const sweep = () =>
+      orchestrator.reapStaleAgents().catch((err) => app.log.warn(`reaper: ${(err as Error).message}`));
+    await sweep();
+    const every = Math.max(30_000, Math.min(config.agentReapMs, 60_000));
+    setInterval(sweep, every).unref();
+  }
+
   await app.listen({ port: config.port, host: "0.0.0.0" });
   if (servingSpa) app.log.info("serving built web SPA from this server");
   app.log.info(loadedEnvFrom ? `loaded env from ${loadedEnvFrom}` : "no .env file found (using process env only)");

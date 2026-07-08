@@ -43,6 +43,10 @@ export const config = {
   // integration repo (.skynet-worktrees) so working copies never show as
   // untracked inside the repo.
   worktreesDir: process.env.SKYNET_WORKTREES_DIR || undefined,
+  // Auto-reap window: a running/waiting agent whose heartbeat has been silent
+  // for longer than this (ms) is presumed dead — its runner is freed and the
+  // agent terminated. Catches orphans left by a crash/restart. 0 disables.
+  agentReapMs: Number(process.env.SKYNET_AGENT_REAP_MS ?? 180_000),
   // Expose the local folder browser (/api/fs/list) so the desktop UI can offer a
   // folder *picker* for connecting a project to a local repo. Local-only: it
   // reveals the server machine's filesystem, so it's ON only outside production
