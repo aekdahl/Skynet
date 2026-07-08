@@ -220,6 +220,89 @@ function todosToPlan(input: Record<string, unknown>): PlanStep[] {
   return plan;
 }
 
+// A clarifying question the agent asked via the AskUserQuestion tool, distilled
+// to what the HITL model needs: a prompt + a flat list of option labels.
+interface ParsedQuestion {
+  header: string; // short label for the question (chip/title)
+  prompt: string; // the full question text shown to the operator
+  options: Array<{ label: string; description?: string }>;
+}
+
+// AskUserQuestion input: { questions: [{ question, header, options: [{label, description}] }] }.
+// We surface the FIRST question (the HITL model is one question + a choice list);
+// any extra questions are appended to the prompt so nothing is silently dropped.
+function parseAskUserQuestion(input: Record<string, unknown>): ParsedQuestion | null {
+  const questions = Array.isArray(input.questions)
+    ? (input.questions as Array<Record<string, unknown>>)
+    : [];
+  if (!questions.length) return null;
+  const q0 = questions[0] ?? {};
+  const rawOpts = Array.isArray(q0.options) ? q0.options : [];
+  const options = rawOpts
+    .map((o) =>
+      typeof o === "string"
+        ? { label: o }
+        : o && typeof o === "object"
+          ? { label: String((o as Record<string, unknown>).label ?? ""), description: (o as Record<string, unknown>).description ? String((o as Record<string, unknown>).description) : undefined }
+          : { label: "" },
+    )
+    .filter((o) => o.label);
+  if (!options.length) return null;
+  const header = String(q0.header ?? "Question").trim() || "Question";
+  let prompt = String(q0.question ?? q0.header ?? "The agent needs a decision.").trim();
+  if (questions.length > 1) {
+    const extra = questions.slice(1).map((q) => String(q.question ?? q.header ?? "")).filter(Boolean);
+    if (extra.length) prompt += `\n\n(Also asked — answer in the same reply via Modify: ${extra.join(" · ")})`;
+  }
+  return { header, prompt, options };
+}
+
+// Turn a parsed AskUserQuestion into a `question` HITL: the prompt + a choice
+// list the UI renders as option buttons (resolved via the `option` action).
+function buildQuestionRaise(q: ParsedQuestion): HitlRaise {
+  const detail = q.options.some((o) => o.description)
+    ? q.options.map((o) => `• ${o.label}${o.description ? ` — ${o.description}` : ""}`).join("\n")
+    : null;
+  return {
+    kind: "question",
+    title: q.header,
+    why: q.prompt,
+    risk: "low",
+    command: detail, // option descriptions, if any, for the detail box
+    options: q.options.map((o) => o.label),
+    recommended: null, // AskUserQuestion marks no default
+    steps: null,
+    diff: null,
+  };
+}
+
+// Short human label of the chosen answer, for the activity log.
+function describeAnswer(q: ParsedQuestion, decision?: Resolution): string {
+  if (decision?.action === "option" && decision.optionIndex != null) {
+    return q.options[decision.optionIndex]?.label ?? `option ${decision.optionIndex}`;
+  }
+  if (decision?.action === "modify" && decision.guidance) return decision.guidance;
+  if (decision?.action === "reject") return "declined — agent's judgment";
+  return "no selection";
+}
+
+// The message handed back to the model as the AskUserQuestion result. Frames it
+// as the human's answer so the agent continues with the decision made for it.
+function answerForQuestion(q: ParsedQuestion, decision?: Resolution): string {
+  if (decision?.action === "option" && decision.optionIndex != null) {
+    const opt = q.options[decision.optionIndex];
+    const label = opt?.label ?? `option ${decision.optionIndex}`;
+    return `The human answered your question "${q.header}": ${label}.${opt?.description ? ` (${opt.description})` : ""} Continue with this decision.`;
+  }
+  if (decision?.action === "modify" && decision.guidance) {
+    return `The human answered your question "${q.header}": ${decision.guidance}. Continue with this.`;
+  }
+  if (decision?.action === "reject") {
+    return `The human declined to choose for "${q.header}" — use your best judgment and proceed.`;
+  }
+  return `The human acknowledged "${q.header}" without a specific choice — use your best judgment and proceed.`;
+}
+
 class ClaudeRunnerHandle implements RunnerHandle {
   readonly agentId: string;
   readonly provider: ProviderId = "claude";
@@ -231,6 +314,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
   // the session, so we always pass the tool's own input through).
   private gateInput: Record<string, unknown> | null = null;
   private gateTool: string | null = null; // name of the tool awaiting approval
+  private gateQuestion: ParsedQuestion | null = null; // set when the gate is an AskUserQuestion
   private lastRationale = ""; // the agent's most recent prose (its stated reasoning)
   private sdkEnv: Record<string, string> = {}; // resolved auth env, reused for side-queries
   private pendingTools = new Map<string, string>(); // tool_use id → tool name, to pair outputs
@@ -261,6 +345,9 @@ class ClaudeRunnerHandle implements RunnerHandle {
 
     const canUseTool: CanUseTool = (toolName, input) => {
       if (AUTO_ALLOW.has(toolName)) return Promise.resolve({ behavior: "allow", updatedInput: input });
+      // AskUserQuestion is the agent asking the operator a decision — surface it
+      // as a `question` HITL with real option buttons, not a generic "approve".
+      const question = toolName === "AskUserQuestion" ? parseAskUserQuestion(input) : null;
       return new Promise<PermissionResult>((resolve) => {
         // One gate at a time — the SDK serializes tool calls in a turn.
         // Register the gate BEFORE emitting the event: a synchronous resume
@@ -269,8 +356,12 @@ class ClaudeRunnerHandle implements RunnerHandle {
         this.gate = resolve;
         this.gateInput = input;
         this.gateTool = toolName;
+        this.gateQuestion = question;
         this.events.onStatus(this.agentId, "waiting");
-        this.events.onHitl(this.agentId, this.buildRaise(toolName, input));
+        this.events.onHitl(
+          this.agentId,
+          question ? buildQuestionRaise(question) : this.buildRaise(toolName, input),
+        );
       });
     };
 
@@ -489,11 +580,19 @@ class ClaudeRunnerHandle implements RunnerHandle {
     if (this.gate) {
       const gate = this.gate;
       const input = this.gateInput ?? {};
+      const question = this.gateQuestion;
       this.gate = null;
       this.gateInput = null;
       this.gateTool = null;
+      this.gateQuestion = null;
       this.events.onStatus(this.agentId, "running");
-      if (decision?.action === "reject") {
+      // AskUserQuestion: there's no interactive frontend to render the picker, so
+      // we never actually run the tool — we deny it and hand the operator's answer
+      // back as the tool's result message, which the model reads and continues on.
+      if (question) {
+        gate({ behavior: "deny", message: answerForQuestion(question, decision) });
+        this.events.onLog(this.agentId, `↳ answered "${question.header}": ${describeAnswer(question, decision)}`);
+      } else if (decision?.action === "reject") {
         gate({ behavior: "deny", message: "Operator rejected this action — revise your approach." });
       } else if (decision?.action === "modify") {
         gate({ behavior: "deny", message: decision.guidance ?? "Adjust per operator guidance." });
