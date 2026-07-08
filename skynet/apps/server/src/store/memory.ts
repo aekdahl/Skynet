@@ -80,6 +80,7 @@ export class MemoryStore implements Store {
   async deleteTask(id: string) { this.tasks.delete(id); this.persist(); }
 
   async listRunners(ws: string) { return [...this.fleet.values()].filter((r) => r.workspaceId === ws); }
+  async listAllRunners() { return [...this.fleet.values()]; }
   async getRunner(id: string) { return this.fleet.get(id); }
   async putRunner(runner: Runner) { this.fleet.set(runner.id, runner); this.persist(); return runner; }
   async deleteRunner(id: string) { this.fleet.delete(id); this.persist(); }

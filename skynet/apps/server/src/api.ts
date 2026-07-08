@@ -279,8 +279,11 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.delete<{ Params: { id: string } }>("/api/fleet/runners/:id", async (req, reply) => {
     const existing = await store.getRunner(req.params.id);
     if (!existing || existing.workspaceId !== ws(req)) return reply.code(404).send({ error: "Runner not found" });
-    // Busy-runner guard — enforced server-side (Backend Brief §04).
-    if (existing.status === "busy" || orchestrator.isBusy(req.params.id)) {
+    // Busy-runner guard — enforced server-side (Backend Brief §04). Gate on the
+    // LIVE map (isBusy), not the persisted status: a runner can be stuck
+    // "busy" with no live agent holding it (an orphan from a restart / missed
+    // free), and that must still be retirable — otherwise it's unremovable.
+    if (orchestrator.isBusy(req.params.id)) {
       return reply.code(409).send({ error: "Cannot retire a busy runner" });
     }
     await hub.deleteRunner(req.params.id);

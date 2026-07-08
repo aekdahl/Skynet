@@ -97,6 +97,11 @@ async function main() {
   if (queued) app.log.info(`preview: queued ${queued} agent build(s)`);
   const servingSpa = await registerStatic(app);
 
+  // Release "orphaned busy" runners — persisted busy but held by no live agent
+  // (a restart leaves the store saying busy while the in-memory live map is
+  // empty). Runs once at boot, before we listen, so nothing is mid-assign.
+  await orchestrator.reconcileRunners().catch((err) => app.log.warn(`runner reconcile: ${(err as Error).message}`));
+
   // Reap presumed-dead agents (frees runners orphaned by a crash/restart). Run
   // once at boot to clear restart orphans, then on an interval. Bounded to a
   // sane minimum so it can't spin hot; disabled when agentReapMs <= 0.

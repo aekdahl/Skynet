@@ -142,6 +142,10 @@ export class PostgresStore implements Store {
   deleteTask(id: string) { return this.del("tasks", id); }
 
   listRunners(ws: string) { return this.list<Runner>("runners", ws); }
+  async listAllRunners(): Promise<Runner[]> {
+    const { rows } = await this.pool.query<{ data: Runner }>("SELECT data FROM runners");
+    return rows.map((r) => r.data);
+  }
   getRunner(id: string) { return this.get<Runner>("runners", id); }
   async putRunner(r: Runner) { await this.put("runners", r.id, r.workspaceId, r); return r; }
   deleteRunner(id: string) { return this.del("runners", id); }
