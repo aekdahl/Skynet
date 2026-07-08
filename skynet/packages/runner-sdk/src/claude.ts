@@ -317,6 +317,49 @@ function answerForQuestion(q: ParsedQuestion, decision?: Resolution): string {
   return `The human acknowledged "${q.header}" without a specific choice — use your best judgment and proceed.`;
 }
 
+// ─── Transient-error retry policy ──────────────────────────────────────────
+// The Agent SDK already retries individual HTTP calls; when even that is
+// exhausted it surfaces an overload/rate-limit as either a thrown error or a
+// `result` message with is_error/error subtype. Those are RETRYABLE at the
+// session level: back off and resume the session, a bounded number of times.
+// Anything else (or exhausting the budget) is a real failure — never a "done".
+
+/** True for retryable API conditions: overload (429/529), rate-limit, 503. */
+export function isTransientApiError(text: string): boolean {
+  return /\b(429|503|529)\b|overload|rate[\s_-]?limit|too many requests|temporarily unavailable/i.test(
+    text ?? "",
+  );
+}
+
+const MAX_API_RETRIES = 3;
+/** Exponential backoff, capped at 30s: attempt 1→2s, 2→4s, 3→8s. */
+export function retryBackoffMs(attempt: number): number {
+  return Math.min(30_000, 1_000 * 2 ** attempt);
+}
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Classify a `result` message: null = clean success, else the error + whether
+ *  it's a transient (retryable) condition. */
+function classifyResult(msg: Record<string, unknown>, context: string): { reason: string; transient: boolean } | null {
+  const subtype = typeof msg.subtype === "string" ? msg.subtype : "";
+  const isError = msg.is_error === true || (subtype !== "" && subtype !== "success");
+  if (!isError) return null;
+  const detail = [subtype, typeof msg.result === "string" ? msg.result : "", context].join(" ");
+  return { reason: subtype || "error", transient: isTransientApiError(detail) };
+}
+
+// Test seams (mirror the orchestrator's providerOverride): let tests drive the
+// SDK message stream deterministically and collapse backoff. Production always
+// uses the real query() and real exponential timing.
+let queryImpl: typeof query = query;
+let backoffMsImpl: (attempt: number) => number = retryBackoffMs;
+export function __setClaudeTestHooks(
+  hooks: { query?: typeof query; backoffMs?: (n: number) => number } | null,
+): void {
+  queryImpl = hooks?.query ?? query;
+  backoffMsImpl = hooks?.backoffMs ?? retryBackoffMs;
+}
+
 class ClaudeRunnerHandle implements RunnerHandle {
   readonly agentId: string;
   readonly provider: ProviderId = "claude";
@@ -339,6 +382,12 @@ class ClaudeRunnerHandle implements RunnerHandle {
   private planById = new Map<string, PlanStep>();
   private finished = false;
   private hb?: ReturnType<typeof setInterval>;
+  // Retry state (transient API overload → resume the session, bounded).
+  private sessionId?: string; // this run's own SDK session, for resume-on-retry
+  private baseOptions?: Options; // query options minus resume, reused per relaunch
+  private initialPrompt = ""; // the kickoff message, re-sent if we retry pre-session
+  private apiRetries = 0; // transient retries spent (budget MAX_API_RETRIES)
+  private lastApiError = ""; // most recent overload/error text seen, for classification
 
   constructor(
     private spec: StartSpec,
@@ -349,13 +398,13 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.agentId = spec.agentId;
     this.events.onStatus(this.agentId, "running");
     this.events.onLog(this.agentId, `picked up "${spec.task}" on ${spec.branch}`);
-    this.input.push(
+    this.initialPrompt =
       `You are a Skynet coding agent on branch ${spec.branch} in this repository. ` +
-        `Task: ${spec.task}. ` +
-        `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
-        `Only if it requires code changes, make them and run any relevant checks. Then stop when done. ` +
-        `Ask before running destructive or irreversible commands.`,
-    );
+      `Task: ${spec.task}. ` +
+      `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
+      `Only if it requires code changes, make them and run any relevant checks. Then stop when done. ` +
+      `Ask before running destructive or irreversible commands.`;
+    this.input.push(this.initialPrompt);
 
     const canUseTool: CanUseTool = (toolName, input) => {
       if (AUTO_ALLOW.has(toolName)) return Promise.resolve({ behavior: "allow", updatedInput: input });
@@ -402,7 +451,9 @@ class ClaudeRunnerHandle implements RunnerHandle {
       return; // q stays unset; consume()/heartbeat never start
     }
 
-    const options: Options = {
+    // Base options (reused verbatim on every relaunch/retry). Fork-resume is kept
+    // OUT of the base so a retry resumes THIS run's own session, not a fork.
+    const baseOptions: Options = {
       cwd: spec.cwd ?? process.cwd(),
       model: mapModel(spec.model),
       permissionMode: "default",
@@ -417,10 +468,15 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // Scrubbed env (drops the nested-session OAuth path); a per-workspace key
       // (orchestrator-injected) overrides ANTHROPIC_API_KEY for this session only.
       env: this.sdkEnv,
-      ...(resumeSessionId ? { resume: resumeSessionId, forkSession: true } : {}),
     };
+    this.baseOptions = baseOptions;
 
-    this.q = query({ prompt: this.input, options });
+    // A fork inherits its parent's context via resume; a fresh run doesn't.
+    const firstOptions: Options = resumeSessionId
+      ? { ...baseOptions, resume: resumeSessionId, forkSession: true }
+      : baseOptions;
+
+    this.q = queryImpl({ prompt: this.input, options: firstOptions });
     this.hb = setInterval(() => this.events.onHeartbeat(this.agentId), 5_000);
     void this.consume();
   }
@@ -511,14 +567,57 @@ class ClaudeRunnerHandle implements RunnerHandle {
 
   private async consume() {
     if (!this.q) return;
+    while (!this.finished) {
+      const outcome = await this.drain();
+      if (this.finished) return; // stopped mid-drain
+
+      if (outcome.done) {
+        this.finish();
+        return;
+      }
+
+      // Errored. A transient overload/rate-limit is retryable: back off and
+      // resume the session, up to MAX_API_RETRIES. Anything else — or exhausting
+      // the budget — is a real failure. NEVER fall through to a "done".
+      if (outcome.transient && this.apiRetries < MAX_API_RETRIES) {
+        this.apiRetries++;
+        const wait = backoffMsImpl(this.apiRetries);
+        this.events.onLog(
+          this.agentId,
+          `Claude API transient error (${outcome.reason}); retrying in ${Math.round(wait / 1000)}s [${this.apiRetries}/${MAX_API_RETRIES}]`,
+        );
+        await this.q?.interrupt().catch(() => undefined); // release the dead session
+        await sleep(wait);
+        if (this.finished) return;
+        this.relaunch();
+        continue;
+      }
+
+      this.fail(
+        outcome.transient
+          ? `Claude API still overloaded after ${MAX_API_RETRIES} retries: ${outcome.reason}`
+          : outcome.reason,
+      );
+      return;
+    }
+  }
+
+  /** Iterate the current query to its end. Returns done on a clean result (or a
+   *  stream that ends without one), else the error + whether it's retryable. */
+  private async drain(): Promise<{ done: true } | { done: false; reason: string; transient: boolean }> {
+    if (!this.q) return { done: false, reason: "no session", transient: false };
     try {
       for await (const msg of this.q as AsyncIterable<SDKMessage>) {
-        if (this.finished) break;
+        if (this.finished) return { done: true };
         if (msg.type === "system" && "session_id" in msg && typeof msg.session_id === "string") {
+          this.sessionId = msg.session_id; // captured for resume-on-retry
           this.onSession(this.agentId, msg.session_id);
         } else if (msg.type === "assistant") {
           const { text, tools } = readAssistant((msg as { message: { content?: unknown } }).message);
           if (text) {
+            // Remember overload/rate-limit chatter so a later error result can be
+            // classified as transient even if its subtype is generic.
+            if (isTransientApiError(text)) this.lastApiError = text;
             if (this.pendingChat) { this.pendingChat = false; this.events.onChatReply(this.agentId, text); }
             else { this.lastRationale = text; this.events.onLog(this.agentId, text); }
           }
@@ -551,17 +650,35 @@ class ClaudeRunnerHandle implements RunnerHandle {
             this.events.onLog(this.agentId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)");
           }
         } else if (msg.type === "result") {
+          // The SDK emits a result even for an errored turn (is_error / non-success
+          // subtype). Treat that as a failure — not a completion (the bug: a 529
+          // storm was being reported as `done` with an empty diff).
           this.emitUsage(msg as Record<string, unknown>);
-          break;
+          const err = classifyResult(msg as Record<string, unknown>, this.lastApiError);
+          return err ? { done: false, ...err } : { done: true };
         }
       }
     } catch (err) {
-      // The query crashed (auth, network, SDK) — this is a FAILURE, not a
-      // completion. Surface it; never report the agent as done with no work.
-      this.fail((err as Error).message);
-      return;
+      // Thrown mid-stream (network/SDK). Retryable only if it reads as overload.
+      const reason = (err as Error).message || String(err);
+      return { done: false, reason, transient: isTransientApiError(reason) };
     }
-    this.finish();
+    // Stream ended with no explicit result message → treat as clean completion.
+    return { done: true };
+  }
+
+  /** Relaunch the query after a transient failure: a fresh input stream (the old
+   *  single-consumer one was abandoned by the errored query), resuming this run's
+   *  session if we have one, else re-sending the kickoff prompt from scratch. */
+  private relaunch() {
+    this.input = createInputStream();
+    const opts: Options = this.sessionId
+      ? { ...(this.baseOptions as Options), resume: this.sessionId }
+      : (this.baseOptions as Options);
+    this.input.push(
+      this.sessionId ? "Continue the task from where you left off." : this.initialPrompt,
+    );
+    this.q = queryImpl({ prompt: this.input, options: opts });
   }
 
   /** Could-not-run path: mark needs-attention, never onCompleted. */
