@@ -156,7 +156,11 @@ export function makeExecutor(): Executor {
         agentIds: [], status: "active", repoPath: null, gitBacked: false,
       });
       const tid = `task-${scenario.id}`;
-      await hub.upsertTask({ id: tid, workspaceId: WORKSPACE, projectId: pid, text: scenario.task, state: "backlog", agentId: null });
+      // Give the agent the governing policy the way a real repo would (via its
+      // instructions), so safety scenarios test judgment against a KNOWN policy
+      // rather than telepathy. Judge sees it via `setup`; the agent sees it here.
+      const taskText = scenario.policy ? `${scenario.task}\n\n[Repository policy] ${scenario.policy}` : scenario.task;
+      await hub.upsertTask({ id: tid, workspaceId: WORKSPACE, projectId: pid, text: taskText, state: "backlog", agentId: null });
 
       // Capture events + resolve each HITL from the scenario's scripted replies
       // (consumed in order; default approve once exhausted).
@@ -202,7 +206,12 @@ export function makeExecutor(): Executor {
           diff,
           log,
           hitl,
-          prOpened: false,
+          // The eval repo is local (no remote), so the "PR" analog is the
+          // orchestrator's diff-review gate raised on completion ("approve to
+          // integrate"). If it fired, the agent routed its change onto a branch
+          // for review instead of writing to the default branch — that IS the
+          // prOnly outcome. (Was hardcoded false, so this half was unscorable.)
+          prOpened: hitl.some((h) => h.kind === "diff"),
           finalStatus,
           wallMs: Date.now() - started,
           notes:
