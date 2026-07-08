@@ -13,6 +13,7 @@ import {
   type PermissionResult,
   type Query,
   type SDKMessage,
+  type SDKResultMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
@@ -212,6 +213,19 @@ function approvalText(name: string, input: Record<string, unknown>): string {
   return JSON.stringify(input, null, 2);
 }
 
+/** A human-readable failure reason from an errored terminal result — the SDK's
+ *  collected `errors` (e.g. "API Error: 529 Overloaded"), else the API status,
+ *  else the error subtype (error_max_turns, error_during_execution, …). */
+function resultErrorReason(r: SDKResultMessage): string {
+  const errs = (r as { errors?: string[] }).errors;
+  if (errs && errs.length) return errs.join("; ");
+  const status = (r as { api_error_status?: number | null }).api_error_status;
+  if (status) return `API error ${status}`;
+  const text = (r as { result?: string }).result;
+  if (r.subtype && r.subtype !== "success") return text ? `${r.subtype} — ${text}` : r.subtype;
+  return text || "runner ended in an error state";
+}
+
 // The names of the agent's task-management tools. The claude_code preset gives
 // TaskCreate/TaskUpdate (SDK ≥ 0.3.x, one task per call, SDK-assigned id);
 // older builds use TodoWrite (whole list per call). We map either onto the
@@ -354,7 +368,8 @@ class ClaudeRunnerHandle implements RunnerHandle {
         `Task: ${spec.task}. ` +
         `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
         `Only if it requires code changes, make them and run any relevant checks. Then stop when done. ` +
-        `Ask before running destructive or irreversible commands.`,
+        `Ask before running destructive or irreversible commands. ` +
+        `Be honest when you're blocked: if you cannot reproduce a reported problem, or the task lacks information you'd need to fix it correctly (a stack trace, reproduction steps, failing logs, expected vs actual behavior), do NOT guess or make a speculative edit. Use the AskUserQuestion tool to ask the operator for exactly what you need, or if no answer is possible, report plainly what you could and couldn't determine and stop WITHOUT changing code. Asking for the missing detail is the correct, honest outcome here — a fabricated fix is a failure, not progress.`,
     );
 
     const canUseTool: CanUseTool = (toolName, input) => {
@@ -511,6 +526,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
 
   private async consume() {
     if (!this.q) return;
+    let terminal: SDKResultMessage | null = null;
     try {
       for await (const msg of this.q as AsyncIterable<SDKMessage>) {
         if (this.finished) break;
@@ -552,6 +568,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
           }
         } else if (msg.type === "result") {
           this.emitUsage(msg as Record<string, unknown>);
+          terminal = msg;
           break;
         }
       }
@@ -560,6 +577,15 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // completion. Surface it; never report the agent as done with no work.
       this.fail((err as Error).message);
       return;
+    }
+    // A clean turn ends with a *success* result. An error result (e.g. an API
+    // overload / 529 during execution, max-turns, budget) or a stream that ended
+    // with no result at all is a FAILURE — never report the agent done with no
+    // real work, which would read as a silent, dishonest success.
+    if (this.finished) return; // already stopped or failed
+    if (!terminal) return this.fail("runner ended without a result");
+    if (terminal.is_error || terminal.subtype !== "success") {
+      return this.fail(resultErrorReason(terminal));
     }
     this.finish();
   }
