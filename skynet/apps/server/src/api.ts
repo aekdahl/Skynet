@@ -198,7 +198,9 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.delete<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {
     const existing = await store.getProject(req.params.id);
     if (!existing || existing.workspaceId !== ws(req)) return reply.code(404).send({ error: "Project not found" });
-    for (const agentId of existing.agentIds) await orchestrator.stopAgent(agentId);
+    // haltAgent (not the detach-only stopAgent) so each agent is left terminal
+    // and its runner freed before the project record goes away.
+    for (const agentId of existing.agentIds) await orchestrator.haltAgent(agentId);
     await hub.deleteProject(req.params.id);
     return { ok: true };
   });

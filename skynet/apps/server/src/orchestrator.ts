@@ -671,7 +671,10 @@ export class Orchestrator {
 
     // No live session (finished, in review, or the server restarted since it ran)
     // → answer statelessly via the provider, grounded in the agent's stored log.
-    if (!live) {
+    // A `done` agent is also answered statelessly even if a stale live entry
+    // lingers: it has nothing left to relay to, so we must never block on its
+    // handle's chat waiter (which would hang until the 45s timeout).
+    if (!live || (await this.store.getAgent(agentId))?.status === "done") {
       const reply = await this.consultFinished(agentId, text);
       await this.hub.agentLog(agentId, `↳ ${reply}`);
       return reply;
@@ -721,15 +724,20 @@ export class Orchestrator {
   }
 
   /**
-   * Terminate an agent — operator "stop" or the reaper. Works even for an
-   * ORPHAN (no live handle after a restart): stop the runner if live, free the
-   * runner it holds (so a stuck "busy" runner is released), retire the worktree,
-   * mark the agent terminal, and record why. This is the escape hatch for a
-   * wedged agent that otherwise blocks its runner from being retired.
+   * Detach an agent's live session — stop its runner if live, free the runner it
+   * holds (so a stuck "busy" runner is released), retire its worktree, and record
+   * why. Works even for an ORPHAN (no live handle after a restart): the agent's
+   * recorded runnerId is the only handle to the stuck runner.
+   *
+   * It deliberately does NOT change the agent's status: the caller owns the
+   * terminal state. Operator "stop" ({@link haltAgent}) and the reaper mark the
+   * agent done themselves; a restart-orphan is left running/waiting so a
+   * follow-up chat can still report its real status (DEF-002) rather than a
+   * misleading "finished".
    */
   async stopAgent(agentId: string, reason = "stopped by operator"): Promise<void> {
     const agent = await this.store.getAgent(agentId);
-    if (!agent || agent.status === "done") return;
+    if (!agent) return;
     const live = this.live.get(agentId);
     if (live) await live.handle.stop().catch(() => undefined);
     // Free the runner using the live mapping OR the agent's recorded runnerId
@@ -738,8 +746,6 @@ export class Orchestrator {
     const ctx = live?.git ?? (await this.gitContextForAgent(agentId).catch(() => undefined));
     if (ctx) await ctx.worktrees.retire(agentId).catch(() => undefined);
     await this.hub.agentLog(agentId, reason);
-    await this.hub.agentStatus(agentId, "done");
-    await this.hub.agentCompleted(agentId, agent.branch);
     this.live.delete(agentId);
   }
 
@@ -760,7 +766,12 @@ export class Orchestrator {
       if (a.status !== "running" && a.status !== "waiting") continue;
       if (a.lastHeartbeatAt > cutoff) continue;
       const silentSec = Math.round((now() - a.lastHeartbeatAt) / 1000);
+      // Detach the (presumed-dead) session + free its runner, then mark it
+      // terminal — a reaped agent isn't coming back, so it must not linger
+      // "running" and get reaped again on the next sweep.
       await this.stopAgent(a.id, `reaped — no heartbeat for ${silentSec}s; runner freed`).catch(() => undefined);
+      await this.hub.agentStatus(a.id, "done").catch(() => undefined);
+      await this.hub.agentCompleted(a.id, a.branch).catch(() => undefined);
     }
   }
 
@@ -812,7 +823,12 @@ export class Orchestrator {
       if (runner) await this.hub.upsertRunner({ ...runner, status: "idle", idleSince: now() });
     }
     await this.stopAgent(agentId); // stop the handle + retire the worktree + drop the session
-    if (agent.status !== "done") await this.hub.agentStatus(agentId, "done");
+    // stopAgent detaches but leaves the status untouched — halt is the terminal
+    // operator action, so mark it done and emit the completion event.
+    if (agent.status !== "done") {
+      await this.hub.agentStatus(agentId, "done");
+      await this.hub.agentCompleted(agentId, agent.branch);
+    }
     return this.store.getAgent(agentId);
   }
 
