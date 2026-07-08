@@ -179,7 +179,18 @@ export class Orchestrator {
       onProgress: (agentId, progress, plan) => void this.hub.agentProgress(agentId, progress, plan),
       onUsage: (agentId, usage) => void this.hub.agentUsage(agentId, usage),
       onHeartbeat: (agentId) => void this.hub.agentHeartbeat(agentId),
-      onStatus: (agentId, status) => void this.hub.agentStatus(agentId, status),
+      // "done" is the ORCHESTRATOR's decision, made in complete()/completeMerged
+      // only AFTER a finished agent's diff has been committed → reviewed → merged
+      // (or confirmed genuinely empty). A runner that flips itself to "done" on
+      // finish() would mark the agent done while its edits are still uncommitted;
+      // an observer polling that window sees a premature "done" with an empty diff
+      // and the work looks silently dropped. Ignore a runner-emitted "done" here —
+      // onCompleted drives the real terminal transition. Other statuses
+      // (running/waiting/review) pass through unchanged.
+      onStatus: (agentId, status) => {
+        if (status === "done") return;
+        void this.hub.agentStatus(agentId, status);
+      },
       onHitl: (agentId, raise) => void this.raise(agentId, raise),
       onCompleted: (agentId, branch) => void this.complete(agentId, branch),
       onFailed: (agentId, reason) => void this.fail(agentId, reason),
@@ -230,7 +241,10 @@ export class Orchestrator {
         .commitAll(agentId, `Skynet agent ${agentId}${agent ? `: ${agent.name}` : ""}`)
         .catch((err) => {
           void this.hub.agentLog(agentId, `commit failed: ${(err as Error).message}`);
-          return { committed: false } as const;
+          // A git error is NOT "nothing to integrate" — the agent may have real
+          // edits we simply couldn't commit. Falling through to done would drop
+          // them silently, so surface it for attention instead.
+          return { committed: false, error: true } as const;
         });
 
       if (res.committed) {
@@ -238,6 +252,15 @@ export class Orchestrator {
         await this.freeRunner(live.runnerId); // compute is done; awaiting review
         await this.hub.agentStatus(agentId, "review");
         await this.raiseDiffReview(agentId, stat);
+        this.live.delete(agentId);
+        return;
+      }
+
+      if ("error" in res && res.error) {
+        // Couldn't commit a finished agent's worktree — needs-attention, never a
+        // silent "done" that would lose the (possibly real) uncommitted work.
+        await this.freeRunner(live.runnerId);
+        await this.hub.agentStatus(agentId, "review");
         this.live.delete(agentId);
         return;
       }
@@ -250,11 +273,15 @@ export class Orchestrator {
     }
 
     // Phase 0 / no-diff completion: free the runner, finish the task & agent.
+    // The orchestrator sets "done" HERE (not the runner) — this is the only place
+    // a genuinely change-free agent becomes terminal, so a runner's own "done" is
+    // ignored (see events().onStatus) and can never precede real integration.
     await this.freeRunner(live?.runnerId ?? null);
     if (live?.taskId) {
       const task = await this.store.getTask(live.taskId);
       if (task) await this.hub.upsertTask({ ...task, state: "done" });
     }
+    await this.hub.agentStatus(agentId, "done");
     await this.hub.agentCompleted(agentId, branch);
     this.live.delete(agentId);
   }
