@@ -18,7 +18,7 @@ export const ProviderId = z.enum([
 ]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
-export const AgentStatus = z.enum(["running", "waiting", "review", "done"]);
+export const AgentStatus = z.enum(["running", "waiting", "paused", "review", "done"]);
 export type AgentStatus = z.infer<typeof AgentStatus>;
 
 export const PlanStepState = z.enum(["done", "now", "todo"]);
@@ -53,6 +53,19 @@ export const PlanStep = z.object({
 });
 export type PlanStep = z.infer<typeof PlanStep>;
 
+// ─── Token usage & cost ─────────────────────────────────────────────────────
+// What a runner has spent so far, reported by the vendor (Claude's result
+// message carries exact numbers; some CLIs surface them best-effort, others
+// not at all). `costUsd`/`durationMs` are nullable when the vendor omits them.
+export const Usage = z.object({
+  inputTokens: z.number().int().nonnegative().default(0),
+  outputTokens: z.number().int().nonnegative().default(0),
+  costUsd: z.number().nonnegative().nullable().default(null),
+  turns: z.number().int().nonnegative().default(0),
+  durationMs: z.number().int().nonnegative().nullable().default(null),
+});
+export type Usage = z.infer<typeof Usage>;
+
 /** Append-only activity log line. Streamed via the `agent.log` event. */
 export const LogLine = z.object({
   at: Timestamp,
@@ -78,6 +91,7 @@ export const Agent = z.object({
   modules: z.array(z.string()), // architectural module ids it touches
   progress: z.number().min(0).max(1),
   plan: z.array(PlanStep),
+  usage: Usage.nullable().default(null), // token/cost telemetry, when the vendor reports it
   modifiedFiles: z.array(z.string()), // surfaced to UI as modules, never raw paths
   log: z.array(LogLine),
   startedAt: Timestamp,
@@ -103,8 +117,14 @@ export const Project = z.object({
   goal: z.string(),
   agentIds: z.array(z.string()),
   status: ProjectStatus,
-  // The single repository this project's agents branch & PR within (one repo per
-  // project). "owner/repo". Optional until GitHub is connected.
+  // A project binds to a repository one of two ways (they can coexist):
+  //  • repoPath — an absolute local folder the agents work in. When it contains
+  //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
+  //    + the merge queue against THAT repo. This is the desktop-first default.
+  //  • repo — a connected GitHub repository "owner/repo" the branches are pushed
+  //    to (PR flow). Optional; used for the cloud/publish path.
+  repoPath: z.string().nullable().default(null),
+  gitBacked: z.boolean().default(false),
   repo: z.string().optional(),
 });
 export type Project = z.infer<typeof Project>;
@@ -149,6 +169,10 @@ export const HitlItem = z.object({
   why: z.string(),
   risk: Risk,
   raisedAt: Timestamp, // UI derives "waited" from this
+  // When set, an unanswered `question` auto-resolves at this time (no-operator
+  // timeout) so a headless/idle run doesn't hang waiting on a human. Null = no
+  // deadline (interactive default). See SKYNET_HITL_QUESTION_TIMEOUT_MS.
+  expiresAt: Timestamp.nullable().default(null),
   resolvedAt: Timestamp.nullable().default(null),
   resolution: Resolution.nullable().default(null),
   // kind-specific payload (only the relevant field is populated):
@@ -225,7 +249,8 @@ export type ChatRequest = z.infer<typeof ChatRequest>;
 export const CreateProjectRequest = z.object({
   name: z.string().min(1),
   goal: z.string().default(""),
-  repo: z.string().optional(), // bind the project to one repo at creation
+  repoPath: z.string().optional(), // absolute path to a local folder to work in
+  repo: z.string().optional(), // or bind to one connected GitHub repo at creation
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 
@@ -233,6 +258,7 @@ export const UpdateProjectRequest = z.object({
   name: z.string().min(1).optional(),
   goal: z.string().optional(),
   status: ProjectStatus.optional(),
+  repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
@@ -319,11 +345,22 @@ export const GithubRepo = z.object({
 });
 export type GithubRepo = z.infer<typeof GithubRepo>;
 
-/** A workspace's GitHub connection — installation + selected repos + policy. */
+/** How the connection authenticates to GitHub. `app` = GitHub App installation
+ *  (least-privilege, server-minted tokens); `pat` = a personal access token the
+ *  user supplied (stored encrypted server-side; used directly as the git token —
+ *  the local/desktop path that needs no cloud). */
+export const GithubAuthMode = z.enum(["app", "pat"]);
+export type GithubAuthMode = z.infer<typeof GithubAuthMode>;
+
+/** A workspace's GitHub connection — auth mode + selected repos + policy.
+ *  Non-secret: a PAT's plaintext never lands here (only its last4); the
+ *  ciphertext lives in the server-side token store. */
 export const GithubConnection = z.object({
   workspaceId: z.string(),
   connected: z.boolean(),
-  installation: GithubInstallation.nullable().default(null),
+  auth: GithubAuthMode.default("app"),
+  installation: GithubInstallation.nullable().default(null), // app mode
+  tokenLast4: z.string().nullable().default(null), // pat mode — for recognition
   repos: z.array(GithubRepo).default([]),
   safety: SafetyPolicy,
 });
@@ -335,6 +372,14 @@ export const ConnectGithubRequest = z.object({
   repos: z.array(GithubRepo).default([]),
 });
 export type ConnectGithubRequest = z.infer<typeof ConnectGithubRequest>;
+
+/** Body to connect via a personal access token (the local/desktop path). The
+ *  token is validated, sealed, and stored server-side — never returned. */
+export const ConnectPatRequest = z.object({
+  token: z.string().min(1),
+  repos: z.array(GithubRepo).default([]),
+});
+export type ConnectPatRequest = z.infer<typeof ConnectPatRequest>;
 
 /** Partial update to the safety policy — any subset of guardrails. */
 export const UpdateSafetyRequest = SafetyPolicy.partial();

@@ -5,15 +5,33 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Snapshot, DEFAULT_WORKSPACE, SAFETY_DEFAULTS, type AuditRecord, type GithubConnection, type Project } from "@skynet/shared";
+import { Snapshot, DEFAULT_WORKSPACE, SAFETY_DEFAULTS, type Agent, type AuditRecord, type GithubConnection, type Project } from "@skynet/shared";
 import type { Store } from "../apps/server/src/store/store.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
 import { FileStore } from "../apps/server/src/store/file.js";
 
+// Stores start empty (no demo fixtures), so the contract seeds its own known
+// agent + project before asserting on reads.
+async function seedContract(store: Store): Promise<void> {
+  await store.putProject({
+    id: "seed-proj", workspaceId: DEFAULT_WORKSPACE, name: "Seed", goal: "g",
+    agentIds: ["seed-agent"], status: "active",
+  });
+  const agent: Agent = {
+    id: "seed-agent", workspaceId: DEFAULT_WORKSPACE, projectId: "seed-proj",
+    name: "Seed agent", status: "running", runnerId: null, provider: "claude",
+    model: "opus-4.5", branch: "agent/seed-agent", modules: [], progress: 0,
+    plan: [], modifiedFiles: [], log: [], startedAt: 0, lastHeartbeatAt: 0,
+    visual: false, previewUrl: null, dependsOn: [], parentId: null,
+    branchFromStep: null, archived: false,
+  };
+  await store.putAgent(agent);
+}
+
 function storeContract(name: string, make: () => Promise<Store>) {
   describe(`Store contract — ${name}`, () => {
     let store: Store;
-    beforeAll(async () => { store = await make(); });
+    beforeAll(async () => { store = await make(); await seedContract(store); });
 
     it("snapshot returns a schema-valid, seeded workspace", async () => {
       const snap = await store.snapshot(DEFAULT_WORKSPACE);
@@ -89,19 +107,19 @@ storeContract("memory", async () => new MemoryStore());
 
 // File-backed store: same contract, plus a real persistence round-trip.
 const tmpDb = (tag: string) => join(tmpdir(), `skynet-${tag}-${Date.now()}-${process.pid}.json`);
-storeContract("file", async () => FileStore.create(tmpDb("contract"), true));
+storeContract("file", async () => FileStore.create(tmpDb("contract")));
 
 describe("FileStore persistence", () => {
   it("round-trips state through the JSON file across reopen", async () => {
     const path = tmpDb("persist");
-    const a = FileStore.create(path, false); // fresh, empty
+    const a = FileStore.create(path); // fresh, empty
     await a.putProject({
       id: "fp1", workspaceId: DEFAULT_WORKSPACE, name: "Persisted", goal: "g",
       agentIds: [], status: "active",
     });
     a.flush(); // force the write now (bypass the debounce)
 
-    const b = FileStore.create(path, false); // reopen from disk
+    const b = FileStore.create(path); // reopen from disk
     const got = await b.getProject("fp1");
     expect(got).toBeTruthy();
     expect(got!.name).toBe("Persisted");
@@ -116,7 +134,8 @@ describePg("Store contract — postgres (DATABASE_URL set)", () => {
   let store: Store;
   beforeAll(async () => {
     const { PostgresStore } = await import("../apps/server/src/store/postgres.js");
-    store = await PostgresStore.create(dbUrl!, true);
+    store = await PostgresStore.create(dbUrl!);
+    await seedContract(store);
   });
   afterAll(async () => {
     // best-effort: PostgresStore holds a pool; let the process exit close it.

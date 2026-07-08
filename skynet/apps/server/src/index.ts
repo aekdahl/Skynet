@@ -2,6 +2,7 @@
 // API + WebSocket gateway + orchestrator in one process (Architecture Brief
 // §03/§08). Phase 0: in-memory store, in-process bus, mock runner.
 
+import { loadedEnvFrom } from "./load-env.js"; // MUST be first — loads .env before config reads process.env
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
@@ -18,6 +19,7 @@ import { registerStatic } from "./static.js";
 import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
 import { registerSecretsRoutes } from "./secrets/index.js";
 import { registerGithubRoutes, configureGithub } from "./github/index.js";
+import { registerEvalsRoutes } from "./evals/index.js";
 import { configureAuth } from "./auth.js";
 import { MemorySessionStore, type SessionStore } from "./auth/sessions.js";
 import { MemoryServiceTokenStore } from "./auth/service-tokens.js";
@@ -31,12 +33,12 @@ async function main() {
   let store: Store;
   if (config.store === "postgres") {
     const { PostgresStore } = await import("./store/postgres.js");
-    store = await PostgresStore.create(config.databaseUrl, config.seedDemo);
+    store = await PostgresStore.create(config.databaseUrl);
   } else if (config.store === "file") {
     const { FileStore } = await import("./store/file.js");
-    store = FileStore.create(config.dbPath, config.seedDemo);
+    store = FileStore.create(config.dbPath);
   } else if (config.store === "memory") {
-    store = new MemoryStore({ seed: config.seedDemo });
+    store = new MemoryStore();
   } else {
     // No silent default: choosing persistence is explicit so data loss is never a surprise.
     throw new Error("No store configured. Set STORE=memory for dev/tests, or STORE=file / STORE=postgres for durability.");
@@ -102,6 +104,9 @@ async function main() {
   await registerSecretsRoutes(app);
   // GitHub App connection + safety policy (workspace-scoped); /api auth applies.
   await registerGithubRoutes(app);
+  // LLM-judged acceptance evals (real runs via the standalone evals/ suite,
+  // spawned as a subprocess); /api auth hook applies.
+  await registerEvalsRoutes(app);
   await registerWs(app, { store, bus, hub });
   // W5 live preview: mount the sandboxed /preview route, stamp visual/previewUrl
   // onto already-stored agents, then warm their builds. No-op unless PREVIEW != off.
@@ -112,6 +117,22 @@ async function main() {
   if (queued) app.log.info(`preview: queued ${queued} agent build(s)`);
   const servingSpa = await registerStatic(app);
 
+  // Release "orphaned busy" runners — persisted busy but held by no live agent
+  // (a restart leaves the store saying busy while the in-memory live map is
+  // empty). Runs once at boot, before we listen, so nothing is mid-assign.
+  await orchestrator.reconcileRunners().catch((err) => app.log.warn(`runner reconcile: ${(err as Error).message}`));
+
+  // Reap presumed-dead agents (frees runners orphaned by a crash/restart). Run
+  // once at boot to clear restart orphans, then on an interval. Bounded to a
+  // sane minimum so it can't spin hot; disabled when agentReapMs <= 0.
+  if (config.agentReapMs > 0) {
+    const sweep = () =>
+      orchestrator.reapStaleAgents().catch((err) => app.log.warn(`reaper: ${(err as Error).message}`));
+    await sweep();
+    const every = Math.max(30_000, Math.min(config.agentReapMs, 60_000));
+    setInterval(sweep, every).unref();
+  }
+
   await app.listen({ port: config.port, host: "0.0.0.0" });
   if (servingSpa) app.log.info("serving built web SPA from this server");
   if (bootstrap) {
@@ -119,6 +140,7 @@ async function main() {
     app.log.info(`MCP bootstrap token registered — workspace=${bootstrap.workspaceId} scopes=[${bootstrap.scopes.join(", ")}] → POST /mcp`);
     if (bootstrap.dropped.length > 0) app.log.warn(`ignored unknown bootstrap scopes: ${bootstrap.dropped.join(", ")}`);
   }
+  app.log.info(loadedEnvFrom ? `loaded env from ${loadedEnvFrom}` : "no .env file found (using process env only)");
   app.log.info(`Skynet server up on :${config.port}  (store=${config.store} bus=${config.bus} runner=${config.runner ?? "per-runner"} sessions=${config.sessions})`);
 }
 

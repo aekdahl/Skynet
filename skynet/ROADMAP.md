@@ -33,6 +33,15 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
 ---
 
 ## v1 — Orchestration completeness & hardening
+- **⭐ Browser tools for coding agents (MCP)** — *near-term priority.* Equip the Claude runner (then the
+  CLI runners) with a Chrome/Playwright **MCP** server so an agent can drive a real browser *within* a
+  coding task: reproduce a bug, verify a UI change end-to-end, or read live docs before editing. Wrap,
+  don't rebuild — a scoped MCP tool on the existing `runner-sdk` seam, **not** our own browser
+  automation; the existing HITL gate already governs tool approvals, so a nav/click can be gated like any
+  other tool. Opt-in per runner/workspace, off by default. Claude first (Agent SDK `mcpServers`), CLI
+  runners after. *(Pulls the browser slice of v3's "Tools via MCP" forward — it's the highest-leverage
+  tool for the code loop; verification/repro is where it pays off, and it composes with the live-preview
+  pipeline below.)*
 - Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** — then breadth
   reactively from the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
 - **Agent labels / custom grouping** — rename agents and group them beyond project (small UX add).
@@ -45,6 +54,12 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
 - **Scale:** Redis multi-replica fan-out; GKE Jobs for runners.
 - Command-safety hardening; secrets at rest; **observability** (metrics/logging/tracing).
 - **Runner session-map cleanup** — `ClaudeRunnerProvider.sessions` (agentId→sessionId, kept for fork resume) grows one entry per agent for the server-process lifetime. Evict on agent completion (retain only entries an active fork could resume). Small RAM/tech-debt fix; no behavior change.
+- **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs).* Still to do:
+  - **Plan-mode gate (Claude)** — expose `permissionMode: "plan"` as a per-project/runner policy so the agent proposes a plan and `ExitPlanMode` becomes a `plan` HITL approved *before* any writes. Best fit for Skynet's HITL model; native to the Agent SDK.
+  - **Per-runner tool + prompt policy** — surface `allowedTools`/`disallowedTools`, a project system prompt, and `settingSources` (CLAUDE.md) instead of the hardcoded auto-allow set + inline steering. Ties into v4 repo-native memory.
+  - **Structured diffs in gates/review** — populate `HitlRaise.diff` from Codex/Cursor patch events and `git diff` in the worktree, so approvals show a real diff, not reconstructed text.
+  - **Token-by-token streaming** — Claude `includePartialMessages` / CLI NDJSON deltas → live "typing" in the log instead of whole-message chunks.
+  - **CLI usage fidelity** — Codex/Gemini/Cursor usage is parsed best-effort today; Copilot emits none (text-only). Firm these up as each vendor's structured output stabilizes.
 - Auth: **SSO/OIDC**.
 - 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap, additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
 
@@ -70,6 +85,8 @@ supervision layer, it doesn't host or resell those services.
 - **Skynet *as* an MCP server (shipped):** the reverse direction — Skynet exposes its own surface
   (projects/tasks/fleet/agents/HITL) as MCP tools so an agent can drive the fleet, incl. a headless
   bootstrap token for sandbox deploys (e.g. Daytona). See [docs/mcp.md](docs/mcp.md).
+  *(The browser/Chrome MCP tool is pulled forward to v1 — see above — since it serves the core code loop,
+  not inbound triggers; the rest of the tool catalog lands here.)*
 - **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
   fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
 - Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.

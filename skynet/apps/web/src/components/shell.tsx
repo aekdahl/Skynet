@@ -19,6 +19,18 @@ const isDesktop = /Electron/i.test(ua);
 const isMac = /Mac/i.test(ua);
 const isWin = /Windows/i.test(ua);
 
+// Avatar/footer identity reflects the workspace the operator named at setup —
+// no fabricated profile. Initials fall back to "S" (Skynet) before onboarding.
+const wsInitials = (name: string): string =>
+  (
+    name
+      .trim()
+      .split(/\s+/)
+      .map((w) => w[0])
+      .join("")
+      .slice(0, 2) || "S"
+  ).toUpperCase();
+
 export function TitleBar() {
   const cls =
     "op-titlebar" +
@@ -41,7 +53,7 @@ export function TitleBar() {
       </div>
       <div className="op-title">Skynet — Agent Network</div>
       <div className="op-titleright">
-        <span className="op-avatar">JD</span>
+        <span className="op-avatar">{wsInitials(workspaceName())}</span>
       </div>
     </header>
   );
@@ -114,6 +126,7 @@ export function OpSidebar({
         {item("Fleet", "◇", () => setView("fleet"), view === "fleet")}
         {item("Integrations", "⑂", () => setView("integrations"), view === "integrations")}
         {item("Settings", "⚙", () => setView("settings"), view === "settings")}
+        {item("Acceptance", "✓", () => setView("acceptance"), view === "acceptance")}
       </nav>
       <div className="op-navsec">PROJECTS</div>
       <div className="op-plist">
@@ -129,10 +142,10 @@ export function OpSidebar({
         ))}
       </div>
       <div className="op-side-foot">
-        <span className="op-avatar">JD</span>
+        <span className="op-avatar">{wsInitials(workspaceName())}</span>
         <div>
-          <div className="who">Jordan Diaz</div>
-          <div className="role">Pilot</div>
+          <div className="who">{workspaceName() || "Skynet"}</div>
+          <div className="role">Workspace</div>
         </div>
       </div>
     </aside>
@@ -204,9 +217,6 @@ export function OpStatusBar({
         )}
       </span>
       {open && <span className="stat-backdrop" onClick={() => setOpen(null)} />}
-      <span className="op-sb-r">
-        skynet-net · main · <span className="ok">✓ synced</span> · v2.18.0
-      </span>
     </footer>
   );
 }

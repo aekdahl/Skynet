@@ -27,6 +27,7 @@ const agent: Agent = {
   modules: ["api/billing", "db/migrations"],
   progress: 0.45,
   plan: [{ text: "Map events", state: "done" }],
+  usage: null,
   modifiedFiles: ["api/billing/webhooks.ts"],
   log: [{ at: 1_000, line: "worker passes replay suite" }],
   startedAt: 10_000,

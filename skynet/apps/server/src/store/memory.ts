@@ -18,7 +18,7 @@ import type {
 import type { AuditRecord } from "@skynet/shared";
 import { now } from "../config.js";
 import type { Store } from "./store.js";
-import { buildSeed, PROVIDERS } from "./seed.js";
+import { PROVIDERS } from "./providers.js";
 
 export class MemoryStore implements Store {
   // `protected` so a persistence subclass (FileStore) can load/serialize them.
@@ -31,25 +31,16 @@ export class MemoryStore implements Store {
   protected deps: Dependency[] = [];
   protected audit: AuditRecord[] = [];
   protected github = new Map<string, GithubConnection>(); // keyed by workspaceId
+  protected githubTokens = new Map<string, string>(); // workspaceId → sealed PAT ciphertext
   private providers: ProviderInfo[] = PROVIDERS;
 
   /** Hook called after every mutation. No-op in memory; FileStore overrides it
    *  to schedule a debounced write to disk. */
   protected persist(): void {}
 
-  // `seed` defaults to true so direct `new MemoryStore()` (tests, scripts) keeps
-  // the demo fixtures; the server passes `config.seedDemo` to start clean.
-  constructor(opts: { seed?: boolean } = {}) {
-    if (opts.seed === false) return; // empty store — no prefilled demo data
-    const seed = buildSeed(now());
-    for (const a of seed.agents) this.agents.set(a.id, a);
-    for (const q of seed.queue) this.queue.set(q.id, q);
-    for (const p of seed.projects) this.projects.set(p.id, p);
-    for (const t of seed.tasks) this.tasks.set(t.id, t);
-    for (const r of seed.fleet) this.fleet.set(r.id, r);
-    this.modules = seed.modules;
-    this.deps = seed.deps;
-  }
+  // The store always starts empty — a fresh install has no projects/agents until
+  // the operator creates them. (No demo fixtures; the provider catalog is the
+  // only prefilled data, and it's live configuration.)
 
   async snapshot(workspaceId: string): Promise<Snapshot> {
     return {
@@ -66,6 +57,7 @@ export class MemoryStore implements Store {
   }
 
   async listAgents(ws: string) { return [...this.agents.values()].filter((a) => a.workspaceId === ws); }
+  async listAllAgents() { return [...this.agents.values()]; }
   async getAgent(id: string) { return this.agents.get(id); }
   async putAgent(agent: Agent) { this.agents.set(agent.id, agent); this.persist(); return agent; }
   async appendLog(agentId: string, at: number, line: string, detail?: string) {
@@ -88,6 +80,7 @@ export class MemoryStore implements Store {
   async deleteTask(id: string) { this.tasks.delete(id); this.persist(); }
 
   async listRunners(ws: string) { return [...this.fleet.values()].filter((r) => r.workspaceId === ws); }
+  async listAllRunners() { return [...this.fleet.values()]; }
   async getRunner(id: string) { return this.fleet.get(id); }
   async putRunner(runner: Runner) { this.fleet.set(runner.id, runner); this.persist(); return runner; }
   async deleteRunner(id: string) { this.fleet.delete(id); this.persist(); }
@@ -102,4 +95,8 @@ export class MemoryStore implements Store {
   async getGithubConnection(ws: string) { return this.github.get(ws); }
   async putGithubConnection(connection: GithubConnection) { this.github.set(connection.workspaceId, connection); this.persist(); }
   async deleteGithubConnection(ws: string) { this.github.delete(ws); this.persist(); }
+
+  async getGithubToken(ws: string) { return this.githubTokens.get(ws); }
+  async putGithubToken(ws: string, ciphertext: string) { this.githubTokens.set(ws, ciphertext); this.persist(); }
+  async deleteGithubToken(ws: string) { this.githubTokens.delete(ws); this.persist(); }
 }

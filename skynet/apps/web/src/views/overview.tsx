@@ -12,6 +12,7 @@ import {
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
 import { RepoPicker, useConnectedRepos } from "../components/repo-picker";
+import { FolderPicker } from "../components/folder-picker";
 
 function ProjectCard({
   project,
@@ -51,6 +52,11 @@ function ProjectCard({
         {empty && <span className="shipped-pill">new</span>}
       </div>
       <p className="proj-goal">{project.goal}</p>
+      {project.repoPath && (
+        <div className="proj-repo mono" title={project.repoPath}>
+          {project.gitBacked ? "◈ git" : "📁"} {project.repoPath}
+        </div>
+      )}
       {project.repo && <div className="proj-repo mono">⑂ {project.repo}</div>}
       <Bar
         value={prog}
@@ -92,13 +98,16 @@ function ProjectCard({
 export function NewProjectCard({
   onCreate,
 }: {
-  onCreate: (name: string, goal: string, repo?: string) => void;
+  onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
   const [repo, setRepo] = useState("");
+  const [repoPath, setRepoPath] = useState("");
   const repos = useConnectedRepos();
+  // A project can bind to a local folder (desktop default) or a GitHub repo.
+  // Requiring a GitHub repo only makes sense when no local folder is chosen.
   const hasRepos = (repos?.length ?? 0) > 0;
   if (!open)
     return (
@@ -122,17 +131,23 @@ export function NewProjectCard({
         value={goal}
         onChange={(e) => setGoal(e.target.value)}
       />
-      <RepoPicker repos={repos} value={repo} onChange={setRepo} />
+      <div className="rp-label">Local folder <span className="rp-hint">· agents work here</span></div>
+      <FolderPicker value={repoPath} onChange={setRepoPath} />
+      {!repoPath && <RepoPicker repos={repos} value={repo} onChange={setRepo} />}
       <div className="qx-row">
         <button
           className="btn btn-primary"
-          disabled={!name.trim() || (hasRepos && !repo)}
+          disabled={!name.trim() || (!repoPath && hasRepos && !repo)}
           onClick={() => {
-            onCreate(name.trim(), goal.trim() || "No goal set yet.", repo || undefined);
+            onCreate(name.trim(), goal.trim() || "No goal set yet.", {
+              repo: repoPath ? undefined : repo || undefined,
+              repoPath: repoPath || undefined,
+            });
             setOpen(false);
             setName("");
             setGoal("");
             setRepo("");
+            setRepoPath("");
           }}
         >
           Create project
@@ -152,7 +167,7 @@ export function OverviewView({
 }: {
   now: number;
   onOpenProject: (id: string) => void;
-  onCreate: (name: string, goal: string, repo?: string) => void;
+  onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
 }) {
   const { projects, agents, queue } = useStore();
   const oq = openQueue(queue);

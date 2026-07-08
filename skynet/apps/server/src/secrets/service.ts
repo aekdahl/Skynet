@@ -5,10 +5,14 @@
 
 import type { ProviderId, SecretMeta } from "@skynet/shared";
 import { config } from "../config.js";
+import { PROVIDER_ENV_VAR, providerEnvCredential } from "../provider-env.js";
 import { fingerprint, masterKey, open, seal } from "./crypto.js";
 import { MemorySecretStore } from "./memory.js";
 import { PostgresSecretStore } from "./postgres.js";
 import type { SecretRecord, SecretStore } from "./types.js";
+
+// Re-exported for existing consumers (secrets/index.js).
+export { PROVIDER_ENV_VAR };
 
 export class SecretsDisabledError extends Error {
   constructor() {
@@ -17,20 +21,9 @@ export class SecretsDisabledError extends Error {
   }
 }
 
-/** Server env var that supplies each provider's key when no stored key exists. */
-export const PROVIDER_ENV_VAR: Record<ProviderId, string> = {
-  claude: "ANTHROPIC_API_KEY",
-  codex: "OPENAI_API_KEY",
-  gemini: "GEMINI_API_KEY",
-  cursor: "CURSOR_API_KEY",
-  copilot: "GITHUB_TOKEN",
-};
-
-/** Providers that currently have a key in the server environment (live). */
+/** Providers with a credential in the server environment (any accepted var). */
 export function envBackedProviders(): ProviderId[] {
-  return (Object.keys(PROVIDER_ENV_VAR) as ProviderId[]).filter(
-    (p) => !!process.env[PROVIDER_ENV_VAR[p]],
-  );
+  return (Object.keys(PROVIDER_ENV_VAR) as ProviderId[]).filter(providerEnvCredential);
 }
 
 const toMeta = (r: SecretRecord): SecretMeta => ({

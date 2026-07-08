@@ -28,7 +28,10 @@ import type {
   UpdateRunnerRequest,
   UpdateTaskRequest,
 } from "@skynet/shared";
+import { modelValidForProvider } from "@skynet/shared";
+import { resolve as resolvePath } from "node:path";
 import { now } from "./config.js";
+import { isGitRepo } from "./fs-browse.js";
 import type { Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -152,6 +155,9 @@ export class Operations {
 
   // ── projects ──────────────────────────────────────────────────────────────
   createProject(ws: string, input: CreateProjectRequest): Promise<Project> {
+    // A local repoPath that contains a .git is git-backed → Skynet auto-manages a
+    // worktree per agent + the merge queue against it (desktop-first default).
+    const repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
     const project: Project = {
       id: this.uid("p"),
       workspaceId: ws,
@@ -159,6 +165,8 @@ export class Operations {
       goal: input.goal,
       agentIds: [],
       status: "active",
+      repoPath,
+      gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo: input.repo,
     };
     return this.hub.upsertProject(project);
@@ -166,12 +174,22 @@ export class Operations {
   async updateProject(ws: string, id: string, patch: UpdateProjectRequest): Promise<Project> {
     const existing = await this.store.getProject(id);
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
-    return this.hub.upsertProject({ ...existing, ...patch });
+    // Rebinding the local folder recomputes git-backing (null clears it).
+    const rebind =
+      patch.repoPath !== undefined
+        ? (() => {
+            const rp = patch.repoPath ? resolvePath(patch.repoPath) : null;
+            return { repoPath: rp, gitBacked: rp ? isGitRepo(rp) : false };
+          })()
+        : {};
+    return this.hub.upsertProject({ ...existing, ...patch, ...rebind });
   }
   async deleteProject(ws: string, id: string): Promise<void> {
     const existing = await this.store.getProject(id);
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
-    for (const agentId of existing.agentIds) await this.orchestrator.stopAgent(agentId);
+    // haltAgent (not the detach-only stopAgent) so each agent is left terminal
+    // and its runner freed before the project record goes away.
+    for (const agentId of existing.agentIds) await this.orchestrator.haltAgent(agentId);
     await this.hub.deleteProject(id);
   }
 
@@ -207,7 +225,12 @@ export class Operations {
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────
-  configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Runner> {
+  async configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Runner> {
+    // A runner's model must be one the chosen provider actually offers — the
+    // provider catalog is the single source of truth (DEF-004). An invalid model
+    // is a 400 (fail() maps a plain Error → 400), matching the HTTP contract.
+    const invalid = modelValidForProvider(await this.store.listProviders(), input.provider, input.model);
+    if (invalid) throw new Error(invalid);
     const id = input.name ?? this.uid("runner");
     const runner: Runner = {
       id,
@@ -223,6 +246,11 @@ export class Operations {
   async updateRunner(ws: string, id: string, patch: UpdateRunnerRequest): Promise<Runner> {
     const existing = await this.store.getRunner(id);
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Runner");
+    // A model change is validated against the runner's existing provider (DEF-004).
+    if (patch.model !== undefined) {
+      const invalid = modelValidForProvider(await this.store.listProviders(), existing.provider, patch.model);
+      if (invalid) throw new Error(invalid);
+    }
     return this.hub.upsertRunner({ ...existing, ...patch });
   }
   async retireRunner(ws: string, id: string): Promise<void> {

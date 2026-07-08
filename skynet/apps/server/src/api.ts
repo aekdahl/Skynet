@@ -18,7 +18,7 @@ import {
   UpdateTaskRequest,
 } from "@skynet/shared";
 import { authenticate, type Principal } from "./auth.js";
-import { NoCapacityError, TaskNotAssignableError } from "./orchestrator.js";
+import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError } from "./orchestrator.js";
 import { NotFoundError, type Operations, RunnerBusyError } from "./operations.js";
 
 declare module "fastify" {
@@ -36,7 +36,12 @@ const ws = (req: FastifyRequest) => req.principal!.workspaceId;
 /** Map a typed operation error to the right HTTP status. */
 function fail(reply: FastifyReply, err: unknown): FastifyReply {
   if (err instanceof NotFoundError) return reply.code(404).send({ error: err.message });
-  if (err instanceof NoCapacityError || err instanceof TaskNotAssignableError || err instanceof RunnerBusyError) {
+  if (
+    err instanceof NoCapacityError ||
+    err instanceof TaskAlreadyAssignedError ||
+    err instanceof RunnerNotConfiguredError ||
+    err instanceof RunnerBusyError
+  ) {
     return reply.code(409).send({ error: (err as Error).message });
   }
   return reply.code(400).send({ error: (err as Error).message });
@@ -49,11 +54,13 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
     // /mcp carries the same bearer-token principal as /api, so agents and humans
     // authenticate identically. Everything else (health, static SPA, /ws — which
-    // authenticates itself) is untouched.
-    if (!req.url.startsWith("/api") && !req.url.startsWith("/mcp")) return;
+    // authenticates itself) is untouched. Lowercase first so an uppercase
+    // /API/... can't skip the guard (DEF-007).
+    const path = req.url.toLowerCase();
+    if (!path.startsWith("/api") && !path.startsWith("/mcp")) return;
     // Login is the one public /api route — it issues the token, so it can't
     // require one. (Path may carry a query string; match the prefix.)
-    if (req.url === "/api/auth/login" || req.url.startsWith("/api/auth/login?")) return;
+    if (path === "/api/auth/login" || path.startsWith("/api/auth/login?")) return;
     const principal = await authenticate(req);
     if (!principal) return reply.code(401).send({ error: "Unauthorized" });
     req.principal = principal;

@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import type { ProviderId, Runner, Project, Task } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
-import { Orchestrator, TaskNotAssignableError } from "../apps/server/src/orchestrator.js";
+import { Orchestrator, TaskAlreadyAssignedError } from "../apps/server/src/orchestrator.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
 import type { Bus } from "../apps/server/src/bus.js";
 import type { RunnerEvents, RunnerHandle, RunnerProvider, StartSpec } from "@skynet/runner-sdk";
@@ -88,7 +88,7 @@ describe("assignTask is idempotent (DEF-003) and refuses done tasks (DEF-005)", 
     const orchestrator = new Orchestrator(store, new Hub(store, new NullBus()), provider);
     await seed(store, "done");
 
-    await expect(orchestrator.assignTask("p1", "t1")).rejects.toBeInstanceOf(TaskNotAssignableError);
+    await expect(orchestrator.assignTask("p1", "t1")).rejects.toBeInstanceOf(TaskAlreadyAssignedError);
     expect(provider.starts).toBe(0);
     expect(await busyCount(store)).toBe(0);
     expect((await store.listAgents(DEFAULT_WORKSPACE)).length).toBe(0);

@@ -42,7 +42,7 @@ const tick = () => new Promise((r) => setTimeout(r, 20));
 
 describe("runner failure is loud, not a fake completion", () => {
   it("a failed runner → agent needs-attention, runner freed, task NOT done", async () => {
-    const store = new MemoryStore({ seed: false });
+    const store = new MemoryStore();
     const bus = new NullBus();
     const hub = new Hub(store, bus);
     const orchestrator = new Orchestrator(store, hub, new FailingProvider());
@@ -82,7 +82,7 @@ describe("runner failure is loud, not a fake completion", () => {
     // The backend is chosen per fleet runner (config.runner is only a global
     // override). A runner whose provider doesn't resolve to a real backend must
     // reject loudly — never quietly fall back to the mock and look like a real run.
-    const store = new MemoryStore({ seed: false });
+    const store = new MemoryStore();
     const hub = new Hub(store, new NullBus());
     const orchestrator = new Orchestrator(store, hub); // no providerOverride; RUNNER unset
 

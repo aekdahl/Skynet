@@ -20,7 +20,7 @@ import type {
 } from "@skynet/shared";
 import { now } from "../config.js";
 import type { Store } from "./store.js";
-import { buildSeed, PROVIDERS } from "./seed.js";
+import { PROVIDERS } from "./providers.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents     (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS hitl_audit (id bigserial PRIMARY KEY, workspace_id te
                                        agent_id text NOT NULL, action text NOT NULL, operator_id text NOT NULL,
                                        at bigint NOT NULL, payload jsonb);
 CREATE TABLE IF NOT EXISTS github_connections (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS github_tokens      (workspace_id text PRIMARY KEY, ciphertext text NOT NULL);
 CREATE INDEX IF NOT EXISTS agents_ws   ON agents(workspace_id);
 CREATE INDEX IF NOT EXISTS hitl_ws     ON hitl_queue(workspace_id);
 CREATE INDEX IF NOT EXISTS projects_ws ON projects(workspace_id);
@@ -49,29 +50,11 @@ const J = (v: unknown) => JSON.stringify(v);
 export class PostgresStore implements Store {
   private constructor(private pool: Pool) {}
 
-  /** Connect, migrate, and (only when `seed` is set) seed fixtures into an empty DB. */
-  static async create(connectionString: string, seed = false): Promise<PostgresStore> {
+  /** Connect and migrate. The store starts empty — no demo fixtures. */
+  static async create(connectionString: string): Promise<PostgresStore> {
     const pool = new Pool({ connectionString });
     await pool.query(SCHEMA);
-    const store = new PostgresStore(pool);
-    if (seed) {
-      const { rows } = await pool.query<{ n: string }>("SELECT count(*) AS n FROM projects");
-      if (Number(rows[0]?.n ?? 0) === 0) await store.seed();
-    }
-    return store;
-  }
-
-  private async seed(): Promise<void> {
-    const s = buildSeed(now());
-    for (const a of s.agents) await this.putAgent(a); // putAgent also persists the log
-    for (const q of s.queue) await this.putHitl(q);
-    for (const p of s.projects) await this.putProject(p);
-    for (const t of s.tasks) await this.putTask(t);
-    for (const r of s.fleet) await this.putRunner(r);
-    for (const m of s.modules)
-      await this.pool.query("INSERT INTO modules(id,workspace_id,data) VALUES($1,$2,$3::jsonb) ON CONFLICT(id) DO NOTHING", [m.id, "cyberdyne", J(m)]);
-    for (const d of s.deps)
-      await this.pool.query("INSERT INTO deps(workspace_id,data) VALUES($1,$2::jsonb)", ["cyberdyne", J(d)]);
+    return new PostgresStore(pool);
   }
 
   // ── agents (log lives in the append-only agent_log table) ─────────────────
@@ -98,6 +81,11 @@ export class PostgresStore implements Store {
     const { rows } = await this.pool.query<{ data: Agent }>("SELECT data FROM agents WHERE workspace_id=$1", [ws]);
     const logs = await this.logsFor(rows.map((r) => r.data.id));
     return rows.map((r) => this.hydrate(r.data, logs));
+  }
+  async listAllAgents(): Promise<Agent[]> {
+    // Maintenance sweep (reaper): status/heartbeat/runner only — logs not hydrated.
+    const { rows } = await this.pool.query<{ data: Agent }>("SELECT data FROM agents");
+    return rows.map((r) => ({ ...r.data, log: [] }));
   }
   async getAgent(id: string): Promise<Agent | undefined> {
     const { rows } = await this.pool.query<{ data: Agent }>("SELECT data FROM agents WHERE id=$1", [id]);
@@ -154,6 +142,10 @@ export class PostgresStore implements Store {
   deleteTask(id: string) { return this.del("tasks", id); }
 
   listRunners(ws: string) { return this.list<Runner>("runners", ws); }
+  async listAllRunners(): Promise<Runner[]> {
+    const { rows } = await this.pool.query<{ data: Runner }>("SELECT data FROM runners");
+    return rows.map((r) => r.data);
+  }
   getRunner(id: string) { return this.get<Runner>("runners", id); }
   async putRunner(r: Runner) { await this.put("runners", r.id, r.workspaceId, r); return r; }
   deleteRunner(id: string) { return this.del("runners", id); }
@@ -197,6 +189,23 @@ export class PostgresStore implements Store {
   }
   async deleteGithubConnection(ws: string): Promise<void> {
     await this.pool.query("DELETE FROM github_connections WHERE workspace_id=$1", [ws]);
+  }
+
+  async getGithubToken(ws: string): Promise<string | undefined> {
+    const { rows } = await this.pool.query<{ ciphertext: string }>(
+      "SELECT ciphertext FROM github_tokens WHERE workspace_id=$1",
+      [ws],
+    );
+    return rows[0]?.ciphertext;
+  }
+  async putGithubToken(ws: string, ciphertext: string): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO github_tokens(workspace_id,ciphertext) VALUES($1,$2) ON CONFLICT(workspace_id) DO UPDATE SET ciphertext=$2",
+      [ws, ciphertext],
+    );
+  }
+  async deleteGithubToken(ws: string): Promise<void> {
+    await this.pool.query("DELETE FROM github_tokens WHERE workspace_id=$1", [ws]);
   }
 
   async snapshot(ws: string): Promise<Snapshot> {

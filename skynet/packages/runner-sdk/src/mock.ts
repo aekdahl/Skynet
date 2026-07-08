@@ -103,7 +103,10 @@ class MockRunnerHandle implements RunnerHandle {
     this.done = true;
     this.plan.forEach((s) => (s.state = "done"));
     this.events.onProgress(this.agentId, 1, this.plan);
-    this.events.onStatus(this.agentId, "done");
+    // The orchestrator owns the terminal "done" (after committing the worktree →
+    // review → merge, or confirming an empty diff). Emitting it here would race
+    // integration and surface a premature "done" with uncommitted work — hand off
+    // via onCompleted only.
     this.events.onCompleted(this.agentId, this.spec.branch);
     this.teardown();
   }

@@ -17,6 +17,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
+import { usageFromJson } from "./cli-runner.js";
 import type {
   HitlRaise,
   RunnerEvents,
@@ -242,6 +243,13 @@ class CursorRunnerHandle implements RunnerHandle {
       return;
     }
 
+    // The stream carries token/cost totals on the final `result` (and sometimes
+    // interim usage/metadata events) — report best-effort when present.
+    if (type === "result" || /usage|metadata/i.test(type)) {
+      const usage = usageFromJson((isRecord(ev.usage) ? ev.usage : ev) as Record<string, unknown>);
+      if (usage) this.events.onUsage?.(this.agentId, usage);
+    }
+
     if (type === "result") {
       if (primary && !this.gateCommand) this.finish();
     }
@@ -332,7 +340,9 @@ class CursorRunnerHandle implements RunnerHandle {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     this.events.onProgress(this.agentId, 1, [] as PlanStep[]);
-    this.events.onStatus(this.agentId, "done");
+    // The orchestrator owns the terminal "done" (after committing the worktree →
+    // review → merge). Emitting it here would race integration and surface a
+    // premature "done" with uncommitted work — hand off via onCompleted only.
     this.events.onCompleted(this.agentId, this.spec.branch);
     this.killChild();
   }

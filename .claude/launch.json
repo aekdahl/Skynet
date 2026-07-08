@@ -4,7 +4,7 @@
     {
       "name": "skynet",
       "runtimeExecutable": "sh",
-      "runtimeArgs": ["-c", "SKYNET_SEED=true pnpm -C skynet --filter @skynet/server dev"],
+      "runtimeArgs": ["-c", "pnpm -C skynet --filter @skynet/server dev"],
       "port": 8080,
       "autoPort": false
     },

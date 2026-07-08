@@ -13,7 +13,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
+import type { PlanStep, ProviderId, Resolution, Usage } from "@skynet/shared";
 import type {
   HitlRaise,
   RunnerEvents,
@@ -32,7 +32,43 @@ export type CliEvent =
   | { kind: "tool"; label: string } // a command/tool invocation → bump progress
   | { kind: "chat"; text: string } // assistant prose (reply to a `message()`)
   | { kind: "approval"; raise: HitlRaise } // blocked on a human → HITL gate
+  | { kind: "usage"; usage: Usage } // token/cost totals the CLI reported
   | { kind: "ignore" }; // noise we deliberately drop
+
+/**
+ * Best-effort token/cost extraction from a parsed JSON event. Vendor JSONL
+ * shapes vary and shift, so we scan the object (and a few common nesting keys)
+ * for the field names these CLIs have used. Returns null unless at least one
+ * token count is present, so we never fabricate a zeroed usage row. Numbers we
+ * can't find stay 0 / null — honest partials, not invented totals.
+ */
+export function usageFromJson(obj: Record<string, unknown>): Usage | null {
+  const scopes = [obj, obj.usage, obj.stats, obj.tokens, obj.metrics].filter(
+    (s): s is Record<string, unknown> => !!s && typeof s === "object",
+  );
+  const num = (keys: string[]): number | undefined => {
+    for (const scope of scopes) {
+      for (const k of keys) {
+        const v = scope[k];
+        if (typeof v === "number" && Number.isFinite(v)) return v;
+      }
+    }
+    return undefined;
+  };
+  const input = num(["input_tokens", "prompt_tokens", "inputTokens", "tokens_in", "input"]);
+  const output = num(["output_tokens", "completion_tokens", "outputTokens", "tokens_out", "output"]);
+  if (input === undefined && output === undefined) return null;
+  const cost = num(["total_cost_usd", "cost_usd", "costUsd", "cost"]);
+  const turns = num(["num_turns", "turns", "steps"]);
+  const durationMs = num(["duration_ms", "durationMs", "elapsed_ms"]);
+  return {
+    inputTokens: input ?? 0,
+    outputTokens: output ?? 0,
+    costUsd: cost ?? null,
+    turns: turns ?? 0,
+    durationMs: durationMs ?? null,
+  };
+}
 
 /** The contract a vendor file fills in. One instance per provider. */
 export interface CliVendor {
@@ -153,6 +189,9 @@ class CliRunnerHandle implements RunnerHandle {
         this.events.onStatus(this.agentId, "waiting");
         this.events.onHitl(this.agentId, ev.raise);
         break;
+      case "usage":
+        this.events.onUsage?.(this.agentId, ev.usage);
+        break;
       case "ignore":
         break;
     }
@@ -179,7 +218,10 @@ class CliRunnerHandle implements RunnerHandle {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     this.events.onProgress(this.agentId, 1, [] as PlanStep[]);
-    this.events.onStatus(this.agentId, "done");
+    // Compute finished, but the orchestrator owns the terminal "done" (after it
+    // commits the worktree → review → merge). Emitting "done" here would race
+    // integration and expose a premature "done" with uncommitted work — hand off
+    // via onCompleted only.
     this.events.onCompleted(this.agentId, this.spec.branch);
     this.kill();
   }

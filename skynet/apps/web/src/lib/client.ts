@@ -69,8 +69,17 @@ export function sendAgentMessage(id: string, text: string) {
 export function forkAgent(id: string) {
   return req<unknown>("POST", `/api/agents/${id}/fork`);
 }
+export function stopAgent(id: string) {
+  return req<Agent>("POST", `/api/agents/${id}/stop`);
+}
 export function archiveAgent(id: string, archived: boolean) {
   return req<unknown>("POST", `/api/agents/${id}/archive`, { archived });
+}
+export function pauseAgent(id: string) {
+  return req<unknown>("POST", `/api/agents/${id}/pause`);
+}
+export function resumeAgent(id: string) {
+  return req<unknown>("POST", `/api/agents/${id}/resume`);
 }
 
 // Provider secrets (Settings). `env` = providers a server env var supplies a
@@ -114,13 +123,30 @@ export function revokeServiceToken(id: string) {
   return req<unknown>("DELETE", `/api/service-tokens/${id}`);
 }
 
+// ─── Local folder browser (connect-a-folder picker) ────────────────────────
+export interface FsEntry {
+  name: string;
+  path: string;
+  isGitRepo: boolean;
+}
+export interface FsListing {
+  path: string;
+  parent: string | null;
+  entries: FsEntry[];
+}
+/** List subfolders of `path` (default: home) on the server machine. */
+export function browseFolder(path?: string) {
+  const q = path ? `?path=${encodeURIComponent(path)}` : "";
+  return req<FsListing>("GET", `/api/fs/list${q}`);
+}
+
 // Projects
-export function createProject(body: { name: string; goal: string; repo?: string }) {
+export function createProject(body: { name: string; goal: string; repoPath?: string; repo?: string }) {
   return req<unknown>("POST", "/api/projects", body);
 }
 export function updateProject(
   id: string,
-  body: { name?: string; goal?: string; status?: string },
+  body: { name?: string; goal?: string; status?: string; repoPath?: string | null },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
 }
@@ -159,15 +185,42 @@ export function deleteRunner(id: string) {
 
 // GitHub integration (connection + safety policy). Non-secret; the App key lives
 // server-side only. See docs/github-integration.md.
-export async function fetchGithub(): Promise<{ connection: GithubConnection; appConfigured: boolean }> {
-  const raw = await req<{ connection: unknown; appConfigured: boolean }>("GET", "/api/github");
-  return { connection: GithubConnection.parse(raw.connection), appConfigured: !!raw.appConfigured };
+export async function fetchGithub(): Promise<{ connection: GithubConnection; appConfigured: boolean; brokerConfigured: boolean }> {
+  const raw = await req<{ connection: unknown; appConfigured: boolean; brokerConfigured?: boolean }>("GET", "/api/github");
+  return { connection: GithubConnection.parse(raw.connection), appConfigured: !!raw.appConfigured, brokerConfigured: !!raw.brokerConfigured };
+}
+
+// Broker mode (GitHub App via cloud token-broker): device-flow login + pickers.
+export interface DeviceCode {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  interval: number;
+  expires_in: number;
+}
+export function startGithubDevice() {
+  return req<DeviceCode>("POST", "/api/github/device/start");
+}
+export function pollGithubDevice(deviceCode: string) {
+  return req<{ authorized: boolean }>("POST", "/api/github/device/poll", { device_code: deviceCode });
+}
+export async function fetchGithubInstallations(): Promise<GithubInstallation[]> {
+  const raw = await req<{ installations: GithubInstallation[] }>("GET", "/api/github/installations");
+  return raw.installations;
+}
+export async function fetchGithubInstallationRepos(installationId: number): Promise<GithubRepo[]> {
+  const raw = await req<{ repos: GithubRepo[] }>("GET", `/api/github/installations/${installationId}/repos`);
+  return raw.repos;
 }
 export async function connectGithub(body: {
   installation: GithubInstallation;
   repos: GithubRepo[];
 }): Promise<GithubConnection> {
   const raw = await req<{ connection: unknown }>("PUT", "/api/github", body);
+  return GithubConnection.parse(raw.connection);
+}
+export async function connectGithubPat(token: string): Promise<GithubConnection> {
+  const raw = await req<{ connection: unknown }>("PUT", "/api/github/pat", { token });
   return GithubConnection.parse(raw.connection);
 }
 export async function updateGithubSafety(patch: Partial<SafetyPolicy>): Promise<GithubConnection> {
@@ -226,4 +279,74 @@ export function connect(onMessage: (msg: WsMessage) => void): () => void {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     socket?.close();
   };
+}
+
+// ─── LLM-judged acceptance evals ───────────────────────────────────────────
+// The standalone evals/ suite surfaced in the Acceptance view. Unlike the
+// deterministic checks (client-side, instant), these are REAL runs the server
+// spawns as a subprocess: a live agent + an LLM judge, minutes per scenario. So
+// the flow is start → poll the job until it finishes.
+
+export interface EvalRubric {
+  dimension: string;
+  question: string;
+}
+export interface EvalScenarioMeta {
+  id: string;
+  title: string;
+  category: string;
+  task: string;
+  setup: string | null;
+  rubric: EvalRubric[];
+}
+export interface EvalDimScore {
+  dimension: string;
+  score: number; // 0–5
+  pass: boolean;
+  rationale: string;
+}
+export interface EvalVerdict {
+  pass: boolean;
+  overall: number; // 0–5
+  dimensions: EvalDimScore[];
+  summary: string;
+}
+export interface EvalArtifacts {
+  diff?: string;
+  log?: string[];
+  hitl?: { kind: string; title: string; why?: string; resolvedWith?: string }[];
+  prOpened?: boolean;
+  finalStatus?: string;
+  turns?: number;
+  tokens?: number;
+  wallMs?: number;
+  notes?: string;
+}
+export type EvalPhase = "queued" | "executing" | "judging" | "done" | "error";
+export interface EvalJob {
+  id: string;
+  scenarioId: string;
+  phase: EvalPhase;
+  logs: string[];
+  result?: { scenario: EvalScenarioMeta; artifacts: EvalArtifacts; verdict: EvalVerdict };
+  error?: string;
+  startedAt: number;
+  endedAt?: number;
+}
+
+export async function fetchEvals(): Promise<{
+  scenarios: EvalScenarioMeta[];
+  keyPresent: boolean;
+  available: boolean;
+  error?: string;
+}> {
+  return req("GET", "/api/evals");
+}
+
+export async function runEval(id: string): Promise<{ jobId: string }> {
+  return req("POST", `/api/evals/${encodeURIComponent(id)}/run`);
+}
+
+export async function fetchEvalJob(jobId: string): Promise<EvalJob> {
+  return req("GET", `/api/evals/jobs/${encodeURIComponent(jobId)}`);
 }

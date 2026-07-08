@@ -1,7 +1,20 @@
+import type { ReactNode } from "react";
 import type { AgentStatus, ProviderInfo } from "@skynet/shared";
 
 export function StatusDot({ status }: { status: AgentStatus }) {
   return <span className={"dot dot-" + status} />;
+}
+
+// A loud, consistent marker for any placeholder / demo / not-yet-wired UI, so
+// temporary data is never mistaken for the real thing. Use it wherever the
+// content shown is mock or a stand-in for an unbuilt backend flow.
+export function PlaceholderNote({ children }: { children: ReactNode }) {
+  return (
+    <div className="placeholder-note" role="note">
+      <span className="placeholder-note-tag">PLACEHOLDER</span>
+      <span className="placeholder-note-text">{children}</span>
+    </div>
+  );
 }
 
 export function Bar({ value, status }: { value: number; status: AgentStatus }) {

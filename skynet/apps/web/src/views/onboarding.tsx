@@ -32,12 +32,17 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const [operator, setOperator] = useState("");
   const [providers, setProviders] = useState<string[]>(["claude"]);
   const [github, setGithub] = useState<GithubConnection>(emptyConnection);
+  const [brokerConfigured, setBrokerConfigured] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // Load any existing GitHub connection so the connect step reflects reality.
   useEffect(() => {
     let cancelled = false;
-    api.fetchGithub().then(({ connection }) => !cancelled && setGithub(connection)).catch(() => {});
+    api.fetchGithub().then(({ connection, brokerConfigured }) => {
+      if (cancelled) return;
+      setGithub(connection);
+      setBrokerConfigured(brokerConfigured);
+    }).catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -121,7 +126,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           <>
             <h1 className="ob-h">Connect GitHub</h1>
             <p className="ob-sub">Install the Skynet App on the repos your fleet will work in — agents branch, push, and open PRs through least-privilege tokens. You can also do this later from Integrations.</p>
-            <GithubConnect github={github} onConnected={onConnected} onDisconnect={onDisconnect} />
+            <GithubConnect github={github} brokerConfigured={brokerConfigured} onConnected={onConnected} onChanged={setGithub} onDisconnect={onDisconnect} />
           </>
         )}
 

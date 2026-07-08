@@ -21,6 +21,7 @@ import {
 } from "../lib/derive";
 import { Bar, Prov, StatusDot } from "../components/common";
 import { RepoPicker, useConnectedRepos } from "../components/repo-picker";
+import { FolderPicker } from "../components/folder-picker";
 import type { Lens } from "../App";
 
 function ViewHead({ title, sub }: { title: string; sub: string }) {
@@ -38,13 +39,14 @@ function GetStarted({
   onCreate,
   onConfigureFleet,
 }: {
-  onCreate: (name: string, goal: string, repo?: string) => void;
+  onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
   onConfigureFleet: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
   const [repo, setRepo] = useState("");
+  const [repoPath, setRepoPath] = useState("");
   const repos = useConnectedRepos();
   const hasRepos = (repos?.length ?? 0) > 0;
   return (
@@ -100,12 +102,19 @@ function GetStarted({
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
             />
-            <RepoPicker repos={repos} value={repo} onChange={setRepo} />
+            <div className="rp-label">Local folder <span className="rp-hint">· agents work here</span></div>
+            <FolderPicker value={repoPath} onChange={setRepoPath} />
+            {!repoPath && <RepoPicker repos={repos} value={repo} onChange={setRepo} />}
             <div className="qx-row">
               <button
                 className="btn btn-primary"
-                disabled={!name.trim() || (hasRepos && !repo)}
-                onClick={() => onCreate(name.trim(), goal.trim() || "No goal set yet.", repo || undefined)}
+                disabled={!name.trim() || (!repoPath && hasRepos && !repo)}
+                onClick={() =>
+                  onCreate(name.trim(), goal.trim() || "No goal set yet.", {
+                    repo: repoPath ? undefined : repo || undefined,
+                    repoPath: repoPath || undefined,
+                  })
+                }
               >
                 Create project
               </button>
@@ -152,7 +161,7 @@ export function HomeView({
   now: number;
   onOpenAgent: (id: string) => void;
   onOpenProject: (id: string) => void;
-  onCreate: (name: string, goal: string, repo?: string) => void;
+  onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
   onGoInbox: () => void;
   onConfigureFleet: () => void;
   onAssign: () => void;

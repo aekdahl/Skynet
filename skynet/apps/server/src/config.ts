@@ -11,9 +11,6 @@ export const config = {
   // Path for STORE=file (zero-dependency JSON persistence; default cwd-relative).
   // The desktop app points this at its per-user data directory.
   dbPath: process.env.SKYNET_DB_PATH || "skynet-data.json",
-  // Prefill the store with demo fixtures (sample projects/agents/queue/fleet).
-  // Off by default — a fresh deploy starts empty; opt in with SKYNET_SEED=true.
-  seedDemo: process.env.SKYNET_SEED === "true",
   // No silent default: pick the fan-out backbone explicitly (BUS=memory for
   // single-process dev/tests; BUS=redis to fan out across replicas).
   bus: (process.env.BUS || undefined) as "memory" | "redis" | undefined,
@@ -58,6 +55,25 @@ export const config = {
   // integration repo (.skynet-worktrees) so working copies never show as
   // untracked inside the repo.
   worktreesDir: process.env.SKYNET_WORKTREES_DIR || undefined,
+  // Auto-reap window: a running/waiting agent whose heartbeat has been silent
+  // for longer than this (ms) is presumed dead — its runner is freed and the
+  // agent terminated. Catches orphans left by a crash/restart. 0 disables.
+  agentReapMs: Number(process.env.SKYNET_AGENT_REAP_MS ?? 180_000),
+  // Auto-resolve window for an unanswered `question` HITL (ms). When an agent
+  // asks the operator something (e.g. "I can't reproduce this — what's the
+  // stack trace?") and no one answers within this window, the question is
+  // auto-resolved as "no answer" so the agent concludes without guessing and the
+  // run doesn't hang. 0 (default) disables it — interactive workspaces wait for a
+  // human indefinitely; headless/eval runs set a bound (e.g. 120_000).
+  hitlQuestionTimeoutMs: Number(process.env.SKYNET_HITL_QUESTION_TIMEOUT_MS ?? 0),
+  // Expose the local folder browser (/api/fs/list) so the desktop UI can offer a
+  // folder *picker* for connecting a project to a local repo. Local-only: it
+  // reveals the server machine's filesystem, so it's ON only outside production
+  // (desktop = server = same machine). MUST stay off for any hosted deploy.
+  allowLocalFs:
+    process.env.SKYNET_ALLOW_LOCAL_FS != null
+      ? process.env.SKYNET_ALLOW_LOCAL_FS === "true"
+      : nodeEnv !== "production",
 
   // ── GitHub App (server-side credentials; never per-workspace) ──────────────
   // When the App id + private key are set, the GitProvider can mint short-lived
@@ -69,6 +85,12 @@ export const config = {
   githubApiBase: process.env.GITHUB_API_URL || "https://api.github.com",
   // HMAC secret to verify inbound webhooks (push/PR/check events).
   githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET || undefined,
+  // ── GitHub App via cloud token-broker (Phase 2; desktop has no App key) ────
+  // When set (and no local App key), installation tokens are minted by the
+  // broker function from a user token obtained via Device Flow. The client id is
+  // public (Device Flow needs no secret).
+  githubBrokerUrl: process.env.SKYNET_GITHUB_BROKER_URL || undefined,
+  githubClientId: process.env.GITHUB_CLIENT_ID || undefined,
 };
 
 export const now = (): number => Date.now();

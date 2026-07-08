@@ -7,10 +7,49 @@
 // React component tree (and out of styles.css) — collision-free with other
 // streams. main.tsx calls setupPwa() once on boot.
 
+import { alertsOn, setAlerts } from "../lib/alerts";
+
 const NAV_EVENT = "skynet:navigate";
+const INSTALL_STATE_EVENT = "skynet:installstate";
 
 let deferredPrompt: (Event & { prompt: () => void; userChoice: Promise<{ outcome: string }> }) | null =
   null;
+let installed = false;
+
+function isStandalone(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    window.matchMedia?.("(display-mode: standalone)").matches === true ||
+    window.matchMedia?.("(display-mode: minimal-ui)").matches === true ||
+    (window.navigator as unknown as { standalone?: boolean }).standalone === true
+  );
+}
+
+function emitInstallState() {
+  window.dispatchEvent(new CustomEvent(INSTALL_STATE_EVENT));
+}
+
+/** Current installability — drives the persistent Install button in Settings. */
+export function installState(): { available: boolean; installed: boolean } {
+  return { available: deferredPrompt != null, installed: installed || isStandalone() };
+}
+
+/** Trigger the native install prompt. 'unavailable' when the browser hasn't
+ *  offered one (already installed, or e.g. iOS Safari — use Add to Home Screen). */
+export async function promptInstall(): Promise<"accepted" | "dismissed" | "unavailable"> {
+  if (!deferredPrompt) return "unavailable";
+  deferredPrompt.prompt();
+  const choice = await deferredPrompt.userChoice.catch(() => ({ outcome: "dismissed" as const }));
+  deferredPrompt = null;
+  emitInstallState();
+  return choice.outcome === "accepted" ? "accepted" : "dismissed";
+}
+
+/** Subscribe to install-availability changes (React re-renders the button). */
+export function onInstallStateChange(cb: () => void): () => void {
+  window.addEventListener(INSTALL_STATE_EVENT, cb);
+  return () => window.removeEventListener(INSTALL_STATE_EVENT, cb);
+}
 
 function dispatchNavigate(view: string, agentId: string | null) {
   window.dispatchEvent(new CustomEvent(NAV_EVENT, { detail: { view, agentId } }));
@@ -53,7 +92,10 @@ export async function notifyInbox(
   body = "An agent is blocked and waiting on a decision.",
   agentId: string | null = null,
 ): Promise<void> {
-  if (!(await enableInboxAlerts())) return;
+  // Respect the app-level switch first (the real mute), then the OS permission.
+  // Never auto-prompt here — permission is requested only when alerts are turned on.
+  if (!alertsOn()) return;
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
   const payload = {
     body,
     icon: "/icon.svg",
@@ -132,6 +174,7 @@ function showInstallBanner() {
   });
   banner.querySelector(".pwa-alerts")?.addEventListener("click", async () => {
     const ok = await enableInboxAlerts();
+    setAlerts(ok); // turning on the app-level switch is what actually enables alerts
     if (ok) await notifyInbox("Inbox alerts on", "We'll ping you here when an agent needs a decision.");
   });
   banner.querySelector(".pwa-x")?.addEventListener("click", () => {
@@ -156,10 +199,13 @@ export function setupPwa() {
   window.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();
     deferredPrompt = e as typeof deferredPrompt;
+    emitInstallState();
     showInstallBanner();
   });
   window.addEventListener("appinstalled", () => {
+    installed = true;
     deferredPrompt = null;
+    emitInstallState();
     document.querySelector(".pwa-install")?.remove();
   });
 
