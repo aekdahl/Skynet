@@ -4,6 +4,7 @@ import "./styles.css";
 import "./styles.responsive.css";
 import { App } from "./App";
 import { StoreProvider } from "./lib/store";
+import { AcceptanceProvider } from "./lib/acceptance-store";
 import { setupPwa } from "./pwa/pwa";
 
 setupPwa();
@@ -14,7 +15,9 @@ if (!root) throw new Error("#root not found");
 createRoot(root).render(
   <StrictMode>
     <StoreProvider>
-      <App />
+      <AcceptanceProvider>
+        <App />
+      </AcceptanceProvider>
     </StoreProvider>
   </StrictMode>,
 );

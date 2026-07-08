@@ -1,53 +1,16 @@
-import { useEffect, useRef, useState } from "react";
-import { SCENARIOS, type Step } from "../lib/acceptance";
-import {
-  fetchEvals,
-  fetchEvalJob,
-  runEval,
-  type EvalJob,
-  type EvalScenarioMeta,
-} from "../lib/client";
+import { type Step } from "../lib/acceptance";
+import { useAcceptance } from "../lib/acceptance-store";
+import { SCENARIOS } from "../lib/acceptance";
+import { type EvalJob } from "../lib/client";
 
-type Status = "idle" | "running" | "pass" | "fail" | "skip";
-
-// A scenario fails only on a real failed step; steps flagged `skip` are
-// unmet preconditions (inconclusive), so a skip-only run reads as SKIP not FAIL.
-function verdict(steps: Step[]): Status {
-  if (steps.some((s) => !s.ok && !s.skip)) return "fail";
-  if (steps.some((s) => s.skip)) return "skip";
-  return "pass";
-}
-
-// In-app acceptance runner. Each scenario drives the real API and asserts on the
-// result; run them one at a time or all together and watch the board react.
+// In-app acceptance runner. Run state lives in AcceptanceProvider (app root), so
+// progress + results persist across view switches while checks/jobs keep running.
 export function AcceptanceView() {
-  const [status, setStatus] = useState<Record<string, Status>>({});
-  const [results, setResults] = useState<Record<string, Step[]>>({});
-  const [running, setRunning] = useState(false);
+  const { cpStatus, cpResults, cpRunning, runCpOne, runCpAll } = useAcceptance();
 
-  const runOne = async (id: string) => {
-    const scenario = SCENARIOS.find((s) => s.id === id);
-    if (!scenario) return;
-    setStatus((m) => ({ ...m, [id]: "running" }));
-    try {
-      const steps = await scenario.run();
-      setResults((m) => ({ ...m, [id]: steps }));
-      setStatus((m) => ({ ...m, [id]: verdict(steps) }));
-    } catch (e) {
-      setResults((m) => ({ ...m, [id]: [{ label: "threw", ok: false, detail: (e as Error).message }] }));
-      setStatus((m) => ({ ...m, [id]: "fail" }));
-    }
-  };
-
-  const runAll = async () => {
-    setRunning(true);
-    for (const s of SCENARIOS) await runOne(s.id); // sequential so you can watch each
-    setRunning(false);
-  };
-
-  const passed = SCENARIOS.filter((s) => status[s.id] === "pass").length;
-  const failed = SCENARIOS.filter((s) => status[s.id] === "fail").length;
-  const skippedN = SCENARIOS.filter((s) => status[s.id] === "skip").length;
+  const passed = SCENARIOS.filter((s) => cpStatus[s.id] === "pass").length;
+  const failed = SCENARIOS.filter((s) => cpStatus[s.id] === "fail").length;
+  const skippedN = SCENARIOS.filter((s) => cpStatus[s.id] === "skip").length;
 
   return (
     <section className="vw acceptance">
@@ -56,7 +19,7 @@ export function AcceptanceView() {
         <p>
           Two suites: fast <strong>control-plane checks</strong> that drive the real API in-app, and
           the <strong>LLM-judged</strong> behavioral suite that runs a real agent per scenario and
-          scores it with a judge model.
+          scores it with a judge model. Runs keep going while you work elsewhere in the app.
         </p>
       </div>
 
@@ -67,8 +30,8 @@ export function AcceptanceView() {
       </p>
 
       <div className="acc-bar">
-        <button className="btn btn-primary" disabled={running} onClick={runAll}>
-          {running ? "Running…" : "Run all"}
+        <button className="btn btn-primary" disabled={cpRunning} onClick={() => void runCpAll()}>
+          {cpRunning ? "Running…" : "Run all"}
         </button>
         <span className="acc-tally">
           {passed > 0 && <span className="acc-tally-ok">✓ {passed} passed</span>}
@@ -79,8 +42,8 @@ export function AcceptanceView() {
 
       <div className="acc-list">
         {SCENARIOS.map((sc) => {
-          const st = status[sc.id] ?? "idle";
-          const steps = results[sc.id];
+          const st = cpStatus[sc.id] ?? "idle";
+          const steps = cpResults[sc.id];
           return (
             <div className={"acc-row acc-" + st} key={sc.id}>
               <div className="acc-row-head">
@@ -91,21 +54,11 @@ export function AcceptanceView() {
                   <div className="acc-name">{sc.name}</div>
                   <div className="acc-desc">{sc.desc}</div>
                 </div>
-                <button className="btn btn-ghost" disabled={st === "running" || running} onClick={() => runOne(sc.id)}>
+                <button className="btn btn-ghost" disabled={st === "running" || cpRunning} onClick={() => void runCpOne(sc.id)}>
                   Run
                 </button>
               </div>
-              {steps && steps.length > 0 && (
-                <ul className="acc-steps">
-                  {steps.map((s, i) => (
-                    <li key={i} className={s.ok ? "acc-step-ok" : s.skip ? "acc-step-skip" : "acc-step-bad"}>
-                      <span className="acc-step-mark">{s.ok ? "✓" : s.skip ? "—" : "✗"}</span>
-                      <span className="acc-step-label">{s.label}</span>
-                      {s.detail && <span className="acc-step-detail mono">{s.detail}</span>}
-                    </li>
-                  ))}
-                </ul>
-              )}
+              {steps && steps.length > 0 && <StepList steps={steps} />}
             </div>
           );
         })}
@@ -116,11 +69,25 @@ export function AcceptanceView() {
   );
 }
 
+function StepList({ steps }: { steps: Step[] }) {
+  return (
+    <ul className="acc-steps">
+      {steps.map((s, i) => (
+        <li key={i} className={s.ok ? "acc-step-ok" : s.skip ? "acc-step-skip" : "acc-step-bad"}>
+          <span className="acc-step-mark">{s.ok ? "✓" : s.skip ? "—" : "✗"}</span>
+          <span className="acc-step-label">{s.label}</span>
+          {s.detail && <span className="acc-step-detail mono">{s.detail}</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 // ─── LLM-judged behavioral suite ───────────────────────────────────────────
 // Real runs: each scenario provisions a live agent against a throwaway repo,
-// then an LLM judge scores it against a rubric (minutes + API tokens each). The
-// server runs the standalone evals/ suite as a subprocess; we start a job and
-// poll it to completion.
+// then an LLM judge scores it against a rubric. The server runs the standalone
+// evals/ suite as a subprocess; the provider starts a job and polls it (polling
+// continues across view switches because it lives in the app-root provider).
 
 type LlmStatus = "idle" | "running" | "pass" | "fail" | "error";
 
@@ -147,65 +114,20 @@ function phaseLabel(job?: EvalJob): string {
 }
 
 function LlmEvalSection() {
-  const [scenarios, setScenarios] = useState<EvalScenarioMeta[] | null>(null);
-  const [keyPresent, setKeyPresent] = useState(false);
-  const [available, setAvailable] = useState(true);
-  const [loadErr, setLoadErr] = useState<string | null>(null);
-  const [jobs, setJobs] = useState<Record<string, EvalJob>>({}); // by scenarioId
-  const [open, setOpen] = useState<Record<string, boolean>>({}); // artifacts expanded, by scenarioId
-  const [running, setRunning] = useState(false);
-  const mounted = useRef(true);
+  const {
+    evalScenarios: scenarios,
+    evalKeyPresent: keyPresent,
+    evalAvailable: available,
+    evalLoadErr: loadErr,
+    jobs,
+    evalRunning: running,
+    artifactsOpen,
+    runEvalOne,
+    runEvalAll,
+    toggleArtifacts,
+  } = useAcceptance();
 
-  useEffect(() => {
-    mounted.current = true;
-    fetchEvals()
-      .then((r) => {
-        if (!mounted.current) return;
-        setScenarios(r.scenarios);
-        setKeyPresent(r.keyPresent);
-        setAvailable(r.available);
-        if (r.error) setLoadErr(r.error);
-      })
-      .catch((e) => mounted.current && setLoadErr((e as Error).message));
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-
-  // Start a scenario and poll its job to a terminal phase. Resolves when done so
-  // "Run all" can sequence one after another.
-  const runOne = (id: string): Promise<void> =>
-    new Promise((resolve) => {
-      setOpen((m) => ({ ...m, [id]: false }));
-      setJobs((m) => ({
-        ...m,
-        [id]: { id: "", scenarioId: id, phase: "queued", logs: [], startedAt: Date.now() },
-      }));
-      runEval(id)
-        .then(({ jobId }) => {
-          const tick = async () => {
-            if (!mounted.current) return resolve();
-            try {
-              const job = await fetchEvalJob(jobId);
-              setJobs((m) => ({ ...m, [id]: job }));
-              if (job.phase === "done" || job.phase === "error") return resolve();
-            } catch {
-              /* transient — keep polling */
-            }
-            setTimeout(tick, 1800);
-          };
-          setTimeout(tick, 1200);
-        })
-        .catch((e) => {
-          setJobs((m) => ({
-            ...m,
-            [id]: { id: "", scenarioId: id, phase: "error", logs: [], error: (e as Error).message, startedAt: Date.now() },
-          }));
-          resolve();
-        });
-    });
-
-  const runAll = async () => {
+  const onRunAll = () => {
     if (!scenarios) return;
     const n = scenarios.length;
     const ok = window.confirm(
@@ -213,10 +135,7 @@ function LlmEvalSection() {
         `Each one provisions a REAL agent and then an LLM judge — roughly 1–3 minutes and real API ` +
         `tokens per scenario (${n} runs total). They run one at a time; you can watch each verdict land.`,
     );
-    if (!ok) return;
-    setRunning(true);
-    for (const s of scenarios) await runOne(s.id);
-    setRunning(false);
+    if (ok) void runEvalAll();
   };
 
   const passed = scenarios?.filter((s) => jobStatus(jobs[s.id]) === "pass").length ?? 0;
@@ -250,7 +169,7 @@ function LlmEvalSection() {
 
       {available && (
         <div className="acc-bar">
-          <button className="btn btn-primary" disabled={disabled || !scenarios} onClick={runAll}>
+          <button className="btn btn-primary" disabled={disabled || !scenarios} onClick={onRunAll}>
             {running ? "Running…" : "Run all"}
           </button>
           <span className="acc-tally">
@@ -269,7 +188,7 @@ function LlmEvalSection() {
           const isRunning = st === "running";
           const v = job?.result?.verdict;
           const artifacts = job?.result?.artifacts;
-          const showArtifacts = open[sc.id] && artifacts;
+          const showArtifacts = artifactsOpen[sc.id] && artifacts;
           return (
             <div className={"acc-row acc-" + st} key={sc.id}>
               <div className="acc-row-head">
@@ -283,7 +202,7 @@ function LlmEvalSection() {
                 <button
                   className="btn btn-ghost"
                   disabled={disabled || isRunning}
-                  onClick={() => runOne(sc.id)}
+                  onClick={() => void runEvalOne(sc.id)}
                   title={!keyPresent ? "Set ANTHROPIC_API_KEY to run" : undefined}
                 >
                   Run
@@ -324,7 +243,7 @@ function LlmEvalSection() {
                   {artifacts && (
                     <button
                       className="btn btn-ghost acc-artifacts-toggle"
-                      onClick={() => setOpen((m) => ({ ...m, [sc.id]: !m[sc.id] }))}
+                      onClick={() => toggleArtifacts(sc.id)}
                     >
                       {showArtifacts ? "Hide artifacts" : "Artifacts"}
                     </button>
