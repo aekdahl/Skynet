@@ -19,6 +19,7 @@
     "clean": "pnpm -r exec rm -rf dist node_modules/.cache"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "typescript": "^5.7.3",
     "vitest": "^2.1.8"
   }

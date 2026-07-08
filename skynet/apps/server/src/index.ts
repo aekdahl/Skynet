@@ -10,7 +10,9 @@ import { InProcessBus } from "./bus.js";
 import type { Bus } from "./bus.js";
 import { Hub } from "./hub.js";
 import { Orchestrator } from "./orchestrator.js";
+import { Operations } from "./operations.js";
 import { registerApi } from "./api.js";
+import { registerMcp } from "./mcp/http.js";
 import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
 import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
@@ -18,8 +20,10 @@ import { registerSecretsRoutes } from "./secrets/index.js";
 import { registerGithubRoutes, configureGithub } from "./github/index.js";
 import { configureAuth } from "./auth.js";
 import { MemorySessionStore, type SessionStore } from "./auth/sessions.js";
+import { MemoryServiceTokenStore } from "./auth/service-tokens.js";
+import { seedBootstrapToken } from "./auth/bootstrap.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
-import { registerAuthRoutes } from "./auth/routes.js";
+import { registerAuthRoutes, registerServiceTokenRoutes } from "./auth/routes.js";
 import { MemoryStore } from "./store/memory.js";
 import type { Store } from "./store/store.js";
 
@@ -48,6 +52,8 @@ async function main() {
   }
   const hub = new Hub(store, bus);
   const orchestrator = new Orchestrator(store, hub);
+  // The shared service layer behind both the HTTP API and the MCP server.
+  const operations = new Operations({ store, hub, orchestrator });
   // Persist the GitHub connection in the same Store as the rest of the domain
   // (file for the desktop app, Postgres for hosted) — durable, no side-store.
   configureGithub(store);
@@ -68,7 +74,13 @@ async function main() {
     throw new Error("No session store configured. Set SESSIONS=memory for dev/tests, or SESSIONS=postgres / SESSIONS=redis.");
   }
   const operators = new MemoryOperatorDirectory(seedOperators());
-  configureAuth({ sessions });
+  // Scoped API tokens for MCP / programmatic access. In-memory for now; a durable
+  // adapter drops in behind ServiceTokenStore (same pattern as sessions) later.
+  const serviceTokens = new MemoryServiceTokenStore();
+  configureAuth({ sessions, serviceTokens });
+  // Headless/sandbox deploys: register the agent-provided bootstrap token so it
+  // can call /mcp without a human login (no-op unless SKYNET_BOOTSTRAP_TOKEN set).
+  const bootstrap = await seedBootstrapToken(serviceTokens);
 
   const app = Fastify({ logger: { level: config.nodeEnv === "development" ? "info" : "warn" } });
   // Loud guardrail: an explicit AUTH_REQUIRED=false in production opens the API.
@@ -81,7 +93,11 @@ async function main() {
   app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: config.runner ?? "per-runner", sessions: config.sessions }));
 
   await registerAuthRoutes(app, { sessions, operators });
-  await registerApi(app, { store, hub, orchestrator });
+  await registerServiceTokenRoutes(app, { serviceTokens });
+  await registerApi(app, { operations });
+  // MCP endpoint (Streamable HTTP) — agents drive Skynet through the same
+  // scoped-principal auth as the /api routes. stdio clients proxy to this too.
+  await registerMcp(app, { operations, bus });
   // Workspace-scoped provider keys (encrypted at rest); /api auth hook applies.
   await registerSecretsRoutes(app);
   // GitHub App connection + safety policy (workspace-scoped); /api auth applies.
@@ -98,6 +114,11 @@ async function main() {
 
   await app.listen({ port: config.port, host: "0.0.0.0" });
   if (servingSpa) app.log.info("serving built web SPA from this server");
+  if (bootstrap) {
+    // Never log the secret itself — only what it was granted.
+    app.log.info(`MCP bootstrap token registered — workspace=${bootstrap.workspaceId} scopes=[${bootstrap.scopes.join(", ")}] → POST /mcp`);
+    if (bootstrap.dropped.length > 0) app.log.warn(`ignored unknown bootstrap scopes: ${bootstrap.dropped.join(", ")}`);
+  }
   app.log.info(`Skynet server up on :${config.port}  (store=${config.store} bus=${config.bus} runner=${config.runner ?? "per-runner"} sessions=${config.sessions})`);
 }
 
