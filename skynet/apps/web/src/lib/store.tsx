@@ -21,6 +21,7 @@ import type {
   Task,
 } from "@skynet/shared";
 import * as api from "./client";
+import { notifyInbox } from "../pwa/pwa";
 
 /** Pull the server's `{ error }` message out of an ApiError body, else fallback. */
 function serverMessage(e: unknown, fallback: string): string {
@@ -226,6 +227,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (msg.type === "snapshot") {
         setState(fromSnapshot(msg.state));
       } else {
+        // A newly-raised HITL is the "needs you" moment → fire an Inbox alert.
+        // notifyInbox no-ops unless the operator turned alerts on (lib/alerts).
+        // Only live deltas fire this; the connect-time snapshot never does, so
+        // reconnecting doesn't re-alert on the existing queue.
+        if (msg.type === "hitl.raised") {
+          void notifyInbox(`Needs you — ${msg.item.title}`, msg.item.why, msg.item.agentId);
+        }
         setState((s) => reduce(s, msg));
       }
     });

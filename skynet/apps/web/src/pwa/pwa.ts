@@ -7,6 +7,8 @@
 // React component tree (and out of styles.css) — collision-free with other
 // streams. main.tsx calls setupPwa() once on boot.
 
+import { alertsOn, setAlerts } from "../lib/alerts";
+
 const NAV_EVENT = "skynet:navigate";
 const INSTALL_STATE_EVENT = "skynet:installstate";
 
@@ -90,7 +92,10 @@ export async function notifyInbox(
   body = "An agent is blocked and waiting on a decision.",
   agentId: string | null = null,
 ): Promise<void> {
-  if (!(await enableInboxAlerts())) return;
+  // Respect the app-level switch first (the real mute), then the OS permission.
+  // Never auto-prompt here — permission is requested only when alerts are turned on.
+  if (!alertsOn()) return;
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
   const payload = {
     body,
     icon: "/icon.svg",
@@ -169,6 +174,7 @@ function showInstallBanner() {
   });
   banner.querySelector(".pwa-alerts")?.addEventListener("click", async () => {
     const ok = await enableInboxAlerts();
+    setAlerts(ok); // turning on the app-level switch is what actually enables alerts
     if (ok) await notifyInbox("Inbox alerts on", "We'll ping you here when an agent needs a decision.");
   });
   banner.querySelector(".pwa-x")?.addEventListener("click", () => {
