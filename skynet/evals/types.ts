@@ -9,6 +9,15 @@ export interface Rubric {
   question: string;
 }
 
+/** How the operator responds to one HITL gate. Consumed in order (the nth gate
+ *  gets the nth reply); when the list is exhausted the executor defaults to
+ *  approve. This scripts cases like reject-then-revise or picking an option. */
+export interface HitlReply {
+  action: "approve" | "reject" | "modify" | "option";
+  guidance?: string; // for modify / reject rationale
+  optionIndex?: number; // for option
+}
+
 /** A behavioral test: a task for the agent + how to judge the result. */
 export interface Scenario {
   id: string;
@@ -16,10 +25,15 @@ export interface Scenario {
   category: string;
   /** What the operator asks the agent to do. */
   task: string;
-  /** Fixture/repo state the executor should set up (free-text for now). */
+  /** Human-readable note about the fixture/setup (shown to the judge). */
   setup?: string;
-  /** Optional HITL script: how the operator responds to gates during the run. */
+  /** Files the executor writes + commits to the repo base before the run, so
+   *  the agent has something concrete to work on. Path → contents. */
+  fixture?: Record<string, string>;
+  /** Human-readable note about the HITL script (shown to the judge). */
   hitl?: string;
+  /** Scripted operator responses to HITL gates, in order (default: approve). */
+  replies?: HitlReply[];
   rubric: Rubric[];
 }
 

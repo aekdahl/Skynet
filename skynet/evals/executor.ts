@@ -8,9 +8,9 @@
 // provider, e.g. claude) with ANTHROPIC_API_KEY set. See README.md.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Artifacts, Executor, Scenario } from "./types.js";
 
 const WORKSPACE = "cyberdyne"; // DEFAULT_WORKSPACE
@@ -25,6 +25,7 @@ type Booted = {
   bus: import("../apps/server/src/bus.js").Bus;
   orchestrator: import("../apps/server/src/orchestrator.js").Orchestrator;
   repo: string;
+  baseSha: string; // the clean base commit; every scenario resets main to it
 };
 let booted: Promise<Booted> | null = null;
 
@@ -42,6 +43,7 @@ async function boot(): Promise<Booted> {
   writeFileSync(join(repo, "README.md"), "# eval fixture\n");
   git(repo, "add", "-A");
   git(repo, "commit", "-m", "base");
+  const baseSha = git(repo, "rev-parse", "HEAD");
 
   // Point the orchestrator at the repo BEFORE importing config (import-time capture).
   process.env.STORE ??= "memory";
@@ -59,15 +61,30 @@ async function boot(): Promise<Booted> {
   const bus = new InProcessBus();
   const hub = new Hub(store, bus);
   const orchestrator = new Orchestrator(store, hub);
-  return { store, hub, bus, orchestrator, repo };
+  return { store, hub, bus, orchestrator, repo, baseSha };
 }
 
 export function makeExecutor(): Executor {
   return {
     async run(scenario: Scenario): Promise<Artifacts> {
       booted ??= boot();
-      const { store, hub, bus, orchestrator, repo } = await booted;
+      const { store, hub, bus, orchestrator, repo, baseSha } = await booted;
       const started = Date.now();
+
+      // Isolate this scenario: reset main to the clean base, then lay down the
+      // scenario's fixture as a commit the agent will branch from.
+      git(repo, "checkout", "-f", "main");
+      git(repo, "reset", "--hard", baseSha);
+      git(repo, "clean", "-fd");
+      if (scenario.fixture) {
+        for (const [rel, content] of Object.entries(scenario.fixture)) {
+          const abs = join(repo, rel);
+          mkdirSync(dirname(abs), { recursive: true });
+          writeFileSync(abs, content);
+        }
+        git(repo, "add", "-A");
+        git(repo, "commit", "-m", `fixture: ${scenario.id}`);
+      }
 
       // Fleet runner + project + backlog task for this scenario.
       const rid = `runner-${scenario.id}`;
@@ -83,14 +100,22 @@ export function makeExecutor(): Executor {
       const tid = `task-${scenario.id}`;
       await hub.upsertTask({ id: tid, workspaceId: WORKSPACE, projectId: pid, text: scenario.task, state: "backlog", agentId: null });
 
-      // Capture events + auto-resolve every HITL (default: approve). A richer
-      // per-scenario HITL script can key off scenario.hitl later.
+      // Capture events + resolve each HITL from the scenario's scripted replies
+      // (consumed in order; default approve once exhausted).
       const hitl: NonNullable<Artifacts["hitl"]> = [];
+      let replyIdx = 0;
       const unsub = bus.subscribe(WORKSPACE, (ev) => {
         if (ev.type === "hitl.raised") {
           const item = ev.item;
-          hitl.push({ kind: item.kind, title: item.title, why: item.why, resolvedWith: "approve" });
-          const resolution = { action: "approve" as const, optionIndex: null, guidance: null, by: "eval", at: Date.now() };
+          const reply = scenario.replies?.[replyIdx++] ?? { action: "approve" as const };
+          hitl.push({ kind: item.kind, title: item.title, why: item.why, resolvedWith: reply.action });
+          const resolution = {
+            action: reply.action,
+            optionIndex: reply.optionIndex ?? null,
+            guidance: reply.guidance ?? null,
+            by: "eval",
+            at: Date.now(),
+          };
           void hub.resolveHitl(item.id, resolution).then((r) => {
             if (r?.resolution?.at === resolution.at) void orchestrator.deliver(item, resolution);
           });
@@ -132,9 +157,16 @@ export function makeExecutor(): Executor {
       } finally {
         unsub();
         if (agentId) await orchestrator.stopAgent(agentId).catch(() => undefined);
-        // Drop the agent branch so repeated runs don't collide.
+        // Best-effort: drop the agent branch (may already be gone after merge).
+        // The next run's start-of-run reset restores main to the clean base.
         const a = await store.getAgent(agentId).catch(() => undefined);
-        if (a?.branch) git(repo, "branch", "-D", a.branch);
+        if (a?.branch) {
+          try {
+            git(repo, "branch", "-D", a.branch);
+          } catch {
+            /* already gone */
+          }
+        }
       }
     },
   };

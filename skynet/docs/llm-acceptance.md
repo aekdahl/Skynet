@@ -20,12 +20,14 @@ capture what it produced, then have a **judge model** score it against a rubric.
 scenario ─▶ executor (runs the agent, captures artifacts) ─▶ judge (LLM) ─▶ verdict
 ```
 
-1. **Scenario** — a task + fixture state + a rubric (`evals/scenarios.ts`).
-2. **Executor** — drives the agent to completion and captures **artifacts**: the branch
-   diff, the agent event log, the HITL items it raised (and how they resolved), whether a
-   PR opened, the final status, and performance counters (turns / tokens / wall-clock).
-   The interface is `Executor` in `evals/types.ts`; wiring it through the orchestrator is
-   the integration step (see the README).
+1. **Scenario** — a task + an optional `fixture` (files written + committed to the repo base
+   before the run) + a rubric + optional scripted HITL `replies` (`evals/scenarios.ts`).
+2. **Executor** (`evals/executor.ts`) — boots the real orchestrator in-process against a
+   throwaway git repo, lays down the fixture, `assignTask`s, resolves each HITL from the
+   scenario's `replies` (in order; default approve), waits for a terminal state, and
+   captures **artifacts**: the branch diff, the agent event log, the HITL items it raised
+   (and how they resolved), whether a PR opened, the final status, and performance counters
+   (turns / tokens / wall-clock).
 3. **Judge** — `evals/judge.ts` sends the scenario + rubric + artifacts to a strong model
    (`SKYNET_JUDGE_MODEL`, default `claude-opus-4-8`) and forces a structured verdict via a
    tool call: per-dimension `{score 0–5, pass, rationale}` + an overall pass.
@@ -41,11 +43,14 @@ The judge scores two axes throughout:
 # List the catalog
 tsx evals/run.ts list
 
-# Judge a captured run (works today with a key — no orchestrator wiring needed)
+# Smoke-test the executor end-to-end with the mock runner — no key needed
+RUNNER=mock tsx evals/run.ts exec <scenarioId>
+
+# Judge a captured run (needs a key)
 ANTHROPIC_API_KEY=… tsx evals/run.ts judge <scenarioId> path/to/artifacts.json
 
-# Full auto-run (once an Executor is wired): run the agent, then judge
-ANTHROPIC_API_KEY=… tsx evals/run.ts run <scenarioId>
+# Full auto-run: executor drives the agent, then judge (needs a key + a real runner)
+ANTHROPIC_API_KEY=… tsx evals/run.ts run <scenarioId>   # or `run all`
 ```
 
 ## The 20 tests for this release
