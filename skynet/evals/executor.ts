@@ -35,6 +35,44 @@ function git(repo: string, ...args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
 }
 
+/** Capture the agent's net change for the judge — and, critically, never a
+ *  silent empty string. The change lands on the agent branch (cut from `base`,
+ *  so `base...branch` excludes the scenario fixture that sits on `base` and
+ *  yields only the agent's edits). After a clean merge the agent branch may be
+ *  pruned, so fall back to the project's integration branch, where the merged
+ *  net change lives. If BOTH come up empty the agent finished without
+ *  integrating anything — record why, rather than handing the judge a bare ""
+ *  it can only read as "no evidence" (which is how a run silently scores 2/5). */
+function captureDiff(
+  repo: string,
+  branch: string | undefined,
+  projectId: string,
+  finalStatus: string,
+): { diff: string; diffNote: string } {
+  const base = process.env.SKYNET_BASE_BRANCH || "main";
+  const tryDiff = (range: string): string => {
+    try {
+      return git(repo, "diff", range);
+    } catch {
+      return ""; // ref may not exist (branch pruned, integration never created)
+    }
+  };
+  if (branch) {
+    const d = tryDiff(`${base}...${branch}`);
+    if (d) return { diff: d, diffNote: "" };
+  }
+  const integ = `skynet/integration/${projectId}`;
+  const merged = tryDiff(`${base}..${integ}`);
+  if (merged) return { diff: merged, diffNote: `diff captured from ${integ} (agent branch unavailable)` };
+  return {
+    diff: "",
+    diffNote:
+      `no diff: agent branch ${branch ?? "(none)"} has no commit beyond ${base}, and ${integ} ` +
+      `did not advance (finalStatus=${finalStatus}) — the runner finished without integrating a ` +
+      `change (it likely errored/aborted before writing an edit, or produced no change).`,
+  };
+}
+
 async function boot(): Promise<Booted> {
   // A throwaway integration repo with a `main` base commit. Every agent gets its
   // own worktree/branch cut from here.
@@ -53,6 +91,17 @@ async function boot(): Promise<Booted> {
   git(repo, "add", "-A");
   git(repo, "commit", "-m", "base");
   const baseSha = git(repo, "rev-parse", "HEAD");
+
+  // Real runs only: a mock runner emits a canned log + never edits/commits, so
+  // the diff artifact comes back empty and the verdict is meaningless. The
+  // in-app path strips this (apps/server/src/evals/index.ts); the standalone CLI
+  // must too, else a dev who ran `. ./.env` (which sets RUNNER=mock) silently
+  // grades fake runs. Drop it BEFORE importing config, which captures RUNNER at
+  // import time — leaving it set would force mock for every agent.
+  if (process.env.RUNNER === "mock") {
+    delete process.env.RUNNER;
+    process.stderr.write("[eval] ignoring RUNNER=mock — the acceptance suite is real-runs-only.\n");
+  }
 
   // Point the orchestrator at the repo BEFORE importing config (import-time capture).
   process.env.STORE ??= "memory";
@@ -107,7 +156,11 @@ export function makeExecutor(): Executor {
         agentIds: [], status: "active", repoPath: null, gitBacked: false,
       });
       const tid = `task-${scenario.id}`;
-      await hub.upsertTask({ id: tid, workspaceId: WORKSPACE, projectId: pid, text: scenario.task, state: "backlog", agentId: null });
+      // Give the agent the governing policy the way a real repo would (via its
+      // instructions), so safety scenarios test judgment against a KNOWN policy
+      // rather than telepathy. Judge sees it via `setup`; the agent sees it here.
+      const taskText = scenario.policy ? `${scenario.task}\n\n[Repository policy] ${scenario.policy}` : scenario.task;
+      await hub.upsertTask({ id: tid, workspaceId: WORKSPACE, projectId: pid, text: taskText, state: "backlog", agentId: null });
 
       // Capture events + resolve each HITL from the scenario's scripted replies
       // (consumed in order; default approve once exhausted).
@@ -185,16 +238,15 @@ export function makeExecutor(): Executor {
 
         const a = await store.getAgent(agentId);
         const log = (a?.log ?? []).map((l) => l.line);
-        // Prefer the diff captured at review time (before the merge consumed the
-        // branch). Fall back to a post-hoc diff only if we never saw a review
-        // (e.g. the agent made no changes, or timed out mid-run).
+        // Prefer the diff captured at review time (committed, before the merge
+        // consumed the branch) — the most reliable proof of the agent's work.
+        // When we never saw a review (no changes, timeout, or a failure parked at
+        // "review"), fall back to captureDiff, which tries the branch/integration
+        // ranges and records a diagnostic in `notes` instead of a silent empty "".
         let diff = reviewDiff;
+        let diffNote = "";
         if (!diff) {
-          try {
-            diff = git(repo, "diff", `main...${a?.branch ?? "HEAD"}`);
-          } catch {
-            /* branch may be gone after merge; diff is best-effort */
-          }
+          ({ diff, diffNote } = captureDiff(repo, a?.branch, pid, finalStatus));
         }
         // A runner (not agent) failure — API 529/auth/crash — is an infra flake,
         // not an agent verdict. Flag it so `run` re-runs rather than scoring it.
@@ -203,11 +255,18 @@ export function makeExecutor(): Executor {
           diff,
           log,
           hitl,
-          prOpened: false,
+          // The eval repo is local (no remote), so the "PR" analog is the
+          // orchestrator's diff-review gate raised on completion ("approve to
+          // integrate"). If it fired, the agent routed its change onto a branch
+          // for review instead of writing to the default branch — that IS the
+          // prOnly outcome. (Was hardcoded false, so this half was unscorable.)
+          prOpened: hitl.some((h) => h.kind === "diff"),
           finalStatus,
           ...(failLine ? { runnerError: failLine } : {}),
           wallMs: Date.now() - started,
-          notes: `provider=${PROVIDER} runnerOverride=${process.env.RUNNER ?? "(none)"}`,
+          notes:
+            `provider=${PROVIDER} runnerOverride=${process.env.RUNNER ?? "(none)"}` +
+            (diffNote ? ` · ${diffNote}` : ""),
         };
       } finally {
         unsub();

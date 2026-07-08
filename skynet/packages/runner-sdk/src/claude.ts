@@ -212,6 +212,159 @@ function approvalText(name: string, input: Record<string, unknown>): string {
   return JSON.stringify(input, null, 2);
 }
 
+// The names of the agent's task-management tools. The claude_code preset gives
+// TaskCreate/TaskUpdate (SDK ≥ 0.3.x, one task per call, SDK-assigned id);
+// older builds use TodoWrite (whole list per call). We map either onto the
+// PLAN panel so progress reflects real work, not a synthetic bump.
+const PLAN_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TodoWrite"]);
+
+const taskStatusToState = (status: string): PlanStep["state"] =>
+  status === "completed" ? "done" : status === "in_progress" ? "now" : "todo";
+
+// TodoWrite input: { todos: [{ content, status, activeForm? }] } — a full list.
+function todosToPlan(input: Record<string, unknown>): PlanStep[] {
+  const todos = Array.isArray(input.todos) ? (input.todos as Array<Record<string, unknown>>) : [];
+  const plan: PlanStep[] = [];
+  for (const t of todos) {
+    const state = taskStatusToState(String(t.status ?? "pending"));
+    // Prefer the present-tense form while active; fall back to the content.
+    const text = String((state === "now" && t.activeForm) || t.content || t.activeForm || "").trim();
+    if (text) plan.push({ text, state });
+  }
+  return plan;
+}
+
+// A clarifying question the agent asked via the AskUserQuestion tool, distilled
+// to what the HITL model needs: a prompt + a flat list of option labels.
+interface ParsedQuestion {
+  header: string; // short label for the question (chip/title)
+  prompt: string; // the full question text shown to the operator
+  options: Array<{ label: string; description?: string }>;
+}
+
+// AskUserQuestion input: { questions: [{ question, header, options: [{label, description}] }] }.
+// We surface the FIRST question (the HITL model is one question + a choice list);
+// any extra questions are appended to the prompt so nothing is silently dropped.
+function parseAskUserQuestion(input: Record<string, unknown>): ParsedQuestion | null {
+  const questions = Array.isArray(input.questions)
+    ? (input.questions as Array<Record<string, unknown>>)
+    : [];
+  if (!questions.length) return null;
+  const q0 = questions[0] ?? {};
+  const rawOpts = Array.isArray(q0.options) ? q0.options : [];
+  const options = rawOpts
+    .map((o) =>
+      typeof o === "string"
+        ? { label: o }
+        : o && typeof o === "object"
+          ? { label: String((o as Record<string, unknown>).label ?? ""), description: (o as Record<string, unknown>).description ? String((o as Record<string, unknown>).description) : undefined }
+          : { label: "" },
+    )
+    .filter((o) => o.label);
+  if (!options.length) return null;
+  const header = String(q0.header ?? "Question").trim() || "Question";
+  let prompt = String(q0.question ?? q0.header ?? "The agent needs a decision.").trim();
+  if (questions.length > 1) {
+    const extra = questions.slice(1).map((q) => String(q.question ?? q.header ?? "")).filter(Boolean);
+    if (extra.length) prompt += `\n\n(Also asked — answer in the same reply via Modify: ${extra.join(" · ")})`;
+  }
+  return { header, prompt, options };
+}
+
+// Turn a parsed AskUserQuestion into a `question` HITL: the prompt + a choice
+// list the UI renders as option buttons (resolved via the `option` action).
+function buildQuestionRaise(q: ParsedQuestion): HitlRaise {
+  const detail = q.options.some((o) => o.description)
+    ? q.options.map((o) => `• ${o.label}${o.description ? ` — ${o.description}` : ""}`).join("\n")
+    : null;
+  return {
+    kind: "question",
+    title: q.header,
+    why: q.prompt,
+    risk: "low",
+    command: detail, // option descriptions, if any, for the detail box
+    options: q.options.map((o) => o.label),
+    recommended: null, // AskUserQuestion marks no default
+    steps: null,
+    diff: null,
+  };
+}
+
+// Short human label of the chosen answer, for the activity log.
+function describeAnswer(q: ParsedQuestion, decision?: Resolution): string {
+  if (decision?.action === "option" && decision.optionIndex != null) {
+    return q.options[decision.optionIndex]?.label ?? `option ${decision.optionIndex}`;
+  }
+  if (decision?.action === "modify" && decision.guidance) return decision.guidance;
+  if (decision?.action === "reject") return "declined — agent's judgment";
+  return "no selection";
+}
+
+// The message handed back to the model as the AskUserQuestion result. Frames it
+// as the human's answer so the agent continues with the decision made for it.
+function answerForQuestion(q: ParsedQuestion, decision?: Resolution): string {
+  if (decision?.action === "option" && decision.optionIndex != null) {
+    const opt = q.options[decision.optionIndex];
+    const label = opt?.label ?? `option ${decision.optionIndex}`;
+    return `The human answered your question "${q.header}": ${label}.${opt?.description ? ` (${opt.description})` : ""} Continue with this decision.`;
+  }
+  if (decision?.action === "modify" && decision.guidance) {
+    return `The human answered your question "${q.header}": ${decision.guidance}. Continue with this.`;
+  }
+  // No operator answered in time (auto-resolved by the server's question
+  // timeout). Do NOT invite a guess — the honest outcome is to conclude.
+  if (decision?.by?.startsWith("system:")) {
+    return `No operator answered your question "${q.header}" in time. Do NOT guess or make a speculative change — state plainly what you could and couldn't determine and exactly what you'd need to proceed, then stop without editing.`;
+  }
+  if (decision?.action === "reject") {
+    return `The human declined to choose for "${q.header}" — use your best judgment and proceed.`;
+  }
+  return `The human acknowledged "${q.header}" without a specific choice — use your best judgment and proceed.`;
+}
+
+// ─── Transient-error retry policy ──────────────────────────────────────────
+// The Agent SDK already retries individual HTTP calls; when even that is
+// exhausted it surfaces an overload/rate-limit as either a thrown error or a
+// `result` message with is_error/error subtype. Those are RETRYABLE at the
+// session level: back off and resume the session, a bounded number of times.
+// Anything else (or exhausting the budget) is a real failure — never a "done".
+
+/** True for retryable API conditions: overload (429/529), rate-limit, 503. */
+export function isTransientApiError(text: string): boolean {
+  return /\b(429|503|529)\b|overload|rate[\s_-]?limit|too many requests|temporarily unavailable/i.test(
+    text ?? "",
+  );
+}
+
+const MAX_API_RETRIES = 3;
+/** Exponential backoff, capped at 30s: attempt 1→2s, 2→4s, 3→8s. */
+export function retryBackoffMs(attempt: number): number {
+  return Math.min(30_000, 1_000 * 2 ** attempt);
+}
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Classify a `result` message: null = clean success, else the error + whether
+ *  it's a transient (retryable) condition. */
+function classifyResult(msg: Record<string, unknown>, context: string): { reason: string; transient: boolean } | null {
+  const subtype = typeof msg.subtype === "string" ? msg.subtype : "";
+  const isError = msg.is_error === true || (subtype !== "" && subtype !== "success");
+  if (!isError) return null;
+  const detail = [subtype, typeof msg.result === "string" ? msg.result : "", context].join(" ");
+  return { reason: subtype || "error", transient: isTransientApiError(detail) };
+}
+
+// Test seams (mirror the orchestrator's providerOverride): let tests drive the
+// SDK message stream deterministically and collapse backoff. Production always
+// uses the real query() and real exponential timing.
+let queryImpl: typeof query = query;
+let backoffMsImpl: (attempt: number) => number = retryBackoffMs;
+export function __setClaudeTestHooks(
+  hooks: { query?: typeof query; backoffMs?: (n: number) => number } | null,
+): void {
+  queryImpl = hooks?.query ?? query;
+  backoffMsImpl = hooks?.backoffMs ?? retryBackoffMs;
+}
+
 class ClaudeRunnerHandle implements RunnerHandle {
   readonly agentId: string;
   readonly provider: ProviderId = "claude";
@@ -223,13 +376,23 @@ class ClaudeRunnerHandle implements RunnerHandle {
   // the session, so we always pass the tool's own input through).
   private gateInput: Record<string, unknown> | null = null;
   private gateTool: string | null = null; // name of the tool awaiting approval
+  private gateQuestion: ParsedQuestion | null = null; // set when the gate is an AskUserQuestion
   private lastRationale = ""; // the agent's most recent prose (its stated reasoning)
   private sdkEnv: Record<string, string> = {}; // resolved auth env, reused for side-queries
   private pendingTools = new Map<string, string>(); // tool_use id → tool name, to pair outputs
   private pendingChat = false;
   private progress = 0;
+  private plan: PlanStep[] = []; // real steps, from the agent's task-tracking tools
+  private planOrder: string[] = []; // task ids in creation order (TaskCreate/Update)
+  private planById = new Map<string, PlanStep>();
   private finished = false;
   private hb?: ReturnType<typeof setInterval>;
+  // Retry state (transient API overload → resume the session, bounded).
+  private sessionId?: string; // this run's own SDK session, for resume-on-retry
+  private baseOptions?: Options; // query options minus resume, reused per relaunch
+  private initialPrompt = ""; // the kickoff message, re-sent if we retry pre-session
+  private apiRetries = 0; // transient retries spent (budget MAX_API_RETRIES)
+  private lastApiError = ""; // most recent overload/error text seen, for classification
 
   constructor(
     private spec: StartSpec,
@@ -240,16 +403,19 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.agentId = spec.agentId;
     this.events.onStatus(this.agentId, "running");
     this.events.onLog(this.agentId, `picked up "${spec.task}" on ${spec.branch}`);
-    this.input.push(
+    this.initialPrompt =
       `You are a Skynet coding agent on branch ${spec.branch} in this repository. ` +
-        `Task: ${spec.task}. ` +
-        `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
-        `Only if it requires code changes, make them and run any relevant checks. Then stop when done. ` +
-        `Ask before running destructive or irreversible commands.`,
-    );
+      `Task: ${spec.task}. ` +
+      `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
+      `Only if it requires code changes, make them and run any relevant checks. Then stop when done. ` +
+      `Ask before running destructive or irreversible commands.`;
+    this.input.push(this.initialPrompt);
 
     const canUseTool: CanUseTool = (toolName, input) => {
       if (AUTO_ALLOW.has(toolName)) return Promise.resolve({ behavior: "allow", updatedInput: input });
+      // AskUserQuestion is the agent asking the operator a decision — surface it
+      // as a `question` HITL with real option buttons, not a generic "approve".
+      const question = toolName === "AskUserQuestion" ? parseAskUserQuestion(input) : null;
       return new Promise<PermissionResult>((resolve) => {
         // One gate at a time — the SDK serializes tool calls in a turn.
         // Register the gate BEFORE emitting the event: a synchronous resume
@@ -258,8 +424,12 @@ class ClaudeRunnerHandle implements RunnerHandle {
         this.gate = resolve;
         this.gateInput = input;
         this.gateTool = toolName;
+        this.gateQuestion = question;
         this.events.onStatus(this.agentId, "waiting");
-        this.events.onHitl(this.agentId, this.buildRaise(toolName, input));
+        this.events.onHitl(
+          this.agentId,
+          question ? buildQuestionRaise(question) : this.buildRaise(toolName, input),
+        );
       });
     };
 
@@ -286,19 +456,32 @@ class ClaudeRunnerHandle implements RunnerHandle {
       return; // q stays unset; consume()/heartbeat never start
     }
 
-    const options: Options = {
+    // Base options (reused verbatim on every relaunch/retry). Fork-resume is kept
+    // OUT of the base so a retry resumes THIS run's own session, not a fork.
+    const baseOptions: Options = {
       cwd: spec.cwd ?? process.cwd(),
       model: mapModel(spec.model),
       permissionMode: "default",
       canUseTool,
       maxTurns: 60,
+      // Use Claude Code's default system prompt + full tool suite. Without this a
+      // bare query() gives a minimal agent that never loads TodoWrite, so the
+      // agent writes plans as prose and the PLAN panel stays empty. The preset
+      // makes the agent maintain a real todo list (→ our plan steps) and behave
+      // like Claude Code; our canUseTool still gates every mutating tool.
+      systemPrompt: { type: "preset", preset: "claude_code" },
       // Scrubbed env (drops the nested-session OAuth path); a per-workspace key
       // (orchestrator-injected) overrides ANTHROPIC_API_KEY for this session only.
       env: this.sdkEnv,
-      ...(resumeSessionId ? { resume: resumeSessionId, forkSession: true } : {}),
     };
+    this.baseOptions = baseOptions;
 
-    this.q = query({ prompt: this.input, options });
+    // A fork inherits its parent's context via resume; a fresh run doesn't.
+    const firstOptions: Options = resumeSessionId
+      ? { ...baseOptions, resume: resumeSessionId, forkSession: true }
+      : baseOptions;
+
+    this.q = queryImpl({ prompt: this.input, options: firstOptions });
     this.hb = setInterval(() => this.events.onHeartbeat(this.agentId), 5_000);
     void this.consume();
   }
@@ -319,25 +502,139 @@ class ClaudeRunnerHandle implements RunnerHandle {
   }
 
   private bump() {
+    // Once the agent maintains a real plan, that drives progress — don't let the
+    // synthetic bump fight it. Only used before the first TodoWrite arrives.
+    if (this.plan.length) return;
     this.progress = Math.min(0.9, this.progress + 0.08);
     this.events.onProgress(this.agentId, this.progress, [] as PlanStep[]);
   }
 
+  /**
+   * Fold a task-tracking tool call into the plan. TodoWrite replaces the whole
+   * list; TaskCreate appends one task (ids are SDK-assigned in creation order,
+   * so we mirror that with sequential ids); TaskUpdate flips one task's state.
+   */
+  private applyPlanTool(name: string, input: Record<string, unknown>) {
+    if (name === "TodoWrite") {
+      const plan = todosToPlan(input);
+      if (plan.length) {
+        this.plan = plan;
+        this.emitPlan();
+      }
+      return;
+    }
+    if (name === "TaskCreate") {
+      const items = Array.isArray(input.tasks)
+        ? (input.tasks as Array<Record<string, unknown>>)
+        : [input];
+      for (const it of items) {
+        const text = String(it.subject || it.title || it.activeForm || it.content || "").trim();
+        if (!text) continue;
+        const id = String(this.planOrder.length + 1); // SDK numbers tasks 1-based
+        this.planOrder.push(id);
+        this.planById.set(id, { text, state: "todo" });
+      }
+    } else if (name === "TaskUpdate") {
+      const id = String(input.taskId ?? input.task_id ?? input.id ?? "");
+      const step = this.planById.get(id);
+      if (step) step.state = taskStatusToState(String(input.status ?? ""));
+    }
+    this.plan = this.planOrder
+      .map((id) => this.planById.get(id))
+      .filter((s): s is PlanStep => !!s);
+    if (this.plan.length) this.emitPlan();
+  }
+
+  /** Recompute progress from the real plan (done/total) and push it + the plan. */
+  private emitPlan() {
+    const done = this.plan.filter((p) => p.state === "done").length;
+    // Keep it shy of 1 until finish() flips the agent to done.
+    this.progress = Math.min(0.99, this.plan.length ? done / this.plan.length : this.progress);
+    this.events.onProgress(this.agentId, this.progress, this.plan);
+  }
+
+  /** Read exact token/cost totals off the SDK `result` message and report them. */
+  private emitUsage(result: Record<string, unknown>) {
+    const u = (result.usage ?? {}) as Record<string, unknown>;
+    const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+    const input =
+      n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens);
+    const cost = typeof result.total_cost_usd === "number" ? result.total_cost_usd : null;
+    const durationMs = typeof result.duration_ms === "number" ? result.duration_ms : null;
+    this.events.onUsage?.(this.agentId, {
+      inputTokens: input,
+      outputTokens: n(u.output_tokens),
+      costUsd: cost,
+      turns: n(result.num_turns),
+      durationMs,
+    });
+  }
+
   private async consume() {
     if (!this.q) return;
+    while (!this.finished) {
+      const outcome = await this.drain();
+      if (this.finished) return; // stopped mid-drain
+
+      if (outcome.done) {
+        this.finish();
+        return;
+      }
+
+      // Errored. A transient overload/rate-limit is retryable: back off and
+      // resume the session, up to MAX_API_RETRIES. Anything else — or exhausting
+      // the budget — is a real failure. NEVER fall through to a "done".
+      if (outcome.transient && this.apiRetries < MAX_API_RETRIES) {
+        this.apiRetries++;
+        const wait = backoffMsImpl(this.apiRetries);
+        this.events.onLog(
+          this.agentId,
+          `Claude API transient error (${outcome.reason}); retrying in ${Math.round(wait / 1000)}s [${this.apiRetries}/${MAX_API_RETRIES}]`,
+        );
+        await this.q?.interrupt().catch(() => undefined); // release the dead session
+        await sleep(wait);
+        if (this.finished) return;
+        this.relaunch();
+        continue;
+      }
+
+      this.fail(
+        outcome.transient
+          ? `Claude API still overloaded after ${MAX_API_RETRIES} retries: ${outcome.reason}`
+          : outcome.reason,
+      );
+      return;
+    }
+  }
+
+  /** Iterate the current query to its end. Returns done on a clean result (or a
+   *  stream that ends without one), else the error + whether it's retryable. */
+  private async drain(): Promise<{ done: true } | { done: false; reason: string; transient: boolean }> {
+    if (!this.q) return { done: false, reason: "no session", transient: false };
     try {
       for await (const msg of this.q as AsyncIterable<SDKMessage>) {
-        if (this.finished) break;
+        if (this.finished) return { done: true };
         if (msg.type === "system" && "session_id" in msg && typeof msg.session_id === "string") {
+          this.sessionId = msg.session_id; // captured for resume-on-retry
           this.onSession(this.agentId, msg.session_id);
         } else if (msg.type === "assistant") {
           const { text, tools } = readAssistant((msg as { message: { content?: unknown } }).message);
           if (text) {
+            // Remember overload/rate-limit chatter so a later error result can be
+            // classified as transient even if its subtype is generic.
+            if (isTransientApiError(text)) this.lastApiError = text;
             if (this.pendingChat) { this.pendingChat = false; this.events.onChatReply(this.agentId, text); }
             else { this.lastRationale = text; this.events.onLog(this.agentId, text); }
           }
           for (const t of tools) {
             if (t.id) this.pendingTools.set(t.id, t.name);
+            // The agent's task-tracking tools are its plan — feed them to the PLAN
+            // panel + progress instead of logging them as tool lines / bumping the
+            // synthetic bar.
+            if (PLAN_TOOLS.has(t.name)) {
+              this.applyPlanTool(t.name, t.input);
+              continue;
+            }
             // Log line carries the call's full input as expandable detail.
             this.events.onLog(this.agentId, `▸ ${describeTool(t.name, t.input)}`, approvalText(t.name, t.input));
             this.bump();
@@ -358,30 +655,35 @@ class ClaudeRunnerHandle implements RunnerHandle {
             this.events.onLog(this.agentId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)");
           }
         } else if (msg.type === "result") {
-          // The SDK reports API errors (e.g. 529 Overloaded, auth), tool-loop
-          // failures, and max-turns exhaustion as an ERROR *result* message
-          // (is_error / subtype != "success") — NOT a thrown exception, so the
-          // catch below never sees them. Only a clean "success" result is a real
-          // completion; anything else is a failure. Never launder a 529 or a
-          // stuck agent into "done" with no work.
-          const r = msg as { subtype?: string; is_error?: boolean };
-          if (r.is_error || (r.subtype && r.subtype !== "success")) {
-            // subtype can be "success" even when is_error is set (e.g. an API
-            // error after a partial turn) — don't echo a misleading "success".
-            const why = r.subtype && r.subtype !== "success" ? r.subtype : "api/runtime error";
-            this.fail(`runner did not complete cleanly (${why})`);
-            return;
-          }
-          break;
+          // The SDK emits a result even for an errored turn (is_error / non-success
+          // subtype). Treat that as a failure — not a completion (the bug: a 529
+          // storm was being reported as `done` with an empty diff).
+          this.emitUsage(msg as Record<string, unknown>);
+          const err = classifyResult(msg as Record<string, unknown>, this.lastApiError);
+          return err ? { done: false, ...err } : { done: true };
         }
       }
     } catch (err) {
-      // The query crashed (auth, network, SDK) — this is a FAILURE, not a
-      // completion. Surface it; never report the agent as done with no work.
-      this.fail((err as Error).message);
-      return;
+      // Thrown mid-stream (network/SDK). Retryable only if it reads as overload.
+      const reason = (err as Error).message || String(err);
+      return { done: false, reason, transient: isTransientApiError(reason) };
     }
-    this.finish();
+    // Stream ended with no explicit result message → treat as clean completion.
+    return { done: true };
+  }
+
+  /** Relaunch the query after a transient failure: a fresh input stream (the old
+   *  single-consumer one was abandoned by the errored query), resuming this run's
+   *  session if we have one, else re-sending the kickoff prompt from scratch. */
+  private relaunch() {
+    this.input = createInputStream();
+    const opts: Options = this.sessionId
+      ? { ...(this.baseOptions as Options), resume: this.sessionId }
+      : (this.baseOptions as Options);
+    this.input.push(
+      this.sessionId ? "Continue the task from where you left off." : this.initialPrompt,
+    );
+    this.q = queryImpl({ prompt: this.input, options: opts });
   }
 
   /** Could-not-run path: mark needs-attention, never onCompleted. */
@@ -397,8 +699,15 @@ class ClaudeRunnerHandle implements RunnerHandle {
     if (this.finished) return;
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
-    this.events.onProgress(this.agentId, 1, [] as PlanStep[]);
-    this.events.onStatus(this.agentId, "done");
+    // Keep the real plan visible on completion (all steps done), rather than
+    // blanking it — the PLAN panel stays meaningful for a finished agent.
+    const donePlan = this.plan.map((p) => ({ ...p, state: "done" as const }));
+    this.events.onProgress(this.agentId, 1, donePlan);
+    // NOTE: do NOT emit onStatus("done") here. Compute is finished, but the agent
+    // is not terminal until the orchestrator commits its worktree → review →
+    // merge (or confirms an empty diff). Signalling "done" now would race that
+    // integration and expose a premature "done" with uncommitted work. Hand off
+    // via onCompleted and let the orchestrator own the terminal transition.
     this.events.onCompleted(this.agentId, this.spec.branch);
     this.input.close();
   }
@@ -411,11 +720,19 @@ class ClaudeRunnerHandle implements RunnerHandle {
     if (this.gate) {
       const gate = this.gate;
       const input = this.gateInput ?? {};
+      const question = this.gateQuestion;
       this.gate = null;
       this.gateInput = null;
       this.gateTool = null;
+      this.gateQuestion = null;
       this.events.onStatus(this.agentId, "running");
-      if (decision?.action === "reject") {
+      // AskUserQuestion: there's no interactive frontend to render the picker, so
+      // we never actually run the tool — we deny it and hand the operator's answer
+      // back as the tool's result message, which the model reads and continues on.
+      if (question) {
+        gate({ behavior: "deny", message: answerForQuestion(question, decision) });
+        this.events.onLog(this.agentId, `↳ answered "${question.header}": ${describeAnswer(question, decision)}`);
+      } else if (decision?.action === "reject") {
         gate({ behavior: "deny", message: "Operator rejected this action — revise your approach." });
       } else if (decision?.action === "modify") {
         gate({ behavior: "deny", message: decision.guidance ?? "Adjust per operator guidance." });

@@ -21,6 +21,7 @@ import type {
   Task,
 } from "@skynet/shared";
 import * as api from "./client";
+import { notifyInbox } from "../pwa/pwa";
 
 /** Pull the server's `{ error }` message out of an ApiError body, else fallback. */
 function serverMessage(e: unknown, fallback: string): string {
@@ -61,6 +62,9 @@ export interface Store extends StoreState {
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   forkAgent: (id: string) => Promise<void>;
   archiveAgent: (id: string, archived: boolean) => Promise<void>;
+  pauseAgent: (id: string) => Promise<void>;
+  resumeAgent: (id: string) => Promise<void>;
+  stopAgent: (id: string) => Promise<void>;
   // Local optimistic flip after a key is set/cleared in Settings (the snapshot
   // recomputes availability from the secret store on next load).
   setProviderAvailable: (id: string, available: boolean) => void;
@@ -120,6 +124,13 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
         ...state,
         agents: state.agents.map((a) =>
           a.id === ev.agentId ? { ...a, lastHeartbeatAt: ev.at } : a,
+        ),
+      };
+    case "agent.usage":
+      return {
+        ...state,
+        agents: state.agents.map((a) =>
+          a.id === ev.agentId ? { ...a, usage: ev.usage } : a,
         ),
       };
     case "agent.status":
@@ -226,6 +237,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (msg.type === "snapshot") {
         setState(fromSnapshot(msg.state));
       } else {
+        // A newly-raised HITL is the "needs you" moment → fire an Inbox alert.
+        // notifyInbox no-ops unless the operator turned alerts on (lib/alerts).
+        // Only live deltas fire this; the connect-time snapshot never does, so
+        // reconnecting doesn't re-alert on the existing queue.
+        if (msg.type === "hitl.raised") {
+          void notifyInbox(`Needs you — ${msg.item.title}`, msg.item.why, msg.item.agentId);
+        }
         setState((s) => reduce(s, msg));
       }
     });
@@ -257,8 +275,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           throw e;
         }
       },
+      stopAgent: async (id) => {
+        await api.stopAgent(id);
+      },
       archiveAgent: async (id, archived) => {
         await api.archiveAgent(id, archived);
+      },
+      pauseAgent: async (id) => {
+        await api.pauseAgent(id);
+      },
+      resumeAgent: async (id) => {
+        await api.resumeAgent(id);
       },
       setProviderAvailable: (id, available) => {
         setState((s) => ({

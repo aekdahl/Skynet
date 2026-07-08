@@ -143,6 +143,7 @@ export function conflicts(agents: Agent[]): Array<[string, Agent[]]> {
 export const STATUS_META: Record<AgentStatus, { label: string; color: string }> = {
   running: { label: "RUNNING", color: "var(--ok)" },
   waiting: { label: "BLOCKED", color: "var(--warn)" },
+  paused: { label: "PAUSED", color: "var(--muted)" },
   review: { label: "REVIEW", color: "var(--info)" },
   done: { label: "DONE", color: "var(--muted)" },
 };

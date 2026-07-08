@@ -15,6 +15,7 @@
 import type { ProviderId, Resolution } from "@skynet/shared";
 import {
   CliRunnerProvider,
+  usageFromJson,
   type CliEvent,
   type CliVendor,
   type ParseCtx,
@@ -72,6 +73,11 @@ const gemini: CliVendor = {
         if (/tool|function|command|action/i.test(type)) {
           const label = String(obj.name ?? obj.command ?? type);
           return { kind: "tool", label };
+        }
+        // Best-effort token/cost totals (stats/usage events in JSON mode).
+        if (/stat|usage|token|metadata/i.test(type) || obj.usage || obj.stats) {
+          const usage = usageFromJson(obj);
+          if (usage) return { kind: "usage", usage };
         }
         const text = obj.response ?? obj.text ?? obj.content ?? obj.message;
         if (typeof text === "string" && text.trim()) return { kind: "chat", text: text.trim() };

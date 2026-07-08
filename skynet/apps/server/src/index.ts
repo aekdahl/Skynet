@@ -17,6 +17,7 @@ import { registerStatic } from "./static.js";
 import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
 import { registerSecretsRoutes } from "./secrets/index.js";
 import { registerGithubRoutes, configureGithub } from "./github/index.js";
+import { registerEvalsRoutes } from "./evals/index.js";
 import { configureAuth } from "./auth.js";
 import { MemorySessionStore, type SessionStore } from "./auth/sessions.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
@@ -87,6 +88,9 @@ async function main() {
   await registerSecretsRoutes(app);
   // GitHub App connection + safety policy (workspace-scoped); /api auth applies.
   await registerGithubRoutes(app);
+  // LLM-judged acceptance evals (real runs via the standalone evals/ suite,
+  // spawned as a subprocess); /api auth hook applies.
+  await registerEvalsRoutes(app);
   await registerWs(app, { store, bus, hub });
   // W5 live preview: mount the sandboxed /preview route, stamp visual/previewUrl
   // onto already-stored agents, then warm their builds. No-op unless PREVIEW != off.
@@ -96,6 +100,22 @@ async function main() {
   const queued = await kickoffPreviewBuilds(store);
   if (queued) app.log.info(`preview: queued ${queued} agent build(s)`);
   const servingSpa = await registerStatic(app);
+
+  // Release "orphaned busy" runners — persisted busy but held by no live agent
+  // (a restart leaves the store saying busy while the in-memory live map is
+  // empty). Runs once at boot, before we listen, so nothing is mid-assign.
+  await orchestrator.reconcileRunners().catch((err) => app.log.warn(`runner reconcile: ${(err as Error).message}`));
+
+  // Reap presumed-dead agents (frees runners orphaned by a crash/restart). Run
+  // once at boot to clear restart orphans, then on an interval. Bounded to a
+  // sane minimum so it can't spin hot; disabled when agentReapMs <= 0.
+  if (config.agentReapMs > 0) {
+    const sweep = () =>
+      orchestrator.reapStaleAgents().catch((err) => app.log.warn(`reaper: ${(err as Error).message}`));
+    await sweep();
+    const every = Math.max(30_000, Math.min(config.agentReapMs, 60_000));
+    setInterval(sweep, every).unref();
+  }
 
   await app.listen({ port: config.port, host: "0.0.0.0" });
   if (servingSpa) app.log.info("serving built web SPA from this server");

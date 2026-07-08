@@ -25,6 +25,8 @@ export interface Store {
 
   // agents — list is workspace-scoped; get/put/delete carry workspaceId on the entity
   listAgents(workspaceId: string): Promise<Agent[]>;
+  /** Every agent across all workspaces — for maintenance sweeps (e.g. the reaper). */
+  listAllAgents(): Promise<Agent[]>;
   getAgent(id: string): Promise<Agent | undefined>;
   putAgent(agent: Agent): Promise<Agent>;
   appendLog(agentId: string, at: number, line: string, detail?: string): Promise<void>;
@@ -48,6 +50,8 @@ export interface Store {
 
   // fleet
   listRunners(workspaceId: string): Promise<Runner[]>;
+  /** Every runner across all workspaces — for maintenance sweeps (reconcile). */
+  listAllRunners(): Promise<Runner[]>;
   getRunner(id: string): Promise<Runner | undefined>;
   putRunner(runner: Runner): Promise<Runner>;
   deleteRunner(id: string): Promise<void>;

@@ -6,12 +6,14 @@ import {
   onInstallStateChange,
   promptInstall,
 } from "../pwa/pwa";
+import { alertsOn, setAlerts } from "../lib/alerts";
 
 // Persistent "Install Skynet" + Inbox-alerts controls for the Settings page —
 // always reachable, not just the one-shot first-run banner.
 export function InstallControls() {
   const [state, setState] = useState(() => installState());
   const [note, setNote] = useState<string | null>(null);
+  const [alerts, setAlertsState] = useState(() => alertsOn());
 
   useEffect(() => onInstallStateChange(() => setState(installState())), []);
 
@@ -26,10 +28,24 @@ export function InstallControls() {
     }
   };
 
-  const onAlerts = async () => {
+  // A real on/off. Turning on requests the OS permission; turning off mutes
+  // notifications regardless of the (non-revocable) browser permission.
+  const toggleAlerts = async () => {
+    if (alerts) {
+      setAlerts(false);
+      setAlertsState(false);
+      setNote("Inbox alerts off.");
+      return;
+    }
     const ok = await enableInboxAlerts();
-    setNote(ok ? "Inbox alerts enabled." : "Alerts are blocked — enable notifications in your browser.");
-    if (ok) void notifyInbox("Inbox alerts on", "We'll ping you when an agent needs a decision.");
+    if (!ok) {
+      setNote("Alerts are blocked — enable notifications in your browser.");
+      return;
+    }
+    setAlerts(true);
+    setAlertsState(true);
+    setNote("Inbox alerts on — we'll ping you when an agent needs a decision.");
+    void notifyInbox("Inbox alerts on", "We'll ping you when an agent needs a decision.");
   };
 
   return (
@@ -43,8 +59,13 @@ export function InstallControls() {
           ⤓ Install Skynet
         </button>
       )}
-      <button className="btn btn-ghost" onClick={onAlerts}>
-        Enable Inbox alerts
+      <button
+        className={"btn " + (alerts ? "btn-lit" : "btn-ghost")}
+        role="switch"
+        aria-checked={alerts}
+        onClick={toggleAlerts}
+      >
+        {alerts ? "✓ Inbox alerts on" : "Enable Inbox alerts"}
       </button>
       {note && (
         <span style={{ color: "var(--faint)", fontSize: 12, flexBasis: "100%" }}>{note}</span>

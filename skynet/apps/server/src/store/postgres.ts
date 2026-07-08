@@ -82,6 +82,11 @@ export class PostgresStore implements Store {
     const logs = await this.logsFor(rows.map((r) => r.data.id));
     return rows.map((r) => this.hydrate(r.data, logs));
   }
+  async listAllAgents(): Promise<Agent[]> {
+    // Maintenance sweep (reaper): status/heartbeat/runner only — logs not hydrated.
+    const { rows } = await this.pool.query<{ data: Agent }>("SELECT data FROM agents");
+    return rows.map((r) => ({ ...r.data, log: [] }));
+  }
   async getAgent(id: string): Promise<Agent | undefined> {
     const { rows } = await this.pool.query<{ data: Agent }>("SELECT data FROM agents WHERE id=$1", [id]);
     if (!rows[0]) return undefined;
@@ -137,6 +142,10 @@ export class PostgresStore implements Store {
   deleteTask(id: string) { return this.del("tasks", id); }
 
   listRunners(ws: string) { return this.list<Runner>("runners", ws); }
+  async listAllRunners(): Promise<Runner[]> {
+    const { rows } = await this.pool.query<{ data: Runner }>("SELECT data FROM runners");
+    return rows.map((r) => r.data);
+  }
   getRunner(id: string) { return this.get<Runner>("runners", id); }
   async putRunner(r: Runner) { await this.put("runners", r.id, r.workspaceId, r); return r; }
   deleteRunner(id: string) { return this.del("runners", id); }

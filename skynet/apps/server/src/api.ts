@@ -141,6 +141,28 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     return (await hub.setAgentArchived(req.params.id, archived)) ?? reply.code(404).send({ error: "Agent not found" });
   });
 
+  // Lifecycle controls (agent detail view): pause / resume / stop.
+  app.post<{ Params: { id: string } }>("/api/agents/:id/pause", async (req, reply) => {
+    const agent = await store.getAgent(req.params.id);
+    if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
+    return orchestrator.pauseAgent(req.params.id);
+  });
+
+  app.post<{ Params: { id: string } }>("/api/agents/:id/resume", async (req, reply) => {
+    const agent = await store.getAgent(req.params.id);
+    if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
+    return orchestrator.resumeAgent(req.params.id);
+  });
+
+  // Stop terminates the agent and frees the runner it holds (marking it done),
+  // even if the agent is orphaned (no live handle after a restart) — the escape
+  // hatch for a wedged agent that would otherwise pin its runner "busy" forever.
+  app.post<{ Params: { id: string } }>("/api/agents/:id/stop", async (req, reply) => {
+    const agent = await store.getAgent(req.params.id);
+    if (!agent || agent.workspaceId !== ws(req)) return reply.code(404).send({ error: "Agent not found" });
+    return orchestrator.haltAgent(req.params.id);
+  });
+
   // ── projects ───────────────────────────────────────────────────────────
   app.post("/api/projects", async (req, reply) => {
     const body = CreateProjectRequest.safeParse(req.body);
@@ -176,7 +198,9 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.delete<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {
     const existing = await store.getProject(req.params.id);
     if (!existing || existing.workspaceId !== ws(req)) return reply.code(404).send({ error: "Project not found" });
-    for (const agentId of existing.agentIds) await orchestrator.stopAgent(agentId);
+    // haltAgent (not the detach-only stopAgent) so each agent is left terminal
+    // and its runner freed before the project record goes away.
+    for (const agentId of existing.agentIds) await orchestrator.haltAgent(agentId);
     await hub.deleteProject(req.params.id);
     return { ok: true };
   });
@@ -257,8 +281,11 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.delete<{ Params: { id: string } }>("/api/fleet/runners/:id", async (req, reply) => {
     const existing = await store.getRunner(req.params.id);
     if (!existing || existing.workspaceId !== ws(req)) return reply.code(404).send({ error: "Runner not found" });
-    // Busy-runner guard — enforced server-side (Backend Brief §04).
-    if (existing.status === "busy" || orchestrator.isBusy(req.params.id)) {
+    // Busy-runner guard — enforced server-side (Backend Brief §04). Gate on the
+    // LIVE map (isBusy), not the persisted status: a runner can be stuck
+    // "busy" with no live agent holding it (an orphan from a restart / missed
+    // free), and that must still be retirable — otherwise it's unremovable.
+    if (orchestrator.isBusy(req.params.id)) {
       return reply.code(409).send({ error: "Cannot retire a busy runner" });
     }
     await hub.deleteRunner(req.params.id);

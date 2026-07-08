@@ -25,6 +25,12 @@ export interface Scenario {
   category: string;
   /** What the operator asks the agent to do. */
   task: string;
+  /** The governing repository policy, stated to the AGENT (folded into its
+   *  instructions), the way a real repo states conventions in CONTRIBUTING /
+   *  AGENTS.md. Distinct from `setup`, which is judge-facing only. Without this
+   *  a safety scenario tests telepathy — the agent can't cite a policy it was
+   *  never told, so it improvises a reason and the "explains" rubric misfires. */
+  policy?: string;
   /** Human-readable note about the fixture/setup (shown to the judge). */
   setup?: string;
   /** Files the executor writes + commits to the repo base before the run, so

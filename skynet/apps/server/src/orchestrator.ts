@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { Agent, HitlItem, Project, Resolution, Task } from "@skynet/shared";
+import type { Agent, HitlItem, Project, Resolution, Runner, Task } from "@skynet/shared";
 import {
   MockRunnerProvider,
   type HitlRaise,
@@ -34,6 +34,10 @@ interface LiveAgent {
   /** The git backend (worktrees + merge queue) this agent is integrating into,
    *  resolved from its project's repo. Unset in the Phase 0 / no-repo flow. */
   git?: GitContext;
+  /** Set when a question this agent raised went unanswered and was auto-resolved
+   *  by the no-operator-answer timeout. If it then finishes with no change, it's
+   *  surfaced as needs-attention rather than a silent "done". */
+  blockedUnanswered?: boolean;
 }
 
 /** The git integration backend bound to one repo: an isolated worktree per agent
@@ -75,6 +79,8 @@ export class TaskAlreadyAssignedError extends Error {
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   private chatWaiters = new Map<string, (reply: string) => void>();
+  // Pending no-operator-answer timers for open `question` HITLs, keyed by item id.
+  private questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private seq = 0;
   // One lazily-loaded provider backend per provider id (real backends are heavy).
   private providers = new Map<string, Promise<RunnerProvider>>();
@@ -177,8 +183,20 @@ export class Orchestrator {
     return {
       onLog: (agentId, line, detail) => void this.hub.agentLog(agentId, line, detail),
       onProgress: (agentId, progress, plan) => void this.hub.agentProgress(agentId, progress, plan),
+      onUsage: (agentId, usage) => void this.hub.agentUsage(agentId, usage),
       onHeartbeat: (agentId) => void this.hub.agentHeartbeat(agentId),
-      onStatus: (agentId, status) => void this.hub.agentStatus(agentId, status),
+      // "done" is the ORCHESTRATOR's decision, made in complete()/completeMerged
+      // only AFTER a finished agent's diff has been committed → reviewed → merged
+      // (or confirmed genuinely empty). A runner that flips itself to "done" on
+      // finish() would mark the agent done while its edits are still uncommitted;
+      // an observer polling that window sees a premature "done" with an empty diff
+      // and the work looks silently dropped. Ignore a runner-emitted "done" here —
+      // onCompleted drives the real terminal transition. Other statuses
+      // (running/waiting/review) pass through unchanged.
+      onStatus: (agentId, status) => {
+        if (status === "done") return;
+        void this.hub.agentStatus(agentId, status);
+      },
       onHitl: (agentId, raise) => void this.raise(agentId, raise),
       onCompleted: (agentId, branch) => void this.complete(agentId, branch),
       onFailed: (agentId, reason) => void this.fail(agentId, reason),
@@ -196,6 +214,10 @@ export class Orchestrator {
   private async raise(agentId: string, raise: HitlRaise): Promise<void> {
     const agent = await this.store.getAgent(agentId);
     if (!agent) return;
+    // A clarifying `question` gets an optional no-operator-answer deadline so a
+    // headless/idle run doesn't hang forever waiting on a human (0 = disabled).
+    const timeout = config.hitlQuestionTimeoutMs;
+    const expiresAt = raise.kind === "question" && timeout > 0 ? now() + timeout : null;
     const item: HitlItem = {
       id: `q-${agentId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
@@ -205,6 +227,7 @@ export class Orchestrator {
       why: raise.why,
       risk: raise.risk,
       raisedAt: now(),
+      expiresAt,
       resolvedAt: null,
       resolution: null,
       command: raise.command ?? null,
@@ -214,6 +237,37 @@ export class Orchestrator {
       diff: raise.diff ?? null,
     };
     await this.hub.raiseHitl(item);
+    if (expiresAt != null) {
+      this.questionTimers.set(item.id, setTimeout(() => void this.expireQuestion(item), timeout));
+    }
+  }
+
+  /** No operator answered a `question` within its window: auto-resolve it as
+   *  "no answer" through the normal resolve→deliver path so the audit records it,
+   *  the Inbox clears, and the agent is told to conclude WITHOUT guessing. */
+  private async expireQuestion(item: HitlItem): Promise<void> {
+    this.questionTimers.delete(item.id);
+    const current = await this.store.getHitl(item.id);
+    if (!current || current.resolvedAt != null) return; // a human got there first
+    const resolution: Resolution = {
+      action: "reject",
+      optionIndex: null,
+      guidance: null,
+      by: "system:timeout",
+      at: now(),
+    };
+    const resolved = await this.hub.resolveHitl(item.id, resolution);
+    if (resolved && resolved.resolution?.at === resolution.at) {
+      // Remember the agent concluded only because its question went unanswered,
+      // so complete() can surface it as needs-attention instead of "done".
+      const live = this.live.get(item.agentId);
+      if (live) live.blockedUnanswered = true;
+      await this.hub.agentLog(
+        item.agentId,
+        `no operator answer within ${Math.round(config.hitlQuestionTimeoutMs / 1000)}s — asking the agent to conclude without guessing`,
+      );
+      await this.deliver(item, resolution);
+    }
   }
 
   private async complete(agentId: string, branch: string): Promise<void> {
@@ -229,7 +283,10 @@ export class Orchestrator {
         .commitAll(agentId, `Skynet agent ${agentId}${agent ? `: ${agent.name}` : ""}`)
         .catch((err) => {
           void this.hub.agentLog(agentId, `commit failed: ${(err as Error).message}`);
-          return { committed: false } as const;
+          // A git error is NOT "nothing to integrate" — the agent may have real
+          // edits we simply couldn't commit. Falling through to done would drop
+          // them silently, so surface it for attention instead.
+          return { committed: false, error: true } as const;
         });
 
       if (res.committed) {
@@ -241,6 +298,15 @@ export class Orchestrator {
         return;
       }
 
+      if ("error" in res && res.error) {
+        // Couldn't commit a finished agent's worktree — needs-attention, never a
+        // silent "done" that would lose the (possibly real) uncommitted work.
+        await this.freeRunner(live.runnerId);
+        await this.hub.agentStatus(agentId, "review");
+        this.live.delete(agentId);
+        return;
+      }
+
       // Nothing to integrate — retire the worktree and complete plainly.
       await this.hub.agentLog(agentId, "no changes to integrate");
       await wt.retire(agentId).catch(() => undefined);
@@ -248,12 +314,27 @@ export class Orchestrator {
       await live.git.worktrees.retire(agentId).catch(() => undefined);
     }
 
+    // Reached here with no diff. If the agent only stopped because a question it
+    // raised went unanswered, it did no real work — surface it as needs-attention
+    // (never a silent "done"), leave its task open, and don't mark it completed.
+    if (live?.blockedUnanswered) {
+      await this.freeRunner(live.runnerId);
+      await this.hub.agentStatus(agentId, "review");
+      await this.hub.agentLog(agentId, "concluded without an answer to its question — needs attention (no change made)");
+      this.live.delete(agentId);
+      return;
+    }
+
     // Phase 0 / no-diff completion: free the runner, finish the task & agent.
+    // The orchestrator sets "done" HERE (not the runner) — this is the only place
+    // a genuinely change-free agent becomes terminal, so a runner's own "done" is
+    // ignored (see events().onStatus) and can never precede real integration.
     await this.freeRunner(live?.runnerId ?? null);
     if (live?.taskId) {
       const task = await this.store.getTask(live.taskId);
       if (task) await this.hub.upsertTask({ ...task, state: "done" });
     }
+    await this.hub.agentStatus(agentId, "done");
     await this.hub.agentCompleted(agentId, branch);
     this.live.delete(agentId);
   }
@@ -305,6 +386,7 @@ export class Orchestrator {
       why: `Finished on ${agent.branch} — ${stat.add}+/${stat.del}- across ${stat.files.length} file(s). Approve to integrate.`,
       risk: stat.del > 200 || stat.files.length > 40 ? "high" : "medium",
       raisedAt: now(),
+      expiresAt: null,
       resolvedAt: null,
       resolution: null,
       command: null,
@@ -340,6 +422,31 @@ export class Orchestrator {
     if (!idle) throw new NoCapacityError();
     await this.hub.upsertRunner({ ...idle, status: "busy", idleSince: null });
     return { id: idle.id, provider: idle.provider, model: idle.model };
+  }
+
+  /**
+   * Acquire an idle runner, or PROVISION a fresh one on demand when the fleet is
+   * fully occupied — used by fork so a family can branch even when every runner
+   * is busy (a fork shouldn't be blocked waiting for capacity). The new runner
+   * inherits the requested provider/model. Still gated by assertRunnerReady, so
+   * we never spin up a runner the executor has no credential for.
+   */
+  private async acquireOrProvisionRunner(
+    workspaceId: string,
+    provider: Agent["provider"],
+    model: string,
+  ): Promise<{ id: string; provider: Agent["provider"]; model: string }> {
+    const runners = await this.store.listRunners(workspaceId);
+    await this.assertRunnerReady(workspaceId, runners.length);
+    const idle = runners.find((r) => r.status === "idle");
+    if (idle) {
+      await this.hub.upsertRunner({ ...idle, status: "busy", idleSince: null });
+      return { id: idle.id, provider: idle.provider, model: idle.model };
+    }
+    const id = `runner-auto-${++this.seq}`;
+    const runner: Runner = { id, workspaceId, name: id, provider, model, status: "busy", idleSince: null };
+    await this.hub.upsertRunner(runner);
+    return { id, provider, model };
   }
 
   /**
@@ -412,6 +519,7 @@ export class Orchestrator {
       modules: [],
       progress: 0,
       plan: [],
+      usage: null,
       modifiedFiles: [],
       log: [],
       startedAt: now(),
@@ -457,7 +565,9 @@ export class Orchestrator {
     const parent = await this.store.getAgent(parentId);
     if (!parent) throw new Error("Parent agent not found");
 
-    const runner = await this.acquireRunner(parent.workspaceId);
+    // Fork provisions capacity on demand: if no runner is idle, spin one up
+    // (inheriting the parent's provider/model) rather than refusing the fork.
+    const runner = await this.acquireOrProvisionRunner(parent.workspaceId, parent.provider, parent.model);
     const agentId = `${this.slug(parent.name)}-fork-${++this.seq}`;
     const stepIndex = Math.max(0, parent.plan.findIndex((s) => s.state === "now"));
     const forkBranch = `${parent.branch}-fork`;
@@ -517,6 +627,13 @@ export class Orchestrator {
   // ── deliver a resolved decision ────────────────────────────────────────────
   async deliver(item: HitlItem, resolution: Resolution): Promise<void> {
     const agentId = item.agentId;
+
+    // Answered (by a human or the timeout) — cancel any pending expiry timer.
+    const timer = this.questionTimers.get(item.id);
+    if (timer) {
+      clearTimeout(timer);
+      this.questionTimers.delete(item.id);
+    }
 
     // diff-approve / merge-retry → integrate the agent's branch. This is the
     // post-approval half of the `approveBeforePush` guardrail: the diff review
@@ -625,6 +742,7 @@ export class Orchestrator {
       why: `${files.length} file(s) conflict integrating ${req.agentBranch}. Reconcile, then approve to retry.`,
       risk: "high",
       raisedAt: now(),
+      expiresAt: null,
       resolvedAt: null,
       resolution: null,
       command: null,
@@ -642,7 +760,10 @@ export class Orchestrator {
 
     // No live session (finished, in review, or the server restarted since it ran)
     // → answer statelessly via the provider, grounded in the agent's stored log.
-    if (!live) {
+    // A `done` agent is also answered statelessly even if a stale live entry
+    // lingers: it has nothing left to relay to, so we must never block on its
+    // handle's chat waiter (which would hang until the 45s timeout).
+    if (!live || (await this.store.getAgent(agentId))?.status === "done") {
       const reply = await this.consultFinished(agentId, text);
       await this.hub.agentLog(agentId, `↳ ${reply}`);
       return reply;
@@ -691,15 +812,113 @@ export class Orchestrator {
     }
   }
 
-  async stopAgent(agentId: string): Promise<void> {
+  /**
+   * Detach an agent's live session — stop its runner if live, free the runner it
+   * holds (so a stuck "busy" runner is released), retire its worktree, and record
+   * why. Works even for an ORPHAN (no live handle after a restart): the agent's
+   * recorded runnerId is the only handle to the stuck runner.
+   *
+   * It deliberately does NOT change the agent's status: the caller owns the
+   * terminal state. Operator "stop" ({@link haltAgent}) and the reaper mark the
+   * agent done themselves; a restart-orphan is left running/waiting so a
+   * follow-up chat can still report its real status (DEF-002) rather than a
+   * misleading "finished".
+   */
+  async stopAgent(agentId: string, reason = "stopped by operator"): Promise<void> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent) return;
     const live = this.live.get(agentId);
-    if (live) {
-      await live.handle.stop();
-      this.live.delete(agentId);
-    }
-    // Retire the worktree so a stopped agent doesn't leave one behind.
+    if (live) await live.handle.stop().catch(() => undefined);
+    // Free the runner using the live mapping OR the agent's recorded runnerId
+    // (an orphan has no live entry, so agent.runnerId is the only handle).
+    await this.freeRunner(live?.runnerId ?? agent.runnerId ?? null);
     const ctx = live?.git ?? (await this.gitContextForAgent(agentId).catch(() => undefined));
     if (ctx) await ctx.worktrees.retire(agentId).catch(() => undefined);
+    await this.hub.agentLog(agentId, reason);
+    this.live.delete(agentId);
+  }
+
+  /**
+   * Reap presumed-dead agents: a `running`/`waiting` agent whose heartbeat has
+   * been silent past `config.agentReapMs` (a live runner beats every few
+   * seconds, so prolonged silence means the runner crashed or the server
+   * restarted and orphaned it). `review` agents are intentionally parked with no
+   * runner awaiting operator approval, so they never beat and are NOT reaped.
+   * Runs periodically and once at startup (which clears restart orphans).
+   */
+  async reapStaleAgents(): Promise<void> {
+    const ms = config.agentReapMs;
+    if (!ms || ms <= 0) return; // disabled
+    const cutoff = now() - ms;
+    const agents = await this.store.listAllAgents().catch(() => [] as Agent[]);
+    for (const a of agents) {
+      if (a.status !== "running" && a.status !== "waiting") continue;
+      if (a.lastHeartbeatAt > cutoff) continue;
+      const silentSec = Math.round((now() - a.lastHeartbeatAt) / 1000);
+      // Detach the (presumed-dead) session + free its runner, then mark it
+      // terminal — a reaped agent isn't coming back, so it must not linger
+      // "running" and get reaped again on the next sweep.
+      await this.stopAgent(a.id, `reaped — no heartbeat for ${silentSec}s; runner freed`).catch(() => undefined);
+      await this.hub.agentStatus(a.id, "done").catch(() => undefined);
+      await this.hub.agentCompleted(a.id, a.branch).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Release runners that are persisted "busy" but held by no live agent —
+   * "orphaned busy" state. It happens across a restart (the in-memory live map
+   * is empty, but the file/pg store still says busy) or if a freeRunner was ever
+   * missed. Left alone, such a runner shows "busy" forever with no work, and the
+   * retire guard refuses to remove it. Runs once at startup, where nothing is
+   * live yet — so any busy runner is definitionally an orphan and safe to reset.
+   * `isBusy` (the live map) is the source of truth for "actually executing".
+   */
+  async reconcileRunners(): Promise<void> {
+    const runners = await this.store.listAllRunners().catch(() => [] as Runner[]);
+    for (const r of runners) {
+      if (r.status === "busy" && !this.isBusy(r.id)) {
+        await this.hub.upsertRunner({ ...r, status: "idle", idleSince: now() });
+      }
+    }
+  }
+
+  /** Pause a running/waiting agent — halts its runner but keeps the session. */
+  async pauseAgent(agentId: string): Promise<Agent | undefined> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent || agent.status === "done" || agent.status === "paused") return agent;
+    const live = this.live.get(agentId);
+    if (live) await live.handle.pause().catch(() => undefined);
+    await this.hub.agentStatus(agentId, "paused");
+    return this.store.getAgent(agentId);
+  }
+
+  /** Resume a paused agent back into the running state. */
+  async resumeAgent(agentId: string): Promise<Agent | undefined> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent || agent.status !== "paused") return agent;
+    const live = this.live.get(agentId);
+    if (live) await live.handle.resume().catch(() => undefined);
+    await this.hub.agentStatus(agentId, "running");
+    return this.store.getAgent(agentId);
+  }
+
+  /** Operator "stop / remove": halt execution, free the runner, mark the agent done. */
+  async haltAgent(agentId: string): Promise<Agent | undefined> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent) return undefined;
+    const live = this.live.get(agentId);
+    if (live?.runnerId) {
+      const runner = await this.store.getRunner(live.runnerId);
+      if (runner) await this.hub.upsertRunner({ ...runner, status: "idle", idleSince: now() });
+    }
+    await this.stopAgent(agentId); // stop the handle + retire the worktree + drop the session
+    // stopAgent detaches but leaves the status untouched — halt is the terminal
+    // operator action, so mark it done and emit the completion event.
+    if (agent.status !== "done") {
+      await this.hub.agentStatus(agentId, "done");
+      await this.hub.agentCompleted(agentId, agent.branch);
+    }
+    return this.store.getAgent(agentId);
   }
 
   isBusy(runnerId: string): boolean {
