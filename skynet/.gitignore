@@ -9,3 +9,9 @@ coverage/
 
 # desktop dev (hot-reload) scratch state
 .skynet-dev/
+
+# Playwright e2e artifacts
+/playwright-report/
+/test-results/
+/blob-report/
+/playwright/.cache/
