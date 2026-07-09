@@ -74,7 +74,7 @@ describe("contracts round-trip", () => {
     const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "op-1", at: 5 };
     const hitl: HitlItem = {
       id: "q1", workspaceId: DEFAULT_WORKSPACE, agentId: "billing", kind: "approval",
-      title: "t", why: "w", risk: "medium", raisedAt: 1, resolvedAt: null, resolution: null,
+      title: "t", why: "w", risk: "medium", raisedAt: 1, expiresAt: null, resolvedAt: null, resolution: null,
       command: "deploy", options: null, recommended: null, steps: null, diff: null,
     };
     const events: ServerEvent[] = [
