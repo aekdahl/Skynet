@@ -127,6 +127,7 @@ export function OpSidebar({
         {item("Integrations", "⑂", () => setView("integrations"), view === "integrations")}
         {item("Settings", "⚙", () => setView("settings"), view === "settings")}
         {item("Acceptance", "✓", () => setView("acceptance"), view === "acceptance")}
+        {item("Simulation", "◐", () => setView("simulation"), view === "simulation")}
       </nav>
       <div className="op-navsec">PROJECTS</div>
       <div className="op-plist">

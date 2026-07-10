@@ -16,6 +16,7 @@ import { Onboarding } from "./views/onboarding";
 import { isOnboarded } from "./lib/firstrun";
 import { SettingsView } from "./views/settings";
 import { AcceptanceView } from "./views/acceptance";
+import { SimulationView } from "./views/simulation";
 
 export type ViewName =
   | "home"
@@ -27,7 +28,8 @@ export type ViewName =
   | "project"
   | "agent"
   | "settings"
-  | "acceptance";
+  | "acceptance"
+  | "simulation";
 export type Lens = "subway" | "timeline" | "ledger" | "roster";
 
 const VIEW_LABEL: Record<string, string> = {
@@ -40,6 +42,7 @@ const VIEW_LABEL: Record<string, string> = {
   project: "Project",
   settings: "Settings",
   acceptance: "Acceptance",
+  simulation: "Simulation",
 };
 
 export function App() {
@@ -204,6 +207,7 @@ export function App() {
               <SettingsView onRerunSetup={() => setRerunSetup(true)} />
             )}
             {store.loaded && view === "acceptance" && <AcceptanceView />}
+            {store.loaded && view === "simulation" && <SimulationView />}
             {store.loaded && view === "agent" && agent && (
               <AgentDetail
                 agent={agent}
