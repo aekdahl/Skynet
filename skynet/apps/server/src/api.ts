@@ -18,6 +18,7 @@ import {
   UpdateTaskRequest,
 } from "@skynet/shared";
 import { authenticate, type Principal } from "./auth.js";
+import { requiresAuth } from "./auth-guard.js";
 import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError } from "./orchestrator.js";
 import { NotFoundError, type Operations, RunnerBusyError } from "./operations.js";
 
@@ -54,13 +55,10 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
     // /mcp carries the same bearer-token principal as /api, so agents and humans
     // authenticate identically. Everything else (health, static SPA, /ws — which
-    // authenticates itself) is untouched. Lowercase first so an uppercase
-    // /API/... can't skip the guard (DEF-007).
-    const path = req.url.toLowerCase();
-    if (!path.startsWith("/api") && !path.startsWith("/mcp")) return;
-    // Login is the one public /api route — it issues the token, so it can't
-    // require one. (Path may carry a query string; match the prefix.)
-    if (path === "/api/auth/login" || path.startsWith("/api/auth/login?")) return;
+    // authenticates itself) is untouched. requiresAuth() owns the decision (it
+    // lowercases first so an uppercase /API/... can't skip the guard, and lets
+    // /api/auth/login through as the one public route) — DEF-007.
+    if (!requiresAuth(req.url)) return;
     const principal = await authenticate(req);
     if (!principal) return reply.code(401).send({ error: "Unauthorized" });
     req.principal = principal;
