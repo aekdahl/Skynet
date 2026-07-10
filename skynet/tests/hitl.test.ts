@@ -67,20 +67,35 @@ describe("HITL idempotency (first-writer-wins)", () => {
     expect(await store.listAudit(DEFAULT_WORKSPACE)).toHaveLength(1);
   });
 
-  // KNOWN GAP (Core / hub.ts): resolveHitl reads the item, then writes, with an
-  // `await` in between. Two *truly concurrent* resolves both observe resolution
-  // === null before either persists, so both record an audit entry — the
-  // first-writer-wins guard only holds for sequential calls (the double-click
-  // path above). Reachable because HTTP resolves interleave on the event loop.
-  // Skipped until Core makes resolveHitl atomic (e.g. a per-id lock or a
-  // conditional store write); flip to `it` to verify the fix.
-  it.skip("concurrent resolves should still produce exactly one audit record", async () => {
-    await Promise.all([
-      hub.resolveHitl("q-test", approve),
-      hub.resolveHitl("q-test", reject),
-    ]);
-    expect(await store.listAudit(DEFAULT_WORKSPACE)).toHaveLength(1);
+  // REGRESSION (Core / hub.ts): resolveHitl reads the item, then writes, with an
+  // `await` in between. Truly concurrent resolves all observe resolution === null
+  // before any persists, so each would record an audit entry — the first-writer-
+  // wins guard would only hold for sequential calls (the double-click path above).
+  // Reachable because HTTP resolves interleave on the event loop. The Hub now
+  // serializes per-id so overlapping resolves are ordered and only the first wins.
+  it("concurrent resolves should still produce exactly one audit record", async () => {
+    const before = (await store.listAudit(DEFAULT_WORKSPACE)).length;
+
+    // Fire N truly concurrent resolves for the same open item.
+    const resolutions: Resolution[] = Array.from({ length: 8 }, (_, i) => ({
+      action: i % 2 === 0 ? "approve" : "reject",
+      optionIndex: null,
+      guidance: null,
+      by: `op-${i}`,
+      at: 5_000 + i,
+    }));
+    const results = await Promise.all(resolutions.map((r) => hub.resolveHitl("q-test", r)));
+
+    // The audit trail grew by exactly one, and only one resolution was delivered.
+    expect((await store.listAudit(DEFAULT_WORKSPACE)).length - before).toBe(1);
     expect(bus.resolved()).toHaveLength(1);
+
+    // The item ends with exactly one resolution and every caller observes it.
+    const stored = await store.getHitl("q-test");
+    expect(stored?.resolution).not.toBeNull();
+    for (const r of results) {
+      expect(r?.resolution).toEqual(stored?.resolution);
+    }
   });
 
   it("resolving an unknown HITL id returns undefined and records nothing", async () => {
