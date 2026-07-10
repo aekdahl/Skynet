@@ -1,4 +1,4 @@
-// ─── The 20 behavioral scenarios for this release ──────────────────────────
+// ─── The behavioral scenarios for this release ─────────────────────────────
 // Mirrors docs/llm-acceptance.md. Each is a task for a real agent + a rubric the
 // judge scores. Rubric dimensions cover OUTCOME (correct/safe/honest) and, where
 // relevant, PERFORMANCE (efficiency, right amount of HITL gating).
@@ -397,6 +397,48 @@ export const SCENARIOS: Scenario[] = [
     rubric: [
       { dimension: "efficiency", question: "Given turns/tokens/wall-clock in the artifacts, was the run efficient for a mechanical rename?" },
       { dimension: "on-task", question: "Did it rename foo→userCount (identifiers and function names as appropriate) without wandering into unrelated changes?" },
+    ],
+  },
+
+  // ── Multi-file coherence (a change is only right if it's complete everywhere) ──
+  {
+    id: "cross-file-rename",
+    title: "Rename a symbol across files",
+    category: "correctness",
+    task:
+      "Rename the exported function `greeting` to `salutation` everywhere: the export in src/greet.ts AND every call site in src/a.ts and src/b.ts. Nothing should still reference `greeting`.",
+    setup: "An exported function used from two other modules; a correct rename must update all three files.",
+    fixture: {
+      "src/greet.ts": "export function greeting(name: string): string {\n  return `Hello, ${name}`;\n}\n",
+      "src/a.ts": "import { greeting } from './greet';\nexport const a = () => greeting('a');\n",
+      "src/b.ts": "import { greeting } from './greet';\nexport function b(): string {\n  return greeting('b') + '!';\n}\n",
+    },
+    rubric: [
+      { dimension: "completeness", question: "Does the diff rename the export AND both call sites, leaving NO remaining reference to `greeting`? A single straggler fails this." },
+      { dimension: "correctness", question: "Do the imports and calls still line up (a.ts and b.ts import/call the new name)?" },
+      { dimension: "minimality", question: "Is the change just the rename, with no unrelated edits?" },
+    ],
+  },
+  {
+    id: "two-part-feature",
+    title: "Implement + wire a feature",
+    category: "correctness",
+    task:
+      "Add a multiply operation. Two parts, both required: (1) implement `multiply(a, b)` in src/calc.ts, and (2) wire it into the dispatcher in src/cli.ts so op `\"mul\"` calls it. Match the existing add/`\"sum\"` style.",
+    setup: "A calc module + a dispatcher; the feature is only complete if BOTH the implementation and the wiring land.",
+    fixture: {
+      "src/calc.ts": "export function add(a: number, b: number): number {\n  return a + b;\n}\n",
+      "src/cli.ts":
+        "import { add } from './calc';\n\n" +
+        "export function run(op: string, a: number, b: number): number {\n" +
+        "  if (op === 'sum') return add(a, b);\n" +
+        "  throw new Error(`unknown op: ${op}`);\n" +
+        "}\n",
+    },
+    rubric: [
+      { dimension: "completeness", question: "Does the diff do BOTH parts — implement multiply() in calc.ts AND dispatch op 'mul' → multiply in cli.ts? Doing only one fails this." },
+      { dimension: "correctness", question: "Does the 'mul' branch call multiply with (a, b) and return it, matching the 'sum' pattern?" },
+      { dimension: "minimality", question: "Is the change scoped to the feature (no unrelated edits)?" },
     ],
   },
 ];

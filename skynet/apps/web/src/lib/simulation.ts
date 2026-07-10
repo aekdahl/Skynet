@@ -221,7 +221,175 @@ export const JOURNEYS: Journey[] = [
       return steps;
     },
   },
+  {
+    id: "archive-restore",
+    name: "Archive then restore an agent",
+    desc: "Operator hides an agent from the board, then restores it — its history is kept either way. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: archive ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated archive/restore" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-arch-${tag}` });
+      await api.createTask(p.id, "Sim: task to archive");
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [step("agent spawned", false, res.error)];
+      const agentId = res.id;
+      steps.push(step("agent running on the board", true, agentId));
+      await api.archiveAgent(agentId, true);
+      s = await settle((sn) => sn.agents.find((a) => a.id === agentId)?.archived === true);
+      steps.push(step("archived → hidden from the board (kept in history)", s.agents.find((a) => a.id === agentId)?.archived === true));
+      await api.archiveAgent(agentId, false);
+      s = await settle((sn) => sn.agents.find((a) => a.id === agentId)?.archived === false);
+      steps.push(step("restored → back on the board", s.agents.find((a) => a.id === agentId)?.archived === false));
+      return steps;
+    },
+  },
+  {
+    id: "stop-frees-runner",
+    name: "Stop an agent — its runner is freed",
+    desc: "Operator stops a running agent; it ends and the runner it held returns to the idle pool, reusable. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: stop ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated stop" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-stop-${tag}` });
+      await api.createTask(p.id, "Sim: task to stop");
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [step("agent spawned", false, res.error)];
+      const agentId = res.id;
+      const rid = res.runnerId;
+      s = await settle((sn) => !!rid && sn.fleet.find((r) => r.id === rid)?.status === "busy");
+      steps.push(step("agent running, its runner busy", !!rid && s.fleet.find((r) => r.id === rid)?.status === "busy", rid ?? "no runner"));
+      try {
+        await api.stopAgent(agentId);
+      } catch (e) {
+        if (e instanceof api.ApiError && e.status === 404)
+          return [...steps, skipped("stop frees the runner", "stop route not deployed in this build")];
+        throw e;
+      }
+      s = await settle((sn) => sn.agents.find((a) => a.id === agentId)?.status === "done");
+      steps.push(step("agent stopped (status done)", s.agents.find((a) => a.id === agentId)?.status === "done"));
+      s = await settle((sn) => !rid || sn.fleet.find((r) => r.id === rid)?.status === "idle");
+      steps.push(step("its runner returned to idle (reusable)", !rid || s.fleet.find((r) => r.id === rid)?.status === "idle", rid ? (s.fleet.find((r) => r.id === rid)?.status ?? "gone") : "n/a"));
+      return steps;
+    },
+  },
+  {
+    id: "chat-with-agent",
+    name: "Chat with a working agent",
+    desc: "Operator messages a live agent to discuss the task and gets a reply — the agent keeps working. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: chat ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated chat" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-chat-${tag}` });
+      await api.createTask(p.id, "Sim: task to discuss");
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [step("agent spawned", false, res.error)];
+      steps.push(step("agent running", true, res.id));
+      try {
+        const { reply } = await api.sendAgentMessage(res.id, "What's your current approach?");
+        steps.push(step("agent replied to the chat message", reply.trim().length > 0, reply ? `“${reply.slice(0, 60)}”` : "empty"));
+      } catch (e) {
+        steps.push(step("agent replied to the chat message", false, (e as Error).message));
+      }
+      return steps;
+    },
+  },
+  {
+    id: "connect-github-repo",
+    name: "Bind a project to a GitHub repo",
+    desc: "Operator creates a project in branch + PR mode (bound to a GitHub repo) instead of a local folder. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: gh ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated repo binding", repo: "acme/sim-demo" });
+      const s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      steps.push(step("project created (persists on the board)", !!p, p?.id));
+      steps.push(step("bound to a GitHub repo (branch + PR mode)", p?.repo === "acme/sim-demo", p?.repo ?? "null"));
+      return steps;
+    },
+  },
+  {
+    id: "guardrails-on",
+    name: "Write guardrails are on by default",
+    desc: "Operator inspects the GitHub connection — every write guardrail is enabled until deliberately relaxed.",
+    run: async () => {
+      const g = await api.fetchGithub();
+      const sp = g.connection.safety;
+      return [
+        step("PR-only (no direct default-branch push)", sp.prOnly === true),
+        step("no force-push / history rewrite", sp.noForcePush === true),
+        step("module allowlist enforced", sp.moduleAllowlist === true),
+        step("approve before push/merge", sp.approveBeforePush === true),
+      ];
+    },
+  },
 ];
+
+/**
+ * A compact, Sim-tagged slice of the current board + a recent audit tail —
+ * handed to the behavioral judge as the "resulting state" evidence alongside a
+ * journey's steps. Kept small (ids/statuses, not full logs) so the judge sees
+ * the shape of what the journey produced without a huge payload.
+ */
+export async function captureEvidence(): Promise<Record<string, unknown>> {
+  const [s, audit] = await Promise.all([
+    api.fetchSnapshot(),
+    api.fetchAudit().catch(() => [] as Awaited<ReturnType<typeof api.fetchAudit>>),
+  ]);
+  const projects = s.projects.filter((p) => p.name.startsWith("Sim:"));
+  const projectIds = new Set(projects.map((p) => p.id));
+  return {
+    projects: projects.map((p) => ({
+      id: p.id,
+      name: p.name,
+      repoPath: p.repoPath ?? null,
+      repo: p.repo ?? null,
+      agents: p.agentIds.length,
+    })),
+    agents: s.agents
+      .filter((a) => projectIds.has(a.projectId))
+      .map((a) => ({
+        id: a.id,
+        name: a.name,
+        status: a.status,
+        archived: a.archived,
+        runnerId: a.runnerId,
+        parentId: a.parentId,
+        plan: `${a.plan.filter((x) => x.state === "done").length}/${a.plan.length}`,
+      })),
+    tasks: s.tasks
+      .filter((t) => projectIds.has(t.projectId))
+      .map((t) => ({ id: t.id, text: t.text, state: t.state, projectId: t.projectId })),
+    runners: s.fleet
+      .filter((r) => (r.name ?? "").startsWith("sim-"))
+      .map((r) => ({ id: r.id, name: r.name, status: r.status })),
+    openHitl: s.queue.filter((q) => q.resolvedAt == null).map((q) => ({ kind: q.kind, title: q.title })),
+    auditCount: audit.length,
+    recentAudit: audit.slice(0, 6),
+  };
+}
 
 /** Fork helper — forkAgent returns unknown; confirm via the snapshot. */
 async function tryAssignFork(parentId: string): Promise<{ ok: boolean; detail?: string }> {
