@@ -7,6 +7,7 @@
 // by docs/qa/llm-e2e. Each scenario is independent and cleans up after itself.
 
 import * as api from "./client";
+import { settle } from "./poll";
 
 export interface Step {
   label: string;
@@ -51,12 +52,12 @@ export const SCENARIOS: Scenario[] = [
       const name = `UAT: project ${uid()}`;
       const steps: Step[] = [];
       await api.createProject({ name, goal: "acceptance check" });
-      let s = await api.fetchSnapshot();
+      let s = await settle((sn) => sn.projects.some((x) => x.name === name));
       const p = s.projects.find((x) => x.name === name);
       steps.push(step("project created + in snapshot", !!p, p?.id));
       if (p) {
         await api.deleteProject(p.id);
-        s = await api.fetchSnapshot();
+        s = await settle((sn) => !sn.projects.some((x) => x.id === p.id));
         steps.push(step("project deleted", !s.projects.some((x) => x.id === p.id)));
       }
       return steps;
@@ -70,13 +71,13 @@ export const SCENARIOS: Scenario[] = [
       const steps: Step[] = [];
       const before = new Set((await api.fetchSnapshot()).fleet.map((r) => r.id));
       await api.createRunner({ provider: "claude", model: "opus-4.8" });
-      const s = await api.fetchSnapshot();
+      const s = await settle((sn) => sn.fleet.some((r) => !before.has(r.id)));
       const added = s.fleet.find((r) => !before.has(r.id));
       steps.push(step("runner added to fleet", !!added, added?.id));
       steps.push(step("new runner is idle", added?.status === "idle", added?.status));
       if (added) {
         await swallow(api.deleteRunner(added.id));
-        const s2 = await api.fetchSnapshot();
+        const s2 = await settle((sn) => !sn.fleet.some((r) => r.id === added.id));
         steps.push(step("runner removed (or busy)", !s2.fleet.some((r) => r.id === added.id), "best-effort"));
       }
       return steps;
@@ -90,27 +91,27 @@ export const SCENARIOS: Scenario[] = [
       const steps: Step[] = [];
       const pname = `UAT: agent ${uid()}`;
       await api.createProject({ name: pname, goal: "acceptance" });
-      let s = await api.fetchSnapshot();
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname)!;
       await api.createRunner({ provider: "claude", model: "opus-4.8" }); // ensure capacity
       await api.createTask(p.id, "acceptance: say hello");
-      s = await api.fetchSnapshot();
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id);
       steps.push(step("task created in project", !!task, task?.id));
       let agentId: string | undefined;
       if (task) {
         await swallow(api.assignTask(p.id, task.id));
-        s = await api.fetchSnapshot();
+        s = await settle((sn) => sn.agents.some((a) => a.projectId === p.id));
         const agent = s.agents.find((a) => a.projectId === p.id);
         agentId = agent?.id;
         steps.push(step("assign created an agent", !!agent, agent && `${agent.id} · ${agent.status}`));
       }
       if (agentId) {
         await api.archiveAgent(agentId, true);
-        s = await api.fetchSnapshot();
+        s = await settle((sn) => sn.agents.find((a) => a.id === agentId)?.archived === true);
         steps.push(step("agent archived (hidden from board)", s.agents.find((a) => a.id === agentId)?.archived === true));
         await api.archiveAgent(agentId, false);
-        s = await api.fetchSnapshot();
+        s = await settle((sn) => sn.agents.find((a) => a.id === agentId)?.archived === false);
         steps.push(step("agent restored", s.agents.find((a) => a.id === agentId)?.archived === false));
         await swallow(api.archiveAgent(agentId, true)); // tidy: hide the temp agent
       }
@@ -132,7 +133,7 @@ export const SCENARIOS: Scenario[] = [
       }
       const { secrets } = await api.fetchSecrets();
       steps.push(step("key stored (metadata only)", secrets.some((m) => m.provider === provider)));
-      const s = await api.fetchSnapshot();
+      const s = await settle((sn) => sn.providers.find((p) => p.id === provider)?.available === true);
       steps.push(step("vendor becomes available", s.providers.find((p) => p.id === provider)?.available === true));
       await swallow(api.deleteSecret(provider));
       const after = await api.fetchSecrets();
@@ -233,12 +234,12 @@ export const SCENARIOS: Scenario[] = [
       const steps: Step[] = [];
       const localName = `UAT: local ${uid()}`;
       await api.createProject({ name: localName, goal: "acceptance", repoPath: "/tmp/uat-acceptance-repo" });
-      let s = await api.fetchSnapshot();
+      let s = await settle((sn) => sn.projects.some((p) => p.name === localName));
       const lp = s.projects.find((p) => p.name === localName);
       steps.push(step("local folder path recorded (worktree-per-agent mode)", lp?.repoPath === "/tmp/uat-acceptance-repo", lp?.repoPath ?? "null"));
       const ghName = `UAT: gh ${uid()}`;
       await api.createProject({ name: ghName, goal: "acceptance", repo: "acme/demo" });
-      s = await api.fetchSnapshot();
+      s = await settle((sn) => sn.projects.some((p) => p.name === ghName));
       const gp = s.projects.find((p) => p.name === ghName);
       steps.push(step("GitHub repo recorded (branch + PR mode)", gp?.repo === "acme/demo", gp?.repo ?? "null"));
       if (lp) await swallow(api.deleteProject(lp.id));
