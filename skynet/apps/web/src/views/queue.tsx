@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Agent, HitlItem } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { fmtClock, fmtWait, KIND_META, openQueue, waitedSecs } from "../lib/derive";
+import { fmtWait, KIND_META, openQueue, waitedSecs } from "../lib/derive";
 
 export function QueueCard({
   item,
@@ -211,7 +211,6 @@ export function QueueView({
   const open = openQueue(queue).sort(
     (a, b) => waitedSecs(b, now) - waitedSecs(a, now),
   );
-  const total = open.reduce((n, it) => n + waitedSecs(it, now), 0);
   const resolvedCount = queue.filter((q) => q.resolvedAt != null).length;
 
   return (
@@ -223,14 +222,6 @@ export function QueueView({
             agents waiting
             <br />
             on you
-          </span>
-        </div>
-        <div className="readout-block">
-          <span className="readout-num readout-warn">{fmtClock(total)}</span>
-          <span className="readout-label">
-            cumulative
-            <br />
-            wait time
           </span>
         </div>
         <div className="readout-block">
