@@ -11,7 +11,21 @@
 
 import * as api from "./client";
 import { settle } from "./poll";
-import type { TaskRun } from "@skynet/shared";
+import type { AuditRecord, TaskRun } from "@skynet/shared";
+
+/** Poll the audit trail until `ready`, then return the latest (real-agent timing). */
+async function settleAudit(
+  ready: (a: AuditRecord[]) => boolean,
+  tries = 8,
+  delayMs = 300,
+): Promise<AuditRecord[]> {
+  let a = await api.fetchAudit();
+  for (let n = 0; n < tries && !ready(a); n++) {
+    await new Promise((r) => setTimeout(r, delayMs));
+    a = await api.fetchAudit();
+  }
+  return a;
+}
 
 export interface Step {
   label: string;
@@ -40,21 +54,6 @@ async function tryAssign(projectId: string, taskId: string): Promise<TaskRun | {
   }
 }
 const repoPathOf = (p: unknown) => (p as { repoPath?: string | null } | undefined)?.repoPath ?? null;
-
-/** Bounded re-fetch of the audit trail until `ready` holds — the settle pattern
- *  (see poll.ts), but for the audit endpoint, which lives outside the snapshot. */
-async function settleAudit(
-  ready: (a: Awaited<ReturnType<typeof api.fetchAudit>>) => boolean,
-  tries = 20,
-  delayMs = 300,
-): Promise<Awaited<ReturnType<typeof api.fetchAudit>>> {
-  let a = await api.fetchAudit();
-  for (let n = 0; n < tries && !ready(a); n++) {
-    await new Promise((r) => setTimeout(r, delayMs));
-    a = await api.fetchAudit();
-  }
-  return a;
-}
 
 export const JOURNEYS: Journey[] = [
   {
@@ -119,41 +118,39 @@ export const JOURNEYS: Journey[] = [
   {
     id: "supervise-decision",
     name: "Supervise a human-in-the-loop decision",
-    desc: "Operator spawns an agent that blocks on a gate, then resolves it — the decision lands in the audit trail. Persists.",
+    desc: "Operator assigns a task needing a gated action; the REAL agent pauses for approval; the operator resolves it and the decision lands in the audit trail. Persists.",
     run: async () => {
       const steps: Step[] = [];
       const tag = uid();
       const pname = `Sim: supervise ${tag}`;
-      // Stand up our OWN agent so the gate is ours to resolve — don't depend on
-      // whatever happens to be in the queue. The mock runner blocks on an
-      // approval gate around the midpoint of its run.
-      await api.createProject({ name: pname, goal: "simulated HITL supervision" });
+      await api.createProject({ name: pname, goal: "simulated supervised decision" });
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-supervise-${tag}` });
-      await api.createTask(p.id, "Sim: task that needs approval");
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-sup-${tag}` });
+      // A task that requires a SHELL command: edits are auto-allowed, but commands
+      // gate — so the real agent raises a genuine approval HITL (no mock/canned gate).
+      await api.createTask(p.id, "Run the shell command `node --version` and report the version string you get back.");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const auditBefore = (await api.fetchAudit()).length;
       const res = await tryAssign(p.id, task.id);
-      if ("error" in res) return [step("agent spawned", false, res.error)];
+      if ("error" in res) return [...steps, step("agent spawned", false, res.error)];
       const agentId = res.id;
-      steps.push(step("agent running", true, agentId));
-      // Wait past the mock's midpoint for the approval gate to be raised for
-      // THIS agent. The gate lands ~10s in, so poll generously (bounded ~20s):
-      // if it never appears within the bound, that's a real failure, not a skip.
-      s = await settle((sn) => sn.queue.some((q) => q.runId === agentId && q.resolvedAt == null), 50, 400);
-      const gate = s.queue.find((q) => q.runId === agentId && q.resolvedAt == null);
-      steps.push(step("agent raised an approval gate (waiting on a human)", !!gate, gate ? `${gate.kind} · ${gate.title}` : "no gate within ~20s"));
-      if (!gate) return steps;
-      // Resolve it and confirm the decision is recorded in the audit trail.
-      const before = (await api.fetchAudit()).length;
-      await api.resolveHitl(gate.id, { action: "approve" });
-      const trail = await settleAudit((a) => a.length > before && a.some((r) => r.hitlId === gate.id));
-      steps.push(step("decision resolved + recorded in audit (persists)", trail.length > before, `${before} → ${trail.length}`));
-      const row = trail.find((r) => r.hitlId === gate.id);
-      steps.push(step("audit row names the resolved gate", !!row, gate.id));
-      steps.push(step("operator recorded on the decision", !!row?.operatorId, row ? `${row.operatorId} · ${row.action}` : "no row"));
+      steps.push(step("real agent running", true, agentId));
+      // Wait generously for the real agent to spin up and reach the command gate.
+      const gated = await settle(
+        (sn) => sn.queue.some((q) => q.runId === agentId && q.resolvedAt == null),
+        60,
+        1000,
+      );
+      const open = gated.queue.find((q) => q.runId === agentId && q.resolvedAt == null);
+      steps.push(step("real agent raised an approval gate", !!open, open ? `${open.kind}: ${open.title}` : "no gate within ~60s"));
+      if (!open) return steps;
+      await api.resolveHitl(open.id, { action: "approve" });
+      const trail = await settleAudit((a) => a.some((r) => r.hitlId === open.id));
+      steps.push(step("decision recorded in audit (persists)", trail.some((r) => r.hitlId === open.id), `audit ${auditBefore} → ${trail.length}`));
+      steps.push(step("audit names the resolved gate + operator", trail.some((r) => r.hitlId === open.id && !!r.operatorId)));
       return steps;
     },
   },
