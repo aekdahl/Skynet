@@ -1,6 +1,6 @@
 // In-app acceptance checks: each scenario drives the REAL API and asserts on the
 // resulting state, so you can run them from within Skynet and watch the control
-// plane behave (temp "UAT:" projects/agents flash on the board, then clean up).
+// plane behave (temp "UAT:" projects/runs flash on the board, then clean up).
 //
 // These verify the control plane + state transitions deterministically — no
 // provider keys needed. Deep runner behavior (real Claude edit→merge) is covered
@@ -38,7 +38,7 @@ export const SCENARIOS: Scenario[] = [
     run: async () => {
       const s = await api.fetchSnapshot();
       return [
-        step("GET /api/snapshot returns a snapshot", Array.isArray(s.agents), `${s.agents.length} agents`),
+        step("GET /api/snapshot returns a snapshot", Array.isArray(s.runs), `${s.runs.length} runs`),
         step("provider catalog present", s.providers.length > 0, `${s.providers.length} providers`),
         step("fleet + projects arrays present", Array.isArray(s.fleet) && Array.isArray(s.projects)),
       ];
@@ -70,13 +70,13 @@ export const SCENARIOS: Scenario[] = [
     run: async () => {
       const steps: Step[] = [];
       const before = new Set((await api.fetchSnapshot()).fleet.map((r) => r.id));
-      await api.createRunner({ provider: "claude", model: "opus-4.8" });
+      await api.createAgent({ provider: "claude", model: "opus-4.8" });
       const s = await settle((sn) => sn.fleet.some((r) => !before.has(r.id)));
       const added = s.fleet.find((r) => !before.has(r.id));
       steps.push(step("runner added to fleet", !!added, added?.id));
       steps.push(step("new runner is idle", added?.status === "idle", added?.status));
       if (added) {
-        await swallow(api.deleteRunner(added.id));
+        await swallow(api.deleteAgent(added.id));
         const s2 = await settle((sn) => !sn.fleet.some((r) => r.id === added.id));
         steps.push(step("runner removed (or busy)", !s2.fleet.some((r) => r.id === added.id), "best-effort"));
       }
@@ -93,27 +93,27 @@ export const SCENARIOS: Scenario[] = [
       await api.createProject({ name: pname, goal: "acceptance" });
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname)!;
-      await api.createRunner({ provider: "claude", model: "opus-4.8" }); // ensure capacity
+      await api.createAgent({ provider: "claude", model: "opus-4.8" }); // ensure capacity
       await api.createTask(p.id, "acceptance: say hello");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id);
       steps.push(step("task created in project", !!task, task?.id));
-      let agentId: string | undefined;
+      let runId: string | undefined;
       if (task) {
         await swallow(api.assignTask(p.id, task.id));
-        s = await settle((sn) => sn.agents.some((a) => a.projectId === p.id));
-        const agent = s.agents.find((a) => a.projectId === p.id);
-        agentId = agent?.id;
+        s = await settle((sn) => sn.runs.some((a) => a.projectId === p.id));
+        const agent = s.runs.find((a) => a.projectId === p.id);
+        runId = agent?.id;
         steps.push(step("assign created an agent", !!agent, agent && `${agent.id} · ${agent.status}`));
       }
-      if (agentId) {
-        await api.archiveAgent(agentId, true);
-        s = await settle((sn) => sn.agents.find((a) => a.id === agentId)?.archived === true);
-        steps.push(step("agent archived (hidden from board)", s.agents.find((a) => a.id === agentId)?.archived === true));
-        await api.archiveAgent(agentId, false);
-        s = await settle((sn) => sn.agents.find((a) => a.id === agentId)?.archived === false);
-        steps.push(step("agent restored", s.agents.find((a) => a.id === agentId)?.archived === false));
-        await swallow(api.archiveAgent(agentId, true)); // tidy: hide the temp agent
+      if (runId) {
+        await api.archiveAgent(runId, true);
+        s = await settle((sn) => sn.runs.find((a) => a.id === runId)?.archived === true);
+        steps.push(step("agent archived (hidden from board)", s.runs.find((a) => a.id === runId)?.archived === true));
+        await api.archiveAgent(runId, false);
+        s = await settle((sn) => sn.runs.find((a) => a.id === runId)?.archived === false);
+        steps.push(step("agent restored", s.runs.find((a) => a.id === runId)?.archived === false));
+        await swallow(api.archiveAgent(runId, true)); // tidy: hide the temp agent
       }
       await swallow(api.deleteProject(p.id)); // cleanup
       return steps;
@@ -150,7 +150,7 @@ export const SCENARIOS: Scenario[] = [
       const s = await api.fetchSnapshot();
       const open = s.queue.find((q) => q.resolvedAt == null);
       if (!open) {
-        steps.push(skipped("an open approval to resolve", "none open — assign a task (agents raise gates) or load seed data, then re-run"));
+        steps.push(skipped("an open approval to resolve", "none open — assign a task (runs raise gates) or load seed data, then re-run"));
         return steps;
       }
       const before = (await api.fetchAudit()).length;

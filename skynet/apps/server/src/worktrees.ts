@@ -60,8 +60,8 @@ export class WorktreeProvisioner {
   }
 
   /** Worktree directory for an agent (id sanitized for the filesystem). */
-  pathFor(agentId: string): string {
-    const safe = agentId.replace(/[^a-zA-Z0-9._-]/g, "_");
+  pathFor(runId: string): string {
+    const safe = runId.replace(/[^a-zA-Z0-9._-]/g, "_");
     return isAbsolute(this.root) ? join(this.root, safe) : resolve(this.repo, this.root, safe);
   }
 
@@ -79,9 +79,9 @@ export class WorktreeProvisioner {
    * (when it exists) else the base branch. Cleans up any stale worktree/branch
    * left by a prior agent with the same id so provisioning is idempotent.
    */
-  async provision(agentId: string, branch: string, opts: ProvisionOpts = {}): Promise<ProvisionResult> {
+  async provision(runId: string, branch: string, opts: ProvisionOpts = {}): Promise<ProvisionResult> {
     await mkdir(this.root, { recursive: true }).catch(() => undefined);
-    const path = this.pathFor(agentId);
+    const path = this.pathFor(runId);
     const baseRef = opts.baseRef && (await this.refExists(opts.baseRef)) ? opts.baseRef : this.baseBranch;
 
     // Clear anything stale at this path / branch name.
@@ -99,8 +99,8 @@ export class WorktreeProvisioner {
    * carries the agent's diff regardless of whether the runner committed itself.
    * Returns committed:false when the worktree is clean (nothing to integrate).
    */
-  async commitAll(agentId: string, message: string): Promise<{ committed: boolean; sha?: string }> {
-    const path = this.pathFor(agentId);
+  async commitAll(runId: string, message: string): Promise<{ committed: boolean; sha?: string }> {
+    const path = this.pathFor(runId);
     const status = await this.git(path, "status", "--porcelain");
     if (!status) return { committed: false };
     await this.git(path, "add", "-A");
@@ -116,8 +116,8 @@ export class WorktreeProvisioner {
   }
 
   /** Added/deleted line counts + touched files of the branch vs its base ref. */
-  async diffStat(agentId: string, baseRef: string): Promise<DiffStat> {
-    const path = this.pathFor(agentId);
+  async diffStat(runId: string, baseRef: string): Promise<DiffStat> {
+    const path = this.pathFor(runId);
     const stat: DiffStat = { add: 0, del: 0, files: [] };
     try {
       const out = await this.git(path, "diff", "--numstat", `${baseRef}...HEAD`);
@@ -134,8 +134,8 @@ export class WorktreeProvisioner {
   }
 
   /** Retire the worktree (the branch is left for the merge queue / history). */
-  async retire(agentId: string): Promise<void> {
-    await this.removePath(this.pathFor(agentId));
+  async retire(runId: string): Promise<void> {
+    await this.removePath(this.pathFor(runId));
   }
 
   private async removePath(path: string): Promise<void> {

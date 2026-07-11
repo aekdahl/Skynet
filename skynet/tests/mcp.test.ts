@@ -20,7 +20,7 @@ import type { RunnerEvents, RunnerHandle, RunnerProvider, StartSpec } from "@sky
 class RunningProvider implements RunnerProvider {
   readonly id: ProviderId = "claude";
   async start(spec: StartSpec, _events: RunnerEvents): Promise<RunnerHandle> {
-    return { agentId: spec.agentId, provider: this.id, async pause() {}, async resume() {}, async message() {}, async stop() {} };
+    return { runId: spec.runId, provider: this.id, async pause() {}, async resume() {}, async message() {}, async stop() {} };
   }
 }
 
@@ -49,7 +49,7 @@ const json = (res: { content: unknown }) => JSON.parse(text(res));
 describe("MCP tool core", () => {
   it("exposes the tool surface and drives the create → assign flow", async () => {
     const { client, store } = await connect(author);
-    await store.putRunner({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
 
     const names = (await client.listTools()).tools.map((t) => t.name);
     expect(names).toEqual(expect.arrayContaining(["get_snapshot", "create_project", "assign_task", "resolve_hitl", "wait_for_hitl", "wait_for_agent"]));
@@ -60,12 +60,12 @@ describe("MCP tool core", () => {
 
     expect(agent.id).toBeTruthy();
     const snapshot = json(await client.callTool({ name: "get_snapshot", arguments: {} }));
-    expect(snapshot.agents.map((a: { id: string }) => a.id)).toContain(agent.id);
+    expect(snapshot.runs.map((a: { id: string }) => a.id)).toContain(agent.id);
   });
 
   it("enforces scopes: an author token cannot resolve_hitl, an approver can", async () => {
     const item: HitlItem = {
-      id: "q1", workspaceId: DEFAULT_WORKSPACE, agentId: "a1", kind: "approval",
+      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "a1", kind: "approval",
       title: "Approve?", why: "because", risk: "medium",
       raisedAt: 0, resolvedAt: null, resolution: null,
       command: null, options: null, recommended: null, steps: null, diff: null,
@@ -87,7 +87,7 @@ describe("MCP tool core", () => {
 
   it("exposes the snapshot resource and the operate_skynet prompt", async () => {
     const { client, store } = await connect(author);
-    await store.putRunner({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
 
     const resources = (await client.listResources()).resources.map((r) => r.uri);
     expect(resources).toContain("skynet://snapshot");
@@ -104,7 +104,7 @@ describe("MCP tool core", () => {
   it("wait_for_hitl returns an already-open item immediately", async () => {
     const { client, hub } = await connect(author);
     await hub.raiseHitl({
-      id: "q9", workspaceId: DEFAULT_WORKSPACE, agentId: "a9", kind: "question",
+      id: "q9", workspaceId: DEFAULT_WORKSPACE, runId: "a9", kind: "question",
       title: "Which?", why: "fork in the road", risk: "low",
       raisedAt: 0, resolvedAt: null, resolution: null,
       command: null, options: ["a", "b"], recommended: 0, steps: null, diff: null,
@@ -119,7 +119,7 @@ describe("waitForEvent", () => {
   it("resolves with the first matching event and ignores non-matches", async () => {
     const bus = new InProcessBus();
     const p = waitForEvent(bus, DEFAULT_WORKSPACE, (e) => e.type === "hitl.raised", 1000);
-    bus.publish(DEFAULT_WORKSPACE, { type: "agent.heartbeat", agentId: "a1", at: 1 }); // ignored
+    bus.publish(DEFAULT_WORKSPACE, { type: "run.heartbeat", runId: "a1", at: 1 }); // ignored
     bus.publish("other-ws", { type: "hitl.raised", item: {} as HitlItem }); // wrong workspace
     bus.publish(DEFAULT_WORKSPACE, { type: "hitl.raised", item: { id: "hit" } as HitlItem });
     const event = (await p) as Extract<ServerEvent, { type: "hitl.raised" }>;

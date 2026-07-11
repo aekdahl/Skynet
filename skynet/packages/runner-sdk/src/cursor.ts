@@ -74,7 +74,7 @@ function readAssistant(message: unknown): { text: string; tools: string[] } {
 }
 
 class CursorRunnerHandle implements RunnerHandle {
-  readonly agentId: string;
+  readonly runId: string;
   readonly provider: ProviderId = "cursor";
   private child?: ChildProcess;
   private reader?: Interface;
@@ -88,13 +88,13 @@ class CursorRunnerHandle implements RunnerHandle {
   constructor(
     private spec: StartSpec,
     private events: RunnerEvents,
-    private onSession: (agentId: string, chatId: string) => void,
+    private onSession: (runId: string, chatId: string) => void,
     private resumeChatId?: string,
   ) {
-    this.agentId = spec.agentId;
-    this.events.onStatus(this.agentId, "running");
-    this.events.onLog(this.agentId, `picked up "${spec.task}" on ${spec.branch}`);
-    this.hb = setInterval(() => this.events.onHeartbeat(this.agentId), 5_000);
+    this.runId = spec.runId;
+    this.events.onStatus(this.runId, "running");
+    this.events.onLog(this.runId, `picked up "${spec.task}" on ${spec.branch}`);
+    this.hb = setInterval(() => this.events.onHeartbeat(this.runId), 5_000);
     this.spawnTurn(this.initialPrompt(), true);
   }
 
@@ -151,7 +151,7 @@ class CursorRunnerHandle implements RunnerHandle {
       child.stderr.on("data", (chunk: string) => {
         if (/sign in|unauthor|api[- ]?key|401|forbidden/i.test(chunk)) sawAuthError = true;
         const line = chunk.trim();
-        if (line) this.events.onLog(this.agentId, `[cursor] ${line}`);
+        if (line) this.events.onLog(this.runId, `[cursor] ${line}`);
       });
     }
 
@@ -189,7 +189,7 @@ class CursorRunnerHandle implements RunnerHandle {
       if (isRecord(parsed)) ev = parsed;
     } catch {
       // Non-JSON output (banners, partial text) — surface verbatim.
-      this.events.onLog(this.agentId, trimmed);
+      this.events.onLog(this.runId, trimmed);
       return;
     }
     if (!ev) return;
@@ -205,7 +205,7 @@ class CursorRunnerHandle implements RunnerHandle {
         "";
       if (id) {
         this.resumeChatId = id;
-        this.onSession(this.agentId, id);
+        this.onSession(this.runId, id);
       }
       return;
     }
@@ -222,13 +222,13 @@ class CursorRunnerHandle implements RunnerHandle {
       if (text) {
         if (this.pendingChat) {
           this.pendingChat = false;
-          this.events.onChatReply(this.agentId, text);
+          this.events.onChatReply(this.runId, text);
         } else {
-          this.events.onLog(this.agentId, text);
+          this.events.onLog(this.runId, text);
         }
       }
       for (const t of tools) {
-        this.events.onLog(this.agentId, `▸ ${t}`);
+        this.events.onLog(this.runId, `▸ ${t}`);
         if (!READ_ONLY.has(t.toLowerCase())) this.bump();
       }
       return;
@@ -239,7 +239,7 @@ class CursorRunnerHandle implements RunnerHandle {
         (typeof ev.name === "string" && ev.name) ||
         (isRecord(ev.tool_call) && typeof ev.tool_call.name === "string" && ev.tool_call.name) ||
         "tool";
-      this.events.onLog(this.agentId, `▸ ${name}`);
+      this.events.onLog(this.runId, `▸ ${name}`);
       if (!READ_ONLY.has(name.toLowerCase())) this.bump();
       return;
     }
@@ -248,7 +248,7 @@ class CursorRunnerHandle implements RunnerHandle {
     // interim usage/metadata events) — report best-effort when present.
     if (type === "result" || /usage|metadata/i.test(type)) {
       const usage = usageFromJson((isRecord(ev.usage) ? ev.usage : ev) as Record<string, unknown>);
-      if (usage) this.events.onUsage?.(this.agentId, usage);
+      if (usage) this.events.onUsage?.(this.runId, usage);
     }
 
     if (type === "result") {
@@ -258,8 +258,8 @@ class CursorRunnerHandle implements RunnerHandle {
 
   private raiseGate(command: string) {
     this.gateCommand = command;
-    this.events.onStatus(this.agentId, "waiting");
-    this.events.onHitl(this.agentId, this.buildRaise(command));
+    this.events.onStatus(this.runId, "waiting");
+    this.events.onHitl(this.runId, this.buildRaise(command));
   }
 
   private buildRaise(command: string): HitlRaise {
@@ -278,12 +278,12 @@ class CursorRunnerHandle implements RunnerHandle {
 
   private bump() {
     this.progress = Math.min(0.9, this.progress + 0.08);
-    this.events.onProgress(this.agentId, this.progress, [] as PlanStep[]);
+    this.events.onProgress(this.runId, this.progress, [] as PlanStep[]);
   }
 
   async pause() {
     // cursor-agent has no external pause; reflect intent in status (mirrors claude).
-    this.events.onStatus(this.agentId, "waiting");
+    this.events.onStatus(this.runId, "waiting");
   }
 
   async resume(decision?: Resolution) {
@@ -291,7 +291,7 @@ class CursorRunnerHandle implements RunnerHandle {
     if (this.gateCommand) {
       const command = this.gateCommand;
       this.gateCommand = null;
-      this.events.onStatus(this.agentId, "running");
+      this.events.onStatus(this.runId, "running");
       // print-mode turns are one-shot, so we deliver the decision as a follow-up
       // turn that continues the same chat (--resume), plus a best-effort stdin
       // answer in case this build blocks the live process awaiting input.
@@ -308,7 +308,7 @@ class CursorRunnerHandle implements RunnerHandle {
         followUp = `Approved — proceed with \`${command}\`.`;
         this.writeStdin("y");
       }
-      this.events.onLog(this.agentId, `decision: ${decision?.action ?? "approve"}`);
+      this.events.onLog(this.runId, `decision: ${decision?.action ?? "approve"}`);
       if (!this.childAlive()) this.spawnTurn(followUp, true);
       return;
     }
@@ -340,11 +340,11 @@ class CursorRunnerHandle implements RunnerHandle {
     if (this.finished) return;
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
-    this.events.onProgress(this.agentId, 1, [] as PlanStep[]);
+    this.events.onProgress(this.runId, 1, [] as PlanStep[]);
     // The orchestrator owns the terminal "done" (after committing the worktree →
     // review → merge). Emitting it here would race integration and surface a
     // premature "done" with uncommitted work — hand off via onCompleted only.
-    this.events.onCompleted(this.agentId, this.spec.branch);
+    this.events.onCompleted(this.runId, this.spec.branch);
     this.killChild();
   }
 
@@ -353,7 +353,7 @@ class CursorRunnerHandle implements RunnerHandle {
     if (this.finished || !primary) return;
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
-    this.events.onFailed(this.agentId, `cursor runner unavailable — ${reason}`);
+    this.events.onFailed(this.runId, `cursor runner unavailable — ${reason}`);
     this.killChild();
   }
 
@@ -376,7 +376,7 @@ class CursorRunnerHandle implements RunnerHandle {
 
 export class CursorRunnerProvider implements RunnerProvider {
   readonly id: ProviderId = "cursor";
-  // agentId → cursor chat id, so a fork can resume its parent's context.
+  // runId → cursor chat id, so a fork can resume its parent's context.
   private chats = new Map<string, string>();
 
   async start(spec: StartSpec, events: RunnerEvents): Promise<RunnerHandle> {
@@ -384,7 +384,7 @@ export class CursorRunnerProvider implements RunnerProvider {
     return new CursorRunnerHandle(
       spec,
       events,
-      (agentId, chatId) => this.chats.set(agentId, chatId),
+      (runId, chatId) => this.chats.set(runId, chatId),
       resumeChatId,
     );
   }

@@ -9,7 +9,7 @@ import { McpServer, type ToolCallback } from "@modelcontextprotocol/sdk/server/m
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
-  AgentStatus,
+  TaskRunStatus,
   ChatRequest,
   ConfigureRunnerRequest,
   CreateProjectRequest,
@@ -30,13 +30,13 @@ export interface McpDeps {
   bus: Bus;
 }
 
-const INSTRUCTIONS = `Skynet orchestrates a fleet of coding agents across projects. Typical flow:
-1. get_snapshot to see projects, agents, fleet runners, and open human-in-the-loop (HITL) items.
+const INSTRUCTIONS = `Skynet orchestrates a fleet of coding runs across projects. Typical flow:
+1. get_snapshot to see projects, runs, fleet runners, and open human-in-the-loop (HITL) items.
 2. create_project, then create_task for each unit of work.
 3. assign_task to spin up an agent on an idle runner (idempotent — re-assigning returns the existing agent).
 4. wait_for_hitl to block until an agent needs a human decision; resolve_hitl to answer it (requires the "approver" scope).
 5. wait_for_agent to block until an agent finishes or needs review.
-Risky actions (approving diffs, pushing to GitHub) are gated behind HITL. A token without the "approver" scope can observe and drive agents but cannot resolve gates — a human must.`;
+Risky actions (approving diffs, pushing to GitHub) are gated behind HITL. A token without the "approver" scope can observe and drive runs but cannot resolve gates — a human must.`;
 
 type Shape = z.ZodRawShape;
 type Args<S extends Shape> = z.infer<z.ZodObject<S>>;
@@ -88,10 +88,10 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   };
 
   // ── observe ───────────────────────────────────────────────────────────────
-  tool("get_snapshot", "observe", "Full workspace snapshot: projects, agents, fleet runners, HITL queue, providers.", {}, () => operations.snapshot(ws), true);
+  tool("get_snapshot", "observe", "Full workspace snapshot: projects, runs, fleet runners, HITL queue, providers.", {}, () => operations.snapshot(ws), true);
   tool("list_projects", "observe", "List the workspace's projects.", {}, () => operations.listProjects(ws), true);
-  tool("list_agents", "observe", "List the workspace's agents (running, waiting, in review, done).", {}, () => operations.listAgents(ws), true);
-  tool("get_agent", "observe", "Get one agent including its plan and recent activity log.", { agentId: z.string() }, (a) => operations.getAgent(ws, a.agentId), true);
+  tool("list_agents", "observe", "List the workspace's runs (running, waiting, in review, done).", {}, () => operations.listRuns(ws), true);
+  tool("get_agent", "observe", "Get one agent including its plan and recent activity log.", { runId: z.string() }, (a) => operations.getRun(ws, a.runId), true);
   tool("list_hitl", "observe", "List the open human-in-the-loop queue (decisions awaiting an operator).", {}, () => operations.listHitl(ws), true);
   tool("list_audit", "observe", "List resolved HITL decisions, newest first (the audit trail).", {}, () => operations.listAudit(ws), true);
 
@@ -110,21 +110,21 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     return operations.updateTask(ws, taskId, patch);
   });
   tool("assign_task", "author", "Assign a task to a fresh agent on an idle runner. Idempotent: re-assigning an already-assigned task returns the existing agent.", { projectId: z.string(), taskId: z.string() }, (a) => operations.assignTask(ws, a.projectId, a.taskId));
-  tool("message_agent", "author", "Send a chat message to an agent and get its reply.", { agentId: z.string(), ...ChatRequest.shape }, async (a) => ({ reply: await operations.chatAgent(ws, a.agentId, a.text) }));
-  tool("fork_agent", "author", "Fork an agent to explore an alternative from its current step.", { agentId: z.string() }, (a) => operations.forkAgent(ws, a.agentId));
-  tool("stop_agent", "author", "Stop a live agent (frees its runner, retires its worktree).", { agentId: z.string() }, async (a) => {
-    await operations.stopAgent(ws, a.agentId);
-    return { stopped: a.agentId };
+  tool("message_agent", "author", "Send a chat message to an agent and get its reply.", { runId: z.string(), ...ChatRequest.shape }, async (a) => ({ reply: await operations.chatAgent(ws, a.runId, a.text) }));
+  tool("fork_agent", "author", "Fork an agent to explore an alternative from its current step.", { runId: z.string() }, (a) => operations.forkAgent(ws, a.runId));
+  tool("stop_agent", "author", "Stop a live agent (frees its runner, retires its worktree).", { runId: z.string() }, async (a) => {
+    await operations.stopAgent(ws, a.runId);
+    return { stopped: a.runId };
   });
-  tool("archive_agent", "author", "Archive (or restore) an agent — hides it from the board without deleting it.", { agentId: z.string(), archived: z.boolean().optional() }, (a) => operations.archiveAgent(ws, a.agentId, a.archived ?? true));
+  tool("archive_agent", "author", "Archive (or restore) an agent — hides it from the board without deleting it.", { runId: z.string(), archived: z.boolean().optional() }, (a) => operations.archiveAgent(ws, a.runId, a.archived ?? true));
   tool("configure_runner", "author", "Add a fleet runner (a provider + model slot that can execute one agent).", ConfigureRunnerRequest.shape, (a) => operations.configureRunner(ws, a));
-  tool("update_runner", "author", "Update a fleet runner's model or name.", { runnerId: z.string(), ...UpdateRunnerRequest.shape }, (a) => {
-    const { runnerId, ...patch } = a;
-    return operations.updateRunner(ws, runnerId, patch);
+  tool("update_runner", "author", "Update a fleet runner's model or name.", { agentId: z.string(), ...UpdateRunnerRequest.shape }, (a) => {
+    const { agentId, ...patch } = a;
+    return operations.updateAgent(ws, agentId, patch);
   });
-  tool("retire_runner", "author", "Retire an idle fleet runner. Fails if the runner is busy.", { runnerId: z.string() }, async (a) => {
-    await operations.retireRunner(ws, a.runnerId);
-    return { retired: a.runnerId };
+  tool("retire_runner", "author", "Retire an idle fleet runner. Fails if the runner is busy.", { agentId: z.string() }, async (a) => {
+    await operations.retireRunner(ws, a.agentId);
+    return { retired: a.agentId };
   });
 
   // ── approver (opt-in scope) ─────────────────────────────────────────────
@@ -138,14 +138,14 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     "wait_for_hitl",
     "observe",
     "Block until a HITL item is raised (optionally for a specific agent), or until timeoutMs elapses. Returns an already-open item immediately if one matches.",
-    { agentId: z.string().optional(), timeoutMs: z.number().int().positive().optional() },
+    { runId: z.string().optional(), timeoutMs: z.number().int().positive().optional() },
     async (a) => {
-      const open = (await operations.listHitl(ws)).filter((h) => !h.resolution && (!a.agentId || h.agentId === a.agentId));
+      const open = (await operations.listHitl(ws)).filter((h) => !h.resolution && (!a.runId || h.runId === a.runId));
       if (open.length > 0) return { hitl: open[0], waited: false };
       const event = await waitForEvent(
         bus,
         ws,
-        (e) => e.type === "hitl.raised" && (!a.agentId || e.item.agentId === a.agentId),
+        (e) => e.type === "hitl.raised" && (!a.runId || e.item.runId === a.runId),
         clampWait(a.timeoutMs),
       );
       if (!event) return { timedOut: true };
@@ -157,21 +157,21 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     "wait_for_agent",
     "observe",
     "Block until an agent reaches a target status (default: any terminal state — 'done' or 'review'), or until timeoutMs elapses.",
-    { agentId: z.string(), status: AgentStatus.optional(), timeoutMs: z.number().int().positive().optional() },
+    { runId: z.string(), status: TaskRunStatus.optional(), timeoutMs: z.number().int().positive().optional() },
     async (a) => {
-      const isTerminal = (s: z.infer<typeof AgentStatus>) => s === "done" || s === "review";
-      const satisfied = (s: z.infer<typeof AgentStatus>) => (a.status ? s === a.status : isTerminal(s));
-      const agent = await operations.getAgent(ws, a.agentId); // 404 unless in this workspace
+      const isTerminal = (s: z.infer<typeof TaskRunStatus>) => s === "done" || s === "review";
+      const satisfied = (s: z.infer<typeof TaskRunStatus>) => (a.status ? s === a.status : isTerminal(s));
+      const agent = await operations.getRun(ws, a.runId); // 404 unless in this workspace
       if (satisfied(agent.status)) return { agent, waited: false };
       const event = await waitForEvent(
         bus,
         ws,
         (e) =>
-          (e.type === "agent.status" && e.agentId === a.agentId && satisfied(e.status)) ||
-          (e.type === "agent.completed" && e.agentId === a.agentId),
+          (e.type === "run.status" && e.runId === a.runId && satisfied(e.status)) ||
+          (e.type === "run.completed" && e.runId === a.runId),
         clampWait(a.timeoutMs),
       );
-      const current = await operations.getAgent(ws, a.agentId);
+      const current = await operations.getRun(ws, a.runId);
       return event ? { agent: current, waited: true } : { timedOut: true, agent: current };
     },
     true,
@@ -183,7 +183,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   server.registerResource(
     "snapshot",
     "skynet://snapshot",
-    { title: "Workspace snapshot", description: "Live projects, agents, fleet runners, HITL queue, and providers.", mimeType: "application/json" },
+    { title: "Workspace snapshot", description: "Live projects, runs, fleet runners, HITL queue, and providers.", mimeType: "application/json" },
     async (uri) => {
       if (!hasScope(principal, "observe")) throw new Error(`Forbidden: reading ${uri.href} requires the "observe" scope.`);
       const snapshot = await operations.snapshot(ws);
@@ -201,7 +201,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
           role: "user",
           content: {
             type: "text",
-            text: "You are operating Skynet, a fleet of coding agents. Start by reading the skynet://snapshot resource (or calling get_snapshot) to see current projects, agents, runners, and open HITL items. To do work: create_project, add tasks with create_task, then assign_task to launch an agent on an idle runner. Use wait_for_hitl to block until an agent needs a decision and wait_for_agent to block until one finishes. If a decision is a human's to make and you lack the approver scope, surface it rather than guessing. Never fabricate progress — report tool results faithfully.",
+            text: "You are operating Skynet, a fleet of coding runs. Start by reading the skynet://snapshot resource (or calling get_snapshot) to see current projects, runs, runners, and open HITL items. To do work: create_project, add tasks with create_task, then assign_task to launch an agent on an idle runner. Use wait_for_hitl to block until an agent needs a decision and wait_for_agent to block until one finishes. If a decision is a human's to make and you lack the approver scope, surface it rather than guessing. Never fabricate progress — report tool results faithfully.",
           },
         },
       ],

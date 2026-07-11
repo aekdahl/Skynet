@@ -5,12 +5,12 @@
 // forwards the bus for the operator's workspace.
 
 import type {
-  Agent,
+  TaskRun,
   HitlItem,
   PlanStep,
   Project,
   Resolution,
-  Runner,
+  Agent,
   Task,
   Usage,
 } from "@skynet/shared";
@@ -34,76 +34,76 @@ export class Hub {
    * changes module sets or active status.
    */
   async refreshConflicts(workspaceId: string): Promise<void> {
-    const agents = await this.store.listAgents(workspaceId);
+    const runs = await this.store.listRuns(workspaceId);
     const seen = this.conflictKeys.get(workspaceId) ?? new Set<string>();
-    for (const c of computeConflicts(agents)) {
-      const key = `${c.moduleId}|${[...c.agentIds].sort().join(",")}`;
+    for (const c of computeConflicts(runs)) {
+      const key = `${c.moduleId}|${[...c.runIds].sort().join(",")}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      this.bus.publish(workspaceId, { type: "conflict.detected", moduleId: c.moduleId, agentIds: c.agentIds });
+      this.bus.publish(workspaceId, { type: "conflict.detected", moduleId: c.moduleId, runIds: c.runIds });
     }
     this.conflictKeys.set(workspaceId, seen);
   }
 
   /** Resolve an agent's workspace so delta-only events land on the right channel. */
-  private async wsOf(agentId: string): Promise<string | undefined> {
-    return (await this.store.getAgent(agentId))?.workspaceId;
+  private async wsOf(runId: string): Promise<string | undefined> {
+    return (await this.store.getRun(runId))?.workspaceId;
   }
 
-  // ── agents ──────────────────────────────────────────────────────────────
-  async createAgent(agent: Agent): Promise<Agent> {
-    await this.store.putAgent(agent);
-    this.bus.publish(agent.workspaceId, { type: "agent.started", agent });
-    return agent;
+  // ── runs ──────────────────────────────────────────────────────────────
+  async createRun(run: TaskRun): Promise<TaskRun> {
+    await this.store.putRun(run);
+    this.bus.publish(run.workspaceId, { type: "run.started", run });
+    return run;
   }
 
-  async agentLog(agentId: string, line: string, detail?: string): Promise<void> {
+  async runLog(runId: string, line: string, detail?: string): Promise<void> {
     const at = now();
-    await this.store.appendLog(agentId, at, line, detail);
-    const ws = await this.wsOf(agentId);
-    if (ws) this.bus.publish(ws, { type: "agent.log", agentId, at, line, detail });
+    await this.store.appendLog(runId, at, line, detail);
+    const ws = await this.wsOf(runId);
+    if (ws) this.bus.publish(ws, { type: "run.log", runId, at, line, detail });
   }
 
-  async agentProgress(agentId: string, progress: number, plan: PlanStep[]): Promise<void> {
-    const a = await this.store.getAgent(agentId);
+  async runProgress(runId: string, progress: number, plan: PlanStep[]): Promise<void> {
+    const a = await this.store.getRun(runId);
     if (!a) return;
-    await this.store.putAgent({ ...a, progress, plan });
-    this.bus.publish(a.workspaceId, { type: "agent.progress", agentId, progress, plan });
+    await this.store.putRun({ ...a, progress, plan });
+    this.bus.publish(a.workspaceId, { type: "run.progress", runId, progress, plan });
   }
 
-  async agentUsage(agentId: string, usage: Usage): Promise<void> {
-    const a = await this.store.getAgent(agentId);
+  async runUsage(runId: string, usage: Usage): Promise<void> {
+    const a = await this.store.getRun(runId);
     if (!a) return;
-    await this.store.putAgent({ ...a, usage });
-    this.bus.publish(a.workspaceId, { type: "agent.usage", agentId, usage });
+    await this.store.putRun({ ...a, usage });
+    this.bus.publish(a.workspaceId, { type: "run.usage", runId, usage });
   }
 
-  async agentHeartbeat(agentId: string): Promise<void> {
-    const a = await this.store.getAgent(agentId);
+  async runHeartbeat(runId: string): Promise<void> {
+    const a = await this.store.getRun(runId);
     if (!a) return;
     const at = now();
-    await this.store.putAgent({ ...a, lastHeartbeatAt: at });
-    this.bus.publish(a.workspaceId, { type: "agent.heartbeat", agentId, at });
+    await this.store.putRun({ ...a, lastHeartbeatAt: at });
+    this.bus.publish(a.workspaceId, { type: "run.heartbeat", runId, at });
   }
 
-  async agentStatus(agentId: string, status: Agent["status"]): Promise<void> {
-    const a = await this.store.getAgent(agentId);
+  async runStatus(runId: string, status: TaskRun["status"]): Promise<void> {
+    const a = await this.store.getRun(runId);
     if (!a) return;
-    await this.store.putAgent({ ...a, status });
-    this.bus.publish(a.workspaceId, { type: "agent.status", agentId, status });
+    await this.store.putRun({ ...a, status });
+    this.bus.publish(a.workspaceId, { type: "run.status", runId, status });
   }
 
-  async agentCompleted(agentId: string, branch: string): Promise<void> {
-    const ws = await this.wsOf(agentId);
-    if (ws) this.bus.publish(ws, { type: "agent.completed", agentId, branch });
+  async runCompleted(runId: string, branch: string): Promise<void> {
+    const ws = await this.wsOf(runId);
+    if (ws) this.bus.publish(ws, { type: "run.completed", runId, branch });
   }
 
-  async setAgentArchived(agentId: string, archived: boolean): Promise<Agent | undefined> {
-    const a = await this.store.getAgent(agentId);
+  async setRunArchived(runId: string, archived: boolean): Promise<TaskRun | undefined> {
+    const a = await this.store.getRun(runId);
     if (!a) return undefined;
     const updated = { ...a, archived };
-    await this.store.putAgent(updated);
-    this.bus.publish(a.workspaceId, { type: "agent.archived", agentId, archived });
+    await this.store.putRun(updated);
+    this.bus.publish(a.workspaceId, { type: "run.archived", runId, archived });
     return updated;
   }
 
@@ -148,7 +148,7 @@ export class Hub {
     await this.store.recordAudit({
       workspaceId: item.workspaceId,
       hitlId: item.id,
-      agentId: item.agentId,
+      runId: item.runId,
       action: resolution.action,
       operatorId: resolution.by,
       at: resolution.at,
@@ -190,15 +190,15 @@ export class Hub {
     if (existing) this.bus.publish(existing.workspaceId, { type: "task.deleted", id });
   }
 
-  async upsertRunner(runner: Runner): Promise<Runner> {
-    await this.store.putRunner(runner);
-    this.bus.publish(runner.workspaceId, { type: "runner.upserted", runner });
-    return runner;
+  async upsertAgent(agent: Agent): Promise<Agent> {
+    await this.store.putAgent(agent);
+    this.bus.publish(agent.workspaceId, { type: "agent.upserted", agent });
+    return agent;
   }
-  async deleteRunner(id: string): Promise<void> {
-    const existing = await this.store.getRunner(id);
-    await this.store.deleteRunner(id);
-    if (existing) this.bus.publish(existing.workspaceId, { type: "runner.deleted", id });
+  async deleteAgent(id: string): Promise<void> {
+    const existing = await this.store.getAgent(id);
+    await this.store.deleteAgent(id);
+    if (existing) this.bus.publish(existing.workspaceId, { type: "agent.deleted", id });
   }
 
   // ── audit trail maintenance ─────────────────────────────────────────────

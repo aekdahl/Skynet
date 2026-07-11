@@ -3,7 +3,7 @@
 // must be reclaimable. reconcileRunners() resets it to idle at boot, and the
 // retire guard keys on the LIVE map (isBusy), so such a runner is removable.
 import { describe, it, expect } from "vitest";
-import { DEFAULT_WORKSPACE, type Runner, type ServerEvent } from "@skynet/shared";
+import { DEFAULT_WORKSPACE, type Agent, type ServerEvent } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
 import { Orchestrator } from "../apps/server/src/orchestrator.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
@@ -15,7 +15,7 @@ class NullBus implements Bus {
   subscribe() { return () => undefined; }
 }
 
-const busyRunner = (id: string): Runner => ({
+const busyRunner = (id: string): Agent => ({
   id, workspaceId: DEFAULT_WORKSPACE, name: id, provider: "claude", model: "opus-4.8",
   status: "busy", idleSince: null,
 });
@@ -24,7 +24,7 @@ describe("orphaned busy runner", () => {
   it("is not counted busy when no live agent holds it", async () => {
     const store = new MemoryStore();
     const orch = new Orchestrator(store, new Hub(store, new NullBus()));
-    await store.putRunner(busyRunner("r-orphan"));
+    await store.putAgent(busyRunner("r-orphan"));
     // Nothing is live → the runner is not actually executing.
     expect(orch.isBusy("r-orphan")).toBe(false);
   });
@@ -32,11 +32,11 @@ describe("orphaned busy runner", () => {
   it("reconcileRunners() resets it to idle", async () => {
     const store = new MemoryStore();
     const orch = new Orchestrator(store, new Hub(store, new NullBus()));
-    await store.putRunner(busyRunner("r-orphan"));
+    await store.putAgent(busyRunner("r-orphan"));
 
     await orch.reconcileRunners();
 
-    const after = await store.getRunner("r-orphan");
+    const after = await store.getAgent("r-orphan");
     expect(after?.status).toBe("idle");
     expect(after?.idleSince).not.toBeNull();
   });
@@ -44,12 +44,12 @@ describe("orphaned busy runner", () => {
   it("leaves an already-idle runner untouched", async () => {
     const store = new MemoryStore();
     const orch = new Orchestrator(store, new Hub(store, new NullBus()));
-    const idle: Runner = { ...busyRunner("r-idle"), status: "idle", idleSince: 123 };
-    await store.putRunner(idle);
+    const idle: Agent = { ...busyRunner("r-idle"), status: "idle", idleSince: 123 };
+    await store.putAgent(idle);
 
     await orch.reconcileRunners();
 
-    const after = await store.getRunner("r-idle");
+    const after = await store.getAgent("r-idle");
     expect(after?.status).toBe("idle");
     expect(after?.idleSince).toBe(123); // not rewritten
   });

@@ -39,7 +39,7 @@ export class FileStore extends MemoryStore {
       const fill = <T extends HasId>(m: Map<string, T>, arr: unknown) => {
         if (Array.isArray(arr)) for (const x of arr) m.set((x as T).id, x as T);
       };
-      fill(this.agents, d.agents);
+      fill(this.runs, d.runs);
       fill(this.queue, d.queue);
       fill(this.projects, d.projects);
       fill(this.tasks, d.tasks);
@@ -68,7 +68,7 @@ export class FileStore extends MemoryStore {
   /** Write the full state atomically (temp file + rename). */
   flush(): void {
     const data = {
-      agents: [...this.agents.values()],
+      runs: [...this.runs.values()],
       queue: [...this.queue.values()],
       projects: [...this.projects.values()],
       tasks: [...this.tasks.values()],

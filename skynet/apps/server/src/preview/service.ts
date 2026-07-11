@@ -2,7 +2,7 @@
 // Resolves {visual, previewUrl} for an agent's working branch via the
 // configured provider. The orchestrator calls resolve() at agent-creation time
 // (so the values ride the agent.started snapshot), and backfillPreviews() seeds
-// existing agents at boot.
+// existing runs at boot.
 
 import { previewConfig } from "./config.js";
 import { providerFor } from "./providers.js";

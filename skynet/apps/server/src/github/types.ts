@@ -1,7 +1,7 @@
 // ─── GitHub integration types ─────────────────────────────────────────────
 // The seams the orchestrator talks to. A GitProvider performs the *remote*
 // operations (push / PR / merge) authenticated as a GitHub App installation;
-// agents never hold credentials, so the safety preflight (safety.ts) cannot be
+// runs never hold credentials, so the safety preflight (safety.ts) cannot be
 // bypassed. A GithubConnectionStore persists the per-workspace connection.
 
 import type { GithubConnection, GithubInstallation, GithubRepo, SafetyPolicy } from "@skynet/shared";
@@ -15,7 +15,7 @@ export interface SafetyViolation {
 /** Everything the preflight + push need about one integration attempt. */
 export interface PushRequest {
   workspaceId: string;
-  agentId: string;
+  runId: string;
   repo: string; // "owner/repo"
   branch: string; // the agent branch, e.g. agent/<id>
   baseBranch: string; // PR target (the repo's default branch)

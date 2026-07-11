@@ -8,7 +8,7 @@ export interface PreviewInput {
   projectId: string;
   projectName: string;
   projectGoal: string;
-  agentId: string;
+  runId: string;
   branch: string;
   /** The agent's own visual flag (e.g. from seed) — providers may honour it. */
   seedVisual: boolean;

@@ -89,7 +89,7 @@ const mapModel = (m: string): string | undefined =>
     : m.startsWith("haiku") ? "haiku"
     : undefined;
 
-// Build the env handed to the Agent SDK subprocess. `Options.env` REPLACES the
+// Build the env handed to the TaskRun SDK subprocess. `Options.env` REPLACES the
 // subprocess environment, so we spread the ambient env (PATH/HOME/…) and then
 // drop the markers that would route a nested Claude Code child to host-managed
 // OAuth — a standalone server can't satisfy that path and would 401.
@@ -346,7 +346,7 @@ function answerForQuestion(q: ParsedQuestion, decision?: Resolution): string {
 }
 
 // ─── Transient-error retry policy ──────────────────────────────────────────
-// The Agent SDK already retries individual HTTP calls; when even that is
+// The TaskRun SDK already retries individual HTTP calls; when even that is
 // exhausted it surfaces an overload/rate-limit as either a thrown error or a
 // `result` message with is_error/error subtype. Those are RETRYABLE at the
 // session level: back off and resume the session, a bounded number of times.
@@ -389,7 +389,7 @@ export function __setClaudeTestHooks(
 }
 
 class ClaudeRunnerHandle implements RunnerHandle {
-  readonly agentId: string;
+  readonly runId: string;
   readonly provider: ProviderId = "claude";
   private input = createInputStream();
   private q?: Query; // unset when we couldn't authenticate (see constructor)
@@ -420,12 +420,12 @@ class ClaudeRunnerHandle implements RunnerHandle {
   constructor(
     private spec: StartSpec,
     private events: RunnerEvents,
-    private onSession: (agentId: string, sessionId: string) => void,
+    private onSession: (runId: string, sessionId: string) => void,
     resumeSessionId?: string,
   ) {
-    this.agentId = spec.agentId;
-    this.events.onStatus(this.agentId, "running");
-    this.events.onLog(this.agentId, `picked up "${spec.task}" on ${spec.branch}`);
+    this.runId = spec.runId;
+    this.events.onStatus(this.runId, "running");
+    this.events.onLog(this.runId, `picked up "${spec.task}" on ${spec.branch}`);
     this.initialPrompt =
       `You are a Skynet coding agent on branch ${spec.branch} in this repository. ` +
       `Task: ${spec.task}. ` +
@@ -449,15 +449,15 @@ class ClaudeRunnerHandle implements RunnerHandle {
         this.gateInput = input;
         this.gateTool = toolName;
         this.gateQuestion = question;
-        this.events.onStatus(this.agentId, "waiting");
+        this.events.onStatus(this.runId, "waiting");
         this.events.onHitl(
-          this.agentId,
+          this.runId,
           question ? buildQuestionRaise(question) : this.buildRaise(toolName, input),
         );
       });
     };
 
-    // Auth: authenticate the nested Agent SDK with any accepted credential — a
+    // Auth: authenticate the nested TaskRun SDK with any accepted credential — a
     // static ANTHROPIC_API_KEY (env or per-workspace, injected as spec.apiKey), a
     // `claude setup-token` subscription token (CLAUDE_CODE_OAUTH_TOKEN), or a
     // gateway bearer token (ANTHROPIC_AUTH_TOKEN). buildRunnerEnv() has already
@@ -473,10 +473,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
       !!this.sdkEnv.ANTHROPIC_AUTH_TOKEN;
     if (!authed) {
       this.events.onLog(
-        this.agentId,
+        this.runId,
         "No Claude credential found — set ANTHROPIC_API_KEY, run `claude setup-token` (CLAUDE_CODE_OAUTH_TOKEN), or configure a gateway (ANTHROPIC_AUTH_TOKEN). RUNNER=mock needs no key.",
       );
-      this.events.onStatus(this.agentId, "review");
+      this.events.onStatus(this.runId, "review");
       return; // q stays unset; consume()/heartbeat never start
     }
 
@@ -507,7 +507,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
       : baseOptions;
 
     this.q = queryImpl({ prompt: this.input, options: firstOptions });
-    this.hb = setInterval(() => this.events.onHeartbeat(this.agentId), 5_000);
+    this.hb = setInterval(() => this.events.onHeartbeat(this.runId), 5_000);
     void this.consume();
   }
 
@@ -531,7 +531,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     // synthetic bump fight it. Only used before the first TodoWrite arrives.
     if (this.plan.length) return;
     this.progress = Math.min(0.9, this.progress + 0.08);
-    this.events.onProgress(this.agentId, this.progress, [] as PlanStep[]);
+    this.events.onProgress(this.runId, this.progress, [] as PlanStep[]);
   }
 
   /**
@@ -575,7 +575,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     const done = this.plan.filter((p) => p.state === "done").length;
     // Keep it shy of 1 until finish() flips the agent to done.
     this.progress = Math.min(0.99, this.plan.length ? done / this.plan.length : this.progress);
-    this.events.onProgress(this.agentId, this.progress, this.plan);
+    this.events.onProgress(this.runId, this.progress, this.plan);
   }
 
   /** Read exact token/cost totals off the SDK `result` message and report them. */
@@ -586,7 +586,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
       n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens);
     const cost = typeof result.total_cost_usd === "number" ? result.total_cost_usd : null;
     const durationMs = typeof result.duration_ms === "number" ? result.duration_ms : null;
-    this.events.onUsage?.(this.agentId, {
+    this.events.onUsage?.(this.runId, {
       inputTokens: input,
       outputTokens: n(u.output_tokens),
       costUsd: cost,
@@ -613,7 +613,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
         this.apiRetries++;
         const wait = backoffMsImpl(this.apiRetries);
         this.events.onLog(
-          this.agentId,
+          this.runId,
           `Claude API transient error (${outcome.reason}); retrying in ${Math.round(wait / 1000)}s [${this.apiRetries}/${MAX_API_RETRIES}]`,
         );
         await this.q?.interrupt().catch(() => undefined); // release the dead session
@@ -641,15 +641,15 @@ class ClaudeRunnerHandle implements RunnerHandle {
         if (this.finished) return { done: true };
         if (msg.type === "system" && "session_id" in msg && typeof msg.session_id === "string") {
           this.sessionId = msg.session_id; // captured for resume-on-retry
-          this.onSession(this.agentId, msg.session_id);
+          this.onSession(this.runId, msg.session_id);
         } else if (msg.type === "assistant") {
           const { text, tools } = readAssistant((msg as { message: { content?: unknown } }).message);
           if (text) {
             // Remember overload/rate-limit chatter so a later error result can be
             // classified as transient even if its subtype is generic.
             if (isTransientApiError(text)) this.lastApiError = text;
-            if (this.pendingChat) { this.pendingChat = false; this.events.onChatReply(this.agentId, text); }
-            else { this.lastRationale = text; this.events.onLog(this.agentId, text); }
+            if (this.pendingChat) { this.pendingChat = false; this.events.onChatReply(this.runId, text); }
+            else { this.lastRationale = text; this.events.onLog(this.runId, text); }
           }
           for (const t of tools) {
             if (t.id) this.pendingTools.set(t.id, t.name);
@@ -661,7 +661,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
               continue;
             }
             // Log line carries the call's full input as expandable detail.
-            this.events.onLog(this.agentId, `▸ ${describeTool(t.name, t.input)}`, approvalText(t.name, t.input));
+            this.events.onLog(this.runId, `▸ ${describeTool(t.name, t.input)}`, approvalText(t.name, t.input));
             this.bump();
           }
         } else if (msg.type === "user") {
@@ -677,7 +677,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
             const name = (id && this.pendingTools.get(id)) || "tool";
             if (id) this.pendingTools.delete(id);
             const out = toolResultText(b.content);
-            this.events.onLog(this.agentId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)");
+            this.events.onLog(this.runId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)");
           }
         } else if (msg.type === "result") {
           // The SDK emits a result even for an errored turn (is_error / non-success
@@ -716,7 +716,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     if (this.finished) return;
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
-    this.events.onFailed(this.agentId, reason);
+    this.events.onFailed(this.runId, reason);
     this.input.close();
   }
 
@@ -727,18 +727,18 @@ class ClaudeRunnerHandle implements RunnerHandle {
     // Keep the real plan visible on completion (all steps done), rather than
     // blanking it — the PLAN panel stays meaningful for a finished agent.
     const donePlan = this.plan.map((p) => ({ ...p, state: "done" as const }));
-    this.events.onProgress(this.agentId, 1, donePlan);
+    this.events.onProgress(this.runId, 1, donePlan);
     // NOTE: do NOT emit onStatus("done") here. Compute is finished, but the agent
     // is not terminal until the orchestrator commits its worktree → review →
     // merge (or confirms an empty diff). Signalling "done" now would race that
     // integration and expose a premature "done" with uncommitted work. Hand off
     // via onCompleted and let the orchestrator own the terminal transition.
-    this.events.onCompleted(this.agentId, this.spec.branch);
+    this.events.onCompleted(this.runId, this.spec.branch);
     this.input.close();
   }
 
   async pause() {
-    this.events.onStatus(this.agentId, "waiting");
+    this.events.onStatus(this.runId, "waiting");
   }
 
   async resume(decision?: Resolution) {
@@ -750,13 +750,13 @@ class ClaudeRunnerHandle implements RunnerHandle {
       this.gateInput = null;
       this.gateTool = null;
       this.gateQuestion = null;
-      this.events.onStatus(this.agentId, "running");
+      this.events.onStatus(this.runId, "running");
       // AskUserQuestion: there's no interactive frontend to render the picker, so
       // we never actually run the tool — we deny it and hand the operator's answer
       // back as the tool's result message, which the model reads and continues on.
       if (question) {
         gate({ behavior: "deny", message: answerForQuestion(question, decision) });
-        this.events.onLog(this.agentId, `↳ answered "${question.header}": ${describeAnswer(question, decision)}`);
+        this.events.onLog(this.runId, `↳ answered "${question.header}": ${describeAnswer(question, decision)}`);
       } else if (decision?.action === "reject") {
         gate({ behavior: "deny", message: "Operator rejected this action — revise your approach." });
       } else if (decision?.action === "modify") {
@@ -801,9 +801,9 @@ class ClaudeRunnerHandle implements RunnerHandle {
     const prompt =
       "You are helping a human operator decide whether to approve an action that an AI coding agent wants to take. " +
       "Answer the operator's question directly and concisely. Do NOT use any tools — just explain.\n\n" +
-      `Agent's task: ${this.spec.task}\n` +
+      `TaskRun's task: ${this.spec.task}\n` +
       `Working directory: ${this.spec.cwd ?? process.cwd()}\n` +
-      (this.lastRationale ? `Agent's stated reasoning: ${this.lastRationale}\n` : "") +
+      (this.lastRationale ? `TaskRun's stated reasoning: ${this.lastRationale}\n` : "") +
       `Pending action: ${this.gateTool ?? "tool"} with input:\n${JSON.stringify(this.gateInput ?? {}, null, 2)}\n\n` +
       `Operator's question: ${question}`;
     return this.runConsult(
@@ -838,7 +838,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
       env: this.sdkEnv,
       fallback,
     });
-    this.events.onChatReply(this.agentId, answer);
+    this.events.onChatReply(this.runId, answer);
   }
 
   async stop() {
@@ -851,7 +851,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
 
 export class ClaudeRunnerProvider implements RunnerProvider {
   readonly id: ProviderId = "claude";
-  // agentId → SDK session id, so a fork can resume a parent's context.
+  // runId → SDK session id, so a fork can resume a parent's context.
   private sessions = new Map<string, string>();
 
   async start(spec: StartSpec, events: RunnerEvents): Promise<RunnerHandle> {
@@ -859,7 +859,7 @@ export class ClaudeRunnerProvider implements RunnerProvider {
     return new ClaudeRunnerHandle(
       spec,
       events,
-      (agentId, sessionId) => this.sessions.set(agentId, sessionId),
+      (runId, sessionId) => this.sessions.set(runId, sessionId),
       resumeSessionId,
     );
   }

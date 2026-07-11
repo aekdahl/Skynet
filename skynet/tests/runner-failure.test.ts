@@ -1,9 +1,9 @@
-// Runner failure must NOT look like success. A runner that can't execute (binary
+// Agent failure must NOT look like success. A runner that can't execute (binary
 // missing, auth failure, crash) calls onFailed — the orchestrator surfaces it and
 // frees the runner, but never marks the agent done or completes its task. This is
 // the regression guard for the "silent mock/fallback" class of bugs.
 import { describe, it, expect } from "vitest";
-import type { ProviderId, Runner, Project, Task, ServerEvent } from "@skynet/shared";
+import type { ProviderId, Agent, Project, Task, ServerEvent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
 import { Orchestrator } from "../apps/server/src/orchestrator.js";
@@ -26,9 +26,9 @@ class NullBus implements Bus {
 class FailingProvider implements RunnerProvider {
   readonly id: ProviderId = "claude";
   async start(spec: StartSpec, events: RunnerEvents): Promise<RunnerHandle> {
-    setTimeout(() => events.onFailed(spec.agentId, "binary not found (simulated)"), 0);
+    setTimeout(() => events.onFailed(spec.runId, "binary not found (simulated)"), 0);
     return {
-      agentId: spec.agentId,
+      runId: spec.runId,
       provider: this.id,
       async pause() {},
       async resume() {},
@@ -47,35 +47,35 @@ describe("runner failure is loud, not a fake completion", () => {
     const hub = new Hub(store, bus);
     const orchestrator = new Orchestrator(store, hub, new FailingProvider());
 
-    const runner: Runner = {
+    const runner: Agent = {
       id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1",
       provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0,
     };
     const project: Project = {
-      id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "Proj", goal: "", agentIds: [], status: "active",
+      id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "Proj", goal: "", runIds: [], status: "active",
     };
     const task: Task = {
-      id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do the thing", state: "backlog", agentId: null,
+      id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do the thing", state: "backlog", runId: null,
     };
-    await store.putRunner(runner);
+    await store.putAgent(runner);
     await store.putProject(project);
     await store.putTask(task);
 
     const agent = await orchestrator.assignTask("p1", "t1");
     await tick(); // let the (async) failure propagate
 
-    const after = await store.getAgent(agent.id);
+    const after = await store.getRun(agent.id);
     expect(after?.status).toBe("review"); // surfaced, NOT "done"
     expect(after?.status).not.toBe("done");
 
     // The runner was returned to the idle pool (not leaked as busy).
-    expect((await store.getRunner("r1"))?.status).toBe("idle");
+    expect((await store.getAgent("r1"))?.status).toBe("idle");
 
     // The task was NOT marked done by a fake completion.
     expect((await store.getTask("t1"))?.state).not.toBe("done");
 
     // No "completed" event was ever published for this agent.
-    expect(bus.events.some((e) => e.type === "agent.completed")).toBe(false);
+    expect(bus.events.some((e) => e.type === "run.completed")).toBe(false);
   });
 
   it("errors loudly for an unresolvable provider (no silent mock fallback)", async () => {
@@ -86,14 +86,14 @@ describe("runner failure is loud, not a fake completion", () => {
     const hub = new Hub(store, new NullBus());
     const orchestrator = new Orchestrator(store, hub); // no providerOverride; RUNNER unset
 
-    const project: Project = { id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", agentIds: [], status: "active" };
-    const runner: Runner = {
+    const project: Project = { id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" };
+    const runner: Agent = {
       id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1",
       provider: "bogus" as ProviderId, model: "x", status: "idle", idleSince: 0,
     };
-    const task: Task = { id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "x", state: "backlog", agentId: null };
+    const task: Task = { id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "x", state: "backlog", runId: null };
     await store.putProject(project);
-    await store.putRunner(runner);
+    await store.putAgent(runner);
     await store.putTask(task);
 
     await expect(orchestrator.assignTask("p1", "t1")).rejects.toThrow(/unknown runner provider/i);

@@ -14,7 +14,7 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 
 export interface MergeRequest {
-  agentId: string;
+  runId: string;
   projectId: string;
   agentBranch: string;
   workspaceId: string;
@@ -28,7 +28,7 @@ export interface MergeCallbacks {
   /** Project checks failed after merge — bounce back to the agent to revise. */
   onChecksFailed(req: MergeRequest, output: string): Promise<void>;
   /** Progress/info line for the agent's log. */
-  onLog(agentId: string, line: string): void;
+  onLog(runId: string, line: string): void;
 }
 
 export class MergeEngine {
@@ -64,12 +64,12 @@ export class MergeEngine {
   }
 
   private async process(req: MergeRequest, branch: string): Promise<void> {
-    this.cb.onLog(req.agentId, `merge queue: integrating ${req.agentBranch} → ${branch}`);
+    this.cb.onLog(req.runId, `merge queue: integrating ${req.agentBranch} → ${branch}`);
     await this.ensureIntegrationBranch(branch);
     await this.git("checkout", branch);
 
     try {
-      await this.git("merge", "--no-ff", "-m", `Merge ${req.agentBranch} (agent ${req.agentId})`, req.agentBranch);
+      await this.git("merge", "--no-ff", "-m", `Merge ${req.agentBranch} (agent ${req.runId})`, req.agentBranch);
     } catch {
       // Conflict — capture the contested files, abort cleanly, escalate.
       let conflicted: string[] = [];
@@ -80,7 +80,7 @@ export class MergeEngine {
         /* ignore */
       }
       await this.git("merge", "--abort").catch(() => undefined);
-      this.cb.onLog(req.agentId, `merge conflict in ${conflicted.length} file(s) — escalating`);
+      this.cb.onLog(req.runId, `merge conflict in ${conflicted.length} file(s) — escalating`);
       await this.cb.onConflict(req, conflicted);
       return;
     }
@@ -96,7 +96,7 @@ export class MergeEngine {
       }
     }
 
-    this.cb.onLog(req.agentId, `merged ${req.agentBranch} into ${branch}`);
+    this.cb.onLog(req.runId, `merged ${req.agentBranch} into ${branch}`);
     await this.cb.onMerged(req, branch);
   }
 }

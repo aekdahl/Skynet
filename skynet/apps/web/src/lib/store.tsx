@@ -8,14 +8,14 @@ import {
   type ReactNode,
 } from "react";
 import type {
-  Agent,
+  TaskRun,
   Dependency,
   HitlItem,
   Module,
   Project,
   ProviderInfo,
   ResolveAction,
-  Runner,
+  Agent,
   ServerEvent,
   Snapshot,
   Task,
@@ -40,11 +40,11 @@ function serverMessage(e: unknown, fallback: string): string {
 // ─── store shape ─────────────────────────────────────────────────────────────
 
 export interface StoreState {
-  agents: Agent[];
+  runs: TaskRun[];
   queue: HitlItem[];
   projects: Project[];
   tasks: Task[];
-  fleet: Runner[];
+  fleet: Agent[];
   modules: Module[];
   deps: Dependency[];
   providers: ProviderInfo[];
@@ -85,10 +85,10 @@ export interface Store extends StoreState {
     patch: { text?: string; state?: string },
   ) => Promise<void>;
   deleteTask: (projectId: string, taskId: string) => Promise<void>;
-  assignTask: (projectId: string, taskId: string) => Promise<Agent | null>;
-  createRunner: (provider: string, model: string, name?: string) => Promise<void>;
-  updateRunner: (id: string, patch: { model?: string; name?: string }) => Promise<void>;
-  deleteRunner: (id: string) => Promise<void>;
+  assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
+  createAgent: (provider: string, model: string, name?: string) => Promise<void>;
+  updateAgent: (id: string, patch: { model?: string; name?: string }) => Promise<void>;
+  deleteAgent: (id: string) => Promise<void>;
   // audit trail maintenance — mirror archive (agent) + delete (project/task/runner)
   archiveAudit: (hitlId: string, archived: boolean) => Promise<void>;
   deleteAudit: (hitlId: string) => Promise<void>;
@@ -110,59 +110,59 @@ function upsert<T extends { id: string }>(list: T[], item: T): T[] {
 
 function reduce(state: StoreState, ev: ServerEvent): StoreState {
   switch (ev.type) {
-    case "agent.started":
-      return { ...state, agents: upsert(state.agents, ev.agent) };
-    case "agent.log":
+    case "run.started":
+      return { ...state, runs: upsert(state.runs, ev.run) };
+    case "run.log":
       return {
         ...state,
-        agents: state.agents.map((a) =>
-          a.id === ev.agentId
+        runs: state.runs.map((a) =>
+          a.id === ev.runId
             ? { ...a, log: [...a.log, { at: ev.at, line: ev.line, detail: ev.detail }] }
             : a,
         ),
       };
-    case "agent.progress":
+    case "run.progress":
       return {
         ...state,
-        agents: state.agents.map((a) =>
-          a.id === ev.agentId ? { ...a, progress: ev.progress, plan: ev.plan } : a,
+        runs: state.runs.map((a) =>
+          a.id === ev.runId ? { ...a, progress: ev.progress, plan: ev.plan } : a,
         ),
       };
-    case "agent.heartbeat":
+    case "run.heartbeat":
       return {
         ...state,
-        agents: state.agents.map((a) =>
-          a.id === ev.agentId ? { ...a, lastHeartbeatAt: ev.at } : a,
+        runs: state.runs.map((a) =>
+          a.id === ev.runId ? { ...a, lastHeartbeatAt: ev.at } : a,
         ),
       };
-    case "agent.usage":
+    case "run.usage":
       return {
         ...state,
-        agents: state.agents.map((a) =>
-          a.id === ev.agentId ? { ...a, usage: ev.usage } : a,
+        runs: state.runs.map((a) =>
+          a.id === ev.runId ? { ...a, usage: ev.usage } : a,
         ),
       };
-    case "agent.status":
+    case "run.status":
       return {
         ...state,
-        agents: state.agents.map((a) =>
-          a.id === ev.agentId ? { ...a, status: ev.status } : a,
+        runs: state.runs.map((a) =>
+          a.id === ev.runId ? { ...a, status: ev.status } : a,
         ),
       };
-    case "agent.completed":
+    case "run.completed":
       return {
         ...state,
-        agents: state.agents.map((a) =>
-          a.id === ev.agentId
+        runs: state.runs.map((a) =>
+          a.id === ev.runId
             ? { ...a, status: "done", branch: ev.branch, progress: 1 }
             : a,
         ),
       };
-    case "agent.archived":
+    case "run.archived":
       return {
         ...state,
-        agents: state.agents.map((a) =>
-          a.id === ev.agentId ? { ...a, archived: ev.archived } : a,
+        runs: state.runs.map((a) =>
+          a.id === ev.runId ? { ...a, archived: ev.archived } : a,
         ),
       };
     case "hitl.raised":
@@ -186,9 +186,9 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
       return { ...state, tasks: upsert(state.tasks, ev.task) };
     case "task.deleted":
       return { ...state, tasks: state.tasks.filter((t) => t.id !== ev.id) };
-    case "runner.upserted":
-      return { ...state, fleet: upsert(state.fleet, ev.runner) };
-    case "runner.deleted":
+    case "agent.upserted":
+      return { ...state, fleet: upsert(state.fleet, ev.agent) };
+    case "agent.deleted":
       return { ...state, fleet: state.fleet.filter((r) => r.id !== ev.id) };
     case "audit.archived":
     case "audit.deleted":
@@ -202,7 +202,7 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
 }
 
 const EMPTY: StoreState = {
-  agents: [],
+  runs: [],
   queue: [],
   projects: [],
   tasks: [],
@@ -217,7 +217,7 @@ const EMPTY: StoreState = {
 
 function fromSnapshot(snap: Snapshot): StoreState {
   return {
-    agents: snap.agents,
+    runs: snap.runs,
     queue: snap.queue,
     projects: snap.projects,
     tasks: snap.tasks,
@@ -261,7 +261,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         // Only live deltas fire this; the connect-time snapshot never does, so
         // reconnecting doesn't re-alert on the existing queue.
         if (msg.type === "hitl.raised") {
-          void notifyInbox(`Needs you — ${msg.item.title}`, msg.item.why, msg.item.agentId);
+          void notifyInbox(`Needs you — ${msg.item.title}`, msg.item.why, msg.item.runId);
         }
         setState((s) => reduce(s, msg));
       }
@@ -288,7 +288,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await api.forkAgent(id);
         } catch (e) {
           if (e instanceof api.ApiError && e.status === 409) {
-            alert(serverMessage(e, "Can't fork — no runner available. Configure one in Fleet."));
+            alert(serverMessage(e, "Can't fork — no agent available. Configure one in Fleet."));
             return;
           }
           throw e;
@@ -335,24 +335,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           return await api.assignTask(projectId, taskId);
         } catch (e) {
           if (e instanceof api.ApiError && e.status === 409) {
-            alert(serverMessage(e, "No idle runner available — configure or free one in Fleet."));
+            alert(serverMessage(e, "No idle agent available — configure or free one in Fleet."));
             return null;
           }
           throw e;
         }
       },
-      createRunner: async (provider, model, name) => {
-        await api.createRunner({ provider, model, name });
+      createAgent: async (provider, model, name) => {
+        await api.createAgent({ provider, model, name });
       },
-      updateRunner: async (id, patch) => {
-        await api.updateRunner(id, patch);
+      updateAgent: async (id, patch) => {
+        await api.updateAgent(id, patch);
       },
-      deleteRunner: async (id) => {
+      deleteAgent: async (id) => {
         try {
-          await api.deleteRunner(id);
+          await api.deleteAgent(id);
         } catch (e) {
           if (e instanceof api.ApiError && e.status === 409) {
-            alert("Runner is busy — finish or reassign its task before retiring.");
+            alert("Agent is busy — finish or reassign its task before retiring.");
             return;
           }
           throw e;

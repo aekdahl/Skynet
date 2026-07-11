@@ -1,5 +1,5 @@
 import type {
-  AgentStatus,
+  TaskRunStatus,
   HitlItem,
   PlanStep,
   ProviderId,
@@ -9,7 +9,7 @@ import type {
 
 /** What the orchestrator hands a provider to start an agent on a task. */
 export interface StartSpec {
-  agentId: string;
+  runId: string;
   projectId: string;
   task: string; // the task text the agent owns
   model: string;
@@ -34,13 +34,13 @@ export interface StartSpec {
  */
 export interface RunnerEvents {
   /** A log line. `detail` is optional expandable content (e.g. a tool's full input/output). */
-  onLog(agentId: string, line: string, detail?: string): void;
-  onProgress(agentId: string, progress: number, plan: PlanStep[]): void;
-  onHeartbeat(agentId: string): void;
-  onStatus(agentId: string, status: AgentStatus): void;
-  /** Agent blocked on a human — orchestrator turns this into a HitlItem. */
-  onHitl(agentId: string, raise: HitlRaise): void;
-  onCompleted(agentId: string, branch: string): void;
+  onLog(runId: string, line: string, detail?: string): void;
+  onProgress(runId: string, progress: number, plan: PlanStep[]): void;
+  onHeartbeat(runId: string): void;
+  onStatus(runId: string, status: TaskRunStatus): void;
+  /** TaskRun blocked on a human — orchestrator turns this into a HitlItem. */
+  onHitl(runId: string, raise: HitlRaise): void;
+  onCompleted(runId: string, branch: string): void;
   /**
    * The runner could NOT execute (binary missing, auth failure, crash). This is
    * a real failure — distinct from onCompleted. The orchestrator surfaces it
@@ -48,16 +48,16 @@ export interface RunnerEvents {
    * or merges its branch. A runner must call this, not onCompleted, when it
    * could not actually do the work.
    */
-  onFailed(agentId: string, reason: string): void;
+  onFailed(runId: string, reason: string): void;
   /** Reply to a `message()` (chat) — does not resolve a HITL item. */
-  onChatReply(agentId: string, text: string): void;
+  onChatReply(runId: string, text: string): void;
   /**
    * Token/cost telemetry, when the vendor reports it (Claude's result message
    * gives exact numbers; some CLIs surface them best-effort). Optional so a
    * provider that has no usage data — or a hand-rolled test harness — can skip
    * it. Called with the cumulative totals for the run.
    */
-  onUsage?(agentId: string, usage: Usage): void;
+  onUsage?(runId: string, usage: Usage): void;
 }
 
 /** The kind-specific fields an agent supplies when it raises a HITL gate. */
@@ -68,7 +68,7 @@ export type HitlRaise = Pick<
 
 /** A live agent the orchestrator can steer. */
 export interface RunnerHandle {
-  readonly agentId: string;
+  readonly runId: string;
   readonly provider: ProviderId;
   pause(): Promise<void>;
   /** Deliver an operator decision and resume; resolves a pending HITL. */
