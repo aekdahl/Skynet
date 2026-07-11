@@ -59,8 +59,11 @@ export function SimulationView() {
       </div>
 
       <p className="acc-section-sub">
-        Best run with <code>RUNNER=mock</code> so assigned agents actually execute (no provider keys needed).
-        Everything created is tagged <code>Sim:</code> / <code>sim-</code> and stays until you clear it.
+        Runs <strong>real agents</strong> on your configured fleet providers — set a provider credential
+        (e.g. <code>ANTHROPIC_API_KEY</code>) and add a runner. Do <strong>not</strong> use{" "}
+        <code>RUNNER=mock</code>: the mock fabricates canned activity (including that stray "migrate staging"
+        gate) and proves nothing. Everything created is tagged <code>Sim:</code> / <code>sim-</code> and
+        stays until you clear it.
       </p>
 
       <div className="acc-list">

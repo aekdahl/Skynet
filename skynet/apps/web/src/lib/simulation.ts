@@ -11,7 +11,21 @@
 
 import * as api from "./client";
 import { settle } from "./poll";
-import type { Agent } from "@skynet/shared";
+import type { Agent, AuditRecord } from "@skynet/shared";
+
+/** Poll the audit trail until `ready`, then return the latest (real-agent timing). */
+async function settleAudit(
+  ready: (a: AuditRecord[]) => boolean,
+  tries = 8,
+  delayMs = 300,
+): Promise<AuditRecord[]> {
+  let a = await api.fetchAudit();
+  for (let n = 0; n < tries && !ready(a); n++) {
+    await new Promise((r) => setTimeout(r, delayMs));
+    a = await api.fetchAudit();
+  }
+  return a;
+}
 
 export interface Step {
   label: string;
@@ -104,20 +118,39 @@ export const JOURNEYS: Journey[] = [
   {
     id: "supervise-decision",
     name: "Supervise a human-in-the-loop decision",
-    desc: "Operator resolves an open HITL gate; the decision is recorded in the audit trail. Persists.",
+    desc: "Operator assigns a task needing a gated action; the REAL agent pauses for approval; the operator resolves it and the decision lands in the audit trail. Persists.",
     run: async () => {
       const steps: Step[] = [];
-      const s = await api.fetchSnapshot();
-      const open = s.queue.find((q) => q.resolvedAt == null);
-      if (!open) {
-        steps.push(skipped("an open HITL gate to resolve", "none open — run a task whose agent raises a gate, then re-run"));
-        return steps;
-      }
-      const before = (await api.fetchAudit()).length;
+      const tag = uid();
+      const pname = `Sim: supervise ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated supervised decision" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-sup-${tag}` });
+      // A task that requires a SHELL command: edits are auto-allowed, but commands
+      // gate — so the real agent raises a genuine approval HITL (no mock/canned gate).
+      await api.createTask(p.id, "Run the shell command `node --version` and report the version string you get back.");
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const auditBefore = (await api.fetchAudit()).length;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [...steps, step("agent spawned", false, res.error)];
+      const agentId = res.id;
+      steps.push(step("real agent running", true, agentId));
+      // Wait generously for the real agent to spin up and reach the command gate.
+      const gated = await settle(
+        (sn) => sn.queue.some((q) => q.agentId === agentId && q.resolvedAt == null),
+        60,
+        1000,
+      );
+      const open = gated.queue.find((q) => q.agentId === agentId && q.resolvedAt == null);
+      steps.push(step("real agent raised an approval gate", !!open, open ? `${open.kind}: ${open.title}` : "no gate within ~60s"));
+      if (!open) return steps;
       await api.resolveHitl(open.id, { action: "approve" });
-      const trail = await api.fetchAudit();
-      steps.push(step("decision resolved + recorded in audit (persists)", trail.length > before, `${before} → ${trail.length}`));
-      steps.push(step("audit row names the resolved gate", trail.some((r) => r.hitlId === open.id), open.id));
+      const trail = await settleAudit((a) => a.some((r) => r.hitlId === open.id));
+      steps.push(step("decision recorded in audit (persists)", trail.some((r) => r.hitlId === open.id), `audit ${auditBefore} → ${trail.length}`));
+      steps.push(step("audit names the resolved gate + operator", trail.some((r) => r.hitlId === open.id && !!r.operatorId)));
       return steps;
     },
   },

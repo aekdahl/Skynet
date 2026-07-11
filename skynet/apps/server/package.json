@@ -5,7 +5,8 @@
   "type": "module",
   "main": "./dist/index.js",
   "scripts": {
-    "dev": "STORE=${STORE:-memory} RUNNER=${RUNNER:-mock} BUS=${BUS:-memory} SESSIONS=${SESSIONS:-memory} tsx watch src/index.ts",
+    "dev": "STORE=${STORE:-memory} BUS=${BUS:-memory} SESSIONS=${SESSIONS:-memory} tsx watch src/index.ts",
+    "dev:mock": "RUNNER=mock pnpm dev",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
