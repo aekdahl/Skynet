@@ -136,6 +136,9 @@ export const Task = z.object({
   text: z.string(),
   state: TaskState,
   agentId: z.string().nullable().default(null),
+  // Manual backlog priority — lower sorts higher (top = next up). Operators
+  // promote/demote to reorder; unset sorts as 0 (legacy tasks / pre-ordering).
+  order: z.number().int().optional(),
 });
 export type Task = z.infer<typeof Task>;
 

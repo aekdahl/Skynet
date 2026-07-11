@@ -214,6 +214,9 @@ export class Operations {
   async createTask(ws: string, projectId: string, input: CreateTaskRequest): Promise<Task> {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    // New tasks append to the bottom of the backlog (highest order = lowest
+    // priority) so existing manual ordering is preserved.
+    const inProject = (await this.store.listTasks(ws)).filter((t) => t.projectId === projectId);
     const task: Task = {
       id: this.uid(`t-${this.slug(project.name)}`),
       workspaceId: ws,
@@ -221,6 +224,7 @@ export class Operations {
       text: input.text,
       state: "backlog",
       agentId: null,
+      order: inProject.length,
     };
     return this.hub.upsertTask(task);
   }
@@ -228,6 +232,29 @@ export class Operations {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
     return this.hub.upsertTask({ ...task, ...patch });
+  }
+  /**
+   * Manually promote (up) or demote (down) a task within its project's backlog.
+   * Swaps priority with the adjacent backlog task; a no-op at the ends. Renumbers
+   * the backlog to a stable 0..n-1 so ties (legacy unset order) resolve cleanly.
+   */
+  async moveTask(ws: string, tid: string, direction: "up" | "down"): Promise<Task> {
+    const task = await this.store.getTask(tid);
+    if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    const rank = (t: Task) => t.order ?? 0;
+    const backlog = (await this.store.listTasks(ws))
+      .filter((t) => t.projectId === task.projectId && t.state === task.state)
+      .sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
+    const idx = backlog.findIndex((t) => t.id === tid);
+    const target = direction === "up" ? idx - 1 : idx + 1;
+    if (idx < 0 || target < 0 || target >= backlog.length) return task; // at an end — no-op
+    // Move the task to its new slot, then renumber the whole list 0..n-1.
+    backlog.splice(idx, 1);
+    backlog.splice(target, 0, task);
+    for (let i = 0; i < backlog.length; i++) {
+      if (rank(backlog[i]!) !== i) await this.hub.upsertTask({ ...backlog[i]!, order: i });
+    }
+    return (await this.store.getTask(tid))!;
   }
   async deleteTask(ws: string, tid: string): Promise<void> {
     const task = await this.store.getTask(tid);

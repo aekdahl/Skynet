@@ -184,6 +184,9 @@ export function deleteTask(projectId: string, taskId: string) {
 export function assignTask(projectId: string, taskId: string) {
   return req<Agent>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
 }
+export function moveTask(projectId: string, taskId: string, direction: "up" | "down") {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/move`, { direction });
+}
 
 // Fleet
 export function createRunner(body: { provider: string; model: string; name?: string }) {

@@ -72,7 +72,11 @@ export const tasksForProject = (tasks: Task[], projectId: string) =>
   tasks.filter((t) => t.projectId === projectId);
 
 export const backlogTasks = (tasks: Task[], projectId: string) =>
-  tasks.filter((t) => t.projectId === projectId && t.state === "backlog");
+  tasks
+    .filter((t) => t.projectId === projectId && t.state === "backlog")
+    // Manual priority: lower `order` sorts higher (top = next up). Stable by id
+    // so legacy tasks with an unset order keep a deterministic position.
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
 
 export const doneTasks = (tasks: Task[], projectId: string) =>
   tasks.filter((t) => t.projectId === projectId && t.state === "done");

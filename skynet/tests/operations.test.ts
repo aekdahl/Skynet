@@ -70,6 +70,40 @@ describe("Operations — workspace-scoped domain layer", () => {
     await expect(ops.retireRunner(DEFAULT_WORKSPACE, "r1")).rejects.toBeInstanceOf(RunnerBusyError);
   });
 
+  it("promotes and demotes backlog tasks, with bounds no-ops", async () => {
+    const { store, ops } = setup();
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repo: undefined });
+    // Created in order a, b, c → orders 0, 1, 2 (top → bottom).
+    const a = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "a" });
+    const b = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "b" });
+    const c = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "c" });
+
+    const orderOf = async () => {
+      const tasks = await store.listTasks(DEFAULT_WORKSPACE);
+      return [a, b, c]
+        .map((t) => tasks.find((x) => x.id === t.id)!)
+        .sort((x, y) => (x.order ?? 0) - (y.order ?? 0))
+        .map((t) => t.text);
+    };
+    expect(await orderOf()).toEqual(["a", "b", "c"]);
+
+    // Promote c → swaps with b: a, c, b.
+    await ops.moveTask(DEFAULT_WORKSPACE, c.id, "up");
+    expect(await orderOf()).toEqual(["a", "c", "b"]);
+
+    // Demote a → swaps with c: c, a, b.
+    await ops.moveTask(DEFAULT_WORKSPACE, a.id, "down");
+    expect(await orderOf()).toEqual(["c", "a", "b"]);
+
+    // Promoting the top task is a no-op; demoting the bottom is a no-op.
+    await ops.moveTask(DEFAULT_WORKSPACE, c.id, "up");
+    await ops.moveTask(DEFAULT_WORKSPACE, b.id, "down");
+    expect(await orderOf()).toEqual(["c", "a", "b"]);
+
+    // Cross-workspace move is a 404, never a silent reorder.
+    await expect(ops.moveTask("resistance", a.id, "up")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
   it("resolves a HITL item once, recording who decided (idempotent)", async () => {
     const { hub, ops, store } = setup();
     const item: HitlItem = {
