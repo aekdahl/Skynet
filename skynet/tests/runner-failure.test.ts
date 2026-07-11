@@ -79,9 +79,10 @@ describe("runner failure is loud, not a fake completion", () => {
   });
 
   it("errors loudly for an unresolvable provider (no silent mock fallback)", async () => {
-    // The backend is chosen per fleet runner (config.runner is only a global
-    // override). A runner whose provider doesn't resolve to a real backend must
-    // reject loudly — never quietly fall back to the mock and look like a real run.
+    // The backend is chosen per fleet runner (there is no mock and no RUNNER
+    // override). A runner whose provider can't execute — a bogus id, or a real
+    // provider with no credential — must reject loudly at assign, never quietly
+    // fall back to a fake run.
     const store = new MemoryStore();
     const hub = new Hub(store, new NullBus());
     const orchestrator = new Orchestrator(store, hub); // no providerOverride; RUNNER unset
@@ -96,6 +97,11 @@ describe("runner failure is loud, not a fake completion", () => {
     await store.putAgent(runner);
     await store.putTask(task);
 
-    await expect(orchestrator.assignTask("p1", "t1")).rejects.toThrow(/unknown runner provider/i);
+    // The usability gate fires first (no credential for "bogus"); an id that
+    // slipped past it would still reject at provider resolution ("unknown runner
+    // provider"). Either way it's a loud reject, never a silent fake run.
+    await expect(orchestrator.assignTask("p1", "t1")).rejects.toThrow(
+      /no credential|unknown runner provider/i,
+    );
   });
 });

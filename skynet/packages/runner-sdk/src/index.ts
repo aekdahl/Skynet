@@ -4,4 +4,3 @@
 // never special-cases a vendor. (Backend Brief §06, Architecture Brief §07.)
 
 export * from "./types.js";
-export * from "./mock.js";

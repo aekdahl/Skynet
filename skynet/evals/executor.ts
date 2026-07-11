@@ -3,11 +3,11 @@
 // repo, auto-resolving HITL gates, and captures artifacts (diff / log / hitl /
 // status) for the judge. Boots the server stack in-process — no HTTP server.
 //
-// Real runs only: leave RUNNER unset so the fleet runner's own provider executes
-// (e.g. claude), with a Claude credential present (ANTHROPIC_API_KEY, or the
-// CLAUDE_CODE_OAUTH_TOKEN / gateway the runner-sdk understands). Do NOT point
-// this at RUNNER=mock — a canned runner produces a fake diff and a meaningless
-// verdict; mock belongs in the deterministic unit tests, never here. See README.
+// Real runs only: agents execute on the fleet runner's own provider (e.g.
+// claude), which needs a credential present (ANTHROPIC_API_KEY, or the
+// CLAUDE_CODE_OAUTH_TOKEN / gateway the runner-sdk understands). There is no
+// mock — without a credential nothing runs, and the scenario surfaces that
+// rather than grading a fake run. See README.
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 import type { Artifacts, Executor, Scenario } from "./types.js";
 
 const WORKSPACE = "cyberdyne"; // DEFAULT_WORKSPACE
-const PROVIDER = process.env.SKYNET_EVAL_PROVIDER || "claude"; // runner's provider (RUNNER can override)
+const PROVIDER = process.env.SKYNET_EVAL_PROVIDER || "claude"; // the fleet runner's provider
 const TIMEOUT_MS = Number(process.env.SKYNET_EVAL_TIMEOUT_MS ?? 180_000);
 
 // Server singletons, lazily booted once (config is captured at import time, so
@@ -92,16 +92,9 @@ async function boot(): Promise<Booted> {
   git(repo, "commit", "-m", "base");
   const baseSha = git(repo, "rev-parse", "HEAD");
 
-  // Real runs only: a mock runner emits a canned log + never edits/commits, so
-  // the diff artifact comes back empty and the verdict is meaningless. The
-  // in-app path strips this (apps/server/src/evals/index.ts); the standalone CLI
-  // must too, else a dev who ran `. ./.env` (which sets RUNNER=mock) silently
-  // grades fake runs. Drop it BEFORE importing config, which captures RUNNER at
-  // import time — leaving it set would force mock for every agent.
-  if (process.env.RUNNER === "mock") {
-    delete process.env.RUNNER;
-    process.stderr.write("[eval] ignoring RUNNER=mock — the acceptance suite is real-runs-only.\n");
-  }
+  // Real runs only: agents execute on their fleet runner's own provider (there
+  // is no mock). Without a provider credential, nothing runs and the scenario
+  // surfaces that rather than grading a fake run.
 
   // Point the orchestrator at the repo BEFORE importing config (import-time capture).
   process.env.STORE ??= "memory";
@@ -264,9 +257,7 @@ export function makeExecutor(): Executor {
           finalStatus,
           ...(failLine ? { runnerError: failLine } : {}),
           wallMs: Date.now() - started,
-          notes:
-            `provider=${PROVIDER} runnerOverride=${process.env.RUNNER ?? "(none)"}` +
-            (diffNote ? ` · ${diffNote}` : ""),
+          notes: `provider=${PROVIDER}` + (diffNote ? ` · ${diffNote}` : ""),
         };
       } finally {
         unsub();

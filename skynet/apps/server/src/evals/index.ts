@@ -48,13 +48,9 @@ let catalogCache: unknown[] | null = null;
 
 function spawnEval(args: string[]) {
   // env inherited from the server (which loaded skynet/.env at boot, so the child
-  // sees ANTHROPIC_API_KEY etc.) — with ONE deliberate override: strip a
-  // RUNNER=mock. The eval suite is real-runs-only; a mock runner yields a fake
-  // diff and a meaningless verdict (see evals/executor.ts). Dropping it lets the
-  // eval runner's own provider (claude) execute for real.
-  const env = { ...process.env };
-  if (env.RUNNER === "mock") delete env.RUNNER;
-  return spawn(tsxBin, [runScript, ...args], { cwd: repoRoot, env });
+  // sees ANTHROPIC_API_KEY etc.). The eval suite is real-runs-only; agents run on
+  // their fleet runner's own provider (there is no mock).
+  return spawn(tsxBin, [runScript, ...args], { cwd: repoRoot, env: { ...process.env } });
 }
 
 // True when a real run is actually possible right now (a mock server env is

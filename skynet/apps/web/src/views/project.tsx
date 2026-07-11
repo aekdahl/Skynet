@@ -72,11 +72,15 @@ function ProjectAgentCard({
 function BacklogCard({
   task,
   onAssign,
+  canPromote,
+  canDemote,
 }: {
   task: Task;
   onAssign: () => void;
+  canPromote: boolean;
+  canDemote: boolean;
 }) {
-  const { updateTask, deleteTask, fleet } = useStore();
+  const { updateTask, deleteTask, moveTask, fleet } = useStore();
   const noRunner = fleet.length === 0;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.text);
@@ -120,6 +124,22 @@ function BacklogCard({
       <div className="kb-card-top">
         <span className="kb-task">{task.text}</span>
         <span className="kb-card-tools">
+          <button
+            className="kb-tool"
+            title="Promote — move up the backlog"
+            disabled={!canPromote}
+            onClick={() => moveTask(task.projectId, task.id, "up")}
+          >
+            ↑
+          </button>
+          <button
+            className="kb-tool"
+            title="Demote — move down the backlog"
+            disabled={!canDemote}
+            onClick={() => moveTask(task.projectId, task.id, "down")}
+          >
+            ↓
+          </button>
           <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>
             ✎
           </button>
@@ -361,11 +381,13 @@ export function ProjectView({
       <div className="kb-cols">
         <div className="kb-col">
           <div className="kb-head">BACKLOG · {backlog.length}</div>
-          {backlog.map((t) => (
+          {backlog.map((t, i) => (
             <BacklogCard
               key={t.id}
               task={t}
               onAssign={() => assignTask(project.id, t.id)}
+              canPromote={i > 0}
+              canDemote={i < backlog.length - 1}
             />
           ))}
           <AddTaskCard onAdd={(text) => createTask(project.id, text)} />
