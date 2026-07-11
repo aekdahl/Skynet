@@ -164,10 +164,30 @@ export class Operations {
     if (!updated) throw new NotFoundError("Agent");
     return updated;
   }
-  /** Stop a live agent (frees its runner, retires its worktree). */
-  async stopAgent(ws: string, agentId: string): Promise<void> {
+  /** Pause a running/waiting agent — halts its runner, keeps the session. */
+  async pauseAgent(ws: string, agentId: string): Promise<Agent> {
     await this.getAgent(ws, agentId); // 404 unless it's in this workspace
-    await this.orchestrator.stopAgent(agentId);
+    const updated = await this.orchestrator.pauseAgent(agentId);
+    if (!updated) throw new NotFoundError("Agent");
+    return updated;
+  }
+  /** Resume a paused agent back into the running state. */
+  async resumeAgent(ws: string, agentId: string): Promise<Agent> {
+    await this.getAgent(ws, agentId); // 404 unless it's in this workspace
+    const updated = await this.orchestrator.resumeAgent(agentId);
+    if (!updated) throw new NotFoundError("Agent");
+    return updated;
+  }
+  /**
+   * Operator "stop": terminal. Halt execution, free the runner, retire the
+   * worktree, and mark the agent done — NOT the detach-only orchestrator.stopAgent
+   * (which leaves status untouched). Returns the now-terminal agent.
+   */
+  async stopAgent(ws: string, agentId: string): Promise<Agent> {
+    await this.getAgent(ws, agentId); // 404 unless it's in this workspace
+    const updated = await this.orchestrator.haltAgent(agentId);
+    if (!updated) throw new NotFoundError("Agent");
+    return updated;
   }
 
   // ── projects ──────────────────────────────────────────────────────────────
