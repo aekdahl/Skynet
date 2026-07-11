@@ -1,12 +1,12 @@
 import type {
-  Agent,
-  AgentStatus,
+  TaskRun,
+  TaskRunStatus,
   HitlItem,
   HitlKind,
   Module,
   ProviderId,
   ProviderInfo,
-  Runner,
+  Agent,
   Task,
 } from "@skynet/shared";
 
@@ -28,22 +28,22 @@ export function fmtClock(sec: number): string {
 
 // ─── epoch-ms → display counters (against a ticking `now`) ──────────────────
 
-export const heartbeatSecs = (agent: Agent, now: number) =>
+export const heartbeatSecs = (agent: TaskRun, now: number) =>
   Math.max(0, (now - agent.lastHeartbeatAt) / 1000);
 
-export const startedMins = (agent: Agent, now: number) =>
+export const startedMins = (agent: TaskRun, now: number) =>
   Math.max(0, (now - agent.startedAt) / 60000);
 
 export const waitedSecs = (hitl: HitlItem, now: number) =>
   Math.max(0, (now - hitl.raisedAt) / 1000);
 
-export function fmtElapsed(agent: Agent, now: number): string {
+export function fmtElapsed(agent: TaskRun, now: number): string {
   const mins = Math.floor(startedMins(agent, now));
   const h = Math.floor(mins / 60);
   return `${h > 0 ? `${h}h ` : ""}${mins % 60}m elapsed`;
 }
 
-export function runnerIdleLabel(runner: Runner, now: number): string {
+export function runnerIdleLabel(runner: Agent, now: number): string {
   if (runner.idleSince == null) return "now";
   const mins = Math.floor((now - runner.idleSince) / 60000);
   if (mins <= 0) return "now";
@@ -53,20 +53,20 @@ export function runnerIdleLabel(runner: Runner, now: number): string {
 
 // ─── plan helpers ───────────────────────────────────────────────────────────
 
-export const curStep = (a: Agent) => {
+export const curStep = (a: TaskRun) => {
   const s = a.plan.find((p) => p.state === "now");
   return s ? s.text : "complete";
 };
-export const stepIdx = (a: Agent) => {
+export const stepIdx = (a: TaskRun) => {
   const i = a.plan.findIndex((p) => p.state === "now");
   return i < 0 ? a.plan.length : i;
 };
-export const planDone = (a: Agent) => a.plan.filter((p) => p.state === "done").length;
+export const planDone = (a: TaskRun) => a.plan.filter((p) => p.state === "done").length;
 
 // ─── collection lookups ──────────────────────────────────────────────────────
 
-export const agentsForProject = (agents: Agent[], projectId: string) =>
-  agents.filter((a) => a.projectId === projectId);
+export const agentsForProject = (runs: TaskRun[], projectId: string) =>
+  runs.filter((a) => a.projectId === projectId);
 
 export const tasksForProject = (tasks: Task[], projectId: string) =>
   tasks.filter((t) => t.projectId === projectId);
@@ -77,28 +77,28 @@ export const backlogTasks = (tasks: Task[], projectId: string) =>
 export const doneTasks = (tasks: Task[], projectId: string) =>
   tasks.filter((t) => t.projectId === projectId && t.state === "done");
 
-export const hitlFor = (queue: HitlItem[], agentId: string) =>
-  queue.find((q) => q.agentId === agentId && q.resolvedAt == null);
+export const hitlFor = (queue: HitlItem[], runId: string) =>
+  queue.find((q) => q.runId === runId && q.resolvedAt == null);
 
 export const openQueue = (queue: HitlItem[]) =>
   queue.filter((q) => q.resolvedAt == null);
 
 // ─── runner / fleet derivations ──────────────────────────────────────────────
 
-export const runnerIsBusy = (runner: Runner, agents: Agent[]) =>
+export const runnerIsBusy = (runner: Agent, runs: TaskRun[]) =>
   runner.status === "busy" ||
-  agents.some((a) => a.status !== "done" && a.runnerId === runner.id);
+  runs.some((a) => a.status !== "done" && a.agentId === runner.id);
 
-export const idleRunners = (fleet: Runner[], agents: Agent[]) =>
-  fleet.filter((r) => !runnerIsBusy(r, agents));
+export const idleRunners = (fleet: Agent[], runs: TaskRun[]) =>
+  fleet.filter((r) => !runnerIsBusy(r, runs));
 
-export const runnerName = (agent: Agent, fleet: Runner[]) => {
-  const r = fleet.find((f) => f.id === agent.runnerId);
-  return r ? r.name : agent.runnerId ?? agent.id;
+export const runnerName = (agent: TaskRun, fleet: Agent[]) => {
+  const r = fleet.find((f) => f.id === agent.agentId);
+  return r ? r.name : agent.agentId ?? agent.id;
 };
 
-export const providerOf = (agent: Agent, fleet: Runner[]): ProviderId => {
-  const r = fleet.find((f) => f.id === agent.runnerId);
+export const providerOf = (agent: TaskRun, fleet: Agent[]): ProviderId => {
+  const r = fleet.find((f) => f.id === agent.agentId);
   return r ? r.provider : agent.provider;
 };
 
@@ -109,12 +109,12 @@ export const modName = (modules: Module[], id: string) =>
 
 // ─── conflict detection (families share a parent) ───────────────────────────
 
-export const familyOf = (a: Agent) => a.parentId ?? a.id;
+export const familyOf = (a: TaskRun) => a.parentId ?? a.id;
 
-export function conflictModulesForAgent(agent: Agent, agents: Agent[]): string[] {
+export function conflictModulesForAgent(agent: TaskRun, runs: TaskRun[]): string[] {
   if (agent.status === "done") return [];
   return agent.modules.filter((mod) =>
-    agents.some(
+    runs.some(
       (other) =>
         other.id !== agent.id &&
         other.status !== "done" &&
@@ -124,9 +124,9 @@ export function conflictModulesForAgent(agent: Agent, agents: Agent[]): string[]
   );
 }
 
-export function conflicts(agents: Agent[]): Array<[string, Agent[]]> {
-  const byMod: Record<string, Agent[]> = {};
-  agents
+export function conflicts(runs: TaskRun[]): Array<[string, TaskRun[]]> {
+  const byMod: Record<string, TaskRun[]> = {};
+  runs
     .filter((a) => a.status !== "done")
     .forEach((a) => {
       a.modules.forEach((m) => {
@@ -140,7 +140,7 @@ export function conflicts(agents: Agent[]): Array<[string, Agent[]]> {
 
 // ─── status / kind metadata ──────────────────────────────────────────────────
 
-export const STATUS_META: Record<AgentStatus, { label: string; color: string }> = {
+export const STATUS_META: Record<TaskRunStatus, { label: string; color: string }> = {
   running: { label: "RUNNING", color: "var(--ok)" },
   waiting: { label: "BLOCKED", color: "var(--warn)" },
   paused: { label: "PAUSED", color: "var(--muted)" },

@@ -100,7 +100,7 @@ function BrowseModal({
         </div>
         <div style={FOOT}>
           <span style={{ color: "var(--faint)", fontSize: 11 }}>
-            Pick the folder your agents should work in.
+            Pick the folder your runs should work in.
           </span>
           <button className="btn btn-primary" disabled={!cur} onClick={() => onPick(cur)}>
             Use this folder

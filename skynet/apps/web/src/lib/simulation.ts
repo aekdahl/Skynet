@@ -11,7 +11,7 @@
 
 import * as api from "./client";
 import { settle } from "./poll";
-import type { Agent } from "@skynet/shared";
+import type { TaskRun } from "@skynet/shared";
 
 export interface Step {
   label: string;
@@ -32,7 +32,7 @@ const step = (label: string, ok: boolean, detail?: string): Step => ({ label, ok
 const skipped = (label: string, detail?: string): Step => ({ label, ok: false, skip: true, detail });
 
 /** Assign a task, returning the agent or a typed failure for a clean step. */
-async function tryAssign(projectId: string, taskId: string): Promise<Agent | { error: string }> {
+async function tryAssign(projectId: string, taskId: string): Promise<TaskRun | { error: string }> {
   try {
     return await api.assignTask(projectId, taskId);
   } catch (e) {
@@ -71,7 +71,7 @@ export const JOURNEYS: Journey[] = [
       steps.push(step("project created (persists on the board)", !!p, p?.id));
       if (!p) return steps;
       steps.push(step("bound to a local folder (worktree-per-agent mode)", repoPathOf(p)?.startsWith("/tmp/skynet-sim/") === true, repoPathOf(p) ?? "null"));
-      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-runner-${tag}` });
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-runner-${tag}` });
       await api.createTask(p.id, "Sim: wire up the /health endpoint");
       await api.createTask(p.id, "Sim: add structured request logging");
       s = await settle(
@@ -96,19 +96,19 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-runner-${tag}` });
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-runner-${tag}` });
       await api.createTask(p.id, "Sim: implement the feature");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id);
       steps.push(step("task queued in backlog", !!task, task?.id));
       if (!task) return steps;
       const res = await tryAssign(p.id, task.id);
-      const agentId = "error" in res ? undefined : res.id;
-      steps.push(step("agent spawned on assign (persists)", !!agentId, "error" in res ? res.error : `${res.id} · ${res.status}`));
+      const runId = "error" in res ? undefined : res.id;
+      steps.push(step("agent spawned on assign (persists)", !!runId, "error" in res ? res.error : `${res.id} · ${res.status}`));
       s = await settle((sn) => sn.tasks.find((t) => t.id === task.id)?.state === "assigned");
       // Assign picks ANY idle runner (persistence may leave others around), so
       // check the agent's OWN runner, not the one this journey happened to add.
-      const rid = "error" in res ? null : res.runnerId;
+      const rid = "error" in res ? null : res.agentId;
       const runner = rid ? s.fleet.find((r) => r.id === rid) : undefined;
       steps.push(step("the agent's runner is busy", runner?.status === "busy", runner?.status ?? "no runner"));
       const t2 = s.tasks.find((t) => t.id === task.id);
@@ -131,7 +131,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-supervise-${tag}` });
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-supervise-${tag}` });
       await api.createTask(p.id, "Sim: task that needs approval");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
@@ -142,8 +142,8 @@ export const JOURNEYS: Journey[] = [
       // Wait past the mock's midpoint for the approval gate to be raised for
       // THIS agent. The gate lands ~10s in, so poll generously (bounded ~20s):
       // if it never appears within the bound, that's a real failure, not a skip.
-      s = await settle((sn) => sn.queue.some((q) => q.agentId === agentId && q.resolvedAt == null), 50, 400);
-      const gate = s.queue.find((q) => q.agentId === agentId && q.resolvedAt == null);
+      s = await settle((sn) => sn.queue.some((q) => q.runId === agentId && q.resolvedAt == null), 50, 400);
+      const gate = s.queue.find((q) => q.runId === agentId && q.resolvedAt == null);
       steps.push(step("agent raised an approval gate (waiting on a human)", !!gate, gate ? `${gate.kind} · ${gate.title}` : "no gate within ~20s"));
       if (!gate) return steps;
       // Resolve it and confirm the decision is recorded in the audit trail.
@@ -160,7 +160,7 @@ export const JOURNEYS: Journey[] = [
   {
     id: "fleet-at-scale",
     name: "Build a busy multi-agent board",
-    desc: "Operator scales the fleet and assigns several tasks so multiple agents run in parallel. Persists.",
+    desc: "Operator scales the fleet and assigns several tasks so multiple runs run in parallel. Persists.",
     run: async () => {
       const steps: Step[] = [];
       const tag = uid();
@@ -169,8 +169,8 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-fleet-${tag}-a` });
-      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-fleet-${tag}-b` });
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-fleet-${tag}-a` });
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-fleet-${tag}-b` });
       await api.createTask(p.id, "Sim: parallel task A");
       await api.createTask(p.id, "Sim: parallel task B");
       s = await settle((sn) => sn.tasks.filter((t) => t.projectId === p.id).length >= 2);
@@ -181,9 +181,9 @@ export const JOURNEYS: Journey[] = [
         if (!("error" in r)) assigned++;
       }
       steps.push(step("both tasks assigned to runners", assigned === 2, `${assigned}/2`));
-      s = await settle((sn) => sn.agents.filter((a) => a.projectId === p.id).length >= 2);
-      const agents = s.agents.filter((a) => a.projectId === p.id);
-      steps.push(step("multiple agents live on the board", agents.length >= 2, `${agents.length} agents`));
+      s = await settle((sn) => sn.runs.filter((a) => a.projectId === p.id).length >= 2);
+      const runs = s.runs.filter((a) => a.projectId === p.id);
+      steps.push(step("multiple runs live on the board", runs.length >= 2, `${runs.length} runs`));
       // Count busy runners fleet-wide (each running agent holds one) rather than
       // only this journey's — assign may reuse idle runners left by prior runs.
       const busy = s.fleet.filter((r) => r.status === "busy").length;
@@ -204,15 +204,15 @@ export const JOURNEYS: Journey[] = [
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
       // Two runners: one for the agent, one free so the fork has capacity.
-      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-steer-${tag}-a` });
-      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-steer-${tag}-b` });
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-steer-${tag}-a` });
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-steer-${tag}-b` });
       await api.createTask(p.id, "Sim: long-running task");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
       const res = await tryAssign(p.id, task.id);
       if ("error" in res) return [step("agent spawned", false, res.error)];
-      const agentId = res.id;
-      steps.push(step("agent running", true, agentId));
+      const runId = res.id;
+      steps.push(step("agent running", true, runId));
       // Lifecycle controls are resilient: if the server route is absent (404),
       // report it as a failed step instead of aborting the journey.
       const lifecycleUnavailable = (label: string, e: unknown): Step =>
@@ -220,20 +220,20 @@ export const JOURNEYS: Journey[] = [
           ? skipped(label, "lifecycle routes not deployed in this build")
           : step(label, false, (e as Error).message);
       try {
-        await api.pauseAgent(agentId);
-        s = await settle((sn) => sn.agents.find((a) => a.id === agentId)?.status === "paused");
-        steps.push(step("pause → status paused", s.agents.find((a) => a.id === agentId)?.status === "paused"));
+        await api.pauseAgent(runId);
+        s = await settle((sn) => sn.runs.find((a) => a.id === runId)?.status === "paused");
+        steps.push(step("pause → status paused", s.runs.find((a) => a.id === runId)?.status === "paused"));
       } catch (e) {
         steps.push(lifecycleUnavailable("pause → status paused", e));
       }
       try {
-        await api.resumeAgent(agentId);
-        s = await settle((sn) => sn.agents.find((a) => a.id === agentId)?.status === "running");
-        steps.push(step("resume → status running", s.agents.find((a) => a.id === agentId)?.status === "running"));
+        await api.resumeAgent(runId);
+        s = await settle((sn) => sn.runs.find((a) => a.id === runId)?.status === "running");
+        steps.push(step("resume → status running", s.runs.find((a) => a.id === runId)?.status === "running"));
       } catch (e) {
         steps.push(lifecycleUnavailable("resume → status running", e));
       }
-      const fork = await tryAssignFork(agentId);
+      const fork = await tryAssignFork(runId);
       steps.push(step("fork created (own branch, shares context)", fork.ok, fork.detail));
       return steps;
     },
@@ -269,20 +269,20 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-arch-${tag}` });
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-arch-${tag}` });
       await api.createTask(p.id, "Sim: task to archive");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
       const res = await tryAssign(p.id, task.id);
       if ("error" in res) return [step("agent spawned", false, res.error)];
-      const agentId = res.id;
-      steps.push(step("agent running on the board", true, agentId));
-      await api.archiveAgent(agentId, true);
-      s = await settle((sn) => sn.agents.find((a) => a.id === agentId)?.archived === true);
-      steps.push(step("archived → hidden from the board (kept in history)", s.agents.find((a) => a.id === agentId)?.archived === true));
-      await api.archiveAgent(agentId, false);
-      s = await settle((sn) => sn.agents.find((a) => a.id === agentId)?.archived === false);
-      steps.push(step("restored → back on the board", s.agents.find((a) => a.id === agentId)?.archived === false));
+      const runId = res.id;
+      steps.push(step("agent running on the board", true, runId));
+      await api.archiveAgent(runId, true);
+      s = await settle((sn) => sn.runs.find((a) => a.id === runId)?.archived === true);
+      steps.push(step("archived → hidden from the board (kept in history)", s.runs.find((a) => a.id === runId)?.archived === true));
+      await api.archiveAgent(runId, false);
+      s = await settle((sn) => sn.runs.find((a) => a.id === runId)?.archived === false);
+      steps.push(step("restored → back on the board", s.runs.find((a) => a.id === runId)?.archived === false));
       return steps;
     },
   },
@@ -298,25 +298,25 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-stop-${tag}` });
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-stop-${tag}` });
       await api.createTask(p.id, "Sim: task to stop");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
       const res = await tryAssign(p.id, task.id);
       if ("error" in res) return [step("agent spawned", false, res.error)];
-      const agentId = res.id;
-      const rid = res.runnerId;
+      const runId = res.id;
+      const rid = res.agentId;
       s = await settle((sn) => !!rid && sn.fleet.find((r) => r.id === rid)?.status === "busy");
       steps.push(step("agent running, its runner busy", !!rid && s.fleet.find((r) => r.id === rid)?.status === "busy", rid ?? "no runner"));
       try {
-        await api.stopAgent(agentId);
+        await api.stopAgent(runId);
       } catch (e) {
         if (e instanceof api.ApiError && e.status === 404)
           return [...steps, skipped("stop frees the runner", "stop route not deployed in this build")];
         throw e;
       }
-      s = await settle((sn) => sn.agents.find((a) => a.id === agentId)?.status === "done");
-      steps.push(step("agent stopped (status done)", s.agents.find((a) => a.id === agentId)?.status === "done"));
+      s = await settle((sn) => sn.runs.find((a) => a.id === runId)?.status === "done");
+      steps.push(step("agent stopped (status done)", s.runs.find((a) => a.id === runId)?.status === "done"));
       s = await settle((sn) => !rid || sn.fleet.find((r) => r.id === rid)?.status === "idle");
       steps.push(step("its runner returned to idle (reusable)", !rid || s.fleet.find((r) => r.id === rid)?.status === "idle", rid ? (s.fleet.find((r) => r.id === rid)?.status ?? "gone") : "n/a"));
       return steps;
@@ -334,7 +334,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-chat-${tag}` });
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-chat-${tag}` });
       await api.createTask(p.id, "Sim: task to discuss");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
@@ -402,16 +402,16 @@ export async function captureEvidence(): Promise<Record<string, unknown>> {
       name: p.name,
       repoPath: p.repoPath ?? null,
       repo: p.repo ?? null,
-      agents: p.agentIds.length,
+      runs: p.runIds.length,
     })),
-    agents: s.agents
+    runs: s.runs
       .filter((a) => projectIds.has(a.projectId))
       .map((a) => ({
         id: a.id,
         name: a.name,
         status: a.status,
         archived: a.archived,
-        runnerId: a.runnerId,
+        agentId: a.agentId,
         parentId: a.parentId,
         plan: `${a.plan.filter((x) => x.state === "done").length}/${a.plan.length}`,
       })),
@@ -431,8 +431,8 @@ export async function captureEvidence(): Promise<Record<string, unknown>> {
 async function tryAssignFork(parentId: string): Promise<{ ok: boolean; detail?: string }> {
   try {
     await api.forkAgent(parentId);
-    const s = await settle((sn) => sn.agents.some((a) => a.parentId === parentId));
-    const fork = s.agents.find((a) => a.parentId === parentId);
+    const s = await settle((sn) => sn.runs.some((a) => a.parentId === parentId));
+    const fork = s.runs.find((a) => a.parentId === parentId);
     return { ok: !!fork, detail: fork?.id };
   } catch (e) {
     return { ok: false, detail: (e as Error).message };
@@ -441,7 +441,7 @@ async function tryAssignFork(parentId: string): Promise<{ ok: boolean; detail?: 
 
 /**
  * Sweep everything the journeys created. Deletes "Sim:" projects (which stops
- * their agents) and idle "sim-" runners. Persistent data is opt-in to remove.
+ * their runs) and idle "sim-" agents. Persistent data is opt-in to remove.
  */
 export async function clearSimulationData(): Promise<{ projects: number; runners: number }> {
   const s = await api.fetchSnapshot();
@@ -457,7 +457,7 @@ export async function clearSimulationData(): Promise<{ projects: number; runners
   let runners = 0;
   for (const r of s.fleet.filter((x) => (x.name ?? "").startsWith("sim-"))) {
     try {
-      await api.deleteRunner(r.id);
+      await api.deleteAgent(r.id);
       runners++;
     } catch {
       /* a busy runner can't be retired — leave it */

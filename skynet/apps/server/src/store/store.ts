@@ -4,7 +4,7 @@
 // without touching the API, orchestrator, or WS gateway.
 
 import type {
-  Agent,
+  TaskRun,
   AuditRecord,
   Dependency,
   GithubConnection,
@@ -12,7 +12,7 @@ import type {
   Module,
   Project,
   ProviderInfo,
-  Runner,
+  Agent,
   Snapshot,
   Task,
 } from "@skynet/shared";
@@ -23,13 +23,13 @@ export interface Store {
   /** Full connect-time snapshot of one workspace's collections. */
   snapshot(workspaceId: string): Promise<Snapshot>;
 
-  // agents — list is workspace-scoped; get/put/delete carry workspaceId on the entity
-  listAgents(workspaceId: string): Promise<Agent[]>;
+  // runs — list is workspace-scoped; get/put/delete carry workspaceId on the entity
+  listRuns(workspaceId: string): Promise<TaskRun[]>;
   /** Every agent across all workspaces — for maintenance sweeps (e.g. the reaper). */
-  listAllAgents(): Promise<Agent[]>;
-  getAgent(id: string): Promise<Agent | undefined>;
-  putAgent(agent: Agent): Promise<Agent>;
-  appendLog(agentId: string, at: number, line: string, detail?: string): Promise<void>;
+  listAllRuns(): Promise<TaskRun[]>;
+  getRun(id: string): Promise<TaskRun | undefined>;
+  putRun(agent: TaskRun): Promise<TaskRun>;
+  appendLog(runId: string, at: number, line: string, detail?: string): Promise<void>;
 
   // HITL queue
   listQueue(workspaceId: string): Promise<HitlItem[]>;
@@ -49,12 +49,12 @@ export interface Store {
   deleteTask(id: string): Promise<void>;
 
   // fleet
-  listRunners(workspaceId: string): Promise<Runner[]>;
+  listAgents(workspaceId: string): Promise<Agent[]>;
   /** Every runner across all workspaces — for maintenance sweeps (reconcile). */
-  listAllRunners(): Promise<Runner[]>;
-  getRunner(id: string): Promise<Runner | undefined>;
-  putRunner(runner: Runner): Promise<Runner>;
-  deleteRunner(id: string): Promise<void>;
+  listAllAgents(): Promise<Agent[]>;
+  getAgent(id: string): Promise<Agent | undefined>;
+  putAgent(runner: Agent): Promise<Agent>;
+  deleteAgent(id: string): Promise<void>;
 
   // workspace-scoped reference data
   listModules(workspaceId: string): Promise<Module[]>;

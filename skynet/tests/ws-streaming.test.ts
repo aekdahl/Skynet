@@ -20,7 +20,7 @@
 // "development"), which we assert below.
 
 import { afterEach, beforeAll, describe, it, expect } from "vitest";
-import type { Runner, WsMessage } from "@skynet/shared";
+import type { Agent, WsMessage } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { bootWsServer, WebSocket, type Fixture } from "../apps/server/tests/ws-fixture.js";
 
@@ -113,7 +113,7 @@ class TestClient {
   }
 }
 
-const runner = (id: string, workspaceId: string): Runner => ({
+const runner = (id: string, workspaceId: string): Agent => ({
   id, workspaceId, name: id, provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0,
 });
 
@@ -149,7 +149,7 @@ describe("WebSocket gateway: snapshot + delta streaming + isolation", () => {
     if (msg.type !== "snapshot") throw new Error("unreachable");
     // A snapshot carries the workspace's collections; a fresh store is empty but
     // always has the live provider catalog stamped on.
-    expect(Array.isArray(msg.state.agents)).toBe(true);
+    expect(Array.isArray(msg.state.runs)).toBe(true);
     expect(Array.isArray(msg.state.providers)).toBe(true);
     expect(msg.state.providers.length).toBeGreaterThan(0);
   });
@@ -160,10 +160,10 @@ describe("WebSocket gateway: snapshot + delta streaming + isolation", () => {
     await c.open();
     await c.next((m) => m.type === "snapshot"); // consume the snapshot first
 
-    fixture.bus.publish(DEFAULT_WORKSPACE, { type: "runner.upserted", runner: runner("r1", DEFAULT_WORKSPACE) });
-    const msg = await c.next((m) => m.type === "runner.upserted");
-    expect(msg.type).toBe("runner.upserted");
-    if (msg.type !== "runner.upserted") throw new Error("unreachable");
+    fixture.bus.publish(DEFAULT_WORKSPACE, { type: "agent.upserted", runner: runner("r1", DEFAULT_WORKSPACE) });
+    const msg = await c.next((m) => m.type === "agent.upserted");
+    expect(msg.type).toBe("agent.upserted");
+    if (msg.type !== "agent.upserted") throw new Error("unreachable");
     expect(msg.runner.id).toBe("r1");
   });
 
@@ -174,14 +174,14 @@ describe("WebSocket gateway: snapshot + delta streaming + isolation", () => {
     await c.next((m) => m.type === "snapshot"); // consume the snapshot
 
     // A delta for the OTHER workspace must not reach this cyberdyne socket...
-    fixture.bus.publish(OTHER_WORKSPACE, { type: "runner.upserted", runner: runner("other", OTHER_WORKSPACE) });
+    fixture.bus.publish(OTHER_WORKSPACE, { type: "agent.upserted", runner: runner("other", OTHER_WORKSPACE) });
     await c.expectNone();
 
     // ...but this workspace's own delta still flows, proving the socket is live
     // and it was isolation, not a dead connection, that dropped the first one.
-    fixture.bus.publish(DEFAULT_WORKSPACE, { type: "runner.upserted", runner: runner("mine", DEFAULT_WORKSPACE) });
-    const msg = await c.next((m) => m.type === "runner.upserted");
-    if (msg.type !== "runner.upserted") throw new Error("unreachable");
+    fixture.bus.publish(DEFAULT_WORKSPACE, { type: "agent.upserted", runner: runner("mine", DEFAULT_WORKSPACE) });
+    const msg = await c.next((m) => m.type === "agent.upserted");
+    if (msg.type !== "agent.upserted") throw new Error("unreachable");
     expect(msg.runner.id).toBe("mine");
   });
 
@@ -192,12 +192,12 @@ describe("WebSocket gateway: snapshot + delta streaming + isolation", () => {
     await c.next((m) => m.type === "snapshot"); // consume the snapshot
 
     // A cyberdyne delta must not reach the resistance socket.
-    fixture.bus.publish(DEFAULT_WORKSPACE, { type: "runner.upserted", runner: runner("cyb", DEFAULT_WORKSPACE) });
+    fixture.bus.publish(DEFAULT_WORKSPACE, { type: "agent.upserted", runner: runner("cyb", DEFAULT_WORKSPACE) });
     await c.expectNone();
 
-    fixture.bus.publish(OTHER_WORKSPACE, { type: "runner.upserted", runner: runner("res", OTHER_WORKSPACE) });
-    const msg = await c.next((m) => m.type === "runner.upserted");
-    if (msg.type !== "runner.upserted") throw new Error("unreachable");
+    fixture.bus.publish(OTHER_WORKSPACE, { type: "agent.upserted", runner: runner("res", OTHER_WORKSPACE) });
+    const msg = await c.next((m) => m.type === "agent.upserted");
+    if (msg.type !== "agent.upserted") throw new Error("unreachable");
     expect(msg.runner.id).toBe("res");
   });
 

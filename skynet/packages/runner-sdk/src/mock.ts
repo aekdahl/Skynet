@@ -23,7 +23,7 @@ const CANNED_PLAN: PlanStep[] = [
 ];
 
 class MockRunnerHandle implements RunnerHandle {
-  readonly agentId: string;
+  readonly runId: string;
   readonly provider: ProviderId = "claude";
   private plan: PlanStep[] = CANNED_PLAN.map((s) => ({ ...s }));
   private progress = 0;
@@ -34,16 +34,16 @@ class MockRunnerHandle implements RunnerHandle {
   private tick?: ReturnType<typeof setInterval>;
 
   constructor(private spec: StartSpec, private events: RunnerEvents) {
-    this.agentId = spec.agentId;
-    this.events.onStatus(this.agentId, "running");
-    this.heartbeat = setInterval(() => this.events.onHeartbeat(this.agentId), 5_000);
+    this.runId = spec.runId;
+    this.events.onStatus(this.runId, "running");
+    this.heartbeat = setInterval(() => this.events.onHeartbeat(this.runId), 5_000);
     this.tick = setInterval(() => this.advance(), 2_500);
-    this.events.onLog(this.agentId, `picked up "${spec.task}" on ${spec.branch}`);
+    this.events.onLog(this.runId, `picked up "${spec.task}" on ${spec.branch}`);
   }
 
   private advance() {
     if (this.paused || this.done) return;
-    this.events.onLog(this.agentId, LOG_POOL[Math.floor(this.progress * LOG_POOL.length) % LOG_POOL.length]!);
+    this.events.onLog(this.runId, LOG_POOL[Math.floor(this.progress * LOG_POOL.length) % LOG_POOL.length]!);
     this.progress = Math.min(0.95, this.progress + 0.12);
 
     // Advance the plan checklist roughly in step with progress.
@@ -53,13 +53,13 @@ class MockRunnerHandle implements RunnerHandle {
       this.step = target;
       this.plan[this.step]!.state = "now";
     }
-    this.events.onProgress(this.agentId, this.progress, this.plan);
+    this.events.onProgress(this.runId, this.progress, this.plan);
 
     // Around the midpoint, block on a human (approval gate).
     if (this.progress >= 0.45 && this.progress < 0.6) {
       this.paused = true;
-      this.events.onStatus(this.agentId, "waiting");
-      this.events.onHitl(this.agentId, {
+      this.events.onStatus(this.runId, "waiting");
+      this.events.onHitl(this.runId, {
         kind: "approval",
         title: `Approve: ${this.spec.task}`,
         why: "Wants to run a potentially destructive command before continuing.",
@@ -75,39 +75,39 @@ class MockRunnerHandle implements RunnerHandle {
 
   async pause() {
     this.paused = true;
-    this.events.onStatus(this.agentId, "waiting");
+    this.events.onStatus(this.runId, "waiting");
   }
 
   async resume(decision?: Resolution) {
     if (this.done) return;
     this.paused = false;
     if (decision?.action === "reject") {
-      this.events.onLog(this.agentId, "decision: rejected — revising approach");
+      this.events.onLog(this.runId, "decision: rejected — revising approach");
       this.progress = Math.max(0.3, this.progress - 0.1);
     } else if (decision?.action === "modify") {
-      this.events.onLog(this.agentId, `decision: modify — "${decision.guidance ?? ""}"`);
+      this.events.onLog(this.runId, `decision: modify — "${decision.guidance ?? ""}"`);
     } else {
-      this.events.onLog(this.agentId, "decision: approved — continuing");
+      this.events.onLog(this.runId, "decision: approved — continuing");
     }
-    this.events.onStatus(this.agentId, "running");
+    this.events.onStatus(this.runId, "running");
     // Drive to completion shortly after resume.
     setTimeout(() => this.finish(), 6_000);
   }
 
   async message(text: string) {
-    this.events.onChatReply(this.agentId, `re: "${text}" — noted, factoring it in.`);
+    this.events.onChatReply(this.runId, `re: "${text}" — noted, factoring it in.`);
   }
 
   private finish() {
     if (this.done) return;
     this.done = true;
     this.plan.forEach((s) => (s.state = "done"));
-    this.events.onProgress(this.agentId, 1, this.plan);
+    this.events.onProgress(this.runId, 1, this.plan);
     // The orchestrator owns the terminal "done" (after committing the worktree →
     // review → merge, or confirming an empty diff). Emitting it here would race
     // integration and surface a premature "done" with uncommitted work — hand off
     // via onCompleted only.
-    this.events.onCompleted(this.agentId, this.spec.branch);
+    this.events.onCompleted(this.runId, this.spec.branch);
     this.teardown();
   }
 

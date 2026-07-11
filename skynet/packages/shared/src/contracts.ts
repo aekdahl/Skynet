@@ -18,8 +18,8 @@ export const ProviderId = z.enum([
 ]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
-export const AgentStatus = z.enum(["running", "waiting", "paused", "review", "done"]);
-export type AgentStatus = z.infer<typeof AgentStatus>;
+export const TaskRunStatus = z.enum(["running", "waiting", "paused", "review", "done"]);
+export type TaskRunStatus = z.infer<typeof TaskRunStatus>;
 
 export const PlanStepState = z.enum(["done", "now", "todo"]);
 export type PlanStepState = z.infer<typeof PlanStepState>;
@@ -33,8 +33,8 @@ export const DEFAULT_WORKSPACE = "cyberdyne";
 export const Risk = z.enum(["low", "medium", "high"]);
 export type Risk = z.infer<typeof Risk>;
 
-export const RunnerStatus = z.enum(["busy", "idle"]);
-export type RunnerStatus = z.infer<typeof RunnerStatus>;
+export const AgentStatus = z.enum(["busy", "idle"]);
+export type AgentStatus = z.infer<typeof AgentStatus>;
 
 export const TaskState = z.enum(["backlog", "assigned", "done"]);
 export type TaskState = z.infer<typeof TaskState>;
@@ -76,15 +76,15 @@ export const LogLine = z.object({
 });
 export type LogLine = z.infer<typeof LogLine>;
 
-// ─── Agent ──────────────────────────────────────────────────────────────────
+// ─── TaskRun ──────────────────────────────────────────────────────────────────
 
-export const Agent = z.object({
+export const TaskRun = z.object({
   id: z.string(),
   workspaceId: z.string(),
   projectId: z.string(),
   name: z.string(), // the task this agent owns
-  status: AgentStatus,
-  runnerId: z.string().nullable(), // which fleet runner executes it
+  status: TaskRunStatus,
+  agentId: z.string().nullable(), // which fleet runner executes it
   provider: ProviderId,
   model: z.string(),
   branch: z.string(),
@@ -102,11 +102,11 @@ export const Agent = z.object({
   // Set when forked — shares context with its parent (same conflict "family"):
   parentId: z.string().nullable().default(null),
   branchFromStep: z.number().int().nullable().default(null),
-  // Archived agents are hidden from the project board but kept in the store and
+  // Archived runs are hidden from the project board but kept in the store and
   // reachable via the project's Archive section.
   archived: z.boolean().default(false),
 });
-export type Agent = z.infer<typeof Agent>;
+export type TaskRun = z.infer<typeof TaskRun>;
 
 // ─── Project · Task ───────────────────────────────────────────────────────
 
@@ -115,10 +115,10 @@ export const Project = z.object({
   workspaceId: z.string(),
   name: z.string(),
   goal: z.string(),
-  agentIds: z.array(z.string()),
+  runIds: z.array(z.string()),
   status: ProjectStatus,
   // A project binds to a repository one of two ways (they can coexist):
-  //  • repoPath — an absolute local folder the agents work in. When it contains
+  //  • repoPath — an absolute local folder the runs work in. When it contains
   //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
   //    + the merge queue against THAT repo. This is the desktop-first default.
   //  • repo — a connected GitHub repository "owner/repo" the branches are pushed
@@ -135,7 +135,7 @@ export const Task = z.object({
   projectId: z.string(),
   text: z.string(),
   state: TaskState,
-  agentId: z.string().nullable().default(null),
+  runId: z.string().nullable().default(null),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -163,7 +163,7 @@ export type Resolution = z.infer<typeof Resolution>;
 export const HitlItem = z.object({
   id: z.string(),
   workspaceId: z.string(),
-  agentId: z.string(),
+  runId: z.string(),
   kind: HitlKind,
   title: z.string(),
   why: z.string(),
@@ -186,16 +186,16 @@ export type HitlItem = z.infer<typeof HitlItem>;
 
 // ─── Fleet runner · Module · Dependency · Provider catalog ──────────────────
 
-export const Runner = z.object({
+export const Agent = z.object({
   id: z.string(),
   workspaceId: z.string(),
   name: z.string(),
   provider: ProviderId,
   model: z.string(),
-  status: RunnerStatus,
+  status: AgentStatus,
   idleSince: Timestamp.nullable().default(null),
 });
-export type Runner = z.infer<typeof Runner>;
+export type Agent = z.infer<typeof Agent>;
 
 export const Module = z.object({
   id: z.string(), // e.g. 'api/billing'
@@ -213,12 +213,12 @@ export type Dependency = z.infer<typeof Dependency>;
 export const AuditRecord = z.object({
   workspaceId: z.string(),
   hitlId: z.string(),
-  agentId: z.string(),
+  runId: z.string(),
   action: z.string(),
   operatorId: z.string(),
   at: Timestamp,
   payload: z.unknown(),
-  // Soft-hide flag, mirroring `Agent.archived`: an archived decision is kept in
+  // Soft-hide flag, mirroring `TaskRun.archived`: an archived decision is kept in
   // the trail but tucked into the view's Archived section. Optional for
   // back-compat with records persisted before this field existed (treat
   // undefined as not-archived).

@@ -14,7 +14,7 @@ import type { PushRequest, SafetyViolation } from "./types.js";
 export function evaluateSafety(policy: SafetyPolicy, req: PushRequest): SafetyViolation[] {
   const violations: SafetyViolation[] = [];
 
-  // PR-only: agents may never write the default branch directly.
+  // PR-only: runs may never write the default branch directly.
   if (policy.prOnly && req.branch === req.baseBranch) {
     violations.push({
       rule: "prOnly",

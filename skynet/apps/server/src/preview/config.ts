@@ -1,6 +1,6 @@
 // ─── Preview config ───────────────────────────────────────────────────────
 // W5 live-preview pipeline configuration, read from the environment so the
-// feature is fully opt-in. The default (`PREVIEW=off`) leaves agents with
+// feature is fully opt-in. The default (`PREVIEW=off`) leaves runs with
 // previewUrl=null exactly as before — the SPA folds the panel away — so the
 // `RUNNER=mock STORE=memory pnpm dev` path is unchanged.
 //
@@ -9,7 +9,7 @@
 //                                           (default http://localhost:$PORT)
 //   SKYNET_PREVIEW_ROOT                     artifact root dir (artifact provider)
 //   SKYNET_PREVIEW_URL_TEMPLATE             URL template (deploy provider), with
-//                                           {agentId} {branch} {workspace} {project}
+//                                           {runId} {branch} {workspace} {project}
 //   SKYNET_PREVIEW_VISUAL_PROJECTS          comma list of project ids to force-visual
 //   SKYNET_PREVIEW_FRAME_ANCESTORS          CSP frame-ancestors (default *)
 
@@ -45,7 +45,7 @@ export const previewConfig = {
 
   // ── build pipeline (artifact provider) ──────────────────────────────────
   // Per-agent branch source, in priority order: a worktree of the integration
-  // repo (SKYNET_INTEGRATION_REPO) → <SOURCE_ROOT>/<agentId> → SOURCE_DIR.
+  // repo (SKYNET_INTEGRATION_REPO) → <SOURCE_ROOT>/<runId> → SOURCE_DIR.
   sourceRoot: process.env.SKYNET_PREVIEW_SOURCE_ROOT || "",
   sourceDir: process.env.SKYNET_PREVIEW_SOURCE_DIR || "",
   // Optional install + build commands run in the source dir. With no build

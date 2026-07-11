@@ -10,7 +10,7 @@ import { FleetView } from "./views/fleet";
 import { ProjectView } from "./views/project";
 import { QueueView } from "./views/queue";
 import { AuditView } from "./views/audit";
-import { AgentDetail } from "./views/agent";
+import { TaskDetail } from "./views/task";
 import { IntegrationsView } from "./views/integrations";
 import { Onboarding } from "./views/onboarding";
 import { isOnboarded } from "./lib/firstrun";
@@ -26,7 +26,7 @@ export type ViewName =
   | "fleet"
   | "integrations"
   | "project"
-  | "agent"
+  | "task"
   | "settings"
   | "acceptance"
   | "simulation";
@@ -55,7 +55,7 @@ export function App() {
   const [view, setView] = useState<ViewName>(() => route0?.view ?? initialView() ?? "home");
   const [lens, setLens] = useState<Lens>(() => route0?.lens ?? "subway");
   const [projectId, setProjectId] = useState<string | null>(() => route0?.projectId ?? null);
-  const [agentId, setAgentId] = useState<string | null>(() => route0?.agentId ?? null);
+  const [runId, setRunId] = useState<string | null>(() => route0?.runId ?? null);
   const [from, setFrom] = useState<ViewName>("home");
   const [fromP, setFromP] = useState<ViewName>("home");
   const [selIdx] = useState(0);
@@ -67,11 +67,11 @@ export function App() {
   // manifest shortcut navigates the app in-place — usually to the Inbox.
   useEffect(
     () =>
-      onNavigate((v, navAgentId) => {
-        if (navAgentId) {
+      onNavigate((v, navRunId) => {
+        if (navRunId) {
           setFrom(v);
-          setAgentId(navAgentId);
-          setView("agent");
+          setRunId(navRunId);
+          setView("task");
         } else {
           setView(v);
         }
@@ -81,9 +81,9 @@ export function App() {
 
   // [w7] Keep the URL hash in sync with router state (shareable deep links).
   useEffect(() => {
-    const desired = toHash({ view, lens, projectId, agentId });
+    const desired = toHash({ view, lens, projectId, runId });
     if (location.hash !== desired) location.hash = desired;
-  }, [view, lens, projectId, agentId]);
+  }, [view, lens, projectId, runId]);
 
   // [w7] Apply hash changes (back/forward, manual edits, shared links).
   useEffect(() => {
@@ -93,19 +93,19 @@ export function App() {
       if (r.view) setView(r.view);
       if (r.lens) setLens(r.lens);
       setProjectId(r.projectId ?? null);
-      setAgentId(r.agentId ?? null);
+      setRunId(r.runId ?? null);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const openAgent = (id: string) => {
-    setFrom(view === "agent" ? from : view);
-    setAgentId(id);
-    setView("agent");
+  const openTask = (id: string) => {
+    setFrom(view === "task" ? from : view);
+    setRunId(id);
+    setView("task");
   };
   const openProject = (id: string) => {
-    setFromP(view === "project" || view === "agent" ? fromP : view);
+    setFromP(view === "project" || view === "task" ? fromP : view);
     setProjectId(id);
     setView("project");
   };
@@ -116,7 +116,7 @@ export function App() {
     setView("projects");
   };
 
-  const agent = store.agents.find((a) => a.id === agentId);
+  const agent = store.runs.find((a) => a.id === runId);
   const project = store.projects.find((p) => p.id === projectId);
 
   // First run: a loaded, empty workspace that hasn't been set up yet → the
@@ -162,7 +162,7 @@ export function App() {
                 lens={lens}
                 setLens={setLens}
                 now={now}
-                onOpenAgent={openAgent}
+                onOpenTask={openTask}
                 onOpenProject={openProject}
                 onCreate={createProject}
                 onGoInbox={() => setView("queue")}
@@ -177,13 +177,13 @@ export function App() {
                 onCreate={createProject}
               />
             )}
-            {store.loaded && view === "fleet" && <FleetView onOpenAgent={openAgent} />}
+            {store.loaded && view === "fleet" && <FleetView onOpenTask={openTask} />}
             {store.loaded && view === "integrations" && <IntegrationsView />}
             {store.loaded && view === "project" && project && (
               <ProjectView
                 project={project}
                 now={now}
-                onOpenAgent={openAgent}
+                onOpenTask={openTask}
                 onBack={() => setView(fromP)}
               />
             )}
@@ -198,25 +198,25 @@ export function App() {
               </div>
             )}
             {store.loaded && view === "queue" && (
-              <QueueView selectedIdx={selIdx} onOpen={openAgent} now={now} />
+              <QueueView selectedIdx={selIdx} onOpen={openTask} now={now} />
             )}
             {store.loaded && view === "audit" && (
-              <AuditView now={now} onOpenAgent={openAgent} />
+              <AuditView now={now} onOpenTask={openTask} />
             )}
             {store.loaded && view === "settings" && (
               <SettingsView onRerunSetup={() => setRerunSetup(true)} />
             )}
             {store.loaded && view === "acceptance" && <AcceptanceView />}
             {store.loaded && view === "simulation" && <SimulationView />}
-            {store.loaded && view === "agent" && agent && (
-              <AgentDetail
+            {store.loaded && view === "task" && agent && (
+              <TaskDetail
                 agent={agent}
                 now={now}
-                onBack={() => setView(from === "agent" ? "home" : from)}
+                onBack={() => setView(from === "task" ? "home" : from)}
                 backLabel={VIEW_LABEL[from] || "Back"}
               />
             )}
-            {store.loaded && view === "agent" && !agent && (
+            {store.loaded && view === "task" && !agent && (
               <div className="vw">
                 <div className="kb-empty">
                   This agent was retired or completed.{" "}
@@ -229,7 +229,7 @@ export function App() {
           </div>
         </main>
       </div>
-      <OpStatusBar onOpenAgent={openAgent} />
+      <OpStatusBar onOpenTask={openTask} />
     </div>
   );
 }

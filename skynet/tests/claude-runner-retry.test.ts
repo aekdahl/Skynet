@@ -12,7 +12,7 @@ import {
 } from "../packages/runner-sdk/src/claude.js";
 import type { RunnerEvents } from "../packages/runner-sdk/src/types.js";
 
-// A scripted stand-in for the Agent SDK query(): each call yields the next
+// A scripted stand-in for the TaskRun SDK query(): each call yields the next
 // scripted message stream, and carries the interrupt() the runner calls.
 function scriptedQuery() {
   const scripts: Array<Array<Record<string, unknown>>> = [];
@@ -41,7 +41,7 @@ function fakeEvents() {
 }
 
 const spec = {
-  agentId: "a1", projectId: "p1", task: "make it faster",
+  runId: "a1", projectId: "p1", task: "make it faster",
   model: "sonnet-4.6", branch: "agent/a1", apiKey: "test-key",
 };
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ProviderId, Runner } from "@skynet/shared";
+import type { ProviderId, Agent } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { fmtWait, providerInfo, runnerIdleLabel, runnerIsBusy, STATUS_META } from "../lib/derive";
 import { StatusDot } from "../components/common";
@@ -9,7 +9,7 @@ function ConfigForm({
   onSave,
   onCancel,
 }: {
-  initial?: Runner;
+  initial?: Agent;
   onSave: (r: { name: string; provider: ProviderId; model: string }) => void;
   onCancel: () => void;
 }) {
@@ -32,11 +32,11 @@ function ConfigForm({
   return (
     <div className="cfg">
       <div className="cfg-row">
-        <label className="cfg-label">Runner name</label>
+        <label className="cfg-label">Agent name</label>
         <input
           className="qx-input"
           value={name}
-          placeholder="runner-10"
+          placeholder="agent-10"
           onChange={(e) => setName(e.target.value)}
         />
       </div>
@@ -96,8 +96,8 @@ function ConfigForm({
   );
 }
 
-export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }) {
-  const { fleet, agents, providers, createRunner, updateRunner, deleteRunner } =
+export function FleetView({ onOpenTask }: { onOpenTask: (id: string) => void }) {
+  const { fleet, runs, providers, createAgent, updateAgent, deleteAgent } =
     useStore();
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
@@ -105,9 +105,9 @@ export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }
   const now = Date.now();
 
   // Every agent this runner has executed (live + finished), newest first — a
-  // completed agent keeps its runnerId, so this is the runner's full work log.
-  const historyOf = (r: Runner) =>
-    agents.filter((a) => a.runnerId === r.id).sort((a, b) => b.startedAt - a.startedAt);
+  // completed agent keeps its agentId, so this is the runner's full work log.
+  const historyOf = (r: Agent) =>
+    runs.filter((a) => a.agentId === r.id).sort((a, b) => b.startedAt - a.startedAt);
 
   // When the RUNNER env is set, it's a GLOBAL override: every agent executes on
   // that provider regardless of its runner's configured provider (`/health`
@@ -127,23 +127,23 @@ export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }
     };
   }, []);
 
-  const busyOf = (r: Runner) =>
-    agents.find((a) => a.status !== "done" && a.runnerId === r.id);
+  const busyOf = (r: Agent) =>
+    runs.find((a) => a.status !== "done" && a.agentId === r.id);
 
   return (
     <section className="vw">
       {override && (
         <div className="settings-warn">
           <b>Runner override active.</b> Every agent runs on <span className="mono">{override}</span> right
-          now (the <span className="mono">RUNNER</span> env is set), regardless of the provider a runner is
-          configured with below. Unset <span className="mono">RUNNER</span> to use each runner's own provider.
+          now (the <span className="mono">RUNNER</span> env is set), regardless of the provider an agent is
+          configured with below. Unset <span className="mono">RUNNER</span> to use each agent's own provider.
         </div>
       )}
       <div className="fleet-head">
         <div className="vw-head">
           <h1>Agent fleet</h1>
           <p>
-            {fleet.length} runners configured · Claude, Codex, Gemini, Cursor, Copilot
+            {fleet.length} agents configured · Claude, Codex, Gemini, Cursor, Copilot
           </p>
         </div>
         <button
@@ -161,7 +161,7 @@ export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }
           <div className="panel-head">NEW AGENT</div>
           <ConfigForm
             onSave={(r) => {
-              createRunner(r.provider, r.model, r.name || undefined);
+              createAgent(r.provider, r.model, r.name || undefined);
               setAdding(false);
             }}
             onCancel={() => setAdding(false)}
@@ -179,7 +179,7 @@ export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }
                 <ConfigForm
                   initial={r}
                   onSave={(u) => {
-                    updateRunner(r.id, { model: u.model, name: u.name || undefined });
+                    updateAgent(r.id, { model: u.model, name: u.name || undefined });
                     setEditing(null);
                   }}
                   onCancel={() => setEditing(null)}
@@ -194,7 +194,7 @@ export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }
                         <button
                           className="fleet-cardhead"
                           aria-expanded={open}
-                          title={history.length ? "Show this runner's task history" : "No task history yet"}
+                          title={history.length ? "Show this agent's task history" : "No task history yet"}
                           onClick={() => setOpenRunner(open ? null : r.id)}
                         >
                           <div className="fleet-top">
@@ -202,7 +202,7 @@ export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }
                               {p.glyph}
                             </span>
                             <span className="fleet-rn mono">{r.name}</span>
-                            {busy || runnerIsBusy(r, agents) ? (
+                            {busy || runnerIsBusy(r, runs) ? (
                               <span className="fleet-state fleet-state-busy">
                                 <span className="dot dot-running" />
                                 busy
@@ -228,7 +228,7 @@ export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }
                         {busy && !open && (
                           <button
                             className="fleet-task fleet-task-link"
-                            onClick={() => onOpenAgent(busy.id)}
+                            onClick={() => onOpenTask(busy.id)}
                             title="Open this agent's live activity"
                           >
                             <span className="fleet-task-name">▸ {busy.name}</span>
@@ -248,7 +248,7 @@ export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }
                                 <button
                                   key={a.id}
                                   className="fleet-hist-row"
-                                  onClick={() => onOpenAgent(a.id)}
+                                  onClick={() => onOpenTask(a.id)}
                                   title="Open this agent's activity & history"
                                 >
                                   <StatusDot status={a.status} />
@@ -288,7 +288,7 @@ export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }
                           ? "Finish or reassign its task before retiring"
                           : "Retire this agent"
                       }
-                      onClick={() => deleteRunner(r.id)}
+                      onClick={() => deleteAgent(r.id)}
                     >
                       Retire
                     </button>
