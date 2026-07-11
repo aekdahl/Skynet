@@ -80,11 +80,17 @@ class MockRunnerHandle implements RunnerHandle {
 
   async resume(decision?: Resolution) {
     if (this.done) return;
-    this.paused = false;
     if (decision?.action === "reject") {
-      this.events.onLog(this.agentId, "decision: rejected — revising approach");
-      this.progress = Math.max(0.3, this.progress - 0.1);
-    } else if (decision?.action === "modify") {
+      // Reject halts the agent and waits for new instructions — it does NOT
+      // continue or complete on its own. The operator resumes it by sending
+      // guidance (chat / message).
+      this.paused = true;
+      this.events.onLog(this.agentId, "decision: rejected — paused; send new instructions to resume");
+      this.events.onStatus(this.agentId, "waiting");
+      return;
+    }
+    this.paused = false;
+    if (decision?.action === "modify") {
       this.events.onLog(this.agentId, `decision: modify — "${decision.guidance ?? ""}"`);
     } else {
       this.events.onLog(this.agentId, "decision: approved — continuing");
@@ -95,6 +101,16 @@ class MockRunnerHandle implements RunnerHandle {
   }
 
   async message(text: string) {
+    // Chat is how new instructions arrive. If the agent is parked (e.g. after a
+    // reject), the message unblocks it and it resumes working.
+    if (this.paused && !this.done) {
+      this.paused = false;
+      this.events.onLog(this.agentId, `new instructions: "${text}" — resuming`);
+      this.events.onStatus(this.agentId, "running");
+      this.events.onChatReply(this.agentId, `re: "${text}" — resuming with that in mind.`);
+      setTimeout(() => this.finish(), 6_000);
+      return;
+    }
     this.events.onChatReply(this.agentId, `re: "${text}" — noted, factoring it in.`);
   }
 
