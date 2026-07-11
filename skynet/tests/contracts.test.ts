@@ -74,7 +74,7 @@ describe("contracts round-trip", () => {
     const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "op-1", at: 5 };
     const hitl: HitlItem = {
       id: "q1", workspaceId: DEFAULT_WORKSPACE, agentId: "billing", kind: "approval",
-      title: "t", why: "w", risk: "medium", raisedAt: 1, resolvedAt: null, resolution: null,
+      title: "t", why: "w", risk: "medium", raisedAt: 1, expiresAt: null, resolvedAt: null, resolution: null,
       command: "deploy", options: null, recommended: null, steps: null, diff: null,
     };
     const events: ServerEvent[] = [
@@ -90,6 +90,10 @@ describe("contracts round-trip", () => {
       { type: "project.deleted", id: "payments" },
       { type: "task.deleted", id: "t-1" },
       { type: "runner.deleted", id: "runner-09" },
+      { type: "audit.archived", hitlId: "q1", archived: true },
+      { type: "audit.deleted", hitlId: "q1" },
+      { type: "audit.archived-all" },
+      { type: "audit.cleared" },
     ];
     for (const e of events) {
       expect(ServerEvent.parse(wire(e))).toEqual(e);

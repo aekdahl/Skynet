@@ -6,7 +6,16 @@ import * as api from "../lib/client";
 
 // Decision audit trail (W8). The resolved-HITL history lives in its own
 // append-only table, not the snapshot/WS stream, so this view fetches it
-// directly and re-pulls whenever a resolution lands (resolved-count changes).
+// directly and re-pulls whenever a resolution lands (resolved-count changes) or
+// an audit.* delta bumps the store's auditRev (archive/delete from any tab).
+
+// A just-resolved decision is mirrored from the live queue (see `merged`) to
+// close DEF-001, but the queue is never pruned — so a *deleted* record whose
+// HITL still sits in the queue would otherwise be resurrected. Only mirror
+// genuinely-recent resolutions: recordAudit is synchronous with resolve, so an
+// older resolution absent from the fetched trail was deleted, not merely
+// in-flight, and must stay gone.
+const RECENT_MS = 15_000;
 
 const ACTION_META: Record<ResolveAction, { label: string; color: string }> = {
   approve: { label: "APPROVED", color: "var(--ok)" },
@@ -50,10 +59,20 @@ function AuditRow({
   rec,
   now,
   onOpenAgent,
+  onArchive,
+  onDelete,
+  confirming,
+  onConfirmDelete,
+  onCancelDelete,
 }: {
   rec: AuditRecord;
   now: number;
   onOpenAgent: (id: string) => void;
+  onArchive: (hitlId: string, archived: boolean) => void;
+  onDelete: (hitlId: string) => void;
+  confirming: boolean;
+  onConfirmDelete: (hitlId: string) => void;
+  onCancelDelete: () => void;
 }) {
   const { queue, agents } = useStore();
   const agent = agents.find((a) => a.id === rec.agentId);
@@ -73,7 +92,7 @@ function AuditRow({
     p.optionIndex != null && item?.options ? item.options[p.optionIndex] : null;
 
   return (
-    <article className="audit-row">
+    <article className={`audit-row${rec.archived ? " audit-row-archived" : ""}`}>
       <div className="audit-row-head">
         <span
           className="audit-action"
@@ -111,6 +130,35 @@ function AuditRow({
       {p.guidance && (
         <p className="audit-detail audit-guidance">“{p.guidance}”</p>
       )}
+
+      <div className="audit-actions">
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => onArchive(rec.hitlId, !rec.archived)}
+          title={rec.archived ? "Restore to the trail" : "Archive — hide from the trail (kept in history)"}
+        >
+          {rec.archived ? "⊕ Restore" : "⊘ Archive"}
+        </button>
+        {confirming ? (
+          <span className="del-confirm">
+            Delete decision?{" "}
+            <button className="btn btn-danger btn-sm" onClick={() => onDelete(rec.hitlId)}>
+              Yes, delete
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={onCancelDelete}>
+              No
+            </button>
+          </span>
+        ) : (
+          <button
+            className="btn btn-ghost btn-sm audit-del"
+            onClick={() => onConfirmDelete(rec.hitlId)}
+            title="Permanently delete this decision"
+          >
+            Delete
+          </button>
+        )}
+      </div>
     </article>
   );
 }
@@ -122,11 +170,19 @@ export function AuditView({
   now: number;
   onOpenAgent: (id: string) => void;
 }) {
-  const { queue } = useStore();
+  const { queue, auditRev, archiveAudit, deleteAudit, archiveAllAudit, clearAudit } = useStore();
   const [records, setRecords] = useState<AuditRecord[] | null>(null);
   const [error, setError] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  // hitlIds removed this session. records won't include them after the re-fetch,
+  // but a recently-resolved decision may still sit in the never-pruned queue, so
+  // suppress it in `merged` until its resolution ages past the recency window.
+  const [removed, setRemoved] = useState<Set<string>>(() => new Set());
 
-  // Re-fetch whenever a resolution lands (the store's resolved tally moves).
+  // Re-fetch whenever a resolution lands (the store's resolved tally moves) or
+  // an audit.* delta bumps auditRev (archive/delete/clear, incl. other tabs).
   const resolvedCount = useMemo(
     () => queue.filter((q) => q.resolvedAt != null).length,
     [queue],
@@ -143,7 +199,7 @@ export function AuditView({
 
   useEffect(() => {
     void load();
-  }, [load, resolvedCount]);
+  }, [load, resolvedCount, auditRev]);
 
   // Merge the fetched history with decisions resolved live in this session
   // (kept current by the WS stream). This closes DEF-001: a just-resolved
@@ -152,9 +208,13 @@ export function AuditView({
   // stale gap while the mount-fetch is in flight. Deduped by hitlId, newest first.
   const merged = useMemo<AuditRecord[]>(() => {
     const byId = new Map<string, AuditRecord>();
-    for (const r of records ?? []) byId.set(r.hitlId, r);
+    for (const r of records ?? []) {
+      if (removed.has(r.hitlId)) continue;
+      byId.set(r.hitlId, r);
+    }
     for (const q of queue) {
-      if (q.resolvedAt == null || !q.resolution || byId.has(q.id)) continue;
+      if (q.resolvedAt == null || !q.resolution || removed.has(q.id) || byId.has(q.id)) continue;
+      if (now - q.resolvedAt > RECENT_MS) continue; // older + absent = deleted, don't resurrect
       byId.set(q.id, {
         workspaceId: q.workspaceId,
         hitlId: q.id,
@@ -162,6 +222,7 @@ export function AuditView({
         action: q.resolution.action,
         operatorId: q.resolution.by,
         at: q.resolvedAt,
+        archived: false,
         payload: {
           optionIndex: q.resolution.optionIndex,
           guidance: q.resolution.guidance,
@@ -173,16 +234,86 @@ export function AuditView({
       });
     }
     return [...byId.values()].sort((a, b) => b.at - a.at);
-  }, [records, queue]);
+  }, [records, queue, removed, now]);
+
+  const active = useMemo(() => merged.filter((r) => !r.archived), [merged]);
+  const archived = useMemo(() => merged.filter((r) => r.archived), [merged]);
+
+  const onArchive = useCallback(
+    async (hitlId: string, next: boolean) => {
+      await archiveAudit(hitlId, next);
+      await load();
+    },
+    [archiveAudit, load],
+  );
+  const onDelete = useCallback(
+    async (hitlId: string) => {
+      setConfirmDelete(null);
+      setRemoved((s) => new Set(s).add(hitlId));
+      await deleteAudit(hitlId);
+      await load();
+    },
+    [deleteAudit, load],
+  );
+  const onArchiveAll = useCallback(async () => {
+    await archiveAllAudit();
+    await load();
+  }, [archiveAllAudit, load]);
+  const onClear = useCallback(async () => {
+    setConfirmClear(false);
+    setRemoved(new Set(merged.map((r) => r.hitlId)));
+    await clearAudit();
+    await load();
+  }, [clearAudit, load, merged]);
+
+  const rowProps = (rec: AuditRecord) => ({
+    rec,
+    now,
+    onOpenAgent,
+    onArchive,
+    onDelete,
+    confirming: confirmDelete === rec.hitlId,
+    onConfirmDelete: setConfirmDelete,
+    onCancelDelete: () => setConfirmDelete(null),
+  });
 
   return (
     <section className="audit">
-      <div className="vw-head">
-        <h1>Decision audit</h1>
-        <p>
-          Every resolved human-in-the-loop decision in this workspace — who
-          decided what, when, and how.
-        </p>
+      <div className="vw-head audit-head">
+        <div>
+          <h1>Decision audit</h1>
+          <p>
+            Every resolved human-in-the-loop decision in this workspace — who
+            decided what, when, and how.
+          </p>
+        </div>
+        {merged.length > 0 && (
+          <div className="audit-bulk">
+            {active.length > 0 && (
+              <button className="btn btn-ghost btn-sm" onClick={() => void onArchiveAll()}>
+                ⊘ Archive all
+              </button>
+            )}
+            {confirmClear ? (
+              <span className="del-confirm">
+                Clear the entire trail?{" "}
+                <button className="btn btn-danger btn-sm" onClick={() => void onClear()}>
+                  Yes, clear
+                </button>
+                <button className="btn btn-ghost btn-sm" onClick={() => setConfirmClear(false)}>
+                  No
+                </button>
+              </span>
+            ) : (
+              <button
+                className="btn btn-ghost btn-sm audit-del"
+                onClick={() => setConfirmClear(true)}
+              >
+                Clear trail
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {error && (
@@ -201,16 +332,29 @@ export function AuditView({
         </div>
       )}
 
-      {!error && merged.length > 0 && (
+      {!error && active.length > 0 && (
         <div className="audit-list">
-          {merged.map((rec, i) => (
-            <AuditRow
-              key={`${rec.hitlId}-${rec.at}-${i}`}
-              rec={rec}
-              now={now}
-              onOpenAgent={onOpenAgent}
-            />
+          {active.map((rec, i) => (
+            <AuditRow key={`${rec.hitlId}-${rec.at}-${i}`} {...rowProps(rec)} />
           ))}
+        </div>
+      )}
+
+      {!error && archived.length > 0 && (
+        <div className="kb-archive-sec">
+          <button
+            className="kb-archive-head"
+            onClick={() => setShowArchived((s) => !s)}
+          >
+            {showArchived ? "▾" : "▸"} ARCHIVED · {archived.length}
+          </button>
+          {showArchived && (
+            <div className="audit-list">
+              {archived.map((rec, i) => (
+                <AuditRow key={`${rec.hitlId}-${rec.at}-${i}`} {...rowProps(rec)} />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </section>

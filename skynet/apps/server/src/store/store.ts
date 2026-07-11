@@ -65,6 +65,14 @@ export interface Store {
   recordAudit(entry: AuditRecord): Promise<void>;
   /** Read the workspace's decision audit trail, newest first (W8). */
   listAudit(workspaceId: string): Promise<AuditRecord[]>;
+  /** Soft-hide (or restore) a single decision — keeps it in the trail. */
+  setAuditArchived(workspaceId: string, hitlId: string, archived: boolean): Promise<void>;
+  /** Permanently remove a single decision from the trail. */
+  deleteAudit(workspaceId: string, hitlId: string): Promise<void>;
+  /** Soft-hide every decision in the workspace's trail. */
+  archiveAllAudit(workspaceId: string): Promise<void>;
+  /** Permanently remove the entire workspace trail. */
+  clearAudit(workspaceId: string): Promise<void>;
 
   // GitHub connection (one per workspace) — non-secret metadata, so it persists
   // through the same Store the deployment uses (file for the desktop app,

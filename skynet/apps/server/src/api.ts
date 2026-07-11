@@ -79,6 +79,27 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   // Decision audit trail — resolved HITL items, newest first (W8, Backend Brief §11).
   app.get("/api/audit", async (req) => store.listAudit(ws(req)));
 
+  // Audit maintenance — archive/restore and delete, per-record and bulk. Mirrors
+  // the archive (agent) and delete (project/task/runner) patterns. Records are
+  // addressed by hitlId (unique per resolved decision within a workspace).
+  // Bulk routes use distinct static paths so they don't collide with :hitlId.
+  app.post("/api/audit/archive-all", async (req) => {
+    await hub.archiveAllAudit(ws(req));
+    return { ok: true };
+  });
+  app.delete("/api/audit", async (req) => {
+    await hub.clearAudit(ws(req));
+    return { ok: true };
+  });
+  app.post<{ Params: { hitlId: string }; Body: { archived?: boolean } }>("/api/audit/:hitlId/archive", async (req) => {
+    await hub.archiveAudit(ws(req), req.params.hitlId, req.body?.archived ?? true);
+    return { ok: true };
+  });
+  app.delete<{ Params: { hitlId: string } }>("/api/audit/:hitlId", async (req) => {
+    await hub.deleteAudit(ws(req), req.params.hitlId);
+    return { ok: true };
+  });
+
   // Local folder browser powering the connect-a-folder picker. Local-only and
   // gated (config.allowLocalFs) — reveals the server machine's filesystem, so
   // it's disabled on hosted deploys. Returns 403 when off.

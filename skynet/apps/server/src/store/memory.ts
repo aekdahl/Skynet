@@ -91,6 +91,22 @@ export class MemoryStore implements Store {
 
   async recordAudit(entry: AuditRecord) { this.audit.push(entry); this.persist(); }
   async listAudit(ws: string) { return this.audit.filter((e) => e.workspaceId === ws).reverse(); }
+  async setAuditArchived(ws: string, hitlId: string, archived: boolean) {
+    for (const e of this.audit) if (e.workspaceId === ws && e.hitlId === hitlId) e.archived = archived;
+    this.persist();
+  }
+  async deleteAudit(ws: string, hitlId: string) {
+    this.audit = this.audit.filter((e) => !(e.workspaceId === ws && e.hitlId === hitlId));
+    this.persist();
+  }
+  async archiveAllAudit(ws: string) {
+    for (const e of this.audit) if (e.workspaceId === ws) e.archived = true;
+    this.persist();
+  }
+  async clearAudit(ws: string) {
+    this.audit = this.audit.filter((e) => e.workspaceId !== ws);
+    this.persist();
+  }
 
   async getGithubConnection(ws: string) { return this.github.get(ws); }
   async putGithubConnection(connection: GithubConnection) { this.github.set(connection.workspaceId, connection); this.persist(); }

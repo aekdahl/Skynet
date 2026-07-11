@@ -35,6 +35,7 @@ ALTER TABLE agent_log ADD COLUMN IF NOT EXISTS detail text;
 CREATE TABLE IF NOT EXISTS hitl_audit (id bigserial PRIMARY KEY, workspace_id text NOT NULL, hitl_id text NOT NULL,
                                        agent_id text NOT NULL, action text NOT NULL, operator_id text NOT NULL,
                                        at bigint NOT NULL, payload jsonb);
+ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS github_connections (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS github_tokens      (workspace_id text PRIMARY KEY, ciphertext text NOT NULL);
 CREATE INDEX IF NOT EXISTS agents_ws   ON agents(workspace_id);
@@ -156,22 +157,35 @@ export class PostgresStore implements Store {
 
   async recordAudit(e: AuditRecord): Promise<void> {
     await this.pool.query(
-      "INSERT INTO hitl_audit(workspace_id,hitl_id,agent_id,action,operator_id,at,payload) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)",
-      [e.workspaceId, e.hitlId, e.agentId, e.action, e.operatorId, e.at, J(e.payload)],
+      "INSERT INTO hitl_audit(workspace_id,hitl_id,agent_id,action,operator_id,at,payload,archived) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8)",
+      [e.workspaceId, e.hitlId, e.agentId, e.action, e.operatorId, e.at, J(e.payload), e.archived ?? false],
     );
   }
 
   async listAudit(ws: string): Promise<AuditRecord[]> {
     const { rows } = await this.pool.query<{
-      workspace_id: string; hitl_id: string; agent_id: string; action: string; operator_id: string; at: string; payload: unknown;
+      workspace_id: string; hitl_id: string; agent_id: string; action: string; operator_id: string; at: string; payload: unknown; archived: boolean;
     }>(
-      "SELECT workspace_id,hitl_id,agent_id,action,operator_id,at,payload FROM hitl_audit WHERE workspace_id=$1 ORDER BY at DESC, id DESC",
+      "SELECT workspace_id,hitl_id,agent_id,action,operator_id,at,payload,archived FROM hitl_audit WHERE workspace_id=$1 ORDER BY at DESC, id DESC",
       [ws],
     );
     return rows.map((r) => ({
       workspaceId: r.workspace_id, hitlId: r.hitl_id, agentId: r.agent_id,
-      action: r.action, operatorId: r.operator_id, at: Number(r.at), payload: r.payload,
+      action: r.action, operatorId: r.operator_id, at: Number(r.at), payload: r.payload, archived: r.archived,
     }));
+  }
+
+  async setAuditArchived(ws: string, hitlId: string, archived: boolean): Promise<void> {
+    await this.pool.query("UPDATE hitl_audit SET archived=$3 WHERE workspace_id=$1 AND hitl_id=$2", [ws, hitlId, archived]);
+  }
+  async deleteAudit(ws: string, hitlId: string): Promise<void> {
+    await this.pool.query("DELETE FROM hitl_audit WHERE workspace_id=$1 AND hitl_id=$2", [ws, hitlId]);
+  }
+  async archiveAllAudit(ws: string): Promise<void> {
+    await this.pool.query("UPDATE hitl_audit SET archived=true WHERE workspace_id=$1", [ws]);
+  }
+  async clearAudit(ws: string): Promise<void> {
+    await this.pool.query("DELETE FROM hitl_audit WHERE workspace_id=$1", [ws]);
   }
 
   async getGithubConnection(ws: string): Promise<GithubConnection | undefined> {
