@@ -71,7 +71,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
         <h1>Settings</h1>
         <p>
           Provider API keys, stored encrypted on this machine and never shown again.
-          A vendor's agents become selectable once its key is set. A key set here
+          A vendor's runs become selectable once its key is set. A key set here
           overrides one from an environment variable; the env key is used as a
           fallback when nothing is set here.
         </p>
@@ -169,11 +169,11 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
 }
 
 // ─── MCP access ─────────────────────────────────────────────────────────────
-// Mint scoped tokens that let agents drive Skynet over MCP. The raw token is
+// Mint scoped tokens that let runs drive Skynet over MCP. The raw token is
 // shown once, right after minting, alongside ready-to-paste client config.
 const SCOPE_INFO: { id: McpScope; label: string; hint: string }[] = [
-  { id: "observe", label: "Observe", hint: "read projects, agents, fleet, and the HITL queue" },
-  { id: "author", label: "Author", hint: "create & assign tasks, drive agents, manage runners" },
+  { id: "observe", label: "Observe", hint: "read projects, runs, fleet, and the HITL queue" },
+  { id: "author", label: "Author", hint: "create & assign tasks, drive runs, manage agents" },
   { id: "approver", label: "Approver", hint: "resolve HITL — approve diffs & pushes without a human" },
 ];
 
@@ -248,7 +248,7 @@ function McpAccessSection() {
     <div className="mcp-access">
       <div className="settings-setup-title">MCP access</div>
       <div className="settings-setup-sub">
-        Scoped tokens let agents drive this workspace over MCP — the same tools you use, gated by scope.
+        Scoped tokens let runs drive this workspace over MCP — the same tools you use, gated by scope.
         Grant <span className="mono">approver</span> only to a token you trust to resolve gates without a human.
       </div>
 

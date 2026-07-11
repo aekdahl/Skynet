@@ -50,14 +50,14 @@ function prompt(e: JourneyEvidence): string {
     .map((s) => `- [${s.skip ? "skip" : s.ok ? "ok" : "FAIL"}] ${s.label}${s.detail ? ` — ${s.detail}` : ""}`)
     .join("\n");
   return [
-    "You are a behavioral QA judge for Skynet, a console for supervising autonomous coding agents.",
-    "You are reviewing one OPERATOR JOURNEY: a scripted sequence of real API actions an operator would take, run against a live server (agents execute on a mock runner). The journey already checked deterministic facts; your job is the holistic review those checks can't do.",
+    "You are a behavioral QA judge for Skynet, a console for supervising autonomous coding runs.",
+    "You are reviewing one OPERATOR JOURNEY: a scripted sequence of real API actions an operator would take, run against a live server (runs execute on a mock runner). The journey already checked deterministic facts; your job is the holistic review those checks can't do.",
     "",
     "Grade ONLY on the evidence below. Judge whether the journey ACHIEVED ITS GOAL and whether the resulting system state is COHERENT — no orphaned or contradictory entities, and statuses that match the actions taken. A journey where every step 'ok' but the end state is nonsensical should NOT pass.",
     "Do not invent problems that the evidence doesn't show; if it looks correct and coherent, pass it.",
     "",
     "## What the evidence contains (don't penalize expected gaps)",
-    "- The `board` is a Sim-tagged SLICE of the system (projects/tasks/agents/runners/openHitl + an audit count), not the whole store. Judge what's present; don't demand fields the slice doesn't carry.",
+    "- The `board` is a Sim-tagged SLICE of the system (projects/tasks/runs/runners/openHitl + an audit count), not the whole store. Judge what's present; don't demand fields the slice doesn't carry.",
     "- `auditCount`/`recentAudit` is the human-in-the-loop DECISION log — it records approvals/rejections/option-picks on HITL gates, NOT routine CRUD. Creating a project, task, or runner, or stopping/archiving an agent, does NOT produce an audit row. Only expect the audit to grow when the journey actually RESOLVED a HITL gate. Absence of audit rows for pure create/lifecycle journeys is EXPECTED, not a failure.",
     "",
     `## Journey: ${e.name}`,

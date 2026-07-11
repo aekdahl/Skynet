@@ -20,7 +20,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
-import type { ProviderId, Project, Runner, ServerEvent, Task } from "@skynet/shared";
+import type { ProviderId, Project, Agent, ServerEvent, Task } from "@skynet/shared";
 import type { RunnerEvents, RunnerHandle, RunnerProvider, StartSpec } from "@skynet/runner-sdk";
 import type { Bus } from "../apps/server/src/bus.js";
 
@@ -46,12 +46,12 @@ class PrematureDoneProvider implements RunnerProvider {
   async start(spec: StartSpec, events: RunnerEvents): Promise<RunnerHandle> {
     if (spec.cwd) this.edit(spec.cwd);
     setTimeout(() => {
-      events.onProgress(spec.agentId, 1, []);
-      events.onStatus(spec.agentId, "done"); // premature — the defect under test
-      events.onCompleted(spec.agentId, spec.branch);
+      events.onProgress(spec.runId, 1, []);
+      events.onStatus(spec.runId, "done"); // premature — the defect under test
+      events.onCompleted(spec.runId, spec.branch);
     }, 0);
     return {
-      agentId: spec.agentId,
+      runId: spec.runId,
       provider: this.id,
       async pause() {},
       async resume() {},
@@ -119,18 +119,18 @@ async function seed(): Promise<{ hub: import("../apps/server/src/hub.js").Hub }>
   bus = new RecordingBus();
   const hub = new Hub(store, bus);
   const project: Project = {
-    id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", agentIds: [], status: "active",
+    id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active",
     repoPath: null, gitBacked: false,
   };
-  const runner: Runner = {
+  const runner: Agent = {
     id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1",
     provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0,
   };
   const task: Task = {
-    id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "fix sum", state: "backlog", agentId: null,
+    id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "fix sum", state: "backlog", runId: null,
   };
   await store.putProject(project);
-  await store.putRunner(runner);
+  await store.putAgent(runner);
   await store.putTask(task);
   return { hub };
 }
@@ -154,9 +154,9 @@ describe("agent completion integrity: successful work is never silently dropped"
 
     const agent = await orchestrator.assignTask("p1", "t1");
     // Wait until the orchestrator has driven the completion (→ review).
-    await waitFor(async () => (await store.getAgent(agent.id))?.status === "review");
+    await waitFor(async () => (await store.getRun(agent.id))?.status === "review");
 
-    const after = await store.getAgent(agent.id);
+    const after = await store.getRun(agent.id);
     expect(after?.status).toBe("review"); // committed & awaiting approval, NOT done
     expect(after?.status).not.toBe("done");
 
@@ -172,7 +172,7 @@ describe("agent completion integrity: successful work is never silently dropped"
     // The core invariant: no premature "done". If a "done" status is ever
     // published, it must come AFTER the diff review is raised (i.e. only via the
     // post-approval merge), never in the window where the edit is uncommitted.
-    const doneIdx = idxOf(bus.events, (e) => e.type === "agent.status" && e.status === "done");
+    const doneIdx = idxOf(bus.events, (e) => e.type === "run.status" && e.status === "done");
     const reviewIdx = idxOf(bus.events, (e) => e.type === "hitl.raised" && e.item.kind === "diff");
     if (doneIdx !== -1) expect(doneIdx).toBeGreaterThan(reviewIdx);
   });
@@ -183,13 +183,13 @@ describe("agent completion integrity: successful work is never silently dropped"
     const orchestrator = new Orchestrator(store, hub, provider);
 
     const agent = await orchestrator.assignTask("p1", "t1");
-    await waitFor(async () => (await store.getAgent(agent.id))?.status === "done");
+    await waitFor(async () => (await store.getRun(agent.id))?.status === "done");
 
-    const after = await store.getAgent(agent.id);
+    const after = await store.getRun(agent.id);
     expect(after?.status).toBe("done"); // genuine no-op → orchestrator sets done
     // No spurious diff review for an empty change.
     expect(bus.events.some((e) => e.type === "hitl.raised" && e.item.kind === "diff")).toBe(false);
     // And a completion event was published.
-    expect(bus.events.some((e) => e.type === "agent.completed")).toBe(true);
+    expect(bus.events.some((e) => e.type === "run.completed")).toBe(true);
   });
 });

@@ -23,10 +23,10 @@ function ProjectCard({
   now: number;
   onOpen: () => void;
 }) {
-  const { agents, queue, tasks, modules } = useStore();
-  const pa = agentsForProject(agents, project.id);
+  const { runs, queue, tasks, modules } = useStore();
+  const pa = agentsForProject(runs, project.id);
   const waiting = openQueue(queue).filter((q) =>
-    pa.some((a) => a.id === q.agentId),
+    pa.some((a) => a.id === q.runId),
   );
   const allDone = pa.length > 0 && pa.every((a) => a.status === "done");
   const empty = pa.length === 0;
@@ -35,10 +35,10 @@ function ProjectCard({
     : 0;
   const backlog = backlogTasks(tasks, project.id);
   const conflictAgent = pa.find(
-    (a) => conflictModulesForAgent(a, agents).length > 0,
+    (a) => conflictModulesForAgent(a, runs).length > 0,
   );
   const conflictMod = conflictAgent
-    ? conflictModulesForAgent(conflictAgent, agents)[0]
+    ? conflictModulesForAgent(conflictAgent, runs)[0]
     : undefined;
 
   return (
@@ -62,9 +62,9 @@ function ProjectCard({
         value={prog}
         status={waiting.length > 0 ? "waiting" : allDone ? "done" : "running"}
       />
-      <div className="proj-agents">
+      <div className="proj-runs">
         {pa.map((a) => {
-          const q = waiting.find((it) => it.agentId === a.id);
+          const q = waiting.find((it) => it.runId === a.id);
           return (
             <div key={a.id} className="proj-agent">
               <StatusDot status={a.status} />
@@ -131,7 +131,7 @@ export function NewProjectCard({
         value={goal}
         onChange={(e) => setGoal(e.target.value)}
       />
-      <div className="rp-label">Local folder <span className="rp-hint">· agents work here</span></div>
+      <div className="rp-label">Local folder <span className="rp-hint">· runs work here</span></div>
       <FolderPicker value={repoPath} onChange={setRepoPath} />
       {!repoPath && <RepoPicker repos={repos} value={repo} onChange={setRepo} />}
       <div className="qx-row">
@@ -169,17 +169,17 @@ export function OverviewView({
   onOpenProject: (id: string) => void;
   onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
 }) {
-  const { projects, agents, queue } = useStore();
+  const { projects, runs, queue } = useStore();
   const oq = openQueue(queue);
-  const running = agents.filter((a) => a.status === "running").length;
+  const running = runs.filter((a) => a.status === "running").length;
   const longest = oq.length ? Math.max(...oq.map((q) => waitedSecs(q, now))) : 0;
 
   const sorted = [...projects].sort((a, b) => {
     const w = (p: Project) =>
-      oq.filter((q) => agentsForProject(agents, p.id).some((x) => x.id === q.agentId))
+      oq.filter((q) => agentsForProject(runs, p.id).some((x) => x.id === q.runId))
         .length;
     const d = (p: Project) => {
-      const pa = agentsForProject(agents, p.id);
+      const pa = agentsForProject(runs, p.id);
       return pa.length > 0 && pa.every((x) => x.status === "done") ? 1 : 0;
     };
     return d(a) - d(b) || w(b) - w(a);
@@ -190,7 +190,7 @@ export function OverviewView({
       <div className="ov-head">
         <h1>Ongoing projects</h1>
         <p className="ov-sub">
-          {running} agents running ·{" "}
+          {running} runs running ·{" "}
           {oq.length > 0 ? (
             <span className="ov-sub-warn">
               {oq.length} decisions waiting on you — longest {fmtWait(longest)}

@@ -5,8 +5,8 @@
 
 import { z } from "zod";
 import {
-  Agent,
-  AgentStatus,
+  TaskRun,
+  TaskRunStatus,
   Dependency,
   HitlItem,
   Module,
@@ -14,7 +14,7 @@ import {
   Project,
   ProviderInfo,
   Resolution,
-  Runner,
+  Agent,
   Task,
   Timestamp,
   Usage,
@@ -23,11 +23,11 @@ import {
 // ─── Connect-time snapshot ────────────────────────────────────────────────
 
 export const Snapshot = z.object({
-  agents: z.array(Agent),
+  runs: z.array(TaskRun),
   queue: z.array(HitlItem), // open + recently-resolved HITL items
   projects: z.array(Project),
   tasks: z.array(Task),
-  fleet: z.array(Runner),
+  fleet: z.array(Agent),
   modules: z.array(Module),
   deps: z.array(Dependency),
   providers: z.array(ProviderInfo),
@@ -38,35 +38,35 @@ export type Snapshot = z.infer<typeof Snapshot>;
 // ─── Server → client deltas ───────────────────────────────────────────────
 
 export const ServerEvent = z.discriminatedUnion("type", [
-  // agent lifecycle
-  z.object({ type: z.literal("agent.started"), agent: Agent }),
-  z.object({ type: z.literal("agent.log"), agentId: z.string(), at: Timestamp, line: z.string(), detail: z.string().optional() }),
+  // task-run lifecycle
+  z.object({ type: z.literal("run.started"), run: TaskRun }),
+  z.object({ type: z.literal("run.log"), runId: z.string(), at: Timestamp, line: z.string(), detail: z.string().optional() }),
   z.object({
-    type: z.literal("agent.progress"),
-    agentId: z.string(),
+    type: z.literal("run.progress"),
+    runId: z.string(),
     progress: z.number().min(0).max(1),
     plan: z.array(PlanStep),
   }),
-  z.object({ type: z.literal("agent.heartbeat"), agentId: z.string(), at: Timestamp }),
-  z.object({ type: z.literal("agent.usage"), agentId: z.string(), usage: Usage }),
-  z.object({ type: z.literal("agent.status"), agentId: z.string(), status: AgentStatus }),
-  z.object({ type: z.literal("agent.completed"), agentId: z.string(), branch: z.string() }),
-  z.object({ type: z.literal("agent.archived"), agentId: z.string(), archived: z.boolean() }),
+  z.object({ type: z.literal("run.heartbeat"), runId: z.string(), at: Timestamp }),
+  z.object({ type: z.literal("run.usage"), runId: z.string(), usage: Usage }),
+  z.object({ type: z.literal("run.status"), runId: z.string(), status: TaskRunStatus }),
+  z.object({ type: z.literal("run.completed"), runId: z.string(), branch: z.string() }),
+  z.object({ type: z.literal("run.archived"), runId: z.string(), archived: z.boolean() }),
 
   // HITL round-trip
   z.object({ type: z.literal("hitl.raised"), item: HitlItem }),
   z.object({ type: z.literal("hitl.resolved"), id: z.string(), resolution: Resolution }),
 
   // derived intelligence
-  z.object({ type: z.literal("conflict.detected"), moduleId: z.string(), agentIds: z.array(z.string()) }),
+  z.object({ type: z.literal("conflict.detected"), moduleId: z.string(), runIds: z.array(z.string()) }),
 
   // collection CRUD deltas — keep every operator's view consistent
   z.object({ type: z.literal("project.upserted"), project: Project }),
   z.object({ type: z.literal("project.deleted"), id: z.string() }),
   z.object({ type: z.literal("task.upserted"), task: Task }),
   z.object({ type: z.literal("task.deleted"), id: z.string() }),
-  z.object({ type: z.literal("runner.upserted"), runner: Runner }),
-  z.object({ type: z.literal("runner.deleted"), id: z.string() }),
+  z.object({ type: z.literal("agent.upserted"), agent: Agent }),
+  z.object({ type: z.literal("agent.deleted"), id: z.string() }),
 
   // audit trail mutations — the decision audit isn't part of the snapshot, so
   // these carry no payload beyond identity; clients re-fetch /api/audit on them.

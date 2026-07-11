@@ -3,7 +3,7 @@
 // existence checks (→ NotFoundError), the busy-runner guard (→ RunnerBusyError),
 // and idempotent HITL resolution.
 import { describe, it, expect } from "vitest";
-import type { HitlItem, ProviderId, Runner } from "@skynet/shared";
+import type { HitlItem, ProviderId, Agent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
 import { Orchestrator } from "../apps/server/src/orchestrator.js";
@@ -24,7 +24,7 @@ class NullBus implements Bus {
 class RunningProvider implements RunnerProvider {
   readonly id: ProviderId = "claude";
   async start(spec: StartSpec, _events: RunnerEvents): Promise<RunnerHandle> {
-    return { agentId: spec.agentId, provider: this.id, async pause() {}, async resume() {}, async message() {}, async stop() {} };
+    return { runId: spec.runId, provider: this.id, async pause() {}, async resume() {}, async message() {}, async stop() {} };
   }
 }
 
@@ -39,17 +39,17 @@ function setup() {
 describe("Operations — workspace-scoped domain layer", () => {
   it("runs the project → task → assign flow and scopes reads to the workspace", async () => {
     const { store, ops } = setup();
-    await store.putRunner({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
 
     const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "Proj", goal: "ship it", repo: undefined });
     const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "do the thing" });
     const agent = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
 
     expect((await ops.listProjects(DEFAULT_WORKSPACE)).map((p) => p.id)).toContain(project.id);
-    expect((await store.getTask(task.id))?.agentId).toBe(agent.id);
+    expect((await store.getTask(task.id))?.runId).toBe(agent.id);
     // The agent belongs to this workspace, not another.
-    expect((await ops.getAgent(DEFAULT_WORKSPACE, agent.id)).id).toBe(agent.id);
-    await expect(ops.getAgent("resistance", agent.id)).rejects.toBeInstanceOf(NotFoundError);
+    expect((await ops.getRun(DEFAULT_WORKSPACE, agent.id)).id).toBe(agent.id);
+    await expect(ops.getRun("resistance", agent.id)).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it("rejects cross-workspace access with NotFoundError", async () => {
@@ -62,7 +62,7 @@ describe("Operations — workspace-scoped domain layer", () => {
 
   it("refuses to retire a busy runner", async () => {
     const { store, ops } = setup();
-    await store.putRunner({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 } satisfies Runner);
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 } satisfies Agent);
     const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repo: undefined });
     const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "x" });
     await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id); // r1 → busy
@@ -106,7 +106,7 @@ describe("Operations — workspace-scoped domain layer", () => {
 
   it("pause / resume drive the agent status and are workspace-scoped", async () => {
     const { store, ops } = setup();
-    await store.putRunner({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
     const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repo: undefined });
     const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "x" });
     const agent = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
@@ -123,17 +123,17 @@ describe("Operations — workspace-scoped domain layer", () => {
 
   it("stop is terminal: marks the agent done AND frees its runner to idle", async () => {
     const { store, ops } = setup();
-    await store.putRunner({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
     const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repo: undefined });
     const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "x" });
     const agent = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
-    expect((await store.getRunner("r1"))?.status).toBe("busy");
+    expect((await store.getAgent("r1"))?.status).toBe("busy");
 
     // The operator-facing stop must halt (terminal + runner freed), NOT the
     // detach-only path that leaves the agent hanging non-terminal.
     const stopped = await ops.stopAgent(DEFAULT_WORKSPACE, agent.id);
     expect(stopped.status).toBe("done");
-    expect((await store.getRunner("r1"))?.status).toBe("idle");
+    expect((await store.getAgent("r1"))?.status).toBe("idle");
 
     await expect(ops.stopAgent("resistance", "no-such")).rejects.toBeInstanceOf(NotFoundError);
   });
@@ -141,7 +141,7 @@ describe("Operations — workspace-scoped domain layer", () => {
   it("resolves a HITL item once, recording who decided (idempotent)", async () => {
     const { hub, ops, store } = setup();
     const item: HitlItem = {
-      id: "q1", workspaceId: DEFAULT_WORKSPACE, agentId: "a1", kind: "approval",
+      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "a1", kind: "approval",
       title: "Run migration?", why: "schema change", risk: "high",
       raisedAt: 0, resolvedAt: null, resolution: null,
       command: "migrate", options: null, recommended: null, steps: null, diff: null,

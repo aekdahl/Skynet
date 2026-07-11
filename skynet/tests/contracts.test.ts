@@ -4,7 +4,7 @@
 // must be rejected — that's the guarantee both apps lean on.
 import { describe, it, expect } from "vitest";
 import {
-  Agent,
+  TaskRun,
   HitlItem,
   Resolution,
   ServerEvent,
@@ -14,13 +14,13 @@ import {
   DEFAULT_WORKSPACE,
 } from "@skynet/shared";
 
-const agent: Agent = {
+const agent: TaskRun = {
   id: "billing",
   workspaceId: DEFAULT_WORKSPACE,
   projectId: "payments",
   name: "Stripe webhook reconciliation",
   status: "waiting",
-  runnerId: "runner-01",
+  agentId: "runner-01",
   provider: "claude",
   model: "opus-4.5",
   branch: "agent/billing-hooks",
@@ -43,8 +43,8 @@ const agent: Agent = {
 const wire = <T>(v: T): unknown => JSON.parse(JSON.stringify(v));
 
 describe("contracts round-trip", () => {
-  it("Agent survives JSON serialize → parse unchanged", () => {
-    const parsed = Agent.parse(wire(agent));
+  it("TaskRun survives JSON serialize → parse unchanged", () => {
+    const parsed = TaskRun.parse(wire(agent));
     expect(parsed).toEqual(agent);
   });
 
@@ -52,10 +52,10 @@ describe("contracts round-trip", () => {
     // The wire may omit defaulted fields; parse must reconstruct them.
     const minimal = {
       id: "x", workspaceId: "w", projectId: "p", name: "n", status: "running",
-      runnerId: null, provider: "claude", model: "m", branch: "b", modules: [],
+      agentId: null, provider: "claude", model: "m", branch: "b", modules: [],
       progress: 0, plan: [], modifiedFiles: [], log: [], startedAt: 0, lastHeartbeatAt: 0,
     };
-    const parsed = Agent.parse(minimal);
+    const parsed = TaskRun.parse(minimal);
     expect(parsed.previewUrl).toBeNull();
     expect(parsed.dependsOn).toEqual([]);
     expect(parsed.visual).toBe(false);
@@ -63,33 +63,33 @@ describe("contracts round-trip", () => {
   });
 
   it("rejects an out-of-range progress", () => {
-    expect(() => Agent.parse({ ...agent, progress: 1.5 })).toThrow();
+    expect(() => TaskRun.parse({ ...agent, progress: 1.5 })).toThrow();
   });
 
   it("rejects an unknown agent status", () => {
-    expect(() => Agent.parse({ ...agent, status: "frozen" })).toThrow();
+    expect(() => TaskRun.parse({ ...agent, status: "frozen" })).toThrow();
   });
 
   it("every ServerEvent variant round-trips through its discriminated union", () => {
     const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "op-1", at: 5 };
     const hitl: HitlItem = {
-      id: "q1", workspaceId: DEFAULT_WORKSPACE, agentId: "billing", kind: "approval",
+      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "billing", kind: "approval",
       title: "t", why: "w", risk: "medium", raisedAt: 1, expiresAt: null, resolvedAt: null, resolution: null,
       command: "deploy", options: null, recommended: null, steps: null, diff: null,
     };
     const events: ServerEvent[] = [
-      { type: "agent.started", agent },
-      { type: "agent.log", agentId: "billing", at: 1, line: "hi" },
-      { type: "agent.progress", agentId: "billing", progress: 0.5, plan: [{ text: "s", state: "now" }] },
-      { type: "agent.heartbeat", agentId: "billing", at: 2 },
-      { type: "agent.status", agentId: "billing", status: "review" },
-      { type: "agent.completed", agentId: "billing", branch: "agent/billing-hooks" },
+      { type: "run.started", run: agent },
+      { type: "run.log", runId: "billing", at: 1, line: "hi" },
+      { type: "run.progress", runId: "billing", progress: 0.5, plan: [{ text: "s", state: "now" }] },
+      { type: "run.heartbeat", runId: "billing", at: 2 },
+      { type: "run.status", runId: "billing", status: "review" },
+      { type: "run.completed", runId: "billing", branch: "agent/billing-hooks" },
       { type: "hitl.raised", item: hitl },
       { type: "hitl.resolved", id: "q1", resolution },
-      { type: "conflict.detected", moduleId: "shared/ui", agentIds: ["onboard", "tokens"] },
+      { type: "conflict.detected", moduleId: "shared/ui", runIds: ["onboard", "tokens"] },
       { type: "project.deleted", id: "payments" },
       { type: "task.deleted", id: "t-1" },
-      { type: "runner.deleted", id: "runner-09" },
+      { type: "agent.deleted", id: "runner-09" },
       { type: "audit.archived", hitlId: "q1", archived: true },
       { type: "audit.deleted", hitlId: "q1" },
       { type: "audit.archived-all" },
@@ -101,12 +101,12 @@ describe("contracts round-trip", () => {
   });
 
   it("rejects an unknown ServerEvent type", () => {
-    expect(() => ServerEvent.parse({ type: "agent.exploded", agentId: "x" })).toThrow();
+    expect(() => ServerEvent.parse({ type: "run.exploded", runId: "x" })).toThrow();
   });
 
   it("Snapshot validates a full default-provider catalog and WsMessage wraps it", () => {
     const snapshot: Snapshot = {
-      agents: [agent], queue: [], projects: [], tasks: [], fleet: [],
+      runs: [agent], queue: [], projects: [], tasks: [], fleet: [],
       modules: [], deps: [], providers: DEFAULT_PROVIDERS, serverTime: 42,
     };
     expect(Snapshot.parse(wire(snapshot))).toEqual(snapshot);

@@ -95,7 +95,7 @@ export interface CliVendor {
 }
 
 class CliRunnerHandle implements RunnerHandle {
-  readonly agentId: string;
+  readonly runId: string;
   readonly provider: ProviderId;
   private child?: ChildProcessWithoutNullStreams;
   private gateOpen = false;
@@ -111,11 +111,11 @@ class CliRunnerHandle implements RunnerHandle {
     private spec: StartSpec,
     private events: RunnerEvents,
   ) {
-    this.agentId = spec.agentId;
+    this.runId = spec.runId;
     this.provider = vendor.id;
-    this.events.onStatus(this.agentId, "running");
-    this.events.onLog(this.agentId, `picked up "${spec.task}" on ${spec.branch}`);
-    this.hb = setInterval(() => this.events.onHeartbeat(this.agentId), 5_000);
+    this.events.onStatus(this.runId, "running");
+    this.events.onLog(this.runId, `picked up "${spec.task}" on ${spec.branch}`);
+    this.hb = setInterval(() => this.events.onHeartbeat(this.runId), 5_000);
     this.launch();
   }
 
@@ -170,27 +170,27 @@ class CliRunnerHandle implements RunnerHandle {
     }
     switch (ev.kind) {
       case "log":
-        this.events.onLog(this.agentId, ev.line);
+        this.events.onLog(this.runId, ev.line);
         break;
       case "tool":
-        this.events.onLog(this.agentId, `▸ ${ev.label}`);
+        this.events.onLog(this.runId, `▸ ${ev.label}`);
         this.bump();
         break;
       case "chat":
         if (this.pendingChat) {
           this.pendingChat = false;
-          this.events.onChatReply(this.agentId, ev.text);
+          this.events.onChatReply(this.runId, ev.text);
         } else {
-          this.events.onLog(this.agentId, ev.text);
+          this.events.onLog(this.runId, ev.text);
         }
         break;
       case "approval":
         this.gateOpen = true;
-        this.events.onStatus(this.agentId, "waiting");
-        this.events.onHitl(this.agentId, ev.raise);
+        this.events.onStatus(this.runId, "waiting");
+        this.events.onHitl(this.runId, ev.raise);
         break;
       case "usage":
-        this.events.onUsage?.(this.agentId, ev.usage);
+        this.events.onUsage?.(this.runId, ev.usage);
         break;
       case "ignore":
         break;
@@ -199,7 +199,7 @@ class CliRunnerHandle implements RunnerHandle {
 
   private bump() {
     this.progress = Math.min(0.9, this.progress + 0.08);
-    this.events.onProgress(this.agentId, this.progress, [] as PlanStep[]);
+    this.events.onProgress(this.runId, this.progress, [] as PlanStep[]);
   }
 
   // Binary missing, process died, or auth failed — this is a FAILURE, not a
@@ -209,7 +209,7 @@ class CliRunnerHandle implements RunnerHandle {
     if (this.finished) return;
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
-    this.events.onFailed(this.agentId, message);
+    this.events.onFailed(this.runId, message);
     this.kill();
   }
 
@@ -217,12 +217,12 @@ class CliRunnerHandle implements RunnerHandle {
     if (this.finished) return;
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
-    this.events.onProgress(this.agentId, 1, [] as PlanStep[]);
+    this.events.onProgress(this.runId, 1, [] as PlanStep[]);
     // Compute finished, but the orchestrator owns the terminal "done" (after it
     // commits the worktree → review → merge). Emitting "done" here would race
     // integration and expose a premature "done" with uncommitted work — hand off
     // via onCompleted only.
-    this.events.onCompleted(this.agentId, this.spec.branch);
+    this.events.onCompleted(this.runId, this.spec.branch);
     this.kill();
   }
 
@@ -237,18 +237,18 @@ class CliRunnerHandle implements RunnerHandle {
   }
 
   async pause() {
-    this.events.onStatus(this.agentId, "waiting");
+    this.events.onStatus(this.runId, "waiting");
   }
 
   async resume(decision?: Resolution) {
     if (this.gateOpen) {
       this.gateOpen = false;
-      this.events.onStatus(this.agentId, "running");
+      this.events.onStatus(this.runId, "running");
       // Best-effort: hand the decision to the CLI if it can take one on stdin.
       this.writeStdin(this.vendor.encodeDecision(decision, this.ctx));
       const tag = decision?.action ?? "approve";
       this.events.onLog(
-        this.agentId,
+        this.runId,
         `decision: ${tag}${decision?.guidance ? ` — "${decision.guidance}"` : ""}`,
       );
     } else if (decision?.guidance) {
@@ -264,7 +264,7 @@ class CliRunnerHandle implements RunnerHandle {
       this.writeStdin(payload);
     } else {
       // CLI runs one-shot — can't chat mid-run; acknowledge instead of hanging.
-      this.events.onChatReply(this.agentId, `re: "${text}" — noted; ${this.vendor.id} runs headless, factoring it into the next step.`);
+      this.events.onChatReply(this.runId, `re: "${text}" — noted; ${this.vendor.id} runs headless, factoring it into the next step.`);
     }
   }
 

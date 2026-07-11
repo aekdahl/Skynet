@@ -32,7 +32,7 @@ class FakeProvider implements GitProvider {
 }
 
 const PUSH = (ws: string): PushRequest => ({
-  workspaceId: ws, agentId: "a1", repo: "octocat/repo", branch: "agent/a1", baseBranch: "main",
+  workspaceId: ws, runId: "a1", repo: "octocat/repo", branch: "agent/a1", baseBranch: "main",
   worktreePath: "/tmp/wt", changedFiles: ["x.ts"], modules: [], allowedModules: [], force: false,
   title: "t", body: "b",
 });

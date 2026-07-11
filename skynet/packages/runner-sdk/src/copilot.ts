@@ -41,7 +41,7 @@ const TOOL_LINE = /^(?:▸|>|•|\s*(?:running|executing|tool|shell|bash|run|edi
 const APPROVAL_PROMPT = /\b(allow|approve|run this|proceed|confirm)\b.*\?\s*(\[[yYnN/]+\])?\s*$/;
 
 class CopilotRunnerHandle implements RunnerHandle {
-  readonly agentId: string;
+  readonly runId: string;
   readonly provider: ProviderId = "copilot";
   private child?: ChildProcess;
   private reader?: Interface;
@@ -56,10 +56,10 @@ class CopilotRunnerHandle implements RunnerHandle {
     private events: RunnerEvents,
     private resumeSession: boolean,
   ) {
-    this.agentId = spec.agentId;
-    this.events.onStatus(this.agentId, "running");
-    this.events.onLog(this.agentId, `picked up "${spec.task}" on ${spec.branch}`);
-    this.hb = setInterval(() => this.events.onHeartbeat(this.agentId), 5_000);
+    this.runId = spec.runId;
+    this.events.onStatus(this.runId, "running");
+    this.events.onLog(this.runId, `picked up "${spec.task}" on ${spec.branch}`);
+    this.hb = setInterval(() => this.events.onHeartbeat(this.runId), 5_000);
     this.spawnTurn(this.initialPrompt(), true);
   }
 
@@ -116,7 +116,7 @@ class CopilotRunnerHandle implements RunnerHandle {
       child.stderr.on("data", (chunk: string) => {
         scanAuth(chunk);
         const line = chunk.trim();
-        if (line) this.events.onLog(this.agentId, `[copilot] ${line}`);
+        if (line) this.events.onLog(this.runId, `[copilot] ${line}`);
       });
     }
 
@@ -161,18 +161,18 @@ class CopilotRunnerHandle implements RunnerHandle {
     if (this.pendingChat) {
       // First substantive line after a chat message becomes the reply.
       this.pendingChat = false;
-      this.events.onChatReply(this.agentId, trimmed);
+      this.events.onChatReply(this.runId, trimmed);
       return;
     }
 
-    this.events.onLog(this.agentId, trimmed);
+    this.events.onLog(this.runId, trimmed);
     if (TOOL_LINE.test(trimmed)) this.bump();
   }
 
   private raiseGate(command: string) {
     this.gateCommand = command;
-    this.events.onStatus(this.agentId, "waiting");
-    this.events.onHitl(this.agentId, this.buildRaise(command));
+    this.events.onStatus(this.runId, "waiting");
+    this.events.onHitl(this.runId, this.buildRaise(command));
   }
 
   private buildRaise(command: string): HitlRaise {
@@ -191,22 +191,22 @@ class CopilotRunnerHandle implements RunnerHandle {
 
   private bump() {
     this.progress = Math.min(0.9, this.progress + 0.08);
-    this.events.onProgress(this.agentId, this.progress, [] as PlanStep[]);
+    this.events.onProgress(this.runId, this.progress, [] as PlanStep[]);
   }
 
   async pause() {
-    this.events.onStatus(this.agentId, "waiting");
+    this.events.onStatus(this.runId, "waiting");
   }
 
   async resume(decision?: Resolution) {
     if (this.gateCommand) {
       const command = this.gateCommand;
       this.gateCommand = null;
-      this.events.onStatus(this.agentId, "running");
+      this.events.onStatus(this.runId, "running");
       // The CLI is blocked on its y/N prompt — answer it directly on stdin.
       if (decision?.action === "reject" || decision?.action === "modify") {
         this.writeStdin("n");
-        this.events.onLog(this.agentId, `decision: ${decision.action}`);
+        this.events.onLog(this.runId, `decision: ${decision.action}`);
         const guidance =
           decision.action === "modify" && decision.guidance?.trim()
             ? decision.guidance.trim()
@@ -215,7 +215,7 @@ class CopilotRunnerHandle implements RunnerHandle {
         else this.spawnTurn(guidance, true);
       } else {
         this.writeStdin("y");
-        this.events.onLog(this.agentId, "decision: approve");
+        this.events.onLog(this.runId, "decision: approve");
         if (!this.childAlive()) this.spawnTurn(`Approved — proceed with \`${command}\`.`, true);
       }
       return;
@@ -243,11 +243,11 @@ class CopilotRunnerHandle implements RunnerHandle {
     if (this.finished) return;
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
-    this.events.onProgress(this.agentId, 1, [] as PlanStep[]);
+    this.events.onProgress(this.runId, 1, [] as PlanStep[]);
     // The orchestrator owns the terminal "done" (after committing the worktree →
     // review → merge). Emitting it here would race integration and surface a
     // premature "done" with uncommitted work — hand off via onCompleted only.
-    this.events.onCompleted(this.agentId, this.spec.branch);
+    this.events.onCompleted(this.runId, this.spec.branch);
     this.killChild();
   }
 
@@ -256,7 +256,7 @@ class CopilotRunnerHandle implements RunnerHandle {
     if (this.finished || !primary) return;
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
-    this.events.onFailed(this.agentId, `copilot runner unavailable — ${reason}`);
+    this.events.onFailed(this.runId, `copilot runner unavailable — ${reason}`);
     this.killChild();
   }
 

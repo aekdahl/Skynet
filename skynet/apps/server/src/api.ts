@@ -53,7 +53,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
 
   // ── auth: every /api and /mcp route resolves a workspace-scoped principal ──
   app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
-    // /mcp carries the same bearer-token principal as /api, so agents and humans
+    // /mcp carries the same bearer-token principal as /api, so runs and humans
     // authenticate identically. Everything else (health, static SPA, /ws — which
     // authenticates itself) is untouched. requiresAuth() owns the decision (it
     // lowercases first so an uppercase /API/... can't skip the guard, and lets
@@ -68,7 +68,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.get("/api/snapshot", (req) => ops.snapshot(ws(req)));
   app.get("/api/providers", (req) => ops.listProviders(ws(req)));
   app.get("/api/projects", (req) => ops.listProjects(ws(req)));
-  app.get("/api/fleet/runners", (req) => ops.listRunners(ws(req)));
+  app.get("/api/fleet/runners", (req) => ops.listAgents(ws(req)));
   // Decision audit trail — resolved HITL items, newest first (W8, Backend Brief §11).
   app.get("/api/audit", (req) => ops.listAudit(ws(req)));
 
@@ -105,7 +105,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   });
 
   // ── agent actions ────────────────────────────────────────────────────────
-  app.post<{ Params: { id: string } }>("/api/agents/:id/messages", async (req, reply) => {
+  app.post<{ Params: { id: string } }>("/api/runs/:id/messages", async (req, reply) => {
     const body = ChatRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
@@ -116,7 +116,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
-  app.post<{ Params: { id: string } }>("/api/agents/:id/fork", async (req, reply) => {
+  app.post<{ Params: { id: string } }>("/api/runs/:id/fork", async (req, reply) => {
     try {
       return await ops.forkAgent(ws(req), req.params.id);
     } catch (err) {
@@ -125,7 +125,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   });
 
   // Archive / restore an agent (hidden from the board, kept in the store).
-  app.post<{ Params: { id: string }; Body: { archived?: boolean } }>("/api/agents/:id/archive", async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: { archived?: boolean } }>("/api/runs/:id/archive", async (req, reply) => {
     try {
       return await ops.archiveAgent(ws(req), req.params.id, req.body?.archived ?? true);
     } catch (err) {
@@ -246,7 +246,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     const body = UpdateRunnerRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
-      return await ops.updateRunner(ws(req), req.params.id, body.data);
+      return await ops.updateAgent(ws(req), req.params.id, body.data);
     } catch (err) {
       return fail(reply, err);
     }

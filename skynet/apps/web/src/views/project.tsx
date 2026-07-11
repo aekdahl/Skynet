@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Agent, Project, Task } from "@skynet/shared";
+import type { TaskRun, Project, Task } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import {
   agentsForProject,
@@ -20,12 +20,12 @@ function ProjectAgentCard({
   onOpen,
   onArchive,
 }: {
-  agent: Agent;
+  agent: TaskRun;
   onOpen: () => void;
   onArchive: () => void;
 }) {
   const { queue } = useStore();
-  const q = openQueue(queue).find((it) => it.agentId === agent.id);
+  const q = openQueue(queue).find((it) => it.runId === agent.id);
   const done = planDone(agent);
   return (
     <div
@@ -156,9 +156,9 @@ function BacklogCard({
         className="kb-assign"
         onClick={onAssign}
         disabled={noRunner}
-        title={noRunner ? "Configure a runner in Fleet before assigning agents." : undefined}
+        title={noRunner ? "Configure an agent in Fleet before assigning runs." : undefined}
       >
-        {noRunner ? "Configure a runner to assign" : "Assign agent →"}
+        {noRunner ? "Configure an agent to assign" : "Assign agent →"}
       </button>
     </div>
   );
@@ -212,16 +212,16 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string) => void }) {
 export function ProjectView({
   project,
   now,
-  onOpenAgent,
+  onOpenTask,
   onBack,
 }: {
   project: Project;
   now: number;
-  onOpenAgent: (id: string) => void;
+  onOpenTask: (id: string) => void;
   onBack: () => void;
 }) {
   const {
-    agents,
+    runs,
     queue,
     tasks,
     updateProject,
@@ -230,16 +230,16 @@ export function ProjectView({
     assignTask,
     archiveAgent,
   } = useStore();
-  const pa = agentsForProject(agents, project.id);
+  const pa = agentsForProject(runs, project.id);
   const items = openQueue(queue).filter((q) =>
-    pa.some((a) => a.id === q.agentId),
+    pa.some((a) => a.id === q.runId),
   );
   const live = pa.filter((a) => !a.archived);
   const inProgress = live.filter((a) => a.status !== "done");
   const doneList = live.filter((a) => a.status === "done");
   const archived = pa.filter((a) => a.archived);
   const backlog = backlogTasks(tasks, project.id);
-  const lead = visualLeadOf(project, agents);
+  const lead = visualLeadOf(project, runs);
 
   const [folded, setFolded] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -305,11 +305,11 @@ export function ProjectView({
             {project.repoPath && (
               <div className="mono proj-repo-line" title={project.repoPath}>
                 {project.gitBacked ? "◈ git" : "📁"} {project.repoPath}
-                {project.gitBacked && " · agents work in auto worktrees here"}
+                {project.gitBacked && " · runs work in auto worktrees here"}
               </div>
             )}
             {project.repo && (
-              <div className="mono proj-repo-line">⑂ {project.repo} · agents branch &amp; PR here</div>
+              <div className="mono proj-repo-line">⑂ {project.repo} · runs branch &amp; PR here</div>
             )}
           </div>
           <div className="projview-head-tools">
@@ -369,10 +369,10 @@ export function ProjectView({
             <QueueCard
               key={it.id}
               item={it}
-              agent={agents.find((a) => a.id === it.agentId)}
+              agent={runs.find((a) => a.id === it.runId)}
               now={now}
               selected={false}
-              onOpen={() => onOpenAgent(it.agentId)}
+              onOpen={() => onOpenTask(it.runId)}
             />
           ))}
         </div>
@@ -394,12 +394,12 @@ export function ProjectView({
         </div>
         <div className="kb-col">
           <div className="kb-head kb-head-active">IN PROGRESS · {inProgress.length}</div>
-          {inProgress.length === 0 && <div className="kb-empty">No agents running.</div>}
+          {inProgress.length === 0 && <div className="kb-empty">No runs running.</div>}
           {inProgress.map((a) => (
             <ProjectAgentCard
               key={a.id}
               agent={a}
-              onOpen={() => onOpenAgent(a.id)}
+              onOpen={() => onOpenTask(a.id)}
               onArchive={() => archiveAgent(a.id, true)}
             />
           ))}
@@ -413,8 +413,8 @@ export function ProjectView({
               className="kb-card kb-done"
               role="button"
               tabIndex={0}
-              onClick={() => onOpenAgent(a.id)}
-              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onOpenAgent(a.id)}
+              onClick={() => onOpenTask(a.id)}
+              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onOpenTask(a.id)}
             >
               <span className="kb-task">✓ {a.name}</span>
               <span className="kb-done-row">
@@ -449,7 +449,7 @@ export function ProjectView({
                 <div key={a.id} className="kb-archive-row">
                   <button
                     className="kb-archive-name"
-                    onClick={() => onOpenAgent(a.id)}
+                    onClick={() => onOpenTask(a.id)}
                   >
                     {a.status === "done" ? "✓ " : ""}
                     {a.name}

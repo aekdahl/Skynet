@@ -4,14 +4,14 @@
 // scoped by workspace; reference data is global for now.
 
 import type {
-  Agent,
+  TaskRun,
   Dependency,
   GithubConnection,
   HitlItem,
   Module,
   Project,
   ProviderInfo,
-  Runner,
+  Agent,
   Snapshot,
   Task,
 } from "@skynet/shared";
@@ -22,11 +22,11 @@ import { PROVIDERS } from "./providers.js";
 
 export class MemoryStore implements Store {
   // `protected` so a persistence subclass (FileStore) can load/serialize them.
-  protected agents = new Map<string, Agent>();
+  protected runs = new Map<string, TaskRun>();
   protected queue = new Map<string, HitlItem>();
   protected projects = new Map<string, Project>();
   protected tasks = new Map<string, Task>();
-  protected fleet = new Map<string, Runner>();
+  protected fleet = new Map<string, Agent>();
   protected modules: Module[] = [];
   protected deps: Dependency[] = [];
   protected audit: AuditRecord[] = [];
@@ -38,17 +38,17 @@ export class MemoryStore implements Store {
    *  to schedule a debounced write to disk. */
   protected persist(): void {}
 
-  // The store always starts empty — a fresh install has no projects/agents until
+  // The store always starts empty — a fresh install has no projects/runs until
   // the operator creates them. (No demo fixtures; the provider catalog is the
   // only prefilled data, and it's live configuration.)
 
   async snapshot(workspaceId: string): Promise<Snapshot> {
     return {
-      agents: await this.listAgents(workspaceId),
+      runs: await this.listRuns(workspaceId),
       queue: await this.listQueue(workspaceId),
       projects: await this.listProjects(workspaceId),
       tasks: await this.listTasks(workspaceId),
-      fleet: await this.listRunners(workspaceId),
+      fleet: await this.listAgents(workspaceId),
       modules: this.modules,
       deps: this.deps,
       providers: this.providers,
@@ -56,12 +56,12 @@ export class MemoryStore implements Store {
     };
   }
 
-  async listAgents(ws: string) { return [...this.agents.values()].filter((a) => a.workspaceId === ws); }
-  async listAllAgents() { return [...this.agents.values()]; }
-  async getAgent(id: string) { return this.agents.get(id); }
-  async putAgent(agent: Agent) { this.agents.set(agent.id, agent); this.persist(); return agent; }
-  async appendLog(agentId: string, at: number, line: string, detail?: string) {
-    const a = this.agents.get(agentId);
+  async listRuns(ws: string) { return [...this.runs.values()].filter((a) => a.workspaceId === ws); }
+  async listAllRuns() { return [...this.runs.values()]; }
+  async getRun(id: string) { return this.runs.get(id); }
+  async putRun(agent: TaskRun) { this.runs.set(agent.id, agent); this.persist(); return agent; }
+  async appendLog(runId: string, at: number, line: string, detail?: string) {
+    const a = this.runs.get(runId);
     if (a) { a.log.push(detail ? { at, line, detail } : { at, line }); this.persist(); }
   }
 
@@ -79,11 +79,11 @@ export class MemoryStore implements Store {
   async putTask(task: Task) { this.tasks.set(task.id, task); this.persist(); return task; }
   async deleteTask(id: string) { this.tasks.delete(id); this.persist(); }
 
-  async listRunners(ws: string) { return [...this.fleet.values()].filter((r) => r.workspaceId === ws); }
-  async listAllRunners() { return [...this.fleet.values()]; }
-  async getRunner(id: string) { return this.fleet.get(id); }
-  async putRunner(runner: Runner) { this.fleet.set(runner.id, runner); this.persist(); return runner; }
-  async deleteRunner(id: string) { this.fleet.delete(id); this.persist(); }
+  async listAgents(ws: string) { return [...this.fleet.values()].filter((r) => r.workspaceId === ws); }
+  async listAllAgents() { return [...this.fleet.values()]; }
+  async getAgent(id: string) { return this.fleet.get(id); }
+  async putAgent(runner: Agent) { this.fleet.set(runner.id, runner); this.persist(); return runner; }
+  async deleteAgent(id: string) { this.fleet.delete(id); this.persist(); }
 
   async listModules(_ws: string) { return this.modules; }
   async listDeps(_ws: string) { return this.deps; }
