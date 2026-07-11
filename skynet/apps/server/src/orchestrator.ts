@@ -81,6 +81,14 @@ export class Orchestrator {
   // Pending no-operator-answer timers for open `question` HITLs, keyed by item id.
   private questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private seq = 0;
+  // Serializes runner acquisition (find-idle → mark-busy). The find and the busy
+  // write are separated by an `await`, so without this two concurrent acquires
+  // could both observe the SAME idle runner and hand it to two agents (TOCTOU
+  // double-booking). Every acquire chains onto this promise so the read-check-
+  // write runs atomically; a busy-marked runner is persisted before the next
+  // acquire's find() reads, so it can never be re-selected. Mirrors the Hub's
+  // per-hitl-id resolve mutex.
+  private acquireLock: Promise<unknown> = Promise.resolve();
   // One lazily-loaded provider backend per provider id (real backends are heavy).
   private providers = new Map<string, Promise<RunnerProvider>>();
   private moduleMap: ModuleMap = loadModuleMap(config.integrationRepo);
@@ -394,29 +402,49 @@ export class Orchestrator {
    * per-workspace secret. There is no mock — no credential means nothing runs.
    */
   private async providerUsable(workspaceId: string, provider: Agent["provider"]): Promise<boolean> {
+    // An injected provider (test seam / a deliberately-supplied backend, see
+    // getProvider) is a working provider — credentialing is the injector's
+    // responsibility, so it's usable regardless of env/secret.
+    if (this.providerOverride) return true;
     if (providerUsableFromEnv(provider)) return true;
     return (await secretService.resolve(workspaceId, provider)) !== undefined;
   }
 
+  /**
+   * Run a runner-acquisition critical section serially. Each call chains onto the
+   * previous one so the find-idle → mark-busy sequence inside `fn` is atomic with
+   * respect to every other acquisition, closing the double-booking TOCTOU. A
+   * prior failure never poisons the chain (we swallow it for the NEXT waiter; the
+   * failing call still rejects to its own caller).
+   */
+  private acquireExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.acquireLock.catch(() => undefined).then(fn);
+    this.acquireLock = run.catch(() => undefined);
+    return run;
+  }
+
   /** Acquire an idle runner whose provider can actually execute; mark it busy.
-   *  Empty fleet or no key for any idle runner → RunnerNotConfiguredError (409);
-   *  runners exist but all busy → NoCapacityError. */
-  private async acquireRunner(workspaceId: string): Promise<{ id: string; provider: Agent["provider"]; model: string }> {
-    const runners = await this.store.listRunners(workspaceId);
-    if (runners.length === 0) {
-      throw new RunnerNotConfiguredError("No runner configured — add one in Fleet before assigning agents.");
-    }
-    const idle = runners.filter((r) => r.status === "idle");
-    if (idle.length === 0) throw new NoCapacityError();
-    for (const r of idle) {
-      if (await this.providerUsable(workspaceId, r.provider)) {
-        await this.hub.upsertRunner({ ...r, status: "busy", idleSince: null });
-        return { id: r.id, provider: r.provider, model: r.model };
+   *  Serialized via acquireExclusive so find-idle → mark-busy is atomic (closes
+   *  the double-booking TOCTOU). Empty fleet or no key for any idle runner →
+   *  RunnerNotConfiguredError (409); runners exist but all busy → NoCapacityError. */
+  private acquireRunner(workspaceId: string): Promise<{ id: string; provider: Agent["provider"]; model: string }> {
+    return this.acquireExclusive(async () => {
+      const runners = await this.store.listRunners(workspaceId);
+      if (runners.length === 0) {
+        throw new RunnerNotConfiguredError("No runner configured — add one in Fleet before assigning agents.");
       }
-    }
-    throw new RunnerNotConfiguredError(
-      "No credential for any available runner's provider — add a provider key in Settings (or sign in a CLI-login provider). Nothing runs without one.",
-    );
+      const idle = runners.filter((r) => r.status === "idle");
+      if (idle.length === 0) throw new NoCapacityError();
+      for (const r of idle) {
+        if (await this.providerUsable(workspaceId, r.provider)) {
+          await this.hub.upsertRunner({ ...r, status: "busy", idleSince: null });
+          return { id: r.id, provider: r.provider, model: r.model };
+        }
+      }
+      throw new RunnerNotConfiguredError(
+        "No credential for any available runner's provider — add a provider key in Settings (or sign in a CLI-login provider). Nothing runs without one.",
+      );
+    });
   }
 
   /**
@@ -426,30 +454,32 @@ export class Orchestrator {
    * inherits the requested provider/model. Gated on a usable provider, so we
    * never spin up a runner the executor has no credential for.
    */
-  private async acquireOrProvisionRunner(
+  private acquireOrProvisionRunner(
     workspaceId: string,
     provider: Agent["provider"],
     model: string,
   ): Promise<{ id: string; provider: Agent["provider"]; model: string }> {
-    const runners = await this.store.listRunners(workspaceId);
-    // Prefer an idle runner whose provider can actually execute.
-    for (const r of runners.filter((r) => r.status === "idle")) {
-      if (await this.providerUsable(workspaceId, r.provider)) {
-        await this.hub.upsertRunner({ ...r, status: "busy", idleSince: null });
-        return { id: r.id, provider: r.provider, model: r.model };
+    return this.acquireExclusive(async () => {
+      const runners = await this.store.listRunners(workspaceId);
+      // Prefer an idle runner whose provider can actually execute.
+      for (const r of runners.filter((r) => r.status === "idle")) {
+        if (await this.providerUsable(workspaceId, r.provider)) {
+          await this.hub.upsertRunner({ ...r, status: "busy", idleSince: null });
+          return { id: r.id, provider: r.provider, model: r.model };
+        }
       }
-    }
-    // None idle+usable → provision one for the requested provider, but only if
-    // that provider is usable (else nothing can run).
-    if (!(await this.providerUsable(workspaceId, provider))) {
-      throw new RunnerNotConfiguredError(
-        `No credential for provider "${provider}" — add a key in Settings (or sign in a CLI-login provider). Nothing runs without one.`,
-      );
-    }
-    const id = `runner-auto-${++this.seq}`;
-    const runner: Runner = { id, workspaceId, name: id, provider, model, status: "busy", idleSince: null };
-    await this.hub.upsertRunner(runner);
-    return { id, provider, model };
+      // None idle+usable → provision one for the requested provider, but only if
+      // that provider is usable (else nothing can run).
+      if (!(await this.providerUsable(workspaceId, provider))) {
+        throw new RunnerNotConfiguredError(
+          `No credential for provider "${provider}" — add a key in Settings (or sign in a CLI-login provider). Nothing runs without one.`,
+        );
+      }
+      const id = `runner-auto-${++this.seq}`;
+      const runner: Runner = { id, workspaceId, name: id, provider, model, status: "busy", idleSince: null };
+      await this.hub.upsertRunner(runner);
+      return { id, provider, model };
+    });
   }
 
   /**
