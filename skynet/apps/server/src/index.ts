@@ -93,7 +93,7 @@ async function main() {
   await app.register(cors, { origin: true });
   await app.register(websocket);
 
-  app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: config.runner ?? "per-runner", sessions: config.sessions }));
+  app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: "per-runner", sessions: config.sessions }));
 
   await registerAuthRoutes(app, { sessions, operators });
   await registerServiceTokenRoutes(app, { serviceTokens });
@@ -144,7 +144,7 @@ async function main() {
     if (bootstrap.dropped.length > 0) app.log.warn(`ignored unknown bootstrap scopes: ${bootstrap.dropped.join(", ")}`);
   }
   app.log.info(loadedEnvFrom ? `loaded env from ${loadedEnvFrom}` : "no .env file found (using process env only)");
-  app.log.info(`Skynet server up on :${config.port}  (store=${config.store} bus=${config.bus} runner=${config.runner ?? "per-runner"} sessions=${config.sessions})`);
+  app.log.info(`Skynet server up on :${config.port}  (store=${config.store} bus=${config.bus} runner=per-runner sessions=${config.sessions})`);
 }
 
 main().catch((err) => {

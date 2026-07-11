@@ -5,7 +5,6 @@
 
 import type { Agent, HitlItem, Project, Resolution, Runner, Task } from "@skynet/shared";
 import {
-  MockRunnerProvider,
   type HitlRaise,
   type RunnerEvents,
   type RunnerHandle,
@@ -16,7 +15,7 @@ import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
 import { MergeEngine, type MergeRequest } from "./merge.js";
 import { loadModuleMap, type ModuleMap } from "./modules-map.js";
-import { assessRunnerReadiness, envKeyPresent, executorNeedsNoKey } from "./runner-readiness.js";
+import { providerUsableFromEnv } from "./provider-env.js";
 import { secretService } from "./secrets/index.js";
 import { previewService } from "./preview/index.js";
 import type { Store } from "./store/store.js";
@@ -91,7 +90,7 @@ export class Orchestrator {
   private gitCtx = new Map<string, GitContext>();
 
   // `providerOverride` is a test seam — inject a runner provider directly instead
-  // of resolving one from RUNNER. Production always passes (store, hub) only.
+  // of resolving the runner's own provider. Production always passes (store, hub) only.
   constructor(private store: Store, private hub: Hub, private providerOverride?: RunnerProvider) {}
 
   /** Build (or reuse) the git backend for a repo path. Cached so each repo keeps
@@ -137,14 +136,9 @@ export class Orchestrator {
     return this.gitContextFor(project);
   }
 
-  // Resolve the backend for an agent. The provider is chosen per fleet runner at
-  // agent creation (runner.provider); config.runner is an optional GLOBAL override
-  // for demos/dev (e.g. RUNNER=mock). Real backends load on demand (heavy) and are
-  // cached per id; the mock path never imports them.
-  private resolveProviderId(runnerProvider: string): string {
-    return config.runner ?? runnerProvider;
-  }
-
+  // Resolve the execution backend for an agent. The provider is the fleet
+  // runner's own provider (runner.provider) — there is no global override and no
+  // mock. Real backends load on demand (heavy) and are cached per id.
   private getProvider(id: string): Promise<RunnerProvider> {
     // Test seam: an injected provider short-circuits resolution.
     if (this.providerOverride) return Promise.resolve(this.providerOverride);
@@ -162,12 +156,9 @@ export class Orchestrator {
             return import("@skynet/runner-sdk/cursor").then((m) => new m.CursorRunnerProvider());
           case "copilot":
             return import("@skynet/runner-sdk/copilot").then((m) => new m.CopilotRunnerProvider());
-          case "mock":
-            // Explicit opt-in only — a deterministic test double, never the default.
-            return Promise.resolve(new MockRunnerProvider());
           default:
-            // No silent mock fallback: an unresolvable provider is a loud error.
-            return Promise.reject(new Error(`Unknown runner provider "${id}" (expected mock|claude|codex|gemini|cursor|copilot).`));
+            // An unresolvable provider is a loud error — there is no mock fallback.
+            return Promise.reject(new Error(`Unknown runner provider "${id}" (expected claude|codex|gemini|cursor|copilot).`));
         }
       })();
       this.providers.set(id, p);
@@ -398,38 +389,42 @@ export class Orchestrator {
   }
 
   /**
-   * Refuse agent creation unless a runner can actually execute: the fleet has a
-   * runner AND the executor has a credential (mock / CLI-login providers need
-   * none). Throws {@link RunnerNotConfiguredError} otherwise.
+   * Whether a provider can actually execute: a CLI-login provider (cursor /
+   * copilot), a provider with a credential env var, or one with a stored
+   * per-workspace secret. There is no mock — no credential means nothing runs.
    */
-  private async assertRunnerReady(workspaceId: string, runnerCount: number): Promise<void> {
-    // Unset RUNNER falls through to the mock provider (see getProvider), which
-    // needs no credential — mirror that here so the dev default stays open.
-    const mode = config.runner ?? "mock";
-    const credentialPresent = executorNeedsNoKey(mode)
-      ? true
-      : envKeyPresent(mode) ||
-        (await secretService.resolve(workspaceId, mode as Agent["provider"])) !== undefined;
-    const readiness = assessRunnerReadiness({ runnerMode: mode, runnerCount, credentialPresent });
-    if (!readiness.ok) throw new RunnerNotConfiguredError(readiness.reason!);
+  private async providerUsable(workspaceId: string, provider: Agent["provider"]): Promise<boolean> {
+    if (providerUsableFromEnv(provider)) return true;
+    return (await secretService.resolve(workspaceId, provider)) !== undefined;
   }
 
-  /** Acquire an idle runner in a workspace; mark it busy. Throws if none. */
+  /** Acquire an idle runner whose provider can actually execute; mark it busy.
+   *  Empty fleet or no key for any idle runner → RunnerNotConfiguredError (409);
+   *  runners exist but all busy → NoCapacityError. */
   private async acquireRunner(workspaceId: string): Promise<{ id: string; provider: Agent["provider"]; model: string }> {
     const runners = await this.store.listRunners(workspaceId);
-    await this.assertRunnerReady(workspaceId, runners.length);
-    const idle = runners.find((r) => r.status === "idle");
-    if (!idle) throw new NoCapacityError();
-    await this.hub.upsertRunner({ ...idle, status: "busy", idleSince: null });
-    return { id: idle.id, provider: idle.provider, model: idle.model };
+    if (runners.length === 0) {
+      throw new RunnerNotConfiguredError("No runner configured — add one in Fleet before assigning agents.");
+    }
+    const idle = runners.filter((r) => r.status === "idle");
+    if (idle.length === 0) throw new NoCapacityError();
+    for (const r of idle) {
+      if (await this.providerUsable(workspaceId, r.provider)) {
+        await this.hub.upsertRunner({ ...r, status: "busy", idleSince: null });
+        return { id: r.id, provider: r.provider, model: r.model };
+      }
+    }
+    throw new RunnerNotConfiguredError(
+      "No credential for any available runner's provider — add a provider key in Settings (or sign in a CLI-login provider). Nothing runs without one.",
+    );
   }
 
   /**
    * Acquire an idle runner, or PROVISION a fresh one on demand when the fleet is
    * fully occupied — used by fork so a family can branch even when every runner
    * is busy (a fork shouldn't be blocked waiting for capacity). The new runner
-   * inherits the requested provider/model. Still gated by assertRunnerReady, so
-   * we never spin up a runner the executor has no credential for.
+   * inherits the requested provider/model. Gated on a usable provider, so we
+   * never spin up a runner the executor has no credential for.
    */
   private async acquireOrProvisionRunner(
     workspaceId: string,
@@ -437,11 +432,19 @@ export class Orchestrator {
     model: string,
   ): Promise<{ id: string; provider: Agent["provider"]; model: string }> {
     const runners = await this.store.listRunners(workspaceId);
-    await this.assertRunnerReady(workspaceId, runners.length);
-    const idle = runners.find((r) => r.status === "idle");
-    if (idle) {
-      await this.hub.upsertRunner({ ...idle, status: "busy", idleSince: null });
-      return { id: idle.id, provider: idle.provider, model: idle.model };
+    // Prefer an idle runner whose provider can actually execute.
+    for (const r of runners.filter((r) => r.status === "idle")) {
+      if (await this.providerUsable(workspaceId, r.provider)) {
+        await this.hub.upsertRunner({ ...r, status: "busy", idleSince: null });
+        return { id: r.id, provider: r.provider, model: r.model };
+      }
+    }
+    // None idle+usable → provision one for the requested provider, but only if
+    // that provider is usable (else nothing can run).
+    if (!(await this.providerUsable(workspaceId, provider))) {
+      throw new RunnerNotConfiguredError(
+        `No credential for provider "${provider}" — add a key in Settings (or sign in a CLI-login provider). Nothing runs without one.`,
+      );
     }
     const id = `runner-auto-${++this.seq}`;
     const runner: Runner = { id, workspaceId, name: id, provider, model, status: "busy", idleSince: null };
@@ -534,7 +537,7 @@ export class Orchestrator {
 
     // Resolve the runner provider first — fail fast (before mutating state) if
     // it can't be resolved, rather than silently running a fake one.
-    const provider = await this.getProvider(this.resolveProviderId(runner.provider));
+    const provider = await this.getProvider(runner.provider);
 
     await this.hub.createAgent(agent);
     await this.hub.upsertTask({ ...task, state: "assigned", agentId });
@@ -602,7 +605,7 @@ export class Orchestrator {
       branchFromStep: stepIndex,
     };
 
-    const provider = await this.getProvider(this.resolveProviderId(runner.provider)); // fail fast if it can't resolve
+    const provider = await this.getProvider(runner.provider); // fail fast if it can't resolve
 
     await this.hub.createAgent(agent);
     if (project) await this.hub.upsertProject({ ...project, agentIds: [...project.agentIds, agentId] });
@@ -790,7 +793,7 @@ export class Orchestrator {
   private async consultFinished(agentId: string, question: string): Promise<string> {
     const agent = await this.store.getAgent(agentId);
     if (!agent) return `(${agentId}) no such agent.`;
-    const provider = await this.getProvider(this.resolveProviderId(agent.provider));
+    const provider = await this.getProvider(agent.provider);
     if (!provider.consult) {
       // No stateless consult available. Don't claim the agent "finished" unless
       // it actually did — otherwise chatting a running/waiting agent gets a

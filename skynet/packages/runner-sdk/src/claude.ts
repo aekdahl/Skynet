@@ -474,7 +474,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     if (!authed) {
       this.events.onLog(
         this.agentId,
-        "No Claude credential found — set ANTHROPIC_API_KEY, run `claude setup-token` (CLAUDE_CODE_OAUTH_TOKEN), or configure a gateway (ANTHROPIC_AUTH_TOKEN). RUNNER=mock needs no key.",
+        "No Claude credential found — set ANTHROPIC_API_KEY, run `claude setup-token` (CLAUDE_CODE_OAUTH_TOKEN), or configure a gateway (ANTHROPIC_AUTH_TOKEN). Without one, nothing runs.",
       );
       this.events.onStatus(this.agentId, "review");
       return; // q stays unset; consume()/heartbeat never start
