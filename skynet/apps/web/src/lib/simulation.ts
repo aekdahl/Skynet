@@ -41,6 +41,21 @@ async function tryAssign(projectId: string, taskId: string): Promise<Agent | { e
 }
 const repoPathOf = (p: unknown) => (p as { repoPath?: string | null } | undefined)?.repoPath ?? null;
 
+/** Bounded re-fetch of the audit trail until `ready` holds — the settle pattern
+ *  (see poll.ts), but for the audit endpoint, which lives outside the snapshot. */
+async function settleAudit(
+  ready: (a: Awaited<ReturnType<typeof api.fetchAudit>>) => boolean,
+  tries = 20,
+  delayMs = 300,
+): Promise<Awaited<ReturnType<typeof api.fetchAudit>>> {
+  let a = await api.fetchAudit();
+  for (let n = 0; n < tries && !ready(a); n++) {
+    await new Promise((r) => setTimeout(r, delayMs));
+    a = await api.fetchAudit();
+  }
+  return a;
+}
+
 export const JOURNEYS: Journey[] = [
   {
     id: "provision-project",
@@ -104,20 +119,41 @@ export const JOURNEYS: Journey[] = [
   {
     id: "supervise-decision",
     name: "Supervise a human-in-the-loop decision",
-    desc: "Operator resolves an open HITL gate; the decision is recorded in the audit trail. Persists.",
+    desc: "Operator spawns an agent that blocks on a gate, then resolves it — the decision lands in the audit trail. Persists.",
     run: async () => {
       const steps: Step[] = [];
-      const s = await api.fetchSnapshot();
-      const open = s.queue.find((q) => q.resolvedAt == null);
-      if (!open) {
-        steps.push(skipped("an open HITL gate to resolve", "none open — run a task whose agent raises a gate, then re-run"));
-        return steps;
-      }
+      const tag = uid();
+      const pname = `Sim: supervise ${tag}`;
+      // Stand up our OWN agent so the gate is ours to resolve — don't depend on
+      // whatever happens to be in the queue. The mock runner blocks on an
+      // approval gate around the midpoint of its run.
+      await api.createProject({ name: pname, goal: "simulated HITL supervision" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createRunner({ provider: "claude", model: "opus-4.8", name: `sim-supervise-${tag}` });
+      await api.createTask(p.id, "Sim: task that needs approval");
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [step("agent spawned", false, res.error)];
+      const agentId = res.id;
+      steps.push(step("agent running", true, agentId));
+      // Wait past the mock's midpoint for the approval gate to be raised for
+      // THIS agent. The gate lands ~10s in, so poll generously (bounded ~20s):
+      // if it never appears within the bound, that's a real failure, not a skip.
+      s = await settle((sn) => sn.queue.some((q) => q.agentId === agentId && q.resolvedAt == null), 50, 400);
+      const gate = s.queue.find((q) => q.agentId === agentId && q.resolvedAt == null);
+      steps.push(step("agent raised an approval gate (waiting on a human)", !!gate, gate ? `${gate.kind} · ${gate.title}` : "no gate within ~20s"));
+      if (!gate) return steps;
+      // Resolve it and confirm the decision is recorded in the audit trail.
       const before = (await api.fetchAudit()).length;
-      await api.resolveHitl(open.id, { action: "approve" });
-      const trail = await api.fetchAudit();
+      await api.resolveHitl(gate.id, { action: "approve" });
+      const trail = await settleAudit((a) => a.length > before && a.some((r) => r.hitlId === gate.id));
       steps.push(step("decision resolved + recorded in audit (persists)", trail.length > before, `${before} → ${trail.length}`));
-      steps.push(step("audit row names the resolved gate", trail.some((r) => r.hitlId === open.id), open.id));
+      const row = trail.find((r) => r.hitlId === gate.id);
+      steps.push(step("audit row names the resolved gate", !!row, gate.id));
+      steps.push(step("operator recorded on the decision", !!row?.operatorId, row ? `${row.operatorId} · ${row.action}` : "no row"));
       return steps;
     },
   },
