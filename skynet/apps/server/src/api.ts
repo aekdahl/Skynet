@@ -224,6 +224,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Manually promote (up) / demote (down) a task's backlog priority.
+  app.post<{ Params: { id: string; tid: string }; Body: { direction?: string } }>("/api/projects/:id/tasks/:tid/move", async (req, reply) => {
+    const direction = req.body?.direction;
+    if (direction !== "up" && direction !== "down") return reply.code(400).send({ error: "direction must be 'up' or 'down'" });
+    try {
+      return await ops.moveTask(ws(req), req.params.tid, direction);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // ── fleet ──────────────────────────────────────────────────────────────
   app.post("/api/fleet/runners", async (req, reply) => {
     const body = ConfigureRunnerRequest.safeParse(req.body);

@@ -85,6 +85,7 @@ export interface Store extends StoreState {
     patch: { text?: string; state?: string },
   ) => Promise<void>;
   deleteTask: (projectId: string, taskId: string) => Promise<void>;
+  moveTask: (projectId: string, taskId: string, direction: "up" | "down") => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   createAgent: (provider: string, model: string, name?: string) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string }) => Promise<void>;
@@ -326,6 +327,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       updateTask: async (projectId, taskId, patch) => {
         await api.updateTask(projectId, taskId, patch);
+      },
+      moveTask: async (projectId, taskId, direction) => {
+        await api.moveTask(projectId, taskId, direction);
       },
       deleteTask: async (projectId, taskId) => {
         await api.deleteTask(projectId, taskId);
