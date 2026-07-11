@@ -1,7 +1,7 @@
 // ─── Preview backfill ─────────────────────────────────────────────────────
-// At boot, stamp visual/previewUrl onto agents already in the store (the seed
+// At boot, stamp visual/previewUrl onto runs already in the store (the seed
 // fixtures, a restored Postgres set) so they ride the connect-time snapshot.
-// Newly-assigned agents get the same treatment inline in the orchestrator.
+// Newly-assigned runs get the same treatment inline in the orchestrator.
 // No-op when the configured provider is `off`.
 
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
@@ -15,20 +15,20 @@ export async function backfillPreviews(
   if (!previewService.enabled) return 0;
   let updated = 0;
   for (const ws of workspaceIds) {
-    const agents = await store.listAgents(ws);
-    for (const agent of agents) {
+    const runs = await store.listRuns(ws);
+    for (const agent of runs) {
       const project = await store.getProject(agent.projectId);
       const { visual, previewUrl } = await previewService.resolve({
         workspaceId: agent.workspaceId,
         projectId: agent.projectId,
         projectName: project?.name ?? "",
         projectGoal: project?.goal ?? "",
-        agentId: agent.id,
+        runId: agent.id,
         branch: agent.branch,
         seedVisual: agent.visual,
       });
       if (agent.visual === visual && agent.previewUrl === previewUrl) continue;
-      await store.putAgent({ ...agent, visual, previewUrl });
+      await store.putRun({ ...agent, visual, previewUrl });
       updated++;
     }
   }

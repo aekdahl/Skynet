@@ -8,7 +8,7 @@
 // isolated stack against a throwaway git repo and captures config at import time
 // (it sets SKYNET_INTEGRATION_REPO before importing the orchestrator). This
 // server has ALREADY imported config, so importing the executor here would bind
-// eval agents to the operator's real workspace. The harness lives outside the
+// eval runs to the operator's real workspace. The harness lives outside the
 // workspace on purpose and must run as its own process — so we spawn the same
 // `tsx evals/run.ts` CLI the suite ships, inheriting this process's env (the
 // .env-loaded ANTHROPIC_API_KEY the judge + runner need flows straight through).

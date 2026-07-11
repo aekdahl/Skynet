@@ -61,8 +61,8 @@ function harness(checkCmd?: string) {
   return { engine, calls, enqueueAndWait };
 }
 
-const req = (agentId: string, agentBranch: string): MergeRequest => ({
-  agentId, agentBranch, projectId: "payments", workspaceId: "cyberdyne",
+const req = (runId: string, agentBranch: string): MergeRequest => ({
+  runId, agentBranch, projectId: "payments", workspaceId: "cyberdyne",
 });
 
 describe("MergeEngine", () => {
@@ -82,7 +82,7 @@ describe("MergeEngine", () => {
   });
 
   it("serializes two merges and escalates the second as a conflict", async () => {
-    // Two agents edit the same line off main → first merges clean, second conflicts.
+    // Two runs edit the same line off main → first merges clean, second conflicts.
     git("checkout", "-b", "agent/a", "main");
     commit("shared.txt", "version A\n", "A edits shared");
     git("checkout", "main");

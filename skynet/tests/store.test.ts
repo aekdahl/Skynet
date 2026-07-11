@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Snapshot, DEFAULT_WORKSPACE, SAFETY_DEFAULTS, type Agent, type AuditRecord, type GithubConnection, type Project } from "@skynet/shared";
+import { Snapshot, DEFAULT_WORKSPACE, SAFETY_DEFAULTS, type TaskRun, type AuditRecord, type GithubConnection, type Project } from "@skynet/shared";
 import type { Store } from "../apps/server/src/store/store.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
 import { FileStore } from "../apps/server/src/store/file.js";
@@ -15,17 +15,17 @@ import { FileStore } from "../apps/server/src/store/file.js";
 async function seedContract(store: Store): Promise<void> {
   await store.putProject({
     id: "seed-proj", workspaceId: DEFAULT_WORKSPACE, name: "Seed", goal: "g",
-    agentIds: ["seed-agent"], status: "active",
+    runIds: ["seed-agent"], status: "active",
   });
-  const agent: Agent = {
+  const agent: TaskRun = {
     id: "seed-agent", workspaceId: DEFAULT_WORKSPACE, projectId: "seed-proj",
-    name: "Seed agent", status: "running", runnerId: null, provider: "claude",
+    name: "Seed agent", status: "running", agentId: null, provider: "claude",
     model: "opus-4.5", branch: "agent/seed-agent", modules: [], progress: 0,
     plan: [], modifiedFiles: [], log: [], startedAt: 0, lastHeartbeatAt: 0,
     visual: false, previewUrl: null, dependsOn: [], parentId: null,
     branchFromStep: null, archived: false,
   };
-  await store.putAgent(agent);
+  await store.putRun(agent);
 }
 
 function storeContract(name: string, make: () => Promise<Store>) {
@@ -36,13 +36,13 @@ function storeContract(name: string, make: () => Promise<Store>) {
     it("snapshot returns a schema-valid, seeded workspace", async () => {
       const snap = await store.snapshot(DEFAULT_WORKSPACE);
       expect(() => Snapshot.parse(snap)).not.toThrow();
-      expect(snap.agents.length).toBeGreaterThan(0);
+      expect(snap.runs.length).toBeGreaterThan(0);
       expect(snap.providers.length).toBeGreaterThan(0);
     });
 
     it("lists are workspace-scoped", async () => {
-      const here = await store.listAgents(DEFAULT_WORKSPACE);
-      const elsewhere = await store.listAgents("no-such-workspace");
+      const here = await store.listRuns(DEFAULT_WORKSPACE);
+      const elsewhere = await store.listRuns("no-such-workspace");
       expect(here.length).toBeGreaterThan(0);
       expect(elsewhere).toEqual([]);
       expect(here.every((a) => a.workspaceId === DEFAULT_WORKSPACE)).toBe(true);
@@ -51,7 +51,7 @@ function storeContract(name: string, make: () => Promise<Store>) {
     it("put → get → delete round-trips a project", async () => {
       const project: Project = {
         id: "ws-test-proj", workspaceId: DEFAULT_WORKSPACE, name: "Test", goal: "g",
-        agentIds: [], status: "active",
+        runIds: [], status: "active",
       };
       await store.putProject(project);
       expect(await store.getProject("ws-test-proj")).toEqual(project);
@@ -60,18 +60,18 @@ function storeContract(name: string, make: () => Promise<Store>) {
     });
 
     it("appendLog appends to an existing agent's log", async () => {
-      const [agent] = await store.listAgents(DEFAULT_WORKSPACE);
+      const [agent] = await store.listRuns(DEFAULT_WORKSPACE);
       expect(agent).toBeDefined();
-      const before = (await store.getAgent(agent!.id))!.log.length;
+      const before = (await store.getRun(agent!.id))!.log.length;
       await store.appendLog(agent!.id, 123_456, "a fresh log line");
-      const after = (await store.getAgent(agent!.id))!.log;
+      const after = (await store.getRun(agent!.id))!.log;
       expect(after.length).toBe(before + 1);
       expect(after.at(-1)).toEqual({ at: 123_456, line: "a fresh log line" });
     });
 
     it("recordAudit → listAudit returns newest-first, workspace-scoped", async () => {
       const base: Omit<AuditRecord, "at" | "hitlId"> = {
-        workspaceId: DEFAULT_WORKSPACE, agentId: "billing", action: "approve",
+        workspaceId: DEFAULT_WORKSPACE, runId: "billing", action: "approve",
         operatorId: "op-1", payload: { k: 1 },
       };
       await store.recordAudit({ ...base, hitlId: "audit-a", at: 1_000 });
@@ -86,7 +86,7 @@ function storeContract(name: string, make: () => Promise<Store>) {
 
     it("audit archive / delete is per-record and workspace-scoped", async () => {
       const base: Omit<AuditRecord, "at" | "hitlId"> = {
-        workspaceId: DEFAULT_WORKSPACE, agentId: "billing", action: "approve",
+        workspaceId: DEFAULT_WORKSPACE, runId: "billing", action: "approve",
         operatorId: "op-1", payload: { k: 1 },
       };
       await store.recordAudit({ ...base, hitlId: "amx-1", at: 10_000 });
@@ -117,7 +117,7 @@ function storeContract(name: string, make: () => Promise<Store>) {
 
     it("audit archive-all / clear are workspace-scoped", async () => {
       const base: Omit<AuditRecord, "at" | "hitlId" | "workspaceId"> = {
-        agentId: "billing", action: "approve", operatorId: "op-1", payload: {},
+        runId: "billing", action: "approve", operatorId: "op-1", payload: {},
       };
       await store.recordAudit({ ...base, workspaceId: "amx-bulk", hitlId: "bulk-1", at: 20_000 });
       await store.recordAudit({ ...base, workspaceId: "amx-bulk", hitlId: "bulk-2", at: 21_000 });
@@ -163,7 +163,7 @@ describe("FileStore persistence", () => {
     const a = FileStore.create(path); // fresh, empty
     await a.putProject({
       id: "fp1", workspaceId: DEFAULT_WORKSPACE, name: "Persisted", goal: "g",
-      agentIds: [], status: "active",
+      runIds: [], status: "active",
     });
     a.flush(); // force the write now (bypass the debounce)
 
@@ -192,13 +192,13 @@ describePg("Store contract — postgres (DATABASE_URL set)", () => {
   it("snapshot returns a schema-valid, seeded workspace", async () => {
     const snap = await store.snapshot(DEFAULT_WORKSPACE);
     expect(() => Snapshot.parse(snap)).not.toThrow();
-    expect(snap.agents.length).toBeGreaterThan(0);
+    expect(snap.runs.length).toBeGreaterThan(0);
   });
 
   it("put → get → delete round-trips a project", async () => {
     const project: Project = {
       id: "pg-test-proj", workspaceId: DEFAULT_WORKSPACE, name: "PG", goal: "g",
-      agentIds: [], status: "active",
+      runIds: [], status: "active",
     };
     await store.putProject(project);
     expect(await store.getProject("pg-test-proj")).toEqual(project);
@@ -208,11 +208,11 @@ describePg("Store contract — postgres (DATABASE_URL set)", () => {
 
   it("recordAudit → listAudit returns newest-first", async () => {
     await store.recordAudit({
-      workspaceId: DEFAULT_WORKSPACE, hitlId: "pg-audit-a", agentId: "billing",
+      workspaceId: DEFAULT_WORKSPACE, hitlId: "pg-audit-a", runId: "billing",
       action: "approve", operatorId: "op-1", at: 1_000, payload: null,
     });
     await store.recordAudit({
-      workspaceId: DEFAULT_WORKSPACE, hitlId: "pg-audit-b", agentId: "billing",
+      workspaceId: DEFAULT_WORKSPACE, hitlId: "pg-audit-b", runId: "billing",
       action: "reject", operatorId: "op-1", at: 2_000, payload: null,
     });
     const trail = await store.listAudit(DEFAULT_WORKSPACE);

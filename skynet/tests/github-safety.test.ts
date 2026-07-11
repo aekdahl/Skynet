@@ -8,7 +8,7 @@ import type { PushRequest } from "../apps/server/src/github/types.js";
 
 const push = (over: Partial<PushRequest> = {}): PushRequest => ({
   workspaceId: "cyberdyne",
-  agentId: "billing-1",
+  runId: "billing-1",
   repo: "acme/monolith",
   branch: "agent/billing-1",
   baseBranch: "main",

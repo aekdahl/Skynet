@@ -1,5 +1,5 @@
 // Single-select repository picker — a project binds to exactly ONE repo, so all
-// of its agents branch & PR within the same repository. The <select> structurally
+// of its runs branch & PR within the same repository. The <select> structurally
 // enforces the one-repo-per-project rule. Repos come from the connected GitHub
 // installation (Integrations); when none are connected, the project is created
 // unbound and a hint points to the Integrations screen.

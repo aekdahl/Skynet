@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Agent, HitlItem } from "@skynet/shared";
+import type { TaskRun, HitlItem } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { fmtClock, fmtWait, KIND_META, openQueue, waitedSecs } from "../lib/derive";
 
@@ -11,7 +11,7 @@ export function QueueCard({
   onOpen,
 }: {
   item: HitlItem;
-  agent: Agent | undefined;
+  agent: TaskRun | undefined;
   now: number;
   selected: boolean;
   onOpen: () => void;
@@ -21,7 +21,7 @@ export function QueueCard({
   const [mode, setMode] = useState<null | "modify" | "chat">(null);
   const [draft, setDraft] = useState("");
   const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
-  const agentName = agent?.name ?? item.agentId;
+  const agentName = agent?.name ?? item.runId;
 
   const send = async () => {
     if (!draft.trim() || !agent) return;
@@ -207,7 +207,7 @@ export function QueueView({
   onOpen: (id: string) => void;
   now: number;
 }) {
-  const { queue, agents } = useStore();
+  const { queue, runs } = useStore();
   const open = openQueue(queue).sort(
     (a, b) => waitedSecs(b, now) - waitedSecs(a, now),
   );
@@ -220,7 +220,7 @@ export function QueueView({
         <div className="readout-block">
           <span className="readout-num">{open.length}</span>
           <span className="readout-label">
-            agents waiting
+            runs waiting
             <br />
             on you
           </span>
@@ -253,10 +253,10 @@ export function QueueView({
             <QueueCard
               key={it.id}
               item={it}
-              agent={agents.find((a) => a.id === it.agentId)}
+              agent={runs.find((a) => a.id === it.runId)}
               now={now}
               selected={i === selectedIdx}
-              onOpen={() => onOpen(it.agentId)}
+              onOpen={() => onOpen(it.runId)}
             />
           ))}
         </div>

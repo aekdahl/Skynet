@@ -98,7 +98,7 @@ async function main() {
   await registerAuthRoutes(app, { sessions, operators });
   await registerServiceTokenRoutes(app, { serviceTokens });
   await registerApi(app, { operations });
-  // MCP endpoint (Streamable HTTP) — agents drive Skynet through the same
+  // MCP endpoint (Streamable HTTP) — runs drive Skynet through the same
   // scoped-principal auth as the /api routes. stdio clients proxy to this too.
   await registerMcp(app, { operations, bus });
   // Workspace-scoped provider keys (encrypted at rest); /api auth hook applies.
@@ -112,7 +112,7 @@ async function main() {
   registerSimulationRoutes(app);
   await registerWs(app, { store, bus, hub });
   // W5 live preview: mount the sandboxed /preview route, stamp visual/previewUrl
-  // onto already-stored agents, then warm their builds. No-op unless PREVIEW != off.
+  // onto already-stored runs, then warm their builds. No-op unless PREVIEW != off.
   await registerPreview(app, { store });
   const stamped = await backfillPreviews(store);
   if (stamped) app.log.info(`preview: stamped ${stamped} agent(s) with a live preview URL`);
@@ -125,7 +125,7 @@ async function main() {
   // empty). Runs once at boot, before we listen, so nothing is mid-assign.
   await orchestrator.reconcileRunners().catch((err) => app.log.warn(`runner reconcile: ${(err as Error).message}`));
 
-  // Reap presumed-dead agents (frees runners orphaned by a crash/restart). Run
+  // Reap presumed-dead runs (frees runners orphaned by a crash/restart). Run
   // once at boot to clear restart orphans, then on an interval. Bounded to a
   // sane minimum so it can't spin hot; disabled when agentReapMs <= 0.
   if (config.agentReapMs > 0) {

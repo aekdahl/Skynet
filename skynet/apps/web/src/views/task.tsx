@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Agent } from "@skynet/shared";
+import type { TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import {
   conflictModulesForAgent,
@@ -17,7 +17,7 @@ import {
 import { StatusDot } from "../components/common";
 import { PreviewFor } from "../components/preview";
 
-function AgentChat({ agent }: { agent: Agent }) {
+function AgentChat({ agent }: { agent: TaskRun }) {
   const { sendAgentMessage } = useStore();
   const now = agent.plan.find((p) => p.state === "now");
   const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
@@ -75,7 +75,7 @@ function AgentChat({ agent }: { agent: Agent }) {
 // For a finished agent, surface the last such line as a headline result —
 // otherwise a question task's answer stays buried in the live log.
 const LOG_MARKERS = ["▸", "↳", "✓", "⏸", "⚠", "❑", "●", "$"];
-function finalAnswer(agent: Agent): string | null {
+function finalAnswer(agent: TaskRun): string | null {
   if (agent.status !== "done") return null;
   for (let i = agent.log.length - 1; i >= 0; i--) {
     const line = (agent.log[i]?.line ?? "").trim();
@@ -90,7 +90,7 @@ function finalAnswer(agent: Agent): string | null {
 }
 
 // Compact token/cost summary for the detail header, when the runner reported it.
-function fmtUsage(u: Agent["usage"]): string | null {
+function fmtUsage(u: TaskRun["usage"]): string | null {
   if (!u) return null;
   const tok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
   const parts = [`${tok(u.inputTokens)}→${tok(u.outputTokens)} tok`];
@@ -99,20 +99,20 @@ function fmtUsage(u: Agent["usage"]): string | null {
   return parts.join(" · ");
 }
 
-export function AgentDetail({
+export function TaskDetail({
   agent,
   now,
   onBack,
   backLabel,
 }: {
-  agent: Agent;
+  agent: TaskRun;
   now: number;
   onBack: () => void;
   backLabel: string;
 }) {
   const {
     queue,
-    agents,
+    runs,
     fleet,
     modules,
     resolveHitl,
@@ -123,13 +123,13 @@ export function AgentDetail({
     stopAgent,
     archiveAgent,
   } = useStore();
-  const q = openQueue(queue).find((it) => it.agentId === agent.id);
+  const q = openQueue(queue).find((it) => it.runId === agent.id);
   const doneCount = planDone(agent);
   const [mode, setMode] = useState<null | "modify" | "chat">(null);
   const [draft, setDraft] = useState("");
   const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
 
-  const conflictMods = conflictModulesForAgent(agent, agents);
+  const conflictMods = conflictModulesForAgent(agent, runs);
   const conflictMod = conflictMods[0];
   const answer = finalAnswer(agent);
 
@@ -147,7 +147,7 @@ export function AgentDetail({
   };
 
   const parent = agent.parentId
-    ? agents.find((a) => a.id === agent.parentId)
+    ? runs.find((a) => a.id === agent.parentId)
     : undefined;
 
   return (
@@ -167,12 +167,12 @@ export function AgentDetail({
             disabled={fleet.length === 0}
             title={
               fleet.length === 0
-                ? "Configure a runner in Fleet before forking agents."
-                : "Duplicate this agent with the same context to work on something else"
+                ? "Configure an agent in Fleet before forking runs."
+                : "Duplicate this run with the same context to work on something else"
             }
             onClick={() => forkAgent(agent.id)}
           >
-            ⑂ Fork agent
+            ⑂ Fork run
           </button>
 
           {/* Lifecycle controls */}
@@ -188,7 +188,7 @@ export function AgentDetail({
             agent.status !== "done" && (
               <button
                 className="btn btn-ghost"
-                title="Pause this agent — halts its runner; resume later"
+                title="Pause this run; resume later"
                 onClick={() => pauseAgent(agent.id)}
               >
                 ⏸ Pause
@@ -198,13 +198,13 @@ export function AgentDetail({
           {agent.status !== "done" && (
             <button
               className="btn btn-ghost btn-stop"
-              title="Stop this agent — halts execution and frees its runner"
+              title="Stop this run — halts execution and frees its agent"
               onClick={() => {
-                if (confirm(`Stop “${agent.name}”? This frees its runner; the agent won't resume.`))
+                if (confirm(`Stop “${agent.name}”? This frees its agent; the run won't resume.`))
                   void stopAgent(agent.id);
               }}
             >
-              ◼ Stop agent
+              ◼ Stop run
             </button>
           )}
           <button
@@ -219,7 +219,7 @@ export function AgentDetail({
           <span className="mono">{agent.branch}</span>
           <span>{agent.model}</span>
           <span>{fmtElapsed(agent, now)}</span>
-          {fmtUsage(agent.usage) && <span className="usage-chip mono" title="Tokens · cost · turns reported by the runner">{fmtUsage(agent.usage)}</span>}
+          {fmtUsage(agent.usage) && <span className="usage-chip mono" title="Tokens · cost · turns reported by the agent">{fmtUsage(agent.usage)}</span>}
           {agent.status === "done" ? (
             <span className="hb hb-done">♥ finished</span>
           ) : (
@@ -363,7 +363,7 @@ export function AgentDetail({
       {conflictMod && (
         <div className="detail-conflict">
           ⚠ Overlap in <b>{modName(modules, conflictMod)}</b> — also being modified by{" "}
-          {agents
+          {runs
             .filter(
               (a) =>
                 a.id !== agent.id &&

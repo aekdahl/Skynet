@@ -16,7 +16,7 @@ export function SimulationView() {
   const skippedN = JOURNEYS.filter((j) => status[j.id] === "skip").length;
 
   const onClear = () => {
-    if (window.confirm("Delete all simulation data? This removes every 'Sim:' project (and its agents) and idle 'sim-' runners.")) {
+    if (window.confirm("Delete all simulation data? This removes every 'Sim:' project (and its runs) and idle 'sim-' agents.")) {
       void clearData();
     }
   };
@@ -52,14 +52,14 @@ export function SimulationView() {
         </span>
         <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "10px" }}>
           {lastClear && <span className="acc-section-sub" style={{ margin: 0 }}>{lastClear}</span>}
-          <button className="btn btn-ghost" disabled={clearing || running} onClick={onClear} title="Remove Sim: projects + sim- runners">
+          <button className="btn btn-ghost" disabled={clearing || running} onClick={onClear} title="Remove Sim: projects + sim- agents">
             {clearing ? "Clearing…" : "Clear simulation data"}
           </button>
         </span>
       </div>
 
       <p className="acc-section-sub">
-        Best run with <code>RUNNER=mock</code> so assigned agents actually execute (no provider keys needed).
+        Best run with <code>RUNNER=mock</code> so assigned runs actually execute (no provider keys needed).
         Everything created is tagged <code>Sim:</code> / <code>sim-</code> and stays until you clear it.
       </p>
 

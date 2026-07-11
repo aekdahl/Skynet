@@ -1,4 +1,4 @@
-// ─── Runner readiness ──────────────────────────────────────────────────────
+// ─── Agent readiness ──────────────────────────────────────────────────────
 // Guards agent creation: you cannot spin up an agent unless there is a runner
 // that can actually execute. Two ways it can't:
 //   • no runner is configured in the fleet at all;
@@ -55,12 +55,12 @@ export function assessRunnerReadiness(input: {
   if (input.runnerCount === 0) {
     return {
       ok: false,
-      reason: "No runner configured — add one in Fleet before assigning agents.",
+      reason: "No runner configured — add one in Fleet before assigning runs.",
     };
   }
   if (input.runnerMode === "mock" || input.credentialPresent) return { ok: true };
   return {
     ok: false,
-    reason: `No API key set for ${input.runnerMode} — add one in Settings before assigning agents.`,
+    reason: `No API key set for ${input.runnerMode} — add one in Settings before assigning runs.`,
   };
 }
