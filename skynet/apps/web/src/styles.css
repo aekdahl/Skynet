@@ -971,6 +971,18 @@ button.fleet-task-link:hover { background: var(--hover, var(--raised)); border-c
 .fleet-task-link .fleet-task-cta { flex: none; font-size: 11px; color: var(--muted, var(--faint)); opacity: 0; transition: opacity 0.12s; }
 button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
 .fleet-actions { display: flex; gap: 8px; border-top: 1px solid var(--line-soft); padding-top: 11px; }
+/* Clickable card header → expands the runner's task history. */
+button.fleet-cardhead { display: flex; flex-direction: column; gap: 11px; width: 100%; padding: 0; margin: 0; border: none; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+button.fleet-cardhead:hover .fleet-rn { color: var(--accent); }
+.fleet-caret { flex: none; color: var(--faint); font-size: 11px; }
+.fleet-histcount { flex: none; color: var(--faint); font-size: 11px; font-family: var(--font-mono); }
+.fleet-hist { display: flex; flex-direction: column; gap: 2px; max-height: 280px; overflow-y: auto; }
+.fleet-hist-empty { font-size: 12px; color: var(--faint); padding: 8px 10px; }
+button.fleet-hist-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: 1px solid transparent; border-radius: 7px; background: var(--raised); font: inherit; text-align: left; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+button.fleet-hist-row:hover { border-color: var(--border); background: var(--hover, var(--raised)); }
+.fleet-hist-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fleet-hist-state { flex: none; font-size: 11px; }
+.fleet-hist-time { flex: none; font-size: 11px; color: var(--faint); }
 .btn-retire { color: var(--danger); }
 .btn-retire:hover:not(:disabled) { border-color: color-mix(in oklch, var(--danger), transparent 50%); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }

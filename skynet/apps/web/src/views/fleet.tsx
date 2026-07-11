@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import type { ProviderId, Runner } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { providerInfo, runnerIdleLabel, runnerIsBusy } from "../lib/derive";
+import { fmtWait, providerInfo, runnerIdleLabel, runnerIsBusy, STATUS_META } from "../lib/derive";
+import { StatusDot } from "../components/common";
 
 function ConfigForm({
   initial,
@@ -100,7 +101,13 @@ export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }
     useStore();
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
+  const [openRunner, setOpenRunner] = useState<string | null>(null);
   const now = Date.now();
+
+  // Every agent this runner has executed (live + finished), newest first — a
+  // completed agent keeps its runnerId, so this is the runner's full work log.
+  const historyOf = (r: Runner) =>
+    agents.filter((a) => a.runnerId === r.id).sort((a, b) => b.startedAt - a.startedAt);
 
   // When the RUNNER env is set, it's a GLOBAL override: every agent executes on
   // that provider regardless of its runner's configured provider (`/health`
@@ -179,37 +186,90 @@ export function FleetView({ onOpenAgent }: { onOpenAgent: (id: string) => void }
                 />
               ) : (
                 <>
-                  <div className="fleet-top">
-                    <span className="fleet-prov" style={{ color: p.color }}>
-                      {p.glyph}
-                    </span>
-                    <span className="fleet-rn mono">{r.name}</span>
-                    {busy || runnerIsBusy(r, agents) ? (
-                      <span className="fleet-state fleet-state-busy">
-                        <span className="dot dot-running" />
-                        busy
-                      </span>
-                    ) : (
-                      <span className="fleet-state fleet-state-idle">
-                        <span className="dot dot-idle" />
-                        idle {runnerIdleLabel(r, now)}
-                      </span>
-                    )}
-                  </div>
-                  <div className="fleet-meta">
-                    <span className="fleet-pname">{p.name}</span>
-                    <span className="fleet-model mono">{r.model}</span>
-                  </div>
-                  {busy && (
-                    <button
-                      className="fleet-task fleet-task-link"
-                      onClick={() => onOpenAgent(busy.id)}
-                      title="Open this agent's live activity"
-                    >
-                      <span className="fleet-task-name">▸ {busy.name}</span>
-                      <span className="fleet-task-cta">activity →</span>
-                    </button>
-                  )}
+                  {(() => {
+                    const history = historyOf(r);
+                    const open = openRunner === r.id;
+                    return (
+                      <>
+                        <button
+                          className="fleet-cardhead"
+                          aria-expanded={open}
+                          title={history.length ? "Show this runner's task history" : "No task history yet"}
+                          onClick={() => setOpenRunner(open ? null : r.id)}
+                        >
+                          <div className="fleet-top">
+                            <span className="fleet-prov" style={{ color: p.color }}>
+                              {p.glyph}
+                            </span>
+                            <span className="fleet-rn mono">{r.name}</span>
+                            {busy || runnerIsBusy(r, agents) ? (
+                              <span className="fleet-state fleet-state-busy">
+                                <span className="dot dot-running" />
+                                busy
+                              </span>
+                            ) : (
+                              <span className="fleet-state fleet-state-idle">
+                                <span className="dot dot-idle" />
+                                idle {runnerIdleLabel(r, now)}
+                              </span>
+                            )}
+                            <span className="fleet-caret">{open ? "▾" : "▸"}</span>
+                          </div>
+                          <div className="fleet-meta">
+                            <span className="fleet-pname">{p.name}</span>
+                            <span className="fleet-model mono">{r.model}</span>
+                            <span className="fleet-histcount">
+                              {history.length} task{history.length === 1 ? "" : "s"}
+                            </span>
+                          </div>
+                        </button>
+
+                        {/* Collapsed + busy: keep the current task glanceable. */}
+                        {busy && !open && (
+                          <button
+                            className="fleet-task fleet-task-link"
+                            onClick={() => onOpenAgent(busy.id)}
+                            title="Open this agent's live activity"
+                          >
+                            <span className="fleet-task-name">▸ {busy.name}</span>
+                            <span className="fleet-task-cta">activity →</span>
+                          </button>
+                        )}
+
+                        {/* Expanded: the runner's full task history, each row → that agent. */}
+                        {open && (
+                          <div className="fleet-hist">
+                            {history.length === 0 ? (
+                              <div className="fleet-hist-empty">
+                                No tasks yet — assign one to this fleet from a project.
+                              </div>
+                            ) : (
+                              history.map((a) => (
+                                <button
+                                  key={a.id}
+                                  className="fleet-hist-row"
+                                  onClick={() => onOpenAgent(a.id)}
+                                  title="Open this agent's activity & history"
+                                >
+                                  <StatusDot status={a.status} />
+                                  <span className="fleet-hist-name">{a.name}</span>
+                                  <span
+                                    className="fleet-hist-state mono"
+                                    style={{ color: STATUS_META[a.status].color }}
+                                  >
+                                    {STATUS_META[a.status].label}
+                                  </span>
+                                  <span className="fleet-hist-time mono">
+                                    {fmtWait(Math.max(0, (now - a.startedAt) / 1000))} ago
+                                  </span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                   <div className="fleet-actions">
                     <button
                       className="btn btn-ghost"
