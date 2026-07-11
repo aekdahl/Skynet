@@ -51,8 +51,8 @@ export function onInstallStateChange(cb: () => void): () => void {
   return () => window.removeEventListener(INSTALL_STATE_EVENT, cb);
 }
 
-function dispatchNavigate(view: string, agentId: string | null) {
-  window.dispatchEvent(new CustomEvent(NAV_EVENT, { detail: { view, agentId } }));
+function dispatchNavigate(view: string, runId: string | null) {
+  window.dispatchEvent(new CustomEvent(NAV_EVENT, { detail: { view, runId } }));
 }
 
 // ─── Service worker registration ────────────────────────────────────────────
@@ -67,8 +67,8 @@ async function registerServiceWorker() {
   }
   // Relay SW → app navigation (push / notification click) as a window event.
   navigator.serviceWorker.addEventListener("message", (event) => {
-    const data = event.data as { type?: string; view?: string; agentId?: string | null };
-    if (data?.type === NAV_EVENT && data.view) dispatchNavigate(data.view, data.agentId ?? null);
+    const data = event.data as { type?: string; view?: string; runId?: string | null };
+    if (data?.type === NAV_EVENT && data.view) dispatchNavigate(data.view, data.runId ?? null);
   });
 }
 
@@ -90,7 +90,7 @@ export async function enableInboxAlerts(): Promise<boolean> {
 export async function notifyInbox(
   title = "Skynet — needs you",
   body = "An agent is blocked and waiting on a decision.",
-  agentId: string | null = null,
+  runId: string | null = null,
 ): Promise<void> {
   // Respect the app-level switch first (the real mute), then the OS permission.
   // Never auto-prompt here — permission is requested only when alerts are turned on.
@@ -101,7 +101,7 @@ export async function notifyInbox(
     icon: "/icon.svg",
     badge: "/icon.svg",
     tag: "skynet-inbox",
-    data: { url: "/?view=queue&source=push", view: "queue", agentId },
+    data: { url: "/?view=queue&source=push", view: "queue", runId },
   };
   const reg = "serviceWorker" in navigator ? await navigator.serviceWorker.ready : null;
   if (reg) await reg.showNotification(title, payload);

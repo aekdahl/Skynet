@@ -9,7 +9,7 @@
 // DEF-002: chatting a running/waiting agent returned the same canned "finished"
 //   string as a done agent. The reply must reflect the agent's actual status.
 import { describe, it, expect, beforeEach } from "vitest";
-import type { ProviderId, Runner, Project, Task, ServerEvent } from "@skynet/shared";
+import type { ProviderId, Agent, Project, Task, ServerEvent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
 import { Orchestrator, TaskAlreadyAssignedError } from "../apps/server/src/orchestrator.js";
@@ -37,7 +37,7 @@ class QuietProvider implements RunnerProvider {
   async start(spec: StartSpec, _events: RunnerEvents): Promise<RunnerHandle> {
     this.started++;
     return {
-      agentId: spec.agentId,
+      runId: spec.runId,
       provider: this.id,
       async pause() {},
       async resume() {},
@@ -49,22 +49,22 @@ class QuietProvider implements RunnerProvider {
 
 const mkFixtures = async (store: MemoryStore) => {
   const project: Project = {
-    id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "Proj", goal: "", agentIds: [], status: "active",
+    id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "Proj", goal: "", runIds: [], status: "active",
   };
-  const r1: Runner = {
+  const r1: Agent = {
     id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1",
     provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0,
   };
-  const r2: Runner = {
+  const r2: Agent = {
     id: "r2", workspaceId: DEFAULT_WORKSPACE, name: "r2",
     provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0,
   };
   const task: Task = {
-    id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do the thing", state: "backlog", agentId: null,
+    id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do the thing", state: "backlog", runId: null,
   };
   await store.putProject(project);
-  await store.putRunner(r1);
-  await store.putRunner(r2);
+  await store.putAgent(r1);
+  await store.putAgent(r2);
   await store.putTask(task);
 };
 
@@ -94,26 +94,26 @@ describe("DEF-003/005: assign is idempotent and refuses done tasks", () => {
 
     // The task still points at the original agent, still assigned.
     const task = await store.getTask("t1");
-    expect(task?.agentId).toBe(first.id);
+    expect(task?.runId).toBe(first.id);
     expect(task?.state).toBe("assigned");
 
     // Only one runner was ever marked busy; the second stayed idle.
-    expect((await store.getRunner("r1"))?.status).toBe("busy");
-    expect((await store.getRunner("r2"))?.status).toBe("idle");
+    expect((await store.getAgent("r1"))?.status).toBe("busy");
+    expect((await store.getAgent("r2"))?.status).toBe("idle");
 
     // The project didn't accumulate a second, orphaned agent id.
     const project = await store.getProject("p1");
-    expect(project?.agentIds).toEqual([first.id]);
+    expect(project?.runIds).toEqual([first.id]);
 
     // The original agent is not orphaned — still the live/attached one.
-    const agent = await store.getAgent(first.id);
+    const agent = await store.getRun(first.id);
     expect(agent?.status).not.toBe("done");
   });
 
   it("assigning a done task is refused (TaskAlreadyAssignedError), no runner acquired", async () => {
     const done: Task = {
       id: "t-done", workspaceId: DEFAULT_WORKSPACE, projectId: "p1",
-      text: "already finished", state: "done", agentId: null,
+      text: "already finished", state: "done", runId: null,
     };
     await store.putTask(done);
 
@@ -121,15 +121,15 @@ describe("DEF-003/005: assign is idempotent and refuses done tasks", () => {
 
     // Nothing was spawned and no runner was taken.
     expect(provider.started).toBe(0);
-    expect((await store.getRunner("r1"))?.status).toBe("idle");
-    expect((await store.getRunner("r2"))?.status).toBe("idle");
+    expect((await store.getAgent("r1"))?.status).toBe("idle");
+    expect((await store.getAgent("r2"))?.status).toBe("idle");
   });
 
   it("a task whose agent is done CAN be re-assigned (frees a fresh spawn)", async () => {
     const first = await orchestrator.assignTask("p1", "t1");
     // Mark the agent done (task still 'assigned', pointing at it).
-    const agent = await store.getAgent(first.id);
-    await store.putAgent({ ...agent!, status: "done" });
+    const agent = await store.getRun(first.id);
+    await store.putRun({ ...agent!, status: "done" });
 
     const second = await orchestrator.assignTask("p1", "t1");
     expect(second.id).not.toBe(first.id);
@@ -153,8 +153,8 @@ describe("DEF-002: chat reply reflects the agent's actual status", () => {
 
   it("a done agent (no live session, no consult) gets the 'finished' reply", async () => {
     const agent = await orchestrator.assignTask("p1", "t1");
-    const stored = await store.getAgent(agent.id);
-    await store.putAgent({ ...stored!, status: "done" });
+    const stored = await store.getRun(agent.id);
+    await store.putRun({ ...stored!, status: "done" });
     // Drop the live session so chat takes the stateless (consultFinished) path.
     await orchestrator.stopAgent(agent.id);
 
@@ -164,7 +164,7 @@ describe("DEF-002: chat reply reflects the agent's actual status", () => {
 
   it("a running agent does NOT get the constant 'finished' reply", async () => {
     const agent = await orchestrator.assignTask("p1", "t1");
-    const stored = await store.getAgent(agent.id);
+    const stored = await store.getRun(agent.id);
     expect(stored?.status).toBe("running");
     // Force the stateless path for a still-running agent (server-restart shape).
     await orchestrator.stopAgent(agent.id);

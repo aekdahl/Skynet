@@ -1,10 +1,10 @@
 // ─── Sandboxed preview route ──────────────────────────────────────────────
-// Serves per-agent built artifacts under /preview/:agentId/* from an isolated
+// Serves per-agent built artifacts under /preview/:runId/* from an isolated
 // root, with path-traversal protection and embedding-friendly security headers.
 // Until a build step populates an agent's dir we serve a styled "building…"
 // page, so the reserved preview URL is always live for the SPA to iframe.
 //
-// Sandboxing: content is confined to <artifactRoot>/<agentId>, never escapes
+// Sandboxing: content is confined to <artifactRoot>/<runId>, never escapes
 // via `..`, and is served with a `frame-ancestors` CSP. In production, serve
 // previews from a SEPARATE origin (subdomain) so allow-same-origin iframes
 // can't reach the control-plane origin; SKYNET_PREVIEW_BASE_URL points there.
@@ -49,18 +49,18 @@ function securityHeaders(reply: FastifyReply): void {
   reply.header("Cache-Control", "no-store");
 }
 
-/** Resolve a request path to a real file under <root>/<agentId>, or null if it escapes. */
-function safeFile(agentId: string, rest: string): string | null {
+/** Resolve a request path to a real file under <root>/<runId>, or null if it escapes. */
+function safeFile(runId: string, rest: string): string | null {
   // Reject ids that could traverse; agent ids are slugs.
-  if (!/^[a-zA-Z0-9._-]+$/.test(agentId)) return null;
-  const base = resolve(previewConfig.artifactRoot, agentId);
+  if (!/^[a-zA-Z0-9._-]+$/.test(runId)) return null;
+  const base = resolve(previewConfig.artifactRoot, runId);
   const target = resolve(base, normalize(rest).replace(/^(\.\.(\/|\\|$))+/, ""));
   if (target !== base && !target.startsWith(base + sep)) return null; // traversal guard
   return target;
 }
 
-function buildingPage(agentId: string): string {
-  const safeId = agentId.replace(/[<>&"]/g, "");
+function buildingPage(runId: string): string {
+  const safeId = runId.replace(/[<>&"]/g, "");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="2">
@@ -92,19 +92,19 @@ export async function registerPreview(app: FastifyInstance, deps: { store: Store
   const { store } = deps;
 
   // Fire-and-forget: resolve the agent's branch and request a build once.
-  const ensureBuild = async (agentId: string): Promise<void> => {
-    if (previewBuilder.stateOf(agentId)) return; // already queued/building/built
-    const agent = await store.getAgent(agentId);
+  const ensureBuild = async (runId: string): Promise<void> => {
+    if (previewBuilder.stateOf(runId)) return; // already queued/building/built
+    const agent = await store.getRun(runId);
     if (agent) previewBuilder.request(agent.id, agent.branch);
   };
 
-  type PreviewParams = { agentId: string; "*"?: string };
+  type PreviewParams = { runId: string; "*"?: string };
   const handler = (req: FastifyRequest<{ Params: PreviewParams }>, reply: FastifyReply) => {
-    const agentId = req.params.agentId ?? "";
+    const runId = req.params.runId ?? "";
     const rest = req.params["*"] ?? "";
     securityHeaders(reply);
 
-    const target = safeFile(agentId, rest);
+    const target = safeFile(runId, rest);
     if (!target) return reply.code(400).type("text/plain").send("bad request");
 
     // A concrete file under the artifact dir → serve it.
@@ -112,19 +112,19 @@ export async function registerPreview(app: FastifyInstance, deps: { store: Store
       return reply.type(mimeFor(target)).send(createReadStream(target));
     }
     // The index ("/preview/:id/") → serve built index.html if present…
-    const index = resolve(previewConfig.artifactRoot, agentId, "index.html");
+    const index = resolve(previewConfig.artifactRoot, runId, "index.html");
     if (existsSync(index) && statSync(index).isFile()) {
       return reply.type("text/html; charset=utf-8").send(createReadStream(index));
     }
     // …otherwise kick off the build (once) and serve the auto-refreshing
     // "building…" placeholder until the artifact lands.
-    void ensureBuild(agentId);
-    return reply.type("text/html; charset=utf-8").send(buildingPage(agentId));
+    void ensureBuild(runId);
+    return reply.type("text/html; charset=utf-8").send(buildingPage(runId));
   };
 
-  app.get<{ Params: PreviewParams }>("/preview/:agentId", handler);
-  app.get<{ Params: PreviewParams }>("/preview/:agentId/", handler);
-  app.get<{ Params: PreviewParams }>("/preview/:agentId/*", handler);
+  app.get<{ Params: PreviewParams }>("/preview/:runId", handler);
+  app.get<{ Params: PreviewParams }>("/preview/:runId/", handler);
+  app.get<{ Params: PreviewParams }>("/preview/:runId/*", handler);
   app.log.info(`preview route mounted (mode=${previewService.mode}, root=${previewConfig.artifactRoot})`);
   return true;
 }

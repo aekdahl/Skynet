@@ -40,7 +40,7 @@ export const artifactProvider: PreviewProvider = {
     if (!isVisual(input)) return NULL_RESULT;
     // URL is reserved at branch-creation time and stable; the route serves a
     // "building…" page until the artifact dir is populated by a build step.
-    return { visual: true, previewUrl: `${previewConfig.baseUrl}/preview/${encodeURIComponent(input.agentId)}/` };
+    return { visual: true, previewUrl: `${previewConfig.baseUrl}/preview/${encodeURIComponent(input.runId)}/` };
   },
 };
 
@@ -53,7 +53,7 @@ export const deployProvider: PreviewProvider = {
     if (!tmpl) return { visual: true, previewUrl: null };
     const branchSlug = input.branch.split("/").pop() ?? input.branch;
     const url = tmpl
-      .replaceAll("{agentId}", encodeURIComponent(input.agentId))
+      .replaceAll("{runId}", encodeURIComponent(input.runId))
       .replaceAll("{branch}", encodeURIComponent(branchSlug))
       .replaceAll("{workspace}", encodeURIComponent(input.workspaceId))
       .replaceAll("{project}", encodeURIComponent(input.projectId));

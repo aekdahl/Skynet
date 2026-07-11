@@ -42,12 +42,12 @@ export function initialView(): PwaView | null {
  * re-dispatches SW `postMessage`s as a `skynet:navigate` CustomEvent so the
  * subscription has no direct service-worker dependency.
  */
-export function onNavigate(cb: (view: PwaView, agentId: string | null) => void): () => void {
+export function onNavigate(cb: (view: PwaView, runId: string | null) => void): () => void {
   if (typeof window === "undefined") return () => {};
   const handler = (e: Event) => {
-    const detail = (e as CustomEvent).detail as { view?: string; agentId?: string | null };
+    const detail = (e as CustomEvent).detail as { view?: string; runId?: string | null };
     const view = detail?.view;
-    if (view && (KNOWN as string[]).includes(view)) cb(view as PwaView, detail.agentId ?? null);
+    if (view && (KNOWN as string[]).includes(view)) cb(view as PwaView, detail.runId ?? null);
   };
   window.addEventListener("skynet:navigate", handler);
   return () => window.removeEventListener("skynet:navigate", handler);

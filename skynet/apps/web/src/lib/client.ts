@@ -3,7 +3,7 @@ import {
   GithubConnection,
   Snapshot,
   WsMessage,
-  type Agent,
+  type TaskRun,
   type GithubInstallation,
   type GithubRepo,
   type ResolveAction,
@@ -75,24 +75,24 @@ export function resolveHitl(
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
 }
 
-// Agent chat / fork
+// TaskRun chat / fork
 export function sendAgentMessage(id: string, text: string) {
-  return req<{ reply: string }>("POST", `/api/agents/${id}/messages`, { text });
+  return req<{ reply: string }>("POST", `/api/runs/${id}/messages`, { text });
 }
 export function forkAgent(id: string) {
-  return req<unknown>("POST", `/api/agents/${id}/fork`);
+  return req<unknown>("POST", `/api/runs/${id}/fork`);
 }
 export function stopAgent(id: string) {
-  return req<Agent>("POST", `/api/agents/${id}/stop`);
+  return req<TaskRun>("POST", `/api/runs/${id}/stop`);
 }
 export function archiveAgent(id: string, archived: boolean) {
-  return req<unknown>("POST", `/api/agents/${id}/archive`, { archived });
+  return req<unknown>("POST", `/api/runs/${id}/archive`, { archived });
 }
 export function pauseAgent(id: string) {
-  return req<unknown>("POST", `/api/agents/${id}/pause`);
+  return req<unknown>("POST", `/api/runs/${id}/pause`);
 }
 export function resumeAgent(id: string) {
-  return req<unknown>("POST", `/api/agents/${id}/resume`);
+  return req<unknown>("POST", `/api/runs/${id}/resume`);
 }
 
 // Provider secrets (Settings). `env` = providers a server env var supplies a
@@ -108,7 +108,7 @@ export function deleteSecret(provider: string) {
 }
 
 // ─── Service tokens (MCP / programmatic access) ────────────────────────────
-// Scoped API tokens for agents driving Skynet over MCP. The raw token is
+// Scoped API tokens for runs driving Skynet over MCP. The raw token is
 // returned ONCE at creation; list only ever yields non-secret metadata.
 export type McpScope = "observe" | "author" | "approver" | "admin";
 
@@ -182,17 +182,17 @@ export function deleteTask(projectId: string, taskId: string) {
   return req<unknown>("DELETE", `/api/projects/${projectId}/tasks/${taskId}`);
 }
 export function assignTask(projectId: string, taskId: string) {
-  return req<Agent>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
+  return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
 }
 
 // Fleet
-export function createRunner(body: { provider: string; model: string; name?: string }) {
+export function createAgent(body: { provider: string; model: string; name?: string }) {
   return req<unknown>("POST", "/api/fleet/runners", body);
 }
-export function updateRunner(id: string, body: { model?: string; name?: string }) {
+export function updateAgent(id: string, body: { model?: string; name?: string }) {
   return req<unknown>("PATCH", `/api/fleet/runners/${id}`, body);
 }
-export function deleteRunner(id: string) {
+export function deleteAgent(id: string) {
   return req<unknown>("DELETE", `/api/fleet/runners/${id}`);
 }
 

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
-import type { AgentStatus, ProviderInfo } from "@skynet/shared";
+import type { TaskRunStatus, ProviderInfo } from "@skynet/shared";
 
-export function StatusDot({ status }: { status: AgentStatus }) {
+export function StatusDot({ status }: { status: TaskRunStatus }) {
   return <span className={"dot dot-" + status} />;
 }
 
@@ -17,7 +17,7 @@ export function PlaceholderNote({ children }: { children: ReactNode }) {
   );
 }
 
-export function Bar({ value, status }: { value: number; status: AgentStatus }) {
+export function Bar({ value, status }: { value: number; status: TaskRunStatus }) {
   return (
     <div className="bar">
       <div

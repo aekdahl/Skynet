@@ -1,5 +1,5 @@
 // ─── Integrations ─────────────────────────────────────────────────────────
-// Connect GitHub (App installation) and tune the safety guardrails agents
+// Connect GitHub (App installation) and tune the safety guardrails runs
 // operate under. Backed by the real /api/github endpoints (the connection
 // persists in the workspace's Store). The App private key is server-side only;
 // this screen never sees a secret. See docs/github-integration.md.
@@ -611,13 +611,13 @@ export function IntegrationsView() {
   const summary =
     github.connected && github.installation
       ? `${github.installation.account} · ${repoCount} repo${repoCount === 1 ? "" : "s"}`
-      : "Connect to let agents branch, push & open PRs";
+      : "Connect to let runs branch, push & open PRs";
 
   return (
     <section className="vw" data-screen-label="Integrations">
       <div className="vw-head">
         <h1>Integrations</h1>
-        <p>Connect the services your agents work through, and set the guardrails.</p>
+        <p>Connect the services your runs work through, and set the guardrails.</p>
       </div>
       <div className="gh-wrap">
         {!loaded ? (
@@ -639,7 +639,7 @@ export function IntegrationsView() {
               </div>
             )}
             {!github.connected && (
-              <div className="gh-warn">Connect GitHub to let agents branch, push, and open PRs.</div>
+              <div className="gh-warn">Connect GitHub to let runs branch, push, and open PRs.</div>
             )}
           </IntegrationSection>
         )}

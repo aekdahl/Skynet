@@ -6,7 +6,7 @@
 
 import { Pool } from "pg";
 import type {
-  Agent,
+  TaskRun,
   AuditRecord,
   Dependency,
   GithubConnection,
@@ -14,7 +14,7 @@ import type {
   Module,
   Project,
   ProviderInfo,
-  Runner,
+  Agent,
   Snapshot,
   Task,
 } from "@skynet/shared";
@@ -23,27 +23,27 @@ import type { Store } from "./store.js";
 import { PROVIDERS } from "./providers.js";
 
 const SCHEMA = `
-CREATE TABLE IF NOT EXISTS agents     (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS runs     (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS hitl_queue (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS projects   (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS tasks      (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
-CREATE TABLE IF NOT EXISTS runners    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS agents    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS modules    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS deps       (id bigserial PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
-CREATE TABLE IF NOT EXISTS agent_log  (id bigserial PRIMARY KEY, agent_id text NOT NULL, at bigint NOT NULL, line text NOT NULL, detail text);
-ALTER TABLE agent_log ADD COLUMN IF NOT EXISTS detail text;
+CREATE TABLE IF NOT EXISTS run_log  (id bigserial PRIMARY KEY, run_id text NOT NULL, at bigint NOT NULL, line text NOT NULL, detail text);
+ALTER TABLE run_log ADD COLUMN IF NOT EXISTS detail text;
 CREATE TABLE IF NOT EXISTS hitl_audit (id bigserial PRIMARY KEY, workspace_id text NOT NULL, hitl_id text NOT NULL,
-                                       agent_id text NOT NULL, action text NOT NULL, operator_id text NOT NULL,
+                                       run_id text NOT NULL, action text NOT NULL, operator_id text NOT NULL,
                                        at bigint NOT NULL, payload jsonb);
 ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS github_connections (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS github_tokens      (workspace_id text PRIMARY KEY, ciphertext text NOT NULL);
-CREATE INDEX IF NOT EXISTS agents_ws   ON agents(workspace_id);
+CREATE INDEX IF NOT EXISTS runs_ws   ON runs(workspace_id);
 CREATE INDEX IF NOT EXISTS hitl_ws     ON hitl_queue(workspace_id);
 CREATE INDEX IF NOT EXISTS projects_ws ON projects(workspace_id);
 CREATE INDEX IF NOT EXISTS tasks_ws    ON tasks(workspace_id);
-CREATE INDEX IF NOT EXISTS runners_ws  ON runners(workspace_id);
-CREATE INDEX IF NOT EXISTS log_agent   ON agent_log(agent_id);
+CREATE INDEX IF NOT EXISTS agents_ws  ON agents(workspace_id);
+CREATE INDEX IF NOT EXISTS log_run   ON run_log(run_id);
 `;
 
 const J = (v: unknown) => JSON.stringify(v);
@@ -58,55 +58,55 @@ export class PostgresStore implements Store {
     return new PostgresStore(pool);
   }
 
-  // ── agents (log lives in the append-only agent_log table) ─────────────────
-  private async logsFor(agentIds: string[]): Promise<Map<string, { at: number; line: string; detail?: string }[]>> {
+  // ── runs (log lives in the append-only run_log table) ─────────────────
+  private async logsFor(runIds: string[]): Promise<Map<string, { at: number; line: string; detail?: string }[]>> {
     const map = new Map<string, { at: number; line: string; detail?: string }[]>();
-    if (!agentIds.length) return map;
-    const { rows } = await this.pool.query<{ agent_id: string; at: string; line: string; detail: string | null }>(
-      "SELECT agent_id, at, line, detail FROM agent_log WHERE agent_id = ANY($1) ORDER BY at ASC, id ASC",
-      [agentIds],
+    if (!runIds.length) return map;
+    const { rows } = await this.pool.query<{ run_id: string; at: string; line: string; detail: string | null }>(
+      "SELECT run_id, at, line, detail FROM run_log WHERE run_id = ANY($1) ORDER BY at ASC, id ASC",
+      [runIds],
     );
     for (const r of rows) {
-      const list = map.get(r.agent_id) ?? [];
+      const list = map.get(r.run_id) ?? [];
       list.push(r.detail != null ? { at: Number(r.at), line: r.line, detail: r.detail } : { at: Number(r.at), line: r.line });
-      map.set(r.agent_id, list);
+      map.set(r.run_id, list);
     }
     return map;
   }
 
-  private hydrate(data: Agent, logs: Map<string, { at: number; line: string; detail?: string }[]>): Agent {
+  private hydrate(data: TaskRun, logs: Map<string, { at: number; line: string; detail?: string }[]>): TaskRun {
     return { ...data, log: logs.get(data.id) ?? [] };
   }
 
-  async listAgents(ws: string): Promise<Agent[]> {
-    const { rows } = await this.pool.query<{ data: Agent }>("SELECT data FROM agents WHERE workspace_id=$1", [ws]);
+  async listRuns(ws: string): Promise<TaskRun[]> {
+    const { rows } = await this.pool.query<{ data: TaskRun }>("SELECT data FROM runs WHERE workspace_id=$1", [ws]);
     const logs = await this.logsFor(rows.map((r) => r.data.id));
     return rows.map((r) => this.hydrate(r.data, logs));
   }
-  async listAllAgents(): Promise<Agent[]> {
+  async listAllRuns(): Promise<TaskRun[]> {
     // Maintenance sweep (reaper): status/heartbeat/runner only — logs not hydrated.
-    const { rows } = await this.pool.query<{ data: Agent }>("SELECT data FROM agents");
+    const { rows } = await this.pool.query<{ data: TaskRun }>("SELECT data FROM runs");
     return rows.map((r) => ({ ...r.data, log: [] }));
   }
-  async getAgent(id: string): Promise<Agent | undefined> {
-    const { rows } = await this.pool.query<{ data: Agent }>("SELECT data FROM agents WHERE id=$1", [id]);
+  async getRun(id: string): Promise<TaskRun | undefined> {
+    const { rows } = await this.pool.query<{ data: TaskRun }>("SELECT data FROM runs WHERE id=$1", [id]);
     if (!rows[0]) return undefined;
     const logs = await this.logsFor([id]);
     return this.hydrate(rows[0].data, logs);
   }
-  async putAgent(agent: Agent): Promise<Agent> {
+  async putRun(agent: TaskRun): Promise<TaskRun> {
     const { log, ...rest } = agent;
     const data = { ...rest, log: [] as typeof log };
     await this.pool.query(
-      "INSERT INTO agents(id,workspace_id,data) VALUES($1,$2,$3::jsonb) ON CONFLICT(id) DO UPDATE SET workspace_id=$2, data=$3::jsonb",
+      "INSERT INTO runs(id,workspace_id,data) VALUES($1,$2,$3::jsonb) ON CONFLICT(id) DO UPDATE SET workspace_id=$2, data=$3::jsonb",
       [agent.id, agent.workspaceId, J(data)],
     );
     // Seed-time: persist any log lines the fixture carried.
     for (const l of log) await this.appendLog(agent.id, l.at, l.line);
     return agent;
   }
-  async appendLog(agentId: string, at: number, line: string, detail?: string): Promise<void> {
-    await this.pool.query("INSERT INTO agent_log(agent_id,at,line,detail) VALUES($1,$2,$3,$4)", [agentId, at, line, detail ?? null]);
+  async appendLog(runId: string, at: number, line: string, detail?: string): Promise<void> {
+    await this.pool.query("INSERT INTO run_log(run_id,at,line,detail) VALUES($1,$2,$3,$4)", [runId, at, line, detail ?? null]);
   }
 
   // ── generic JSONB collections ─────────────────────────────────────────────
@@ -142,14 +142,14 @@ export class PostgresStore implements Store {
   async putTask(t: Task) { await this.put("tasks", t.id, t.workspaceId, t); return t; }
   deleteTask(id: string) { return this.del("tasks", id); }
 
-  listRunners(ws: string) { return this.list<Runner>("runners", ws); }
-  async listAllRunners(): Promise<Runner[]> {
-    const { rows } = await this.pool.query<{ data: Runner }>("SELECT data FROM runners");
+  listAgents(ws: string) { return this.list<Agent>("agents", ws); }
+  async listAllAgents(): Promise<Agent[]> {
+    const { rows } = await this.pool.query<{ data: Agent }>("SELECT data FROM agents");
     return rows.map((r) => r.data);
   }
-  getRunner(id: string) { return this.get<Runner>("runners", id); }
-  async putRunner(r: Runner) { await this.put("runners", r.id, r.workspaceId, r); return r; }
-  deleteRunner(id: string) { return this.del("runners", id); }
+  getAgent(id: string) { return this.get<Agent>("agents", id); }
+  async putAgent(r: Agent) { await this.put("agents", r.id, r.workspaceId, r); return r; }
+  deleteAgent(id: string) { return this.del("agents", id); }
 
   listModules(ws: string) { return this.list<Module>("modules", ws); }
   listDeps(ws: string) { return this.list<Dependency>("deps", ws); }
@@ -157,20 +157,20 @@ export class PostgresStore implements Store {
 
   async recordAudit(e: AuditRecord): Promise<void> {
     await this.pool.query(
-      "INSERT INTO hitl_audit(workspace_id,hitl_id,agent_id,action,operator_id,at,payload,archived) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8)",
-      [e.workspaceId, e.hitlId, e.agentId, e.action, e.operatorId, e.at, J(e.payload), e.archived ?? false],
+      "INSERT INTO hitl_audit(workspace_id,hitl_id,run_id,action,operator_id,at,payload,archived) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8)",
+      [e.workspaceId, e.hitlId, e.runId, e.action, e.operatorId, e.at, J(e.payload), e.archived ?? false],
     );
   }
 
   async listAudit(ws: string): Promise<AuditRecord[]> {
     const { rows } = await this.pool.query<{
-      workspace_id: string; hitl_id: string; agent_id: string; action: string; operator_id: string; at: string; payload: unknown; archived: boolean;
+      workspace_id: string; hitl_id: string; run_id: string; action: string; operator_id: string; at: string; payload: unknown; archived: boolean;
     }>(
-      "SELECT workspace_id,hitl_id,agent_id,action,operator_id,at,payload,archived FROM hitl_audit WHERE workspace_id=$1 ORDER BY at DESC, id DESC",
+      "SELECT workspace_id,hitl_id,run_id,action,operator_id,at,payload,archived FROM hitl_audit WHERE workspace_id=$1 ORDER BY at DESC, id DESC",
       [ws],
     );
     return rows.map((r) => ({
-      workspaceId: r.workspace_id, hitlId: r.hitl_id, agentId: r.agent_id,
+      workspaceId: r.workspace_id, hitlId: r.hitl_id, runId: r.run_id,
       action: r.action, operatorId: r.operator_id, at: Number(r.at), payload: r.payload, archived: r.archived,
     }));
   }
@@ -223,15 +223,15 @@ export class PostgresStore implements Store {
   }
 
   async snapshot(ws: string): Promise<Snapshot> {
-    const [agents, queue, projects, tasks, fleet, modules, deps] = await Promise.all([
-      this.listAgents(ws),
+    const [runs, queue, projects, tasks, fleet, modules, deps] = await Promise.all([
+      this.listRuns(ws),
       this.listQueue(ws),
       this.listProjects(ws),
       this.listTasks(ws),
-      this.listRunners(ws),
+      this.listAgents(ws),
       this.listModules(ws),
       this.listDeps(ws),
     ]);
-    return { agents, queue, projects, tasks, fleet, modules, deps, providers: PROVIDERS, serverTime: now() };
+    return { runs, queue, projects, tasks, fleet, modules, deps, providers: PROVIDERS, serverTime: now() };
   }
 }

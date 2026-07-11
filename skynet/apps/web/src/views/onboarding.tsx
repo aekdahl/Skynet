@@ -70,7 +70,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       for (const id of providers) {
         const info = catalog.find((p) => p.id === id);
         const model = info?.models[0] ?? "";
-        if (model) await store.createRunner(id, model);
+        if (model) await store.createAgent(id, model);
       }
       setOnboarded();
       onDone();
@@ -125,7 +125,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         {step === 1 && (
           <>
             <h1 className="ob-h">Connect GitHub</h1>
-            <p className="ob-sub">Install the Skynet App on the repos your fleet will work in — agents branch, push, and open PRs through least-privilege tokens. You can also do this later from Integrations.</p>
+            <p className="ob-sub">Install the Skynet App on the repos your fleet will work in — runs branch, push, and open PRs through least-privilege tokens. You can also do this later from Integrations.</p>
             <GithubConnect github={github} brokerConfigured={brokerConfigured} onConnected={onConnected} onChanged={setGithub} onDisconnect={onDisconnect} />
           </>
         )}
@@ -154,7 +154,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         {step === 3 && (
           <>
             <h1 className="ob-h">Configure your fleet</h1>
-            <p className="ob-sub">Pick the agent providers Skynet can spin up. Each becomes a runner; add, retire, or tune them anytime in Fleet.</p>
+            <p className="ob-sub">Pick the agent providers Skynet can spin up. Each becomes an agent; add, retire, or tune them anytime in Fleet.</p>
             <div className="ob-prov-grid">
               {store.providers.map((p: ProviderInfo) => {
                 const on = providers.includes(p.id);
@@ -173,7 +173,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               })}
             </div>
             <div className="ob-hint" style={{ textAlign: "center" }}>
-              {providers.length === 0 ? "Select at least one provider." : `Starts your fleet with ${providers.length} runner${providers.length === 1 ? "" : "s"}.`}
+              {providers.length === 0 ? "Select at least one provider." : `Starts your fleet with ${providers.length} agent${providers.length === 1 ? "" : "s"}.`}
             </div>
           </>
         )}

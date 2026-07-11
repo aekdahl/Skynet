@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Agent, Project } from "@skynet/shared";
+import type { TaskRun, Project } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import {
   fmtWait,
@@ -72,11 +72,11 @@ export function OpSidebar({
   setLens: (l: Lens) => void;
   onOpenProject: (id: string) => void;
 }) {
-  const { projects, agents, queue } = useStore();
+  const { projects, runs, queue } = useStore();
   const queueCount = openQueue(queue).length;
 
   const dotColor = (p: Project) => {
-    const pa = agents.filter((a) => a.projectId === p.id);
+    const pa = runs.filter((a) => a.projectId === p.id);
     if (pa.length && pa.every((a) => a.status === "done")) return "var(--faint)";
     if (pa.some((a) => a.status === "waiting" || a.status === "review"))
       return "var(--warn)";
@@ -154,24 +154,24 @@ export function OpSidebar({
 }
 
 export function OpStatusBar({
-  onOpenAgent,
+  onOpenTask,
 }: {
-  onOpenAgent: (id: string) => void;
+  onOpenTask: (id: string) => void;
 }) {
-  const { agents, queue, fleet } = useStore();
+  const { runs, queue, fleet } = useStore();
   const [open, setOpen] = useState<string | null>(null);
   const now = Date.now();
 
-  const running = agents.filter((a) => a.status === "running");
-  const blocked = agents.filter(
+  const running = runs.filter((a) => a.status === "running");
+  const blocked = runs.filter(
     (a) => a.status === "waiting" || a.status === "review",
   );
-  const busy = agents.filter((a) => a.status !== "done");
-  const idle = idleRunners(fleet, agents);
+  const busy = runs.filter((a) => a.status !== "done");
+  const idle = idleRunners(fleet, runs);
   const oq = openQueue(queue);
   const longest = oq.length ? Math.max(...oq.map((q) => waitedSecs(q, now))) : 0;
 
-  const stat = (key: string, list: Agent[], label: string, dot: string) => (
+  const stat = (key: string, list: TaskRun[], label: string, dot: string) => (
     <span className="op-sb-wrap">
       <button
         className={"op-sb-stat" + (open === key ? " on" : "")}
@@ -191,7 +191,7 @@ export function OpStatusBar({
               className="op-sb-item"
               onClick={() => {
                 setOpen(null);
-                onOpenAgent(a.id);
+                onOpenTask(a.id);
               }}
             >
               <StatusDot status={a.status} />

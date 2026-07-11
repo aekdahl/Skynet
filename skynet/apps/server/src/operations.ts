@@ -1,6 +1,6 @@
 // ─── Operations ───────────────────────────────────────────────────────────
 // The workspace-scoped service layer behind the product surface: create a
-// project, add & assign tasks, drive agents, resolve HITL, manage the fleet.
+// project, add & assign tasks, drive runs, resolve HITL, manage the fleet.
 // Every front-end (the HTTP API today, the MCP server next) delegates here, so
 // there is exactly ONE implementation of each action and no drift between the
 // human and agent-facing contracts.
@@ -11,7 +11,7 @@
 // and the persist-then-publish mutation via the Hub / Orchestrator.
 
 import type {
-  Agent,
+  TaskRun,
   AuditRecord,
   ConfigureRunnerRequest,
   CreateProjectRequest,
@@ -21,7 +21,7 @@ import type {
   ProviderInfo,
   ResolveRequest,
   Resolution,
-  Runner,
+  Agent,
   Snapshot,
   Task,
   UpdateProjectRequest,
@@ -93,11 +93,11 @@ export class Operations {
   listTasks(ws: string): Promise<Task[]> {
     return this.store.listTasks(ws);
   }
+  listRuns(ws: string): Promise<TaskRun[]> {
+    return this.store.listRuns(ws);
+  }
   listAgents(ws: string): Promise<Agent[]> {
     return this.store.listAgents(ws);
-  }
-  listRunners(ws: string): Promise<Runner[]> {
-    return this.store.listRunners(ws);
   }
   listHitl(ws: string): Promise<HitlItem[]> {
     return this.store.listQueue(ws);
@@ -122,9 +122,9 @@ export class Operations {
     return this.hub.clearAudit(ws);
   }
 
-  async getAgent(ws: string, agentId: string): Promise<Agent> {
-    const agent = await this.store.getAgent(agentId);
-    if (!agent || agent.workspaceId !== ws) throw new NotFoundError("Agent");
+  async getRun(ws: string, runId: string): Promise<TaskRun> {
+    const agent = await this.store.getRun(runId);
+    if (!agent || agent.workspaceId !== ws) throw new NotFoundError("TaskRun");
     return agent;
   }
 
@@ -150,43 +150,43 @@ export class Operations {
   }
 
   // ── agent actions ───────────────────────────────────────────────────────
-  async chatAgent(ws: string, agentId: string, text: string): Promise<string> {
-    await this.getAgent(ws, agentId); // 404 unless it's in this workspace
-    return this.orchestrator.chat(agentId, text);
+  async chatAgent(ws: string, runId: string, text: string): Promise<string> {
+    await this.getRun(ws, runId); // 404 unless it's in this workspace
+    return this.orchestrator.chat(runId, text);
   }
-  async forkAgent(ws: string, agentId: string): Promise<Agent> {
-    await this.getAgent(ws, agentId);
-    return this.orchestrator.fork(agentId);
+  async forkAgent(ws: string, runId: string): Promise<TaskRun> {
+    await this.getRun(ws, runId);
+    return this.orchestrator.fork(runId);
   }
-  async archiveAgent(ws: string, agentId: string, archived: boolean): Promise<Agent> {
-    await this.getAgent(ws, agentId);
-    const updated = await this.hub.setAgentArchived(agentId, archived);
-    if (!updated) throw new NotFoundError("Agent");
+  async archiveAgent(ws: string, runId: string, archived: boolean): Promise<TaskRun> {
+    await this.getRun(ws, runId);
+    const updated = await this.hub.setRunArchived(runId, archived);
+    if (!updated) throw new NotFoundError("TaskRun");
     return updated;
   }
-  /** Pause a running/waiting agent — halts its runner, keeps the session. */
-  async pauseAgent(ws: string, agentId: string): Promise<Agent> {
-    await this.getAgent(ws, agentId); // 404 unless it's in this workspace
-    const updated = await this.orchestrator.pauseAgent(agentId);
-    if (!updated) throw new NotFoundError("Agent");
+  /** Pause a running/waiting task run — halts its agent, keeps the session. */
+  async pauseAgent(ws: string, runId: string): Promise<TaskRun> {
+    await this.getRun(ws, runId); // 404 unless it's in this workspace
+    const updated = await this.orchestrator.pauseAgent(runId);
+    if (!updated) throw new NotFoundError("TaskRun");
     return updated;
   }
-  /** Resume a paused agent back into the running state. */
-  async resumeAgent(ws: string, agentId: string): Promise<Agent> {
-    await this.getAgent(ws, agentId); // 404 unless it's in this workspace
-    const updated = await this.orchestrator.resumeAgent(agentId);
-    if (!updated) throw new NotFoundError("Agent");
+  /** Resume a paused task run back into the running state. */
+  async resumeAgent(ws: string, runId: string): Promise<TaskRun> {
+    await this.getRun(ws, runId); // 404 unless it's in this workspace
+    const updated = await this.orchestrator.resumeAgent(runId);
+    if (!updated) throw new NotFoundError("TaskRun");
     return updated;
   }
   /**
-   * Operator "stop": terminal. Halt execution, free the runner, retire the
-   * worktree, and mark the agent done — NOT the detach-only orchestrator.stopAgent
-   * (which leaves status untouched). Returns the now-terminal agent.
+   * Operator "stop": terminal. Halt execution, free the agent, retire the
+   * worktree, and mark the run done — NOT the detach-only orchestrator.stopAgent
+   * (which leaves status untouched). Returns the now-terminal run.
    */
-  async stopAgent(ws: string, agentId: string): Promise<Agent> {
-    await this.getAgent(ws, agentId); // 404 unless it's in this workspace
-    const updated = await this.orchestrator.haltAgent(agentId);
-    if (!updated) throw new NotFoundError("Agent");
+  async stopAgent(ws: string, runId: string): Promise<TaskRun> {
+    await this.getRun(ws, runId); // 404 unless it's in this workspace
+    const updated = await this.orchestrator.haltAgent(runId);
+    if (!updated) throw new NotFoundError("TaskRun");
     return updated;
   }
 
@@ -200,7 +200,7 @@ export class Operations {
       workspaceId: ws,
       name: input.name,
       goal: input.goal,
-      agentIds: [],
+      runIds: [],
       status: "active",
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
@@ -226,7 +226,7 @@ export class Operations {
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
     // haltAgent (not the detach-only stopAgent) so each agent is left terminal
     // and its runner freed before the project record goes away.
-    for (const agentId of existing.agentIds) await this.orchestrator.haltAgent(agentId);
+    for (const runId of existing.runIds) await this.orchestrator.haltAgent(runId);
     await this.hub.deleteProject(id);
   }
 
@@ -240,7 +240,7 @@ export class Operations {
       projectId,
       text: input.text,
       state: "backlog",
-      agentId: null,
+      runId: null,
     };
     return this.hub.upsertTask(task);
   }
@@ -255,21 +255,21 @@ export class Operations {
     await this.hub.deleteTask(tid);
   }
   /** Assign a task to a fresh agent (idempotent — see Orchestrator.assignTask). */
-  async assignTask(ws: string, projectId: string, tid: string): Promise<Agent> {
+  async assignTask(ws: string, projectId: string, tid: string): Promise<TaskRun> {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
     return this.orchestrator.assignTask(projectId, tid);
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────
-  async configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Runner> {
+  async configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent> {
     // A runner's model must be one the chosen provider actually offers — the
     // provider catalog is the single source of truth (DEF-004). An invalid model
     // is a 400 (fail() maps a plain Error → 400), matching the HTTP contract.
     const invalid = modelValidForProvider(await this.store.listProviders(), input.provider, input.model);
     if (invalid) throw new Error(invalid);
     const id = input.name ?? this.uid("runner");
-    const runner: Runner = {
+    const runner: Agent = {
       id,
       workspaceId: ws,
       name: id,
@@ -278,23 +278,23 @@ export class Operations {
       status: "idle",
       idleSince: now(),
     };
-    return this.hub.upsertRunner(runner);
+    return this.hub.upsertAgent(runner);
   }
-  async updateRunner(ws: string, id: string, patch: UpdateRunnerRequest): Promise<Runner> {
-    const existing = await this.store.getRunner(id);
-    if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Runner");
+  async updateAgent(ws: string, id: string, patch: UpdateRunnerRequest): Promise<Agent> {
+    const existing = await this.store.getAgent(id);
+    if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Agent");
     // A model change is validated against the runner's existing provider (DEF-004).
     if (patch.model !== undefined) {
       const invalid = modelValidForProvider(await this.store.listProviders(), existing.provider, patch.model);
       if (invalid) throw new Error(invalid);
     }
-    return this.hub.upsertRunner({ ...existing, ...patch });
+    return this.hub.upsertAgent({ ...existing, ...patch });
   }
   async retireRunner(ws: string, id: string): Promise<void> {
-    const existing = await this.store.getRunner(id);
-    if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Runner");
+    const existing = await this.store.getAgent(id);
+    if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Agent");
     // Busy-runner guard — enforced server-side (Backend Brief §04).
     if (existing.status === "busy" || this.orchestrator.isBusy(id)) throw new RunnerBusyError();
-    await this.hub.deleteRunner(id);
+    await this.hub.deleteAgent(id);
   }
 }

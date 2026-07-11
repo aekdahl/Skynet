@@ -23,7 +23,7 @@ class CapturingBus implements Bus {
 }
 
 const item: HitlItem = {
-  id: "q-test", workspaceId: DEFAULT_WORKSPACE, agentId: "billing", kind: "approval",
+  id: "q-test", workspaceId: DEFAULT_WORKSPACE, runId: "billing", kind: "approval",
   title: "Run migration", why: "needs approval", risk: "medium",
   raisedAt: 1_000, resolvedAt: null, resolution: null,
   command: "migrate", options: null, recommended: null, steps: null, diff: null,

@@ -58,7 +58,7 @@ function fmtClockTime(at: number): string {
 function AuditRow({
   rec,
   now,
-  onOpenAgent,
+  onOpenTask,
   onArchive,
   onDelete,
   confirming,
@@ -67,16 +67,16 @@ function AuditRow({
 }: {
   rec: AuditRecord;
   now: number;
-  onOpenAgent: (id: string) => void;
+  onOpenTask: (id: string) => void;
   onArchive: (hitlId: string, archived: boolean) => void;
   onDelete: (hitlId: string) => void;
   confirming: boolean;
   onConfirmDelete: (hitlId: string) => void;
   onCancelDelete: () => void;
 }) {
-  const { queue, agents } = useStore();
-  const agent = agents.find((a) => a.id === rec.agentId);
-  const agentName = agent?.name ?? rec.agentId;
+  const { queue, runs } = useStore();
+  const agent = runs.find((a) => a.id === rec.runId);
+  const agentName = agent?.name ?? rec.runId;
   const meta = isResolveAction(rec.action)
     ? ACTION_META[rec.action]
     : { label: rec.action.toUpperCase(), color: "var(--muted)" };
@@ -108,7 +108,7 @@ function AuditRow({
             {kindMeta.label}
           </span>
         )}
-        <button className="audit-agent" onClick={() => onOpenAgent(rec.agentId)}>
+        <button className="audit-agent" onClick={() => onOpenTask(rec.runId)}>
           {agentName}
         </button>
         <span className="audit-when" title={fmtClockTime(rec.at)}>
@@ -165,10 +165,10 @@ function AuditRow({
 
 export function AuditView({
   now,
-  onOpenAgent,
+  onOpenTask,
 }: {
   now: number;
-  onOpenAgent: (id: string) => void;
+  onOpenTask: (id: string) => void;
 }) {
   const { queue, auditRev, archiveAudit, deleteAudit, archiveAllAudit, clearAudit } = useStore();
   const [records, setRecords] = useState<AuditRecord[] | null>(null);
@@ -218,7 +218,7 @@ export function AuditView({
       byId.set(q.id, {
         workspaceId: q.workspaceId,
         hitlId: q.id,
-        agentId: q.agentId,
+        runId: q.runId,
         action: q.resolution.action,
         operatorId: q.resolution.by,
         at: q.resolvedAt,
@@ -269,7 +269,7 @@ export function AuditView({
   const rowProps = (rec: AuditRecord) => ({
     rec,
     now,
-    onOpenAgent,
+    onOpenTask,
     onArchive,
     onDelete,
     confirming: confirmDelete === rec.hitlId,

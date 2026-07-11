@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import type { Agent, Project } from "@skynet/shared";
+import type { TaskRun, Project } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import {
   agentsForProject,
@@ -60,7 +60,7 @@ function GetStarted({
         <p className="gs-sub">
           The Agent Network for a fleet of coding agents. Start with a project
           — a goal you want the fleet to deliver — then break it into tasks and
-          assign them to runners. The machines do the rest; progress shows up
+          assign them to agents. The machines do the rest; progress shows up
           here on the home map.
         </p>
         <div className="gs-steps">
@@ -149,7 +149,7 @@ export function HomeView({
   lens,
   setLens,
   now,
-  onOpenAgent,
+  onOpenTask,
   onOpenProject,
   onCreate,
   onGoInbox,
@@ -159,14 +159,14 @@ export function HomeView({
   lens: Lens;
   setLens: (l: Lens) => void;
   now: number;
-  onOpenAgent: (id: string) => void;
+  onOpenTask: (id: string) => void;
   onOpenProject: (id: string) => void;
   onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
   onGoInbox: () => void;
   onConfigureFleet: () => void;
   onAssign: () => void;
 }) {
-  const { projects, agents, queue, modules, fleet } = useStore();
+  const { projects, runs, queue, modules, fleet } = useStore();
 
   if (projects.length === 0)
     return <GetStarted onCreate={onCreate} onConfigureFleet={onConfigureFleet} />;
@@ -174,10 +174,10 @@ export function HomeView({
   const blockers = openQueue(queue).sort(
     (a, b) => waitedSecs(b, now) - waitedSecs(a, now),
   );
-  const conf = conflicts(agents);
+  const conf = conflicts(runs);
 
-  const projName = (agentId: string) => {
-    const a = agents.find((x) => x.id === agentId);
+  const projName = (runId: string) => {
+    const a = runs.find((x) => x.id === runId);
     return projects.find((p) => p.id === a?.projectId)?.name ?? "—";
   };
 
@@ -204,12 +204,12 @@ export function HomeView({
               {blockers.map((item) => {
                 const k = KIND_META[item.kind];
                 const waited = waitedSecs(item, now);
-                const a = agents.find((x) => x.id === item.agentId);
+                const a = runs.find((x) => x.id === item.runId);
                 return (
                   <button
                     key={item.id}
                     className={"blocker" + (waited > 300 ? " blocker-hot" : "")}
-                    onClick={() => onOpenAgent(item.agentId)}
+                    onClick={() => onOpenTask(item.runId)}
                   >
                     <div className="blocker-top">
                       <span
@@ -222,8 +222,8 @@ export function HomeView({
                     </div>
                     <span className="blocker-title">{item.title}</span>
                     <div className="blocker-meta mono">
-                      {a ? runnerName(a, fleet) : item.agentId} ·{" "}
-                      {projName(item.agentId)}
+                      {a ? runnerName(a, fleet) : item.runId} ·{" "}
+                      {projName(item.runId)}
                     </div>
                     <div className="blocker-cta">Review &amp; decide →</div>
                   </button>
@@ -241,7 +241,7 @@ export function HomeView({
             are both working here.
             <button
               className="home-conflict-link"
-              onClick={() => list[0] && onOpenAgent(list[0].id)}
+              onClick={() => list[0] && onOpenTask(list[0].id)}
             >
               Review →
             </button>
@@ -261,16 +261,16 @@ export function HomeView({
       </div>
       <div className="home-lens">
         {lens === "subway" && (
-          <SubwayView now={now} onOpenAgent={onOpenAgent} onOpenProject={onOpenProject} />
+          <SubwayView now={now} onOpenTask={onOpenTask} onOpenProject={onOpenProject} />
         )}
-        {lens === "timeline" && <TimelineView now={now} onOpenAgent={onOpenAgent} />}
+        {lens === "timeline" && <TimelineView now={now} onOpenTask={onOpenTask} />}
         {lens === "ledger" && (
-          <LedgerView now={now} onOpenAgent={onOpenAgent} onAssign={onAssign} />
+          <LedgerView now={now} onOpenTask={onOpenTask} onAssign={onAssign} />
         )}
         {lens === "roster" && (
           <RosterView
             now={now}
-            onOpenAgent={onOpenAgent}
+            onOpenTask={onOpenTask}
             onOpenProject={onOpenProject}
             onAssign={onAssign}
           />
@@ -284,31 +284,31 @@ export function HomeView({
 
 function LedgerView({
   now,
-  onOpenAgent,
+  onOpenTask,
   onAssign,
 }: {
   now: number;
-  onOpenAgent: (id: string) => void;
+  onOpenTask: (id: string) => void;
   onAssign: () => void;
 }) {
-  const { agents, queue, fleet, projects, providers } = useStore();
-  const idle = idleRunners(fleet, agents);
+  const { runs, queue, fleet, projects, providers } = useStore();
+  const idle = idleRunners(fleet, runs);
   const oq = openQueue(queue);
-  const projName = (a: Agent) =>
+  const projName = (a: TaskRun) =>
     projects.find((p) => p.id === a.projectId)?.name ?? "—";
 
   const groups = [
-    { h: "WAITING ON YOU", s: "waiting", list: agents.filter((a) => a.status === "waiting") },
-    { h: "IN REVIEW", s: "review", list: agents.filter((a) => a.status === "review") },
-    { h: "RUNNING", s: "running", list: agents.filter((a) => a.status === "running") },
+    { h: "WAITING ON YOU", s: "waiting", list: runs.filter((a) => a.status === "waiting") },
+    { h: "IN REVIEW", s: "review", list: runs.filter((a) => a.status === "review") },
+    { h: "RUNNING", s: "running", list: runs.filter((a) => a.status === "running") },
   ].filter((g) => g.list.length > 0);
-  const ongoing = agents.filter((a) => a.status !== "done");
+  const ongoing = runs.filter((a) => a.status !== "done");
 
   return (
     <section className="vw">
       <ViewHead
         title="Ongoing tasks"
-        sub={`${ongoing.length} in flight · ${oq.length} waiting on you · ${idle.length} agents idle`}
+        sub={`${ongoing.length} in flight · ${oq.length} waiting on you · ${idle.length} runs idle`}
       />
       <div className="lg-table">
         {groups.map((g) => (
@@ -317,9 +317,9 @@ function LedgerView({
               {g.h} · {g.list.length}
             </div>
             {g.list.map((a) => {
-              const q = oq.find((it) => it.agentId === a.id);
+              const q = oq.find((it) => it.runId === a.id);
               return (
-                <button key={a.id} className="lg-row" onClick={() => onOpenAgent(a.id)}>
+                <button key={a.id} className="lg-row" onClick={() => onOpenTask(a.id)}>
                   <StatusDot status={a.status} />
                   <span className="lg-task">{a.name}</span>
                   <span className="lg-agent mono">{runnerName(a, fleet)}</span>
@@ -339,13 +339,13 @@ function LedgerView({
           </div>
         ))}
         <div className="lg-group">
-          <div className="lg-group-head lg-gh-agents">
+          <div className="lg-group-head lg-gh-runs">
             ACTIVE AGENTS · {ongoing.length} — {idle.length} IDLE
           </div>
           {ongoing.map((a) => {
-            const q = oq.find((it) => it.agentId === a.id);
+            const q = oq.find((it) => it.runId === a.id);
             return (
-              <button key={a.id} className="lg-arow" onClick={() => onOpenAgent(a.id)}>
+              <button key={a.id} className="lg-arow" onClick={() => onOpenTask(a.id)}>
                 <StatusDot status={a.status} />
                 <span className="lg-agent-id mono">{runnerName(a, fleet)}</span>
                 <span className="lg-model mono">{a.model}</span>
@@ -383,14 +383,14 @@ function LedgerView({
 
 function SwDiagram({
   project,
-  onOpenAgent,
+  onOpenTask,
 }: {
   project: Project;
-  onOpenAgent: (id: string) => void;
+  onOpenTask: (id: string) => void;
 }) {
-  const { agents, fleet } = useStore();
-  const tasks = agentsForProject(agents, project.id);
-  const rows: Agent[] = [];
+  const { runs, fleet } = useStore();
+  const tasks = agentsForProject(runs, project.id);
+  const rows: TaskRun[] = [];
   tasks
     .filter((t) => !t.parentId)
     .forEach((m) => {
@@ -400,7 +400,7 @@ function SwDiagram({
   // include any orphan forks whose parent isn't in this project
   tasks.filter((t) => t.parentId && !rows.includes(t)).forEach((t) => rows.push(t));
 
-  const colsOf = (t: Agent) =>
+  const colsOf = (t: TaskRun) =>
     (t.parentId ? (t.branchFromStep ?? 0) + 1 : 0) + t.plan.length;
   const totalCols = Math.max(2, ...rows.map(colsOf));
   const X = (c: number) => (c / (totalCols - 1)) * 100;
@@ -415,7 +415,7 @@ function SwDiagram({
         const rn = runnerName(t, fleet);
         const parentRn = t.parentId
           ? runnerName(
-              agents.find((a) => a.id === t.parentId) ?? t,
+              runs.find((a) => a.id === t.parentId) ?? t,
               fleet,
             )
           : "";
@@ -425,7 +425,7 @@ function SwDiagram({
             className="swb-row"
             style={{ top: r * ROW_H + "px", height: ROW_H + "px" }}
           >
-            <button className="swb-name" onClick={() => onOpenAgent(t.id)}>
+            <button className="swb-name" onClick={() => onOpenTask(t.id)}>
               <StatusDot status={t.status} />
               <span className="sw-task-text">
                 <span className="sw-tname">{t.name}</span>
@@ -506,14 +506,14 @@ function SwDiagram({
 
 function SubwayView({
   now,
-  onOpenAgent,
+  onOpenTask,
   onOpenProject,
 }: {
   now: number;
-  onOpenAgent: (id: string) => void;
+  onOpenTask: (id: string) => void;
   onOpenProject: (id: string) => void;
 }) {
-  const { agents, queue, projects, modules } = useStore();
+  const { runs, queue, projects, modules } = useStore();
   const oq = openQueue(queue);
   return (
     <section className="vw">
@@ -523,14 +523,14 @@ function SubwayView({
       />
       <div className="sw-list">
         {projects.map((p) => {
-          const pa = agentsForProject(agents, p.id);
+          const pa = agentsForProject(runs, p.id);
           const allDone = pa.length > 0 && pa.every((a) => a.status === "done");
-          const q = oq.find((it) => pa.some((a) => a.id === it.agentId));
+          const q = oq.find((it) => pa.some((a) => a.id === it.runId));
           const conflictAgent = pa.find(
             (a) =>
               a.status !== "done" &&
               a.modules.some((mod) =>
-                agents.some(
+                runs.some(
                   (o) =>
                     o.id !== a.id &&
                     o.status !== "done" &&
@@ -540,7 +540,7 @@ function SubwayView({
               ),
           );
           const conflictMod = conflictAgent?.modules.find((mod) =>
-            agents.some(
+            runs.some(
               (o) =>
                 o.id !== conflictAgent.id &&
                 o.status !== "done" &&
@@ -567,7 +567,7 @@ function SubwayView({
                 {allDone && <span className="expill expill-done">✓ shipped</span>}
               </div>
               {pa.length > 0 ? (
-                <SwDiagram project={p} onOpenAgent={onOpenAgent} />
+                <SwDiagram project={p} onOpenTask={onOpenTask} />
               ) : (
                 <div className="kb-empty">
                   No tasks running yet — assign one from the project's backlog.
@@ -585,18 +585,18 @@ function SubwayView({
 
 function RosterView({
   now,
-  onOpenAgent,
+  onOpenTask,
   onOpenProject,
   onAssign,
 }: {
   now: number;
-  onOpenAgent: (id: string) => void;
+  onOpenTask: (id: string) => void;
   onOpenProject: (id: string) => void;
   onAssign: () => void;
 }) {
-  const { agents, queue, fleet, projects, providers } = useStore();
-  const busy = agents.filter((a) => a.status !== "done");
-  const idle = idleRunners(fleet, agents);
+  const { runs, queue, fleet, projects, providers } = useStore();
+  const busy = runs.filter((a) => a.status !== "done");
+  const idle = idleRunners(fleet, runs);
   const oq = openQueue(queue);
   return (
     <section className="vw">
@@ -608,9 +608,9 @@ function RosterView({
           </div>
           <div className="rs-cards">
             {busy.map((a) => {
-              const q = oq.find((it) => it.agentId === a.id);
+              const q = oq.find((it) => it.runId === a.id);
               return (
-                <button key={a.id} className="rs-card" onClick={() => onOpenAgent(a.id)}>
+                <button key={a.id} className="rs-card" onClick={() => onOpenTask(a.id)}>
                   <span className="rs-card-top">
                     <StatusDot status={a.status} />
                     <span className="mono rs-id">
@@ -654,22 +654,22 @@ function RosterView({
           <div className="rs-tasks">
             {projects
               .filter((p) =>
-                agentsForProject(agents, p.id).some((a) => a.status !== "done"),
+                agentsForProject(runs, p.id).some((a) => a.status !== "done"),
               )
               .map((p) => (
                 <div key={p.id} className="rs-proj">
                   <button className="rs-proj-name" onClick={() => onOpenProject(p.id)}>
                     {p.name} →
                   </button>
-                  {agentsForProject(agents, p.id)
+                  {agentsForProject(runs, p.id)
                     .filter((a) => a.status !== "done")
                     .map((a) => {
-                      const q = oq.find((it) => it.agentId === a.id);
+                      const q = oq.find((it) => it.runId === a.id);
                       return (
                         <button
                           key={a.id}
                           className="rs-task-row"
-                          onClick={() => onOpenAgent(a.id)}
+                          onClick={() => onOpenTask(a.id)}
                         >
                           <StatusDot status={a.status} />
                           <span className="rs-task-main">
@@ -700,12 +700,12 @@ function RosterView({
 
 function TimelineView({
   now,
-  onOpenAgent,
+  onOpenTask,
 }: {
   now: number;
-  onOpenAgent: (id: string) => void;
+  onOpenTask: (id: string) => void;
 }) {
-  const { agents, queue, projects, deps, fleet } = useStore();
+  const { runs, queue, projects, deps, fleet } = useStore();
   const oq = openQueue(queue);
   const W = 185;
   const NOW = 144;
@@ -717,10 +717,10 @@ function TimelineView({
     { m: 174, l: "15:00" },
   ];
 
-  const startedMin = (a: Agent) => Math.floor((now - a.startedAt) / 60000);
+  const startedMin = (a: TaskRun) => Math.floor((now - a.startedAt) / 60000);
 
   const laneAgents = projects.map((p) =>
-    agentsForProject(agents, p.id),
+    agentsForProject(runs, p.id),
   );
   const laneTops: number[] = [];
   let acc = 0;
@@ -736,7 +736,7 @@ function TimelineView({
     return 0;
   };
   const barStartX = (id: string) => {
-    const a = agents.find((x) => x.id === id);
+    const a = runs.find((x) => x.id === id);
     return pct(Math.max(0, NOW - (a ? startedMin(a) : 0)));
   };
 
@@ -763,8 +763,8 @@ function TimelineView({
             <div key={t.l} className="tl-grid" style={{ left: pct(t.m) + "%" }} />
           ))}
           {deps.map((d) => {
-            const fa = agents.find((a) => a.id === d.fromAgentId);
-            const ta = agents.find((a) => a.id === d.toAgentId);
+            const fa = runs.find((a) => a.id === d.fromAgentId);
+            const ta = runs.find((a) => a.id === d.toAgentId);
             if (!fa || !ta) return null;
             const x = barStartX(d.toAgentId);
             const y1 = rowCenter(d.fromAgentId);
@@ -791,7 +791,7 @@ function TimelineView({
             );
           })}
           {projects.map((p) => {
-            const pa = agentsForProject(agents, p.id);
+            const pa = agentsForProject(runs, p.id);
             return (
               <div key={p.id} className="tl-lane">
                 <span className="tl-proj">{p.name}</span>
@@ -805,13 +805,13 @@ function TimelineView({
                         : sm / Math.max(a.progress, 0.08);
                     const x = pct(start);
                     const w = Math.max(7, pct(Math.min(start + total, W)) - x);
-                    const q = oq.find((it) => it.agentId === a.id);
+                    const q = oq.find((it) => it.runId === a.id);
                     return (
                       <div key={a.id} className="tl-canvas">
                         <button
                           className={"tl-bar tl-bar-" + a.status}
                           style={{ left: x + "%", width: w + "%" }}
-                          onClick={() => onOpenAgent(a.id)}
+                          onClick={() => onOpenTask(a.id)}
                         >
                           <span
                             className="tl-fill"

@@ -1,6 +1,6 @@
 // ─── Routing / deep links (W7) ────────────────────────────────────────────
-// Maps the in-memory router state (view / lens / projectId / agentId) to a URL
-// hash so views, projects, and agents are shareable and back/forward works.
+// Maps the in-memory router state (view / lens / projectId / runId) to a URL
+// hash so views, projects, and runs are shareable and back/forward works.
 // Hash form: #/home/<lens> · #/queue · #/audit · #/projects · #/fleet ·
 //            #/project/<id> · #/agent/<id>
 
@@ -10,7 +10,7 @@ export interface RoutePatch {
   view?: ViewName;
   lens?: Lens;
   projectId?: string | null;
-  agentId?: string | null;
+  runId?: string | null;
 }
 
 const LENSES: Lens[] = ["subway", "timeline", "ledger", "roster"];
@@ -31,22 +31,22 @@ export function parseHash(): RoutePatch | null {
       return { view: seg };
     case "project":
       return arg ? { view: "project", projectId: arg } : { view: "projects" };
-    case "agent":
-      return arg ? { view: "agent", agentId: arg } : { view: "home" };
+    case "task":
+      return arg ? { view: "task", runId: arg } : { view: "home" };
     default:
       return null;
   }
 }
 
 /** Serialize router state to a hash. */
-export function toHash(r: { view: ViewName; lens: Lens; projectId: string | null; agentId: string | null }): string {
+export function toHash(r: { view: ViewName; lens: Lens; projectId: string | null; runId: string | null }): string {
   switch (r.view) {
     case "home":
       return `#/home/${r.lens}`;
     case "project":
       return r.projectId ? `#/project/${r.projectId}` : "#/projects";
-    case "agent":
-      return r.agentId ? `#/agent/${r.agentId}` : "#/home";
+    case "task":
+      return r.runId ? `#/agent/${r.runId}` : "#/home";
     default:
       return `#/${r.view}`;
   }

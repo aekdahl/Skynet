@@ -1,4 +1,4 @@
-import type { Agent, Project } from "@skynet/shared";
+import type { TaskRun, Project } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { agentsForProject, heartbeatSecs } from "../lib/derive";
 
@@ -54,7 +54,7 @@ function PreviewFrame({ url, title }: { url: string; title: string }) {
 
 const hostPath = (url: string) => url.replace(/^https?:\/\//, "");
 
-export function PreviewFor({ agent }: { agent: Agent }) {
+export function PreviewFor({ agent }: { agent: TaskRun }) {
   const now = agent.plan.find((p) => p.state === "now");
 
   if (agent.visual) {
@@ -91,7 +91,7 @@ export function PreviewFor({ agent }: { agent: Agent }) {
 
   // Non-visual agent: no renderable delivery. Don't fabricate a terminal — the
   // agent's real activity is in the LIVE LOG panel. Callers fold this panel away
-  // for non-visual agents; this is the defensive fallback if one renders it.
+  // for non-visual runs; this is the defensive fallback if one renders it.
   return (
     <PvShell label={agent.name} fresh="just now" done={agent.status === "done"}>
       <div className="pv-none">
@@ -103,8 +103,8 @@ export function PreviewFor({ agent }: { agent: Agent }) {
 
 // ─── project-level delivery preview ─────────────────────────────────────────
 
-export function visualLeadOf(project: Project, agents: Agent[]): Agent | null {
-  const pa = agentsForProject(agents, project.id).filter((a) => a.visual);
+export function visualLeadOf(project: Project, runs: TaskRun[]): TaskRun | null {
+  const pa = agentsForProject(runs, project.id).filter((a) => a.visual);
   const live = pa
     .filter((a) => a.status !== "done")
     .sort((x, y) => y.progress - x.progress);
@@ -112,13 +112,13 @@ export function visualLeadOf(project: Project, agents: Agent[]): Agent | null {
 }
 
 export function ProjectDelivery({ project }: { project: Project }) {
-  const { agents } = useStore();
+  const { runs } = useStore();
   const now = Date.now();
-  const lead = visualLeadOf(project, agents);
+  const lead = visualLeadOf(project, runs);
   if (!lead) return null;
 
   const fresh = (() => {
-    const pa = agentsForProject(agents, project.id).filter(
+    const pa = agentsForProject(runs, project.id).filter(
       (a) => a.status !== "done",
     );
     if (!pa.length) return "just now";

@@ -4,7 +4,7 @@
 //   resume — paused agent → back to "running"; the live runner is resumed.
 //   stop   — halts execution, frees the runner back to idle, marks agent "done".
 import { describe, it, expect, beforeEach } from "vitest";
-import type { ProviderId, Runner, Project, Task, ServerEvent } from "@skynet/shared";
+import type { ProviderId, Agent, Project, Task, ServerEvent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
 import { Orchestrator } from "../apps/server/src/orchestrator.js";
@@ -26,7 +26,7 @@ class RecordingProvider implements RunnerProvider {
   async start(spec: StartSpec, _events: RunnerEvents): Promise<RunnerHandle> {
     const calls = this.calls;
     return {
-      agentId: spec.agentId,
+      runId: spec.runId,
       provider: this.id,
       async pause() { calls.pause++; },
       async resume() { calls.resume++; },
@@ -38,17 +38,17 @@ class RecordingProvider implements RunnerProvider {
 
 const mkFixtures = async (store: MemoryStore) => {
   const project: Project = {
-    id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "Proj", goal: "", agentIds: [], status: "active",
+    id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "Proj", goal: "", runIds: [], status: "active",
   };
-  const runner: Runner = {
+  const runner: Agent = {
     id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1",
     provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0,
   };
   const task: Task = {
-    id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do the thing", state: "backlog", agentId: null,
+    id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do the thing", state: "backlog", runId: null,
   };
   await store.putProject(project);
-  await store.putRunner(runner);
+  await store.putAgent(runner);
   await store.putTask(task);
 };
 
@@ -73,7 +73,7 @@ describe("agent lifecycle controls: pause / resume / stop", () => {
     const paused = await orchestrator.pauseAgent(agent.id);
     expect(paused?.status).toBe("paused");
     expect(provider.calls.pause).toBe(1);
-    expect((await store.getAgent(agent.id))?.status).toBe("paused");
+    expect((await store.getRun(agent.id))?.status).toBe("paused");
   });
 
   it("resume returns a paused agent to 'running' and resumes its runner", async () => {
@@ -87,12 +87,12 @@ describe("agent lifecycle controls: pause / resume / stop", () => {
 
   it("stop halts the agent, frees its runner to idle, and marks it done", async () => {
     const agent = await orchestrator.assignTask("p1", "t1");
-    expect((await store.getRunner("r1"))?.status).toBe("busy");
+    expect((await store.getAgent("r1"))?.status).toBe("busy");
 
     const stopped = await orchestrator.haltAgent(agent.id);
     expect(stopped?.status).toBe("done");
     expect(provider.calls.stop).toBe(1);
-    expect((await store.getRunner("r1"))?.status).toBe("idle");
+    expect((await store.getAgent("r1"))?.status).toBe("idle");
     // The live session is gone — pausing a stopped agent is a no-op.
     expect(orchestrator.isBusy("r1")).toBe(false);
   });
