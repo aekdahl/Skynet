@@ -133,6 +133,33 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Lifecycle controls: pause halts the runner (session kept), resume returns it
+  // to running, stop is terminal (frees the runner, marks the agent done). Each
+  // returns the updated agent.
+  app.post<{ Params: { id: string } }>("/api/agents/:id/pause", async (req, reply) => {
+    try {
+      return await ops.pauseAgent(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/agents/:id/resume", async (req, reply) => {
+    try {
+      return await ops.resumeAgent(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/agents/:id/stop", async (req, reply) => {
+    try {
+      return await ops.stopAgent(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // ── projects ───────────────────────────────────────────────────────────
   app.post("/api/projects", async (req, reply) => {
     const body = CreateProjectRequest.safeParse(req.body);
