@@ -15,10 +15,31 @@ import type { FastifyRequest } from "fastify";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { config } from "./config.js";
 import type { SessionStore } from "./auth/sessions.js";
+import type { ServiceTokenStore } from "./auth/service-tokens.js";
+
+/**
+ * Capability scopes carried by a service token (MCP / API access). Human logins
+ * carry no scopes (`Principal.scopes` undefined) and are treated as full
+ * authority; a service token narrows what an automated caller may do:
+ *  • observe  — reads (snapshot, lists, get)
+ *  • author   — create/assign/fork/chat/stop/archive, configure fleet runners
+ *  • approver — resolve HITL items (approve/reject/modify diffs, answer, gate push)
+ *  • admin    — mint/revoke tokens and other privileged ops (never granted to MCP)
+ */
+export const SCOPES = ["observe", "author", "approver", "admin"] as const;
+export type Scope = (typeof SCOPES)[number];
 
 export interface Principal {
   workspaceId: string;
   operatorId: string;
+  // Undefined = full authority (human sessions, dev tokens). A service token
+  // carries an explicit subset; scope-gated call sites check these before acting.
+  scopes?: Scope[];
+}
+
+/** True if the principal may exercise `scope`. Humans (no scopes) always may. */
+export function hasScope(principal: Principal, scope: Scope): boolean {
+  return principal.scopes === undefined || principal.scopes.includes(scope);
 }
 
 // Dev tokens — two workspaces so isolation is demonstrable. These resolve
@@ -36,12 +57,15 @@ const devAuthAllowed = (): boolean => config.nodeEnv !== "production";
 /** Cookie that carries a session token (set by the login route). */
 export const SESSION_COOKIE = "skynet_session";
 
-// Injected session backend (real login tokens). Absent until configureAuth runs.
+// Injected backends (real login tokens + service/API tokens). Absent until
+// configureAuth runs.
 let sessions: SessionStore | undefined;
+let serviceTokens: ServiceTokenStore | undefined;
 
-/** Wire the session backend (called once at bootstrap). */
-export function configureAuth(opts: { sessions?: SessionStore }): void {
+/** Wire the auth backends (called once at bootstrap). */
+export function configureAuth(opts: { sessions?: SessionStore; serviceTokens?: ServiceTokenStore }): void {
   sessions = opts.sessions;
+  serviceTokens = opts.serviceTokens;
 }
 
 /** Extract a token from an Authorization header or a ?token= query value. */
@@ -75,6 +99,10 @@ export async function resolvePrincipal(token?: string): Promise<Principal | unde
     if (dev && TOKENS[token]) return TOKENS[token]; // dev tokens never resolve in prod
     const fromSession = await sessions?.resolve(token);
     if (fromSession) return fromSession;
+    // Service/API tokens (MCP + programmatic access). Real credentials, so they
+    // resolve in production too — unlike the dev conveniences above.
+    const fromServiceToken = await serviceTokens?.resolve(token);
+    if (fromServiceToken) return fromServiceToken;
   }
   // Fail closed unless dev explicitly allows the open default. In production this
   // is never reached as open (authRequired defaults on; dev=false here anyway).

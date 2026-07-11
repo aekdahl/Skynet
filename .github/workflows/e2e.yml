@@ -1,0 +1,58 @@
+name: E2E (SPA smoke)
+
+# First automated UI coverage. Kept SEPARATE from the main `CI` gate (ci.yml,
+# vitest) and NON-BLOCKING (continue-on-error) so a browser flake never blocks a
+# merge while the suite earns trust. The monorepo lives under skynet/, so all
+# package-manager steps run there.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spa-smoke:
+    runs-on: ubuntu-latest
+    # Non-blocking: report the result without failing the PR's required checks.
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: skynet
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: skynet/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      # playwright.config.ts's webServer builds packages + web + server and boots
+      # it against the built SPA before the tests run.
+      - name: Run SPA smoke
+        run: pnpm test:e2e
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: skynet/playwright-report
+          retention-days: 7
+          if-no-files-found: ignore

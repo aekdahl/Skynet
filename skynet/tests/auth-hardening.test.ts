@@ -9,6 +9,7 @@
 import { describe, it, expect } from "vitest";
 import type { FastifyRequest } from "fastify";
 import { authenticate } from "../apps/server/src/auth.js";
+import { isGuardedPath, isPublicLogin, requiresAuth } from "../apps/server/src/auth-guard.js";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 
 // Minimal FastifyRequest stand-in — authenticate only touches headers + query.
@@ -49,30 +50,41 @@ describe("DEF-006: REST ignores the ?token= query param", () => {
 });
 
 describe("DEF-007: the /api prefix guard is case-insensitive", () => {
-  // Mirrors the onRequest hook's guard: lowercase the path, then prefix-match.
-  const isApiRoute = (url: string) => url.toLowerCase().startsWith("/api");
-  const isPublicLogin = (url: string) => {
-    const p = url.toLowerCase();
-    return p === "/api/auth/login" || p.startsWith("/api/auth/login?");
-  };
-
-  it("treats uppercase /API/... as a guarded API route", () => {
-    expect(isApiRoute("/API/snapshot")).toBe(true);
-    expect(isApiRoute("/Api/Fleet/Runners")).toBe(true);
+  // Assert against the real predicates the onRequest hook uses (auth-guard.ts),
+  // so production and the test can't drift.
+  it("treats uppercase /API/... as a guarded route", () => {
+    expect(isGuardedPath("/API/snapshot")).toBe(true);
+    expect(isGuardedPath("/Api/Fleet/Runners")).toBe(true);
   });
 
-  it("still matches real lowercase /api/... routes", () => {
-    expect(isApiRoute("/api/snapshot")).toBe(true);
+  it("still matches real lowercase /api/... and /mcp routes", () => {
+    expect(isGuardedPath("/api/snapshot")).toBe(true);
+    expect(isGuardedPath("/mcp")).toBe(true);
+    expect(isGuardedPath("/MCP")).toBe(true);
   });
 
   it("does not match non-api paths", () => {
-    expect(isApiRoute("/assets/app.js")).toBe(false);
-    expect(isApiRoute("/")).toBe(false);
+    expect(isGuardedPath("/assets/app.js")).toBe(false);
+    expect(isGuardedPath("/")).toBe(false);
   });
 
   it("recognizes the public login route regardless of case, with a query string", () => {
     expect(isPublicLogin("/API/auth/login")).toBe(true);
     expect(isPublicLogin("/api/auth/login?next=/")).toBe(true);
     expect(isPublicLogin("/api/auth/logout")).toBe(false);
+  });
+
+  it("requires auth on guarded routes but exempts the public login route", () => {
+    expect(requiresAuth("/api/snapshot")).toBe(true);
+    expect(requiresAuth("/API/snapshot")).toBe(true);
+    expect(requiresAuth("/mcp")).toBe(true);
+    // Login is guarded-prefix but public, so it must NOT require auth.
+    expect(requiresAuth("/api/auth/login")).toBe(false);
+    expect(requiresAuth("/API/auth/login")).toBe(false);
+    expect(requiresAuth("/api/auth/login?next=/")).toBe(false);
+    // Non-api paths pass through untouched.
+    expect(requiresAuth("/assets/app.js")).toBe(false);
+    expect(requiresAuth("/ws")).toBe(false);
+    expect(requiresAuth("/")).toBe(false);
   });
 });

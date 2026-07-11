@@ -8,7 +8,7 @@ suite. Full rationale + the scenario catalog: [`../docs/llm-acceptance.md`](../d
 and `vitest` never touch it. It runs on demand, costs tokens, and is non-deterministic.
 
 ## Layout
-- `scenarios.ts` — the 20 scenarios (task + `fixture` + rubric, some with scripted HITL `replies`).
+- `scenarios.ts` — the scenarios (task + `fixture` + rubric, some with scripted HITL `replies`).
 - `judge.ts` — the LLM-as-judge. Runs through the runner-sdk's `oneShotText` (→ the `claude`
   CLI), the **same transport a live runner uses** — so it authenticates identically and works
   both standalone and nested inside a Claude Code session (where a raw `fetch` to the API has

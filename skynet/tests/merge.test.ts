@@ -113,6 +113,6 @@ describe("MergeEngine", () => {
     expect(calls.merged).toHaveLength(0);
     // Merge commit was reset (HEAD~1) — integration branch tip is the base commit,
     // so the agent's file is not present on it.
-    expect(() => gitQuiet("cat-file", "-e", "skynet/integration/payments:feature.ts")).toThrow();
+    expect(() => git("cat-file", "-e", "skynet/integration/payments:feature.ts")).toThrow();
   });
 });

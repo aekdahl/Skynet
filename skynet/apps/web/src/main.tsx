@@ -5,6 +5,7 @@ import "./styles.responsive.css";
 import { App } from "./App";
 import { StoreProvider } from "./lib/store";
 import { AcceptanceProvider } from "./lib/acceptance-store";
+import { SimulationProvider } from "./lib/simulation-store";
 import { setupPwa } from "./pwa/pwa";
 
 setupPwa();
@@ -16,7 +17,9 @@ createRoot(root).render(
   <StrictMode>
     <StoreProvider>
       <AcceptanceProvider>
-        <App />
+        <SimulationProvider>
+          <App />
+        </SimulationProvider>
       </AcceptanceProvider>
     </StoreProvider>
   </StrictMode>,

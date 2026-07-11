@@ -22,6 +22,9 @@ import type { Store } from "./store/store.js";
 export class Hub {
   // Per-workspace set of already-emitted conflict keys, to avoid re-emitting.
   private conflictKeys = new Map<string, Set<string>>();
+  // Per-hitl-id promise chain so overlapping resolves of the same id run
+  // serially — the read-check-write in resolveHitl is otherwise a TOCTOU race.
+  private hitlLocks = new Map<string, Promise<unknown>>();
 
   constructor(private store: Store, private bus: Bus) {}
 
@@ -111,8 +114,32 @@ export class Hub {
     return item;
   }
 
-  /** Idempotent, first-writer-wins (Backend Brief §05); records the audit trail. */
+  /**
+   * Idempotent, first-writer-wins (Backend Brief §05); records the audit trail.
+   *
+   * Serialized per-hitl-id so truly concurrent resolves of the same id are
+   * ordered: the read-check-write below has an `await` between the guard and
+   * the write, so without this two overlapping resolves would both observe
+   * `resolution === null` and each record an audit entry / double-deliver.
+   * We chain onto any in-flight resolve for the same id and clean the entry
+   * up once this is the tail of the chain.
+   */
   async resolveHitl(id: string, resolution: Resolution): Promise<HitlItem | undefined> {
+    const prior = this.hitlLocks.get(id) ?? Promise.resolve();
+    const run = prior
+      .catch(() => {}) // a prior failure must not poison the queue
+      .then(() => this.doResolveHitl(id, resolution));
+    this.hitlLocks.set(id, run);
+    try {
+      return await run;
+    } finally {
+      // Only the last enqueued resolve clears the map, so we never drop a
+      // still-pending chain.
+      if (this.hitlLocks.get(id) === run) this.hitlLocks.delete(id);
+    }
+  }
+
+  private async doResolveHitl(id: string, resolution: Resolution): Promise<HitlItem | undefined> {
     const item = await this.store.getHitl(id);
     if (!item) return undefined;
     if (item.resolution) return item; // already resolved — return existing

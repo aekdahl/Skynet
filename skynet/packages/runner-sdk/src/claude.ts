@@ -56,8 +56,31 @@ function createInputStream() {
   };
 }
 
-// Read-only tools run without a human gate; mutating/risky tools raise a HITL.
-const AUTO_ALLOW = new Set(["Read", "LS", "Glob", "Grep", "NotebookRead", "TodoWrite"]);
+// Tools that run without a mid-run human gate. This is deliberately more than
+// just read-only tools: file EDITS are included because every change the agent
+// makes is captured in its own worktree and reviewed as a whole in the
+// end-of-run diff-review HITL — so pausing for per-edit approval is needless
+// over-gating (a one-word comment fix shouldn't block on a human). Human control
+// is kept where it matters: the whole-diff review, decisions the agent raises
+// (AskUserQuestion → a `question` gate), and the genuinely risky/irreversible
+// surface — shell commands (Bash) and anything unrecognized still gate below.
+const AUTO_ALLOW = new Set([
+  // read-only
+  "Read", "LS", "Glob", "Grep", "NotebookRead", "TodoWrite",
+  // file edits — reviewed wholesale in the diff-review gate, not per call
+  "Edit", "MultiEdit", "Write", "NotebookEdit",
+]);
+
+/**
+ * Does `toolName` run without a blocking mid-run approval? True for read-only
+ * tools and file edits (edits ride the end-of-run diff review). False for the
+ * risky/irreversible surface — shell commands (Bash) and anything unrecognized —
+ * which raises an approval gate. (AskUserQuestion is handled separately: it's a
+ * decision the agent raises, surfaced as a `question` gate, not an approval.)
+ */
+export function isAutoAllowed(toolName: string): boolean {
+  return AUTO_ALLOW.has(toolName);
+}
 
 const mapModel = (m: string): string | undefined =>
   m.startsWith("fable") ? "claude-fable-5"
@@ -408,11 +431,12 @@ class ClaudeRunnerHandle implements RunnerHandle {
       `Task: ${spec.task}. ` +
       `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
       `Only if it requires code changes, make them and run any relevant checks. Then stop when done. ` +
-      `Ask before running destructive or irreversible commands.`;
+      `Ask before running destructive or irreversible commands. ` +
+      `Be honest when you're blocked: if you cannot reproduce a reported problem, or the task lacks information you'd need to fix it correctly (a stack trace, reproduction steps, failing logs, expected vs actual behavior), do NOT guess or make a speculative edit. Use the AskUserQuestion tool to ask the operator for exactly what you need, or if no answer is possible, report plainly what you could and couldn't determine and stop WITHOUT changing code. Asking for the missing detail is the correct, honest outcome here — a fabricated fix is a failure, not progress.`;
     this.input.push(this.initialPrompt);
 
     const canUseTool: CanUseTool = (toolName, input) => {
-      if (AUTO_ALLOW.has(toolName)) return Promise.resolve({ behavior: "allow", updatedInput: input });
+      if (isAutoAllowed(toolName)) return Promise.resolve({ behavior: "allow", updatedInput: input });
       // AskUserQuestion is the agent asking the operator a decision — surface it
       // as a `question` HITL with real option buttons, not a generic "approve".
       const question = toolName === "AskUserQuestion" ? parseAskUserQuestion(input) : null;
@@ -468,7 +492,8 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // bare query() gives a minimal agent that never loads TodoWrite, so the
       // agent writes plans as prose and the PLAN panel stays empty. The preset
       // makes the agent maintain a real todo list (→ our plan steps) and behave
-      // like Claude Code; our canUseTool still gates every mutating tool.
+      // like Claude Code; our canUseTool gates the risky surface (shell + unknown
+      // tools), while edits ride the end-of-run diff review (see AUTO_ALLOW).
       systemPrompt: { type: "preset", preset: "claude_code" },
       // Scrubbed env (drops the nested-session OAuth path); a per-workspace key
       // (orchestrator-injected) overrides ANTHROPIC_API_KEY for this session only.
