@@ -1,7 +1,7 @@
 // ─── Provider credential env vars ──────────────────────────────────────────
 // Single source of truth for which environment variables authenticate each
 // provider. Shared by the secrets service (availability + env fallback) and the
-// runner-readiness guard so the two never diverge.
+// orchestrator's runner-usability check so the two never diverge.
 //
 // Claude accepts more than an API key: `claude setup-token` mints a
 // CLAUDE_CODE_OAUTH_TOKEN for headless/subscription auth, and a gateway/proxy
@@ -34,4 +34,21 @@ export const PROVIDER_ENV_VAR: Record<ProviderId, string> = Object.fromEntries(
 /** True when any of a provider's credential env vars is set (non-empty). */
 export function providerEnvCredential(provider: ProviderId): boolean {
   return (PROVIDER_ENV_VARS[provider] ?? []).some((v) => (process.env[v] ?? "").trim() !== "");
+}
+
+/**
+ * Providers that authenticate via their own CLI login (`cursor` / GitHub) rather
+ * than an API-key env var, so they're usable without a key/token in the env.
+ * Everything else needs a credential — no keys, nothing runs.
+ */
+export const CLI_LOGIN_PROVIDERS = new Set<ProviderId>(["cursor", "copilot"]);
+
+/**
+ * Whether a provider is usable from the ambient environment alone: a CLI-login
+ * provider, or one with a credential env var set. Callers OR this with a stored
+ * per-workspace secret. (There is no mock — an unusable provider means the
+ * runner cannot execute.)
+ */
+export function providerUsableFromEnv(provider: ProviderId): boolean {
+  return CLI_LOGIN_PROVIDERS.has(provider) || providerEnvCredential(provider);
 }

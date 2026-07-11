@@ -110,9 +110,9 @@ async function main(): Promise<void> {
   }
 
   if (cmd === "exec") {
-    // Run a scenario through the executor and print its artifacts (no judge —
-    // works without a key; smoke-test with RUNNER=mock). Pipe to a file, then
-    // `judge <id> that-file.json` to score it.
+    // Run a scenario through the executor and print its artifacts (no judge).
+    // Needs a provider credential to actually run the agent — nothing runs
+    // without one. Pipe to a file, then `judge <id> that-file.json` to score it.
     if (!arg1) throw new Error("usage: tsx evals/run.ts exec <scenarioId>");
     const scenario = find(arg1);
     const executor = await loadExecutor();

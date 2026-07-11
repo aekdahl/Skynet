@@ -59,8 +59,8 @@ export function SimulationView() {
       </div>
 
       <p className="acc-section-sub">
-        Best run with <code>RUNNER=mock</code> so assigned runs actually execute (no provider keys needed).
-        Everything created is tagged <code>Sim:</code> / <code>sim-</code> and stays until you clear it.
+        Assigned agents run on real key-backed runners — configure a provider key in Settings, or
+        nothing runs. Everything created is tagged <code>Sim:</code> / <code>sim-</code> and stays until you clear it.
       </p>
 
       <div className="acc-list">
