@@ -70,6 +70,40 @@ describe("Operations — workspace-scoped domain layer", () => {
     await expect(ops.retireRunner(DEFAULT_WORKSPACE, "r1")).rejects.toBeInstanceOf(RunnerBusyError);
   });
 
+  it("pause / resume drive the agent status and are workspace-scoped", async () => {
+    const { store, ops } = setup();
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repo: undefined });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "x" });
+    const agent = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+
+    const paused = await ops.pauseAgent(DEFAULT_WORKSPACE, agent.id);
+    expect(paused.status).toBe("paused");
+    const resumed = await ops.resumeAgent(DEFAULT_WORKSPACE, agent.id);
+    expect(resumed.status).toBe("running");
+
+    // Another workspace can't see (or drive) this agent.
+    await expect(ops.pauseAgent("resistance", agent.id)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(ops.resumeAgent("resistance", agent.id)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("stop is terminal: marks the agent done AND frees its runner to idle", async () => {
+    const { store, ops } = setup();
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repo: undefined });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "x" });
+    const agent = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    expect((await store.getAgent("r1"))?.status).toBe("busy");
+
+    // The operator-facing stop must halt (terminal + runner freed), NOT the
+    // detach-only path that leaves the agent hanging non-terminal.
+    const stopped = await ops.stopAgent(DEFAULT_WORKSPACE, agent.id);
+    expect(stopped.status).toBe("done");
+    expect((await store.getAgent("r1"))?.status).toBe("idle");
+
+    await expect(ops.stopAgent("resistance", "no-such")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
   it("resolves a HITL item once, recording who decided (idempotent)", async () => {
     const { hub, ops, store } = setup();
     const item: HitlItem = {

@@ -82,6 +82,14 @@ export class Orchestrator {
   // Pending no-operator-answer timers for open `question` HITLs, keyed by item id.
   private questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private seq = 0;
+  // Serializes runner acquisition (find-idle → mark-busy). The find and the busy
+  // write are separated by an `await`, so without this two concurrent acquires
+  // could both observe the SAME idle runner and hand it to two agents (TOCTOU
+  // double-booking). Every acquire chains onto this promise so the read-check-
+  // write runs atomically; a busy-marked runner is persisted before the next
+  // acquire's find() reads, so it can never be re-selected. Mirrors the Hub's
+  // per-hitl-id resolve mutex.
+  private acquireLock: Promise<unknown> = Promise.resolve();
   // One lazily-loaded provider backend per provider id (real backends are heavy).
   private providers = new Map<string, Promise<RunnerProvider>>();
   private moduleMap: ModuleMap = loadModuleMap(config.integrationRepo);
@@ -414,14 +422,29 @@ export class Orchestrator {
     if (!readiness.ok) throw new RunnerNotConfiguredError(readiness.reason!);
   }
 
+  /**
+   * Run a runner-acquisition critical section serially. Each call chains onto the
+   * previous one so the find-idle → mark-busy sequence inside `fn` is atomic with
+   * respect to every other acquisition, closing the double-booking TOCTOU. A
+   * prior failure never poisons the chain (we swallow it for the NEXT waiter; the
+   * failing call still rejects to its own caller).
+   */
+  private acquireExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.acquireLock.catch(() => undefined).then(fn);
+    this.acquireLock = run.catch(() => undefined);
+    return run;
+  }
+
   /** Acquire an idle runner in a workspace; mark it busy. Throws if none. */
-  private async acquireAgent(workspaceId: string): Promise<{ id: string; provider: TaskRun["provider"]; model: string }> {
-    const runners = await this.store.listAgents(workspaceId);
-    await this.assertRunnerReady(workspaceId, runners.length);
-    const idle = runners.find((r) => r.status === "idle");
-    if (!idle) throw new NoCapacityError();
-    await this.hub.upsertAgent({ ...idle, status: "busy", idleSince: null });
-    return { id: idle.id, provider: idle.provider, model: idle.model };
+  private acquireAgent(workspaceId: string): Promise<{ id: string; provider: TaskRun["provider"]; model: string }> {
+    return this.acquireExclusive(async () => {
+      const runners = await this.store.listAgents(workspaceId);
+      await this.assertRunnerReady(workspaceId, runners.length);
+      const idle = runners.find((r) => r.status === "idle");
+      if (!idle) throw new NoCapacityError();
+      await this.hub.upsertAgent({ ...idle, status: "busy", idleSince: null });
+      return { id: idle.id, provider: idle.provider, model: idle.model };
+    });
   }
 
   /**
@@ -431,22 +454,24 @@ export class Orchestrator {
    * inherits the requested provider/model. Still gated by assertRunnerReady, so
    * we never spin up a runner the executor has no credential for.
    */
-  private async acquireOrProvisionRunner(
+  private acquireOrProvisionRunner(
     workspaceId: string,
     provider: TaskRun["provider"],
     model: string,
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string }> {
-    const runners = await this.store.listAgents(workspaceId);
-    await this.assertRunnerReady(workspaceId, runners.length);
-    const idle = runners.find((r) => r.status === "idle");
-    if (idle) {
-      await this.hub.upsertAgent({ ...idle, status: "busy", idleSince: null });
-      return { id: idle.id, provider: idle.provider, model: idle.model };
-    }
-    const id = `runner-auto-${++this.seq}`;
-    const runner: Agent = { id, workspaceId, name: id, provider, model, status: "busy", idleSince: null };
-    await this.hub.upsertAgent(runner);
-    return { id, provider, model };
+    return this.acquireExclusive(async () => {
+      const runners = await this.store.listAgents(workspaceId);
+      await this.assertRunnerReady(workspaceId, runners.length);
+      const idle = runners.find((r) => r.status === "idle");
+      if (idle) {
+        await this.hub.upsertAgent({ ...idle, status: "busy", idleSince: null });
+        return { id: idle.id, provider: idle.provider, model: idle.model };
+      }
+      const id = `runner-auto-${++this.seq}`;
+      const runner: Agent = { id, workspaceId, name: id, provider, model, status: "busy", idleSince: null };
+      await this.hub.upsertAgent(runner);
+      return { id, provider, model };
+    });
   }
 
   /**
