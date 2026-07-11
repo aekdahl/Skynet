@@ -218,6 +218,11 @@ export const AuditRecord = z.object({
   operatorId: z.string(),
   at: Timestamp,
   payload: z.unknown(),
+  // Soft-hide flag, mirroring `Agent.archived`: an archived decision is kept in
+  // the trail but tucked into the view's Archived section. Optional for
+  // back-compat with records persisted before this field existed (treat
+  // undefined as not-archived).
+  archived: z.boolean().optional(),
 });
 export type AuditRecord = z.infer<typeof AuditRecord>;
 

@@ -67,6 +67,13 @@ export const ServerEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("task.deleted"), id: z.string() }),
   z.object({ type: z.literal("runner.upserted"), runner: Runner }),
   z.object({ type: z.literal("runner.deleted"), id: z.string() }),
+
+  // audit trail mutations — the decision audit isn't part of the snapshot, so
+  // these carry no payload beyond identity; clients re-fetch /api/audit on them.
+  z.object({ type: z.literal("audit.archived"), hitlId: z.string(), archived: z.boolean() }),
+  z.object({ type: z.literal("audit.deleted"), hitlId: z.string() }),
+  z.object({ type: z.literal("audit.archived-all") }),
+  z.object({ type: z.literal("audit.cleared") }),
 ]);
 export type ServerEvent = z.infer<typeof ServerEvent>;
 

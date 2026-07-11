@@ -50,6 +50,10 @@ export interface StoreState {
   providers: ProviderInfo[];
   connected: boolean;
   loaded: boolean;
+  // Bumps on any audit.* delta. The trail isn't held in the store (it's fetched
+  // over HTTP by the Audit view), so this is the signal the view watches to
+  // re-pull after an archive/delete/clear lands — from any operator or tab.
+  auditRev: number;
 }
 
 export interface Store extends StoreState {
@@ -85,6 +89,11 @@ export interface Store extends StoreState {
   createRunner: (provider: string, model: string, name?: string) => Promise<void>;
   updateRunner: (id: string, patch: { model?: string; name?: string }) => Promise<void>;
   deleteRunner: (id: string) => Promise<void>;
+  // audit trail maintenance — mirror archive (agent) + delete (project/task/runner)
+  archiveAudit: (hitlId: string, archived: boolean) => Promise<void>;
+  deleteAudit: (hitlId: string) => Promise<void>;
+  archiveAllAudit: () => Promise<void>;
+  clearAudit: () => Promise<void>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -181,6 +190,12 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
       return { ...state, fleet: upsert(state.fleet, ev.runner) };
     case "runner.deleted":
       return { ...state, fleet: state.fleet.filter((r) => r.id !== ev.id) };
+    case "audit.archived":
+    case "audit.deleted":
+    case "audit.archived-all":
+    case "audit.cleared":
+      // The trail lives outside the store — nudge the Audit view to re-fetch.
+      return { ...state, auditRev: state.auditRev + 1 };
     default:
       return state;
   }
@@ -197,6 +212,7 @@ const EMPTY: StoreState = {
   providers: [],
   connected: false,
   loaded: false,
+  auditRev: 0,
 };
 
 function fromSnapshot(snap: Snapshot): StoreState {
@@ -211,6 +227,9 @@ function fromSnapshot(snap: Snapshot): StoreState {
     providers: snap.providers,
     connected: true,
     loaded: true,
+    // A fresh snapshot supersedes any prior trail state; the Audit view re-pulls
+    // on mount anyway, so reset the revision rather than carrying it across.
+    auditRev: 0,
   };
 }
 
@@ -338,6 +357,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           }
           throw e;
         }
+      },
+      archiveAudit: async (hitlId, archived) => {
+        await api.archiveAudit(hitlId, archived);
+      },
+      deleteAudit: async (hitlId) => {
+        await api.deleteAudit(hitlId);
+      },
+      archiveAllAudit: async () => {
+        await api.archiveAllAudit();
+      },
+      clearAudit: async () => {
+        await api.clearAudit();
       },
     };
   }, [state]);

@@ -105,6 +105,23 @@ export class Operations {
   listAudit(ws: string): Promise<AuditRecord[]> {
     return this.store.listAudit(ws);
   }
+
+  // ── audit maintenance (archive/restore + delete, per-record and bulk) ─────
+  // Records are addressed by hitlId, scoped to the caller's workspace; the Hub
+  // persists-then-publishes so the audit view can refresh off the audit.* event.
+  archiveAudit(ws: string, hitlId: string, archived: boolean): Promise<void> {
+    return this.hub.archiveAudit(ws, hitlId, archived);
+  }
+  deleteAudit(ws: string, hitlId: string): Promise<void> {
+    return this.hub.deleteAudit(ws, hitlId);
+  }
+  archiveAllAudit(ws: string): Promise<void> {
+    return this.hub.archiveAllAudit(ws);
+  }
+  clearAudit(ws: string): Promise<void> {
+    return this.hub.clearAudit(ws);
+  }
+
   async getAgent(ws: string, agentId: string): Promise<Agent> {
     const agent = await this.store.getAgent(agentId);
     if (!agent || agent.workspaceId !== ws) throw new NotFoundError("Agent");

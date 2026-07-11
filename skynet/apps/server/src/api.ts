@@ -72,6 +72,27 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   // Decision audit trail — resolved HITL items, newest first (W8, Backend Brief §11).
   app.get("/api/audit", (req) => ops.listAudit(ws(req)));
 
+  // Audit maintenance — archive/restore and delete, per-record and bulk. Mirrors
+  // the archive (agent) and delete (project/task/runner) patterns. Records are
+  // addressed by hitlId (unique per resolved decision within a workspace).
+  // Bulk routes use distinct static paths so they don't collide with :hitlId.
+  app.post("/api/audit/archive-all", async (req) => {
+    await ops.archiveAllAudit(ws(req));
+    return { ok: true };
+  });
+  app.delete("/api/audit", async (req) => {
+    await ops.clearAudit(ws(req));
+    return { ok: true };
+  });
+  app.post<{ Params: { hitlId: string }; Body: { archived?: boolean } }>("/api/audit/:hitlId/archive", async (req) => {
+    await ops.archiveAudit(ws(req), req.params.hitlId, req.body?.archived ?? true);
+    return { ok: true };
+  });
+  app.delete<{ Params: { hitlId: string } }>("/api/audit/:hitlId", async (req) => {
+    await ops.deleteAudit(ws(req), req.params.hitlId);
+    return { ok: true };
+  });
+
   // ── HITL ───────────────────────────────────────────────────────────────
   app.post<{ Params: { id: string } }>("/api/hitl/:id/resolve", async (req, reply) => {
     const body = ResolveRequest.safeParse(req.body);

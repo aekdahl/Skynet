@@ -90,6 +90,10 @@ describe("contracts round-trip", () => {
       { type: "project.deleted", id: "payments" },
       { type: "task.deleted", id: "t-1" },
       { type: "runner.deleted", id: "runner-09" },
+      { type: "audit.archived", hitlId: "q1", archived: true },
+      { type: "audit.deleted", hitlId: "q1" },
+      { type: "audit.archived-all" },
+      { type: "audit.cleared" },
     ];
     for (const e of events) {
       expect(ServerEvent.parse(wire(e))).toEqual(e);

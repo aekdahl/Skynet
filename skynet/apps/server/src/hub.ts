@@ -200,4 +200,25 @@ export class Hub {
     await this.store.deleteRunner(id);
     if (existing) this.bus.publish(existing.workspaceId, { type: "runner.deleted", id });
   }
+
+  // ── audit trail maintenance ─────────────────────────────────────────────
+  // The trail isn't in the snapshot/WS state, so these events carry only
+  // identity — clients re-fetch /api/audit when one lands. Workspace is passed
+  // in (no getAudit(id)); callers resolve it from the request.
+  async archiveAudit(workspaceId: string, hitlId: string, archived: boolean): Promise<void> {
+    await this.store.setAuditArchived(workspaceId, hitlId, archived);
+    this.bus.publish(workspaceId, { type: "audit.archived", hitlId, archived });
+  }
+  async deleteAudit(workspaceId: string, hitlId: string): Promise<void> {
+    await this.store.deleteAudit(workspaceId, hitlId);
+    this.bus.publish(workspaceId, { type: "audit.deleted", hitlId });
+  }
+  async archiveAllAudit(workspaceId: string): Promise<void> {
+    await this.store.archiveAllAudit(workspaceId);
+    this.bus.publish(workspaceId, { type: "audit.archived-all" });
+  }
+  async clearAudit(workspaceId: string): Promise<void> {
+    await this.store.clearAudit(workspaceId);
+    this.bus.publish(workspaceId, { type: "audit.cleared" });
+  }
 }

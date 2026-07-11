@@ -84,6 +84,54 @@ function storeContract(name: string, make: () => Promise<Store>) {
       expect(trail.some((e) => e.workspaceId === "other-ws")).toBe(false);
     });
 
+    it("audit archive / delete is per-record and workspace-scoped", async () => {
+      const base: Omit<AuditRecord, "at" | "hitlId"> = {
+        workspaceId: DEFAULT_WORKSPACE, agentId: "billing", action: "approve",
+        operatorId: "op-1", payload: { k: 1 },
+      };
+      await store.recordAudit({ ...base, hitlId: "amx-1", at: 10_000 });
+      await store.recordAudit({ ...base, hitlId: "amx-2", at: 11_000 });
+      await store.recordAudit({ ...base, workspaceId: "amx-other", hitlId: "amx-3", at: 12_000 });
+
+      // archive is a soft flag — the record stays in the trail
+      await store.setAuditArchived(DEFAULT_WORKSPACE, "amx-1", true);
+      const afterArchive = await store.listAudit(DEFAULT_WORKSPACE);
+      expect(afterArchive.find((e) => e.hitlId === "amx-1")?.archived).toBe(true);
+      expect(afterArchive.find((e) => e.hitlId === "amx-2")?.archived ?? false).toBe(false);
+
+      // restore
+      await store.setAuditArchived(DEFAULT_WORKSPACE, "amx-1", false);
+      expect((await store.listAudit(DEFAULT_WORKSPACE)).find((e) => e.hitlId === "amx-1")?.archived).toBe(false);
+
+      // a foreign-workspace hitlId is not touched
+      await store.setAuditArchived(DEFAULT_WORKSPACE, "amx-3", true);
+      expect((await store.listAudit("amx-other")).find((e) => e.hitlId === "amx-3")?.archived ?? false).toBe(false);
+
+      // delete removes exactly one record, scoped to the workspace
+      await store.deleteAudit(DEFAULT_WORKSPACE, "amx-1");
+      const afterDelete = await store.listAudit(DEFAULT_WORKSPACE);
+      expect(afterDelete.some((e) => e.hitlId === "amx-1")).toBe(false);
+      expect(afterDelete.some((e) => e.hitlId === "amx-2")).toBe(true);
+      expect((await store.listAudit("amx-other")).some((e) => e.hitlId === "amx-3")).toBe(true);
+    });
+
+    it("audit archive-all / clear are workspace-scoped", async () => {
+      const base: Omit<AuditRecord, "at" | "hitlId" | "workspaceId"> = {
+        agentId: "billing", action: "approve", operatorId: "op-1", payload: {},
+      };
+      await store.recordAudit({ ...base, workspaceId: "amx-bulk", hitlId: "bulk-1", at: 20_000 });
+      await store.recordAudit({ ...base, workspaceId: "amx-bulk", hitlId: "bulk-2", at: 21_000 });
+      await store.recordAudit({ ...base, workspaceId: "amx-keep", hitlId: "keep-1", at: 22_000 });
+
+      await store.archiveAllAudit("amx-bulk");
+      expect((await store.listAudit("amx-bulk")).every((e) => e.archived === true)).toBe(true);
+      expect((await store.listAudit("amx-keep")).every((e) => e.archived ?? false)).toBe(false);
+
+      await store.clearAudit("amx-bulk");
+      expect(await store.listAudit("amx-bulk")).toEqual([]);
+      expect((await store.listAudit("amx-keep")).some((e) => e.hitlId === "keep-1")).toBe(true);
+    });
+
     it("put → get → delete round-trips a GitHub connection (one per workspace)", async () => {
       expect(await store.getGithubConnection("ws-gh")).toBeUndefined();
       const conn: GithubConnection = {

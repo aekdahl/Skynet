@@ -53,6 +53,19 @@ export async function fetchAudit(): Promise<AuditRecord[]> {
   const raw = await req<unknown>("GET", "/api/audit");
   return AuditRecord.array().parse(raw);
 }
+// Audit maintenance — archive/restore + delete, per-record and bulk.
+export function archiveAudit(hitlId: string, archived: boolean) {
+  return req<unknown>("POST", `/api/audit/${hitlId}/archive`, { archived });
+}
+export function deleteAudit(hitlId: string) {
+  return req<unknown>("DELETE", `/api/audit/${hitlId}`);
+}
+export function archiveAllAudit() {
+  return req<unknown>("POST", "/api/audit/archive-all");
+}
+export function clearAudit() {
+  return req<unknown>("DELETE", "/api/audit");
+}
 
 // HITL
 export function resolveHitl(
