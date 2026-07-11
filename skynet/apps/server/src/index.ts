@@ -20,6 +20,7 @@ import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./previ
 import { registerSecretsRoutes } from "./secrets/index.js";
 import { registerGithubRoutes, configureGithub } from "./github/index.js";
 import { registerEvalsRoutes } from "./evals/index.js";
+import { registerSimulationRoutes } from "./simulation/index.js";
 import { configureAuth } from "./auth.js";
 import { MemorySessionStore, type SessionStore } from "./auth/sessions.js";
 import { MemoryServiceTokenStore } from "./auth/service-tokens.js";
@@ -107,6 +108,8 @@ async function main() {
   // LLM-judged acceptance evals (real runs via the standalone evals/ suite,
   // spawned as a subprocess); /api auth hook applies.
   await registerEvalsRoutes(app);
+  // Behavioral LLM judge for Simulation journeys (in-process; /api auth applies).
+  registerSimulationRoutes(app);
   await registerWs(app, { store, bus, hub });
   // W5 live preview: mount the sandboxed /preview route, stamp visual/previewUrl
   // onto already-stored agents, then warm their builds. No-op unless PREVIEW != off.

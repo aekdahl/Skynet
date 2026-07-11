@@ -350,3 +350,29 @@ export async function runEval(id: string): Promise<{ jobId: string }> {
 export async function fetchEvalJob(jobId: string): Promise<EvalJob> {
   return req("GET", `/api/evals/jobs/${encodeURIComponent(jobId)}`);
 }
+
+// ─── Simulation behavioral judge ────────────────────────────────────────────
+export interface SimStepEvidence {
+  label: string;
+  ok: boolean;
+  skip?: boolean;
+  detail?: string;
+}
+export interface SimJudgeEvidence {
+  id: string;
+  name: string;
+  goal: string;
+  steps: SimStepEvidence[];
+  board: unknown;
+}
+export interface SimVerdict {
+  pass: boolean;
+  score: number;
+  summary: string;
+  findings: string[];
+}
+/** Ask the server's LLM judge to review a simulation journey's evidence. 503 if
+ *  no Claude credential is configured (surfaced to the caller as an ApiError). */
+export async function judgeSimulation(evidence: SimJudgeEvidence): Promise<SimVerdict> {
+  return req("POST", "/api/simulation/judge", evidence);
+}
