@@ -219,25 +219,27 @@ export const JOURNEYS: Journey[] = [
       if ("error" in res) return [step("agent spawned", false, res.error)];
       const runId = res.id;
       steps.push(step("agent running", true, runId));
-      // Lifecycle controls are resilient: if the server route is absent (404),
-      // report it as a failed step instead of aborting the journey.
-      const lifecycleUnavailable = (label: string, e: unknown): Step =>
+      // Pause/resume are SHIPPED routes. A 404 means the server build is stale or
+      // behind main — a real deploy regression, not a benign gap — so fail loudly
+      // (don't skip) to surface it immediately. Catch keeps the journey going so
+      // the fork leg still runs and its result is reported alongside the failure.
+      const lifecycleFailure = (label: string, e: unknown): Step =>
         e instanceof api.ApiError && e.status === 404
-          ? skipped(label, "lifecycle routes not deployed in this build")
+          ? step(label, false, "route missing (404) — server build is stale/behind main")
           : step(label, false, (e as Error).message);
       try {
         await api.pauseAgent(runId);
         s = await settle((sn) => sn.runs.find((a) => a.id === runId)?.status === "paused");
         steps.push(step("pause → status paused", s.runs.find((a) => a.id === runId)?.status === "paused"));
       } catch (e) {
-        steps.push(lifecycleUnavailable("pause → status paused", e));
+        steps.push(lifecycleFailure("pause → status paused", e));
       }
       try {
         await api.resumeAgent(runId);
         s = await settle((sn) => sn.runs.find((a) => a.id === runId)?.status === "running");
         steps.push(step("resume → status running", s.runs.find((a) => a.id === runId)?.status === "running"));
       } catch (e) {
-        steps.push(lifecycleUnavailable("resume → status running", e));
+        steps.push(lifecycleFailure("resume → status running", e));
       }
       const fork = await tryAssignFork(runId);
       steps.push(step("fork created (own branch, shares context)", fork.ok, fork.detail));
@@ -317,9 +319,13 @@ export const JOURNEYS: Journey[] = [
       try {
         await api.stopAgent(runId);
       } catch (e) {
-        if (e instanceof api.ApiError && e.status === 404)
-          return [...steps, skipped("stop frees the runner", "stop route not deployed in this build")];
-        throw e;
+        // stop is a SHIPPED route — a 404 is a stale/behind-main build, a real
+        // regression. Fail loudly instead of skipping so it can't hide.
+        const detail =
+          e instanceof api.ApiError && e.status === 404
+            ? "stop route missing (404) — server build is stale/behind main"
+            : (e as Error).message;
+        return [...steps, step("stop frees the runner", false, detail)];
       }
       s = await settle((sn) => sn.runs.find((a) => a.id === runId)?.status === "done");
       steps.push(step("agent stopped (status done)", s.runs.find((a) => a.id === runId)?.status === "done"));
