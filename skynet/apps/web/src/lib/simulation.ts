@@ -128,9 +128,18 @@ export const JOURNEYS: Journey[] = [
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
       await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-sup-${tag}` });
-      // A task that requires a SHELL command: edits are auto-allowed, but commands
-      // gate — so the real agent raises a genuine approval HITL (no mock/canned gate).
-      await api.createTask(p.id, "Run the shell command `node --version` and report the version string you get back.");
+      // A task that FORCES a shell command: edits are auto-allowed, but commands
+      // gate — so the real agent raises a genuine approval HITL (no mock/canned
+      // gate). The command's output must be unknowable without running it — a
+      // clock-derived value — so the agent can't satisfy the task from its own
+      // knowledge and skip the gated tool (as it did with `node --version`, which
+      // it could just answer, completing the run with no gate ever raised).
+      await api.createTask(
+        p.id,
+        "Run the shell command `echo skynet-gate-$(date +%s)` and report back the EXACT line it prints. " +
+          "The value depends on the current clock, so you cannot know it without actually running the " +
+          "command — do not guess or fabricate the output.",
+      );
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
       const auditBefore = (await api.fetchAudit()).length;
