@@ -51,4 +51,19 @@ describe("FileStore legacy HITL migration", () => {
     expect(ids).not.toContain("q-broken");
     expect(Snapshot.safeParse(snap).success).toBe(true);
   });
+
+  it("drops a task whose state the enum no longer allows (e.g. legacy 'assigned')", async () => {
+    // Real regression: persistent sim data held a task in state "assigned" after
+    // the state enum switched to the kanban pipeline — one such row blanked the app.
+    const good = { id: "t-good", workspaceId: DEFAULT_WORKSPACE, projectId: "p-1", text: "ok", state: "ongoing", runId: "r-1", order: 0 };
+    const legacy = { id: "t-assigned", workspaceId: DEFAULT_WORKSPACE, projectId: "p-1", text: "Sim: task", state: "assigned", runId: "r-2", order: 0 };
+    const path = join(mkdtempSync(join(tmpdir(), "file-store-migration-")), "skynet-data.json");
+    writeFileSync(path, JSON.stringify({ tasks: [good, legacy] }));
+
+    const snap = await FileStore.create(path).snapshot(DEFAULT_WORKSPACE);
+    const ids = snap.tasks.map((t) => t.id);
+    expect(ids).toContain("t-good");
+    expect(ids).not.toContain("t-assigned");
+    expect(Snapshot.safeParse(snap).success).toBe(true);
+  });
 });
