@@ -150,6 +150,11 @@ kbd {
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
   padding: calc(var(--card-pad) * 1.3); cursor: pointer;
   display: flex; flex-direction: column; gap: 16px;
+  /* Grid items default to min-width:auto and refuse to shrink below their
+     content — a long task line would then push the card past its 1fr track and
+     overflow the viewport. min-width:0 lets it shrink so the inner ellipsis
+     engages; overflow:hidden keeps any stray content inside the rounded border. */
+  min-width: 0; overflow: hidden;
   transition: border-color 0.15s ease, transform 0.15s ease;
 }
 .proj:hover { border-color: var(--faint); transform: translateY(-1px); }
@@ -164,8 +169,8 @@ kbd {
 }
 .shipped-pill { flex: none; font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
 .proj-goal { font-size: 13px; color: var(--muted); line-height: 1.55; text-wrap: pretty; margin-top: -6px; }
-.proj-agents { display: flex; flex-direction: column; gap: 9px; }
-.proj-agent { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.proj-runs { display: flex; flex-direction: column; gap: 9px; }
+.proj-agent { display: flex; align-items: center; gap: 10px; font-size: 13px; min-width: 0; }
 .proj-agent-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
 .proj-agent-state { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .proj-conflict { font-family: var(--font-mono); font-size: 11px; color: var(--danger); }
