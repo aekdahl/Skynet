@@ -9,6 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AuditRecord, Dependency, GithubConnection, Module } from "@skynet/shared";
+import { HitlItem } from "@skynet/shared";
 import { MemoryStore } from "./memory.js";
 
 interface HasId { id: string }
@@ -40,7 +41,21 @@ export class FileStore extends MemoryStore {
         if (Array.isArray(arr)) for (const x of arr) m.set((x as T).id, x as T);
       };
       fill(this.runs, d.runs);
-      fill(this.queue, d.queue);
+      // Migrate + validate persisted HITL items. The agentId→runId rename shipped
+      // without a data migration, so a store written before it has queue items
+      // with `agentId` and no `runId`. The Snapshot contract now REQUIRES runId,
+      // and the client parses the whole snapshot atomically — so a single legacy
+      // item fails validation and blanks the entire UI ("Connecting…" forever).
+      // Backfill runId from the legacy agentId, then drop anything that still
+      // fails the contract so one bad record can't wedge the app.
+      if (Array.isArray(d.queue)) {
+        for (const raw of d.queue as Record<string, unknown>[]) {
+          const item = raw.runId == null && typeof raw.agentId === "string" ? { ...raw, runId: raw.agentId } : raw;
+          const parsed = HitlItem.safeParse(item);
+          if (parsed.success) this.queue.set(parsed.data.id, parsed.data);
+          else console.warn(`[file-store] dropped unparseable HITL item ${String(raw.id ?? "(no id)")}: ${parsed.error.issues.map((i) => i.path.join(".")).join(", ")}`);
+        }
+      }
       fill(this.projects, d.projects);
       fill(this.tasks, d.tasks);
       fill(this.fleet, d.fleet);
