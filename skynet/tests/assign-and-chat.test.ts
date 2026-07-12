@@ -92,10 +92,10 @@ describe("DEF-003/005: assign is idempotent and refuses done tasks", () => {
     expect(second.id).toBe(first.id);
     expect(provider.started).toBe(1);
 
-    // The task still points at the original agent, still assigned.
+    // The task still points at the original run, still ongoing.
     const task = await store.getTask("t1");
     expect(task?.runId).toBe(first.id);
-    expect(task?.state).toBe("assigned");
+    expect(task?.state).toBe("ongoing");
 
     // Only one runner was ever marked busy; the second stayed idle.
     expect((await store.getAgent("r1"))?.status).toBe("busy");

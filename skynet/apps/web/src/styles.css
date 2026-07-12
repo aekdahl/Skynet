@@ -454,6 +454,17 @@ button.lg-arow:hover { background: var(--raised); }
   border-bottom-left-radius: 16px;
 }
 .sw-fork { color: var(--violet); }
+/* ── Subway v2: one line per project, tasks as stations ─────────────────── */
+.swb2 { padding: 30px 46px 34px; }
+.swb2-track { position: relative; height: 2px; }
+.swb2-line { position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--line); }
+.swb2-seg { position: absolute; top: 0; height: 2px; background: var(--line); }
+.swb2-seg-done { background: var(--ok); }
+.swb2-st { position: absolute; top: 0; transform: translate(-50%, -50%); width: 13px; height: 13px; padding: 0; background: none; border: none; cursor: pointer; }
+.swb2-st:disabled { cursor: default; }
+.swb2-dot { display: block; width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--line); background: var(--panel); }
+.swb2-label { position: absolute; left: 50%; top: 15px; transform: translateX(-50%); width: 92px; text-align: center; font-size: 10px; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.swb2-st-low .swb2-label { top: auto; bottom: 15px; }
 .fork-tag { color: var(--violet); }
 .btn-fork { margin-left: auto; color: var(--violet); }
 .btn-fork:hover { border-color: var(--violet); color: var(--violet); }
@@ -693,7 +704,26 @@ button.kb-done:hover { opacity: 1; }
 
 /* archive control on a board card */
 .kb-archive { flex: none; background: none; border: none; color: var(--faint); cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 5px; border-radius: 5px; opacity: 0; transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease; }
-.pa-card:hover .kb-archive, .kb-done:hover .kb-archive { opacity: 1; }
+.pa-card:hover .kb-archive, .kb-done:hover .kb-archive, .kb-card:hover .kb-archive { opacity: 1; }
+
+/* ── 6-stage pipeline board ─────────────────────────────────────────────── */
+/* Six columns don't fit a fluid grid — lay them out as fixed-width lanes that
+   scroll horizontally. (Overrides the 3-col grid on the base .kb-cols.) */
+.kb-cols-6 { display: flex; overflow-x: auto; padding-bottom: 6px; }
+.kb-cols-6 > .kb-col { flex: 0 0 236px; }
+.kb-card-top { display: flex; align-items: flex-start; gap: 8px; }
+.kb-card-top .kb-task { flex: 1; min-width: 0; }
+.kb-card[role="button"] { cursor: pointer; }
+.kb-card[role="button"]:hover { border-color: var(--border); }
+.kb-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.kb-move { background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; font-family: var(--font-ui); font-size: 11px; color: var(--text); cursor: pointer; }
+.kb-move:hover:not(:disabled) { border-color: var(--border); }
+.kb-move:disabled { color: var(--faint); cursor: not-allowed; }
+.kb-move-primary { color: var(--accent); border-color: color-mix(in oklch, var(--accent), transparent 55%); }
+.kb-autopick { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); cursor: pointer; }
+.kb-assessment { font-size: 11px; color: var(--muted); line-height: 1.4; border-left: 2px solid var(--line); padding-left: 8px; }
+.kb-flag { font-size: 11px; color: var(--warn); line-height: 1.4; }
+.proj-autonomy { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; margin-right: 4px; }
 .kb-archive:hover { color: var(--text); background: var(--raised); }
 
 /* project-level Archived section */

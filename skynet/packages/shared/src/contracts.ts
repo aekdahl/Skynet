@@ -36,7 +36,18 @@ export type Risk = z.infer<typeof Risk>;
 export const AgentStatus = z.enum(["busy", "idle"]);
 export type AgentStatus = z.infer<typeof AgentStatus>;
 
-export const TaskState = z.enum(["backlog", "assigned", "done"]);
+// The kanban pipeline. A task flows backlog → triage → todo → ongoing → review →
+// done. Agents autonomously handle backlog→triage (assessment) and, when a task
+// is flagged autoPick, todo→ongoing; a human gates triage→todo and can demote
+// done→triage/backlog. ongoing/review/done carry a linked TaskRun (see Task.runId).
+export const TaskState = z.enum([
+  "backlog",
+  "triage",
+  "todo",
+  "ongoing",
+  "review",
+  "done",
+]);
 export type TaskState = z.infer<typeof TaskState>;
 
 export const ProjectStatus = z.enum(["active", "paused", "done"]);
@@ -117,6 +128,9 @@ export const Project = z.object({
   goal: z.string(),
   runIds: z.array(z.string()),
   status: ProjectStatus,
+  // When true, the autonomy loop may act on this project's tasks (triage,
+  // auto-pick, auto-review). Off = the board is fully human-driven.
+  autonomy: z.boolean().default(true),
   // A project binds to a repository one of two ways (they can coexist):
   //  • repoPath — an absolute local folder the runs work in. When it contains
   //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
@@ -136,6 +150,16 @@ export const Task = z.object({
   text: z.string(),
   state: TaskState,
   runId: z.string().nullable().default(null),
+  // Marked for autonomous pickup: when true and an agent is idle, the autonomy
+  // loop starts this task (todo → ongoing) without a human. Off = waits for a
+  // human "Start now".
+  autoPick: z.boolean().default(false),
+  // Short agent-written assessment produced during autonomous triage
+  // (backlog → triage): clarity / rough effort / risks.
+  assessment: z.string().nullable().default(null),
+  // Set when an autonomous review couldn't confidently approve and flagged the
+  // task for a human (the task stays in `review`).
+  reviewFlaggedReason: z.string().nullable().default(null),
   // Manual backlog priority — lower sorts higher (top = next up). Operators
   // promote/demote to reorder; unset sorts as 0 (legacy tasks / pre-ordering).
   order: z.number().int().optional(),
@@ -266,6 +290,7 @@ export const UpdateProjectRequest = z.object({
   name: z.string().min(1).optional(),
   goal: z.string().optional(),
   status: ProjectStatus.optional(),
+  autonomy: z.boolean().optional(),
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
 });
@@ -274,11 +299,18 @@ export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 export const CreateTaskRequest = z.object({ text: z.string().min(1) });
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequest>;
 
+// Editing a task edits its text / auto-pick flag only. State changes go through
+// the guarded move endpoint (MoveTaskRequest) so illegal transitions are rejected.
 export const UpdateTaskRequest = z.object({
   text: z.string().min(1).optional(),
-  state: TaskState.optional(),
+  autoPick: z.boolean().optional(),
 });
 export type UpdateTaskRequest = z.infer<typeof UpdateTaskRequest>;
+
+// A human-initiated kanban move; the server validates it against the allowed
+// (human) transition map before applying.
+export const MoveTaskRequest = z.object({ to: TaskState });
+export type MoveTaskRequest = z.infer<typeof MoveTaskRequest>;
 
 export const ConfigureRunnerRequest = z.object({
   provider: ProviderId,

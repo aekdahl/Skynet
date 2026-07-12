@@ -1,5 +1,23 @@
+import { useState } from "react";
 import { JOURNEYS, type Step } from "../lib/simulation";
 import { useSimulation, type JudgeState } from "../lib/simulation-store";
+
+// Full plain-text outcome for one journey — deterministic steps + the LLM judge
+// verdict — so an operator can copy the whole result into a bug report / notes.
+function outcomeText(name: string, desc: string, result: string, steps: Step[] | undefined, verdict: JudgeState | undefined): string {
+  const out = [`# ${name}`, desc, `Result: ${result.toUpperCase()}`, "", "## Steps"];
+  for (const s of steps ?? []) {
+    out.push(`${s.ok ? "✓" : s.skip ? "—" : "✗"} ${s.label}${s.detail ? ` — ${s.detail}` : ""}`);
+  }
+  if (verdict?.phase === "done") {
+    const v = verdict.verdict;
+    out.push("", "## Judge", `${v.pass ? "PASS" : "FAIL"} · ${v.score.toFixed(1)}/5`, v.summary);
+    for (const f of v.findings) out.push(`- ${f}`);
+  } else if (verdict?.phase === "error") {
+    out.push("", "## Judge", `ERROR — ${verdict.error}`);
+  }
+  return out.join("\n");
+}
 
 // Persistent, human-simulating regression runner. Unlike Acceptance (which
 // cleans up after itself), each journey drives the core operator processes and
@@ -10,6 +28,12 @@ export function SimulationView() {
   const { status, results, verdicts, judgeAvailable, running, clearing, lastClear, runOne, runAll, judgeOne, judgeAll, clearData } =
     useSimulation();
   const anyResults = JOURNEYS.some((j) => results[j.id]);
+  const [copied, setCopied] = useState<string | null>(null);
+  const copy = (id: string, text: string) => {
+    void navigator.clipboard?.writeText(text);
+    setCopied(id);
+    setTimeout(() => setCopied((c) => (c === id ? null : c)), 1500);
+  };
 
   const passed = JOURNEYS.filter((j) => status[j.id] === "pass").length;
   const failed = JOURNEYS.filter((j) => status[j.id] === "fail").length;
@@ -87,6 +111,14 @@ export function SimulationView() {
                     {verdicts[j.id]?.phase === "judging" ? "Judging…" : "⚖ Judge"}
                   </button>
                 )}
+                <button
+                  className="btn btn-ghost"
+                  disabled={!steps || steps.length === 0}
+                  title="Copy the full outcome (steps + judge verdict)"
+                  onClick={() => copy(j.id, outcomeText(j.name, j.desc, st, steps, verdicts[j.id]))}
+                >
+                  {copied === j.id ? "Copied" : "⧉ Copy"}
+                </button>
                 <button className="btn btn-ghost" disabled={st === "running" || running} onClick={() => void runOne(j.id)}>
                   Run
                 </button>

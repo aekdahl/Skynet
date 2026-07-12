@@ -104,14 +104,14 @@ export const JOURNEYS: Journey[] = [
       const res = await tryAssign(p.id, task.id);
       const runId = "error" in res ? undefined : res.id;
       steps.push(step("agent spawned on assign (persists)", !!runId, "error" in res ? res.error : `${res.id} · ${res.status}`));
-      s = await settle((sn) => sn.tasks.find((t) => t.id === task.id)?.state === "assigned");
+      s = await settle((sn) => sn.tasks.find((t) => t.id === task.id)?.state === "ongoing");
       // Assign picks ANY idle runner (persistence may leave others around), so
       // check the agent's OWN runner, not the one this journey happened to add.
       const rid = "error" in res ? null : res.agentId;
       const runner = rid ? s.fleet.find((r) => r.id === rid) : undefined;
       steps.push(step("the agent's runner is busy", runner?.status === "busy", runner?.status ?? "no runner"));
       const t2 = s.tasks.find((t) => t.id === task.id);
-      steps.push(step("task moved to assigned", t2?.state === "assigned", t2?.state));
+      steps.push(step("task moved to ongoing", t2?.state === "ongoing", t2?.state));
       return steps;
     },
   },

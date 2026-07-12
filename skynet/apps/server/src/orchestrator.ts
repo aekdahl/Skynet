@@ -292,6 +292,12 @@ export class Orchestrator {
         const stat = await wt.diffStat(runId, live.baseRef);
         await this.freeRunner(live.agentId); // compute is done; awaiting review
         await this.hub.runStatus(runId, "review");
+        // The run produced a diff → its task enters the review column (a human or
+        // an autonomous reviewer resolves the diff HITL, which merges → done).
+        if (live.taskId) {
+          const task = await this.store.getTask(live.taskId);
+          if (task) await this.hub.upsertTask({ ...task, state: "review" });
+        }
         await this.raiseDiffReview(runId, stat);
         this.live.delete(runId);
         return;
@@ -570,7 +576,7 @@ export class Orchestrator {
     const provider = await this.getProvider(runner.provider);
 
     await this.hub.createRun(agent);
-    await this.hub.upsertTask({ ...task, state: "assigned", runId });
+    await this.hub.upsertTask({ ...task, state: "ongoing", runId });
     await this.hub.upsertProject({ ...project, runIds: [...project.runIds, runId] });
 
     // Git backend for this project's repo (local repoPath, else global) — drives
@@ -894,6 +900,113 @@ export class Orchestrator {
       await this.stopAgent(a.id, `reaped — no heartbeat for ${silentSec}s; runner freed`).catch(() => undefined);
       await this.hub.runStatus(a.id, "done").catch(() => undefined);
       await this.hub.runCompleted(a.id, a.branch).catch(() => undefined);
+    }
+  }
+
+  private autonomyTicking = false;
+
+  /**
+   * Autonomy loop: for each project with `autonomy` on and idle-agent capacity,
+   * do the low-risk moves so tasks flow without a human — triage a backlog item
+   * (agent writes an assessment), start an auto-pick todo task, and review a
+   * finished run (approve → merge → done, else flag it for a human). The human
+   * gate (triage → todo) is never crossed here. Bounded per project per tick.
+   */
+  async tickAutonomy(): Promise<void> {
+    if (!config.autonomyMs || config.autonomyMs <= 0) return;
+    if (this.autonomyTicking) return; // never overlap ticks
+    this.autonomyTicking = true;
+    try {
+      const allAgents = await this.store.listAllAgents().catch(() => [] as Agent[]);
+      const workspaces = [...new Set(allAgents.map((a) => a.workspaceId))];
+      for (const ws of workspaces) {
+        const projects = (await this.store.listProjects(ws)).filter((p) => p.autonomy);
+        if (projects.length === 0) continue;
+        const tasks = await this.store.listTasks(ws);
+        for (const p of projects) {
+          // Re-read idle capacity per project (an earlier project may have used it).
+          const idle = (await this.store.listAgents(ws)).filter((a) => a.status === "idle");
+          if (idle.length === 0) break; // no capacity left in this workspace
+          const mine = tasks.filter((t) => t.projectId === p.id);
+          try {
+            // 1) Triage one backlog item → assessment, move to triage.
+            const backlog = mine.find((t) => t.state === "backlog");
+            if (backlog) {
+              const assessment = await this.assessTask(ws, idle[0]!, backlog);
+              await this.hub.upsertTask({ ...backlog, state: "triage", assessment });
+            }
+            // 2) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
+            for (const t of mine.filter((t) => t.state === "todo" && t.autoPick)) {
+              try {
+                await this.assignTask(p.id, t.id);
+              } catch {
+                break; // out of capacity / no credential — stop pickups this tick
+              }
+            }
+            // 3) Review a finished run: approve → merge/done, else flag for a human.
+            const review = mine.find((t) => t.state === "review" && t.runId && !t.reviewFlaggedReason);
+            if (review?.runId) {
+              const open = (await this.store.listQueue(ws)).find(
+                (h) => h.runId === review.runId && !h.resolvedAt,
+              );
+              if (open) await this.autoReview(ws, idle[0]!, review, open);
+            }
+          } catch (err) {
+            await this.hub.runLog(p.id, `autonomy skipped ${p.id}: ${(err as Error).message}`).catch(() => undefined);
+          }
+        }
+      }
+    } finally {
+      this.autonomyTicking = false;
+    }
+  }
+
+  /** A short agent-written assessment for autonomous triage. Falls back to a
+   *  deterministic note when the provider has no stateless consult (e.g. mock). */
+  private async assessTask(ws: string, agent: Agent, task: Task): Promise<string> {
+    try {
+      const provider = await this.getProvider(agent.provider);
+      if (!provider.consult) return `Auto-triaged — "${task.text}" looks actionable; no blockers noted.`;
+      const apiKey = await secretService.resolve(ws, agent.provider);
+      const reply = await provider.consult(
+        { task: task.text, model: agent.model, cwd: config.runnerCwd, apiKey },
+        "You are triaging a backlog item for a coding project. In 2-3 short lines: is the ask clear, rough effort (S/M/L), and any risks? Be terse.",
+      );
+      return reply.trim().slice(0, 500) || `Auto-triaged — "${task.text}".`;
+    } catch (err) {
+      return `Auto-triaged — "${task.text}" (assessment unavailable: ${(err as Error).message}).`;
+    }
+  }
+
+  /** Autonomous review of a finished run's open HITL: approve → resolve (merges →
+   *  done via the normal path), else flag the task for a human. */
+  private async autoReview(ws: string, agent: Agent, task: Task, hitl: HitlItem): Promise<void> {
+    const run = task.runId ? await this.store.getRun(task.runId) : undefined;
+    let approve = true;
+    let reason = "auto-approved";
+    try {
+      const provider = await this.getProvider(agent.provider);
+      if (provider.consult && run) {
+        const apiKey = await secretService.resolve(ws, agent.provider);
+        const context = run.log.slice(-30).map((l) => l.line).join("\n").slice(-3000);
+        const reply = await provider.consult(
+          { task: task.text, model: agent.model, cwd: config.runnerCwd, apiKey, context },
+          `Review whether this run satisfies the task "${task.text}". Reply on the FIRST line with exactly APPROVE or FLAG, then a one-line reason.`,
+        );
+        const head = reply.trim().split("\n")[0]?.toUpperCase() ?? "";
+        approve = !head.includes("FLAG");
+        reason = reply.trim().slice(0, 300) || reason;
+      }
+    } catch (err) {
+      approve = false;
+      reason = `review consult failed: ${(err as Error).message}`;
+    }
+    if (approve) {
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "autonomy", at: now() };
+      const resolved = await this.hub.resolveHitl(hitl.id, resolution);
+      if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(hitl, resolution);
+    } else {
+      await this.hub.upsertTask({ ...task, reviewFlaggedReason: reason });
     }
   }
 

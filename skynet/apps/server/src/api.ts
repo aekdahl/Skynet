@@ -16,6 +16,7 @@ import {
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
+  MoveTaskRequest,
 } from "@skynet/shared";
 import { authenticate, type Principal } from "./auth.js";
 import { requiresAuth } from "./auth-guard.js";
@@ -219,6 +220,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/assign", async (req, reply) => {
     try {
       return await ops.assignTask(ws(req), req.params.id, req.params.tid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Human kanban move (validated against the allowed-transition map).
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/state", async (req, reply) => {
+    const body = MoveTaskRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.transitionTask(ws(req), req.params.tid, body.data.to, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }

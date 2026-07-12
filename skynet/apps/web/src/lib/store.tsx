@@ -75,17 +75,18 @@ export interface Store extends StoreState {
   createProject: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => Promise<void>;
   updateProject: (
     id: string,
-    patch: { name?: string; goal?: string; status?: string },
+    patch: { name?: string; goal?: string; status?: string; autonomy?: boolean },
   ) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   createTask: (projectId: string, text: string) => Promise<void>;
   updateTask: (
     projectId: string,
     taskId: string,
-    patch: { text?: string; state?: string },
+    patch: { text?: string; autoPick?: boolean },
   ) => Promise<void>;
   deleteTask: (projectId: string, taskId: string) => Promise<void>;
   moveTask: (projectId: string, taskId: string, direction: "up" | "down") => Promise<void>;
+  transitionTask: (projectId: string, taskId: string, to: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   createAgent: (provider: string, model: string, name?: string) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string }) => Promise<void>;
@@ -334,6 +335,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       moveTask: async (projectId, taskId, direction) => {
         await api.moveTask(projectId, taskId, direction);
+      },
+      transitionTask: async (projectId, taskId, to) => {
+        try {
+          await api.transitionTask(projectId, taskId, to);
+        } catch (e) {
+          if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't move the task."));
+        }
       },
       deleteTask: async (projectId, taskId) => {
         await api.deleteTask(projectId, taskId);

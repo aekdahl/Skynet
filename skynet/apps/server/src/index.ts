@@ -136,6 +136,15 @@ async function main() {
     setInterval(sweep, every).unref();
   }
 
+  // Autonomy loop: triage backlog items, start auto-pick tasks, review finished
+  // runs — for projects with autonomy on. Disabled when autonomyMs <= 0.
+  if (config.autonomyMs > 0) {
+    const tick = () =>
+      orchestrator.tickAutonomy().catch((err) => app.log.warn(`autonomy: ${(err as Error).message}`));
+    const every = Math.max(8_000, Math.min(config.autonomyMs, 60_000));
+    setInterval(tick, every).unref();
+  }
+
   await app.listen({ port: config.port, host: "0.0.0.0" });
   if (servingSpa) app.log.info("serving built web SPA from this server");
   if (bootstrap) {
