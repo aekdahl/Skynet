@@ -393,6 +393,375 @@ export const JOURNEYS: Journey[] = [
       ];
     },
   },
+  {
+    id: "run-pipeline-merge",
+    name: "Full run pipeline — edit → diff review → merge",
+    desc: "A REAL agent edits code in its isolated worktree and raises the end-of-run diff review; the operator approves and the branch integrates, completing the run. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: pipeline ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated end-to-end run", repoPath: `/tmp/skynet-sim/${tag}` });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-pipe-${tag}` });
+      // A concrete edit (file writes are auto-allowed, so no mid-run gate) —
+      // finishing routes the agent's branch to the end-of-run diff-review gate.
+      await api.createTask(
+        p.id,
+        `Create a file named \`skynet-sim.txt\` in the repo root containing exactly the single line \`pipeline-${tag}\`. Make no other changes.`,
+      );
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [...steps, step("agent spawned", false, res.error)];
+      const runId = res.id;
+      steps.push(step("real agent running", true, runId));
+      // Edit → finish → orchestrator commits → diff-review gate (kind "diff").
+      const gated = await settle(
+        (sn) => sn.queue.some((q) => q.runId === runId && q.kind === "diff" && q.resolvedAt == null),
+        120,
+        1000,
+      );
+      const diff = gated.queue.find((q) => q.runId === runId && q.kind === "diff" && q.resolvedAt == null);
+      steps.push(step("agent edited code and raised a diff-review gate", !!diff, diff ? diff.title : "no diff gate within ~120s"));
+      if (!diff) return steps;
+      await api.resolveHitl(diff.id, { action: "approve" });
+      const done = await settle((sn) => sn.runs.find((a) => a.id === runId)?.status === "done", 60, 1000);
+      const run = done.runs.find((a) => a.id === runId);
+      steps.push(step("approval integrated the branch — run done", run?.status === "done", `status ${run?.status ?? "gone"}${run?.branch ? ` · ${run.branch}` : ""}`));
+      const t2 = done.tasks.find((t) => t.id === task.id);
+      steps.push(step("owning task moved to done (persists)", t2?.state === "done", t2?.state));
+      return steps;
+    },
+  },
+  {
+    id: "gate-reject",
+    name: "Reject a gated action",
+    desc: "A REAL agent raises an approval gate on a shell command; the operator REJECTS it and the rejection lands in the audit trail. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: reject ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated rejection" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-rej-${tag}` });
+      await api.createTask(
+        p.id,
+        "Run the shell command `echo skynet-reject-$(date +%s)` and report the EXACT line it prints. The value depends on the clock, so you must actually run it — do not guess.",
+      );
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [...steps, step("agent spawned", false, res.error)];
+      const runId = res.id;
+      steps.push(step("real agent running", true, runId));
+      const gated = await settle((sn) => sn.queue.some((q) => q.runId === runId && q.resolvedAt == null), 60, 1000);
+      const open = gated.queue.find((q) => q.runId === runId && q.resolvedAt == null);
+      steps.push(step("real agent raised an approval gate", !!open, open ? `${open.kind}: ${open.title}` : "no gate within ~60s"));
+      if (!open) return steps;
+      await api.resolveHitl(open.id, { action: "reject" });
+      const trail = await settleAudit((a) => a.some((r) => r.hitlId === open.id));
+      const row = trail.find((r) => r.hitlId === open.id);
+      steps.push(step("rejection recorded in audit (action=reject)", row?.action === "reject", row ? `${row.action} · ${row.operatorId}` : "no audit row"));
+      return steps;
+    },
+  },
+  {
+    id: "gate-modify",
+    name: "Modify a gated action with guidance",
+    desc: "A REAL agent raises an approval gate; the operator resolves it with MODIFY + guidance, and the modification (with its guidance) lands in the audit trail. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: modify ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated modify-with-guidance" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-mod-${tag}` });
+      await api.createTask(
+        p.id,
+        "Run the shell command `echo skynet-modify-$(date +%s)` and report the EXACT line it prints. The value depends on the clock, so you must actually run it — do not guess.",
+      );
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [...steps, step("agent spawned", false, res.error)];
+      const runId = res.id;
+      steps.push(step("real agent running", true, runId));
+      const gated = await settle((sn) => sn.queue.some((q) => q.runId === runId && q.resolvedAt == null), 60, 1000);
+      const open = gated.queue.find((q) => q.runId === runId && q.resolvedAt == null);
+      steps.push(step("real agent raised an approval gate", !!open, open ? `${open.kind}: ${open.title}` : "no gate within ~60s"));
+      if (!open) return steps;
+      await api.resolveHitl(open.id, { action: "modify", guidance: "Prefer `node --version` — it's safer for this check." });
+      const trail = await settleAudit((a) => a.some((r) => r.hitlId === open.id));
+      const row = trail.find((r) => r.hitlId === open.id);
+      steps.push(step("modification recorded in audit (action=modify)", row?.action === "modify", row ? `${row.action} · ${row.operatorId}` : "no audit row"));
+      return steps;
+    },
+  },
+  {
+    id: "gate-question",
+    name: "Answer a structured question (AskUserQuestion)",
+    desc: "A REAL agent asks the operator to choose between options; the operator picks one via an option button and the decision lands in the audit trail. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: question ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated structured question" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-q-${tag}` });
+      await api.createTask(
+        p.id,
+        "Before doing ANY work, you MUST use your question tool (AskUserQuestion) to ask the operator to choose between two options: (A) proceed with the task, or (B) stop. Ask the question and wait for the operator's choice before doing anything else.",
+      );
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [...steps, step("agent spawned", false, res.error)];
+      const runId = res.id;
+      steps.push(step("real agent running", true, runId));
+      const gated = await settle(
+        (sn) => sn.queue.some((q) => q.runId === runId && q.kind === "question" && q.resolvedAt == null),
+        60,
+        1000,
+      );
+      const q = gated.queue.find((qq) => qq.runId === runId && qq.kind === "question" && qq.resolvedAt == null);
+      steps.push(step("real agent raised a structured question gate", !!q, q ? q.title : "no question within ~60s"));
+      if (!q) return steps;
+      await api.resolveHitl(q.id, { action: "option", optionIndex: 0 });
+      const trail = await settleAudit((a) => a.some((r) => r.hitlId === q.id));
+      const row = trail.find((r) => r.hitlId === q.id);
+      steps.push(step("operator's choice recorded in audit (action=option)", row?.action === "option", row ? `${row.action} · ${row.operatorId}` : "no audit row"));
+      return steps;
+    },
+  },
+  {
+    id: "no-over-gate",
+    name: "Trivial edits don't over-gate",
+    desc: "A REAL agent makes a trivial file edit and reaches the end-of-run review WITHOUT any mid-run approval gate — edits are auto-allowed (#98). Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: no-over-gate ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated trivial edit", repoPath: `/tmp/skynet-sim/${tag}` });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-triv-${tag}` });
+      await api.createTask(
+        p.id,
+        `Create a new file \`note-${tag}.txt\` containing the single comment line \`// touched by skynet ${tag}\`. This is a trivial edit — just write the file, nothing else.`,
+      );
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [...steps, step("agent spawned", false, res.error)];
+      const runId = res.id;
+      steps.push(step("real agent running", true, runId));
+      // Run until it finishes executing (review/done), noting whether ANY approval
+      // gate was raised for it along the way. A `diff` review at the end is fine —
+      // that's the whole-diff gate, not per-edit over-gating.
+      let sawApproval = false;
+      const finished = await settle(
+        (sn) => {
+          if (sn.queue.some((q) => q.runId === runId && q.kind === "approval")) sawApproval = true;
+          const st = sn.runs.find((a) => a.id === runId)?.status;
+          return st === "review" || st === "done";
+        },
+        90,
+        1000,
+      );
+      const st = finished.runs.find((a) => a.id === runId)?.status;
+      steps.push(step("run reached the end-of-run review", st === "review" || st === "done", st ?? "gone"));
+      steps.push(step("no mid-run approval gate for a trivial edit (#98)", !sawApproval, sawApproval ? "an approval gate was raised" : "none — edits auto-allowed"));
+      return steps;
+    },
+  },
+  {
+    id: "audit-maintenance",
+    name: "Audit maintenance — archive / restore / delete",
+    desc: "After a REAL decision hits the trail, the operator archives, restores, then deletes the record; the trail reflects each transition (#100). Persists (until deleted).",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: audit-maint ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated audit maintenance" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-audit-${tag}` });
+      await api.createTask(
+        p.id,
+        "Run the shell command `echo skynet-audit-$(date +%s)` and report the EXACT line it prints. The value depends on the clock, so you must actually run it — do not guess.",
+      );
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [...steps, step("agent spawned", false, res.error)];
+      const runId = res.id;
+      steps.push(step("real agent running", true, runId));
+      const gated = await settle((sn) => sn.queue.some((q) => q.runId === runId && q.resolvedAt == null), 60, 1000);
+      const open = gated.queue.find((q) => q.runId === runId && q.resolvedAt == null);
+      steps.push(step("real agent raised an approval gate", !!open, open ? `${open.kind}: ${open.title}` : "no gate within ~60s"));
+      if (!open) return steps;
+      const hitlId = open.id;
+      await api.resolveHitl(hitlId, { action: "approve" });
+      let t = await settleAudit((a) => a.some((r) => r.hitlId === hitlId));
+      steps.push(step("decision recorded in audit", t.some((r) => r.hitlId === hitlId)));
+      await api.archiveAudit(hitlId, true);
+      t = await settleAudit((a) => a.some((r) => r.hitlId === hitlId && r.archived === true));
+      steps.push(step("record archived (soft-hide)", t.some((r) => r.hitlId === hitlId && r.archived === true)));
+      await api.archiveAudit(hitlId, false);
+      t = await settleAudit((a) => a.some((r) => r.hitlId === hitlId && r.archived !== true));
+      steps.push(step("record restored", t.some((r) => r.hitlId === hitlId && r.archived !== true)));
+      await api.deleteAudit(hitlId);
+      t = await settleAudit((a) => !a.some((r) => r.hitlId === hitlId));
+      steps.push(step("record deleted from the trail", !t.some((r) => r.hitlId === hitlId)));
+      return steps;
+    },
+  },
+  {
+    id: "chat-after-finish",
+    name: "Chat with an agent after it finishes",
+    desc: "An operator messages a run that has finished executing (review/done) and still gets a reply — the session is reachable post-run. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: chat-after ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated post-run chat", repoPath: `/tmp/skynet-sim/${tag}` });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-chatf-${tag}` });
+      await api.createTask(p.id, `Create a file \`done-${tag}.txt\` with the single line \`finished-${tag}\`, then stop.`);
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [...steps, step("agent spawned", false, res.error)];
+      const runId = res.id;
+      steps.push(step("real agent running", true, runId));
+      const finished = await settle(
+        (sn) => {
+          const st = sn.runs.find((a) => a.id === runId)?.status;
+          return st === "review" || st === "done";
+        },
+        90,
+        1000,
+      );
+      const st = finished.runs.find((a) => a.id === runId)?.status;
+      steps.push(step("run finished executing (review/done)", st === "review" || st === "done", st ?? "gone"));
+      if (!(st === "review" || st === "done")) return steps;
+      try {
+        const { reply } = await api.sendAgentMessage(runId, "In one sentence, what did you change?");
+        steps.push(step("agent replied after finishing", reply.trim().length > 0, reply ? `“${reply.slice(0, 60)}”` : "empty"));
+      } catch (e) {
+        steps.push(step("agent replied after finishing", false, (e as Error).message));
+      }
+      return steps;
+    },
+  },
+  {
+    id: "live-telemetry",
+    name: "Live agent detail — plan, telemetry, log",
+    desc: "A REAL running agent surfaces plan steps (PLAN panel), a live activity log, and token/cost telemetry. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: telemetry ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated live detail", repoPath: `/tmp/skynet-sim/${tag}` });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-tele-${tag}` });
+      await api.createTask(
+        p.id,
+        `Explore this repository: list the files, read a couple of them, and write a short summary of what the project does to a new file \`summary-${tag}.md\`.`,
+      );
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [...steps, step("agent spawned", false, res.error)];
+      const runId = res.id;
+      steps.push(step("real agent running", true, runId));
+      const planned = await settle((sn) => (sn.runs.find((a) => a.id === runId)?.plan.length ?? 0) > 0, 60, 1000);
+      const planLen = planned.runs.find((a) => a.id === runId)?.plan.length ?? 0;
+      steps.push(step("PLAN panel has real steps", planLen > 0, `${planLen} steps`));
+      const logged = await settle((sn) => (sn.runs.find((a) => a.id === runId)?.log.length ?? 0) > 0, 60, 1000);
+      const logLen = logged.runs.find((a) => a.id === runId)?.log.length ?? 0;
+      steps.push(step("live activity log streaming", logLen > 0, `${logLen} lines`));
+      const metered = await settle(
+        (sn) => {
+          const u = sn.runs.find((a) => a.id === runId)?.usage;
+          return !!u && u.inputTokens + u.outputTokens > 0;
+        },
+        60,
+        1000,
+      );
+      const u = metered.runs.find((a) => a.id === runId)?.usage;
+      steps.push(step("token/cost telemetry reported", !!u && u.inputTokens + u.outputTokens > 0, u ? `${u.inputTokens}in/${u.outputTokens}out${u.costUsd != null ? ` · $${u.costUsd}` : ""}` : "no usage"));
+      return steps;
+    },
+  },
+  {
+    id: "retire-guard",
+    name: "Busy runner can't be retired; freed one can",
+    desc: "A runner executing a task can't be retired; after the run is stopped the runner returns to the idle pool and is retirable (#77). Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: retire ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated retire guard" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-ret-${tag}` });
+      // A shell command gates → the run parks in `waiting`, keeping its runner
+      // reliably busy while we test the retire guard (no race with a fast finish).
+      await api.createTask(p.id, "Run the shell command `echo skynet-hold-$(date +%s)` and report the exact line — you must actually run it.");
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [...steps, step("agent spawned", false, res.error)];
+      const runId = res.id;
+      const rid = res.agentId;
+      s = await settle((sn) => !!rid && sn.fleet.find((r) => r.id === rid)?.status === "busy");
+      steps.push(step("runner busy with the run", !!rid && s.fleet.find((r) => r.id === rid)?.status === "busy", rid ?? "no runner"));
+      // Retiring a busy runner must be refused (RunnerBusyError → 409).
+      let refused = false;
+      try {
+        await api.deleteAgent(rid!);
+      } catch (e) {
+        refused = e instanceof api.ApiError && e.status === 409;
+      }
+      steps.push(step("retire refused while busy (409)", refused));
+      // Stop the run → the runner returns to idle.
+      try {
+        await api.stopAgent(runId);
+      } catch (e) {
+        return [...steps, step("stop the run", false, (e as Error).message)];
+      }
+      s = await settle((sn) => !!rid && sn.fleet.find((r) => r.id === rid)?.status === "idle");
+      steps.push(step("runner freed to idle after stop", !!rid && s.fleet.find((r) => r.id === rid)?.status === "idle"));
+      // Now retire succeeds and the runner leaves the fleet.
+      let retired = false;
+      try {
+        await api.deleteAgent(rid!);
+        retired = true;
+      } catch {
+        retired = false;
+      }
+      const after = await settle((sn) => !sn.fleet.some((r) => r.id === rid));
+      steps.push(step("freed runner is retirable", retired && !after.fleet.some((r) => r.id === rid)));
+      return steps;
+    },
+  },
 ];
 
 /**
