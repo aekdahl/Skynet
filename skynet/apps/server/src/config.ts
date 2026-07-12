@@ -57,6 +57,11 @@ export const config = {
   // for longer than this (ms) is presumed dead — its runner is freed and the
   // agent terminated. Catches orphans left by a crash/restart. 0 disables.
   agentReapMs: Number(process.env.SKYNET_AGENT_REAP_MS ?? 180_000),
+  // How often the autonomy loop ticks (ms): for projects with `autonomy` on it
+  // triages backlog items, starts auto-pick todo tasks, and reviews finished
+  // runs. 0 disables it entirely (fully human-driven). Per-project autonomy
+  // flag still gates each project.
+  autonomyMs: Number(process.env.SKYNET_AUTONOMY_MS ?? 15_000),
   // Auto-resolve window for an unanswered `question` HITL (ms). When an agent
   // asks the operator something (e.g. "I can't reproduce this — what's the
   // stack trace?") and no one answers within this window, the question is
