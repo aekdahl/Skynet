@@ -364,8 +364,8 @@ export const JOURNEYS: Journey[] = [
   },
   {
     id: "connect-github-repo",
-    name: "Bind a project to a GitHub repo",
-    desc: "Operator creates a project in branch + PR mode (bound to a GitHub repo) instead of a local folder. Persists.",
+    name: "Record a GitHub repo binding (branch + PR mode)",
+    desc: "Operator creates a project in branch + PR mode — the repo binding is RECORDED on the project (control-plane only). Note: no real GitHub auth/clone/PR happens; a live round-trip needs a connected App/PAT (see #47). Persists.",
     run: async () => {
       const steps: Step[] = [];
       const tag = uid();
@@ -374,7 +374,10 @@ export const JOURNEYS: Journey[] = [
       const s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       steps.push(step("project created (persists on the board)", !!p, p?.id));
-      steps.push(step("bound to a GitHub repo (branch + PR mode)", p?.repo === "acme/sim-demo", p?.repo ?? "null"));
+      steps.push(step("repo binding recorded — branch + PR mode (control-plane only)", p?.repo === "acme/sim-demo", p?.repo ?? "null"));
+      // Deliberately NOT asserted: real GitHub connection/auth, repo existence, or
+      // a push/PR — those need a connected App or PAT (connected=false by default),
+      // which this keyless journey can't and shouldn't fake.
       return steps;
     },
   },
@@ -777,6 +780,9 @@ export async function captureEvidence(): Promise<Record<string, unknown>> {
   ]);
   const projects = s.projects.filter((p) => p.name.startsWith("Sim:"));
   const projectIds = new Set(projects.map((p) => p.id));
+  // Runs owned by Sim projects — used to scope openHitl to THIS suite's gates,
+  // so the judge never reasons about (or contradicts) the operator's real inbox.
+  const simRunIds = new Set(s.runs.filter((a) => projectIds.has(a.projectId)).map((a) => a.id));
   return {
     projects: projects.map((p) => ({
       id: p.id,
@@ -802,7 +808,9 @@ export async function captureEvidence(): Promise<Record<string, unknown>> {
     runners: s.fleet
       .filter((r) => (r.name ?? "").startsWith("sim-"))
       .map((r) => ({ id: r.id, name: r.name, status: r.status })),
-    openHitl: s.queue.filter((q) => q.resolvedAt == null).map((q) => ({ kind: q.kind, title: q.title })),
+    openHitl: s.queue
+      .filter((q) => q.resolvedAt == null && simRunIds.has(q.runId))
+      .map((q) => ({ kind: q.kind, title: q.title })),
     auditCount: audit.length,
     recentAudit: audit.slice(0, 6),
   };
