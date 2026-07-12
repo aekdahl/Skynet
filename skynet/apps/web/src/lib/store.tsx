@@ -249,8 +249,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .then((snap) => {
         if (!cancelled) setState(fromSnapshot(snap));
       })
-      .catch(() => {
-        /* the WS snapshot will seed state if the REST seed fails */
+      .catch((err) => {
+        // The WS snapshot will seed state if the REST seed fails — but never
+        // swallow silently: a schema/contract drift makes fetchSnapshot reject
+        // here, and without a log the app just hangs on "Connecting…" with no
+        // clue why. Surface it so the next drift is diagnosable in seconds.
+        console.error("[store] initial snapshot fetch failed (will retry via WS):", err);
       });
 
     const disconnect = api.connect((msg) => {
