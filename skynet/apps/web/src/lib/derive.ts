@@ -8,6 +8,7 @@ import type {
   ProviderInfo,
   Agent,
   Task,
+  TaskState,
 } from "@skynet/shared";
 
 // ─── time formatting ───────────────────────────────────────────────────────
@@ -143,6 +144,24 @@ export function conflicts(runs: TaskRun[]): Array<[string, TaskRun[]]> {
 }
 
 // ─── status / kind metadata ──────────────────────────────────────────────────
+
+// The kanban pipeline, in column order, with per-state label + accent.
+export const TASK_STATES = ["backlog", "triage", "todo", "ongoing", "review", "done"] as const;
+export const TASK_STATE_META: Record<TaskState, { label: string; color: string }> = {
+  backlog: { label: "BACKLOG", color: "var(--muted)" },
+  triage: { label: "TRIAGE", color: "var(--info)" },
+  todo: { label: "TODO", color: "var(--accent)" },
+  ongoing: { label: "ONGOING", color: "var(--ok)" },
+  review: { label: "REVIEW", color: "var(--warn)" },
+  done: { label: "DONE", color: "var(--muted)" },
+};
+
+/** A project's tasks in one pipeline state, ordered by manual priority. */
+export function tasksInState(tasks: Task[], projectId: string, state: TaskState): Task[] {
+  return tasks
+    .filter((t) => t.projectId === projectId && t.state === state)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
+}
 
 export const STATUS_META: Record<TaskRunStatus, { label: string; color: string }> = {
   running: { label: "RUNNING", color: "var(--ok)" },

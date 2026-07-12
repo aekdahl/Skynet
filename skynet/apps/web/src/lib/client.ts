@@ -159,7 +159,7 @@ export function createProject(body: { name: string; goal: string; repoPath?: str
 }
 export function updateProject(
   id: string,
-  body: { name?: string; goal?: string; status?: string; repoPath?: string | null },
+  body: { name?: string; goal?: string; status?: string; autonomy?: boolean; repoPath?: string | null },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
 }
@@ -174,7 +174,7 @@ export function createTask(projectId: string, text: string) {
 export function updateTask(
   projectId: string,
   taskId: string,
-  body: { text?: string; state?: string },
+  body: { text?: string; autoPick?: boolean },
 ) {
   return req<unknown>("PATCH", `/api/projects/${projectId}/tasks/${taskId}`, body);
 }
@@ -183,6 +183,10 @@ export function deleteTask(projectId: string, taskId: string) {
 }
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
+}
+// Guarded kanban move (backlog→triage, triage→todo, review→done, demote, …).
+export function transitionTask(projectId: string, taskId: string, to: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/state`, { to });
 }
 export function moveTask(projectId: string, taskId: string, direction: "up" | "down") {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/move`, { direction });

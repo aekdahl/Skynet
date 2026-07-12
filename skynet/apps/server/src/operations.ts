@@ -53,6 +53,26 @@ export class RunnerBusyError extends Error {
   }
 }
 
+/** A kanban move that isn't a legal human transition. 400. */
+export class InvalidTransitionError extends Error {
+  constructor(from: string, to: string) {
+    super(`Can't move a task from "${from}" to "${to}".`);
+    this.name = "InvalidTransitionError";
+  }
+}
+
+// Legal HUMAN kanban moves (the autonomy loop uses its own paths). `ongoing` is
+// run-driven — a human uses Stop on the run, or abandons back to `todo` (which
+// stops+detaches the run). `todo → ongoing` is "Start now" (assignTask), not here.
+const HUMAN_TRANSITIONS: Record<Task["state"], Task["state"][]> = {
+  backlog: ["triage"],
+  triage: ["todo", "backlog"],
+  todo: ["triage", "backlog"],
+  ongoing: ["todo"],
+  review: ["done", "todo"],
+  done: ["triage", "backlog"],
+};
+
 export interface OperationsDeps {
   store: Store;
   hub: Hub;
@@ -202,6 +222,7 @@ export class Operations {
       goal: input.goal,
       runIds: [],
       status: "active",
+      autonomy: true,
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo: input.repo,
@@ -244,6 +265,9 @@ export class Operations {
       text: input.text,
       state: "backlog",
       runId: null,
+      autoPick: false,
+      assessment: null,
+      reviewFlaggedReason: null,
       order: inProject.length,
     };
     return this.hub.upsertTask(task);
@@ -286,6 +310,51 @@ export class Operations {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
     return this.orchestrator.assignTask(projectId, tid);
+  }
+
+  /**
+   * Human-driven kanban move, validated against HUMAN_TRANSITIONS. Handles the
+   * gated edges: review→done approves an open diff HITL (merges → done) when one
+   * exists; abandoning `ongoing`/`review` or demoting a `done` task stops+archives
+   * its run and detaches it so the task returns clean.
+   */
+  async transitionTask(ws: string, tid: string, to: Task["state"], operatorId: string): Promise<Task> {
+    const task = await this.store.getTask(tid);
+    if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    if (task.state === to) return task; // no-op
+    if (!(HUMAN_TRANSITIONS[task.state] ?? []).includes(to)) {
+      throw new InvalidTransitionError(task.state, to);
+    }
+
+    // review → done: if the run still has an open review HITL, approve it — that
+    // merges the branch and marks the task done through the normal path.
+    if (task.state === "review" && to === "done" && task.runId) {
+      const open = (await this.store.listQueue(ws)).find(
+        (h) => h.runId === task.runId && !h.resolvedAt,
+      );
+      if (open) {
+        await this.resolveHitl(ws, open.id, { action: "approve" }, operatorId);
+        return (await this.store.getTask(tid)) ?? task;
+      }
+    }
+
+    // Moves that abandon in-flight work (ongoing/review → todo, or demoting a
+    // done task) stop + archive the run and detach it, so the task starts fresh.
+    const abandonsRun =
+      !!task.runId &&
+      ((task.state === "ongoing" || task.state === "review") && to === "todo" ||
+        (task.state === "done" && (to === "triage" || to === "backlog")));
+    if (abandonsRun && task.runId) {
+      await this.orchestrator.stopAgent(task.runId, "task moved off the run by an operator").catch(() => undefined);
+      await this.hub.setRunArchived(task.runId, true).catch(() => undefined);
+    }
+
+    return this.hub.upsertTask({
+      ...task,
+      state: to,
+      ...(abandonsRun ? { runId: null } : {}),
+      reviewFlaggedReason: null,
+    });
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────

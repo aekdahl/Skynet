@@ -292,6 +292,12 @@ export class Orchestrator {
         const stat = await wt.diffStat(runId, live.baseRef);
         await this.freeRunner(live.agentId); // compute is done; awaiting review
         await this.hub.runStatus(runId, "review");
+        // The run produced a diff → its task enters the review column (a human or
+        // an autonomous reviewer resolves the diff HITL, which merges → done).
+        if (live.taskId) {
+          const task = await this.store.getTask(live.taskId);
+          if (task) await this.hub.upsertTask({ ...task, state: "review" });
+        }
         await this.raiseDiffReview(runId, stat);
         this.live.delete(runId);
         return;
@@ -570,7 +576,7 @@ export class Orchestrator {
     const provider = await this.getProvider(runner.provider);
 
     await this.hub.createRun(agent);
-    await this.hub.upsertTask({ ...task, state: "assigned", runId });
+    await this.hub.upsertTask({ ...task, state: "ongoing", runId });
     await this.hub.upsertProject({ ...project, runIds: [...project.runIds, runId] });
 
     // Git backend for this project's repo (local repoPath, else global) — drives
