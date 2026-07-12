@@ -12,6 +12,8 @@ const PROVIDER_ENV_KEY: Record<ProviderId, string | undefined> = {
   gemini: process.env.GEMINI_API_KEY,
   cursor: process.env.CURSOR_API_KEY,
   copilot: process.env.GITHUB_TOKEN,
+  // Hermes is provider-agnostic; its recommended key is OpenRouter's.
+  hermes: process.env.OPENROUTER_API_KEY,
 };
 
 export const PROVIDERS = DEFAULT_PROVIDERS.map((p) => ({

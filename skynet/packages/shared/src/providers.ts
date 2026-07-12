@@ -11,6 +11,7 @@ export const DEFAULT_PROVIDERS: ProviderInfo[] = [
   { id: "gemini", name: "Gemini CLI", glyph: "✦", color: "#5EA2FF", models: ["gemini-3-pro", "gemini-3-flash"] },
   { id: "cursor", name: "Cursor Agent", glyph: "▎", color: "#A78BFA", models: ["composer-2"] },
   { id: "copilot", name: "GitHub Copilot", glyph: "◈", color: "#8B93A5", models: ["copilot-workspace"] },
+  { id: "hermes", name: "Hermes Agent", glyph: "⬡", color: "#E0B341", models: ["anthropic/claude-sonnet-4.6", "openai/gpt-5.2", "nousresearch/hermes-4-405b"] },
 ];
 
 /**

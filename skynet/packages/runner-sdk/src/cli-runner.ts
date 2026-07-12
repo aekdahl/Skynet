@@ -14,6 +14,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution, Usage } from "@skynet/shared";
+import { wrapForSandbox } from "./sandbox.js";
 import type {
   HitlRaise,
   RunnerEvents,
@@ -120,10 +121,15 @@ class CliRunnerHandle implements RunnerHandle {
   }
 
   private launch() {
+    const cwd = this.spec.cwd ?? process.cwd();
+    // Opt-in OS write-confinement (SKYNET_RUNNER_SANDBOX). No-op unless enabled
+    // and a sandbox tool is available; otherwise runs the vendor bin directly.
+    const wrapped = wrapForSandbox(this.vendor.bin, this.vendor.buildArgs(this.spec), { cwd });
+    if (wrapped.note) this.events.onLog(this.runId, wrapped.note);
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn(this.vendor.bin, this.vendor.buildArgs(this.spec), {
-        cwd: this.spec.cwd ?? process.cwd(),
+      child = spawn(wrapped.bin, wrapped.args, {
+        cwd,
         env: { ...process.env, ...(this.vendor.env?.(this.spec) ?? {}) },
         // Default stdio is "pipe" for all three streams.
       });
