@@ -253,6 +253,12 @@ export const JOURNEYS: Journey[] = [
     run: async () => {
       const steps: Step[] = [];
       const provider = "gemini"; // unlikely env-backed, so the flip is unambiguous
+      // If the provider is already available (env-backed), the key→flip can't be
+      // proven — skip rather than pass trivially.
+      const preAvail = (await api.fetchSnapshot()).providers.find((p) => p.id === provider)?.available;
+      if (preAvail === true) {
+        return [skipped("vendor gated by a key (not env)", `${provider} already env-backed — can't prove the key-gated flip`)];
+      }
       try {
         await api.setSecret(provider, `sim-key-${uid()}42`);
       } catch (e) {

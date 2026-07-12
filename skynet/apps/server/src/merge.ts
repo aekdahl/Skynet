@@ -10,6 +10,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { assertApprovable, CommandDeniedError, runBounded } from "./command-safety.js";
 
 const exec = promisify(execFile);
 
@@ -86,12 +87,29 @@ export class MergeEngine {
     }
 
     if (this.checkCmd) {
+      // Run the operator-configured check under hard limits (timeout, output cap,
+      // confined cwd, no inherited stdio) and refuse denylisted commands outright.
+      // Env is preserved (an operator-set check needs the real toolchain on PATH),
+      // unlike agent commands which are gated + denied at approve time.
+      const bounce = async (output: string) => {
+        await this.git("reset", "--hard", "HEAD~1").catch(() => undefined); // undo the merge commit
+        await this.cb.onChecksFailed(req, output);
+      };
       try {
-        await exec("/bin/sh", ["-c", this.checkCmd], { cwd: this.repo });
+        assertApprovable(this.checkCmd);
       } catch (err) {
-        // Undo the merge commit; bounce back to the agent.
-        await this.git("reset", "--hard", "HEAD~1").catch(() => undefined);
-        await this.cb.onChecksFailed(req, (err as { stderr?: string }).stderr ?? "checks failed");
+        if (err instanceof CommandDeniedError) {
+          await bounce(`check command refused by safety policy: ${err.message}`);
+          return;
+        }
+        throw err;
+      }
+      const res = await runBounded(this.checkCmd, {
+        cwd: this.repo,
+        env: process.env as Record<string, string>,
+      });
+      if (res.code !== 0 || res.timedOut) {
+        await bounce(res.timedOut ? "checks timed out" : res.stderr || res.stdout || "checks failed");
         return;
       }
     }

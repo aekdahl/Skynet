@@ -13,7 +13,7 @@
 // works both standalone and nested inside a Claude Code session (where a raw
 // fetch to the API has no egress). Distinct from evals/judge.ts, which grades a
 // real agent's CODE diff against a rubric — this grades SYSTEM BEHAVIOR across a
-// multi-step operator journey run on the mock runner.
+// multi-step operator journey whose runs execute on real, key-backed runners.
 
 import { oneShotText } from "@skynet/runner-sdk/claude";
 

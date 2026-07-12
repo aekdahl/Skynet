@@ -30,6 +30,7 @@ import type {
 } from "@skynet/shared";
 import { modelValidForProvider } from "@skynet/shared";
 import { resolve as resolvePath } from "node:path";
+import { assertApprovable, CommandDeniedError } from "./command-safety.js";
 import { now } from "./config.js";
 import { isGitRepo } from "./fs-browse.js";
 import type { Hub } from "./hub.js";
@@ -133,6 +134,13 @@ export class Operations {
   async resolveHitl(ws: string, hitlId: string, input: ResolveRequest, operatorId: string): Promise<HitlItem> {
     const item = await this.store.getHitl(hitlId);
     if (!item || item.workspaceId !== ws) throw new NotFoundError("HITL item");
+    // A catastrophic command can NEVER be approved, even if an operator
+    // fat-fingers "approve" on the gate — re-validate the command against the
+    // denylist server-side and refuse before recording any decision. GATE-risk
+    // commands still approve; only hard-DENY patterns (e.g. `rm -rf /`) throw.
+    if (input.action === "approve" && item.kind === "approval" && item.command) {
+      assertApprovable(item.command); // throws CommandDeniedError → 422, nothing recorded
+    }
     const resolution: Resolution = {
       action: input.action,
       optionIndex: input.optionIndex ?? null,

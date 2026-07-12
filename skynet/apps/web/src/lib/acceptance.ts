@@ -100,11 +100,23 @@ export const SCENARIOS: Scenario[] = [
       steps.push(step("task created in project", !!task, task?.id));
       let runId: string | undefined;
       if (task) {
-        await swallow(api.assignTask(p.id, task.id));
-        s = await settle((sn) => sn.runs.some((a) => a.projectId === p.id));
-        const agent = s.runs.find((a) => a.projectId === p.id);
-        runId = agent?.id;
-        steps.push(step("assign created an agent", !!agent, agent && `${agent.id} · ${agent.status}`));
+        try {
+          const run = await api.assignTask(p.id, task.id);
+          runId = run.id;
+          steps.push(step("assign created an agent", true, `${run.id} · ${run.status}`));
+        } catch (e) {
+          // Keyless (no provider credential) the orchestrator refuses to spawn —
+          // RunnerNotConfigured (409). That's expected for this control-plane,
+          // key-free suite; real agent spawn is covered by the Simulation suite.
+          // Skip cleanly rather than failing (the mock runner that used to spawn
+          // here keyless was removed in #108).
+          const st = e instanceof api.ApiError ? e.status : 0;
+          steps.push(
+            st === 409
+              ? skipped("assign created an agent", "no provider credential — agent spawn is covered by Simulation")
+              : step("assign created an agent", false, (e as Error).message),
+          );
+        }
       }
       if (runId) {
         await api.archiveAgent(runId, true);
@@ -126,6 +138,13 @@ export const SCENARIOS: Scenario[] = [
     run: async () => {
       const steps: Step[] = [];
       const provider = "gemini"; // unlikely to be env-backed, so the flip is unambiguous
+      // If the provider is ALREADY available (an env var backs it), the key→flip
+      // can't be proven — "becomes available" would pass regardless. Skip so this
+      // is never a false positive.
+      const preAvail = (await api.fetchSnapshot()).providers.find((p) => p.id === provider)?.available;
+      if (preAvail === true) {
+        return [skipped("vendor gated by a key (not env)", `${provider} is already env-backed here — can't prove the key-gated flip`)];
+      }
       try {
         await api.setSecret(provider, `uat-key-${uid()}90`);
       } catch (e) {
@@ -147,10 +166,15 @@ export const SCENARIOS: Scenario[] = [
     desc: "Resolving an open approval records a decision in the audit trail.",
     run: async () => {
       const steps: Step[] = [];
+      // This keyless suite can't spawn a real agent to RAISE a gate (that needs a
+      // provider credential), so it can only exercise the resolve→audit path when
+      // a gate already happens to be open. The self-contained version — spawn a
+      // real agent, make it raise a gate, resolve it, assert the audit — lives in
+      // the Simulation suite (supervise / audit-maintenance). Skip when none open.
       const s = await api.fetchSnapshot();
       const open = s.queue.find((q) => q.resolvedAt == null);
       if (!open) {
-        steps.push(skipped("an open approval to resolve", "none open — assign a task (runs raise gates) or load seed data, then re-run"));
+        steps.push(skipped("an open approval to resolve", "none open (keyless) — the self-contained version is the Simulation 'Supervise' + 'Audit maintenance' journeys"));
         return steps;
       }
       const before = (await api.fetchAudit()).length;
@@ -231,6 +255,10 @@ export const SCENARIOS: Scenario[] = [
     name: "Project binds to a folder or a GitHub repo",
     desc: 'Backs “point it at any local folder — or connect a GitHub repo.” Both connect modes are recorded.',
     run: async () => {
+      // Control-plane only: verifies both connect modes are RECORDED on the
+      // project (round-trip through the store). It does NOT exercise a real
+      // worktree checkout or GitHub connection — those need a credential and are
+      // covered by the Simulation suite + docs/qa/llm-e2e.
       const steps: Step[] = [];
       const localName = `UAT: local ${uid()}`;
       await api.createProject({ name: localName, goal: "acceptance", repoPath: "/tmp/uat-acceptance-repo" });

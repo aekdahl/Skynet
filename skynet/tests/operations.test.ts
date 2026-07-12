@@ -164,4 +164,26 @@ describe("Operations — workspace-scoped domain layer", () => {
     // A HITL item in another workspace is invisible here.
     await expect(ops.resolveHitl("resistance", "q1", { action: "approve" }, "kyle")).rejects.toBeInstanceOf(NotFoundError);
   });
+
+  it("refuses to approve a denylisted command — a fat-finger 'approve' can't run rm -rf /", async () => {
+    const { hub, ops, store } = setup();
+    const danger: HitlItem = {
+      id: "cmd-1", workspaceId: DEFAULT_WORKSPACE, runId: "a1", kind: "approval",
+      title: "Approve: Bash", why: "agent requested a shell command", risk: "high",
+      raisedAt: 0, resolvedAt: null, resolution: null,
+      command: "rm -rf /", options: null, recommended: null, steps: null, diff: null,
+    };
+    await hub.raiseHitl(danger);
+    // The catastrophic command is refused at resolve time, even on explicit approve.
+    await expect(ops.resolveHitl(DEFAULT_WORKSPACE, "cmd-1", { action: "approve" }, "jordan")).rejects.toThrow();
+    // And nothing is recorded: the gate stays open, the audit trail has no row.
+    expect((await store.getHitl("cmd-1"))?.resolvedAt).toBeNull();
+    expect((await store.listAudit(DEFAULT_WORKSPACE)).filter((a) => a.hitlId === "cmd-1")).toHaveLength(0);
+
+    // A destructive-but-legitimate command (gate-risk, not deny) still approves.
+    const ok: HitlItem = { ...danger, id: "cmd-2", command: "rm -rf ./build" };
+    await hub.raiseHitl(ok);
+    const resolved = await ops.resolveHitl(DEFAULT_WORKSPACE, "cmd-2", { action: "approve" }, "jordan");
+    expect(resolved.resolution?.action).toBe("approve");
+  });
 });
