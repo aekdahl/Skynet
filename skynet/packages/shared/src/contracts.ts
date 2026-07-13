@@ -255,6 +255,25 @@ export const AuditRecord = z.object({
 export type AuditRecord = z.infer<typeof AuditRecord>;
 
 /** Provider catalog entry — drives glyphs, colors, and the model dropdown. */
+// What a provider needs before it can run — surfaced in the UI (Settings +
+// create-agent) so an operator knows whether it wants a CLI on PATH, a login,
+// and/or which credential. Static per provider; assembled server-side.
+export const ProviderRequirements = z.object({
+  // "sdk" runs in-process (no external binary); "cli" spawns a vendor binary.
+  runtime: z.enum(["sdk", "cli"]),
+  // The CLI binary name (cli runtime only), else null.
+  bin: z.string().nullable().default(null),
+  // Credential env vars that authenticate it, most-preferred first (may be empty
+  // for a pure CLI-login provider).
+  authEnvVars: z.array(z.string()).default([]),
+  // True when it can authenticate via its own CLI login instead of a key/token.
+  cliLogin: z.boolean().default(false),
+  // One-line "how to install / set up" hint, and a docs link if we have one.
+  installHint: z.string().nullable().default(null),
+  docsUrl: z.string().nullable().default(null),
+});
+export type ProviderRequirements = z.infer<typeof ProviderRequirements>;
+
 export const ProviderInfo = z.object({
   id: ProviderId,
   name: z.string(),
@@ -264,6 +283,11 @@ export const ProviderInfo = z.object({
   // Whether a credential is configured server-side. Undefined = treat as
   // available (back-compat); the create-agent UI disables providers set to false.
   available: z.boolean().optional(),
+  // What it needs to run (static descriptor). Optional for back-compat.
+  requirements: ProviderRequirements.optional(),
+  // Live detection: is the required CLI binary on the server's PATH? null = not
+  // applicable (in-process SDK provider); undefined = not probed.
+  binOnPath: z.boolean().nullable().optional(),
 });
 export type ProviderInfo = z.infer<typeof ProviderInfo>;
 

@@ -5,6 +5,7 @@
 // that aren't available. This is live configuration, not demo data.
 
 import { DEFAULT_PROVIDERS, type ProviderId } from "@skynet/shared";
+import { withProviderRequirements } from "../provider-requirements.js";
 
 const PROVIDER_ENV_KEY: Record<ProviderId, string | undefined> = {
   claude: process.env.ANTHROPIC_API_KEY,
@@ -16,7 +17,9 @@ const PROVIDER_ENV_KEY: Record<ProviderId, string | undefined> = {
   hermes: process.env.OPENROUTER_API_KEY,
 };
 
-export const PROVIDERS = DEFAULT_PROVIDERS.map((p) => ({
-  ...p,
-  available: Boolean(PROVIDER_ENV_KEY[p.id]),
-}));
+// Each provider carries its static requirements + a live binOnPath probe (what
+// it needs to run), plus the env-derived `available` baseline (the secrets
+// overlay refines `available` per workspace at serve time).
+export const PROVIDERS = withProviderRequirements(
+  DEFAULT_PROVIDERS.map((p) => ({ ...p, available: Boolean(PROVIDER_ENV_KEY[p.id]) })),
+);

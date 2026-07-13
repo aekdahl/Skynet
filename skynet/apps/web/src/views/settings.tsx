@@ -4,6 +4,7 @@ import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import type { McpScope, ServiceTokenMeta } from "../lib/client";
 import { InstallControls } from "../components/install-controls";
+import { providerReadiness } from "../lib/derive";
 
 // Provider keys live in the encrypted secret store, scoped to this workspace.
 // A vendor's runners are only selectable in create-agent once its key is set
@@ -91,6 +92,8 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
           const meta = configured.get(p.id);
           const envBacked = envSet.has(p.id);
           const draft = drafts[p.id] ?? "";
+          const req = p.requirements;
+          const rd = providerReadiness(p);
           return (
             <div className="settings-row" key={p.id}>
               <div className="settings-prov">
@@ -135,6 +138,46 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                   </button>
                 )}
               </div>
+              {req && (
+                <div className="settings-req">
+                  <span className={"settings-badge " + (rd.ready ? "ok" : "warn")}>
+                    {rd.ready ? "Ready to run" : `Needs ${rd.missing.join(" and ")}`}
+                  </span>
+                  <span className="settings-req-detail">
+                    {req.runtime === "cli" ? (
+                      <>
+                        Runtime: <code>{req.bin}</code> CLI
+                        {p.binOnPath === true ? " — found on PATH" : " — not found on PATH"}
+                      </>
+                    ) : (
+                      <>Runtime: in-process (no CLI to install)</>
+                    )}
+                    {" · "}
+                    {req.cliLogin ? (
+                      <>Auth: CLI login or a key</>
+                    ) : req.authEnvVars.length > 0 ? (
+                      <>
+                        Auth: <code>{req.authEnvVars.slice(0, 3).join(" / ")}</code>
+                      </>
+                    ) : (
+                      <>Auth: —</>
+                    )}
+                  </span>
+                  {req.installHint && (
+                    <span className="settings-req-hint">
+                      {req.installHint}
+                      {req.docsUrl && (
+                        <>
+                          {" "}
+                          <a href={req.docsUrl} target="_blank" rel="noreferrer">
+                            Docs ↗
+                          </a>
+                        </>
+                      )}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

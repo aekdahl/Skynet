@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import type { ProviderId, Agent } from "@skynet/shared";
+import type { ProviderId, ProviderInfo, Agent } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { fmtWait, providerInfo, runnerIdleLabel, runnerIsBusy, STATUS_META } from "../lib/derive";
+import { fmtWait, providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy, STATUS_META } from "../lib/derive";
 import { StatusDot } from "../components/common";
 
 function ConfigForm({
@@ -14,14 +14,16 @@ function ConfigForm({
   onCancel: () => void;
 }) {
   const { providers } = useStore();
-  const isConfigured = (p: { available?: boolean }) => p.available !== false;
+  const isConfigured = (p: ProviderInfo) => providerReadiness(p).ready;
   const [name, setName] = useState(initial ? initial.name : "");
   const [provider, setProvider] = useState<ProviderId>(
     initial
       ? initial.provider
       : (providers.find(isConfigured)?.id ?? providers[0]?.id ?? "claude"),
   );
-  const models = providerInfo(providers, provider).models;
+  const selected = providerInfo(providers, provider);
+  const selectedReq = selected.requirements;
+  const models = selected.models;
   const [model, setModel] = useState(initial ? initial.model : (models[0] ?? ""));
 
   useEffect(() => {
@@ -44,7 +46,7 @@ function ConfigForm({
         <label className="cfg-label">Provider</label>
         <div className="cfg-prov">
           {providers.map((p) => {
-            const configured = isConfigured(p);
+            const rd = providerReadiness(p);
             return (
               <button
                 key={p.id}
@@ -52,20 +54,41 @@ function ConfigForm({
                 style={
                   provider === p.id
                     ? { borderColor: p.color, color: p.color }
-                    : configured
+                    : rd.ready
                       ? undefined
                       : { opacity: 0.4, cursor: "not-allowed" }
                 }
-                disabled={!configured}
-                title={configured ? undefined : `${p.name} isn't set up — add its API key to enable it`}
+                disabled={!rd.ready}
+                title={rd.ready ? undefined : `${p.name} needs ${rd.missing.join(" and ")}`}
                 onClick={() => setProvider(p.id)}
               >
                 <span style={{ color: p.color }}>{p.glyph}</span> {p.name}
-                {!configured && " · not set up"}
+                {!rd.ready && " · needs setup"}
               </button>
             );
           })}
         </div>
+        {selectedReq && (
+          <p className="cfg-prov-req">
+            {selectedReq.runtime === "cli"
+              ? `Runs the ${selectedReq.bin} CLI on the server — must be installed on PATH.`
+              : "Runs in-process — no CLI to install."}{" "}
+            {selectedReq.cliLogin
+              ? "Auth via its CLI login or a key."
+              : selectedReq.authEnvVars.length > 0
+                ? `Auth: ${selectedReq.authEnvVars.slice(0, 3).join(" / ")}.`
+                : ""}{" "}
+            {selectedReq.installHint}
+            {selectedReq.docsUrl && (
+              <>
+                {" "}
+                <a href={selectedReq.docsUrl} target="_blank" rel="noreferrer">
+                  Setup docs ↗
+                </a>
+              </>
+            )}
+          </p>
+        )}
       </div>
       <div className="cfg-row">
         <label className="cfg-label">Model</label>
