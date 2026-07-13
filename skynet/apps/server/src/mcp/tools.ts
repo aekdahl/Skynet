@@ -118,13 +118,13 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   });
   tool("archive_agent", "author", "Archive (or restore) an agent — hides it from the board without deleting it.", { runId: z.string(), archived: z.boolean().optional() }, (a) => operations.archiveAgent(ws, a.runId, a.archived ?? true));
   tool("configure_runner", "author", "Add a fleet runner (a provider + model slot that can execute one agent).", ConfigureRunnerRequest.shape, (a) => operations.configureRunner(ws, a));
-  tool("update_runner", "author", "Update a fleet runner's model or name.", { agentId: z.string(), ...UpdateRunnerRequest.shape }, (a) => {
-    const { agentId, ...patch } = a;
-    return operations.updateAgent(ws, agentId, patch);
+  tool("update_runner", "author", "Update a fleet runner's model or name.", { runnerId: z.string(), ...UpdateRunnerRequest.shape }, (a) => {
+    const { runnerId, ...patch } = a;
+    return operations.updateAgent(ws, runnerId, patch);
   });
-  tool("retire_runner", "author", "Retire an idle fleet runner. Fails if the runner is busy.", { agentId: z.string() }, async (a) => {
-    await operations.retireRunner(ws, a.agentId);
-    return { retired: a.agentId };
+  tool("retire_runner", "author", "Retire an idle fleet runner. Fails if the runner is busy.", { runnerId: z.string() }, async (a) => {
+    await operations.retireRunner(ws, a.runnerId);
+    return { retired: a.runnerId };
   });
 
   // ── approver (opt-in scope) ─────────────────────────────────────────────

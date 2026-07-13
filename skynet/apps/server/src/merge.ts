@@ -10,7 +10,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { classifyCommand, runBounded } from "./command-safety.js";
+import { assertApprovable, CommandDeniedError, runBounded } from "./command-safety.js";
 
 const exec = promisify(execFile);
 
@@ -87,27 +87,29 @@ export class MergeEngine {
     }
 
     if (this.checkCmd) {
-      // Run the project check under the same safety envelope as any other
-      // Skynet-spawned command: refuse a catastrophic command outright, and
-      // otherwise run it bounded (timeout, output cap, scrubbed env, confined
-      // cwd) so a wedged or runaway check can't hang or flood the merge queue.
-      const verdict = classifyCommand(this.checkCmd);
-      if (verdict.decision === "deny") {
-        await this.git("reset", "--hard", "HEAD~1").catch(() => undefined);
-        await this.cb.onChecksFailed(
-          req,
-          `check command blocked by safety policy: ${verdict.reasons.join("; ") || verdict.ruleIds.join(", ")}`,
-        );
-        return;
+      // Run the operator-configured check under hard limits (timeout, output cap,
+      // confined cwd, no inherited stdio) and refuse denylisted commands outright.
+      // Env is preserved (an operator-set check needs the real toolchain on PATH),
+      // unlike agent commands which are gated + denied at approve time.
+      const bounce = async (output: string) => {
+        await this.git("reset", "--hard", "HEAD~1").catch(() => undefined); // undo the merge commit
+        await this.cb.onChecksFailed(req, output);
+      };
+      try {
+        assertApprovable(this.checkCmd);
+      } catch (err) {
+        if (err instanceof CommandDeniedError) {
+          await bounce(`check command refused by safety policy: ${err.message}`);
+          return;
+        }
+        throw err;
       }
-      const res = await runBounded(this.checkCmd, { cwd: this.repo });
-      if (res.timedOut || res.code !== 0) {
-        // Undo the merge commit; bounce back to the agent.
-        await this.git("reset", "--hard", "HEAD~1").catch(() => undefined);
-        const detail = res.timedOut
-          ? "checks timed out"
-          : (res.stderr || res.stdout || "checks failed").trim().slice(0, 500);
-        await this.cb.onChecksFailed(req, detail);
+      const res = await runBounded(this.checkCmd, {
+        cwd: this.repo,
+        env: process.env as Record<string, string>,
+      });
+      if (res.code !== 0 || res.timedOut) {
+        await bounce(res.timedOut ? "checks timed out" : res.stderr || res.stdout || "checks failed");
         return;
       }
     }
