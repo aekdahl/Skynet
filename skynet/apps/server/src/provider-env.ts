@@ -24,6 +24,9 @@ export const PROVIDER_ENV_VARS: Record<ProviderId, readonly string[]> = {
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
   cursor: ["CURSOR_API_KEY"],
   copilot: ["GITHUB_TOKEN", "GH_TOKEN"],
+  // Hermes is provider-agnostic; OpenRouter is its recommended key, but any of
+  // these provider keys in the ambient env also make it usable.
+  hermes: ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"],
 };
 
 /** The primary API-key env var per provider (its value is injectable as the key). */

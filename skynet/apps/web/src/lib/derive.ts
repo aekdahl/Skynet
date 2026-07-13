@@ -185,3 +185,38 @@ export const providerInfo = (
 ): ProviderInfo =>
   providers.find((p) => p.id === id) ??
   ({ id, name: id, glyph: "✱", color: "var(--accent)", models: [] } as ProviderInfo);
+
+// ─── provider readiness ──────────────────────────────────────────────────────
+// Whether a provider can actually run right now, and if not, exactly what's
+// missing. Combines the static requirements descriptor with the live signals the
+// server attaches: `available` (a credential is configured — env or stored key)
+// and `binOnPath` (the CLI binary was found on the server's PATH). Mirrors the
+// orchestrator's real usability rule so the UI never enables something that
+// can't run — nor disables a CLI-login provider that can. Falls back to the
+// legacy `available` flag when an older server sends no requirements.
+export interface ProviderReadiness {
+  ready: boolean;
+  /** Plain-English list of what's still needed (empty when ready). */
+  missing: string[];
+  /** True while a credential is configured (env var or stored key). */
+  credentialSet: boolean;
+}
+
+export function providerReadiness(p: ProviderInfo): ProviderReadiness {
+  const credentialSet = p.available !== false;
+  const req = p.requirements;
+  if (!req) return { ready: credentialSet, missing: credentialSet ? [] : ["setup"], credentialSet };
+
+  const missing: string[] = [];
+  if (req.runtime === "cli" && p.binOnPath !== true) {
+    missing.push(`the ${req.bin ?? "provider"} CLI on PATH`);
+  }
+  // A credential is required unless the provider can authenticate via its own
+  // CLI login (cursor/copilot).
+  const authOk = credentialSet || req.cliLogin;
+  if (!authOk) {
+    const keys = req.authEnvVars.slice(0, 3).join(" / ");
+    missing.push(keys ? `a credential (${keys})` : "a credential");
+  }
+  return { ready: missing.length === 0, missing, credentialSet };
+}
