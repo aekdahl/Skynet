@@ -139,8 +139,10 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
 
   // Lifecycle controls: pause halts the runner (session kept), resume returns it
   // to running, stop is terminal (frees the runner, marks the agent done). Each
-  // returns the updated agent.
-  app.post<{ Params: { id: string } }>("/api/agents/:id/pause", async (req, reply) => {
+  // returns the updated run. Pathed under /api/runs/:id like the other run
+  // actions (messages/fork/archive) — the agents→runs rename missed these three,
+  // so the client's /api/runs/:id/{pause,resume,stop} calls 404'd.
+  app.post<{ Params: { id: string } }>("/api/runs/:id/pause", async (req, reply) => {
     try {
       return await ops.pauseAgent(ws(req), req.params.id);
     } catch (err) {
@@ -148,7 +150,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
-  app.post<{ Params: { id: string } }>("/api/agents/:id/resume", async (req, reply) => {
+  app.post<{ Params: { id: string } }>("/api/runs/:id/resume", async (req, reply) => {
     try {
       return await ops.resumeAgent(ws(req), req.params.id);
     } catch (err) {
@@ -156,7 +158,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
-  app.post<{ Params: { id: string } }>("/api/agents/:id/stop", async (req, reply) => {
+  app.post<{ Params: { id: string } }>("/api/runs/:id/stop", async (req, reply) => {
     try {
       return await ops.stopAgent(ws(req), req.params.id);
     } catch (err) {
