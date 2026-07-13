@@ -20,6 +20,7 @@ import {
 } from "@skynet/shared";
 import { authenticate, type Principal } from "./auth.js";
 import { requiresAuth } from "./auth-guard.js";
+import { CommandDeniedError } from "./command-safety.js";
 import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError } from "./orchestrator.js";
 import { NotFoundError, type Operations, RunnerBusyError } from "./operations.js";
 
@@ -38,6 +39,8 @@ const ws = (req: FastifyRequest) => req.principal!.workspaceId;
 /** Map a typed operation error to the right HTTP status. */
 function fail(reply: FastifyReply, err: unknown): FastifyReply {
   if (err instanceof NotFoundError) return reply.code(404).send({ error: err.message });
+  // A denylisted command can never be approved — policy refusal, not a bad request.
+  if (err instanceof CommandDeniedError) return reply.code(422).send({ error: err.message });
   if (
     err instanceof NoCapacityError ||
     err instanceof TaskAlreadyAssignedError ||

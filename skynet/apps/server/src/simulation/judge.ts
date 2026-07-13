@@ -13,7 +13,7 @@
 // works both standalone and nested inside a Claude Code session (where a raw
 // fetch to the API has no egress). Distinct from evals/judge.ts, which grades a
 // real agent's CODE diff against a rubric — this grades SYSTEM BEHAVIOR across a
-// multi-step operator journey run on the mock runner.
+// multi-step operator journey whose runs execute on real, key-backed runners.
 
 import { oneShotText } from "@skynet/runner-sdk/claude";
 
@@ -51,13 +51,14 @@ function prompt(e: JourneyEvidence): string {
     .join("\n");
   return [
     "You are a behavioral QA judge for Skynet, a console for supervising autonomous coding runs.",
-    "You are reviewing one OPERATOR JOURNEY: a scripted sequence of real API actions an operator would take, run against a live server (runs execute on a mock runner). The journey already checked deterministic facts; your job is the holistic review those checks can't do.",
+    "You are reviewing one OPERATOR JOURNEY: a scripted sequence of real API actions an operator would take, run against a live server. Runs execute on real, key-backed provider runners — there is no mock runner. The journey already checked deterministic facts; your job is the holistic review those checks can't do.",
     "",
     "Grade ONLY on the evidence below. Judge whether the journey ACHIEVED ITS GOAL and whether the resulting system state is COHERENT — no orphaned or contradictory entities, and statuses that match the actions taken. A journey where every step 'ok' but the end state is nonsensical should NOT pass.",
     "Do not invent problems that the evidence doesn't show; if it looks correct and coherent, pass it.",
     "",
     "## What the evidence contains (don't penalize expected gaps)",
     "- The `board` is a Sim-tagged SLICE of the system (projects/tasks/runs/runners/openHitl + an audit count), not the whole store. Judge what's present; don't demand fields the slice doesn't carry.",
+    "- `openHitl` lists unresolved gates for THIS journey's own runs, captured at one instant AFTER the journey's steps ran. It is a point-in-time snapshot, NOT the operator's whole inbox. An empty `openHitl` means this journey left no gate of its own pending at that instant — it does NOT prove the global inbox is empty, and these agents persist and may raise further gates afterward. Never conclude 'nothing is pending' system-wide from it.",
     "- `auditCount`/`recentAudit` is the human-in-the-loop DECISION log — it records approvals/rejections/option-picks on HITL gates, NOT routine CRUD. Creating a project, task, or runner, or stopping/archiving an agent, does NOT produce an audit row. Only expect the audit to grow when the journey actually RESOLVED a HITL gate. Absence of audit rows for pure create/lifecycle journeys is EXPECTED, not a failure.",
     "",
     `## Journey: ${e.name}`,
