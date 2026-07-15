@@ -122,4 +122,46 @@ describe("autonomy loop", () => {
     await orch.tickAutonomy();
     expect((await store.getHitl("q1"))?.resolution?.action).toBe("approve");
   });
+
+  it("does NOT clobber a task that reached done while its review consult was running", async () => {
+    // Race: autonomy picks up the review task and starts a (slow) review consult;
+    // meanwhile the operator approves the diff gate → merge → task done. The
+    // consult then returns FLAG. Autonomy must defer, not knock done → review.
+    const store = new MemoryStore();
+    const hub = new Hub(store, new NullBus());
+    const run: TaskRun = {
+      id: "r1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "do X", status: "review",
+      runnerId: null, agentId: "a1", model: "opus-4.8", branch: "agent/r1", modules: [], progress: 1,
+      plan: [], modifiedFiles: [], log: [], startedAt: 0, lastHeartbeatAt: 0, visual: false,
+      previewUrl: null, dependsOn: [], parentId: null, branchFromStep: null, archived: false,
+    };
+    const hitl: HitlItem = {
+      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "r1", kind: "diff", title: "Review",
+      why: "", risk: "medium", raisedAt: 0, expiresAt: null, resolvedAt: null, resolution: null,
+      command: null, options: null, recommended: null, steps: null, diff: null,
+    };
+    // The consult simulates the operator winning the race mid-consult: the gate
+    // resolves and the task advances to done before FLAG comes back.
+    const racing: RunnerProvider = {
+      id: "claude",
+      async start(spec: StartSpec, _e: RunnerEvents): Promise<RunnerHandle> {
+        return { runId: spec.runId, provider: "claude", async pause() {}, async resume() {}, async message() {}, async stop() {} };
+      },
+      async consult(): Promise<string> {
+        await store.putHitl({ ...hitl, resolvedAt: 1, resolution: { action: "approve", optionIndex: null, guidance: null, by: "jordan", at: 1 } });
+        await store.putTask(mkTask({ state: "done", runId: "r1" }));
+        return "FLAG: needs more tests";
+      },
+    };
+    const orch = new Orchestrator(store, hub, racing);
+    await store.putProject(project);
+    await store.putAgent(idleAgent);
+    await store.putRun(run);
+    await store.putHitl(hitl);
+    await store.putTask(mkTask({ state: "review", runId: "r1" }));
+    await orch.tickAutonomy();
+    const t = await store.getTask("t1");
+    expect(t?.state).toBe("done"); // NOT clobbered back to review
+    expect(t?.reviewFlaggedReason).toBeNull();
+  });
 });

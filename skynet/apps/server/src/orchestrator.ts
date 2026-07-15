@@ -1003,12 +1003,22 @@ export class Orchestrator {
       approve = false;
       reason = `review consult failed: ${(err as Error).message}`;
     }
+    // The consult above is slow (an LLM round-trip); meanwhile an operator — or
+    // another actor — may have resolved this same gate and driven the run to
+    // done. Re-validate against fresh state before writing so autonomy defers to
+    // whatever already happened and never clobbers a task that moved on (a stale
+    // `{...task, state:"review"}` write would knock a merged→done task back to
+    // review). DEF-001: derive the write from fresh state, not the snapshot.
+    const freshHitl = await this.store.getHitl(hitl.id);
+    if (!freshHitl || freshHitl.resolvedAt) return; // already handled — defer
+    const freshTask = await this.store.getTask(task.id);
+    if (!freshTask || freshTask.state !== "review" || freshTask.runId !== task.runId) return;
     if (approve) {
       const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "autonomy", at: now() };
       const resolved = await this.hub.resolveHitl(hitl.id, resolution);
       if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(hitl, resolution);
     } else {
-      await this.hub.upsertTask({ ...task, reviewFlaggedReason: reason });
+      await this.hub.upsertTask({ ...freshTask, reviewFlaggedReason: reason });
     }
   }
 
