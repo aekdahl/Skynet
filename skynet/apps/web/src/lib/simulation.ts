@@ -771,6 +771,160 @@ export const JOURNEYS: Journey[] = [
       return steps;
     },
   },
+  {
+    id: "task-lifecycle",
+    name: "Task lifecycle — edit, move, transition, delete",
+    desc: "Operator grooms the backlog: edits a task's text, reorders it, advances its state, and deletes another. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: backlog ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated backlog grooming" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      await api.createTask(p.id, "Sim: task to edit");
+      await api.createTask(p.id, "Sim: task to delete");
+      s = await settle((sn) => sn.tasks.filter((t) => t.projectId === p.id).length >= 2);
+      const editTask = s.tasks.find((t) => t.projectId === p.id && t.text === "Sim: task to edit");
+      const delTask = s.tasks.find((t) => t.projectId === p.id && t.text === "Sim: task to delete");
+      steps.push(step("backlog seeded (2 tasks)", !!editTask && !!delTask));
+      if (!editTask || !delTask) return steps;
+      await api.updateTask(p.id, editTask.id, { text: "Sim: task (edited)" });
+      s = await settle((sn) => sn.tasks.find((t) => t.id === editTask.id)?.text === "Sim: task (edited)");
+      steps.push(step("task text edited", s.tasks.find((t) => t.id === editTask.id)?.text === "Sim: task (edited)"));
+      try {
+        await api.transitionTask(p.id, editTask.id, "triage");
+        s = await settle((sn) => sn.tasks.find((t) => t.id === editTask.id)?.state === "triage");
+        const st = s.tasks.find((t) => t.id === editTask.id)?.state;
+        steps.push(step("task advanced backlog → triage", st === "triage", st));
+      } catch (e) {
+        steps.push(step("task advanced backlog → triage", false, (e as Error).message));
+      }
+      try {
+        await api.moveTask(p.id, delTask.id, "up");
+        steps.push(step("task reordered (move accepted)", true));
+      } catch (e) {
+        steps.push(step("task reordered (move accepted)", false, (e as Error).message));
+      }
+      await api.deleteTask(p.id, delTask.id);
+      s = await settle((sn) => !sn.tasks.some((t) => t.id === delTask.id));
+      steps.push(step("task deleted (gone from the backlog)", !s.tasks.some((t) => t.id === delTask.id)));
+      return steps;
+    },
+  },
+  {
+    id: "project-edit-and-status",
+    name: "Project — rename, re-goal, pause",
+    desc: "Operator renames a project, updates its goal, and moves it active → paused. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: proj ${tag}`;
+      await api.createProject({ name: pname, goal: "original goal" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      steps.push(step("project created (active)", p.status === "active", p.status));
+      const renamed = `Sim: proj ${tag} (renamed)`;
+      await api.updateProject(p.id, { name: renamed, goal: "updated goal" });
+      s = await settle((sn) => sn.projects.find((x) => x.id === p.id)?.name === renamed);
+      const p2 = s.projects.find((x) => x.id === p.id);
+      steps.push(step("renamed + goal updated", p2?.name === renamed && p2?.goal === "updated goal", p2?.goal));
+      await api.updateProject(p.id, { status: "paused" });
+      s = await settle((sn) => sn.projects.find((x) => x.id === p.id)?.status === "paused");
+      const st = s.projects.find((x) => x.id === p.id)?.status;
+      steps.push(step("status active → paused", st === "paused", st));
+      return steps;
+    },
+  },
+  {
+    id: "provider-key-removal",
+    name: "Remove a provider key — vendor reverts",
+    desc: "Operator removes a stored provider key; the vendor flips back to unavailable (unless an env var still supplies it).",
+    run: async () => {
+      const steps: Step[] = [];
+      const provider = "gemini"; // unlikely env-backed, so the flip is unambiguous
+      try {
+        await api.setSecret(provider, `sim-key-${uid()}42`);
+      } catch (e) {
+        return [skipped("secret store enabled (SKYNET_MASTER_KEY set)", (e as Error).message)];
+      }
+      let s = await settle((sn) => sn.providers.find((p) => p.id === provider)?.available === true);
+      steps.push(step("key set → vendor available", s.providers.find((p) => p.id === provider)?.available === true));
+      await api.deleteSecret(provider);
+      const after = await api.fetchSecrets();
+      steps.push(step("key removed from the store", !after.secrets.some((m) => m.provider === provider)));
+      const envBacked = after.env.includes(provider);
+      s = await settle((sn) => sn.providers.find((p) => p.id === provider)?.available === envBacked);
+      steps.push(
+        envBacked
+          ? skipped("vendor reverts to unavailable", "still available via an env var — expected")
+          : step("vendor reverts to unavailable", s.providers.find((p) => p.id === provider)?.available === false),
+      );
+      return steps;
+    },
+  },
+  {
+    id: "service-token-lifecycle",
+    name: "MCP service token — mint, list, revoke",
+    desc: "Operator mints a scoped MCP token (raw secret shown once), sees only metadata in the list, then revokes it.",
+    run: async () => {
+      const steps: Step[] = [];
+      let created: Awaited<ReturnType<typeof api.createServiceToken>>;
+      try {
+        created = await api.createServiceToken({ label: `sim-token-${uid()}`, scopes: ["observe"] });
+      } catch (e) {
+        return [skipped("service tokens enabled", (e as Error).message)];
+      }
+      steps.push(step("token minted — raw secret returned once", typeof created.token === "string" && created.token.length >= 8, `id ${created.id}`));
+      const list = await api.listServiceTokens();
+      const meta = list.find((t) => t.id === created.id);
+      steps.push(step("appears in the list as metadata", !!meta, meta?.label));
+      const noRaw = !!meta && !("token" in (meta as unknown as Record<string, unknown>)) && typeof meta.last4 === "string";
+      steps.push(step("list carries only last4, never the raw token", noRaw, meta?.last4));
+      await api.revokeServiceToken(created.id);
+      const after = await api.listServiceTokens();
+      steps.push(step("revoked — gone from the list", !after.some((t) => t.id === created.id)));
+      return steps;
+    },
+  },
+  {
+    id: "github-connect-safety",
+    name: "GitHub — reject a bad PAT, toggle a guardrail",
+    desc: "Operator's invalid PAT is refused; and — once GitHub is connected — a write guardrail toggles off then back on (skips otherwise). No live GitHub round-trip.",
+    run: async () => {
+      const steps: Step[] = [];
+      try {
+        await api.connectGithubPat("ghp_sim_invalid_000000000000000000000000");
+        steps.push(step("invalid PAT is refused", false, "unexpectedly accepted"));
+      } catch (e) {
+        steps.push(
+          e instanceof api.ApiError
+            ? step("invalid PAT is refused", true, `HTTP ${e.status}`)
+            : skipped("invalid PAT is refused", `couldn't reach GitHub to validate: ${(e as Error).message}`),
+        );
+      }
+      const before = (await api.fetchGithub()).connection.safety.moduleAllowlist;
+      try {
+        await api.updateGithubSafety({ moduleAllowlist: !before });
+        const flipped = (await api.fetchGithub()).connection.safety.moduleAllowlist;
+        steps.push(step("guardrail toggled off", flipped === !before, `moduleAllowlist ${before} → ${flipped}`));
+        await api.updateGithubSafety({ moduleAllowlist: before });
+        steps.push(step("guardrail restored", (await api.fetchGithub()).connection.safety.moduleAllowlist === before));
+      } catch (e) {
+        // Toggling guardrails requires a CONNECTED GitHub (PAT/App) — a live
+        // remote we don't have offline; a 404 is the correct "not connected"
+        // response, so treat it as inconclusive, not a failure.
+        steps.push(
+          e instanceof api.ApiError && e.status === 404
+            ? skipped("guardrail toggle", "GitHub not connected — toggling needs a live PAT/App connection")
+            : step("guardrail toggle", false, (e as Error).message),
+        );
+      }
+      return steps;
+    },
+  },
 ];
 
 /**
