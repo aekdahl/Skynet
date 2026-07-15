@@ -61,6 +61,14 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
   - **Token-by-token streaming** — Claude `includePartialMessages` / CLI NDJSON deltas → live "typing" in the log instead of whole-message chunks.
   - **CLI usage fidelity** — Codex/Gemini/Cursor usage is parsed best-effort today; Copilot emits none (text-only). Firm these up as each vendor's structured output stabilizes.
 - Auth: **SSO/OIDC**.
+- **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
+  everything (projects, runs, HITL, audit) but mutate nothing (no assign / resolve / transition /
+  settings / provider keys). Wrap, don't rebuild: reuse the existing scoped-principal model — service
+  tokens already carry `observe`/`author`/`approver` scopes, so extend the same scopes to human
+  sessions rather than a parallel permission system.
+- **Time-limited admin promotion** — temporarily elevate a viewer to admin for a bounded,
+  auto-expiring window (break-glass / sudo-style), then revert to their base role automatically; every
+  promotion + expiry is audited. Depends on the read-only role above.
 - 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap, additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
 
 ## v2 — Agentic area-managers (the hierarchy)  🔬🔗⛓
