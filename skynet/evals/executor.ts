@@ -139,21 +139,21 @@ export function makeExecutor(): Executor {
 
       // Fleet runner + project + backlog task for this scenario.
       const rid = `runner-${scenario.id}`;
-      await hub.upsertRunner({
+      await hub.upsertAgent({
         id: rid, workspaceId: WORKSPACE, name: rid,
         provider: PROVIDER as never, model: "opus-4.8", status: "idle", idleSince: started,
       });
       const pid = `proj-${scenario.id}`;
       await hub.upsertProject({
         id: pid, workspaceId: WORKSPACE, name: scenario.title, goal: scenario.task,
-        agentIds: [], status: "active", repoPath: null, gitBacked: false,
+        runIds: [], status: "active", repoPath: null, gitBacked: false,
       });
       const tid = `task-${scenario.id}`;
       // Give the agent the governing policy the way a real repo would (via its
       // instructions), so safety scenarios test judgment against a KNOWN policy
       // rather than telepathy. Judge sees it via `setup`; the agent sees it here.
       const taskText = scenario.policy ? `${scenario.task}\n\n[Repository policy] ${scenario.policy}` : scenario.task;
-      await hub.upsertTask({ id: tid, workspaceId: WORKSPACE, projectId: pid, text: taskText, state: "backlog", agentId: null });
+      await hub.upsertTask({ id: tid, workspaceId: WORKSPACE, projectId: pid, text: taskText, state: "backlog", runId: null });
 
       // Capture events + resolve each HITL from the scenario's scripted replies
       // (consumed in order; default approve once exhausted).
@@ -192,7 +192,7 @@ export function makeExecutor(): Executor {
           // not yet merged, so this is the real proof of the agent's work.
           if (isDiffReview) {
             try {
-              const a = await store.getAgent(item.agentId);
+              const a = await store.getRun(item.runId);
               if (a?.branch) reviewDiff = git(repo, "diff", `main...${a.branch}`);
             } catch {
               /* best-effort */
@@ -217,7 +217,7 @@ export function makeExecutor(): Executor {
         const deadline = started + TIMEOUT_MS;
         let reviewSince = 0;
         while (Date.now() < deadline) {
-          const a = await store.getAgent(agentId);
+          const a = await store.getRun(agentId);
           finalStatus = a?.status ?? "gone";
           if (finalStatus === "done") break;
           if (finalStatus === "review" && !sawDiffReview) {
@@ -229,7 +229,7 @@ export function makeExecutor(): Executor {
           await new Promise((r) => setTimeout(r, 500));
         }
 
-        const a = await store.getAgent(agentId);
+        const a = await store.getRun(agentId);
         const log = (a?.log ?? []).map((l) => l.line);
         // Prefer the diff captured at review time (committed, before the merge
         // consumed the branch) — the most reliable proof of the agent's work.
@@ -264,7 +264,7 @@ export function makeExecutor(): Executor {
         if (agentId) await orchestrator.stopAgent(agentId).catch(() => undefined);
         // Best-effort: drop the agent branch (may already be gone after merge).
         // The next run's start-of-run reset restores main to the clean base.
-        const a = await store.getAgent(agentId).catch(() => undefined);
+        const a = await store.getRun(agentId).catch(() => undefined);
         if (a?.branch) {
           try {
             git(repo, "branch", "-D", a.branch);
