@@ -689,9 +689,13 @@ export const JOURNEYS: Journey[] = [
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
       await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-tele-${tag}` });
+      // Force a PLAN: the PLAN panel is populated from the agent's todo/task tool
+      // (the runner folds TodoWrite/TaskCreate/TaskUpdate into `plan`). A short
+      // task won't reliably make a model plan, so explicitly require a tracked
+      // task list — otherwise `plan` stays empty even though the agent ran fine.
       await api.createTask(
         p.id,
-        `Explore this repository: list the files, read a couple of them, and write a short summary of what the project does to a new file \`summary-${tag}.md\`.`,
+        `Investigate this repository and TRACK YOUR WORK AS A TASK LIST using your todo/planning tool, so each step is visible. FIRST create a task list with these three items, then work through them one at a time, marking each complete as you finish it: (1) list the repository's files, (2) read two of them, (3) write a short summary of what the project does to a new file \`summary-${tag}.md\`.`,
       );
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
