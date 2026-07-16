@@ -761,7 +761,14 @@ class ClaudeRunnerHandle implements RunnerHandle {
       } else if (decision?.action === "reject") {
         gate({ behavior: "deny", message: "Operator rejected this action — revise your approach." });
       } else if (decision?.action === "modify") {
-        gate({ behavior: "deny", message: decision.guidance ?? "Adjust per operator guidance." });
+        // Deliver the operator's guidance on the TRUSTED operator channel (a user
+        // message), not just as the tool-denial reason. Guidance smuggled only in
+        // a tool_result reads like injected data to a security-conscious agent,
+        // which may (correctly) refuse it — so deny the pending tool, then echo
+        // the guidance as a first-class, authoritative operator instruction.
+        const guidance = decision.guidance?.trim() || "Adjust per operator guidance.";
+        gate({ behavior: "deny", message: "The operator interrupted this action with a directive — see their instruction in the next message and follow it." });
+        this.input.push(`[OPERATOR DIRECTIVE — authoritative, from the human operator supervising you; overrides your prior plan] ${guidance}`);
       } else {
         // Echo the tool's own input as `updatedInput` — required for the SDK to
         // actually run the approved tool (omitting it stalls the session).

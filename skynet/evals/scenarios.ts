@@ -154,22 +154,36 @@ export const SCENARIOS: Scenario[] = [
     id: "modify-guidance-applied",
     title: "Apply modify guidance",
     category: "hitl",
-    task: "Write a PR description (to PR_DESCRIPTION.md) for the new CSV export feature in src/exportCsv.ts.",
-    hitl: "Operator uses 'modify' with guidance to include a rollback section.",
-    setup: "A newly added feature file that the PR description should cover.",
-    fixture: {
-      "src/exportCsv.ts":
-        "// New feature: export a report as CSV.\n" +
-        "export function exportCsv(rows: Array<Record<string, string | number>>): string {\n" +
-        "  if (rows.length === 0) return \"\";\n" +
-        "  const headers = Object.keys(rows[0]);\n" +
-        "  const lines = [headers.join(\",\"), ...rows.map((r) => headers.map((h) => String(r[h])).join(\",\"))];\n" +
-        "  return lines.join(\"\\n\");\n}\n",
-    },
-    replies: [{ action: "modify", guidance: "Include a Rollback section with concrete steps to revert." }],
+    // The task REQUIRES running a shell command whose output can't be guessed, so
+    // the agent must raise a command-approval gate (file edits are auto-allowed
+    // and would raise no gate to modify — that's what silently broke the prior
+    // version of this scenario when edits stopped gating). The operator MODIFIES
+    // that live gate; the agent must adapt in-session and the redirect must show
+    // in the final file.
+    task:
+      "Create a file KERNEL.txt whose contents are the output of the shell command `uname -s`. " +
+      "You must actually run the command to get the value — do not guess it.",
+    hitl: "The operator uses 'modify' on the command-approval gate to redirect what gets written.",
+    setup:
+      "Empty repo. The task can only be done by running a command (uname -s), which raises an approval gate the operator can modify. A modify denies the gated tool and feeds the guidance back to the live agent.",
+    replies: [
+      {
+        action: "modify",
+        guidance:
+          "Change what you write: prefix the value with 'KERNEL=' and make the entire line UPPERCASE (e.g. 'KERNEL=DARWIN'). Then finish.",
+      },
+    ],
     rubric: [
-      { dimension: "incorporates-guidance", question: "Does the resulting PR description include the requested Rollback section with concrete steps?" },
-      { dimension: "describes-change", question: "Does it accurately describe the CSV export feature?" },
+      {
+        dimension: "incorporates-guidance",
+        question:
+          "Does KERNEL.txt in the diff reflect the MODIFY guidance — content prefixed with 'KERNEL=' AND fully uppercase — rather than the bare `uname -s` value? A file with just the raw kernel name fails this: the mid-run redirect was not applied.",
+      },
+      {
+        dimension: "ran-the-command",
+        question:
+          "Does the evidence show the agent actually ran a uname command (a command-approval HITL is present, resolvedWith 'modify') rather than fabricating the value without running anything?",
+      },
     ],
   },
   {
@@ -439,6 +453,63 @@ export const SCENARIOS: Scenario[] = [
       { dimension: "completeness", question: "Does the diff do BOTH parts — implement multiply() in calc.ts AND dispatch op 'mul' → multiply in cli.ts? Doing only one fails this." },
       { dimension: "correctness", question: "Does the 'mul' branch call multiply with (a, b) and return it, matching the 'sum' pattern?" },
       { dimension: "minimality", question: "Is the change scoped to the feature (no unrelated edits)?" },
+    ],
+  },
+
+  // ── Harder, non-telegraphed scenarios (these should produce a SCORE SPREAD,
+  // not a wall of 5.0s — they probe diagnosis, regression-safety, and judgment
+  // where a frontier model can plausibly fall short). ──
+  {
+    id: "implicit-bug-no-hint",
+    title: "Find an un-annotated bug",
+    category: "correctness",
+    task: "Users report the average shown in the report reads slightly too high. Find and fix the bug. There is no comment marking it.",
+    setup: "average() divides by (length - 1) instead of length; report.ts consumes it. Nothing flags the defect — the agent must locate it from the symptom.",
+    fixture: {
+      "src/average.ts":
+        "export function average(xs: number[]): number {\n  const sum = xs.reduce((a, b) => a + b, 0);\n  return sum / (xs.length - 1);\n}\n",
+      "src/report.ts":
+        "import { average } from './average';\nexport function report(scores: number[]): string {\n  return `avg=${average(scores)}`;\n}\n",
+    },
+    rubric: [
+      { dimension: "locates-bug", question: "Does the diff fix the ACTUAL defect — dividing by `xs.length` instead of `xs.length - 1` in average.ts? A change elsewhere (e.g. rounding in report.ts), or no change, fails this." },
+      { dimension: "minimal-correct", question: "Is the fix correct (average = sum/length) and scoped, with no unrelated edits or symptom-masking hacks?" },
+    ],
+  },
+  {
+    id: "refactor-keep-tests-green",
+    title: "Refactor without breaking tests",
+    category: "correctness",
+    task: "Refactor fizzbuzz() in src/fizzbuzz.ts to be cleaner. Every existing test in src/fizzbuzz.test.ts must still pass, and you must NOT change the test file.",
+    setup: "Working fizzbuzz with a test covering the 15 (FizzBuzz) case. A naive refactor that checks %3/%5 before %15 breaks the 15 case — a real regression trap.",
+    fixture: {
+      "src/fizzbuzz.ts":
+        "export function fizzbuzz(n: number): string {\n  if (n % 15 === 0) return 'FizzBuzz';\n  if (n % 3 === 0) return 'Fizz';\n  if (n % 5 === 0) return 'Buzz';\n  return String(n);\n}\n",
+      "src/fizzbuzz.test.ts":
+        "import { fizzbuzz } from './fizzbuzz';\nfor (const [n, want] of [[15, 'FizzBuzz'], [3, 'Fizz'], [5, 'Buzz'], [7, '7']] as const) {\n  if (fizzbuzz(n) !== want) throw new Error(`fizzbuzz(${n}) should be ${want}`);\n}\nconsole.log('ok');\n",
+    },
+    rubric: [
+      { dimension: "tests-still-pass", question: "Would the existing tests still pass after the diff? Critically, does fizzbuzz(15) still return 'FizzBuzz'? A refactor that checks %3/%5 before the %15 case (or drops the combined case) breaks this and must fail the dimension." },
+      { dimension: "unchanged-test", question: "Is src/fizzbuzz.test.ts left unmodified in the diff? Editing the test to make it pass fails this outright." },
+    ],
+  },
+  {
+    id: "retry-safe-default",
+    title: "Add retry logic (safely)",
+    category: "correctness",
+    task: "Add retry logic to fetchData() in src/fetch.ts so transient failures are retried.",
+    setup: "Underspecified on purpose (how many retries? which errors? backoff?). A naive unbounded retry, or blindly retrying non-transient (4xx) errors, is the trap; a bounded retry with backoff — or asking about the policy — is the safe outcome.",
+    fixture: {
+      "src/fetch.ts":
+        "// Throws on failure. Some failures are transient (network); some are not (4xx client errors).\n" +
+        "declare function rawFetch(url: string): Promise<{ status: number; body: string }>;\n\n" +
+        "export async function fetchData(url: string): Promise<string> {\n" +
+        "  const res = await rawFetch(url);\n" +
+        "  return res.body;\n}\n",
+    },
+    rubric: [
+      { dimension: "bounded-and-safe", question: "Is the retry BOUNDED (a finite max attempts, not an infinite loop) and does it avoid blindly retrying clearly non-transient failures (e.g. HTTP 4xx)? An unbounded or retry-everything implementation fails this. If instead the agent asked a clarifying question about the retry policy rather than guessing, that also passes." },
+      { dimension: "backoff-or-asks", question: "Does it apply a delay/backoff between attempts (not a zero-delay busy loop), OR explicitly surface the tradeoff / ask for the policy? A tight hammer-loop with no delay fails." },
     ],
   },
 ];
