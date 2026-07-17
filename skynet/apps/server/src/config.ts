@@ -1,10 +1,27 @@
 // Environment config — see .env.example for the full list.
 
-const nodeEnv = process.env.NODE_ENV ?? "development";
+const rawNodeEnv = process.env.NODE_ENV;
+const nodeEnv = rawNodeEnv ?? "development";
+// Dev conveniences (open API + dev-token map) require an EXPLICIT development or
+// test signal — never an unset/typo'd/"staging" NODE_ENV. An UNSET NODE_ENV is
+// treated as production-grade (secure), so forgetting to set it can't silently
+// open the API. (Vitest sets NODE_ENV=test, so the suite keeps its open default.)
+const devMode = rawNodeEnv === "development" || rawNodeEnv === "test";
 
 export const config = {
   port: Number(process.env.PORT ?? 8080),
   nodeEnv,
+  // Explicit dev/test only — gates the open-auth fallback + dev-token map.
+  devMode,
+  // Trust an upstream reverse proxy's X-Forwarded-For for the client IP (needed
+  // so rate limiting keys on the real caller in a hosted deploy). Off by default
+  // — only enable behind a proxy you control (XFF is spoofable otherwise).
+  trustProxy: process.env.SKYNET_TRUST_PROXY === "true",
+  // Per-IP request cap per minute on /api + /mcp (0 disables). A generous general
+  // limit blunts abuse/DoS without tripping the local suites; login is far tighter
+  // to blunt credential brute-force. Loopback is exempt in devMode (trusted desktop).
+  rateMax: Number(process.env.SKYNET_RATE_MAX ?? 600),
+  loginRateMax: Number(process.env.SKYNET_LOGIN_RATE_MAX ?? 10),
   // No silent default: an unset STORE errors at boot rather than quietly using
   // an ephemeral in-memory store. Opt in explicitly (STORE=memory for dev/tests).
   store: (process.env.STORE || undefined) as "memory" | "file" | "postgres" | undefined,
@@ -29,7 +46,11 @@ export const config = {
   // default: if AUTH_REQUIRED is unset, it's ON in production and OFF in dev —
   // so a prod deploy never silently accepts unauthenticated requests. Explicit
   // AUTH_REQUIRED=true/false always wins.
-  authRequired: process.env.AUTH_REQUIRED != null ? process.env.AUTH_REQUIRED === "true" : nodeEnv === "production",
+  // Secure by default: ON unless we're explicitly in development/test. So an
+  // unset/typo'd/"staging" NODE_ENV requires auth (fail closed). Explicit
+  // AUTH_REQUIRED=true/false always wins; index.ts refuses to boot with it off
+  // outside dev/test.
+  authRequired: process.env.AUTH_REQUIRED != null ? process.env.AUTH_REQUIRED === "true" : !devMode,
   // Lifetime of a login session before it expires (→ 401). Default 12h.
   sessionTtlMs: Number(process.env.SESSION_TTL_MS ?? 12 * 60 * 60 * 1000),
 
