@@ -23,7 +23,7 @@ import { registerEvalsRoutes } from "./evals/index.js";
 import { registerSimulationRoutes } from "./simulation/index.js";
 import { configureAuth } from "./auth.js";
 import { MemorySessionStore, type SessionStore } from "./auth/sessions.js";
-import { MemoryServiceTokenStore } from "./auth/service-tokens.js";
+import { StoreServiceTokenStore } from "./auth/service-tokens.js";
 import { seedBootstrapToken } from "./auth/bootstrap.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
 import { registerAuthRoutes, registerServiceTokenRoutes } from "./auth/routes.js";
@@ -77,9 +77,11 @@ async function main() {
     throw new Error("No session store configured. Set SESSIONS=memory for dev/tests, or SESSIONS=postgres / SESSIONS=redis.");
   }
   const operators = new MemoryOperatorDirectory(seedOperators());
-  // Scoped API tokens for MCP / programmatic access. In-memory for now; a durable
-  // adapter drops in behind ServiceTokenStore (same pattern as sessions) later.
-  const serviceTokens = new MemoryServiceTokenStore();
+  // Scoped API tokens for MCP / programmatic access. Persisted through the
+  // domain Store (file on desktop, Postgres hosted) as a hash + last-4 — so a
+  // token minted in Settings survives a restart, and the raw secret is never
+  // written to disk.
+  const serviceTokens = new StoreServiceTokenStore(store);
   configureAuth({ sessions, serviceTokens });
   // Headless/sandbox deploys: register the agent-provided bootstrap token so it
   // can call /mcp without a human login (no-op unless SKYNET_BOOTSTRAP_TOKEN set).

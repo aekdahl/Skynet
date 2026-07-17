@@ -16,6 +16,7 @@ import type {
   Snapshot,
   Task,
 } from "@skynet/shared";
+import type { StoredServiceToken } from "../auth/service-tokens.js";
 
 export type { AuditRecord };
 
@@ -85,4 +86,12 @@ export interface Store {
   getGithubToken(workspaceId: string): Promise<string | undefined>;
   putGithubToken(workspaceId: string, ciphertext: string): Promise<void>;
   deleteGithubToken(workspaceId: string): Promise<void>;
+
+  // Service tokens (MCP / programmatic auth). Persisted as a SHA-256 hash + a
+  // last-4 fingerprint — the raw bearer secret is never stored (shown once at
+  // mint). Backs StoreServiceTokenStore so tokens survive a restart.
+  putServiceToken(t: StoredServiceToken): Promise<void>;
+  getServiceTokenByHash(tokenHash: string): Promise<StoredServiceToken | undefined>;
+  listServiceTokens(workspaceId: string): Promise<StoredServiceToken[]>;
+  deleteServiceToken(id: string): Promise<boolean>;
 }

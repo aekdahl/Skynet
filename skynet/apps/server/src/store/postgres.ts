@@ -20,6 +20,7 @@ import type {
 } from "@skynet/shared";
 import { now } from "../config.js";
 import type { Store } from "./store.js";
+import type { StoredServiceToken } from "../auth/service-tokens.js";
 import { PROVIDERS } from "./providers.js";
 
 const SCHEMA = `
@@ -38,6 +39,9 @@ CREATE TABLE IF NOT EXISTS hitl_audit (id bigserial PRIMARY KEY, workspace_id te
 ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS github_connections (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS github_tokens      (workspace_id text PRIMARY KEY, ciphertext text NOT NULL);
+CREATE TABLE IF NOT EXISTS service_tokens     (id text PRIMARY KEY, token_hash text NOT NULL, workspace_id text NOT NULL, data jsonb NOT NULL);
+CREATE INDEX IF NOT EXISTS service_tokens_hash ON service_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS service_tokens_ws   ON service_tokens(workspace_id);
 CREATE INDEX IF NOT EXISTS runs_ws   ON runs(workspace_id);
 CREATE INDEX IF NOT EXISTS hitl_ws     ON hitl_queue(workspace_id);
 CREATE INDEX IF NOT EXISTS projects_ws ON projects(workspace_id);
@@ -220,6 +224,31 @@ export class PostgresStore implements Store {
   }
   async deleteGithubToken(ws: string): Promise<void> {
     await this.pool.query("DELETE FROM github_tokens WHERE workspace_id=$1", [ws]);
+  }
+
+  async putServiceToken(t: StoredServiceToken): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO service_tokens(id,token_hash,workspace_id,data) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO UPDATE SET token_hash=$2, workspace_id=$3, data=$4",
+      [t.id, t.tokenHash, t.principal.workspaceId, t],
+    );
+  }
+  async getServiceTokenByHash(tokenHash: string): Promise<StoredServiceToken | undefined> {
+    const { rows } = await this.pool.query<{ data: StoredServiceToken }>(
+      "SELECT data FROM service_tokens WHERE token_hash=$1",
+      [tokenHash],
+    );
+    return rows[0]?.data;
+  }
+  async listServiceTokens(ws: string): Promise<StoredServiceToken[]> {
+    const { rows } = await this.pool.query<{ data: StoredServiceToken }>(
+      "SELECT data FROM service_tokens WHERE workspace_id=$1",
+      [ws],
+    );
+    return rows.map((r) => r.data);
+  }
+  async deleteServiceToken(id: string): Promise<boolean> {
+    const { rowCount } = await this.pool.query("DELETE FROM service_tokens WHERE id=$1", [id]);
+    return (rowCount ?? 0) > 0;
   }
 
   async snapshot(ws: string): Promise<Snapshot> {

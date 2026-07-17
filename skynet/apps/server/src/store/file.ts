@@ -84,6 +84,12 @@ export class FileStore extends MemoryStore {
       if (Array.isArray(d.github)) for (const c of d.github as GithubConnection[]) this.github.set(c.workspaceId, c);
       if (d.githubTokens && typeof d.githubTokens === "object")
         for (const [ws, ct] of Object.entries(d.githubTokens as Record<string, string>)) this.githubTokens.set(ws, ct);
+      // Service tokens hold a hash (never the raw secret) — a plain array keyed
+      // by id. Server-internal (no shared zod contract), so fill directly with a
+      // light shape guard and drop anything malformed.
+      if (Array.isArray(d.serviceTokens))
+        for (const t of d.serviceTokens as import("../auth/service-tokens.js").StoredServiceToken[])
+          if (t && typeof t.id === "string" && typeof t.tokenHash === "string" && t.principal) this.serviceTokens.set(t.id, t);
     } catch {
       // Corrupt or empty file → start fresh; the next flush rewrites it cleanly.
     }
@@ -111,6 +117,7 @@ export class FileStore extends MemoryStore {
       audit: this.audit,
       github: [...this.github.values()],
       githubTokens: Object.fromEntries(this.githubTokens),
+      serviceTokens: [...this.serviceTokens.values()],
     };
     try {
       const tmp = `${this.path}.tmp`;
