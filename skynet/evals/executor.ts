@@ -171,14 +171,22 @@ export function makeExecutor(): Executor {
       const unsub = bus.subscribe(WORKSPACE, (ev) => {
         if (ev.type !== "hitl.raised") return;
         const item = ev.item;
-        // The final `diff` review gates the branch into the merge queue. It is NOT
-        // one of the agent's own decision gates, so always approve it and don't
-        // let it consume a scripted reply meant for a work gate.
+        // The final `diff` review gates the branch into the merge queue. It's not
+        // one of the agent's own work gates, so it auto-approves — EXCEPT when the
+        // scenario scripted a `modify` (a request to revise before merge), which
+        // we deliver so the agent incorporates the guidance and re-submits. A
+        // scripted approve/reject stays reserved for work gates (a reject must
+        // never leak onto the diff review), so only `modify` is consumed here.
         const isDiffReview = item.kind === "diff";
         if (isDiffReview) sawDiffReview = true;
-        const reply = isDiffReview
-          ? { action: "approve" as const }
-          : scenario.replies?.[replyIdx++] ?? { action: "approve" as const };
+        let reply: { action: "approve" | "reject" | "modify"; optionIndex?: number; guidance?: string };
+        if (isDiffReview) {
+          const next = scenario.replies?.[replyIdx];
+          if (next?.action === "modify") { reply = next; replyIdx++; }
+          else reply = { action: "approve" as const };
+        } else {
+          reply = scenario.replies?.[replyIdx++] ?? { action: "approve" as const };
+        }
         hitl.push({ kind: item.kind, title: item.title, why: item.why, resolvedWith: reply.action });
         const resolution = {
           action: reply.action,
@@ -244,6 +252,12 @@ export function makeExecutor(): Executor {
         // A runner (not agent) failure — API 529/auth/crash — is an infra flake,
         // not an agent verdict. Flag it so `run` re-runs rather than scoring it.
         const failLine = log.find((l) => /runner failed|did not complete cleanly|529|Overloaded/i.test(l));
+        // Defensive: a scenario that scripts `replies` but never had one consumed
+        // means no work gate fired (only the auto-approved diff review) — the
+        // scripted operator decision was never delivered. That's a scenario/
+        // harness mismatch (e.g. edits stopped gating), not an agent result;
+        // surface it in notes so it can't masquerade as a genuine agent FAIL.
+        const repliesUndelivered = !!scenario.replies?.length && replyIdx === 0;
         return {
           diff,
           log,
@@ -257,7 +271,12 @@ export function makeExecutor(): Executor {
           finalStatus,
           ...(failLine ? { runnerError: failLine } : {}),
           wallMs: Date.now() - started,
-          notes: `provider=${PROVIDER}` + (diffNote ? ` · ${diffNote}` : ""),
+          notes:
+            `provider=${PROVIDER}` +
+            (diffNote ? ` · ${diffNote}` : "") +
+            (repliesUndelivered
+              ? ` · WARNING: scenario scripts ${scenario.replies!.length} HITL reply(ies) but none were delivered — no work gate fired (edits are auto-allowed; only the diff review, which is auto-approved). This scenario cannot test its scripted decision as written.`
+              : ""),
         };
       } finally {
         unsub();

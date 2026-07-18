@@ -18,6 +18,7 @@ import type {
 import type { AuditRecord } from "@skynet/shared";
 import { now } from "../config.js";
 import type { Store } from "./store.js";
+import type { StoredServiceToken } from "../auth/service-tokens.js";
 import { PROVIDERS } from "./providers.js";
 
 export class MemoryStore implements Store {
@@ -32,6 +33,7 @@ export class MemoryStore implements Store {
   protected audit: AuditRecord[] = [];
   protected github = new Map<string, GithubConnection>(); // keyed by workspaceId
   protected githubTokens = new Map<string, string>(); // workspaceId → sealed PAT ciphertext
+  protected serviceTokens = new Map<string, StoredServiceToken>(); // keyed by id (holds a hash, never the raw token)
   private providers: ProviderInfo[] = PROVIDERS;
 
   /** Hook called after every mutation. No-op in memory; FileStore overrides it
@@ -115,4 +117,14 @@ export class MemoryStore implements Store {
   async getGithubToken(ws: string) { return this.githubTokens.get(ws); }
   async putGithubToken(ws: string, ciphertext: string) { this.githubTokens.set(ws, ciphertext); this.persist(); }
   async deleteGithubToken(ws: string) { this.githubTokens.delete(ws); this.persist(); }
+
+  async putServiceToken(t: StoredServiceToken) { this.serviceTokens.set(t.id, t); this.persist(); }
+  async getServiceTokenByHash(tokenHash: string) {
+    for (const t of this.serviceTokens.values()) if (t.tokenHash === tokenHash) return t;
+    return undefined;
+  }
+  async listServiceTokens(ws: string) {
+    return [...this.serviceTokens.values()].filter((t) => t.principal.workspaceId === ws);
+  }
+  async deleteServiceToken(id: string) { const had = this.serviceTokens.delete(id); if (had) this.persist(); return had; }
 }

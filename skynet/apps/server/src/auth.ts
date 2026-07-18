@@ -51,8 +51,9 @@ const TOKENS: Record<string, Principal> = {
 
 const DEV_DEFAULT: Principal = { workspaceId: DEFAULT_WORKSPACE, operatorId: "operator" };
 
-/** Dev conveniences (token map + open default) are disabled in production. */
-const devAuthAllowed = (): boolean => config.nodeEnv !== "production";
+/** Dev conveniences (token map + open default) require an EXPLICIT development
+ *  or test env — an unset/"staging"/production NODE_ENV never opens the API. */
+const devAuthAllowed = (): boolean => config.devMode;
 
 /** Cookie that carries a session token (set by the login route). */
 export const SESSION_COOKIE = "skynet_session";

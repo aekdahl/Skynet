@@ -96,6 +96,11 @@ export class Orchestrator {
   // demand. Keyed by repo so a project's local repo and the global integration
   // repo each get their own queue.
   private gitCtx = new Map<string, GitContext>();
+  // Runs parked at a diff review, keyed by runId. The live entry is dropped when
+  // a review is raised (compute is freed while a human reviews), so this holds
+  // the little that a `modify` needs to resume the run for a revision in its
+  // still-present worktree (see reviseAfterReview / deliver()). Cleared on merge.
+  private reviews = new Map<string, { git: GitContext; baseRef: string; taskId: string | null }>();
 
   // `providerOverride` is a test seam — inject a runner provider directly instead
   // of resolving the runner's own provider. Production always passes (store, hub) only.
@@ -301,6 +306,9 @@ export class Orchestrator {
           if (task) await this.hub.upsertTask({ ...task, state: "review" });
         }
         await this.raiseDiffReview(runId, stat);
+        // Keep what a `modify` review resolution needs to resume this run for a
+        // revision — its worktree survives (retire only happens on merge).
+        this.reviews.set(runId, { git: live.git, baseRef: live.baseRef, taskId: live.taskId });
         this.live.delete(runId);
         return;
       }
@@ -701,6 +709,15 @@ export class Orchestrator {
       }
     }
 
+    // Review feedback loop: a `modify` on a finished run's diff/merge review is a
+    // request to revise before it can merge. Compute was freed for the review, so
+    // there's no live handle — re-acquire one and resume the run in its worktree
+    // with the guidance (reviseAfterReview), rather than silently dropping it.
+    if ((item.kind === "diff" || item.kind === "merge") && resolution.action === "modify" && !this.live.has(runId)) {
+      await this.reviseAfterReview(runId, resolution.guidance ?? "");
+      return;
+    }
+
     const live = this.live.get(runId);
     if (live) {
       await live.handle.resume(resolution);
@@ -712,8 +729,54 @@ export class Orchestrator {
     }
   }
 
+  /** A `modify` on a finished run's diff review: re-acquire compute and resume the
+   *  agent in its existing worktree with the reviewer's guidance so it can revise
+   *  and re-submit. The worktree still holds the committed work (retire happens
+   *  only on merge), so a fresh turn edits on top of it; on the agent's next
+   *  completion, complete() re-commits and re-raises the review. Loops until the
+   *  operator approves. */
+  private async reviseAfterReview(runId: string, guidance: string): Promise<void> {
+    const review = this.reviews.get(runId);
+    const run = await this.store.getRun(runId);
+    if (!run || !review) {
+      await this.hub.runLog(runId, `revision requested but this run is no longer resumable — not applied`);
+      return;
+    }
+    let acq: { id: string; provider: TaskRun["provider"]; model: string };
+    try {
+      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model);
+    } catch (err) {
+      await this.hub.runLog(runId, `cannot revise — ${(err as Error).message}`);
+      return;
+    }
+    const provider = await this.getProvider(acq.provider);
+    const cwd = review.git.worktrees.pathFor(runId);
+    const apiKey = await secretService.resolve(run.workspaceId, run.provider);
+    const revisePrompt =
+      `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
+      `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
+      `only the changes needed to address the request, then stop.`;
+    await this.hub.runStatus(runId, "running");
+    if (review.taskId) {
+      const task = await this.store.getTask(review.taskId);
+      if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
+    }
+    await this.hub.runLog(runId, "revising per review guidance");
+    try {
+      const handle = await provider.start(
+        { runId, projectId: run.projectId, task: revisePrompt, model: run.model, branch: run.branch, cwd, apiKey },
+        this.events(),
+      );
+      this.live.set(runId, { handle, agentId: acq.id, taskId: review.taskId, branch: run.branch, baseRef: review.baseRef, git: review.git });
+      this.reviews.delete(runId);
+    } catch (err) {
+      await this.failStartup(runId, acq.id, (err as Error).message);
+    }
+  }
+
   /** Merge committed: free the runner, mark the owning task done, finish the agent. */
   private async completeMerged(runId: string, branch: string): Promise<void> {
+    this.reviews.delete(runId); // integrated — no longer awaiting a revise
     const agent = await this.store.getRun(runId);
     await this.freeRunner(agent?.agentId ?? null);
     if (agent) {

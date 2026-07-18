@@ -21,9 +21,10 @@ import { registerSecretsRoutes } from "./secrets/index.js";
 import { registerGithubRoutes, configureGithub } from "./github/index.js";
 import { registerEvalsRoutes } from "./evals/index.js";
 import { registerSimulationRoutes } from "./simulation/index.js";
+import { registerRateLimit } from "./rate-limit.js";
 import { configureAuth } from "./auth.js";
 import { MemorySessionStore, type SessionStore } from "./auth/sessions.js";
-import { MemoryServiceTokenStore } from "./auth/service-tokens.js";
+import { StoreServiceTokenStore } from "./auth/service-tokens.js";
 import { seedBootstrapToken } from "./auth/bootstrap.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
 import { registerAuthRoutes, registerServiceTokenRoutes } from "./auth/routes.js";
@@ -77,21 +78,41 @@ async function main() {
     throw new Error("No session store configured. Set SESSIONS=memory for dev/tests, or SESSIONS=postgres / SESSIONS=redis.");
   }
   const operators = new MemoryOperatorDirectory(seedOperators());
-  // Scoped API tokens for MCP / programmatic access. In-memory for now; a durable
-  // adapter drops in behind ServiceTokenStore (same pattern as sessions) later.
-  const serviceTokens = new MemoryServiceTokenStore();
+  // Scoped API tokens for MCP / programmatic access. Persisted through the
+  // domain Store (file on desktop, Postgres hosted) as a hash + last-4 — so a
+  // token minted in Settings survives a restart, and the raw secret is never
+  // written to disk.
+  const serviceTokens = new StoreServiceTokenStore(store);
   configureAuth({ sessions, serviceTokens });
   // Headless/sandbox deploys: register the agent-provided bootstrap token so it
   // can call /mcp without a human login (no-op unless SKYNET_BOOTSTRAP_TOKEN set).
   const bootstrap = await seedBootstrapToken(serviceTokens);
 
-  const app = Fastify({ logger: { level: config.nodeEnv === "development" ? "info" : "warn" } });
-  // Loud guardrail: an explicit AUTH_REQUIRED=false in production opens the API.
-  if (config.nodeEnv === "production" && !config.authRequired) {
-    app.log.warn("AUTH_REQUIRED=false in production — the API accepts UNAUTHENTICATED requests. Set AUTH_REQUIRED=true.");
+  // Hard guardrail: never boot an OPEN API outside an explicit dev/test env. An
+  // unset/typo'd/"staging" NODE_ENV now requires auth by default; if someone
+  // ALSO forces AUTH_REQUIRED=false there, fail closed rather than silently serve
+  // unauthenticated requests. Only an explicit NODE_ENV=development/test may open.
+  if (!config.authRequired && !config.devMode) {
+    throw new Error(
+      "Refusing to start: AUTH_REQUIRED is off outside an explicit development/test env — the API would accept UNAUTHENTICATED requests. " +
+        `Set AUTH_REQUIRED=true (recommended), or NODE_ENV=development for local dev. (NODE_ENV=${config.nodeEnv})`,
+    );
+  }
+
+  // trustProxy: read the real client IP from X-Forwarded-For behind a proxy you
+  // control, so rate limiting keys on the caller, not the proxy. Off by default.
+  const app = Fastify({
+    logger: { level: config.nodeEnv === "development" ? "info" : "warn" },
+    trustProxy: config.trustProxy,
+  });
+  if (!config.authRequired) {
+    app.log.warn("AUTH_REQUIRED is OFF (explicit dev/test) — the API accepts unauthenticated requests. Never expose this build.");
   }
   await app.register(cors, { origin: true });
   await app.register(websocket);
+  // Rate limiting runs before auth so a flood is shed early. Guards /api + /mcp
+  // (login hardest); exempts loopback in dev. See rate-limit.ts.
+  registerRateLimit(app);
 
   app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: "per-runner", sessions: config.sessions }));
 
