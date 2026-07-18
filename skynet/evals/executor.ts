@@ -171,14 +171,22 @@ export function makeExecutor(): Executor {
       const unsub = bus.subscribe(WORKSPACE, (ev) => {
         if (ev.type !== "hitl.raised") return;
         const item = ev.item;
-        // The final `diff` review gates the branch into the merge queue. It is NOT
-        // one of the agent's own decision gates, so always approve it and don't
-        // let it consume a scripted reply meant for a work gate.
+        // The final `diff` review gates the branch into the merge queue. It's not
+        // one of the agent's own work gates, so it auto-approves — EXCEPT when the
+        // scenario scripted a `modify` (a request to revise before merge), which
+        // we deliver so the agent incorporates the guidance and re-submits. A
+        // scripted approve/reject stays reserved for work gates (a reject must
+        // never leak onto the diff review), so only `modify` is consumed here.
         const isDiffReview = item.kind === "diff";
         if (isDiffReview) sawDiffReview = true;
-        const reply = isDiffReview
-          ? { action: "approve" as const }
-          : scenario.replies?.[replyIdx++] ?? { action: "approve" as const };
+        let reply: { action: "approve" | "reject" | "modify"; optionIndex?: number; guidance?: string };
+        if (isDiffReview) {
+          const next = scenario.replies?.[replyIdx];
+          if (next?.action === "modify") { reply = next; replyIdx++; }
+          else reply = { action: "approve" as const };
+        } else {
+          reply = scenario.replies?.[replyIdx++] ?? { action: "approve" as const };
+        }
         hitl.push({ kind: item.kind, title: item.title, why: item.why, resolvedWith: reply.action });
         const resolution = {
           action: reply.action,
