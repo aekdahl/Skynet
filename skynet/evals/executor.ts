@@ -252,6 +252,12 @@ export function makeExecutor(): Executor {
         // A runner (not agent) failure — API 529/auth/crash — is an infra flake,
         // not an agent verdict. Flag it so `run` re-runs rather than scoring it.
         const failLine = log.find((l) => /runner failed|did not complete cleanly|529|Overloaded/i.test(l));
+        // Defensive: a scenario that scripts `replies` but never had one consumed
+        // means no work gate fired (only the auto-approved diff review) — the
+        // scripted operator decision was never delivered. That's a scenario/
+        // harness mismatch (e.g. edits stopped gating), not an agent result;
+        // surface it in notes so it can't masquerade as a genuine agent FAIL.
+        const repliesUndelivered = !!scenario.replies?.length && replyIdx === 0;
         return {
           diff,
           log,
@@ -265,7 +271,12 @@ export function makeExecutor(): Executor {
           finalStatus,
           ...(failLine ? { runnerError: failLine } : {}),
           wallMs: Date.now() - started,
-          notes: `provider=${PROVIDER}` + (diffNote ? ` · ${diffNote}` : ""),
+          notes:
+            `provider=${PROVIDER}` +
+            (diffNote ? ` · ${diffNote}` : "") +
+            (repliesUndelivered
+              ? ` · WARNING: scenario scripts ${scenario.replies!.length} HITL reply(ies) but none were delivered — no work gate fired (edits are auto-allowed; only the diff review, which is auto-approved). This scenario cannot test its scripted decision as written.`
+              : ""),
         };
       } finally {
         unsub();
