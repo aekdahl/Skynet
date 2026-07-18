@@ -3,9 +3,13 @@
 // exposed only at creation, and it flows through the same auth resolution humans
 // use — so workspace isolation holds for automated callers too.
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { configureAuth, hasScope, resolvePrincipal, type Principal } from "../apps/server/src/auth.js";
-import { MemoryServiceTokenStore } from "../apps/server/src/auth/service-tokens.js";
+import { MemoryServiceTokenStore, StoreServiceTokenStore } from "../apps/server/src/auth/service-tokens.js";
+import { FileStore } from "../apps/server/src/store/file.js";
 
 describe("service-token store", () => {
   it("mints a scoped principal and resolves the token back to it", async () => {
@@ -60,6 +64,46 @@ describe("service-token store", () => {
       workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:a", scopes: ["author"], label: "a", ttlMs: -1,
     });
     expect(await store.resolve(created.token)).toBeUndefined();
+  });
+});
+
+describe("durable service-token store (Store-backed, hash-only)", () => {
+  const tmpDb = () => join(mkdtempSync(join(tmpdir(), "skynet-tok-")), "db.json");
+  const base = { workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:research", scopes: ["observe", "author"] as const, label: "research" };
+
+  it("survives a restart — a token minted before reload still resolves", async () => {
+    const path = tmpDb();
+    const fs = FileStore.create(path);
+    const minted = await new StoreServiceTokenStore(fs).create({ ...base });
+    expect(minted.token.startsWith("skynet_pat_")).toBe(true);
+    fs.flush(); // FileStore debounces writes ~150ms; a real restart is seconds later — force it now.
+
+    // A fresh FileStore from the same file is exactly what a restarted process does.
+    const reopened = new StoreServiceTokenStore(FileStore.create(path));
+    expect(await reopened.resolve(minted.token)).toEqual({
+      workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:research", scopes: ["observe", "author"],
+    });
+    const list = await reopened.list(DEFAULT_WORKSPACE);
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ id: minted.id, last4: minted.token.slice(-4) });
+    expect(await reopened.revoke(minted.id)).toBe(true);
+    expect(await reopened.resolve(minted.token)).toBeUndefined();
+  });
+
+  it("never writes the raw token to disk — only a hash + last4", async () => {
+    const path = tmpDb();
+    const fs = FileStore.create(path);
+    const minted = await new StoreServiceTokenStore(fs).create({ ...base });
+    fs.flush();
+    const onDisk = readFileSync(path, "utf8");
+    expect(onDisk).not.toContain(minted.token); // the raw secret must NOT be persisted
+    expect(onDisk).toContain(minted.token.slice(-4)); // last4 fingerprint is fine
+  });
+
+  it("honors an expiry across the durable path", async () => {
+    const store = new StoreServiceTokenStore(FileStore.create(tmpDb()));
+    const minted = await store.create({ ...base, ttlMs: -1 }); // already expired
+    expect(await store.resolve(minted.token)).toBeUndefined();
   });
 });
 
