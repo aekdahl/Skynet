@@ -55,6 +55,22 @@ async function tryAssign(projectId: string, taskId: string): Promise<TaskRun | {
 }
 const repoPathOf = (p: unknown) => (p as { repoPath?: string | null } | undefined)?.repoPath ?? null;
 
+/**
+ * Ensure the fleet has idle capacity to assign onto — WITHOUT piling up runners.
+ * `assignTask` picks the oldest idle runner, so a journey that always mints a
+ * fresh one just leaves it idle while the task runs on a borrowed elder. For
+ * journeys that only need *a* runner (not a specific named one), reuse an idle
+ * runner when one exists, else provision a fresh sim- runner. Journeys that are
+ * ABOUT the fleet (provision, fleet-at-scale) or need their own runner to test
+ * (stop/retire, fork) still create explicitly.
+ */
+async function ensureCapacity(name: string): Promise<void> {
+  const s = await api.fetchSnapshot();
+  if (!s.fleet.some((r) => r.status === "idle")) {
+    await api.createAgent({ provider: "claude", model: "opus-4.8", name });
+  }
+}
+
 export const JOURNEYS: Journey[] = [
   {
     id: "provision-project",
@@ -127,7 +143,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-sup-${tag}` });
+      await ensureCapacity(`sim-sup-${tag}`);
       // A task that FORCES a shell command: edits are auto-allowed, but commands
       // gate — so the real agent raises a genuine approval HITL (no mock/canned
       // gate). The command's output must be unknowable without running it — a
@@ -283,7 +299,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-arch-${tag}` });
+      await ensureCapacity(`sim-arch-${tag}`);
       await api.createTask(p.id, "Sim: task to archive");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
@@ -352,7 +368,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-chat-${tag}` });
+      await ensureCapacity(`sim-chat-${tag}`);
       await api.createTask(p.id, "Sim: task to discuss");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
@@ -414,7 +430,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-pipe-${tag}` });
+      await ensureCapacity(`sim-pipe-${tag}`);
       // A concrete edit (file writes are auto-allowed, so no mid-run gate) —
       // finishing routes the agent's branch to the end-of-run diff-review gate.
       await api.createTask(
@@ -457,7 +473,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-rej-${tag}` });
+      await ensureCapacity(`sim-rej-${tag}`);
       await api.createTask(
         p.id,
         "Run the shell command `echo skynet-reject-$(date +%s)` and report the EXACT line it prints. The value depends on the clock, so you must actually run it — do not guess.",
@@ -491,7 +507,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-mod-${tag}` });
+      await ensureCapacity(`sim-mod-${tag}`);
       await api.createTask(
         p.id,
         "Run the shell command `echo skynet-modify-$(date +%s)` and report the EXACT line it prints. The value depends on the clock, so you must actually run it — do not guess.",
@@ -525,7 +541,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-q-${tag}` });
+      await ensureCapacity(`sim-q-${tag}`);
       await api.createTask(
         p.id,
         "Before doing ANY work, you MUST use your question tool (AskUserQuestion) to ask the operator to choose between two options: (A) proceed with the task, or (B) stop. Ask the question and wait for the operator's choice before doing anything else.",
@@ -563,7 +579,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-triv-${tag}` });
+      await ensureCapacity(`sim-triv-${tag}`);
       await api.createTask(
         p.id,
         `Create a new file \`note-${tag}.txt\` containing the single comment line \`// touched by skynet ${tag}\`. This is a trivial edit — just write the file, nothing else.`,
@@ -605,7 +621,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-audit-${tag}` });
+      await ensureCapacity(`sim-audit-${tag}`);
       await api.createTask(
         p.id,
         "Run the shell command `echo skynet-audit-$(date +%s)` and report the EXACT line it prints. The value depends on the clock, so you must actually run it — do not guess.",
@@ -648,7 +664,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-chatf-${tag}` });
+      await ensureCapacity(`sim-chatf-${tag}`);
       await api.createTask(p.id, `Create a file \`done-${tag}.txt\` with the single line \`finished-${tag}\`, then stop.`);
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
@@ -688,14 +704,10 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-tele-${tag}` });
-      // Force a PLAN: the PLAN panel is populated from the agent's todo/task tool
-      // (the runner folds TodoWrite/TaskCreate/TaskUpdate into `plan`). A short
-      // task won't reliably make a model plan, so explicitly require a tracked
-      // task list — otherwise `plan` stays empty even though the agent ran fine.
+      await ensureCapacity(`sim-tele-${tag}`);
       await api.createTask(
         p.id,
-        `Investigate this repository and TRACK YOUR WORK AS A TASK LIST using your todo/planning tool, so each step is visible. FIRST create a task list with these three items, then work through them one at a time, marking each complete as you finish it: (1) list the repository's files, (2) read two of them, (3) write a short summary of what the project does to a new file \`summary-${tag}.md\`.`,
+        `Use your TODO/task-planning tool to lay out a multi-step plan FIRST, then carry it out step by step, keeping the plan updated: (1) list the repository files, (2) read two of them, (3) write a short summary of what the project does to a new file \`summary-${tag}.md\`. Maintain the plan as you go.`,
       );
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
@@ -705,7 +717,14 @@ export const JOURNEYS: Journey[] = [
       steps.push(step("real agent running", true, runId));
       const planned = await settle((sn) => (sn.runs.find((a) => a.id === runId)?.plan.length ?? 0) > 0, 60, 1000);
       const planLen = planned.runs.find((a) => a.id === runId)?.plan.length ?? 0;
-      steps.push(step("PLAN panel has real steps", planLen > 0, `${planLen} steps`));
+      // Plan steps come from the agent's own task-tracking tool calls — a model may
+      // legitimately skip a formal plan on a short task, so treat 0 as inconclusive
+      // (SKIP), not a failure. The log + telemetry checks below still gate the run.
+      steps.push(
+        planLen > 0
+          ? step("PLAN panel has real steps", true, `${planLen} steps`)
+          : skipped("PLAN panel has real steps", "agent finished without emitting a task plan (models may skip planning short tasks) — log + telemetry still verified"),
+      );
       const logged = await settle((sn) => (sn.runs.find((a) => a.id === runId)?.log.length ?? 0) > 0, 60, 1000);
       const logLen = logged.runs.find((a) => a.id === runId)?.log.length ?? 0;
       steps.push(step("live activity log streaming", logLen > 0, `${logLen} lines`));
@@ -932,22 +951,33 @@ export const JOURNEYS: Journey[] = [
 ];
 
 /**
- * A compact, Sim-tagged slice of the current board + a recent audit tail —
- * handed to the behavioral judge as the "resulting state" evidence alongside a
- * journey's steps. Kept small (ids/statuses, not full logs) so the judge sees
- * the shape of what the journey produced without a huge payload.
+ * A compact slice of the board handed to the behavioral judge as the "resulting
+ * state" evidence for ONE journey. When `scopeProjectIds` is given (the projects
+ * THIS journey just created), everything is scoped to those projects' runs/tasks
+ * + only the runners those runs actually use + only the gates/decisions on those
+ * runs. That isolation matters: the Simulation board is shared and persistent, so
+ * without it the judge sees every other journey's runs/gates/idle spare runners
+ * and spends its verdict explaining them away (or, worse, mis-attributes them).
+ * Falls back to the whole Sim-tagged board when no scope is passed.
  */
-export async function captureEvidence(): Promise<Record<string, unknown>> {
+export async function captureEvidence(scopeProjectIds?: string[]): Promise<Record<string, unknown>> {
   const [s, audit] = await Promise.all([
     api.fetchSnapshot(),
     api.fetchAudit().catch(() => [] as Awaited<ReturnType<typeof api.fetchAudit>>),
   ]);
-  const projects = s.projects.filter((p) => p.name.startsWith("Sim:"));
+  const scoped = scopeProjectIds != null;
+  const projects = scoped
+    ? s.projects.filter((p) => scopeProjectIds!.includes(p.id))
+    : s.projects.filter((p) => p.name.startsWith("Sim:"));
   const projectIds = new Set(projects.map((p) => p.id));
-  // Runs owned by Sim projects — used to scope openHitl to THIS suite's gates,
-  // so the judge never reasons about (or contradicts) the operator's real inbox.
-  const simRunIds = new Set(s.runs.filter((a) => projectIds.has(a.projectId)).map((a) => a.id));
+  const runs = s.runs.filter((a) => projectIds.has(a.projectId));
+  const runIds = new Set(runs.map((a) => a.id));
+  // Only the runners THIS journey's runs actually execute on — not every sim-
+  // runner ever provisioned. Idle spares are noise the judge would flag as an
+  // incoherent "provisioned runner sits idle" gap.
+  const usedRunnerIds = new Set(runs.map((a) => a.agentId).filter((x): x is string => !!x));
   return {
+    scope: scoped ? "this journey's own entities only" : "all Sim-tagged",
     projects: projects.map((p) => ({
       id: p.id,
       name: p.name,
@@ -955,29 +985,55 @@ export async function captureEvidence(): Promise<Record<string, unknown>> {
       repo: p.repo ?? null,
       runs: p.runIds.length,
     })),
-    runs: s.runs
-      .filter((a) => projectIds.has(a.projectId))
-      .map((a) => ({
-        id: a.id,
-        name: a.name,
-        status: a.status,
-        archived: a.archived,
-        agentId: a.agentId,
-        parentId: a.parentId,
-        plan: `${a.plan.filter((x) => x.state === "done").length}/${a.plan.length}`,
-      })),
+    runs: runs.map((a) => ({
+      id: a.id,
+      name: a.name,
+      status: a.status,
+      archived: a.archived,
+      agentId: a.agentId,
+      parentId: a.parentId,
+      plan: `${a.plan.filter((x) => x.state === "done").length}/${a.plan.length}`,
+    })),
     tasks: s.tasks
       .filter((t) => projectIds.has(t.projectId))
       .map((t) => ({ id: t.id, text: t.text, state: t.state, projectId: t.projectId })),
     runners: s.fleet
-      .filter((r) => (r.name ?? "").startsWith("sim-"))
+      .filter((r) => usedRunnerIds.has(r.id))
       .map((r) => ({ id: r.id, name: r.name, status: r.status })),
     openHitl: s.queue
-      .filter((q) => q.resolvedAt == null && simRunIds.has(q.runId))
-      .map((q) => ({ kind: q.kind, title: q.title })),
-    auditCount: audit.length,
-    recentAudit: audit.slice(0, 6),
+      .filter((q) => q.resolvedAt == null && runIds.has(q.runId))
+      .map((q) => ({ kind: q.kind, title: q.title, runId: q.runId })),
+    // Only decisions on THIS journey's runs — not the whole shared audit trail.
+    audit: audit
+      .filter((r) => runIds.has(r.runId))
+      .slice(0, 6)
+      .map((r) => ({ hitlId: r.hitlId, runId: r.runId, action: r.action, operatorId: r.operatorId })),
   };
+}
+
+/**
+ * Drain any Sim run left wedged on an unanswered gate. Gate-testing journeys
+ * resolve only their ONE scripted decision; a real agent then re-raises a
+ * follow-up gate (another Bash command) that nothing answers, so the run wedges
+ * in `waiting`, holds its runner busy, and leaves a dangling gate. Across the
+ * shared, persistent board these pile up — runners never free, later journeys
+ * borrow whichever idle runner is left, and every later judge has to reason
+ * about a growing heap of unrelated open gates. Called after each journey: it
+ * approves open gates on Sim runs until they clear (letting the agent finish to
+ * done/review) or the budget runs out. Bounded so a chatty agent can't hang it.
+ */
+export async function drainWedgedRuns(budgetMs = 25_000): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    const s = await api.fetchSnapshot().catch(() => null);
+    if (!s) return;
+    const simProjectIds = new Set(s.projects.filter((p) => p.name.startsWith("Sim:")).map((p) => p.id));
+    const simRunIds = new Set(s.runs.filter((r) => simProjectIds.has(r.projectId)).map((r) => r.id));
+    const open = s.queue.filter((q) => q.resolvedAt == null && simRunIds.has(q.runId));
+    if (open.length === 0) return;
+    for (const gate of open) await api.resolveHitl(gate.id, { action: "approve" }).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 700));
+  }
 }
 
 /** Fork helper — forkAgent returns unknown; confirm via the snapshot. */

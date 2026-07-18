@@ -14,7 +14,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { JOURNEYS, captureEvidence, clearSimulationData, type Step } from "./simulation";
+import { JOURNEYS, captureEvidence, clearSimulationData, drainWedgedRuns, type Step } from "./simulation";
 import { fetchEvals, judgeSimulation, type SimVerdict } from "./client";
 import * as api from "./client";
 
@@ -79,8 +79,20 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       return next;
     });
     try {
+      // Which Sim projects existed BEFORE — so we can attribute the ones this
+      // journey creates and scope its evidence to just those (isolated verdicts).
+      const before = new Set(
+        (await api.fetchSnapshot().catch(() => null))?.projects.filter((p) => p.name.startsWith("Sim:")).map((p) => p.id) ?? [],
+      );
       const steps = await journey.run();
-      evidence.current[id] = await captureEvidence().catch(() => ({}));
+      // Drain any run this (or a prior) gate-journey left wedged on an unanswered
+      // gate, so the board stays coherent and runners free up instead of piling up.
+      await drainWedgedRuns().catch(() => undefined);
+      const after = await api.fetchSnapshot().catch(() => null);
+      const mine = after
+        ? after.projects.filter((p) => p.name.startsWith("Sim:") && !before.has(p.id)).map((p) => p.id)
+        : undefined;
+      evidence.current[id] = await captureEvidence(mine).catch(() => ({}));
       setResults((m) => ({ ...m, [id]: steps }));
       setStatus((m) => ({ ...m, [id]: verdict(steps) }));
     } catch (e) {
