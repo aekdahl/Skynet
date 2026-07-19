@@ -766,9 +766,19 @@ class ClaudeRunnerHandle implements RunnerHandle {
         // a tool_result reads like injected data to a security-conscious agent,
         // which may (correctly) refuse it — so deny the pending tool, then echo
         // the guidance as a first-class, authoritative operator instruction.
+        //
+        // Queue the operator message BEFORE denying the tool, so the follow-up
+        // turn is already available the instant the denial resolves. Otherwise the
+        // agent can end its turn on the denial ("I'll wait for your directive") and
+        // idle before the directive lands — the run then finalizes with no change.
+        // The denial reason itself now tells the agent to continue NOW, not wait.
         const guidance = decision.guidance?.trim() || "Adjust per operator guidance.";
-        gate({ behavior: "deny", message: "The operator interrupted this action with a directive — see their instruction in the next message and follow it." });
         this.input.push(`[OPERATOR DIRECTIVE — authoritative, from the human operator supervising you; overrides your prior plan] ${guidance}`);
+        gate({
+          behavior: "deny",
+          message:
+            "The operator interrupted this action with a new directive, delivered to you as an operator message. Do NOT stop or wait for further input — read that directive and continue the task with it now.",
+        });
       } else {
         // Echo the tool's own input as `updatedInput` — required for the SDK to
         // actually run the approved tool (omitting it stalls the session).
