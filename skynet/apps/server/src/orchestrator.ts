@@ -776,13 +776,25 @@ export class Orchestrator {
 
   /** Merge committed: free the runner, mark the owning task done, finish the agent. */
   private async completeMerged(runId: string, branch: string): Promise<void> {
+    const review = this.reviews.get(runId);
     this.reviews.delete(runId); // integrated — no longer awaiting a revise
     const agent = await this.store.getRun(runId);
     await this.freeRunner(agent?.agentId ?? null);
-    if (agent) {
-      const tasks = await this.store.listTasks(agent.workspaceId);
-      const task = tasks.find((t) => t.runId === runId);
-      if (task) await this.hub.upsertTask({ ...task, state: "done" });
+    // Advance the owning task to done alongside the run. Resolve it by the EXACT
+    // taskId we stashed when the review was raised (reliable), falling back to a
+    // runId match. The find-by-runId alone left tasks stranded in `review` after
+    // their run reached `done` (an incoherent lifecycle) whenever that lookup came
+    // up empty — a task's `runId` is set at assign, but this closes the gap and,
+    // if a task still can't be resolved, says so loudly rather than silently
+    // leaving it behind.
+    const taskId =
+      review?.taskId ??
+      (agent ? (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === runId)?.id : undefined);
+    if (taskId) {
+      const task = await this.store.getTask(taskId);
+      if (task && task.state !== "done") await this.hub.upsertTask({ ...task, state: "done" });
+    } else {
+      await this.hub.runLog(runId, "merged, but could not resolve the owning task to mark it done");
     }
     await this.hub.runStatus(runId, "done");
     await this.hub.runCompleted(runId, branch);
