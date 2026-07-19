@@ -1,0 +1,37 @@
+# ─── Skynet — headless MCP server image ─────────────────────────────────────
+# Server only: the API + WS + /mcp, no web SPA and no Electron. Same codebase as
+# the desktop/hosted build (one Operations core, two surfaces) — just packaged to
+# run GUI-less so a sandbox (e.g. a Daytona sandbox an agent spins up) can drive
+# Skynet over MCP. See docs/mcp-sandbox.md.
+
+FROM node:22-slim AS base
+RUN corepack enable
+WORKDIR /app
+
+FROM base AS build
+# Lockfile + manifests first for layer caching.
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.base.json ./
+COPY packages ./packages
+COPY apps ./apps
+RUN pnpm install --frozen-lockfile
+# Build ONLY the shared packages + the server — the web SPA is not built (headless).
+RUN pnpm --filter "./packages/*" --filter @skynet/server build
+
+FROM base AS runtime
+# Secure-by-default, MCP-first defaults. Override at runtime as needed.
+ENV NODE_ENV=production \
+    SKYNET_HEADLESS=true \
+    AUTH_REQUIRED=true \
+    STORE=file \
+    BUS=memory \
+    SESSIONS=memory \
+    SKYNET_DB_PATH=/data/skynet-data.json \
+    PORT=8080
+COPY --from=build /app /app
+RUN mkdir -p /data
+EXPOSE 8080
+# Provide at runtime (see docs/mcp-sandbox.md):
+#   SKYNET_BOOTSTRAP_TOKEN  a strong random skynet_pat_… secret the MCP client uses
+#   SKYNET_MASTER_KEY       32-byte base64 — enables the encrypted provider-key store
+#   ANTHROPIC_API_KEY       (or a CLI-login provider) — else agents can't actually run
+CMD ["node", "apps/server/dist/index.js"]
