@@ -34,6 +34,12 @@ echo "skynet_pat_$(openssl rand -hex 32)"
 
 ## 2. Quick start (local, to see the loop)
 
+> A prebuilt image is published to **`ghcr.io/aekdahl/skynet-mcp`** by the
+> **MCP image** GitHub Actions workflow (run it on demand from the Actions tab,
+> or it builds automatically on a `v*` release tag). Pull that instead of
+> building locally if you don't need a custom build:
+> `docker pull ghcr.io/aekdahl/skynet-mcp:latest`.
+
 ```bash
 docker build -f Dockerfile.mcp -t skynet-mcp .
 TOKEN="skynet_pat_$(openssl rand -hex 32)"
