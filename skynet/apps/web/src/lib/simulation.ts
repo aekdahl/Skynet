@@ -948,6 +948,122 @@ export const JOURNEYS: Journey[] = [
       return steps;
     },
   },
+  {
+    id: "burst-parallel",
+    name: "Burst — a wave of tasks runs in parallel",
+    desc: "Operator provisions a small fleet and fires a batch of tasks at once; the whole wave executes concurrently, each run on its own runner (the acquisition mutex must not double-book). Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const N = 4;
+      const pname = `Sim: burst ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated parallel burst" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      // A dedicated pool so the whole wave runs at once. This journey is ABOUT
+      // parallelism, so provision explicitly (like fleet-at-scale).
+      for (let i = 0; i < N; i++) {
+        await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-burst-${tag}-${i}` });
+      }
+      for (let i = 0; i < N; i++) {
+        await api.createTask(p.id, `Sim: parallel unit ${i + 1} — write a one-line note to burst-${tag}-${i + 1}.txt`);
+      }
+      s = await settle((sn) => sn.tasks.filter((t) => t.projectId === p.id).length >= N);
+      const tasks = s.tasks.filter((t) => t.projectId === p.id).slice(0, N);
+      steps.push(step(`backlog seeded with ${N} tasks`, tasks.length === N, `${tasks.length} tasks`));
+      // Fire the whole wave concurrently — exercises the runner-acquisition mutex.
+      const results = await Promise.all(tasks.map((t) => tryAssign(p.id, t.id)));
+      const assigned = results.filter((r) => !("error" in r)).length;
+      steps.push(step("whole wave assigned at once", assigned === N, `${assigned}/${N}`));
+      s = await settle((sn) => sn.runs.filter((a) => a.projectId === p.id).length >= N);
+      const runs = s.runs.filter((a) => a.projectId === p.id);
+      steps.push(step("all units live as parallel runs", runs.length >= N, `${runs.length} runs`));
+      // Each concurrent run holds its OWN runner — the mutex must never hand the
+      // same idle runner to two runs (the TOCTOU double-booking guard, at scale).
+      const runnerIds = new Set(runs.map((a) => a.agentId).filter((x): x is string => !!x));
+      steps.push(step("each run on its own runner — no double-booking", runnerIds.size === runs.length, `${runnerIds.size} runners for ${runs.length} runs`));
+      const inFlight = s.tasks.filter((t) => t.projectId === p.id && t.state !== "backlog").length;
+      steps.push(step("tasks moved off the backlog into flight", inFlight >= N, `${inFlight}/${N} in flight`));
+      return steps;
+    },
+  },
+  {
+    id: "fan-out-forks",
+    name: "Fan out — fork a run into a family of alternatives",
+    desc: "Operator assigns a task, then forks the run several times to explore alternatives; each fork branches from the original (shared context) on its own track. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const K = 3; // forks
+      const pname = `Sim: fanout ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated fan-out family" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      // Root + a runner per fork so the family runs in parallel (fork also
+      // provisions on demand, but pre-seeding keeps them concurrent).
+      for (let i = 0; i < K + 1; i++) {
+        await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-fanout-${tag}-${i}` });
+      }
+      await api.createTask(p.id, `Sim: root task — explore approaches for fanout-${tag}`);
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      const res = await tryAssign(p.id, task.id);
+      if ("error" in res) return [step("root run spawned", false, res.error)];
+      const parentId = res.id;
+      steps.push(step("root run spawned", true, parentId));
+      // Fan out: fork the root K times.
+      for (let i = 0; i < K; i++) await tryAssignFork(parentId);
+      s = await settle((sn) => sn.runs.filter((a) => a.parentId === parentId).length >= K);
+      const children = s.runs.filter((a) => a.parentId === parentId);
+      steps.push(step(`root fanned out into ${K} forks`, children.length >= K, `${children.length} children of ${parentId}`));
+      // The family — root + children — each on its own branch/track.
+      const family = s.runs.filter((a) => a.id === parentId || a.parentId === parentId);
+      const branches = new Set(family.map((a) => a.branch));
+      steps.push(step("each family member on its own branch/track", branches.size === family.length, `${branches.size} branches for ${family.length} runs`));
+      // Forks inherit the root's provider lineage.
+      steps.push(step("forks share the root's provider lineage", family.every((a) => a.provider === res.provider), res.provider));
+      return steps;
+    },
+  },
+  {
+    id: "deep-backlog",
+    name: "Deep backlog — a fleet works a big batch in parallel",
+    desc: "A project with a deep backlog: the operator fires the whole batch, workers pull tasks in parallel up to capacity (no double-booking, no over-spawn), and any excess waits in the backlog — nothing is dropped. Persists.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const M = 6; // backlog depth
+      const N = 3; // dedicated runners (the shared board may add more idle capacity)
+      const pname = `Sim: backlog ${tag}`;
+      await api.createProject({ name: pname, goal: "simulated deep backlog" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      for (let i = 0; i < N; i++) {
+        await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-backlog-${tag}-${i}` });
+      }
+      for (let i = 0; i < M; i++) await api.createTask(p.id, `Sim: backlog item ${i + 1} of ${M}`);
+      s = await settle((sn) => sn.tasks.filter((t) => t.projectId === p.id).length >= M);
+      const tasks = s.tasks.filter((t) => t.projectId === p.id).slice(0, M);
+      steps.push(step(`deep backlog seeded (${M} tasks)`, tasks.length === M, `${tasks.length} tasks`));
+      // Fire the whole backlog at once; only as many as there is idle capacity
+      // start, the rest are refused (no capacity) and stay queued.
+      const results = await Promise.all(tasks.map((t) => tryAssign(p.id, t.id)));
+      const started = results.filter((r) => !("error" in r)).length;
+      steps.push(step("workers pull tasks in parallel", started >= Math.min(N, M), `${started} started · ${M - started} refused (no capacity)`));
+      s = await settle((sn) => sn.runs.filter((a) => a.projectId === p.id).length >= started);
+      const runs = s.runs.filter((a) => a.projectId === p.id);
+      steps.push(step("no over-spawn — one run per started task", runs.length === started, `${runs.length} runs for ${started} started`));
+      const runnerIds = new Set(runs.map((a) => a.agentId).filter((x): x is string => !!x));
+      steps.push(step("each run on its own runner — no double-booking", runnerIds.size === runs.length, `${runnerIds.size} runners for ${runs.length} runs`));
+      // Every task is accounted for: either started (has a run) or still queued.
+      const accounted = s.tasks.filter((t) => t.projectId === p.id && (t.state === "backlog" || !!t.runId)).length;
+      steps.push(step("unstarted work waits in the backlog — nothing dropped", accounted === M, `${accounted}/${M} accounted`));
+      return steps;
+    },
+  },
 ];
 
 /**
