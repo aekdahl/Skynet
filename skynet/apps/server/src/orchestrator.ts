@@ -1139,6 +1139,17 @@ export class Orchestrator {
       await this.hub.runStatus(runId, "done");
       await this.hub.runCompleted(runId, agent.branch);
     }
+    // A stopped run integrates no change, so its owning task must not be left
+    // stranded "ongoing" (or "review") with no live run behind it — that reads as
+    // in-progress while nothing is working it. Return the task to `todo` (cleanly
+    // re-pickable) and archive+detach the dead run, mirroring the abandon path
+    // (transitionTask ongoing/review → todo). Invariant: an `ongoing` task always
+    // has a live run.
+    const task = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === runId);
+    if (task && (task.state === "ongoing" || task.state === "review")) {
+      await this.hub.setRunArchived(runId, true).catch(() => undefined);
+      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewFlaggedReason: null });
+    }
     return this.store.getRun(runId);
   }
 

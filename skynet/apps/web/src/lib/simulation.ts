@@ -498,19 +498,22 @@ export const JOURNEYS: Journey[] = [
   {
     id: "gate-modify",
     name: "Modify a gated action with guidance",
-    desc: "A REAL agent raises an approval gate; the operator resolves it with MODIFY + guidance, and the modification (with its guidance) lands in the audit trail. Persists.",
+    desc: "A REAL agent raises an approval gate; the operator resolves it with MODIFY + guidance; the agent APPLIES the directive and runs to completion (guards the idle-after-directive regression, #130). The modify lands in the audit trail. Persists.",
     run: async () => {
       const steps: Step[] = [];
       const tag = uid();
       const pname = `Sim: modify ${tag}`;
-      await api.createProject({ name: pname, goal: "simulated modify-with-guidance" });
+      await api.createProject({ name: pname, goal: "simulated modify-with-guidance", repoPath: `/tmp/skynet-sim/${tag}` });
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
       await ensureCapacity(`sim-mod-${tag}`);
+      // A task that can only be done by running a gated command AND writing a
+      // file — so the modify has something concrete to redirect, and applying it
+      // leaves a checkable diff (parity with the eval's KERNEL.txt scenario).
       await api.createTask(
         p.id,
-        "Run the shell command `echo skynet-modify-$(date +%s)` and report the EXACT line it prints. The value depends on the clock, so you must actually run it — do not guess.",
+        `Create a file \`kernel-${tag}.txt\` whose contents are the output of the shell command \`uname -s\`. You must actually run the command to get the value — do not guess it.`,
       );
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
@@ -522,10 +525,37 @@ export const JOURNEYS: Journey[] = [
       const open = gated.queue.find((q) => q.runId === runId && q.resolvedAt == null);
       steps.push(step("real agent raised an approval gate", !!open, open ? `${open.kind}: ${open.title}` : "no gate within ~60s"));
       if (!open) return steps;
-      await api.resolveHitl(open.id, { action: "modify", guidance: "Prefer `node --version` — it's safer for this check." });
+      await api.resolveHitl(open.id, {
+        action: "modify",
+        guidance: "Change what you write: prefix the value with `KERNEL=` and make the whole line UPPERCASE (e.g. `KERNEL=DARWIN`), then finish.",
+      });
       const trail = await settleAudit((a) => a.some((r) => r.hitlId === open.id));
       const row = trail.find((r) => r.hitlId === open.id);
       steps.push(step("modification recorded in audit (action=modify)", row?.action === "modify", row ? `${row.action} · ${row.operatorId}` : "no audit row"));
+      // Follow-through (guards #130): the agent must APPLY the directive and
+      // continue — re-run the revised command and write the file, raising the
+      // end-of-run diff review. Approve any follow-up command gates. If it stalled
+      // after the directive ("I'll wait…"), no diff ever appears → fail loudly.
+      let diffId: string | undefined;
+      let lastId = open.id;
+      for (let i = 0; i < 5 && !diffId; i++) {
+        const snap = await settle(
+          (sn) =>
+            sn.runs.find((a) => a.id === runId)?.status === "done" ||
+            sn.queue.some((q) => q.runId === runId && !q.resolvedAt && q.id !== lastId),
+          60,
+          1000,
+        );
+        const g = snap.queue.find((q) => q.runId === runId && !q.resolvedAt && q.id !== lastId);
+        if (g?.kind === "diff") { diffId = g.id; break; }
+        if (g) { lastId = g.id; await api.resolveHitl(g.id, { action: "approve" }).catch(() => undefined); continue; }
+        if (snap.runs.find((a) => a.id === runId)?.status === "done") break; // stalled / no change
+      }
+      steps.push(step("agent applied the directive and produced a diff — didn't stall (#130)", !!diffId, diffId ?? "no diff after modify — agent stalled or made no change"));
+      if (!diffId) return steps;
+      await api.resolveHitl(diffId, { action: "approve" });
+      const fin = await settle((sn) => sn.runs.find((a) => a.id === runId)?.status === "done", 60, 1000);
+      steps.push(step("run completed after applying the directive", fin.runs.find((a) => a.id === runId)?.status === "done", fin.runs.find((a) => a.id === runId)?.status ?? "gone"));
       return steps;
     },
   },
