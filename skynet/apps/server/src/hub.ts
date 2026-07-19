@@ -152,8 +152,10 @@ export class Hub {
       action: resolution.action,
       operatorId: resolution.by,
       at: resolution.at,
-      // Snapshot what was decided so the audit is self-contained — the live HITL
-      // item leaves the queue once resolved, so the view can't re-derive it.
+      // Snapshot the FULL gate + decision so the audit is self-contained — the
+      // live HITL item leaves the queue once resolved, so the view can't re-derive
+      // it. Captures the agent's rationale, the risk, and the options (so which
+      // one was chosen still renders after the item is gone), not just the action.
       payload: {
         optionIndex: resolution.optionIndex,
         guidance: resolution.guidance,
@@ -161,6 +163,11 @@ export class Hub {
         title: item.title,
         why: item.why,
         command: item.command,
+        rationale: item.rationale,
+        risk: item.risk,
+        options: item.options,
+        recommended: item.recommended,
+        diff: item.diff,
       },
     });
     this.bus.publish(item.workspaceId, { type: "hitl.resolved", id, resolution });

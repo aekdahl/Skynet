@@ -226,6 +226,7 @@ kbd {
 .qcard-agent {
   background: none; border: none; cursor: pointer; font-family: var(--font-mono);
   font-size: 11px; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line);
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
 }
 .qcard-agent:hover { color: var(--text); }
 .qcard-wait { margin-left: auto; font-family: var(--font-mono); font-size: 12px; color: var(--warn); font-variant-numeric: tabular-nums; }
@@ -1197,11 +1198,13 @@ button.fleet-hist-row:hover { border-color: var(--border); background: var(--hov
 .audit-agent {
   background: none; border: none; cursor: pointer; font-family: var(--font-mono);
   font-size: 11px; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line);
+  max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
 }
 .audit-agent:hover { color: var(--text); }
 .audit-when { margin-left: auto; font-family: var(--font-mono); font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .audit-title { font-size: calc(var(--fs) + 2px); font-weight: 600; letter-spacing: -0.01em; }
 .audit-why { font-size: 13px; color: var(--muted); line-height: 1.5; text-wrap: pretty; margin-top: 2px; }
+.audit-reason { font-size: 13px; color: var(--muted); font-style: italic; line-height: 1.5; margin-top: 3px; }
 .audit-cmd { font-size: 12px; color: var(--text); background: var(--bg); border: 1px solid var(--line-soft); border-radius: 6px; padding: 8px 10px; margin-top: 4px; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
 .audit-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--faint); }
 .audit-op { color: var(--muted); }
