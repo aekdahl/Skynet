@@ -411,7 +411,10 @@ export class Orchestrator {
       workspaceId: agent.workspaceId,
       runId,
       kind: "diff",
-      title: `Review diff: ${agent.name}`,
+      // Concise, scannable title — the run/task is shown separately in every view
+      // (queue card, audit row, run header), so embedding the whole task prompt
+      // here just bloats the row. The stats + branch live in `why`.
+      title: `Review diff — ${stat.add}+/${stat.del}− (${stat.files.length} file${stat.files.length === 1 ? "" : "s"})`,
       why: `Finished on ${agent.branch} — ${stat.add}+/${stat.del}- across ${stat.files.length} file(s). Approve to integrate.`,
       risk: stat.del > 200 || stat.files.length > 40 ? "high" : "medium",
       raisedAt: now(),
@@ -857,7 +860,7 @@ export class Orchestrator {
       workspaceId: agent.workspaceId,
       runId: req.runId,
       kind: "merge",
-      title: `Merge conflict: ${agent.name}`,
+      title: `Merge conflict — ${files.length} file${files.length === 1 ? "" : "s"}`,
       why: `${files.length} file(s) conflict integrating ${req.agentBranch}. Reconcile, then approve to retry.`,
       risk: "high",
       raisedAt: now(),
