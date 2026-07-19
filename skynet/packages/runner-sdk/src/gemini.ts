@@ -39,6 +39,7 @@ function approvalRaise(command: string): HitlRaise {
     command: command || null,
     options: null,
     recommended: null,
+    rationale: null,
     steps: null,
     diff: null,
   };

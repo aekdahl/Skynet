@@ -216,6 +216,28 @@ function describeTool(name: string, input: Record<string, unknown>): string {
   return name;
 }
 
+// A specific, human title for the gate — what the operator is being asked to
+// allow — instead of a generic "Approve: Bash".
+function actionTitle(name: string, input: Record<string, unknown>): string {
+  const fp = typeof input.file_path === "string" ? input.file_path : undefined;
+  if (name === "Bash" && typeof input.command === "string") return `Run a shell command: ${clip(input.command, 70)}`;
+  if (name === "Write" && fp) return `Create/overwrite ${fp}`;
+  if (name === "Edit" && fp) return `Edit ${fp}`;
+  if (fp) return `${name} ${fp}`;
+  return `Use the ${name} tool`;
+}
+
+// A plain-language statement of what the action DOES / what it touches — the
+// system's framing (the orchestrator appends any safety flag). Distinct from the
+// agent's own `rationale`.
+function actionImpact(name: string, input: Record<string, unknown>): string {
+  const fp = typeof input.file_path === "string" ? input.file_path : undefined;
+  if (name === "Bash") return "Runs a shell command in the agent's isolated worktree.";
+  if (name === "Write" && fp) return `Writes ${fp} in the agent's worktree (creates it or replaces its contents).`;
+  if (name === "Edit" && fp) return `Modifies ${fp} in the agent's worktree.`;
+  return `Runs the ${name} tool in the agent's worktree.`;
+}
+
 // Human-readable detail shown in the approval gate (the box the operator reads).
 function approvalText(name: string, input: Record<string, unknown>): string {
   if (name === "Bash" && typeof input.command === "string") return input.command;
@@ -308,6 +330,7 @@ function buildQuestionRaise(q: ParsedQuestion): HitlRaise {
     command: detail, // option descriptions, if any, for the detail box
     options: q.options.map((o) => o.label),
     recommended: null, // AskUserQuestion marks no default
+    rationale: null,
     steps: null,
     diff: null,
   };
@@ -514,11 +537,16 @@ class ClaudeRunnerHandle implements RunnerHandle {
 
   private buildRaise(toolName: string, input: Record<string, unknown>): HitlRaise {
     const command = approvalText(toolName, input);
+    // The agent's most recent prose IS its stated reasoning for what it's doing —
+    // surface it so the operator sees intent, not just the raw action. Trim to a
+    // sane length; drop it if the agent hasn't said anything yet.
+    const rationale = this.lastRationale.trim() ? clip(this.lastRationale.trim(), 600) : null;
     return {
       kind: "approval",
-      title: `Approve: ${toolName}`,
-      why: `Unit requested ${toolName} and is paused for your decision.`,
-      risk: "medium",
+      title: actionTitle(toolName, input),
+      why: actionImpact(toolName, input),
+      risk: toolName === "Bash" ? "medium" : "low", // orchestrator upgrades on a safety flag
+      rationale,
       command,
       options: null,
       recommended: null,

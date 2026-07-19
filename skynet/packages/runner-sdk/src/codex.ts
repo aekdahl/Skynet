@@ -34,6 +34,7 @@ function approvalRaise(toolName: string, command: unknown): HitlRaise {
     command: typeof command === "string" ? command : command ? JSON.stringify(command) : null,
     options: null,
     recommended: null,
+    rationale: null,
     steps: null,
     diff: null,
   };

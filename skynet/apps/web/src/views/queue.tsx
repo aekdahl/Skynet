@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { TaskRun, HitlItem } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { fmtWait, KIND_META, openQueue, waitedSecs } from "../lib/derive";
+import { RiskChip } from "../components/hitl-context";
 
 export function QueueCard({
   item,
@@ -48,12 +49,14 @@ export function QueueCard({
         <span className="kind-chip" style={{ color: k.color, borderColor: k.color }}>
           {k.label}
         </span>
+        <RiskChip risk={item.risk} />
         <button className="qcard-agent" onClick={onOpen}>
           {agentName}
         </button>
         <span className="qcard-wait">{fmtWait(waitedSecs(item, now))}</span>
       </div>
       <h3 className="qcard-title">{item.title}</h3>
+      {item.rationale && <p className="qcard-reason">💭 {item.rationale}</p>}
       <p className="qcard-why">{item.why}</p>
 
       {item.command && <pre className="qcard-code">$ {item.command}</pre>}

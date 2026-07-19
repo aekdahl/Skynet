@@ -16,6 +16,7 @@ import {
 } from "../lib/derive";
 import { StatusDot } from "../components/common";
 import { PreviewFor } from "../components/preview";
+import { HitlContext, RiskChip } from "../components/hitl-context";
 
 function AgentChat({ agent }: { agent: TaskRun }) {
   const { sendAgentMessage } = useStore();
@@ -260,6 +261,7 @@ export function TaskDetail({
               {KIND_META[q.kind].label}
             </span>
             <span className="detail-blocked-title">{q.title}</span>
+            <RiskChip risk={q.risk} />
             <span className="qcard-wait">{fmtWait(waitedSecs(q, now))}</span>
             {q.options ? (
               q.options.map((opt, i) => (
@@ -300,6 +302,7 @@ export function TaskDetail({
               Chat
             </button>
           </div>
+          <HitlContext q={q} runName={agent.name} />
           {mode === "modify" && (
             <div className="qx detail-modify">
               <textarea

@@ -231,6 +231,21 @@ kbd {
 .qcard-wait { margin-left: auto; font-family: var(--font-mono); font-size: 12px; color: var(--warn); font-variant-numeric: tabular-nums; }
 .qcard-title { font-size: calc(var(--fs) + 4px); font-weight: 600; letter-spacing: -0.01em; }
 .qcard-why { font-size: var(--fs); color: var(--muted); line-height: 1.55; text-wrap: pretty; }
+.qcard-reason { margin: 2px 0 4px; font-size: 13px; color: var(--muted); font-style: italic; line-height: 1.5; }
+
+/* HITL context — what / why / intent for an approval gate (run detail + queue) */
+.hitl-ctx { margin-top: 10px; display: flex; flex-direction: column; gap: 9px; padding: 12px 14px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg); }
+.hitl-ctx-row { display: grid; grid-template-columns: 128px 1fr; gap: 12px; align-items: start; font-size: 13px; }
+.hitl-ctx-label { color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding-top: 3px; }
+.hitl-ctx-val { color: var(--text); min-width: 0; line-height: 1.5; }
+.hitl-ctx-cmd { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: 12px; color: var(--text); background: var(--line-soft); padding: 8px 10px; border-radius: 6px; }
+.hitl-ctx-reason .hitl-ctx-val { color: var(--muted); font-style: italic; }
+
+/* Risk severity chip */
+.risk-chip { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--line); color: var(--faint); white-space: nowrap; }
+.risk-chip.risk-high { color: var(--danger); border-color: var(--danger); }
+.risk-chip.risk-medium { color: var(--warn); border-color: var(--warn); }
+.risk-chip.risk-low { color: var(--faint); }
 .qcard-code {
   font-family: var(--font-mono); font-size: 12px; color: var(--text);
   background: var(--bg); border: 1px solid var(--line-soft); border-radius: 6px;
