@@ -54,6 +54,17 @@ export const config = {
   // Lifetime of a login session before it expires (→ 401). Default 12h.
   sessionTtlMs: Number(process.env.SESSION_TTL_MS ?? 12 * 60 * 60 * 1000),
 
+  // ── First operator (production login seed) ─────────────────────────────────
+  // In dev/test the operator directory is seeded with the demo pair so the login
+  // flow is demoable end-to-end. In PRODUCTION those shared demo accounts are
+  // NEVER seeded (a well-known password on a hosted deploy is a footgun); instead
+  // the first admin is seeded ONLY from these env vars. Unset in prod → an empty
+  // directory (UI login disabled — correct for a headless/MCP deploy that uses
+  // service tokens; a UI deploy MUST set these). See auth/operators.ts.
+  adminEmail: (process.env.SKYNET_ADMIN_EMAIL || "").toLowerCase() || undefined,
+  adminPassword: process.env.SKYNET_ADMIN_PASSWORD || undefined,
+  adminWorkspace: process.env.SKYNET_ADMIN_WORKSPACE || undefined,
+
   // ── MCP bootstrap token (headless / sandbox deploys) ───────────────────────
   // In a sandbox (e.g. Daytona) there is no human to log in and mint a token,
   // so the creating agent injects a strong random secret here at boot; Skynet
