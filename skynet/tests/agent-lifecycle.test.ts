@@ -97,6 +97,24 @@ describe("agent lifecycle controls: pause / resume / stop", () => {
     expect(orchestrator.isBusy("r1")).toBe(false);
   });
 
+  it("stop returns the owning task to 'todo' and detaches+archives the dead run", async () => {
+    const agent = await orchestrator.assignTask("p1", "t1");
+    // assign moves the task to 'ongoing' and links the run.
+    expect((await store.getTask("t1"))?.state).toBe("ongoing");
+    expect((await store.getTask("t1"))?.runId).toBe(agent.id);
+
+    await orchestrator.haltAgent(agent.id);
+
+    // A stopped run integrates nothing, so its task must not stay stranded
+    // 'ongoing' — it returns to 'todo', re-pickable, with the dead run detached.
+    const task = await store.getTask("t1");
+    expect(task?.state).toBe("todo");
+    expect(task?.runId).toBeNull();
+    // The dead run is archived (hidden from the board) but kept in the store.
+    expect((await store.getRun(agent.id))?.archived).toBe(true);
+    expect((await store.getRun(agent.id))?.status).toBe("done");
+  });
+
   it("pause is a no-op on a finished agent", async () => {
     const agent = await orchestrator.assignTask("p1", "t1");
     await orchestrator.haltAgent(agent.id); // → done
