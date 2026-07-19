@@ -11,6 +11,7 @@
 
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
+import { config } from "../config.js";
 import type { Principal } from "../auth.js";
 
 export interface OperatorRecord {
@@ -68,14 +69,44 @@ export class MemoryOperatorDirectory implements OperatorDirectory {
   }
 }
 
+export interface SeedOptions {
+  /** Dev/test seeds the demo pair; production never does. */
+  devMode: boolean;
+  adminEmail?: string;
+  adminPassword?: string;
+  adminWorkspace?: string;
+}
+
 /**
- * Dev seed — mirrors the dev token operators so login is demoable end-to-end.
- * Two workspaces keep isolation visible. Replace with a real directory in prod.
- * Credentials: jordan@cyberdyne.dev / kyle@resistance.dev, password "skynet".
+ * Pure seed policy (config-free so it's directly testable):
+ *
+ * - Dev/test: the demo pair, so the login flow is demoable end-to-end and the
+ *   suite can authenticate. Two workspaces keep isolation visible.
+ *   Credentials: jordan@cyberdyne.dev / kyle@resistance.dev, pw "skynet".
+ * - Production: NEVER the demo pair — a well-known password on a hosted deploy is
+ *   a footgun. Seed a single admin ONLY when both adminEmail + adminPassword are
+ *   given; otherwise the directory is empty (UI login disabled — correct for a
+ *   headless/MCP deploy that uses service tokens; a UI deploy MUST set them).
  */
+export function seedOperatorRecords(opts: SeedOptions): OperatorRecord[] {
+  if (opts.devMode) {
+    return [
+      makeOperator("jordan", DEFAULT_WORKSPACE, "jordan@cyberdyne.dev", "skynet"),
+      makeOperator("kyle", "resistance", "kyle@resistance.dev", "skynet"),
+    ];
+  }
+  if (opts.adminEmail && opts.adminPassword) {
+    return [makeOperator("admin", opts.adminWorkspace || DEFAULT_WORKSPACE, opts.adminEmail, opts.adminPassword)];
+  }
+  return [];
+}
+
+/** Seed from the live environment config. index.ts warns on an empty prod directory. */
 export function seedOperators(): OperatorRecord[] {
-  return [
-    makeOperator("jordan", DEFAULT_WORKSPACE, "jordan@cyberdyne.dev", "skynet"),
-    makeOperator("kyle", "resistance", "kyle@resistance.dev", "skynet"),
-  ];
+  return seedOperatorRecords({
+    devMode: config.devMode,
+    adminEmail: config.adminEmail,
+    adminPassword: config.adminPassword,
+    adminWorkspace: config.adminWorkspace,
+  });
 }

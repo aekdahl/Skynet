@@ -77,7 +77,8 @@ async function main() {
   } else {
     throw new Error("No session store configured. Set SESSIONS=memory for dev/tests, or SESSIONS=postgres / SESSIONS=redis.");
   }
-  const operators = new MemoryOperatorDirectory(seedOperators());
+  const seededOperators = seedOperators();
+  const operators = new MemoryOperatorDirectory(seededOperators);
   // Scoped API tokens for MCP / programmatic access. Persisted through the
   // domain Store (file on desktop, Postgres hosted) as a hash + last-4 — so a
   // token minted in Settings survives a restart, and the raw secret is never
@@ -109,6 +110,14 @@ async function main() {
   });
   if (!config.authRequired) {
     app.log.warn("AUTH_REQUIRED is OFF (explicit dev/test) — the API accepts unauthenticated requests. Never expose this build.");
+  }
+  // Fail-loud, not fail-silent: in production the demo operators are never
+  // seeded, so an empty directory means nobody can log in via the UI. Fine for a
+  // headless/MCP deploy (service tokens), a lockout for a UI deploy — say so.
+  if (!config.devMode && seededOperators.length === 0) {
+    app.log.warn(
+      "No operator seeded — UI login is disabled. Set SKYNET_ADMIN_EMAIL + SKYNET_ADMIN_PASSWORD to seed the first admin, or drive the API with service tokens (MCP).",
+    );
   }
   await app.register(cors, { origin: true });
   await app.register(websocket);
