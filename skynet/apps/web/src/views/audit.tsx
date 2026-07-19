@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AuditRecord, ResolveAction } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { fmtWait, KIND_META } from "../lib/derive";
+import { RiskChip } from "../components/hitl-context";
 import * as api from "../lib/client";
 
 // Decision audit trail (W8). The resolved-HITL history lives in its own
@@ -36,6 +37,9 @@ function payloadOf(p: unknown): {
   title: string | null;
   why: string | null;
   command: string | null;
+  rationale: string | null;
+  risk: string | null;
+  options: string[] | null;
 } {
   const o = (p ?? {}) as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
@@ -46,6 +50,9 @@ function payloadOf(p: unknown): {
     title: str(o.title),
     why: str(o.why),
     command: str(o.command),
+    rationale: str(o.rationale),
+    risk: str(o.risk),
+    options: Array.isArray(o.options) ? (o.options as unknown[]).filter((x): x is string => typeof x === "string") : null,
   };
 }
 
@@ -88,8 +95,12 @@ function AuditRow({
   const title = p.title ?? item?.title ?? null;
   const why = p.why ?? item?.why ?? null;
   const command = p.command ?? item?.command ?? null;
+  const rationale = p.rationale ?? item?.rationale ?? null;
+  const risk = p.risk ?? item?.risk ?? null;
+  // Read the chosen option from the SNAPSHOT (self-contained) — the live item's
+  // options are gone once it leaves the queue; fall back to it for old records.
   const chosen =
-    p.optionIndex != null && item?.options ? item.options[p.optionIndex] : null;
+    p.optionIndex != null ? (p.options?.[p.optionIndex] ?? item?.options?.[p.optionIndex] ?? null) : null;
 
   return (
     <article className={`audit-row${rec.archived ? " audit-row-archived" : ""}`}>
@@ -108,6 +119,7 @@ function AuditRow({
             {kindMeta.label}
           </span>
         )}
+        {risk && <RiskChip risk={risk as "low" | "medium" | "high"} />}
         <button className="audit-agent" onClick={() => onOpenTask(rec.runId)}>
           {agentName}
         </button>
@@ -117,6 +129,7 @@ function AuditRow({
       </div>
 
       {title && <h3 className="audit-title">{title}</h3>}
+      {rationale && <p className="audit-reason">💭 {rationale}</p>}
       {why && <p className="audit-why">{why}</p>}
       {command && <pre className="audit-cmd mono">{command}</pre>}
 
@@ -230,6 +243,11 @@ export function AuditView({
           title: q.title,
           why: q.why,
           command: q.command,
+          rationale: q.rationale,
+          risk: q.risk,
+          options: q.options,
+          recommended: q.recommended,
+          diff: q.diff,
         },
       });
     }
