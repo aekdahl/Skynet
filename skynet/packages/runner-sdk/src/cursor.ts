@@ -271,6 +271,7 @@ class CursorRunnerHandle implements RunnerHandle {
       command,
       options: null,
       recommended: null,
+      rationale: null,
       steps: null,
       diff: null,
     };

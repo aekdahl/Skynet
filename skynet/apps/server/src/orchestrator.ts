@@ -10,6 +10,7 @@ import {
   type RunnerHandle,
   type RunnerProvider,
 } from "@skynet/runner-sdk";
+import { classifyCommand } from "./command-safety.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
@@ -224,14 +225,27 @@ export class Orchestrator {
     // headless/idle run doesn't hang forever waiting on a human (0 = disabled).
     const timeout = config.hitlQuestionTimeoutMs;
     const expiresAt = raise.kind === "question" && timeout > 0 ? now() + timeout : null;
+    // Enrich a command-approval gate with the safety classifier's real severity +
+    // reason, so the operator sees WHY it's risky (not just a flat "medium"). The
+    // runner already decided to gate; this only adds honest, specific context.
+    let risk = raise.risk;
+    let why = raise.why;
+    if (raise.kind === "approval" && raise.command) {
+      const verdict = classifyCommand(raise.command);
+      const rank = { low: 0, medium: 1, high: 2 } as const;
+      if (rank[verdict.risk] > rank[risk]) risk = verdict.risk;
+      const flags = verdict.reasons.filter((r) => !/read-only|no-op/i.test(r));
+      if (flags.length && verdict.risk !== "low") why = `${why} ⚠ Flagged: ${flags.join("; ")}.`;
+    }
     const item: HitlItem = {
       id: `q-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId,
       kind: raise.kind,
       title: raise.title,
-      why: raise.why,
-      risk: raise.risk,
+      why,
+      risk,
+      rationale: raise.rationale ?? null,
       raisedAt: now(),
       expiresAt,
       resolvedAt: null,
@@ -404,6 +418,7 @@ export class Orchestrator {
       expiresAt: null,
       resolvedAt: null,
       resolution: null,
+      rationale: null,
       command: null,
       options: null,
       recommended: null,
@@ -849,6 +864,7 @@ export class Orchestrator {
       expiresAt: null,
       resolvedAt: null,
       resolution: null,
+      rationale: null,
       command: null,
       options: null,
       recommended: null,

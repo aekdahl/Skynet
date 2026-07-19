@@ -63,7 +63,7 @@ export interface RunnerEvents {
 /** The kind-specific fields an agent supplies when it raises a HITL gate. */
 export type HitlRaise = Pick<
   HitlItem,
-  "kind" | "title" | "why" | "risk" | "command" | "options" | "recommended" | "steps" | "diff"
+  "kind" | "title" | "why" | "risk" | "rationale" | "command" | "options" | "recommended" | "steps" | "diff"
 >;
 
 /** A live agent the orchestrator can steer. */

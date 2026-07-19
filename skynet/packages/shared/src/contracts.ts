@@ -203,6 +203,10 @@ export const HitlItem = z.object({
   expiresAt: Timestamp.nullable().default(null),
   resolvedAt: Timestamp.nullable().default(null),
   resolution: Resolution.nullable().default(null),
+  // The agent's OWN stated reasoning/intent for this action — its words, not the
+  // system's — so the operator can see WHY the agent wants it, not just what it is.
+  // Distinct from `why` (the system's impact/risk framing). Null when unavailable.
+  rationale: z.string().nullable().default(null),
   // kind-specific payload (only the relevant field is populated):
   command: z.string().nullable().default(null), // approval
   options: z.array(z.string()).nullable().default(null), // question
