@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Skynet — run a fleet of coding agents</title>
+    <meta
+      name="description"
+      content="Skynet runs a fleet of coding agents in parallel and lets you supervise them from one console. Download the desktop app, or run the headless MCP server image."
+    />
+    <style>
+      :root {
+        --bg: #fafaf9;
+        --panel: #ffffff;
+        --ink: #1c1917;
+        --muted: #57534e;
+        --line: #e7e5e4;
+        --accent: #2563eb;
+        --accent-ink: #ffffff;
+        --code-bg: #f5f5f4;
+        --code-ink: #292524;
+        --radius: 14px;
+        --maxw: 960px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0c0a09;
+          --panel: #1c1917;
+          --ink: #f5f5f4;
+          --muted: #a8a29e;
+          --line: #292524;
+          --accent: #3b82f6;
+          --accent-ink: #0c0a09;
+          --code-bg: #0c0a09;
+          --code-ink: #e7e5e4;
+        }
+      }
+      * { box-sizing: border-box; }
+      html { -webkit-text-size-adjust: 100%; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 20px; }
+      header { padding: 64px 0 40px; text-align: center; }
+      .logo {
+        display: inline-flex; align-items: center; gap: 10px;
+        font-weight: 700; font-size: 20px; letter-spacing: -0.01em;
+      }
+      .logo .dot {
+        width: 12px; height: 12px; border-radius: 50%;
+        background: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+      }
+      h1 {
+        margin: 28px 0 12px; font-size: clamp(28px, 5vw, 44px);
+        line-height: 1.1; letter-spacing: -0.02em;
+      }
+      .tagline { margin: 0 auto; max-width: 620px; color: var(--muted); font-size: clamp(16px, 2.4vw, 19px); }
+      .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 8px 0 24px; }
+      @media (max-width: 720px) { .cards { grid-template-columns: 1fr; } }
+      .card {
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: var(--radius); padding: 26px; display: flex; flex-direction: column;
+      }
+      .card h2 { margin: 0 0 6px; font-size: 20px; letter-spacing: -0.01em; }
+      .card .lead { margin: 0 0 18px; color: var(--muted); font-size: 15px; }
+      .card .spacer { flex: 1; }
+      .btn {
+        display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+        padding: 12px 18px; border-radius: 10px; font-weight: 600; font-size: 15px;
+        text-decoration: none; border: 1px solid transparent; cursor: pointer; width: 100%;
+      }
+      .btn.primary { background: var(--accent); color: var(--accent-ink); }
+      .btn.primary:hover { filter: brightness(1.05); }
+      .btn.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
+      .btn.ghost:hover { border-color: var(--muted); }
+      .btn[aria-disabled="true"] { opacity: 0.55; pointer-events: none; }
+      .sub { margin-top: 10px; font-size: 13px; color: var(--muted); text-align: center; }
+      .sub a { color: var(--accent); text-decoration: none; }
+      .sub a:hover { text-decoration: underline; }
+      .altlinks { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+      .altlinks a {
+        font-size: 12.5px; color: var(--muted); text-decoration: none;
+        border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px;
+      }
+      .altlinks a:hover { border-color: var(--muted); color: var(--ink); }
+      .cmd {
+        position: relative; background: var(--code-bg); color: var(--code-ink);
+        border: 1px solid var(--line); border-radius: 10px; padding: 12px 44px 12px 14px;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        overflow-x: auto; white-space: pre; margin: 0 0 10px;
+      }
+      .cmd .copy {
+        position: absolute; top: 7px; right: 7px; border: 1px solid var(--line);
+        background: var(--panel); color: var(--muted); border-radius: 7px;
+        padding: 4px 8px; font-size: 11px; cursor: pointer;
+      }
+      .cmd .copy:hover { color: var(--ink); border-color: var(--muted); }
+      .divider { height: 1px; background: var(--line); margin: 20px 0; }
+      .which {
+        background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+        padding: 22px 26px; margin: 8px 0 40px;
+      }
+      .which h3 { margin: 0 0 10px; font-size: 15px; letter-spacing: 0.02em; text-transform: uppercase; color: var(--muted); }
+      .which ul { margin: 0; padding-left: 18px; }
+      .which li { margin: 6px 0; color: var(--ink); font-size: 15px; }
+      .which li b { font-weight: 600; }
+      footer { padding: 8px 0 56px; text-align: center; color: var(--muted); font-size: 13.5px; }
+      footer a { color: var(--muted); text-decoration: none; }
+      footer a:hover { color: var(--ink); text-decoration: underline; }
+      .sep { margin: 0 8px; opacity: 0.5; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <span class="logo"><span class="dot"></span>Skynet</span>
+        <h1>Run a fleet of coding agents in parallel</h1>
+        <p class="tagline">
+          Skynet supervises many coding agents at once from a single console — plan, gate, review, and
+          merge their work. Run it yourself on the desktop, or let an agent drive it headless over MCP.
+        </p>
+      </header>
+
+      <main class="cards">
+        <!-- Desktop app -->
+        <section class="card">
+          <h2>Desktop app</h2>
+          <p class="lead">
+            Local-first for macOS &amp; Windows. Agents run on your machine, your provider keys never
+            leave it, and installed apps self-update.
+          </p>
+          <div class="spacer"></div>
+          <a class="btn primary" id="desktop-btn" href="https://github.com/aekdahl/Skynet/releases/latest" rel="noopener">
+            <span id="desktop-btn-label">Download for your OS</span>
+          </a>
+          <div class="altlinks" id="desktop-alt"></div>
+          <p class="sub" id="desktop-note">Checking the latest release…</p>
+        </section>
+
+        <!-- MCP server image -->
+        <section class="card">
+          <h2>MCP server image</h2>
+          <p class="lead">
+            A slim, headless server image exposing the <code>/mcp</code> endpoint. Deploy it to a sandbox
+            (e.g. Daytona) and let an agent drive Skynet with a bootstrap token.
+          </p>
+          <div class="cmd"
+            >docker pull ghcr.io/aekdahl/skynet-mcp:latest<button class="copy" data-copy="docker pull ghcr.io/aekdahl/skynet-mcp:latest">Copy</button></div>
+          <div class="cmd"
+            >TOKEN="skynet_pat_$(openssl rand -hex 32)"
+docker run --rm -p 8080:8080 \
+  -e SKYNET_BOOTSTRAP_TOKEN="$TOKEN" \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  ghcr.io/aekdahl/skynet-mcp:latest<button class="copy" data-copy='TOKEN="skynet_pat_$(openssl rand -hex 32)"
+docker run --rm -p 8080:8080 \
+  -e SKYNET_BOOTSTRAP_TOKEN="$TOKEN" \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  ghcr.io/aekdahl/skynet-mcp:latest'>Copy</button></div>
+          <div class="spacer"></div>
+          <a class="btn ghost" href="https://github.com/aekdahl/Skynet/blob/main/skynet/docs/mcp-sandbox.md" rel="noopener">
+            Sandbox &amp; Daytona guide →
+          </a>
+          <p class="sub">MCP endpoint at <code>&lt;url&gt;/mcp</code>, authenticated with your bootstrap token.</p>
+        </section>
+      </main>
+
+      <section class="which">
+        <h3>Which one do I want?</h3>
+        <ul>
+          <li><b>Desktop app</b> — you want to run Skynet yourself and supervise agents from a window on your own machine.</li>
+          <li><b>MCP server image</b> — you want an agent (or CI, or a Daytona sandbox) to spin Skynet up headless and drive it programmatically over MCP.</li>
+        </ul>
+      </section>
+
+      <footer>
+        <a href="https://github.com/aekdahl/Skynet" rel="noopener">GitHub</a>
+        <span class="sep">·</span>
+        <a href="https://github.com/aekdahl/Skynet/releases" rel="noopener">All releases</a>
+        <span class="sep">·</span>
+        <a href="https://github.com/aekdahl/Skynet/blob/main/skynet/docs/mcp-sandbox.md" rel="noopener">MCP docs</a>
+      </footer>
+    </div>
+
+    <script>
+      // Copy-to-clipboard for the docker commands.
+      document.querySelectorAll(".copy").forEach((b) => {
+        b.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(b.getAttribute("data-copy"));
+            const prev = b.textContent;
+            b.textContent = "Copied";
+            setTimeout(() => (b.textContent = prev), 1400);
+          } catch {
+            /* clipboard blocked — no-op */
+          }
+        });
+      });
+
+      // Populate the desktop download from the LATEST GitHub release's actual
+      // assets, so links never go stale across versions and reflect real state
+      // (no assets yet → point at the releases page instead of a dead link).
+      const REPO = "aekdahl/Skynet";
+      const btn = document.getElementById("desktop-btn");
+      const label = document.getElementById("desktop-btn-label");
+      const note = document.getElementById("desktop-note");
+      const alt = document.getElementById("desktop-alt");
+
+      const ua = navigator.userAgent;
+      const isMac = /Mac/.test(ua);
+      const isWin = /Win/.test(ua);
+
+      function classify(assets) {
+        const find = (pred) => assets.find((a) => pred(a.name.toLowerCase()));
+        return {
+          macArm: find((n) => n.endsWith(".dmg") && (n.includes("arm64") || n.includes("aarch64"))),
+          macX64: find((n) => n.endsWith(".dmg") && (n.includes("x64") || n.includes("intel") || n.includes("x86_64"))),
+          macAny: find((n) => n.endsWith(".dmg")),
+          win: find((n) => n.endsWith(".exe")),
+        };
+      }
+
+      (async () => {
+        try {
+          const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+            headers: { Accept: "application/vnd.github+json" },
+          });
+          if (!res.ok) throw new Error(String(res.status));
+          const rel = await res.json();
+          const assets = Array.isArray(rel.assets) ? rel.assets : [];
+          if (!assets.length) throw new Error("no-assets");
+          const k = classify(assets);
+          const ver = rel.tag_name ? ` (${rel.tag_name})` : "";
+
+          // Primary button = the detected OS; alt chips = the rest.
+          const chips = [];
+          const addChip = (asset, text) => asset && chips.push(`<a href="${asset.browser_download_url}">${text}</a>`);
+
+          if (isWin && k.win) {
+            btn.href = k.win.browser_download_url;
+            label.textContent = "Download for Windows";
+            addChip(k.macArm || k.macAny, "macOS (Apple Silicon)");
+            addChip(k.macX64, "macOS (Intel)");
+          } else if (k.macArm || k.macX64 || k.macAny) {
+            const primary = k.macArm || k.macAny;
+            btn.href = primary.browser_download_url;
+            label.textContent = "Download for macOS" + (k.macArm ? " (Apple Silicon)" : "");
+            addChip(k.macX64, "macOS (Intel)");
+            addChip(k.win, "Windows");
+          } else if (k.win) {
+            btn.href = k.win.browser_download_url;
+            label.textContent = "Download for Windows";
+          }
+          alt.innerHTML = chips.join("");
+          note.innerHTML = `Latest release${ver} · <a href="https://github.com/${REPO}/releases/latest">all downloads</a>`;
+        } catch (e) {
+          // No published installers yet (or the API is unreachable): keep the
+          // button pointed at the releases page and say so plainly.
+          label.textContent = "View releases";
+          note.innerHTML =
+            e && e.message === "no-assets"
+              ? `No installer published yet — <a href="https://github.com/${REPO}/releases">watch releases</a>.`
+              : `<a href="https://github.com/${REPO}/releases/latest">Open the latest release</a>.`;
+        }
+      })();
+    </script>
+  </body>
+</html>
