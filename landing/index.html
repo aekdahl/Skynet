@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Skynet — run a fleet of coding agents</title>
+    <meta
+      name="description"
+      content="Skynet runs a fleet of coding agents in parallel and lets you supervise them from one console. Download the desktop app, or run the headless MCP server image."
+    />
+    <link rel="icon" type="image/svg+xml" href="icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* Design tokens mirror the app (apps/web/src/styles.css) — dark-only. */
+      :root {
+        --bg: #0b0d11;
+        --panel: #11141a;
+        --raised: #171b23;
+        --line: #232936;
+        --line-soft: #1b202b;
+        --text: #e9ecf2;
+        --muted: #8b93a5;
+        --faint: #596172;
+        --accent: #ffb224;
+        --ok: #3dd68c;
+        --font-ui: "Space Grotesk", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        --maxw: 960px;
+      }
+      * { box-sizing: border-box; }
+      html { -webkit-text-size-adjust: 100%; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font-ui);
+        font-size: 14px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        /* The app's accent glow bleeding from the top. */
+        background-image: radial-gradient(ellipse 80% 50% at 60% -12%, rgba(255, 178, 36, 0.07), transparent 70%);
+        background-repeat: no-repeat;
+      }
+      .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 20px; }
+
+      /* Brand — the app's amber "S" mark + wide-tracked wordmark. */
+      header { padding: 60px 0 40px; text-align: center; }
+      .brand { display: inline-flex; align-items: center; gap: 11px; }
+      .mark {
+        width: 30px; height: 30px; border-radius: 8px; flex: none;
+        background: var(--accent); color: #0b0d11;
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 700; font-size: 19px; line-height: 1;
+      }
+      .brand-name { font-weight: 700; letter-spacing: 0.22em; font-size: 14px; }
+      h1 {
+        margin: 30px 0 14px; font-weight: 700;
+        font-size: clamp(30px, 5.2vw, 48px); line-height: 1.08; letter-spacing: -0.02em;
+      }
+      .tagline { margin: 0 auto; max-width: 640px; color: var(--muted); font-size: clamp(15px, 2.3vw, 18px); }
+      .tagline .accent { color: var(--text); }
+
+      /* Cards */
+      .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 8px 0 22px; }
+      @media (max-width: 720px) { .cards { grid-template-columns: 1fr; } }
+      .card {
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: 12px; padding: 24px; display: flex; flex-direction: column;
+      }
+      .kicker {
+        font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+        letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); margin: 0 0 10px;
+      }
+      .card h2 { margin: 0 0 7px; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+      .card .lead { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+      .card .lead code, code.inline {
+        font-family: var(--font-mono); font-size: 0.9em; color: var(--text);
+        background: var(--raised); border-radius: 5px; padding: 1px 5px;
+      }
+      .spacer { flex: 1; }
+
+      /* Buttons — primary = amber w/ dark ink (app's .btn-primary); ghost = raised. */
+      .btn {
+        display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+        padding: 12px 18px; border-radius: 9px; font-family: var(--font-ui);
+        font-weight: 600; font-size: 14px; text-decoration: none; cursor: pointer;
+        border: 1px solid transparent; width: 100%;
+      }
+      .btn.primary { background: var(--accent); color: #0b0d11; border-color: var(--accent); }
+      .btn.primary:hover { filter: brightness(1.08); }
+      .btn.ghost { background: var(--raised); color: var(--text); border-color: var(--line); }
+      .btn.ghost:hover { border-color: var(--muted); }
+
+      .sub { margin-top: 11px; font-size: 12.5px; color: var(--muted); text-align: center; }
+      .sub a { color: var(--accent); text-decoration: none; }
+      .sub a:hover { text-decoration: underline; }
+      .altlinks { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+      .altlinks a {
+        font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); text-decoration: none;
+        border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px;
+      }
+      .altlinks a:hover { border-color: var(--muted); color: var(--text); }
+
+      /* Command blocks — IBM Plex Mono on the base bg, like the app's HITL cmd. */
+      .cmd {
+        position: relative; background: var(--bg); color: var(--text);
+        border: 1px solid var(--line-soft); border-radius: 8px; padding: 12px 46px 12px 14px;
+        font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55;
+        overflow-x: auto; white-space: pre; margin: 0 0 10px;
+      }
+      .cmd .tok { color: var(--accent); }
+      .cmd .copy {
+        position: absolute; top: 7px; right: 7px; border: 1px solid var(--line);
+        background: var(--raised); color: var(--muted); border-radius: 6px;
+        padding: 4px 9px; font-family: var(--font-mono); font-size: 10.5px; cursor: pointer;
+      }
+      .cmd .copy:hover { color: var(--text); border-color: var(--muted); }
+
+      /* "Which one" */
+      .which {
+        background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+        padding: 22px 26px; margin: 8px 0 38px;
+      }
+      .which h3 {
+        margin: 0 0 12px; font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+        letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint);
+      }
+      .which ul { margin: 0; padding-left: 18px; }
+      .which li { margin: 7px 0; color: var(--text); font-size: 14px; }
+      .which li::marker { color: var(--accent); }
+      .which li b { font-weight: 600; }
+
+      footer { padding: 4px 0 56px; text-align: center; }
+      footer a { font-family: var(--font-mono); font-size: 12px; color: var(--muted); text-decoration: none; }
+      footer a:hover { color: var(--text); }
+      .sep { margin: 0 8px; color: var(--faint); }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <span class="brand"><span class="mark">S</span><span class="brand-name">SKYNET</span></span>
+        <h1>Run a fleet of coding agents in parallel</h1>
+        <p class="tagline">
+          Skynet supervises many coding agents at once from a single console —
+          <span class="accent">plan, gate, review, and merge</span> their work. Run it yourself on the
+          desktop, or let an agent drive it headless over MCP.
+        </p>
+      </header>
+
+      <main class="cards">
+        <!-- Desktop app -->
+        <section class="card">
+          <p class="kicker">Run it yourself</p>
+          <h2>Desktop app</h2>
+          <p class="lead">
+            Local-first for macOS &amp; Windows. Agents run on your machine, your provider keys never
+            leave it, and installed apps self-update.
+          </p>
+          <div class="spacer"></div>
+          <a class="btn primary" id="desktop-btn" href="https://github.com/aekdahl/Skynet/releases/latest" rel="noopener">
+            <span id="desktop-btn-label">Download for your OS</span>
+          </a>
+          <div class="altlinks" id="desktop-alt"></div>
+          <p class="sub" id="desktop-note">Checking the latest release…</p>
+        </section>
+
+        <!-- MCP server image -->
+        <section class="card">
+          <p class="kicker">Agent-driven, headless</p>
+          <h2>MCP server image</h2>
+          <p class="lead">
+            A slim, headless server image exposing the <code>/mcp</code> endpoint. Deploy it to a sandbox
+            (e.g. Daytona) and let an agent drive Skynet with a bootstrap token.
+          </p>
+          <div class="cmd"
+            ><span class="tok">docker</span> pull ghcr.io/aekdahl/skynet-mcp:latest<button class="copy" data-copy="docker pull ghcr.io/aekdahl/skynet-mcp:latest">Copy</button></div>
+          <div class="cmd"
+            >TOKEN="skynet_pat_$(openssl rand -hex 32)"
+<span class="tok">docker</span> run --rm -p 8080:8080 \
+  -e SKYNET_BOOTSTRAP_TOKEN="$TOKEN" \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  ghcr.io/aekdahl/skynet-mcp:latest<button class="copy" data-copy='TOKEN="skynet_pat_$(openssl rand -hex 32)"
+docker run --rm -p 8080:8080 \
+  -e SKYNET_BOOTSTRAP_TOKEN="$TOKEN" \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  ghcr.io/aekdahl/skynet-mcp:latest'>Copy</button></div>
+          <div class="spacer"></div>
+          <a class="btn ghost" href="https://github.com/aekdahl/Skynet/blob/main/skynet/docs/mcp-sandbox.md" rel="noopener">
+            Sandbox &amp; Daytona guide →
+          </a>
+          <p class="sub">MCP endpoint at <code class="inline">&lt;url&gt;/mcp</code>, authenticated with your bootstrap token.</p>
+        </section>
+      </main>
+
+      <section class="which">
+        <h3>Which one do I want?</h3>
+        <ul>
+          <li><b>Desktop app</b> — you want to run Skynet yourself and supervise agents from a window on your own machine.</li>
+          <li><b>MCP server image</b> — you want an agent (or CI, or a Daytona sandbox) to spin Skynet up headless and drive it programmatically over MCP.</li>
+        </ul>
+      </section>
+
+      <footer>
+        <a href="https://github.com/aekdahl/Skynet" rel="noopener">GitHub</a>
+        <span class="sep">·</span>
+        <a href="https://github.com/aekdahl/Skynet/releases" rel="noopener">All releases</a>
+        <span class="sep">·</span>
+        <a href="https://github.com/aekdahl/Skynet/blob/main/skynet/docs/mcp-sandbox.md" rel="noopener">MCP docs</a>
+      </footer>
+    </div>
+
+    <script>
+      // Copy-to-clipboard for the docker commands.
+      document.querySelectorAll(".copy").forEach((b) => {
+        b.addEventListener("click", async (e) => {
+          e.preventDefault();
+          try {
+            await navigator.clipboard.writeText(b.getAttribute("data-copy"));
+            const prev = b.textContent;
+            b.textContent = "Copied";
+            setTimeout(() => (b.textContent = prev), 1400);
+          } catch {
+            /* clipboard blocked — no-op */
+          }
+        });
+      });
+
+      // Populate the desktop download from the LATEST GitHub release's actual
+      // assets, so links never go stale across versions and reflect real state
+      // (no assets yet → point at the releases page instead of a dead link).
+      const REPO = "aekdahl/Skynet";
+      const btn = document.getElementById("desktop-btn");
+      const label = document.getElementById("desktop-btn-label");
+      const note = document.getElementById("desktop-note");
+      const alt = document.getElementById("desktop-alt");
+
+      const ua = navigator.userAgent;
+      const isWin = /Win/.test(ua);
+
+      function classify(assets) {
+        const find = (pred) => assets.find((a) => pred(a.name.toLowerCase()));
+        return {
+          macArm: find((n) => n.endsWith(".dmg") && (n.includes("arm64") || n.includes("aarch64"))),
+          macX64: find((n) => n.endsWith(".dmg") && (n.includes("x64") || n.includes("intel") || n.includes("x86_64"))),
+          macAny: find((n) => n.endsWith(".dmg")),
+          win: find((n) => n.endsWith(".exe")),
+        };
+      }
+
+      (async () => {
+        try {
+          const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+            headers: { Accept: "application/vnd.github+json" },
+          });
+          if (!res.ok) throw new Error(String(res.status));
+          const rel = await res.json();
+          const assets = Array.isArray(rel.assets) ? rel.assets : [];
+          if (!assets.length) throw new Error("no-assets");
+          const k = classify(assets);
+          const ver = rel.tag_name ? ` (${rel.tag_name})` : "";
+
+          const chips = [];
+          const addChip = (asset, text) => asset && chips.push(`<a href="${asset.browser_download_url}">${text}</a>`);
+
+          if (isWin && k.win) {
+            btn.href = k.win.browser_download_url;
+            label.textContent = "Download for Windows";
+            addChip(k.macArm || k.macAny, "macOS (Apple Silicon)");
+            addChip(k.macX64, "macOS (Intel)");
+          } else if (k.macArm || k.macX64 || k.macAny) {
+            const primary = k.macArm || k.macAny;
+            btn.href = primary.browser_download_url;
+            label.textContent = "Download for macOS" + (k.macArm ? " (Apple Silicon)" : "");
+            addChip(k.macX64, "macOS (Intel)");
+            addChip(k.win, "Windows");
+          } else if (k.win) {
+            btn.href = k.win.browser_download_url;
+            label.textContent = "Download for Windows";
+          }
+          alt.innerHTML = chips.join("");
+          note.innerHTML = `Latest release${ver} · <a href="https://github.com/${REPO}/releases/latest">all downloads</a>`;
+        } catch (e) {
+          label.textContent = "View releases";
+          note.innerHTML =
+            e && e.message === "no-assets"
+              ? `No installer published yet — <a href="https://github.com/${REPO}/releases">watch releases</a>.`
+              : `<a href="https://github.com/${REPO}/releases/latest">Open the latest release</a>.`;
+        }
+      })();
+    </script>
+  </body>
+</html>
