@@ -102,7 +102,9 @@ async function main() {
   // trustProxy: read the real client IP from X-Forwarded-For behind a proxy you
   // control, so rate limiting keys on the caller, not the proxy. Off by default.
   const app = Fastify({
-    logger: { level: config.nodeEnv === "development" ? "info" : "warn" },
+    // Headless deploys log at info so the operator/agent sees the MCP-ready +
+    // bootstrap-token confirmation on boot (otherwise suppressed in production).
+    logger: { level: config.nodeEnv === "development" || config.headless ? "info" : "warn" },
     trustProxy: config.trustProxy,
   });
   if (!config.authRequired) {
@@ -132,14 +134,21 @@ async function main() {
   // Behavioral LLM judge for Simulation journeys (in-process; /api auth applies).
   registerSimulationRoutes(app);
   await registerWs(app, { store, bus, hub });
-  // W5 live preview: mount the sandboxed /preview route, stamp visual/previewUrl
-  // onto already-stored runs, then warm their builds. No-op unless PREVIEW != off.
-  await registerPreview(app, { store });
-  const stamped = await backfillPreviews(store);
-  if (stamped) app.log.info(`preview: stamped ${stamped} agent(s) with a live preview URL`);
-  const queued = await kickoffPreviewBuilds(store);
-  if (queued) app.log.info(`preview: queued ${queued} agent build(s)`);
-  const servingSpa = await registerStatic(app);
+  // Headless / MCP-first mode skips the web SPA + preview pipeline — just the
+  // API + WS + /mcp (agent surface only). Otherwise mount both as usual.
+  let servingSpa = false;
+  if (config.headless) {
+    app.log.info("headless mode: SPA + live-preview disabled — API + WS + /mcp only");
+  } else {
+    // W5 live preview: mount the sandboxed /preview route, stamp visual/previewUrl
+    // onto already-stored runs, then warm their builds. No-op unless PREVIEW != off.
+    await registerPreview(app, { store });
+    const stamped = await backfillPreviews(store);
+    if (stamped) app.log.info(`preview: stamped ${stamped} agent(s) with a live preview URL`);
+    const queued = await kickoffPreviewBuilds(store);
+    if (queued) app.log.info(`preview: queued ${queued} agent build(s)`);
+    servingSpa = await registerStatic(app);
+  }
 
   // Release "orphaned busy" runners — persisted busy but held by no live agent
   // (a restart leaves the store saying busy while the in-memory live map is
@@ -172,6 +181,10 @@ async function main() {
     // Never log the secret itself — only what it was granted.
     app.log.info(`MCP bootstrap token registered — workspace=${bootstrap.workspaceId} scopes=[${bootstrap.scopes.join(", ")}] → POST /mcp`);
     if (bootstrap.dropped.length > 0) app.log.warn(`ignored unknown bootstrap scopes: ${bootstrap.dropped.join(", ")}`);
+  }
+  if (config.headless) {
+    app.log.info(`MCP endpoint ready → POST :${config.port}/mcp  (Authorization: Bearer <service-token>)`);
+    if (!bootstrap) app.log.warn("headless without SKYNET_BOOTSTRAP_TOKEN — no token registered; set it, or mint one via the API, before an MCP client can connect.");
   }
   app.log.info(loadedEnvFrom ? `loaded env from ${loadedEnvFrom}` : "no .env file found (using process env only)");
   app.log.info(`Skynet server up on :${config.port}  (store=${config.store} bus=${config.bus} runner=per-runner sessions=${config.sessions})`);

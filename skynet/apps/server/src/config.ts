@@ -59,6 +59,10 @@ export const config = {
   // so the creating agent injects a strong random secret here at boot; Skynet
   // registers it as a scoped service token the agent then uses to call /mcp.
   // Unset (the default) → no bootstrap token; tokens are minted only via the UI.
+  // Headless / MCP-first mode: don't serve the web SPA or run the live-preview
+  // pipeline — just the API + WS + /mcp. For a sandbox (e.g. Daytona) that only
+  // needs the agent surface. Same server, leaner footprint. See docs/mcp-sandbox.md.
+  headless: process.env.SKYNET_HEADLESS === "true",
   mcpBootstrapToken: process.env.SKYNET_BOOTSTRAP_TOKEN || undefined,
   // Comma-separated scopes for the bootstrap token (default: observe + author,
   // NEVER approver by default — a human still gates HITL unless you opt in).
