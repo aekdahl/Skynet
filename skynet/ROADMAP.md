@@ -30,6 +30,13 @@ found these rare-to-absent), and where they live:
 6. **Org-wide knowledge diffusion** (v1 mass-inform + v4): one teammate's decision instantly informs
    every teammate's agents.
 
+**Recommended near-term order (re-prioritized on the findings)** — ship in this order:
+**(1) Provider breadth** (Codex/Gemini/Cursor/Copilot + **OpenCode**) — the *only* place we trail the field,
+and it's table stakes (also unlocks consensus runs); **(2) Governance-to-SOTA quick wins** (the launch wedge,
+mostly already built) + **guided provider connect**; **(3) v1.5** ease-of-use + **Memory v0** (the wedge that
+makes us not-just-another-orchestrator); **(4) Cross-vendor consensus runs** (needs the v1 providers).
+Everything below stays directional.
+
 Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ = depends on earlier version.
 
 ---
@@ -66,8 +73,9 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
   runners after. *(Pulls the browser slice of v3's "Tools via MCP" forward — it's the highest-leverage
   tool for the code loop; verification/repro is where it pays off, and it composes with the live-preview
   pipeline below.)*
-- Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** — then breadth
-  reactively from the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
+- Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** (+ **OpenCode**, which
+  is ubiquitous across the competitor field) — then breadth reactively from the candidate list in
+  [docs/runner-catalog.md](docs/runner-catalog.md).
 - **Agent labels / custom grouping** — rename agents and group them beyond project (small UX add).
 - **Mass inform** — select multiple agents (or a whole project / area / manager-family) and attach a
   note that rides the *next* prompt each already receives — **no extra turn, ~free** (Claude SDK
@@ -103,6 +111,12 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
   - **Structured diffs in gates/review** — populate `HitlRaise.diff` from Codex/Cursor patch events and `git diff` in the worktree, so approvals show a real diff, not reconstructed text.
   - **Token-by-token streaming** — Claude `includePartialMessages` / CLI NDJSON deltas → live "typing" in the log instead of whole-message chunks.
   - **CLI usage fidelity** — Codex/Gemini/Cursor usage is parsed best-effort today; Copilot emits none (text-only). Firm these up as each vendor's structured output stabilizes.
+- **Review upgrades (adopted from the competitor sweep):**
+  - **Agent-authored diff walkthrough** — the run drafts a plain-English summary + inline comments grounded on
+    the real `git diff` *before* you approve (nothing merges until accepted). Upgrades the diff HITL. *(Octomux-style.)*
+  - **Verifier gate** — run the project's tests/checks in the worktree and **block the merge on failure** as a
+    first-class gate (not just the pre-merge `checkCmd`); auto-commit on green. *(bernstein / MartinLoop-style.)*
+  - **Checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks. *(AGX-style.)*
 - Auth: **SSO/OIDC**.
 - **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
   everything (projects, runs, HITL, audit) but mutate nothing (no assign / resolve / transition /
@@ -161,6 +175,11 @@ supervision layer, it doesn't host or resell those services.
   bootstrap token for sandbox deploys (e.g. Daytona). See [docs/mcp.md](docs/mcp.md).
   *(The browser/Chrome MCP tool is pulled forward to v1 — see above — since it serves the core code loop,
   not inbound triggers; the rest of the tool catalog lands here.)*
+- **Feedback-loop responders (route back to the *originating* run)** — a CI failure, a PR review comment, or a
+  merge conflict re-engages the **same** agent that produced the branch (self-healing), not a fresh run.
+  *(Agent Orchestrator-style; ties directly to the responders below.)*
+- **Interop surface (adopted)** — beyond `/mcp`, expose the fleet via an **OpenAI-compatible endpoint + REST**
+  so external tools can drive it as a model/service. *(claw-orchestrator-style; broadens who can call Skynet.)*
 - **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
   fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
 - Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.
@@ -210,6 +229,10 @@ memory (v4) + thin runner adapters.
 - **Repo-optional / chat-only mode** — a repo should *not* be hard-required. A "just chat with an
   agent" mode is mechanically a runner with **no worktree and no merge**; it widens the funnel to try
   Skynet. Not the core money bet, but cheap to allow.
+- **Cross-repo / multi-repo atomic changes** — a coordinated change spanning several repos. A gap **no
+  local tool** fills today (cloud-only: Oz/Devin); a bigger future bet, flagged so we don't foreclose it.
+- **No-telemetry / keys-never-leave-host guarantee** — make the local-first privacy stance an *explicit,
+  stated* guarantee (already true for the desktop build; competitors like Octomux market it as a headline).
 - **Distribution:** hosted (our GCP) vs. self-host (`docker compose`) vs. **BYO-runner** (containers on
   the customer's infra, only the UI hosted) for code-privacy.
 - **Retention/policy** for logs, audit, and memory.
