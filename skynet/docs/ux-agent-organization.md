@@ -8,7 +8,10 @@ Inbox, Fleet, Agent detail).
 ## Background — what exists today (don't redesign these)
 - A task → an **agent** (named after its task). Multiple agents from the **same vendor** run at once.
 - Agents are **grouped by project** today; the **Roster** lens splits active agents vs. idle runners;
-  **Ledger** is the dense scan; **Subway** shows progress with **branches off a parent** (forks).
+  **Ledger** is the dense scan; **Subway** shows progress with **branches off a parent** (forks) —
+  now formally defined as **one map per project, one track per agent, tasks as stations, forks as
+  branches that fold back when done**: see [subway-model.md](subway-model.md) (the canonical spec; the
+  hierarchy view in Job B reuses its branch primitive).
 - The **Fleet** view manages *runners* (configured vendor+model instances), separate from agents.
 - Data already on an agent: `id`, `name` (the task), `status`, `provider`, `model`, `projectId`,
   `modules`, `parentId` (lineage), `role` (worker|manager — see B).
