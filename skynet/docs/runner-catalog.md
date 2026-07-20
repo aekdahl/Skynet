@@ -24,6 +24,13 @@ These run as a command-line process we can drive non-interactively. Ideal `runne
 | **OpenHands** (ex-OpenDevin) | open source | ⭐ headless agent runtime; strong fit |
 | **Goose** | Block | ⭐ open-source CLI agent, MCP-native |
 | **Amp** | Sourcegraph | ⭐ CLI agent |
+| **OpenCode** | open source | ⭐ provider-agnostic terminal agent; **ubiquitous** across the competitor field |
+| **Crush** | Charm | ◻ OSS TUI coding agent, rising |
+| **Antigravity** (`agy`) | Google | ◻ agentic IDE/CLI; appears in claw / CCC adapters |
+| **Auggie CLI** | Augment | ◻ Augment's CLI agent (distinct from the IDE in Tier 3) |
+| **Qwen Code** | Alibaba | ◻ model-vendor coding CLI |
+| **Grok CLI** | xAI | ◻ model-vendor coding CLI |
+| **Kimi CLI** | Moonshot | ◻ model-vendor coding CLI |
 | **SWE-agent** | Princeton | ◻ research-grade, CLI, good for benchmarks |
 | **Plandex** | open source | ◻ CLI, plan-based long tasks |
 | **gptme** | open source | ◻ terminal agent |
@@ -31,7 +38,7 @@ These run as a command-line process we can drive non-interactively. Ideal `runne
 | **Codebuff** | Codebuff | ◻ CLI |
 | **Mentat** | open source | ◻ CLI editor agent |
 | **Refact.ai** | open source | ◻ self-hostable agent |
-| **Factory "Droids"** | Factory.ai | ◻ CLI droids |
+| **Factory "Droids"** | Factory.ai | ⭐ CLI droids; in wide orchestrator use |
 | **Warp Agent** | Warp | ◻ terminal-native agent mode |
 | **Qodo** (ex-Codium) | Qodo | ◻ agentic, test-generation focus |
 
@@ -54,7 +61,7 @@ with the "triggers & integrations" theme — they behave like a delegated remote
 ## Tier 3 — IDE-first agents (harder to run headless; lower priority)
 Primarily editor extensions; wrappable only if/when they expose a headless mode.
 **Cline**, **Roo Code**, **Kilo Code**, **Continue**, **Tabnine**, **Windsurf/Cascade (Codeium)**,
-**Zed agent**, **JetBrains AI / Junie**, **Augment (IDE)**.
+**Zed agent**, **JetBrains AI / Junie**, **Augment (IDE)**, **Kiro (AWS)**.
 
 ## Tier 4 — Agent *frameworks/SDKs* (build-your-own — against "wrap, don't rebuild")
 Not off-the-shelf agents; toolkits for *building* one. Use **only** if a needed specialized agent
@@ -66,6 +73,10 @@ doesn't exist off-the-shelf. Listed for awareness, deliberately low priority:
 ---
 
 ## How we'll add them
+> **Demand signal (competitor sweep, 2026):** the orchestrator *Agent Orchestrator* ships adapters for **23
+> harnesses** — a real-world map of which agents matter. Cross-referencing it drove the ⭐ picks above
+> (OpenCode, Aider, Goose, Amp, Droid lead by usage). Breadth is commodity — prioritize by that signal + user demand.
+
 - **Reactively + by fit:** Tier 1 first (cleanest container-spawn), then Tier 2 where a vendor's API
   is compelling (Devin, Jules). Add on real user demand — breadth is commodity, not a sprint.
 - **One adapter per agent**, behind the existing `runner-sdk` (`packages/runner-sdk/src/<vendor>.ts`),
