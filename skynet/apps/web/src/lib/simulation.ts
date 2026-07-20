@@ -1139,6 +1139,11 @@ export async function captureEvidence(scopeProjectIds?: string[]): Promise<Recor
     projects: projects.map((p) => ({
       id: p.id,
       name: p.name,
+      // Surface goal + status so lifecycle journeys (rename / re-goal / pause)
+      // are verifiable from the evidence — the judge grades on what's here, and
+      // without status a paused/active transition can't be corroborated.
+      goal: p.goal,
+      status: p.status,
       repoPath: p.repoPath ?? null,
       repo: p.repo ?? null,
       runs: p.runIds.length,
