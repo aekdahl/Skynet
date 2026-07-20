@@ -16,6 +16,7 @@ import {
   providerInfo,
   runnerIdleLabel,
   runnerName,
+  STATUS_META,
   stepIdx,
   TASK_STATES,
   TASK_STATE_META,
@@ -393,18 +394,42 @@ function SwDiagram({
   project: Project;
   onOpenTask: (id: string) => void;
 }) {
-  const { tasks } = useStore();
+  const { tasks, runs } = useStore();
   const rank = (s: TaskState) => TASK_STATES.indexOf(s);
   const stations: Task[] = tasks
     .filter((t) => t.projectId === project.id)
     .sort((a, b) => rank(a.state) - rank(b.state) || (a.order ?? 0) - (b.order ?? 0));
   if (stations.length === 0) return null;
 
+  // Fan-out: a forked run traces up its parentId chain to a family-root run;
+  // that root run belongs to a task (task.runId === rootRunId), so hang the whole
+  // family's forks off THAT task's station. Without this, forks are invisible on
+  // the line — which is exactly what the header promises ("⑂ branches split off").
+  const rootOf = (r: TaskRun): string => {
+    let cur: TaskRun | undefined = r;
+    const seen = new Set<string>();
+    while (cur?.parentId && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      cur = runs.find((x) => x.id === cur!.parentId);
+    }
+    return cur?.id ?? r.id;
+  };
+  const forksByRoot = new Map<string, TaskRun[]>();
+  for (const r of runs) {
+    if (!r.parentId) continue;
+    const root = rootOf(r);
+    const list = forksByRoot.get(root) ?? [];
+    list.push(r);
+    forksByRoot.set(root, list);
+  }
+  const forksFor = (t: Task): TaskRun[] => (t.runId ? forksByRoot.get(t.runId) ?? [] : []);
+  const maxForks = Math.max(0, ...stations.map((t) => forksFor(t).length));
+
   const n = stations.length;
   const X = (i: number) => (n === 1 ? 50 : (i / (n - 1)) * 100);
 
   return (
-    <div className="swb2">
+    <div className="swb2" style={maxForks ? { paddingBottom: 44 + maxForks * 18 } : undefined}>
       <div className="swb2-track">
         <span className="swb2-line" />
         {stations.map((t, i) =>
@@ -422,18 +447,45 @@ function SwDiagram({
         {stations.map((t, i) => {
           const meta = TASK_STATE_META[t.state];
           const openable = !!t.runId;
+          const forks = forksFor(t);
+          // Force the label up when forks hang below, so they don't collide.
+          const low = !!(i % 2) || forks.length > 0;
           return (
-            <button
-              key={t.id}
-              className={"swb2-st" + (i % 2 ? " swb2-st-low" : "")}
-              style={{ left: X(i) + "%" }}
-              title={`${t.text} · ${meta.label}`}
-              disabled={!openable}
-              onClick={() => t.runId && onOpenTask(t.runId)}
-            >
-              <span className="swb2-dot" style={{ background: meta.color, borderColor: meta.color }} />
-              <span className="swb2-label" style={{ color: meta.color }}>{t.text}</span>
-            </button>
+            <Fragment key={t.id}>
+              <button
+                className={"swb2-st" + (low ? " swb2-st-low" : "")}
+                style={{ left: X(i) + "%" }}
+                title={`${t.text} · ${meta.label}`}
+                disabled={!openable}
+                onClick={() => t.runId && onOpenTask(t.runId)}
+              >
+                <span className="swb2-dot" style={{ background: meta.color, borderColor: meta.color }} />
+                <span className="swb2-label" style={{ color: meta.color }}>{t.text}</span>
+              </button>
+              {forks.length > 0 && (
+                <span className="swb2-forks" style={{ left: X(i) + "%" }}>
+                  <span className="swb2-fork-stem" style={{ height: 14 + forks.length * 18 + "px" }} />
+                  {forks.map((f, fi) => {
+                    const fm = STATUS_META[f.status];
+                    return (
+                      <button
+                        key={f.id}
+                        className="swb2-fork"
+                        style={{ top: 14 + fi * 18 + "px" }}
+                        title={`fork · ${f.branch} · ${fm.label}`}
+                        onClick={() => onOpenTask(f.id)}
+                      >
+                        <span className="swb2-fork-arm" />
+                        <span className="swb2-fork-dot" style={{ background: fm.color, borderColor: fm.color }} />
+                      </button>
+                    );
+                  })}
+                  <span className="swb2-fork-tag" style={{ top: 14 + forks.length * 18 + "px" }}>
+                    ⑂{forks.length}
+                  </span>
+                </span>
+              )}
+            </Fragment>
           );
         })}
       </div>

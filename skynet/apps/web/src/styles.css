@@ -486,6 +486,28 @@ button.lg-arow:hover { background: var(--raised); }
 .swb2-dot { display: block; width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--line); background: var(--panel); }
 .swb2-label { position: absolute; left: 50%; top: 15px; transform: translateX(-50%); width: 92px; text-align: center; font-size: 10px; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .swb2-st-low .swb2-label { top: auto; bottom: 15px; }
+/* Fan-out: forks of a station's run hang below it as violet branches (⑂). */
+.swb2-forks { position: absolute; top: 0; }
+.swb2-fork-stem {
+  position: absolute; left: 0; top: 2px; width: 2px; margin-left: -1px;
+  background: color-mix(in oklch, var(--violet), transparent 45%);
+}
+.swb2-fork {
+  position: absolute; left: 0; display: flex; align-items: center;
+  background: none; border: none; padding: 0; cursor: pointer; transform: translateY(-50%);
+}
+.swb2-fork-arm {
+  width: 15px; height: 2px; margin-left: -1px;
+  background: color-mix(in oklch, var(--violet), transparent 45%);
+}
+.swb2-fork-dot {
+  width: 11px; height: 11px; border-radius: 50%; border: 2px solid; margin-left: -1px;
+}
+.swb2-fork:hover .swb2-fork-dot { filter: brightness(1.25); }
+.swb2-fork-tag {
+  position: absolute; left: 4px; font-family: var(--font-mono); font-size: 10px;
+  color: var(--violet); transform: translateY(2px);
+}
 .fork-tag { color: var(--violet); }
 .btn-fork { margin-left: auto; color: var(--violet); }
 .btn-fork:hover { border-color: var(--violet); color: var(--violet); }
