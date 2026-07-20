@@ -56,6 +56,16 @@ strengthens precisely as the agent market churns.
 *Honest caveat:* auto-distilling good memory is hard. Start with operator-authored + decision-derived
 facts; LLM-assisted distillation later (a Skynet-side helper, not an agent).
 
+*Openness as a second moat (decided):* don't lock the memory in — **publish an open, git-committable
+memory format and expose the brain as an MCP server any tool can read/write, even outside Skynet.**
+Counter-intuitively, openness *strengthens* the moat: users only entrust their accumulated knowledge to
+something they can't be locked out of, so open = trust = adoption = Skynet becomes the default hub. The
+durable moat then shifts from *owning the format* to **curation quality + the accumulated personal corpus +
+being the hub** (the git → GitHub play). Open-core: the format + read/write MCP are free (drive ubiquity);
+distillation quality, cross-vendor translation, hosted sync, team sharing, and governance are the paid layer.
+This also reframes the market — the orchestration tier is overwhelmingly free/OSS, so we do **not** monetize
+orchestration; we give it away to acquire users and monetize the moat.
+
 ### Layer 3 — Agent fluency (the flywheel)
 **More agents + clearer tasks → better results *and* more usage.** Skynet should make users better
 fleet operators across a spectrum:
