@@ -1,5 +1,5 @@
-import { Fragment, useState } from "react";
-import type { TaskRun, Project, Task, TaskState } from "@skynet/shared";
+import { Fragment, useState, type ReactNode } from "react";
+import type { TaskRun, Project } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import {
   agentsForProject,
@@ -17,8 +17,6 @@ import {
   runnerIdleLabel,
   runnerName,
   stepIdx,
-  TASK_STATES,
-  TASK_STATE_META,
   waitedSecs,
 } from "../lib/derive";
 import { Bar, Prov, StatusDot } from "../components/common";
@@ -383,9 +381,12 @@ function LedgerView({
 
 // ─── Subway lens ─────────────────────────────────────────────────────────────
 
-// One horizontal line PER PROJECT: its tasks are the stations, laid out left→
-// right in pipeline order (backlog → … → done) and coloured by state. (Replaces
-// the old one-line-per-run layout that stacked runs vertically.)
+// One horizontal track PER RUN in the project, stacked vertically: parallel runs
+// read as concurrent tracks, and a fork branches off its parent's track at the
+// step it split from (the ⑂ elbow). Stops along a track are the run's plan steps;
+// a run with no plan yet still gets its own baseline track so fan-out and burst
+// are visible immediately. (The prior tasks-as-stations layout collapsed every
+// run onto one line, hiding forks and parallelism entirely.)
 function SwDiagram({
   project,
   onOpenTask,
@@ -393,48 +394,103 @@ function SwDiagram({
   project: Project;
   onOpenTask: (id: string) => void;
 }) {
-  const { tasks } = useStore();
-  const rank = (s: TaskState) => TASK_STATES.indexOf(s);
-  const stations: Task[] = tasks
-    .filter((t) => t.projectId === project.id)
-    .sort((a, b) => rank(a.state) - rank(b.state) || (a.order ?? 0) - (b.order ?? 0));
-  if (stations.length === 0) return null;
+  const { runs, fleet } = useStore();
+  const family = agentsForProject(runs, project.id);
+  // Order rows so each root is immediately followed by its forks (branch reads
+  // top-down); orphan forks whose parent isn't here still get a row.
+  const rows: TaskRun[] = [];
+  family
+    .filter((t) => !t.parentId)
+    .forEach((m) => {
+      rows.push(m);
+      family.filter((t) => t.parentId === m.id).forEach((b) => rows.push(b));
+    });
+  family.filter((t) => t.parentId && !rows.includes(t)).forEach((t) => rows.push(t));
+  if (rows.length === 0) return null;
 
-  const n = stations.length;
-  const X = (i: number) => (n === 1 ? 50 : (i / (n - 1)) * 100);
+  // A track's width = its fork offset + its plan length (min 1 so an empty-plan
+  // run still shows a baseline dot).
+  const colsOf = (t: TaskRun) =>
+    (t.parentId ? (t.branchFromStep ?? 0) + 1 : 0) + Math.max(1, t.plan.length);
+  const totalCols = Math.max(2, ...rows.map(colsOf));
+  const X = (c: number) => (c / (totalCols - 1)) * 100;
+  const ROW_H = 80;
+  const TY = 34;
 
   return (
-    <div className="swb2">
-      <div className="swb2-track">
-        <span className="swb2-line" />
-        {stations.map((t, i) =>
-          i === 0 ? null : (
-            <span
-              key={"seg" + t.id}
-              className={
-                "swb2-seg" +
-                (stations[i - 1]!.state === "done" && t.state === "done" ? " swb2-seg-done" : "")
-              }
-              style={{ left: X(i - 1) + "%", width: X(i) - X(i - 1) + "%" }}
-            />
-          ),
-        )}
-        {stations.map((t, i) => {
-          const meta = TASK_STATE_META[t.state];
-          const openable = !!t.runId;
-          return (
-            <button
-              key={t.id}
-              className={"swb2-st" + (i % 2 ? " swb2-st-low" : "")}
-              style={{ left: X(i) + "%" }}
-              title={`${t.text} · ${meta.label}`}
-              disabled={!openable}
-              onClick={() => t.runId && onOpenTask(t.runId)}
-            >
-              <span className="swb2-dot" style={{ background: meta.color, borderColor: meta.color }} />
-              <span className="swb2-label" style={{ color: meta.color }}>{t.text}</span>
+    <div className="swb" style={{ height: rows.length * ROW_H + "px" }}>
+      {rows.map((t, r) => {
+        const cur = stepIdx(t);
+        const done = t.status === "done";
+        const rn = runnerName(t, fleet);
+        const parentRn = t.parentId
+          ? runnerName(runs.find((a) => a.id === t.parentId) ?? t, fleet)
+          : "";
+        return (
+          <div key={t.id} className="swb-row" style={{ top: r * ROW_H + "px", height: ROW_H + "px" }}>
+            <button className="swb-name" onClick={() => onOpenTask(t.id)}>
+              <StatusDot status={t.status} />
+              <span className="sw-task-text">
+                <span className="sw-tname">{t.name}</span>
+                <span className={"sw-trunner mono" + (t.parentId ? " sw-fork" : "")}>
+                  {t.parentId ? "⑂ " + rn + " · fork of " + parentRn : rn + " · " + t.model}
+                </span>
+              </span>
             </button>
-          );
+            <span className="swb-count mono">{done ? "✓" : cur + "/" + t.plan.length}</span>
+          </div>
+        );
+      })}
+      <div className="swb-canvas">
+        {rows.map((t, r) => {
+          const off = t.parentId ? (t.branchFromStep ?? 0) + 1 : 0;
+          const cur = stepIdx(t);
+          const done = t.status === "done";
+          // Every track shows at least a start→now baseline, even with no plan.
+          const stops = t.plan.length > 0 ? t.plan.map((s) => s.text) : [t.name];
+          const els: ReactNode[] = [];
+          if (t.parentId) {
+            const p = rows.findIndex((x) => x.id === t.parentId);
+            const fromStep = t.branchFromStep ?? 0;
+            if (p >= 0) {
+              els.push(
+                <span
+                  key="el"
+                  className="swb-elbow"
+                  style={{
+                    left: X(fromStep) + "%",
+                    width: X(off) - X(fromStep) + "%",
+                    top: p * ROW_H + TY + 5 + "px",
+                    height: (r - p) * ROW_H - 5 + "px",
+                  }}
+                />,
+              );
+            }
+          }
+          for (let i = 1; i < stops.length; i++) {
+            els.push(
+              <span
+                key={"s" + i}
+                className={"swb-seg" + (done || i <= cur ? " swb-seg-done" : "")}
+                style={{ left: X(off + i - 1) + "%", width: X(off + i) - X(off + i - 1) + "%", top: r * ROW_H + TY + "px" }}
+              />,
+            );
+          }
+          stops.forEach((text, i) => {
+            const state = done || i < cur ? "done" : i === cur ? "cur" : "todo";
+            els.push(
+              <span
+                key={"st" + i}
+                className={"swb-st sw-" + state + (state === "cur" ? " sw-cur-" + t.status : "")}
+                title={text}
+                style={{ left: X(off + i) + "%", top: r * ROW_H + TY + "px" }}
+              >
+                {state === "cur" && <span className={"sw-label sw-label-" + t.status}>{text}</span>}
+                {done && i === stops.length - 1 && <span className="sw-label sw-label-done">merged ✓</span>}
+              </span>,
+            );
+          });
+          return <Fragment key={t.id}>{els}</Fragment>;
         })}
       </div>
     </div>
@@ -503,10 +559,14 @@ function SubwayView({
                 )}
                 {allDone && <span className="expill expill-done">✓ shipped</span>}
               </div>
-              {tasks.some((t) => t.projectId === p.id) ? (
+              {pa.length > 0 ? (
                 <SwDiagram project={p} onOpenTask={onOpenTask} />
               ) : (
-                <div className="kb-empty">No tasks yet — add one in the project.</div>
+                <div className="kb-empty">
+                  {tasks.some((t) => t.projectId === p.id)
+                    ? "Tasks in the backlog — assign one to see its run line."
+                    : "No tasks yet — add one in the project."}
+                </div>
               )}
             </div>
           );
