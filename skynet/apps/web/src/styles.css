@@ -1082,7 +1082,7 @@ button.fleet-hist-row:hover { border-color: var(--border); background: var(--hov
 .blocker:hover { border-color: color-mix(in oklch, var(--accent), transparent 45%); transform: translateY(-1px); }
 .blocker:hover .blocker-cta { color: var(--accent); }
 .blocker-hot { border-color: color-mix(in oklch, var(--warn), transparent 55%); }
-.blocker-top { display: flex; align-items: center; justify-content: space-between; }
+.blocker-top { display: flex; align-items: center; gap: 10px; }
 .blocker-kind { font-family: var(--font-mono); font-size: 9px; font-weight: 600; letter-spacing: 0.1em; border: 1px solid; border-radius: 4px; padding: 2px 7px; white-space: nowrap; }
 .blocker-wait { font-size: 13px; font-weight: 600; color: var(--warn); font-variant-numeric: tabular-nums; }
 .blocker-title { font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.35; }
