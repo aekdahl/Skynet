@@ -76,15 +76,21 @@ junction between them** — this is what makes parallelism visible. Each folds i
 A per-fork-set mode flag. Because the fold is visual-only (§0), **neither mode integrates code on its
 own** — real integration is still per-task, human-gated.
 
-## 6. A station carries two facts — work × integration
+## 6. A station carries one fact — work state
 
-Render **both**, independently:
+Render **work state only**: `queued` / `running` / `done` (the dot fill / the lit "now" stop). A
+station is about **the agent's progress on that task** — nothing else.
 
-- **Work state** — `queued` / `running` / `done` (e.g. the dot fill / lit "now" stop).
-- **Integration state** — `no-PR` / `in-review` / `merged` / `rejected` (e.g. a ring or badge).
+**Integration (PR) state is decoupled — keep it off the map.** Whether a task's branch has a PR, and
+whether it merged, is **not** a per-station concern:
 
-**"Work done" ≠ "merged."** A track can look complete while its stations' PRs are still awaiting your
-approval. The gated diff/merge HITL drives the integration state.
+- it's a **project-level** matter at most (an optional roll-up on the project — _not_ a per-station badge); and
+- it's usually enough to surface **on demand** — in **task detail**, or by **asking the agent** —
+  rather than tracking it continuously. Skynet doesn't need to poll PR status to be useful; **don't build
+  a live PR-tracker** unless a concrete need appears.
+
+Consequently, a track **folds back when its tasks are work-done** (§3) — **independent of PR/merge
+status**. "Folded" means _the work is finished_, never _the code is merged_ (§0).
 
 ## 7. Everything else
 
@@ -103,15 +109,17 @@ approval. The gated diff/merge HITL drives the integration state.
 | Station (task) | `task` via `task.runId`; ordered by the run's start time |
 | Junction / fork | `run.parentId` (+ `run.branchFromStep` for the exact split point) |
 | Trunk | the project integration branch (`skynet/integration/<projectId>`) |
-| Integration state | the task's PR / merge-HITL status |
+
+PR / integration status is **not** part of the map (§6) — it's a project-level or on-demand concern,
+so it isn't in this table.
 
 The **one real change vs. today**: rendering aggregates **by agent**, not by run.
 
 ## 9. What this reworks
 
 The current `SwDiagram` draws **task-stations on a per-project line** with **runs as branches**. This
-spec is **agent-tracks with recursive fold-back to the trunk**, and a station that encodes **work ×
-integration**. That's a rebuild — tracked separately from this brief. The branch primitive is shared
+spec is **agent-tracks with recursive fold-back to the trunk**, and a **work-state-only station** (PR
+status stays off the map, §6). That's a rebuild — tracked separately from this brief. The branch primitive is shared
 with the manager→worker hierarchy rendering (`role`/`parentId`), so build it once.
 
 ## 10. Open / deferred
