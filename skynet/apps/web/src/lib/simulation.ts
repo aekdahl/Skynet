@@ -11,7 +11,7 @@
 
 import * as api from "./client";
 import { settle } from "./poll";
-import type { AuditRecord, TaskRun } from "@skynet/shared";
+import type { AuditRecord, Snapshot, TaskRun } from "@skynet/shared";
 
 /** Poll the audit trail until `ready`, then return the latest (real-agent timing). */
 async function settleAudit(
@@ -758,14 +758,26 @@ export const JOURNEYS: Journey[] = [
       const logged = await settle((sn) => (sn.runs.find((a) => a.id === runId)?.log.length ?? 0) > 0, 60, 1000);
       const logLen = logged.runs.find((a) => a.id === runId)?.log.length ?? 0;
       steps.push(step("live activity log streaming", logLen > 0, `${logLen} lines`));
-      const metered = await settle(
+      // Token/cost telemetry is reported by the vendor at the END of the agent's
+      // turn (the SDK `result` message), which lands as the run reaches
+      // review/done — NOT mid-run. Polling for usage early races that message and
+      // spuriously reads "no usage" on a multi-step task. So first wait for the
+      // turn to complete (usage present, OR the run reached review/done), with a
+      // generous window; then a short grace for the usage delta to land after the
+      // status flip (WS delta ordering).
+      const hasUsage = (sn: Snapshot) => {
+        const u = sn.runs.find((a) => a.id === runId)?.usage;
+        return !!u && u.inputTokens + u.outputTokens > 0;
+      };
+      await settle(
         (sn) => {
-          const u = sn.runs.find((a) => a.id === runId)?.usage;
-          return !!u && u.inputTokens + u.outputTokens > 0;
+          const st = sn.runs.find((a) => a.id === runId)?.status;
+          return hasUsage(sn) || st === "review" || st === "done";
         },
-        60,
+        180,
         1000,
       );
+      const metered = await settle(hasUsage, 20, 1000);
       const u = metered.runs.find((a) => a.id === runId)?.usage;
       steps.push(step("token/cost telemetry reported", !!u && u.inputTokens + u.outputTokens > 0, u ? `${u.inputTokens}in/${u.outputTokens}out${u.costUsd != null ? ` · $${u.costUsd}` : ""}` : "no usage"));
       return steps;
@@ -1127,6 +1139,11 @@ export async function captureEvidence(scopeProjectIds?: string[]): Promise<Recor
     projects: projects.map((p) => ({
       id: p.id,
       name: p.name,
+      // Surface goal + status so lifecycle journeys (rename / re-goal / pause)
+      // are verifiable from the evidence — the judge grades on what's here, and
+      // without status a paused/active transition can't be corroborated.
+      goal: p.goal,
+      status: p.status,
       repoPath: p.repoPath ?? null,
       repo: p.repo ?? null,
       runs: p.runIds.length,
