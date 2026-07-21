@@ -229,13 +229,15 @@ export class Orchestrator {
     // reason, so the operator sees WHY it's risky (not just a flat "medium"). The
     // runner already decided to gate; this only adds honest, specific context.
     let risk = raise.risk;
-    let why = raise.why;
+    const why = raise.why;
+    let flags: string[] = [];
     if (raise.kind === "approval" && raise.command) {
       const verdict = classifyCommand(raise.command);
       const rank = { low: 0, medium: 1, high: 2 } as const;
       if (rank[verdict.risk] > rank[risk]) risk = verdict.risk;
-      const flags = verdict.reasons.filter((r) => !/read-only|no-op/i.test(r));
-      if (flags.length && verdict.risk !== "low") why = `${why} ⚠ Flagged: ${flags.join("; ")}.`;
+      // Surface the classifier's real reasons as scannable chips (not buried in
+      // prose) so the operator sees exactly WHY this needs approval.
+      if (verdict.risk !== "low") flags = verdict.reasons.filter((r) => !/read-only|no-op/i.test(r));
     }
     const item: HitlItem = {
       id: `q-${runId}-${++this.seq}`,
@@ -255,6 +257,7 @@ export class Orchestrator {
       recommended: raise.recommended ?? null,
       steps: raise.steps ?? null,
       diff: raise.diff ?? null,
+      flags,
     };
     await this.hub.raiseHitl(item);
     if (expiresAt != null) {
@@ -427,6 +430,7 @@ export class Orchestrator {
       recommended: null,
       steps: null,
       diff: { add: stat.add, del: stat.del, modules: agent.modules },
+      flags: [],
     });
   }
 
@@ -905,6 +909,7 @@ export class Orchestrator {
       recommended: null,
       steps: null,
       diff: { add: 0, del: 0, modules: agent.modules },
+      flags: files, // the conflicting files — shown as chips
     });
   }
 

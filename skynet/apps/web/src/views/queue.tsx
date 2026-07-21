@@ -62,12 +62,24 @@ export function QueueCard({
 
       {item.command && <pre className="qcard-code">$ {item.command}</pre>}
 
-      {item.steps && (
-        <ol className="qcard-steps">
-          {item.steps.map((s, i) => (
-            <li key={i}>{s}</li>
+      {item.flags && item.flags.length > 0 && (
+        <div className="qcard-flags">
+          <span className="qcard-flags-label mono">{item.kind === "merge" ? "Conflicts in" : "Flagged"}</span>
+          {item.flags.map((f, i) => (
+            <span key={i} className={"flag-chip" + (item.kind === "merge" ? " flag-file mono" : "")}>{f}</span>
           ))}
-        </ol>
+        </div>
+      )}
+
+      {item.steps && (
+        <>
+          <p className="qcard-plan-label mono">Proposed plan — approve before the agent writes</p>
+          <ol className="qcard-steps">
+            {item.steps.map((s, i) => (
+              <li key={i}>{s}</li>
+            ))}
+          </ol>
+        </>
       )}
 
       {item.diff && (item.kind === "diff" || item.kind === "merge") && (

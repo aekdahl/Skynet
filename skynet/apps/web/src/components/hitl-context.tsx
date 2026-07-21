@@ -21,8 +21,10 @@ export function HitlContext({ q, runName, openDiff = false }: { q: HitlItem; run
   if (q.rationale) rows.push({ label: "Agent's reason", value: q.rationale, cls: "hitl-ctx-reason" });
   if (q.why) rows.push({ label: "Why you're asked", value: q.why });
 
+  const flags = q.flags ?? [];
+  const flagLabel = q.kind === "merge" ? "Conflicts in" : "Flagged";
   const showDiff = !!q.diff && (q.kind === "diff" || q.kind === "merge");
-  if (rows.length === 0 && !showDiff) return null;
+  if (rows.length === 0 && flags.length === 0 && !showDiff) return null;
   return (
     <div className="hitl-ctx">
       {rows.map((r, i) => (
@@ -31,6 +33,16 @@ export function HitlContext({ q, runName, openDiff = false }: { q: HitlItem; run
           <span className="hitl-ctx-val">{r.value}</span>
         </div>
       ))}
+      {flags.length > 0 && (
+        <div className="hitl-ctx-row">
+          <span className="hitl-ctx-label">{flagLabel}</span>
+          <span className="hitl-ctx-val hitl-flags">
+            {flags.map((f, i) => (
+              <span key={i} className={"flag-chip" + (q.kind === "merge" ? " flag-file mono" : "")}>{f}</span>
+            ))}
+          </span>
+        </div>
+      )}
       {showDiff && q.diff && (
         <div className="hitl-ctx-row hitl-ctx-diff">
           <span className="hitl-ctx-label">Change</span>
