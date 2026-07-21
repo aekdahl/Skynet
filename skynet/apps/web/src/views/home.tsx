@@ -381,14 +381,16 @@ function LedgerView({
 
 // ─── Subway lens ─────────────────────────────────────────────────────────────
 
-// Subway — ONE MAP PER PROJECT (docs/subway-model.md). A track = an AGENT (fleet
-// runner) within this project; stations = the tasks it worked (its runs, left→
-// right). A fork spawns a NEW agent → a new track that branches off the station
-// it forked from; when a track's whole subtree is work-done it FOLDS BACK into
-// its parent (or the trunk = the project's integration line). The fold is
-// visual only — real merges are per-task and human-gated. Unassigned backlog
-// tasks are not on the map (shown as a count on the trunk).
+// Subway — ONE MAP PER PROJECT (docs/subway-model.md). The first agent assigned
+// anchors a START and an END node; every other agent lives between them. A track
+// = an AGENT (fleet runner); its stations are the tasks it worked (its runs,
+// left→right). A path fans out from START (a fork branches at the station it
+// forked from) and, once its whole subtree is work-done, MERGES back into END
+// (leaf-first). Merging here is VISUAL only — real merges are per-task and
+// human-gated. Unassigned backlog tasks are off the map (a count by START).
 type SwTrack = { agentId: string; runs: TaskRun[]; parentRunId: string | null };
+
+const swShort = (s: string) => (s.length > 25 ? s.slice(0, 24).trimEnd() + "…" : s);
 
 function SwDiagram({
   project,
@@ -418,32 +420,39 @@ function SwDiagram({
   const parentOf = (t: SwTrack) => (t.parentRunId ? trackOfRun(t.parentRunId) : undefined);
   const childrenOf = (t: SwTrack) => tracks.filter((x) => parentOf(x) === t);
 
-  // DFS pre-order: each root followed by its fork descendants (branch reads top-down).
+  // Row 0 = the first agent assigned (the backbone: START → its tasks → END).
+  // DFS pre-order: each root — earliest first — followed by its fork descendants.
+  const bornAt = (t: SwTrack) => t.runs[0]!.startedAt;
   const order: SwTrack[] = [];
   const walk = (t: SwTrack) => {
     order.push(t);
-    childrenOf(t).forEach(walk);
+    childrenOf(t)
+      .sort((a, b) => bornAt(a) - bornAt(b))
+      .forEach(walk);
   };
-  tracks.filter((t) => !parentOf(t)).forEach(walk);
+  tracks
+    .filter((t) => !parentOf(t))
+    .sort((a, b) => bornAt(a) - bornAt(b))
+    .forEach(walk);
   tracks.filter((t) => !order.includes(t)).forEach((t) => order.push(t)); // orphaned forks
   const rowOf = (t: SwTrack) => order.indexOf(t);
 
-  // Columns: root tracks start at 0; a fork starts one column past its junction
-  // (the parent run's station), giving the staircase fan-out.
+  // Columns: START = col 0; every track fans from START at col 1, except a fork
+  // which starts one column past its junction (the parent run's station).
   const baseCol = new Map<SwTrack, number>();
   const junctionCol = new Map<SwTrack, number>();
   for (const t of order) {
     const p = parentOf(t);
     if (!p) {
-      baseCol.set(t, 0);
+      baseCol.set(t, 1);
       continue;
     }
     const j = Math.max(0, p.runs.findIndex((r) => r.id === t.parentRunId));
-    const jc = (baseCol.get(p) ?? 0) + j;
+    const jc = (baseCol.get(p) ?? 1) + j;
     junctionCol.set(t, jc);
     baseCol.set(t, jc + 1);
   }
-  // Fold-back is leaf-first: a track is complete only when its own runs AND every
+  // Merge is leaf-first: a track merges into END only when its own runs AND every
   // child track are complete.
   const completeMemo = new Map<SwTrack, boolean>();
   const isComplete = (t: SwTrack): boolean => {
@@ -460,13 +469,15 @@ function SwDiagram({
     if (p) junctions.add(p.agentId + ":" + ((junctionCol.get(t) ?? 0) - (baseCol.get(p) ?? 0)));
   }
 
-  const totalCols = Math.max(2, ...order.map((t) => (baseCol.get(t) ?? 0) + t.runs.length + 1));
+  const lastColOf = (t: SwTrack) => (baseCol.get(t) ?? 1) + t.runs.length - 1;
+  const END_COL = Math.max(2, ...order.map(lastColOf)) + 1;
+  const totalCols = END_COL + 1;
   const X = (c: number) => (c / (totalCols - 1)) * 100;
-  const TRUNK_Y = 12,
-    ROW0 = 44,
+  const ROW0 = 44,
     ROW_H = 76,
     TY = 28;
   const rowY = (r: number) => ROW0 + r * ROW_H + TY;
+  const y0 = rowY(0);
   const backlog = tasks.filter((t) => t.projectId === project.id && !t.runId).length;
 
   return (
@@ -483,7 +494,7 @@ function SwDiagram({
               <span className="sw-task-text">
                 <span className="sw-tname">{rn}</span>
                 <span className={"sw-trunner mono" + (p ? " sw-fork" : "")}>
-                  {p ? "⑂ fork of " + parentRn : head.model + (isComplete(t) ? " · folded ✓" : "")}
+                  {(p ? "⑂ fork of " + parentRn : head.model) + (isComplete(t) ? " · merged ✓" : "")}
                 </span>
               </span>
             </button>
@@ -494,30 +505,45 @@ function SwDiagram({
         );
       })}
       <div className="swb-canvas">
-        <span className="swb-trunk" style={{ top: TRUNK_Y + "px" }} />
-        <span className="swb-trunk-label mono" style={{ top: TRUNK_Y - 9 + "px" }}>
-          integration{backlog > 0 ? " · " + backlog + " in backlog" : ""}
+        {/* START + END anchors — the first agent's frame; everything lives between them */}
+        <span className="swb-anchor swb-start" style={{ left: X(0) + "%", top: y0 + "px" }} title="Project start" />
+        <span className="swb-anchor-label mono" style={{ left: X(0) + "%", top: y0 + 13 + "px" }}>
+          start{backlog > 0 ? " · +" + backlog + " backlog" : ""}
+        </span>
+        <span
+          className={"swb-anchor swb-end" + (order.some(isComplete) ? " swb-end-live" : "")}
+          style={{ left: X(END_COL) + "%", top: y0 + "px" }}
+          title="Work merges here when done"
+        />
+        <span className="swb-anchor-label mono" style={{ left: X(END_COL) + "%", top: y0 + 13 + "px" }}>
+          ship
         </span>
         {order.map((t, r) => {
-          const base = baseCol.get(t) ?? 0;
+          const base = baseCol.get(t) ?? 1;
           const p = parentOf(t);
-          const py = p ? rowY(rowOf(p)) : TRUNK_Y;
-          const jc = p ? (junctionCol.get(t) ?? 0) : 0;
+          const isBackbone = r === 0 && !p;
+          const yr = rowY(r);
           const els: ReactNode[] = [];
-          // branch in — from the junction station (or the trunk at col 0) to this track's first station
-          els.push(
-            <span
-              key="in"
-              className={"swb-elbow" + (p ? "" : " swb-tap")}
-              style={{ left: X(jc) + "%", width: X(base) - X(jc) + "%", top: py + "px", height: rowY(r) - py + "px" }}
-            />,
-          );
+          // branch in — backbone starts at START; a fork branches at its junction; other agents fan from START
+          if (isBackbone) {
+            els.push(<span key="in" className="swb-seg" style={{ left: X(0) + "%", width: X(base) - X(0) + "%", top: yr + "px" }} />);
+          } else {
+            const depCol = p ? (junctionCol.get(t) ?? 0) : 0;
+            const depY = p ? rowY(rowOf(p)) : y0;
+            els.push(
+              <span
+                key="in"
+                className={"swb-elbow" + (p ? "" : " swb-fan")}
+                style={{ left: X(depCol) + "%", width: X(base) - X(depCol) + "%", top: depY + "px", height: yr - depY + "px" }}
+              />,
+            );
+          }
           for (let i = 1; i < t.runs.length; i++) {
             els.push(
               <span
                 key={"seg" + i}
                 className={"swb-seg" + (t.runs[i - 1]!.status === "done" ? " swb-seg-done" : "")}
-                style={{ left: X(base + i - 1) + "%", width: X(base + i) - X(base + i - 1) + "%", top: rowY(r) + "px" }}
+                style={{ left: X(base + i - 1) + "%", width: X(base + i) - X(base + i - 1) + "%", top: yr + "px" }}
               />,
             );
           }
@@ -529,22 +555,28 @@ function SwDiagram({
                 key={"st" + i}
                 className={"swb-st sw-" + st + (st === "cur" ? " sw-cur-" + run.status : "") + (rp ? " sw-repoint" : "")}
                 title={run.name + (rp ? " · forked from here" : "")}
-                style={{ left: X(base + i) + "%", top: rowY(r) + "px" }}
+                style={{ left: X(base + i) + "%", top: yr + "px" }}
               >
-                <span className={"sw-label " + (st === "cur" ? "sw-label-" + run.status : "sw-label-muted")}>{run.name}</span>
+                <span className={"sw-label " + (st === "cur" ? "sw-label-" + run.status : "sw-label-muted")}>{swShort(run.name)}</span>
               </span>,
             );
           });
-          // fold back — a complete subtree returns to its parent (or the trunk)
+          // merge into END once the whole subtree is work-done (visual only)
           if (isComplete(t)) {
-            const last = base + t.runs.length - 1;
-            els.push(
-              <span
-                key="fold"
-                className="swb-fold"
-                style={{ left: X(last) + "%", width: X(last + 1) - X(last) + "%", top: py + "px", height: rowY(r) - py + "px" }}
-              />,
-            );
+            const lc = lastColOf(t);
+            if (isBackbone) {
+              els.push(
+                <span key="merge" className="swb-seg swb-seg-done" style={{ left: X(lc) + "%", width: X(END_COL) - X(lc) + "%", top: yr + "px" }} />,
+              );
+            } else {
+              els.push(
+                <span
+                  key="merge"
+                  className="swb-fold"
+                  style={{ left: X(lc) + "%", width: X(END_COL) - X(lc) + "%", top: y0 + "px", height: yr - y0 + "px" }}
+                />,
+              );
+            }
           }
           return <Fragment key={t.agentId}>{els}</Fragment>;
         })}
@@ -568,7 +600,7 @@ function SubwayView({
     <section className="vw">
       <ViewHead
         title="Project lines"
-        sub="One line per agent · stations are its tasks · ⑂ a fork branches to a new agent · a track folds back when its work is done"
+        sub="Every agent fans out from start and merges into end · one line per agent · stations are its tasks · ⑂ a fork branches to a new agent"
       />
       <div className="sw-list">
         {projects.map((p) => {

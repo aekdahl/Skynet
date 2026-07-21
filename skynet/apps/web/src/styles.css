@@ -475,12 +475,15 @@ button.lg-arow:hover { background: var(--raised); }
   border-bottom-left-radius: 16px;
 }
 .sw-fork { color: var(--violet); }
-/* trunk = the project integration line; agent tracks branch from it & fold back */
-.swb-trunk { position: absolute; left: 0; right: 0; height: 2px; margin-top: -1px; background: linear-gradient(90deg, color-mix(in oklch, var(--accent), transparent 70%), var(--line)); }
-.swb-trunk-label { position: absolute; left: 0; font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); background: var(--panel); padding-right: 8px; }
-/* trunk tap — a quiet vertical drop from the trunk to a top-level track */
-.swb-elbow.swb-tap { border-left: 1px dotted color-mix(in oklch, var(--faint), transparent 40%); border-bottom-color: transparent; border-bottom-left-radius: 0; }
-/* fold-back — a completed subtree returning to its parent/trunk (mirror of the branch elbow) */
+/* START + END anchors — the first agent's frame; every track lives between them */
+.swb-anchor { position: absolute; transform: translate(-50%, -50%); width: 13px; height: 13px; border-radius: 50%; }
+.swb-start { background: var(--accent); box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent), transparent 82%); }
+.swb-end { background: var(--panel); border: 2px solid var(--faint); }
+.swb-end-live { border-color: var(--ok); box-shadow: 0 0 10px color-mix(in oklch, var(--ok), transparent 55%); }
+.swb-anchor-label { position: absolute; transform: translateX(-50%); font-size: 9.5px; letter-spacing: 0.06em; color: var(--faint); white-space: nowrap; }
+/* a top-level agent fanning out from START (quiet, not a fork) */
+.swb-elbow.swb-fan { border-left: 2px solid color-mix(in oklch, var(--faint), transparent 45%); border-bottom: 2px solid color-mix(in oklch, var(--faint), transparent 45%); border-bottom-left-radius: 14px; }
+/* merge into END — a completed subtree returning to the end node (green) */
 .swb-fold {
   position: absolute;
   border-right: 2px dashed color-mix(in oklch, var(--ok), transparent 30%);
