@@ -90,7 +90,7 @@ export interface RunDiff {
 }
 /** The real unified diff of a run's branch — lazily fetched for the review UI. */
 export function fetchRunDiff(id: string) {
-  return req<RunDiff>("GET", `/api/runs/${id}/diff`);
+  return req<RunDiff>("GET", `/api/runs/${encodeURIComponent(id)}/diff`);
 }
 export function stopAgent(id: string) {
   return req<TaskRun>("POST", `/api/runs/${id}/stop`);
