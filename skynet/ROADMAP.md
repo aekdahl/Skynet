@@ -160,6 +160,14 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
 - **Managers organize by area *or* role** — same mechanism, different scope: a "Billing manager"
   (module area) or a "Review / QA / Security manager" (function). Role-managers are how specialized
   agents are arranged; workers under them inherit the role's prompt + tool scope.
+- **⭐ North star: the auto dev team.** The endgame of the hierarchy is a **per-project Team
+  Blueprint** — Skynet proposes a full team (Chief of Staff, Spec Analyst, Architect, Area Leads,
+  Developers, QA, Security, Scribe, Memory Curator) sized to the project, hired with **one human
+  approval (G0)**, and run through a gated pipeline (spec → plan → build → verify → review →
+  secure → merge → document → learn) where the blueprint may delegate *who holds* a gate but never
+  remove one, and **nothing self-approves**. Full sketch: [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md)
+  (phased: CoS+Leads+QA ride v2 · Security/Spec/Scribe ride v1 governance + v3 triggers ·
+  Curator/retro ride v4/v5).
 
 ## v3 — Triggers & integrations (inbound work)  🔗
 Turn Skynet from "I assign tasks" into "work flows in from my stack, human-gated." Every integration
