@@ -186,6 +186,11 @@ export class Operations {
     await this.getRun(ws, runId);
     return this.orchestrator.fork(runId);
   }
+  /** The real diff (unified patch + stat) of a run's branch, for the review UI. */
+  async runDiff(ws: string, runId: string): Promise<{ patch: string; add: number; del: number; files: string[] }> {
+    await this.getRun(ws, runId); // 404 unless it's in this workspace
+    return this.orchestrator.runDiff(runId);
+  }
   async archiveAgent(ws: string, runId: string, archived: boolean): Promise<TaskRun> {
     await this.getRun(ws, runId);
     const updated = await this.hub.setRunArchived(runId, archived);

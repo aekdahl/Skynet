@@ -3,6 +3,7 @@ import type { TaskRun, HitlItem } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { fmtWait, KIND_META, openQueue, waitedSecs } from "../lib/derive";
 import { RiskChip } from "../components/hitl-context";
+import { DiffView } from "../components/diff-view";
 
 export function QueueCard({
   item,
@@ -69,12 +70,8 @@ export function QueueCard({
         </ol>
       )}
 
-      {item.diff && (
-        <div className="qcard-diff">
-          <span className="diff-add">+{item.diff.add}</span>
-          <span className="diff-del">−{item.diff.del}</span>
-          <span className="diff-files">{item.diff.modules.join("  ·  ")}</span>
-        </div>
+      {item.diff && (item.kind === "diff" || item.kind === "merge") && (
+        <DiffView runId={item.runId} add={item.diff.add} del={item.diff.del} />
       )}
 
       {item.options ? (

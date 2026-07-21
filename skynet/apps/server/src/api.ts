@@ -128,6 +128,16 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // The real diff of a run's branch (unified patch + stat) — lazily loaded by the
+  // diff-review UI so patches never ride in the snapshot.
+  app.get<{ Params: { id: string } }>("/api/runs/:id/diff", async (req, reply) => {
+    try {
+      return await ops.runDiff(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // Archive / restore an agent (hidden from the board, kept in the store).
   app.post<{ Params: { id: string }; Body: { archived?: boolean } }>("/api/runs/:id/archive", async (req, reply) => {
     try {

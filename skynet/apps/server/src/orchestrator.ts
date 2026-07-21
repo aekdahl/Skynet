@@ -832,6 +832,26 @@ export class Orchestrator {
    * The agent stays in `review` until the PR is merged on GitHub. Enforcement is
    * server-side here — the runner never had credentials to push around it.
    */
+  /**
+   * The real diff of a run's branch (unified patch + stat), for the diff-review
+   * UI. Lazily produced from the worktree so patches never bloat the snapshot.
+   * Returns an empty patch if the run has no git worktree (non-git project) or
+   * it's already been retired.
+   */
+  async runDiff(runId: string): Promise<{ patch: string; add: number; del: number; files: string[] }> {
+    const review = this.reviews.get(runId);
+    const ctx = review?.git ?? (await this.gitContextForAgent(runId).catch(() => undefined));
+    if (!ctx) return { patch: "", add: 0, del: 0, files: [] };
+    // The worktree is branched off the project's integration tip, NOT `main`, so
+    // diff against that base — the review's captured baseRef when we have it,
+    // else the project's integration branch.
+    const run = await this.store.getRun(runId);
+    const baseRef = review?.baseRef ?? (run ? ctx.merge.integrationBranch(run.projectId) : config.baseBranch);
+    const stat = await ctx.worktrees.diffStat(runId, baseRef);
+    const patch = await ctx.worktrees.patch(runId, baseRef);
+    return { patch, add: stat.add, del: stat.del, files: stat.files };
+  }
+
   private async pushToGithub(git: GitContext, agent: TaskRun, repo: string): Promise<void> {
     const worktreePath = git.worktrees.pathFor(agent.id);
     const stat = await git.worktrees.diffStat(agent.id, config.baseBranch);

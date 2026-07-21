@@ -302,7 +302,7 @@ export function TaskDetail({
               Chat
             </button>
           </div>
-          <HitlContext q={q} runName={agent.name} />
+          <HitlContext q={q} runName={agent.name} openDiff />
           {mode === "modify" && (
             <div className="qx detail-modify">
               <textarea
