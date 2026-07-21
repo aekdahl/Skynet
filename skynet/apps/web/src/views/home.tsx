@@ -381,12 +381,17 @@ function LedgerView({
 
 // ─── Subway lens ─────────────────────────────────────────────────────────────
 
-// One horizontal track PER RUN in the project, stacked vertically: parallel runs
-// read as concurrent tracks, and a fork branches off its parent's track at the
-// step it split from (the ⑂ elbow). Stops along a track are the run's plan steps;
-// a run with no plan yet still gets its own baseline track so fan-out and burst
-// are visible immediately. (The prior tasks-as-stations layout collapsed every
-// run onto one line, hiding forks and parallelism entirely.)
+// Subway — ONE MAP PER PROJECT (docs/subway-model.md). The first agent assigned
+// anchors a START and an END node; every other agent lives between them. A track
+// = an AGENT (fleet runner); its stations are the tasks it worked (its runs,
+// left→right). A path fans out from START (a fork branches at the station it
+// forked from) and, once its whole subtree is work-done, MERGES back into END
+// (leaf-first). Merging here is VISUAL only — real merges are per-task and
+// human-gated. Unassigned backlog tasks are off the map (a count by START).
+type SwTrack = { agentId: string; runs: TaskRun[]; parentRunId: string | null };
+
+const swShort = (s: string) => (s.length > 25 ? s.slice(0, 24).trimEnd() + "…" : s);
+
 function SwDiagram({
   project,
   onOpenTask,
@@ -394,103 +399,186 @@ function SwDiagram({
   project: Project;
   onOpenTask: (id: string) => void;
 }) {
-  const { runs, fleet } = useStore();
-  const family = agentsForProject(runs, project.id);
-  // Order rows so each root is immediately followed by its forks (branch reads
-  // top-down); orphan forks whose parent isn't here still get a row.
-  const rows: TaskRun[] = [];
-  family
-    .filter((t) => !t.parentId)
-    .forEach((m) => {
-      rows.push(m);
-      family.filter((t) => t.parentId === m.id).forEach((b) => rows.push(b));
-    });
-  family.filter((t) => t.parentId && !rows.includes(t)).forEach((t) => rows.push(t));
-  if (rows.length === 0) return null;
+  const { runs, fleet, tasks } = useStore();
+  const mine = agentsForProject(runs, project.id);
+  if (mine.length === 0) return null;
 
-  // A track's width = its fork offset + its plan length (min 1 so an empty-plan
-  // run still shows a baseline dot).
-  const colsOf = (t: TaskRun) =>
-    (t.parentId ? (t.branchFromStep ?? 0) + 1 : 0) + Math.max(1, t.plan.length);
-  const totalCols = Math.max(2, ...rows.map(colsOf));
+  // Group runs into tracks by agent; order each track's stations by start time.
+  const byAgent = new Map<string, TaskRun[]>();
+  for (const r of mine) {
+    const k = r.agentId ?? r.id;
+    const list = byAgent.get(k) ?? [];
+    list.push(r);
+    byAgent.set(k, list);
+  }
+  const tracks: SwTrack[] = [];
+  byAgent.forEach((list, agentId) => {
+    list.sort((a, b) => a.startedAt - b.startedAt);
+    tracks.push({ agentId, runs: list, parentRunId: list[0]!.parentId ?? null });
+  });
+  const trackOfRun = (runId: string) => tracks.find((t) => t.runs.some((r) => r.id === runId));
+  const parentOf = (t: SwTrack) => (t.parentRunId ? trackOfRun(t.parentRunId) : undefined);
+  const childrenOf = (t: SwTrack) => tracks.filter((x) => parentOf(x) === t);
+
+  // Row 0 = the first agent assigned (the backbone: START → its tasks → END).
+  // DFS pre-order: each root — earliest first — followed by its fork descendants.
+  const bornAt = (t: SwTrack) => t.runs[0]!.startedAt;
+  const order: SwTrack[] = [];
+  const walk = (t: SwTrack) => {
+    order.push(t);
+    childrenOf(t)
+      .sort((a, b) => bornAt(a) - bornAt(b))
+      .forEach(walk);
+  };
+  tracks
+    .filter((t) => !parentOf(t))
+    .sort((a, b) => bornAt(a) - bornAt(b))
+    .forEach(walk);
+  tracks.filter((t) => !order.includes(t)).forEach((t) => order.push(t)); // orphaned forks
+  const rowOf = (t: SwTrack) => order.indexOf(t);
+
+  // Columns: START = col 0; every track fans from START at col 1, except a fork
+  // which starts one column past its junction (the parent run's station).
+  const baseCol = new Map<SwTrack, number>();
+  const junctionCol = new Map<SwTrack, number>();
+  for (const t of order) {
+    const p = parentOf(t);
+    if (!p) {
+      baseCol.set(t, 1);
+      continue;
+    }
+    const j = Math.max(0, p.runs.findIndex((r) => r.id === t.parentRunId));
+    const jc = (baseCol.get(p) ?? 1) + j;
+    junctionCol.set(t, jc);
+    baseCol.set(t, jc + 1);
+  }
+  // Merge is leaf-first: a track merges into END only when its own runs AND every
+  // child track are complete.
+  const completeMemo = new Map<SwTrack, boolean>();
+  const isComplete = (t: SwTrack): boolean => {
+    const m = completeMemo.get(t);
+    if (m !== undefined) return m;
+    const v = t.runs.every((r) => r.status === "done") && childrenOf(t).every(isComplete);
+    completeMemo.set(t, v);
+    return v;
+  };
+  // Parent stations a fork branched from → mark "re-pointed".
+  const junctions = new Set<string>();
+  for (const t of order) {
+    const p = parentOf(t);
+    if (p) junctions.add(p.agentId + ":" + ((junctionCol.get(t) ?? 0) - (baseCol.get(p) ?? 0)));
+  }
+
+  const lastColOf = (t: SwTrack) => (baseCol.get(t) ?? 1) + t.runs.length - 1;
+  const END_COL = Math.max(2, ...order.map(lastColOf)) + 1;
+  const totalCols = END_COL + 1;
   const X = (c: number) => (c / (totalCols - 1)) * 100;
-  const ROW_H = 80;
-  const TY = 34;
+  const ROW0 = 44,
+    ROW_H = 76,
+    TY = 28;
+  const rowY = (r: number) => ROW0 + r * ROW_H + TY;
+  const y0 = rowY(0);
+  const backlog = tasks.filter((t) => t.projectId === project.id && !t.runId).length;
 
   return (
-    <div className="swb" style={{ height: rows.length * ROW_H + "px" }}>
-      {rows.map((t, r) => {
-        const cur = stepIdx(t);
-        const done = t.status === "done";
-        const rn = runnerName(t, fleet);
-        const parentRn = t.parentId
-          ? runnerName(runs.find((a) => a.id === t.parentId) ?? t, fleet)
-          : "";
+    <div className="swb" style={{ height: ROW0 + order.length * ROW_H + 6 + "px" }}>
+      {order.map((t, r) => {
+        const head = t.runs.find((x) => x.status !== "done") ?? t.runs[t.runs.length - 1]!;
+        const p = parentOf(t);
+        const rn = runnerName(head, fleet);
+        const parentRn = p ? runnerName(p.runs[0]!, fleet) : "";
         return (
-          <div key={t.id} className="swb-row" style={{ top: r * ROW_H + "px", height: ROW_H + "px" }}>
-            <button className="swb-name" onClick={() => onOpenTask(t.id)}>
-              <StatusDot status={t.status} />
+          <div key={t.agentId} className="swb-row" style={{ top: ROW0 + r * ROW_H + "px", height: ROW_H + "px" }}>
+            <button className="swb-name" onClick={() => onOpenTask(head.id)}>
+              <StatusDot status={head.status} />
               <span className="sw-task-text">
-                <span className="sw-tname">{t.name}</span>
-                <span className={"sw-trunner mono" + (t.parentId ? " sw-fork" : "")}>
-                  {t.parentId ? "⑂ " + rn + " · fork of " + parentRn : rn + " · " + t.model}
+                <span className="sw-tname">{rn}</span>
+                <span className={"sw-trunner mono" + (p ? " sw-fork" : "")}>
+                  {(p ? "⑂ fork of " + parentRn : head.model) + (isComplete(t) ? " · merged ✓" : "")}
                 </span>
               </span>
             </button>
-            <span className="swb-count mono">{done ? "✓" : cur + "/" + t.plan.length}</span>
+            <span className="swb-count mono">
+              {t.runs.filter((x) => x.status === "done").length}/{t.runs.length}
+            </span>
           </div>
         );
       })}
       <div className="swb-canvas">
-        {rows.map((t, r) => {
-          const off = t.parentId ? (t.branchFromStep ?? 0) + 1 : 0;
-          const cur = stepIdx(t);
-          const done = t.status === "done";
-          // Every track shows at least a start→now baseline, even with no plan.
-          const stops = t.plan.length > 0 ? t.plan.map((s) => s.text) : [t.name];
+        {/* START + END anchors — the first agent's frame; everything lives between them */}
+        <span className="swb-anchor swb-start" style={{ left: X(0) + "%", top: y0 + "px" }} title="Project start" />
+        <span className="swb-anchor-label mono" style={{ left: X(0) + "%", top: y0 + 13 + "px" }}>
+          start{backlog > 0 ? " · +" + backlog + " backlog" : ""}
+        </span>
+        <span
+          className={"swb-anchor swb-end" + (order.some(isComplete) ? " swb-end-live" : "")}
+          style={{ left: X(END_COL) + "%", top: y0 + "px" }}
+          title="Work merges here when done"
+        />
+        <span className="swb-anchor-label mono" style={{ left: X(END_COL) + "%", top: y0 + 13 + "px" }}>
+          ship
+        </span>
+        {order.map((t, r) => {
+          const base = baseCol.get(t) ?? 1;
+          const p = parentOf(t);
+          const isBackbone = r === 0 && !p;
+          const yr = rowY(r);
           const els: ReactNode[] = [];
-          if (t.parentId) {
-            const p = rows.findIndex((x) => x.id === t.parentId);
-            const fromStep = t.branchFromStep ?? 0;
-            if (p >= 0) {
+          // branch in — backbone starts at START; a fork branches at its junction; other agents fan from START
+          if (isBackbone) {
+            els.push(<span key="in" className="swb-seg" style={{ left: X(0) + "%", width: X(base) - X(0) + "%", top: yr + "px" }} />);
+          } else {
+            const depCol = p ? (junctionCol.get(t) ?? 0) : 0;
+            const depY = p ? rowY(rowOf(p)) : y0;
+            els.push(
+              <span
+                key="in"
+                className={"swb-elbow" + (p ? "" : " swb-fan")}
+                style={{ left: X(depCol) + "%", width: X(base) - X(depCol) + "%", top: depY + "px", height: yr - depY + "px" }}
+              />,
+            );
+          }
+          for (let i = 1; i < t.runs.length; i++) {
+            els.push(
+              <span
+                key={"seg" + i}
+                className={"swb-seg" + (t.runs[i - 1]!.status === "done" ? " swb-seg-done" : "")}
+                style={{ left: X(base + i - 1) + "%", width: X(base + i) - X(base + i - 1) + "%", top: yr + "px" }}
+              />,
+            );
+          }
+          t.runs.forEach((run, i) => {
+            const st = run.status === "done" ? "done" : "cur";
+            const rp = junctions.has(t.agentId + ":" + i);
+            els.push(
+              <span
+                key={"st" + i}
+                className={"swb-st sw-" + st + (st === "cur" ? " sw-cur-" + run.status : "") + (rp ? " sw-repoint" : "")}
+                title={run.name + (rp ? " · forked from here" : "")}
+                style={{ left: X(base + i) + "%", top: yr + "px" }}
+              >
+                <span className={"sw-label " + (st === "cur" ? "sw-label-" + run.status : "sw-label-muted")}>{swShort(run.name)}</span>
+              </span>,
+            );
+          });
+          // merge into END once the whole subtree is work-done (visual only)
+          if (isComplete(t)) {
+            const lc = lastColOf(t);
+            if (isBackbone) {
+              els.push(
+                <span key="merge" className="swb-seg swb-seg-done" style={{ left: X(lc) + "%", width: X(END_COL) - X(lc) + "%", top: yr + "px" }} />,
+              );
+            } else {
               els.push(
                 <span
-                  key="el"
-                  className="swb-elbow"
-                  style={{
-                    left: X(fromStep) + "%",
-                    width: X(off) - X(fromStep) + "%",
-                    top: p * ROW_H + TY + 5 + "px",
-                    height: (r - p) * ROW_H - 5 + "px",
-                  }}
+                  key="merge"
+                  className="swb-fold"
+                  style={{ left: X(lc) + "%", width: X(END_COL) - X(lc) + "%", top: y0 + "px", height: yr - y0 + "px" }}
                 />,
               );
             }
           }
-          for (let i = 1; i < stops.length; i++) {
-            els.push(
-              <span
-                key={"s" + i}
-                className={"swb-seg" + (done || i <= cur ? " swb-seg-done" : "")}
-                style={{ left: X(off + i - 1) + "%", width: X(off + i) - X(off + i - 1) + "%", top: r * ROW_H + TY + "px" }}
-              />,
-            );
-          }
-          stops.forEach((text, i) => {
-            const state = done || i < cur ? "done" : i === cur ? "cur" : "todo";
-            els.push(
-              <span
-                key={"st" + i}
-                className={"swb-st sw-" + state + (state === "cur" ? " sw-cur-" + t.status : "")}
-                title={text}
-                style={{ left: X(off + i) + "%", top: r * ROW_H + TY + "px" }}
-              >
-                {state === "cur" && <span className={"sw-label sw-label-" + t.status}>{text}</span>}
-                {done && i === stops.length - 1 && <span className="sw-label sw-label-done">merged ✓</span>}
-              </span>,
-            );
-          });
-          return <Fragment key={t.id}>{els}</Fragment>;
+          return <Fragment key={t.agentId}>{els}</Fragment>;
         })}
       </div>
     </div>
@@ -512,7 +600,7 @@ function SubwayView({
     <section className="vw">
       <ViewHead
         title="Project lines"
-        sub="Filled stops are done · the lit stop is now · ⑂ branches split off the step they originated from"
+        sub="Every agent fans out from start and merges into end · one line per agent · stations are its tasks · ⑂ a fork branches to a new agent"
       />
       <div className="sw-list">
         {projects.map((p) => {

@@ -475,6 +475,24 @@ button.lg-arow:hover { background: var(--raised); }
   border-bottom-left-radius: 16px;
 }
 .sw-fork { color: var(--violet); }
+/* START + END anchors — the first agent's frame; every track lives between them */
+.swb-anchor { position: absolute; transform: translate(-50%, -50%); width: 13px; height: 13px; border-radius: 50%; }
+.swb-start { background: var(--accent); box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent), transparent 82%); }
+.swb-end { background: var(--panel); border: 2px solid var(--faint); }
+.swb-end-live { border-color: var(--ok); box-shadow: 0 0 10px color-mix(in oklch, var(--ok), transparent 55%); }
+.swb-anchor-label { position: absolute; transform: translateX(-50%); font-size: 9.5px; letter-spacing: 0.06em; color: var(--faint); white-space: nowrap; }
+/* a top-level agent fanning out from START (quiet, not a fork) */
+.swb-elbow.swb-fan { border-left: 2px solid color-mix(in oklch, var(--faint), transparent 45%); border-bottom: 2px solid color-mix(in oklch, var(--faint), transparent 45%); border-bottom-left-radius: 14px; }
+/* merge into END — a completed subtree returning to the end node (green) */
+.swb-fold {
+  position: absolute;
+  border-right: 2px dashed color-mix(in oklch, var(--ok), transparent 30%);
+  border-bottom: 2px dashed color-mix(in oklch, var(--ok), transparent 30%);
+  border-bottom-right-radius: 16px;
+}
+/* a parent station a fork branched off from (re-pointed) */
+.sw-repoint { outline: 2px solid color-mix(in oklch, var(--violet), transparent 20%); outline-offset: 2px; }
+.sw-label-muted { color: var(--faint); }
 /* ── Subway v2: one line per project, tasks as stations ─────────────────── */
 .swb2 { padding: 30px 46px 34px; }
 .swb2-track { position: relative; height: 2px; }
