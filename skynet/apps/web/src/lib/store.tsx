@@ -78,11 +78,11 @@ export interface Store extends StoreState {
     patch: { name?: string; goal?: string; status?: string; autonomy?: boolean },
   ) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
-  createTask: (projectId: string, text: string) => Promise<void>;
+  createTask: (projectId: string, text: string, description?: string) => Promise<void>;
   updateTask: (
     projectId: string,
     taskId: string,
-    patch: { text?: string; autoPick?: boolean },
+    patch: { text?: string; description?: string | null; autoPick?: boolean },
   ) => Promise<void>;
   deleteTask: (projectId: string, taskId: string) => Promise<void>;
   moveTask: (projectId: string, taskId: string, direction: "up" | "down") => Promise<void>;
@@ -327,8 +327,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteProject: async (id) => {
         await api.deleteProject(id);
       },
-      createTask: async (projectId, text) => {
-        await api.createTask(projectId, text);
+      createTask: async (projectId, text, description) => {
+        await api.createTask(projectId, text, description);
       },
       updateTask: async (projectId, taskId, patch) => {
         await api.updateTask(projectId, taskId, patch);

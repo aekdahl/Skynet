@@ -619,8 +619,11 @@ export class Orchestrator {
       const { cwd, baseRef } = await this.provisionCwd(git, runId, branch, git?.merge.integrationBranch(projectId));
       // Inject this workspace's provider key (env fallback when none is stored).
       const apiKey = await secretService.resolve(project.workspaceId, runner.provider);
+      // The agent gets the full brief: the short name plus the longer
+      // description when one exists (the run's display name stays the short text).
+      const brief = task.description ? `${task.text}\n\n${task.description}` : task.text;
       const handle = await provider.start(
-        { runId, projectId, task: task.text, model: runner.model, branch, cwd, apiKey },
+        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId, branch, baseRef, git });
@@ -1090,7 +1093,7 @@ export class Orchestrator {
       if (!provider.consult) return `Auto-triaged — "${task.text}" looks actionable; no blockers noted.`;
       const apiKey = await secretService.resolve(ws, agent.provider);
       const reply = await provider.consult(
-        { task: task.text, model: agent.model, cwd: config.runnerCwd, apiKey },
+        { task: task.description ? `${task.text}\n\n${task.description}` : task.text, model: agent.model, cwd: config.runnerCwd, apiKey },
         "You are triaging a backlog item for a coding project. In 2-3 short lines: is the ask clear, rough effort (S/M/L), and any risks? Be terse.",
       );
       return reply.trim().slice(0, 500) || `Auto-triaged — "${task.text}".`;

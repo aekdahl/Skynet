@@ -148,7 +148,10 @@ export const Task = z.object({
   id: z.string(),
   workspaceId: z.string(),
   projectId: z.string(),
-  text: z.string(),
+  text: z.string(), // the short task NAME (kept concise for the board/subway)
+  // Optional longer detail — the full brief the agent gets, but not shown as the
+  // name. Keeps names scannable while allowing a rich description when needed.
+  description: z.string().nullable().default(null),
   state: TaskState,
   runId: z.string().nullable().default(null),
   // Marked for autonomous pickup: when true and an agent is idle, the autonomy
@@ -328,13 +331,17 @@ export const UpdateProjectRequest = z.object({
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 
-export const CreateTaskRequest = z.object({ text: z.string().min(1) });
+export const CreateTaskRequest = z.object({
+  text: z.string().min(1),
+  description: z.string().optional(),
+});
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequest>;
 
 // Editing a task edits its text / auto-pick flag only. State changes go through
 // the guarded move endpoint (MoveTaskRequest) so illegal transitions are rejected.
 export const UpdateTaskRequest = z.object({
   text: z.string().min(1).optional(),
+  description: z.string().nullable().optional(),
   autoPick: z.boolean().optional(),
 });
 export type UpdateTaskRequest = z.infer<typeof UpdateTaskRequest>;

@@ -114,6 +114,7 @@ export function TaskDetail({
   const {
     queue,
     runs,
+    tasks,
     fleet,
     modules,
     resolveHitl,
@@ -125,6 +126,8 @@ export function TaskDetail({
     archiveAgent,
   } = useStore();
   const q = openQueue(queue).find((it) => it.runId === agent.id);
+  // The backing task's longer description (the run's name is the short task text).
+  const taskDesc = tasks.find((t) => t.runId === agent.id)?.description ?? null;
   const doneCount = planDone(agent);
   const [mode, setMode] = useState<null | "modify" | "chat">(null);
   const [draft, setDraft] = useState("");
@@ -240,6 +243,13 @@ export function TaskDetail({
           )}
         </div>
       </div>
+
+      {taskDesc && (
+        <div className="detail-desc">
+          <div className="detail-desc-label mono">BRIEF</div>
+          <p className="detail-desc-body">{taskDesc}</p>
+        </div>
+      )}
 
       {answer && (
         <div className="detail-result">
