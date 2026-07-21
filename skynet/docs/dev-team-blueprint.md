@@ -14,28 +14,65 @@
 
 ---
 
-## 1. The core idea: the Team Blueprint
+## 1. The core idea: Charter → Blueprint → Plan
 
-When a project is created (or on demand for an existing one), Skynet **proposes a team**:
+A team can only be sized from a **proper understanding of the project** — so intake comes
+first. Creating a project is a short, LLM-assisted conversation, not a name field:
 
 ```
-Project goal + repo profile (size, stack, module map, backlog depth)
+"I want usage-based billing"        ← the operator's raw ask
         │
-        ▼
-┌─ TEAM BLUEPRINT (a `plan` HITL — Gate G0) ─────────────────────────────┐
-│  Roles to hire, how many, which provider/model per role, which gates   │
-│  are active, budgets, and the escalation policy.                       │
-│  Operator: approve / edit / strip down to a single dev.                │
-└─────────────────────────────────────────────────────────────────────────┘
+        ▼  intake interview (LLM drafts, operator corrects — G-1)
+┌─ PROJECT CHARTER ───────────────────────────────────────────────────────┐
+│  Goals & non-goals · definition of done · constraints (stack, deadline, │
+│  budget) · known risks & unknowns · success criteria. Draft-quality in  │
+│  seconds; the operator edits/approves. Stored on the project + memory.  │
+└──────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼  + repo profile (size, stack, module map, backlog depth)
+┌─ TEAM BLUEPRINT (a `plan` HITL — Gate G0) ──────────────────────────────┐
+│  Roles to hire, how many, which provider/model per role, which gates    │
+│  are active, budgets, and the escalation policy.                        │
+│  Operator: approve / edit / strip down to a single dev.                 │
+└──────────────────────────────────────────────────────────────────────────┘
         │ approve
         ▼
+┌─ INITIAL PLAN (a `plan` HITL — the CoS's first act) ────────────────────┐
+│  Proposed epics → milestones → tasks (each with a short name + full     │
+│  brief + acceptance criteria), dependency order, and per-milestone      │
+│  effort/budget estimates. Operator approves/edits → becomes the backlog.│
+└──────────────────────────────────────────────────────────────────────────┘
+        │
 Team provisioned → work flows through the pipeline (§4) → team scales
 elastically with the backlog → roles retire when idle → project ships.
 ```
 
-The blueprint is **sized to the project**: a README fix proposes one developer and no
-ceremony; a payments service proposes the full bench. The operator can always edit —
-the blueprint is a *default*, not a mandate.
+- **The Charter is the source of truth** the whole team plans against — the Architect reads
+  its constraints, the Spec Analyst checks briefs against its definition of done, the CoS
+  reports progress against its milestones. It lives on the project *and* in memory (v4), so
+  later agents — and later *projects* — inherit it.
+- **On timing:** agent work is wall-clock-fast, so "timing" here means **dependency order,
+  milestone sequencing, and human-gate availability** — not sprint dates. Estimates are
+  honest ranges (tokens/cost + elapsed-time), refined by the retro loop's actuals (§4), never
+  fabricated deadlines.
+- The blueprint is **sized to the charter**: a README fix proposes one developer and no
+  ceremony; a payments service proposes the full bench. The operator can always edit —
+  charter, blueprint, and plan are *defaults*, not mandates.
+
+### Whose keys, whose models (decided)
+**The user's own keys — everywhere.** The intake interviewer, the blueprint proposer, the CoS
+planner, and every role agent all resolve credentials through the existing per-workspace
+secret store (`secretService.resolve`) exactly like runners do today. This is
+[positioning.md](positioning.md) applied to orchestration: Skynet is the supervision layer, it
+does **not** host or resell model access. Consequences, made explicit:
+- **BYOK end-to-end** — no Skynet-side model account, no markup, works offline-from-us.
+- **Metered like everything else** — charter/blueprint/planning calls are token-metered under
+  the project budget and show up in the CoS digest (planning isn't free, so it's visible).
+- **Role→model choice is the user's** — the blueprint proposes a model per role (cheap model
+  for the Scribe, strong model for the Architect); the operator's keys determine what's
+  available, and the picker only offers providers with a stored credential.
+- **A project with no key can't hire** — intake still works up to the charter draft (one
+  cheap call), then prompts to connect a provider (the v1 guided-connect flow).
 
 ---
 
@@ -47,8 +84,8 @@ reviewer is a *feature* — diverse-lens review is one of our signature bets).
 
 | # | Role | Mandate (what it does) | Never does | Key gates it drives |
 |---|---|---|---|---|
-| 1 | **Chief of Staff** (one per project) | Decomposes the goal → epics/tasks; owns the backlog; assigns to leads; posts the daily digest (shipped/blocked/cost); proposes team scaling | Edit code | G0 blueprint, standup digest |
-| 2 | **Spec Analyst** (PM hat) | Turns vague asks into task briefs — short name + full description + acceptance criteria (the task-linter, §v1.5, as an agent); asks the operator clarifying `question`s *before* work starts | Edit code | G1 spec gate |
+| 1 | **Chief of Staff** (one per project) | Drafts the **initial plan** (epics → milestones → tasks, dependency-ordered, with estimate ranges) from the Charter; owns the backlog; assigns to leads; posts the daily digest (shipped/blocked/cost, progress vs. milestones); proposes team scaling | Edit code | G0 blueprint, initial plan, standup digest |
+| 2 | **Spec Analyst** (PM hat) | Runs the **intake interview** (drafts the Project Charter — goals, non-goals, risks, done-definition — for the operator to correct); turns vague asks into task briefs — short name + full description + acceptance criteria (the task-linter, §v1.5, as an agent); asks clarifying `question`s *before* work starts | Edit code | G-1 charter, G1 spec gate |
 | 3 | **Architect** | Owns the module map; writes ADRs (→ memory); reviews leads' plans for cross-area fit; flags boundary violations | Edit code (advises only) | G2 plan gate (consulted) |
 | 4 | **Area Leads** (per module area) | Exactly [agent-hierarchy.md](agent-hierarchy.md): decompose area goals, `spawn_worker`, first-line supervision by risk policy, first-line diff review, worker→area merges | Broad edits outside area | G2, first-pass G4 |
 | 5 | **Developers** (workers, N elastic) | The coding agents — one task each, own worktree/branch, any provider | Merge their own work | raise G3/G4 |
@@ -72,6 +109,7 @@ decision is written to `hitl_audit` as `manager:<id>` (already designed) — rev
 
 | Gate | What's checked | Default holder | Delegatable to |
 |---|---|---|---|
+| **G-1 · Charter** | Project goals, non-goals, risks, done-definition (LLM-drafted, human-owned) | **Human** | never |
 | **G0 · Blueprint** | Team composition, budgets, policy | **Human** | never |
 | **G1 · Spec** | Task has a name, brief, acceptance criteria | Spec Analyst (auto) → `question` to human if ambiguous | — |
 | **G2 · Plan** | Worker's plan before any writes (plan-mode) | Area Lead (low-risk) / **Human** (medium+, cross-area → Architect consulted) | lead |
@@ -92,7 +130,11 @@ Two invariants, non-negotiable:
 ## 4. The pipeline (how work flows)
 
 ```
- intake ─ CoS triages (or v3 trigger files it)
+ charter ─ intake interview → Charter ─────────────────[G-1, once per project]
+   │
+ plan₀ ─── CoS: epics → milestones → tasks + estimates ─[initial plan, once]
+   │
+ intake ─ CoS triages new asks (or v3 trigger files it)
    │
  spec ──── Spec Analyst → brief + acceptance criteria ──[G1]
    │
@@ -121,7 +163,9 @@ Two invariants, non-negotiable:
 - **Escalation ladder** — worker → lead → CoS → operator, with **SLAs on gates** (waiting-time
   is already tracked; a gate breaching its SLA pings the digest / notification).
 - **Retro loop** — after each epic: which briefs one-shotted vs. churned through gates → the
-  provably-improving-fleet metrics (ROADMAP ⭐4); the Curator promotes winning patterns to memory.
+  provably-improving-fleet metrics (ROADMAP ⭐4); the Curator promotes winning patterns to memory;
+  **estimate calibration** — actual tokens/time per task feed back into the CoS's ranges, so
+  milestone estimates get honest with use instead of staying guesses.
 - **Elasticity** — the CoS proposes scaling ("backlog 12 deep, 2 idle runners → hire 3 devs?")
   as a `plan` gate; roles idle past a TTL auto-retire (their memory persists — the team is
   disposable, the knowledge isn't).
