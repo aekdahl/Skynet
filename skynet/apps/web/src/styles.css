@@ -475,6 +475,21 @@ button.lg-arow:hover { background: var(--raised); }
   border-bottom-left-radius: 16px;
 }
 .sw-fork { color: var(--violet); }
+/* trunk = the project integration line; agent tracks branch from it & fold back */
+.swb-trunk { position: absolute; left: 0; right: 0; height: 2px; margin-top: -1px; background: linear-gradient(90deg, color-mix(in oklch, var(--accent), transparent 70%), var(--line)); }
+.swb-trunk-label { position: absolute; left: 0; font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); background: var(--panel); padding-right: 8px; }
+/* trunk tap — a quiet vertical drop from the trunk to a top-level track */
+.swb-elbow.swb-tap { border-left: 1px dotted color-mix(in oklch, var(--faint), transparent 40%); border-bottom-color: transparent; border-bottom-left-radius: 0; }
+/* fold-back — a completed subtree returning to its parent/trunk (mirror of the branch elbow) */
+.swb-fold {
+  position: absolute;
+  border-right: 2px dashed color-mix(in oklch, var(--ok), transparent 30%);
+  border-bottom: 2px dashed color-mix(in oklch, var(--ok), transparent 30%);
+  border-bottom-right-radius: 16px;
+}
+/* a parent station a fork branched off from (re-pointed) */
+.sw-repoint { outline: 2px solid color-mix(in oklch, var(--violet), transparent 20%); outline-offset: 2px; }
+.sw-label-muted { color: var(--faint); }
 /* ── Subway v2: one line per project, tasks as stations ─────────────────── */
 .swb2 { padding: 30px 46px 34px; }
 .swb2-track { position: relative; height: 2px; }
