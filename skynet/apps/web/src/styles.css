@@ -258,6 +258,53 @@ kbd {
 .diff-add { color: var(--ok); font-weight: 600; }
 .diff-del { color: var(--danger); font-weight: 600; }
 .diff-files { color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Real diff viewer (GitHub-style) ──────────────────────────────────────── */
+.dv-wrap { margin-top: 6px; }
+.dv-toggle {
+  display: inline-flex; align-items: center; gap: 8px; background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: 12px; padding: 2px 0;
+}
+.dv-toggle:hover { color: var(--text); }
+.dv-caret { color: var(--faint); }
+.dv-toggle-stat { color: var(--faint); }
+.dv-empty { color: var(--muted); font-size: 12px; margin: 8px 0 2px; }
+.dv { margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; max-height: 420px; overflow-y: auto; }
+.dv-file + .dv-file { border-top: 1px solid var(--line); }
+.dv-file-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 6px 12px; background: var(--raised); font-size: 12px; color: var(--text);
+  position: sticky; top: 0;
+}
+.dv-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dv-stat { flex: none; font-size: 11px; }
+.dv-body { font-size: 12px; line-height: 1.5; }
+.dv-line { display: grid; grid-template-columns: 40px 40px 14px 1fr; white-space: pre-wrap; word-break: break-word; }
+.dv-ln { text-align: right; padding-right: 8px; color: var(--faint); font-size: 10.5px; user-select: none; }
+.dv-sign { text-align: center; color: var(--faint); }
+.dv-code { padding-right: 10px; color: var(--text); }
+.dv-add { background: color-mix(in oklch, var(--ok), transparent 88%); }
+.dv-add .dv-sign { color: var(--ok); }
+.dv-del { background: color-mix(in oklch, var(--danger), transparent 88%); }
+.dv-del .dv-sign { color: var(--danger); }
+.dv-hunk { background: var(--bg); color: var(--info); }
+.dv-hunk .dv-code { color: var(--info); }
+.hitl-ctx-diff { flex-direction: column; align-items: stretch; gap: 4px; }
+
+/* Decision chips — approval risk reasons ("Flagged") / merge conflict files */
+.hitl-flags, .qcard-flags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.qcard-flags { margin: 4px 0; }
+.qcard-flags-label, .qcard-plan-label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+.qcard-plan-label { margin: 8px 0 2px; }
+.flag-chip {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid color-mix(in oklch, var(--warn), transparent 55%);
+  color: var(--warn); background: color-mix(in oklch, var(--warn), transparent 88%);
+}
+.flag-chip.flag-file {
+  border-color: color-mix(in oklch, var(--danger), transparent 55%);
+  color: var(--danger); background: color-mix(in oklch, var(--danger), transparent 90%);
+}
 .qcard-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding-top: 2px; }
 
 .btn {

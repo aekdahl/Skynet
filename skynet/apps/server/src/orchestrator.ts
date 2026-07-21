@@ -229,13 +229,15 @@ export class Orchestrator {
     // reason, so the operator sees WHY it's risky (not just a flat "medium"). The
     // runner already decided to gate; this only adds honest, specific context.
     let risk = raise.risk;
-    let why = raise.why;
+    const why = raise.why;
+    let flags: string[] = [];
     if (raise.kind === "approval" && raise.command) {
       const verdict = classifyCommand(raise.command);
       const rank = { low: 0, medium: 1, high: 2 } as const;
       if (rank[verdict.risk] > rank[risk]) risk = verdict.risk;
-      const flags = verdict.reasons.filter((r) => !/read-only|no-op/i.test(r));
-      if (flags.length && verdict.risk !== "low") why = `${why} ⚠ Flagged: ${flags.join("; ")}.`;
+      // Surface the classifier's real reasons as scannable chips (not buried in
+      // prose) so the operator sees exactly WHY this needs approval.
+      if (verdict.risk !== "low") flags = verdict.reasons.filter((r) => !/read-only|no-op/i.test(r));
     }
     const item: HitlItem = {
       id: `q-${runId}-${++this.seq}`,
@@ -255,6 +257,7 @@ export class Orchestrator {
       recommended: raise.recommended ?? null,
       steps: raise.steps ?? null,
       diff: raise.diff ?? null,
+      flags,
     };
     await this.hub.raiseHitl(item);
     if (expiresAt != null) {
@@ -427,6 +430,7 @@ export class Orchestrator {
       recommended: null,
       steps: null,
       diff: { add: stat.add, del: stat.del, modules: agent.modules },
+      flags: [],
     });
   }
 
@@ -832,6 +836,26 @@ export class Orchestrator {
    * The agent stays in `review` until the PR is merged on GitHub. Enforcement is
    * server-side here — the runner never had credentials to push around it.
    */
+  /**
+   * The real diff of a run's branch (unified patch + stat), for the diff-review
+   * UI. Lazily produced from the worktree so patches never bloat the snapshot.
+   * Returns an empty patch if the run has no git worktree (non-git project) or
+   * it's already been retired.
+   */
+  async runDiff(runId: string): Promise<{ patch: string; add: number; del: number; files: string[] }> {
+    const review = this.reviews.get(runId);
+    const ctx = review?.git ?? (await this.gitContextForAgent(runId).catch(() => undefined));
+    if (!ctx) return { patch: "", add: 0, del: 0, files: [] };
+    // The worktree is branched off the project's integration tip, NOT `main`, so
+    // diff against that base — the review's captured baseRef when we have it,
+    // else the project's integration branch.
+    const run = await this.store.getRun(runId);
+    const baseRef = review?.baseRef ?? (run ? ctx.merge.integrationBranch(run.projectId) : config.baseBranch);
+    const stat = await ctx.worktrees.diffStat(runId, baseRef);
+    const patch = await ctx.worktrees.patch(runId, baseRef);
+    return { patch, add: stat.add, del: stat.del, files: stat.files };
+  }
+
   private async pushToGithub(git: GitContext, agent: TaskRun, repo: string): Promise<void> {
     const worktreePath = git.worktrees.pathFor(agent.id);
     const stat = await git.worktrees.diffStat(agent.id, config.baseBranch);
@@ -885,6 +909,7 @@ export class Orchestrator {
       recommended: null,
       steps: null,
       diff: { add: 0, del: 0, modules: agent.modules },
+      flags: files, // the conflicting files — shown as chips
     });
   }
 

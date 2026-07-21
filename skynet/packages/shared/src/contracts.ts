@@ -213,6 +213,9 @@ export const HitlItem = z.object({
   recommended: z.number().int().nullable().default(null), // question — index
   steps: z.array(z.string()).nullable().default(null), // plan
   diff: DiffSummary.nullable().default(null), // diff
+  // System-computed, scannable chips for the decision: the safety classifier's
+  // risk reasons (approval) or the conflicting files (merge). Not runner-supplied.
+  flags: z.array(z.string()).default([]),
 });
 export type HitlItem = z.infer<typeof HitlItem>;
 

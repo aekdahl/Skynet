@@ -133,6 +133,21 @@ export class WorktreeProvisioner {
     return stat;
   }
 
+  /**
+   * Full unified diff (patch) of the branch vs its base ref — the real change an
+   * operator reviews. Best-effort; capped so a giant diff can't bloat the wire.
+   */
+  async patch(runId: string, baseRef: string, maxBytes = 200_000): Promise<string> {
+    try {
+      const { stdout } = await exec("git", ["-C", this.pathFor(runId), "diff", `${baseRef}...HEAD`], {
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      return stdout.length > maxBytes ? stdout.slice(0, maxBytes) + "\n… (diff truncated — review the full branch)" : stdout;
+    } catch {
+      return "";
+    }
+  }
+
   /** Retire the worktree (the branch is left for the merge queue / history). */
   async retire(runId: string): Promise<void> {
     await this.removePath(this.pathFor(runId));

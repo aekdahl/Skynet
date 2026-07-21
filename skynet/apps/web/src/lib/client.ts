@@ -82,6 +82,16 @@ export function sendAgentMessage(id: string, text: string) {
 export function forkAgent(id: string) {
   return req<unknown>("POST", `/api/runs/${id}/fork`);
 }
+export interface RunDiff {
+  patch: string;
+  add: number;
+  del: number;
+  files: string[];
+}
+/** The real unified diff of a run's branch — lazily fetched for the review UI. */
+export function fetchRunDiff(id: string) {
+  return req<RunDiff>("GET", `/api/runs/${id}/diff`);
+}
 export function stopAgent(id: string) {
   return req<TaskRun>("POST", `/api/runs/${id}/stop`);
 }
