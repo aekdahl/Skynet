@@ -24,7 +24,12 @@ export default defineConfig({
     alias: [{ find: /^@skynet\/shared$/, replacement: sharedSrc }],
   },
   server: {
-    port: 5173,
+    // The desktop launcher pins a dedicated port (SKYNET_VITE_PORT) with strictPort
+    // so Vite binds exactly that or fails loudly — never drifts onto another
+    // project's dev server (e.g. anything already on 5173). Plain `pnpm dev` keeps
+    // the default 5173 and Vite's usual auto-bump.
+    port: Number(process.env.SKYNET_VITE_PORT) || 5173,
+    strictPort: !!process.env.SKYNET_VITE_PORT,
     proxy: {
       "/api": {
         target: `http://localhost:${apiPort}`,

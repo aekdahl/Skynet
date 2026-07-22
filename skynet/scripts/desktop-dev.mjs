@@ -2,8 +2,11 @@
 //
 //   • server: `@skynet/server` in watch mode (tsx) on :8099, file store + a dev
 //     master key so persistence + the secret store work like the real app.
-//   • web:    Vite dev server on :5173 with HMR, proxying /api + /ws → :8099.
-//   • app:    Electron loads http://127.0.0.1:5173 (SKYNET_DEV=1), so it does
+//   • web:    Vite dev server on :5273 with HMR, proxying /api + /ws → :8099.
+//             A dedicated port (not Vite's crowded default 5173) + strictPort, so
+//             we never silently bind a different project's dev server — if 5273 is
+//             taken, Vite exits loudly instead of drifting to another port.
+//   • app:    Electron loads http://localhost:5273 (SKYNET_DEV=1), so it does
 //             NOT spawn its own server and picks up SPA edits instantly.
 //
 // Edit web → instant HMR in the window. Edit server → tsx restarts it. Run from
@@ -15,7 +18,10 @@ import { randomBytes } from "node:crypto";
 import http from "node:http";
 
 const PORT = 8099;
-const VITE_PORT = 5173;
+// Dedicated Skynet port, NOT Vite's default 5173 — that default collides with any
+// other Vite project you have running, and Vite would silently bump to another
+// port while Electron still loaded 5173 (i.e. the other app). See `--strictPort`.
+const VITE_PORT = 5273;
 const devDir = ".skynet-dev";
 mkdirSync(devDir, { recursive: true });
 
@@ -92,7 +98,10 @@ run("server", ["--filter", "@skynet/server", "dev"], {
 });
 
 // 2. web (Vite HMR), proxying API/WS to the server above
-run("web", ["--filter", "@skynet/web", "dev"], { SKYNET_SERVER_PORT: String(PORT) });
+// SKYNET_VITE_PORT makes vite.config bind OUR port with strictPort: it either
+// gets 5273 or exits loudly (→ the launcher shuts down), never drifting onto
+// whatever else is on 5173.
+run("web", ["--filter", "@skynet/web", "dev"], { SKYNET_SERVER_PORT: String(PORT), SKYNET_VITE_PORT: String(VITE_PORT) });
 
 // 3. wait for both, then launch Electron pointed at Vite
 const ping = (port, path) =>
@@ -116,6 +125,8 @@ const ping = (port, path) =>
       run("app", ["--dir", "apps/desktop", "exec", "electron", "."], {
         SKYNET_DEV: "1",
         SKYNET_DESKTOP_PORT: String(PORT),
+        // Point Electron at OUR Vite port (main.cjs defaults to 5173 otherwise).
+        SKYNET_DEV_URL: `http://localhost:${VITE_PORT}`,
       });
       return;
     }
