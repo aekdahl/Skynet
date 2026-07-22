@@ -452,6 +452,15 @@ export const JOURNEYS: Journey[] = [
       const diff = gated.queue.find((q) => q.runId === runId && q.kind === "diff" && q.resolvedAt == null);
       steps.push(step("agent edited code and raised a diff-review gate", !!diff, diff ? diff.title : "no diff gate within ~120s"));
       if (!diff) return steps;
+      // The review UI's lazily-fetched REAL diff: the patch should be a unified
+      // git diff containing the file the agent was told to create.
+      try {
+        const rd = await api.fetchRunDiff(runId);
+        const ok = rd.patch.includes("skynet-sim.txt") && rd.files.includes("skynet-sim.txt");
+        steps.push(step("review diff endpoint returns the real patch", ok, `${rd.add}+/${rd.del}− · ${rd.files.join(",") || "no files"}`));
+      } catch (e) {
+        steps.push(step("review diff endpoint returns the real patch", false, (e as Error).message));
+      }
       await api.resolveHitl(diff.id, { action: "approve" });
       const done = await settle((sn) => sn.runs.find((a) => a.id === runId)?.status === "done", 60, 1000);
       const run = done.runs.find((a) => a.id === runId);

@@ -276,6 +276,7 @@ export class Operations {
       workspaceId: ws,
       projectId,
       text: input.text,
+      description: input.description?.trim() || null,
       state: "backlog",
       runId: null,
       autoPick: false,

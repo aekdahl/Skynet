@@ -178,13 +178,16 @@ export function deleteProject(id: string) {
 }
 
 // Tasks
-export function createTask(projectId: string, text: string) {
-  return req<unknown>("POST", `/api/projects/${projectId}/tasks`, { text });
+export function createTask(projectId: string, text: string, description?: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks`, {
+    text,
+    ...(description ? { description } : {}),
+  });
 }
 export function updateTask(
   projectId: string,
   taskId: string,
-  body: { text?: string; autoPick?: boolean },
+  body: { text?: string; description?: string | null; autoPick?: boolean },
 ) {
   return req<unknown>("PATCH", `/api/projects/${projectId}/tasks/${taskId}`, body);
 }

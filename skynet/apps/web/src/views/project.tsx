@@ -40,6 +40,7 @@ function TaskCard({
   } = useStore();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.text);
+  const [descDraft, setDescDraft] = useState(task.description ?? "");
   const pid = task.projectId;
   const s = task.state;
   const move = (to: string) => transitionTask(pid, task.id, to);
@@ -50,24 +51,37 @@ function TaskCard({
   if (editing) {
     return (
       <div className={"kb-card kb-card-" + s}>
+        <div className="task-name-wrap">
+          <input
+            className="qx-input"
+            autoFocus
+            maxLength={TASK_NAME_MAX}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <span className={"task-name-count mono" + (draft.length >= TASK_NAME_MAX ? " task-name-max" : "")}>
+            {draft.length}/{TASK_NAME_MAX}
+          </span>
+        </div>
         <textarea
           className="qx-input"
-          rows={2}
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          rows={3}
+          placeholder="Description (optional) — the full brief the agent gets…"
+          value={descDraft}
+          onChange={(e) => setDescDraft(e.target.value)}
         />
         <div className="qx-row">
           <button
             className="btn btn-primary"
             onClick={() => {
-              if (draft.trim()) updateTask(pid, task.id, { text: draft.trim() });
+              if (draft.trim())
+                updateTask(pid, task.id, { text: draft.trim(), description: descDraft.trim() || null });
               setEditing(false);
             }}
           >
             Save
           </button>
-          <button className="btn btn-ghost" onClick={() => { setDraft(task.text); setEditing(false); }}>
+          <button className="btn btn-ghost" onClick={() => { setDraft(task.text); setDescDraft(task.description ?? ""); setEditing(false); }}>
             Cancel
           </button>
         </div>
@@ -90,7 +104,7 @@ function TaskCard({
     >
       <div className="kb-card-top">
         {run && <StatusDot status={run.status} />}
-        <span className="kb-task">{task.text}</span>
+        <span className="kb-task" title={task.description ?? undefined}>{task.text}</span>
         {(s === "backlog" || s === "triage" || s === "todo") && (
           <span className="kb-card-tools" onClick={stop}>
             {s === "backlog" && (
@@ -104,6 +118,8 @@ function TaskCard({
           </span>
         )}
       </div>
+
+      {task.description && !run && <p className="kb-desc">{task.description}</p>}
 
       {run && (
         <>
@@ -181,34 +197,54 @@ function TaskCard({
   );
 }
 
-function AddTaskCard({ onAdd }: { onAdd: (text: string) => void }) {
+// Task NAME is deliberately short (scannable on the board/subway); the longer
+// brief goes in the optional description, which rides the agent's prompt.
+export const TASK_NAME_MAX = 80;
+
+function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) => void }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  const [desc, setDesc] = useState("");
   if (!open)
     return (
       <button className="kb-add" onClick={() => setOpen(true)}>
         + Add task
       </button>
     );
+  const submit = () => {
+    onAdd(draft.trim(), desc.trim() || undefined);
+    setDraft("");
+    setDesc("");
+    setOpen(false);
+  };
   return (
     <div className="kb-card kb-card-backlog">
+      <div className="task-name-wrap">
+        <input
+          className="qx-input"
+          autoFocus
+          maxLength={TASK_NAME_MAX}
+          placeholder="Task name — short, like a commit subject"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && draft.trim() && submit()}
+        />
+        <span className={"task-name-count mono" + (draft.length >= TASK_NAME_MAX ? " task-name-max" : "")}>
+          {draft.length}/{TASK_NAME_MAX}
+        </span>
+      </div>
       <textarea
         className="qx-input"
-        rows={2}
-        autoFocus
-        placeholder="Describe the task…"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
+        rows={3}
+        placeholder="Description (optional) — the full brief the agent gets: context, constraints, what done looks like…"
+        value={desc}
+        onChange={(e) => setDesc(e.target.value)}
       />
       <div className="qx-row">
-        <button
-          className="btn btn-primary"
-          disabled={!draft.trim()}
-          onClick={() => { onAdd(draft.trim()); setDraft(""); setOpen(false); }}
-        >
+        <button className="btn btn-primary" disabled={!draft.trim()} onClick={submit}>
           Add to backlog
         </button>
-        <button className="btn btn-ghost" onClick={() => { setDraft(""); setOpen(false); }}>
+        <button className="btn btn-ghost" onClick={() => { setDraft(""); setDesc(""); setOpen(false); }}>
           Cancel
         </button>
       </div>
@@ -370,7 +406,7 @@ export function ProjectView({
                   onOpenTask={onOpenTask}
                 />
               ))}
-              {st === "backlog" && <AddTaskCard onAdd={(text) => createTask(project.id, text)} />}
+              {st === "backlog" && <AddTaskCard onAdd={(text, description) => createTask(project.id, text, description)} />}
               {colTasks.length === 0 && st !== "backlog" && <div className="kb-empty">—</div>}
             </div>
           );
