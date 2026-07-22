@@ -123,9 +123,11 @@ export class Orchestrator {
             await this.hub.runLog(req.runId, `checks failed: ${out.slice(0, 200)}`);
             await this.hub.runStatus(req.runId, "review");
           },
+          onMergeFailed: (req, reason) => this.raiseMergeFailedHitl(req, reason),
           onLog: (id, line) => void this.hub.runLog(id, line),
         },
         config.checkCmd,
+        worktrees.root, // scratch integration worktrees live beside the agent worktrees
       );
       ctx = { repo, worktrees, merge };
       this.gitCtx.set(repo, ctx);
@@ -889,11 +891,48 @@ export class Orchestrator {
     }
   }
 
+  /** One open merge gate per run — approving one that fails again may raise a
+   *  successor, but two simultaneously open ones are always noise. */
+  private async hasOpenMergeGate(workspaceId: string, runId: string): Promise<boolean> {
+    const queue = await this.store.listQueue(workspaceId);
+    return queue.some((q) => q.runId === runId && q.kind === "merge" && q.resolvedAt == null);
+  }
+
+  /** Merge couldn't run (NOT a textual conflict) → an honest gate with git's
+   *  real reason, never a phantom "Merge conflict — 0 files". */
+  private async raiseMergeFailedHitl(req: MergeRequest, reason: string): Promise<void> {
+    const agent = await this.store.getRun(req.runId);
+    if (!agent) return;
+    await this.hub.runStatus(req.runId, "review");
+    if (await this.hasOpenMergeGate(agent.workspaceId, req.runId)) return;
+    await this.hub.raiseHitl({
+      id: `q-merge-${req.runId}-${++this.seq}`,
+      workspaceId: agent.workspaceId,
+      runId: req.runId,
+      kind: "merge",
+      title: "Integration failed — not a conflict",
+      why: `git could not merge ${req.agentBranch}: ${reason}. Fix the repo state, then approve to retry (reject bounces the run back for revision).`,
+      risk: "high",
+      raisedAt: now(),
+      expiresAt: null,
+      resolvedAt: null,
+      resolution: null,
+      rationale: null,
+      command: null,
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: { add: 0, del: 0, modules: agent.modules },
+      flags: [reason],
+    });
+  }
+
   /** Textual merge conflict → raise a `merge` HITL for an operator to reconcile. */
   private async raiseMergeHitl(req: MergeRequest, files: string[]): Promise<void> {
     const agent = await this.store.getRun(req.runId);
     if (!agent) return;
     await this.hub.runStatus(req.runId, "review");
+    if (await this.hasOpenMergeGate(agent.workspaceId, req.runId)) return;
     await this.hub.raiseHitl({
       id: `q-merge-${req.runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
