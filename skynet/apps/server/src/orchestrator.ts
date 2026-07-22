@@ -339,6 +339,28 @@ export class Orchestrator {
         return;
       }
 
+      // Nothing was committed. But if the agent actually used file-mutating tools
+      // (Edit/Write/…) and the worktree still came back clean, its edits never
+      // landed on this branch — a silent "done" with an empty diff would hide the
+      // lost work (and read as a false success). Surface needs-attention instead.
+      // A genuinely change-free run — a clarifying question, a confirmed no-op —
+      // used no such tool and completes normally below.
+      const finishedRun = await this.store.getRun(runId);
+      const attemptedFileEdit = (finishedRun?.log ?? []).some((l) =>
+        /^▸ (Edit|Write|MultiEdit|NotebookEdit)\b/.test(l.line),
+      );
+      if (attemptedFileEdit) {
+        await this.hub.runLog(
+          runId,
+          "finished but nothing was committed despite file edits — needs attention (edits did not persist to the worktree)",
+        );
+        await this.freeRunner(live.agentId);
+        await this.hub.runStatus(runId, "review");
+        await wt.retire(runId).catch(() => undefined);
+        this.live.delete(runId);
+        return;
+      }
+
       // Nothing to integrate — retire the worktree and complete plainly.
       await this.hub.runLog(runId, "no changes to integrate");
       await wt.retire(runId).catch(() => undefined);
