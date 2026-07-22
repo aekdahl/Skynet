@@ -138,6 +138,11 @@ features below are white space.)
   no git literacy. Widens the funnel (also in Considerations).
 - **Task linter v0 (assistive)** — *pulled forward from v5:* "vague task → touches 3 modules, split into
   3?"; "no 'done' defined?". The ease differentiator **nobody has** — lowers the skill floor, not just setup.
+- **Charter-assisted project creation** — creating a project is a short LLM-drafted intake, not a name
+  field: goals, non-goals, risks, constraints, definition of done — operator corrects and approves (the
+  Charter). Uses the **user's own key** via the existing secret store (one cheap call; metered). The
+  Charter is what the auto dev team (v2 north star) later sizes itself from, and what **auto task/milestone
+  proposal** plans against. See [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §1.
 - **Parallelism nudge** — "idle runners + deep backlog → spin up more?" turns the fleet's own state into guidance.
 
 **Memory v0 (thin moat, pulled forward from v4):**
@@ -160,6 +165,18 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
 - **Managers organize by area *or* role** — same mechanism, different scope: a "Billing manager"
   (module area) or a "Review / QA / Security manager" (function). Role-managers are how specialized
   agents are arranged; workers under them inherit the role's prompt + tool scope.
+- **⭐ North star: the auto dev team.** The endgame of the hierarchy is **Charter → Blueprint →
+  Plan**: project intake is an LLM-assisted **Charter** (goals, non-goals, risks, done-definition —
+  human-approved, G-1); from it Skynet proposes a **Team Blueprint** (Chief of Staff, Spec Analyst,
+  Architect, Area Leads, Developers, QA, Security, Scribe, Memory Curator) sized to the project and
+  hired with **one human approval (G0)**; the CoS then **auto-proposes the initial plan** — epics →
+  milestones → tasks with dependency order and honest estimate ranges (calibrated by retro actuals,
+  never fabricated deadlines). Work runs through a gated pipeline (spec → plan → build → verify →
+  review → secure → merge → document → learn) where the blueprint may delegate *who holds* a gate but
+  never remove one, and **nothing self-approves**. **All of it BYOK** — intake, planning, and every
+  role resolve the user's own keys via the existing secret store, metered under the project budget.
+  Full sketch: [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) (phased: Charter rides v1.5 ·
+  CoS+Leads+QA ride v2 · Security/Spec/Scribe ride v1 governance + v3 triggers · Curator/retro ride v4/v5).
 
 ## v3 — Triggers & integrations (inbound work)  🔗
 Turn Skynet from "I assign tasks" into "work flows in from my stack, human-gated." Every integration
