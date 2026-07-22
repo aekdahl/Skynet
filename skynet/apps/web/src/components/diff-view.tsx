@@ -71,16 +71,28 @@ export function DiffView({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [data, setData] = useState<RunDiff | null>(null);
-  const [err, setErr] = useState(false);
-  const asked = useRef(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
-    if (!open || asked.current) return;
-    asked.current = true;
+    if (!open) return;
+    let live = true;
+    setErr(null);
+    setData(null);
     fetchRunDiff(runId)
-      .then(setData)
-      .catch(() => setErr(true));
-  }, [open, runId]);
+      .then((d) => live && setData(d))
+      .catch((e: unknown) => {
+        // Surface the real reason so a 404 (server predates this endpoint — a
+        // stale build) is obvious rather than a mystery "couldn't load".
+        const status = (e as { status?: number })?.status;
+        const msg = status ? `HTTP ${status}` : (e as Error)?.message || "network error";
+        console.error("diff load failed:", e);
+        if (live) setErr(msg);
+      });
+    return () => {
+      live = false;
+    };
+  }, [open, runId, nonce]);
 
   const files = data ? parseUnifiedDiff(data.patch) : [];
   const nFiles = data ? data.files.length : 0;
@@ -96,7 +108,10 @@ export function DiffView({
       </button>
       {open &&
         (err ? (
-          <p className="dv-empty">Couldn't load the diff — review it on the branch.</p>
+          <p className="dv-empty">
+            Couldn't load the diff ({err}) — review it on the branch.{" "}
+            <button className="dv-retry" onClick={() => setNonce((n) => n + 1)}>Retry</button>
+          </p>
         ) : !data ? (
           <p className="dv-empty">Loading diff…</p>
         ) : files.length === 0 ? (

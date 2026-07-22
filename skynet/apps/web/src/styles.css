@@ -269,6 +269,7 @@ kbd {
 .dv-caret { color: var(--faint); }
 .dv-toggle-stat { color: var(--faint); }
 .dv-empty { color: var(--muted); font-size: 12px; margin: 8px 0 2px; }
+.dv-retry { background: none; border: none; color: var(--accent); cursor: pointer; font: inherit; padding: 0; text-decoration: underline; }
 .dv { margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; max-height: 420px; overflow-y: auto; }
 .dv-file + .dv-file { border-top: 1px solid var(--line); }
 .dv-file-head {
@@ -513,7 +514,7 @@ button.lg-arow:hover { background: var(--raised); }
 .swb-canvas { position: absolute; left: 274px; right: 56px; top: 0; bottom: 0; }
 .swb-seg { position: absolute; height: 2px; background: var(--line); margin-top: -1px; }
 .swb-seg-done { background: var(--ok); }
-.swb-st { position: absolute; width: 12px; height: 12px; border-radius: 50%; transform: translate(-50%, -50%); }
+.swb-st { position: absolute; width: 12px; height: 12px; border-radius: 50%; transform: translate(-50%, -50%); z-index: 2; }
 .swb-st.sw-todo { width: 10px; height: 10px; }
 .swb-elbow {
   position: absolute;
@@ -523,19 +524,23 @@ button.lg-arow:hover { background: var(--raised); }
 }
 .sw-fork { color: var(--violet); }
 /* START + END anchors — the first agent's frame; every track lives between them */
-.swb-anchor { position: absolute; transform: translate(-50%, -50%); width: 13px; height: 13px; border-radius: 50%; }
+.swb-anchor { position: absolute; transform: translate(-50%, -50%); width: 13px; height: 13px; border-radius: 50%; z-index: 2; }
 .swb-start { background: var(--accent); box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent), transparent 82%); }
 .swb-end { background: var(--panel); border: 2px solid var(--faint); }
 .swb-end-live { border-color: var(--ok); box-shadow: 0 0 10px color-mix(in oklch, var(--ok), transparent 55%); }
 .swb-anchor-label { position: absolute; transform: translateX(-50%); font-size: 9.5px; letter-spacing: 0.06em; color: var(--faint); white-space: nowrap; }
 /* a top-level agent fanning out from START (quiet, not a fork) */
 .swb-elbow.swb-fan { border-left: 2px solid color-mix(in oklch, var(--faint), transparent 45%); border-bottom: 2px solid color-mix(in oklch, var(--faint), transparent 45%); border-bottom-left-radius: 14px; }
-/* merge into END — a completed subtree returning to the end node (green) */
+/* rejoin the main path (END) — green once a subtree merges, grey while pending */
 .swb-fold {
-  position: absolute;
+  position: absolute; z-index: 1;
   border-right: 2px dashed color-mix(in oklch, var(--ok), transparent 30%);
   border-bottom: 2px dashed color-mix(in oklch, var(--ok), transparent 30%);
   border-bottom-right-radius: 16px;
+}
+.swb-fold.swb-fold-pending {
+  border-right-color: color-mix(in oklch, var(--faint), transparent 45%);
+  border-bottom-color: color-mix(in oklch, var(--faint), transparent 45%);
 }
 /* a parent station a fork branched off from (re-pointed) */
 .sw-repoint { outline: 2px solid color-mix(in oklch, var(--violet), transparent 20%); outline-offset: 2px; }

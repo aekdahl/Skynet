@@ -390,7 +390,7 @@ function LedgerView({
 // human-gated. Unassigned backlog tasks are off the map (a count by START).
 type SwTrack = { agentId: string; runs: TaskRun[]; parentRunId: string | null };
 
-const swShort = (s: string) => (s.length > 25 ? s.slice(0, 24).trimEnd() + "…" : s);
+const swShort = (s: string) => (s.length > 18 ? s.slice(0, 17).trimEnd() + "…" : s);
 
 function SwDiagram({
   project,
@@ -561,18 +561,24 @@ function SwDiagram({
               </span>,
             );
           });
-          // merge into END once the whole subtree is work-done (visual only)
-          if (isComplete(t)) {
+          // rejoin the main path (END) — ALWAYS drawn so start↔end is connected;
+          // grey while the track's subtree is unfinished, green once it merges.
+          {
+            const done = isComplete(t);
             const lc = lastColOf(t);
             if (isBackbone) {
               els.push(
-                <span key="merge" className="swb-seg swb-seg-done" style={{ left: X(lc) + "%", width: X(END_COL) - X(lc) + "%", top: yr + "px" }} />,
+                <span
+                  key="merge"
+                  className={"swb-seg" + (done ? " swb-seg-done" : "")}
+                  style={{ left: X(lc) + "%", width: X(END_COL) - X(lc) + "%", top: yr + "px" }}
+                />,
               );
             } else {
               els.push(
                 <span
                   key="merge"
-                  className="swb-fold"
+                  className={"swb-fold" + (done ? "" : " swb-fold-pending")}
                   style={{ left: X(lc) + "%", width: X(END_COL) - X(lc) + "%", top: y0 + "px", height: yr - y0 + "px" }}
                 />,
               );
