@@ -219,11 +219,28 @@ export function QueueView({
   onOpen: (id: string) => void;
   now: number;
 }) {
-  const { queue, runs } = useStore();
+  const { queue, runs, resolveHitl } = useStore();
   const open = openQueue(queue).sort(
     (a, b) => waitedSecs(b, now) - waitedSecs(a, now),
   );
   const resolvedCount = queue.filter((q) => q.resolvedAt != null).length;
+  // Clear-all = reject every still-open gate. Consequential (each reject bounces
+  // that run), so it's a two-step: arm, then confirm.
+  const [armed, setArmed] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const rejectAll = async () => {
+    setClearing(true);
+    // Sequential, not Promise.all — each reject resumes its agent; don't stampede.
+    for (const it of open) {
+      try {
+        await resolveHitl(it.id, "reject");
+      } catch {
+        /* already resolved / gone — keep going */
+      }
+    }
+    setClearing(false);
+    setArmed(false);
+  };
 
   return (
     <section className="queue">
@@ -244,6 +261,25 @@ export function QueueView({
             this session
           </span>
         </div>
+        {open.length > 0 && (
+          <div className="readout-actions">
+            {armed ? (
+              <>
+                <span className="readout-confirm">Reject all {open.length} open?</span>
+                <button className="btn btn-danger" disabled={clearing} onClick={rejectAll}>
+                  {clearing ? "Rejecting…" : "Reject all"}
+                </button>
+                <button className="btn btn-ghost" disabled={clearing} onClick={() => setArmed(false)}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button className="btn btn-ghost" title="Reject every still-open gate" onClick={() => setArmed(true)}>
+                Clear all
+              </button>
+            )}
+          </div>
+        )}
       </div>
       {open.length === 0 ? (
         <div className="queue-empty">

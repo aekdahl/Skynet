@@ -202,6 +202,8 @@ kbd {
   border-bottom: 1px solid var(--line); margin-bottom: calc(var(--sp) * 1.4);
 }
 .readout-block { display: flex; align-items: baseline; gap: 12px; }
+.readout-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.readout-confirm { font-family: var(--font-mono); font-size: 12px; color: var(--danger); }
 .readout-num {
   font-family: var(--font-mono); font-weight: 600; font-size: 44px; line-height: 1;
   font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
@@ -432,7 +434,7 @@ button.chip:hover { border-color: var(--faint); }
 .expill { font-family: var(--font-mono); font-size: 11px; font-weight: 600; border-radius: 20px; padding: 3px 10px; white-space: nowrap; border: 1px solid; }
 .expill-waiting { color: var(--warn); border-color: color-mix(in oklch, var(--warn), transparent 70%); background: color-mix(in oklch, var(--warn), transparent 93%); }
 .expill-conflict { color: var(--danger); border-color: color-mix(in oklch, var(--danger), transparent 70%); background: color-mix(in oklch, var(--danger), transparent 93%); }
-.expill-done { color: var(--faint); border-color: var(--line); background: none; }
+.expill-done { color: var(--ok); border-color: color-mix(in oklch, var(--ok), transparent 60%); background: color-mix(in oklch, var(--ok), transparent 90%); box-shadow: 0 0 10px color-mix(in oklch, var(--ok), transparent 80%); }
 
 /* ===== ledger ===== */
 .lg-table { display: flex; flex-direction: column; gap: 18px; }
@@ -472,7 +474,9 @@ button.lg-arow:hover { background: var(--raised); }
 /* ===== subway ===== */
 .sw-list { display: flex; flex-direction: column; gap: 14px; }
 .sw-proj { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 22px 8px; }
-.sw-proj-done { opacity: 0.5; }
+/* a shipped project dims its DIAGRAM only — the header (and the ✓ shipped pill)
+   stays full-strength so completion reads as a win, not a disabled card */
+.sw-proj-done .swb { opacity: 0.5; }
 .sw-proj-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
 .sw-proj-title { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .sw-proj-name { background: none; border: none; cursor: pointer; font-family: var(--font-ui); color: var(--text); font-size: 15px; font-weight: 600; text-align: left; padding: 0; }
