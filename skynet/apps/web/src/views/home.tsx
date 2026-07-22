@@ -399,7 +399,7 @@ function SwDiagram({
   project: Project;
   onOpenTask: (id: string) => void;
 }) {
-  const { runs, fleet, tasks } = useStore();
+  const { runs, fleet } = useStore();
   const mine = agentsForProject(runs, project.id);
   if (mine.length === 0) return null;
 
@@ -478,7 +478,6 @@ function SwDiagram({
     TY = 28;
   const rowY = (r: number) => ROW0 + r * ROW_H + TY;
   const y0 = rowY(0);
-  const backlog = tasks.filter((t) => t.projectId === project.id && !t.runId).length;
 
   return (
     <div className="swb" style={{ height: ROW0 + order.length * ROW_H + 6 + "px" }}>
@@ -508,7 +507,7 @@ function SwDiagram({
         {/* START + END anchors — the first agent's frame; everything lives between them */}
         <span className="swb-anchor swb-start" style={{ left: X(0) + "%", top: y0 + "px" }} title="Project start" />
         <span className="swb-anchor-label mono" style={{ left: X(0) + "%", top: y0 + 13 + "px" }}>
-          start{backlog > 0 ? " · +" + backlog + " backlog" : ""}
+          start
         </span>
         <span
           className={"swb-anchor swb-end" + (order.some(isComplete) ? " swb-end-live" : "")}
@@ -533,7 +532,7 @@ function SwDiagram({
             els.push(
               <span
                 key="in"
-                className={"swb-elbow" + (p ? "" : " swb-fan")}
+                className="swb-elbow"
                 style={{ left: X(depCol) + "%", width: X(base) - X(depCol) + "%", top: depY + "px", height: yr - depY + "px" }}
               />,
             );
@@ -551,14 +550,15 @@ function SwDiagram({
             const st = run.status === "done" ? "done" : "cur";
             const rp = junctions.has(t.agentId + ":" + i);
             els.push(
-              <span
+              <button
                 key={"st" + i}
                 className={"swb-st sw-" + st + (st === "cur" ? " sw-cur-" + run.status : "") + (rp ? " sw-repoint" : "")}
-                title={run.name + (rp ? " · forked from here" : "")}
+                title={run.name + (rp ? " · forked from here" : "") + " — open task"}
+                onClick={() => onOpenTask(run.id)}
                 style={{ left: X(base + i) + "%", top: yr + "px" }}
               >
                 <span className={"sw-label " + (st === "cur" ? "sw-label-" + run.status : "sw-label-muted")}>{swShort(run.name)}</span>
-              </span>,
+              </button>,
             );
           });
           // rejoin the main path (END) — ALWAYS drawn so start↔end is connected;
@@ -635,12 +635,16 @@ function SubwayView({
                 o.modules.includes(mod),
             ),
           );
+          const backlog = tasks.filter((t) => t.projectId === p.id && !t.runId).length;
           return (
             <div key={p.id} className={"sw-proj" + (allDone ? " sw-proj-done" : "")}>
               <div className="sw-proj-head">
-                <button className="sw-proj-name" onClick={() => onOpenProject(p.id)}>
-                  {p.name} →
-                </button>
+                <span className="sw-proj-title">
+                  <button className="sw-proj-name" onClick={() => onOpenProject(p.id)}>
+                    {p.name} →
+                  </button>
+                  {backlog > 0 && <span className="sw-proj-sub mono">{backlog} in backlog</span>}
+                </span>
                 {q && (
                   <span className="expill expill-waiting">
                     ⏸ waiting {fmtWait(waitedSecs(q, now))}

@@ -474,8 +474,10 @@ button.lg-arow:hover { background: var(--raised); }
 .sw-proj { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 22px 8px; }
 .sw-proj-done { opacity: 0.5; }
 .sw-proj-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
-.sw-proj-name { background: none; border: none; cursor: pointer; font-family: var(--font-ui); color: var(--text); font-size: 15px; font-weight: 600; flex: 1; text-align: left; padding: 0; }
+.sw-proj-title { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sw-proj-name { background: none; border: none; cursor: pointer; font-family: var(--font-ui); color: var(--text); font-size: 15px; font-weight: 600; text-align: left; padding: 0; }
 .sw-proj-name:hover { color: var(--accent); }
+.sw-proj-sub { font-size: 10.5px; color: var(--faint); }
 .sw-task {
   width: 100%; display: grid; grid-template-columns: 250px 1fr 44px; gap: 20px; align-items: center;
   padding: 10px 8px 32px; background: none; border: none; border-radius: 8px; cursor: pointer;
@@ -514,12 +516,25 @@ button.lg-arow:hover { background: var(--raised); }
 .swb-canvas { position: absolute; left: 274px; right: 56px; top: 0; bottom: 0; }
 .swb-seg { position: absolute; height: 2px; background: var(--line); margin-top: -1px; }
 .swb-seg-done { background: var(--ok); }
-.swb-st { position: absolute; width: 12px; height: 12px; border-radius: 50%; transform: translate(-50%, -50%); z-index: 2; }
-.swb-st.sw-todo { width: 10px; height: 10px; }
+/* stations are buttons — click opens the task's run detail */
+.swb-st { position: absolute; width: 12px; height: 12px; border-radius: 50%; transform: translate(-50%, -50%); z-index: 2; padding: 0; border: none; background: none; cursor: pointer; font-family: inherit; }
+/* the button reset sits later in the file than the shared .sw-* dot styles, so
+   re-declare the state looks at higher specificity or the rings/fills vanish */
+.swb-st.sw-done { background: var(--ok); }
+.swb-st.sw-cur { background: var(--bg); }
+.swb-st.sw-cur-waiting { border: 3px solid var(--warn); }
+.swb-st.sw-cur-running { border: 3px solid var(--ok); }
+.swb-st.sw-cur-review { border: 3px solid var(--info); }
+.swb-st.sw-todo { width: 10px; height: 10px; border: 2px solid var(--line); }
+.swb-st:hover { filter: brightness(1.3); }
+.swb-st:hover .sw-label { color: var(--text); }
+/* ONE connector style: dashed grey elbow = "joins from / branches off" — used by
+   forks and independent agents alike. Fork-ness is marked at the NODES (violet ⑂
+   label + re-point ring), not by line color. */
 .swb-elbow {
   position: absolute;
-  border-left: 2px dashed color-mix(in oklch, var(--violet), transparent 25%);
-  border-bottom: 2px dashed color-mix(in oklch, var(--violet), transparent 25%);
+  border-left: 2px dashed color-mix(in oklch, var(--faint), transparent 40%);
+  border-bottom: 2px dashed color-mix(in oklch, var(--faint), transparent 40%);
   border-bottom-left-radius: 16px;
 }
 .sw-fork { color: var(--violet); }
@@ -529,8 +544,6 @@ button.lg-arow:hover { background: var(--raised); }
 .swb-end { background: var(--panel); border: 2px solid var(--faint); }
 .swb-end-live { border-color: var(--ok); box-shadow: 0 0 10px color-mix(in oklch, var(--ok), transparent 55%); }
 .swb-anchor-label { position: absolute; transform: translateX(-50%); font-size: 9.5px; letter-spacing: 0.06em; color: var(--faint); white-space: nowrap; }
-/* a top-level agent fanning out from START (quiet, not a fork) */
-.swb-elbow.swb-fan { border-left: 2px solid color-mix(in oklch, var(--faint), transparent 45%); border-bottom: 2px solid color-mix(in oklch, var(--faint), transparent 45%); border-bottom-left-radius: 14px; }
 /* rejoin the main path (END) — green once a subtree merges, grey while pending */
 .swb-fold {
   position: absolute; z-index: 1;
@@ -539,8 +552,8 @@ button.lg-arow:hover { background: var(--raised); }
   border-bottom-right-radius: 16px;
 }
 .swb-fold.swb-fold-pending {
-  border-right-color: color-mix(in oklch, var(--faint), transparent 45%);
-  border-bottom-color: color-mix(in oklch, var(--faint), transparent 45%);
+  border-right-color: color-mix(in oklch, var(--faint), transparent 40%);
+  border-bottom-color: color-mix(in oklch, var(--faint), transparent 40%);
 }
 /* a parent station a fork branched off from (re-pointed) */
 .sw-repoint { outline: 2px solid color-mix(in oklch, var(--violet), transparent 20%); outline-offset: 2px; }
