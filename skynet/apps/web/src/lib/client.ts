@@ -4,6 +4,7 @@ import {
   Snapshot,
   WsMessage,
   type TaskRun,
+  type TaskAssignment,
   type GithubInstallation,
   type GithubRepo,
   type ResolveAction,
@@ -187,7 +188,12 @@ export function createTask(projectId: string, text: string, description?: string
 export function updateTask(
   projectId: string,
   taskId: string,
-  body: { text?: string; description?: string | null; autoPick?: boolean },
+  body: {
+    text?: string;
+    description?: string | null;
+    autoPick?: boolean;
+    assignment?: TaskAssignment;
+  },
 ) {
   return req<unknown>("PATCH", `/api/projects/${projectId}/tasks/${taskId}`, body);
 }

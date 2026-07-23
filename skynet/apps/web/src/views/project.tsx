@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { TaskRun, Project, Task } from "@skynet/shared";
+import type { TaskRun, Project, Task, TaskAssignment, Agent } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import {
   agentsForProject,
@@ -15,6 +15,79 @@ import { ProjectDelivery, visualLeadOf } from "../components/preview";
 import { QueueCard } from "./queue";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
+
+// Agent-eligibility picker: who may take this task. `unassigned` blocks leaving
+// backlog; `any` = whole fleet; `agents` = a chosen pool (≥1). Editable in the
+// pre-run stages; a compact read-only chip once a run exists.
+function AgentEligibility({
+  task,
+  fleet,
+  onChange,
+  editable,
+}: {
+  task: Task;
+  fleet: Agent[];
+  onChange: (a: TaskAssignment) => void;
+  editable: boolean;
+}) {
+  const a = task.assignment;
+  if (!editable) {
+    const label =
+      a.mode === "any" ? "any agent" : a.mode === "agents" ? `${a.agentIds.length} agent(s)` : "unassigned";
+    return (
+      <span className={"kb-elig-chip mono" + (a.mode === "unassigned" ? " kb-elig-unset" : "")} title="Agent eligibility">
+        👤 {label}
+      </span>
+    );
+  }
+  return (
+    <div className="kb-elig" onClick={stop}>
+      <label className="kb-elig-row">
+        <span className="kb-elig-lbl">Agent</span>
+        <select
+          className="kb-elig-select"
+          value={a.mode}
+          onChange={(e) => {
+            const mode = e.target.value as TaskAssignment["mode"];
+            if (mode === "agents") {
+              const seed = a.agentIds.length ? a.agentIds : fleet[0] ? [fleet[0].id] : [];
+              onChange({ mode, agentIds: seed });
+            } else {
+              onChange({ mode, agentIds: [] });
+            }
+          }}
+        >
+          <option value="unassigned">Unassigned</option>
+          <option value="any">Any agent</option>
+          <option value="agents" disabled={fleet.length === 0}>
+            Specific agents…
+          </option>
+        </select>
+      </label>
+      {a.mode === "agents" && (
+        <div className="kb-elig-list">
+          {fleet.map((ag) => {
+            const on = a.agentIds.includes(ag.id);
+            return (
+              <label key={ag.id} className="kb-elig-opt">
+                <input
+                  type="checkbox"
+                  checked={on}
+                  onChange={() => {
+                    const next = on ? a.agentIds.filter((id) => id !== ag.id) : [...a.agentIds, ag.id];
+                    if (next.length === 0) return; // schema requires ≥1 in `agents` mode
+                    onChange({ mode: "agents", agentIds: next });
+                  }}
+                />{" "}
+                {ag.name}
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // One card per Task. For pre-run states (backlog/triage/todo) it shows the task
 // text + stage controls; for ongoing/review/done it joins the linked TaskRun to
@@ -143,9 +216,33 @@ function TaskCard({
         <div className="kb-flag">⚠ flagged for you — {task.reviewFlaggedReason}</div>
       )}
 
+      {(s === "backlog" || s === "triage" || s === "todo") ? (
+        <AgentEligibility
+          task={task}
+          fleet={fleet}
+          editable
+          onChange={(assignment) => updateTask(pid, task.id, { assignment })}
+        />
+      ) : (
+        <div className="kb-elig-ro">
+          <AgentEligibility task={task} fleet={fleet} editable={false} onChange={() => {}} />
+        </div>
+      )}
+
       <div className="kb-actions" onClick={stop}>
         {s === "backlog" && (
-          <button className="kb-move" onClick={() => move("triage")}>→ Triage</button>
+          <button
+            className="kb-move"
+            disabled={task.assignment.mode === "unassigned"}
+            title={
+              task.assignment.mode === "unassigned"
+                ? "Pick an agent (Any, or specific agents) before moving out of backlog."
+                : "Move to Triage"
+            }
+            onClick={() => move("triage")}
+          >
+            → Triage
+          </button>
         )}
         {s === "triage" && (
           <>

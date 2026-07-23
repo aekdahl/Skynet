@@ -5,7 +5,7 @@ import type { Project, Task, ServerEvent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
 import { Orchestrator } from "../apps/server/src/orchestrator.js";
-import { Operations, InvalidTransitionError } from "../apps/server/src/operations.js";
+import { Operations, InvalidTransitionError, AssignmentRequiredError } from "../apps/server/src/operations.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
 import type { Bus } from "../apps/server/src/bus.js";
 
@@ -18,9 +18,11 @@ const project: Project = {
   id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [],
   status: "active", autonomy: true, repoPath: null, gitBacked: false,
 };
-const mkTask = (state: Task["state"]): Task => ({
+// Default eligibility is "any" so existing transition tests exercise legal moves;
+// the leaving-backlog gate is covered explicitly below with an `unassigned` task.
+const mkTask = (state: Task["state"], assignment: Task["assignment"] = { mode: "any", agentIds: [] }): Task => ({
   id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "x", state,
-  runId: null, autoPick: false, assessment: null, reviewFlaggedReason: null,
+  runId: null, autoPick: false, assessment: null, reviewFlaggedReason: null, assignment,
 });
 
 describe("task transition guard", () => {
@@ -60,5 +62,15 @@ describe("task transition guard", () => {
     await expect(ops.transitionTask(DEFAULT_WORKSPACE, "t1", "ongoing", "op-1")).rejects.toBeInstanceOf(
       InvalidTransitionError,
     );
+  });
+
+  it("blocks leaving backlog until an agent is assigned", async () => {
+    await store.putTask(mkTask("backlog", { mode: "unassigned", agentIds: [] }));
+    await expect(ops.transitionTask(DEFAULT_WORKSPACE, "t1", "triage", "op-1")).rejects.toBeInstanceOf(
+      AssignmentRequiredError,
+    );
+    // Setting eligibility unblocks the move.
+    await ops.updateTask(DEFAULT_WORKSPACE, "t1", { assignment: { mode: "any", agentIds: [] } });
+    expect((await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "triage", "op-1")).state).toBe("triage");
   });
 });

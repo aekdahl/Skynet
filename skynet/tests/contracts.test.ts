@@ -4,6 +4,7 @@
 // must be rejected — that's the guarantee both apps lean on.
 import { describe, it, expect } from "vitest";
 import {
+  Task,
   TaskRun,
   HitlItem,
   Resolution,
@@ -60,6 +61,22 @@ describe("contracts round-trip", () => {
     expect(parsed.dependsOn).toEqual([]);
     expect(parsed.visual).toBe(false);
     expect(parsed.parentId).toBeNull();
+  });
+
+  it("Task.assignment defaults to unassigned and round-trips a pinned pool", () => {
+    // A legacy task with no assignment parses to the `unassigned` default.
+    const legacy = Task.parse({
+      id: "t1", workspaceId: "w", projectId: "p", text: "x", state: "backlog",
+    });
+    expect(legacy.assignment).toEqual({ mode: "unassigned", agentIds: [] });
+    // A pinned pool survives serialize → parse unchanged.
+    const pinned = { ...legacy, assignment: { mode: "agents", agentIds: ["a1", "a2"] } };
+    expect(Task.parse(wire(pinned)).assignment).toEqual({ mode: "agents", agentIds: ["a1", "a2"] });
+  });
+
+  it("rejects an `agents` assignment with an empty pool", () => {
+    const bad = { id: "t1", workspaceId: "w", projectId: "p", text: "x", state: "backlog", assignment: { mode: "agents", agentIds: [] } };
+    expect(() => Task.parse(bad)).toThrow();
   });
 
   it("rejects an out-of-range progress", () => {

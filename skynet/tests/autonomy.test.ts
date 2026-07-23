@@ -34,9 +34,12 @@ const idleAgent: Agent = {
   id: "a1", workspaceId: DEFAULT_WORKSPACE, name: "a1", provider: "claude",
   model: "opus-4.8", status: "idle", idleSince: 0,
 };
+// Default eligibility "any" so autonomy will act on these; the parking behavior
+// for `unassigned` tasks is covered explicitly below.
 const mkTask = (over: Partial<Task>): Task => ({
   id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do X", state: "backlog",
-  runId: null, autoPick: false, assessment: null, reviewFlaggedReason: null, ...over,
+  runId: null, autoPick: false, assessment: null, reviewFlaggedReason: null,
+  assignment: { mode: "any", agentIds: [] }, ...over,
 });
 
 const setup = async (reply?: string) => {
@@ -57,6 +60,21 @@ describe("autonomy loop", () => {
     const t = await store.getTask("t1");
     expect(t?.state).toBe("triage");
     expect(t?.assessment).toContain("clear ask");
+  });
+
+  it("parks an unassigned backlog task (never auto-triages without an eligibility choice)", async () => {
+    const { store, orch } = await setup("clear ask, S, low risk");
+    await store.putTask(mkTask({ state: "backlog", assignment: { mode: "unassigned", agentIds: [] } }));
+    await orch.tickAutonomy();
+    expect((await store.getTask("t1"))?.state).toBe("backlog");
+  });
+
+  it("does NOT auto-pick an unassigned todo task", async () => {
+    const { store, orch, provider } = await setup();
+    await store.putTask(mkTask({ state: "todo", autoPick: true, assignment: { mode: "unassigned", agentIds: [] } }));
+    await orch.tickAutonomy();
+    expect((await store.getTask("t1"))?.state).toBe("todo");
+    expect(provider.started).toBe(0);
   });
 
   it("does NOT cross the human gate (leaves triage where it is)", async () => {
