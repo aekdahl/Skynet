@@ -63,6 +63,41 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
 
 ---
 
+## v0.5 — UX release polish (pre-release · from [docs/ux-review.md](docs/ux-review.md))
+
+Findings from the July 2026 end-to-end audit. **P0 blocks release; P1 makes the core loop
+sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below.)
+
+**P0 — integrity & first impressions**
+1. **Router + nav-state integrity** — make Settings/Acceptance/Simulation deep-linkable
+   (complete `parseHash`); derive the sidebar `.on` highlight purely from router state
+   (highlights currently accumulate — three "active" at once); give focus a distinct
+   `:focus-visible` ring instead of the active style; window title reflects view/project.
+2. **Onboarding step 2 (GitHub) is a PLACEHOLDER** mid-wizard — move it to Integrations
+   post-wizard (or an optional "connect later" card without placeholder framing).
+3. **Blocked-CTA / disabled-state system** — one pattern app-wide: distinct disabled
+   treatment + an inline, readable reason ("Select at least one provider", "name required")
+   next to the button. Applies to GetStarted, wizard step 4, task composer, fleet form.
+4. **Legibility floor** — ≥11px and `--muted` for any text that carries meaning; `--faint`
+   only for decoration (subway anchor labels, backlog subtitle, legends, picker hints).
+5. **Persist the workspace name server-side** — today it's localStorage-only and silently
+   reverts to "Skynet" on another profile/machine.
+
+**P1 — core-loop guidance & affordances**
+6. **Continuation after Create project** — land in the project with the task composer
+   focused; keep a live **first-run checklist** on Home (create → task → assign → approve)
+   until the first merge.
+7. **Task composer polish** — autofocus name; "description (optional — the full brief the
+   agent receives)"; ⌘↵ submits; blocked-reason per P0.3.
+8. **Assign is a primary affordance** — "Assign →" on backlog/todo kanban cards (drag-to-
+   ONGOING later); today it only lives on Roster idle rows.
+9. **Explain the Autonomy toggle** — subtitle its consequences; consider default-off for a
+   user's first project (autonomy impresses more after the gates have been seen).
+10. **Fleet copy & guardrails** — "1 agents" pluralization; unify "+ Configure agent" vs
+    "Add to fleet"; move destructive **Retire** behind detail/overflow or confirm inline;
+    label the provider strip as the *catalog*, not configured.
+11. **Inbox empty state teaches** — show the four gate kinds that would arrive there.
+
 ## v1 — Orchestration completeness & hardening
 - **⭐ Browser tools for coding agents (MCP)** — *near-term priority.* Equip the Claude runner (then the
   CLI runners) with a Chrome/Playwright **MCP** server so an agent can drive a real browser *within* a
@@ -117,6 +152,14 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
   - **Verifier gate** — run the project's tests/checks in the worktree and **block the merge on failure** as a
     first-class gate (not just the pre-merge `checkCmd`); auto-commit on green. *(bernstein / MartinLoop-style.)*
   - **Checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks. *(AGX-style.)*
+- **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** content max-width /
+  purposeful two-column layouts (views left-hug at 1440 today) · stop amber doing triple duty
+  (brand + primary + "waiting" status — move caution to its own hue; never encode status by hue
+  alone) · replace unicode nav glyphs with one 16px stroke icon set (Lucide-style, terminal tone) ·
+  **motion tokens** (120/200ms ease-out: view/lens crossfade, card enter, gate-resolve collapse,
+  subway merge draw-in; respect `prefers-reduced-motion`) · one interactive-surface state rule
+  (hover/active/focus consistent on every clickable, absent on everything else) · **a11y pass**
+  (aria-labels on icon buttons, focus-visible everywhere, contrast audit vs the P0 type floor).
 - Auth: **SSO/OIDC**.
 - **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
   everything (projects, runs, HITL, audit) but mutate nothing (no assign / resolve / transition /
@@ -144,6 +187,13 @@ features below are white space.)
   Charter is what the auto dev team (v2 north star) later sizes itself from, and what **auto task/milestone
   proposal** plans against. See [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §1.
 - **Parallelism nudge** — "idle runners + deep backlog → spin up more?" turns the fleet's own state into guidance.
+- **Operator ergonomics (P3 of [docs/ux-review.md](docs/ux-review.md)):** **⌘K command palette**
+  (navigation + verbs: assign, approve latest gate, open project) · **keyboard-first Inbox**
+  (j/k navigate, a/r/m approve/reject/modify, ↵ opens the run — `QueueView.selectedIdx` already
+  exists; finish it + a visible shortcut bar) · **OS notifications + dock badge** on new gates
+  (Electron; waiting-minutes are the product's core currency) · **Timeline lens depth** (zoom,
+  brush, click-through) · **cost/usage roll-ups** (per-project header + per-runner in Fleet —
+  pre-figures the team blueprint's budgets).
 
 **Memory v0 (thin moat, pulled forward from v4):**
 - Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory
