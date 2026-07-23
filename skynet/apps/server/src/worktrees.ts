@@ -12,7 +12,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 
 const exec = promisify(execFile);
@@ -151,6 +151,59 @@ export class WorktreeProvisioner {
   /** Retire the worktree (the branch is left for the merge queue / history). */
   async retire(runId: string): Promise<void> {
     await this.removePath(this.pathFor(runId));
+  }
+
+  // ── GC plumbing (see Orchestrator.gcWorktrees) ─────────────────────────────
+
+  /**
+   * Worktrees living under THIS provisioner's root — never the repo's own
+   * checkout or anyone else's worktrees (the same repo may host the user's
+   * unrelated worktrees; we only ever touch what we created).
+   */
+  /** Canonical root for path comparisons — git reports realpaths (e.g. macOS
+   *  /var → /private/var), so prefix checks must compare like with like. */
+  private async realRoot(): Promise<string> {
+    const r = await realpath(this.root).catch(() => this.root);
+    return r.endsWith("/") ? r : r + "/";
+  }
+
+  async list(): Promise<Array<{ path: string; branch: string | null }>> {
+    const out = await this.git(this.repo, "worktree", "list", "--porcelain").catch(() => "");
+    const all: Array<{ path: string; branch: string | null }> = [];
+    let cur: { path: string; branch: string | null } | null = null;
+    for (const line of out.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        cur = { path: line.slice("worktree ".length).trim(), branch: null };
+        all.push(cur);
+      } else if (line.startsWith("branch ") && cur) {
+        cur.branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+      }
+    }
+    const root = await this.realRoot();
+    return all.filter((w) => w.path.startsWith(root));
+  }
+
+  /** Remove a worktree by absolute path (GC of zombies whose run id is gone). */
+  async removeAt(path: string): Promise<void> {
+    const real = await realpath(path).catch(() => path);
+    if (!real.startsWith(await this.realRoot())) return; // never reach outside our root
+    await this.removePath(path);
+  }
+
+  /** `agent/*` branches fully merged into `mergedInto` (safe to delete). */
+  async mergedAgentBranches(mergedInto: string): Promise<string[]> {
+    if (!(await this.refExists(mergedInto))) return [];
+    const out = await this.git(
+      this.repo,
+      "for-each-ref", "--format=%(refname:short)", "--merged", mergedInto, "refs/heads/agent",
+    ).catch(() => "");
+    return out.split("\n").filter(Boolean);
+  }
+
+  /** Delete a branch ref (only ever called for verified-merged agent branches). */
+  async deleteBranch(name: string): Promise<void> {
+    if (!name.startsWith("agent/")) return; // GC only ever deletes agent branches
+    await this.git(this.repo, "branch", "-D", name).catch(() => undefined);
   }
 
   private async removePath(path: string): Promise<void> {
