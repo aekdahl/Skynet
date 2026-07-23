@@ -18,6 +18,7 @@ import {
   UpdateTaskRequest,
   MoveTaskRequest,
 } from "@skynet/shared";
+import { readFile } from "node:fs/promises";
 import { authenticate, type Principal } from "./auth.js";
 import { requiresAuth } from "./auth-guard.js";
 import { CommandDeniedError } from "./command-safety.js";
@@ -75,6 +76,18 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.get("/api/fleet/runners", (req) => ops.listAgents(ws(req)));
   // Decision audit trail — resolved HITL items, newest first (W8, Backend Brief §11).
   app.get("/api/audit", (req) => ops.listAudit(ws(req)));
+
+  // The product roadmap (ROADMAP.md at the repo root), served so the Settings
+  // view can render it in-app. Read per request (it's small and edited often in
+  // dev); auth applies via the standard /api hook. Missing file → honest note.
+  app.get("/api/roadmap", async () => {
+    try {
+      const markdown = await readFile(new URL("../../../ROADMAP.md", import.meta.url), "utf8");
+      return { markdown };
+    } catch {
+      return { markdown: "# Roadmap\n\nROADMAP.md isn't bundled with this build — see the repository." };
+    }
+  });
 
   // Audit maintenance — archive/restore and delete, per-record and bulk. Mirrors
   // the archive (agent) and delete (project/task/runner) patterns. Records are

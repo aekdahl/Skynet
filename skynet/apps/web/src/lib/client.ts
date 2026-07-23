@@ -105,6 +105,11 @@ export function resumeAgent(id: string) {
   return req<unknown>("POST", `/api/runs/${id}/resume`);
 }
 
+/** The product roadmap (ROADMAP.md), rendered in Settings. */
+export function fetchRoadmap() {
+  return req<{ markdown: string }>("GET", "/api/roadmap");
+}
+
 // Provider secrets (Settings). `env` = providers a server env var supplies a
 // key for (a stored key overrides it).
 export function fetchSecrets() {
