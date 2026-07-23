@@ -93,7 +93,12 @@ export class Orchestrator {
   private acquireLock: Promise<unknown> = Promise.resolve();
   // One lazily-loaded provider backend per provider id (real backends are heavy).
   private providers = new Map<string, Promise<RunnerProvider>>();
-  private moduleMap: ModuleMap = loadModuleMap(config.integrationRepo);
+  // One module map per repo path, resolved from a project's OWN repo when it's
+  // git-backed (its `.skynet/modules.json`), else the server-global integration
+  // repo. Cached so the map file is read at most once per repo, not per diff —
+  // and so a project bound to its own repo never silently uses the fallback of
+  // some other repo's catalog. See moduleMapFor().
+  private moduleMaps = new Map<string, ModuleMap>();
   // One git backend per repo path (worktrees + serialized merge queue), built on
   // demand. Keyed by repo so a project's local repo and the global integration
   // repo each get their own queue.
@@ -141,6 +146,21 @@ export class Orchestrator {
   private gitContextFor(project?: Project | null): GitContext | undefined {
     const repo = project?.gitBacked && project.repoPath ? project.repoPath : config.integrationRepo;
     return repo ? this.gitContextForRepo(repo) : undefined;
+  }
+
+  /** Resolve (and cache) the module map for a project: its own repo when
+   *  git-backed (reads `<repoPath>/.skynet/modules.json`), else the server-global
+   *  integration repo. Cached per repo path so the map is read once, and so a
+   *  project's own catalog is used rather than a static global one (#3). */
+  private moduleMapFor(project?: Project | null): ModuleMap {
+    const repo = project?.gitBacked && project.repoPath ? project.repoPath : config.integrationRepo;
+    const key = repo ?? "";
+    let map = this.moduleMaps.get(key);
+    if (!map) {
+      map = loadModuleMap(repo);
+      this.moduleMaps.set(key, map);
+    }
+    return map;
   }
 
   /** Resolve the git backend for an existing agent (prefers the live entry, else
@@ -412,6 +432,14 @@ export class Orchestrator {
   private async raiseDiffReview(runId: string, stat: { add: number; del: number; files: string[] }): Promise<void> {
     const agent = await this.store.getRun(runId);
     if (!agent) return;
+    // Modules the diff ACTUALLY touched, derived from the changed files via the
+    // project's own module map — not the agent's declared scope (`agent.modules`,
+    // initialized []), which would under- or mis-report what changed (#6).
+    const project = await this.store.getProject(agent.projectId);
+    const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
+    // Record what actually changed on the run so every view reflects it (the run
+    // itself, not just the review card). `modifiedFiles` was never populated.
+    await this.hub.runModifiedFiles(runId, stat.files);
     await this.hub.raiseHitl({
       id: `q-diff-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
@@ -432,7 +460,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: stat.add, del: stat.del, modules: agent.modules },
+      diff: { add: stat.add, del: stat.del, modules },
       flags: [],
     });
   }
@@ -749,7 +777,7 @@ export class Orchestrator {
         // worktree to push from. Otherwise fall back to the local merge queue
         // (against the project's own repo when git-backed, else the global one).
         if (conn?.connected && project?.repo && git) {
-          await this.pushToGithub(git, agent, project.repo);
+          await this.pushToGithub(git, agent, project.repo, project);
           return;
         }
         if (git) {
@@ -886,10 +914,10 @@ export class Orchestrator {
     return { patch, add: stat.add, del: stat.del, files: stat.files };
   }
 
-  private async pushToGithub(git: GitContext, agent: TaskRun, repo: string): Promise<void> {
+  private async pushToGithub(git: GitContext, agent: TaskRun, repo: string, project?: Project | null): Promise<void> {
     const worktreePath = git.worktrees.pathFor(agent.id);
     const stat = await git.worktrees.diffStat(agent.id, config.baseBranch);
-    const modules = this.moduleMap.modulesForFiles(stat.files);
+    const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
     await this.hub.runStatus(agent.id, "review");
     try {
       const result = await githubService.pushAndOpenPr({
