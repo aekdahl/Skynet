@@ -79,11 +79,15 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       return next;
     });
     try {
-      // Which Sim projects existed BEFORE — so we can attribute the ones this
-      // journey creates and scope its evidence to just those (isolated verdicts).
+      // Which Sim projects AND fleet runners existed BEFORE — so we can
+      // attribute the ones this journey creates and scope its evidence to just
+      // those (isolated verdicts). Runners matter independently of runs: a
+      // provisioning journey's goal can be an idle runner that executes nothing.
+      const snapBefore = await api.fetchSnapshot().catch(() => null);
       const before = new Set(
-        (await api.fetchSnapshot().catch(() => null))?.projects.filter((p) => p.name.startsWith("Sim:")).map((p) => p.id) ?? [],
+        snapBefore?.projects.filter((p) => p.name.startsWith("Sim:")).map((p) => p.id) ?? [],
       );
+      const fleetBefore = new Set(snapBefore?.fleet.map((r) => r.id) ?? []);
       const steps = await journey.run();
       // Drain any run this (or a prior) gate-journey left wedged on an unanswered
       // gate, so the board stays coherent and runners free up instead of piling up.
@@ -92,7 +96,10 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       const mine = after
         ? after.projects.filter((p) => p.name.startsWith("Sim:") && !before.has(p.id)).map((p) => p.id)
         : undefined;
-      evidence.current[id] = await captureEvidence(mine).catch(() => ({}));
+      const mineRunners = after
+        ? after.fleet.filter((r) => !fleetBefore.has(r.id)).map((r) => r.id)
+        : undefined;
+      evidence.current[id] = await captureEvidence(mine, mineRunners).catch(() => ({}));
       setResults((m) => ({ ...m, [id]: steps }));
       setStatus((m) => ({ ...m, [id]: verdict(steps) }));
     } catch (e) {
