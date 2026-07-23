@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNow, useStore } from "./lib/store";
 import { initialView, onNavigate } from "./pwa/launch"; // [pwa] Inbox-first launch + push deep-link
 import { parseHash, toHash } from "./lib/routing"; // [w7] deep links
-import { TitleBar, OpSidebar, OpStatusBar } from "./components/shell";
+import { TitleBar, OpSidebar, OpStatusBar, ConnectingShell } from "./components/shell";
 import { useTweaks } from "./components/tweaks";
 import { HomeView } from "./views/home";
 import { OverviewView } from "./views/overview";
@@ -119,6 +119,14 @@ export function App() {
   const agent = store.runs.find((a) => a.id === runId);
   const project = store.projects.find((p) => p.id === projectId);
 
+  // Before the first snapshot lands, render a skeleton of the shell with a real
+  // connect→connected lifecycle and a retry affordance — never a dead-end
+  // "Connecting…" message. The socket auto-reconnects; ConnectingShell surfaces
+  // that state and lets the operator force a retry.
+  if (!store.loaded) {
+    return <ConnectingShell phase={store.wsPhase} onRetry={store.retry} />;
+  }
+
   // First run: a loaded, empty workspace that hasn't been set up yet → the
   // onboarding wizard (sets up GitHub + fleet against the real backend). All
   // hooks above run unconditionally; only the render branches here.
@@ -150,11 +158,13 @@ export function App() {
         />
         <main className="main">
           <div className="content">
-            {!store.loaded && (
-              <div className="getstarted">
-                <div className="gs-inner">
-                  <p className="gs-sub">Connecting to mission control…</p>
-                </div>
+            {store.wsPhase === "closed" && (
+              <div className="reconnect-bar" role="status" aria-live="polite">
+                <span className="reconnect-dot" />
+                Connection lost — reconnecting… data may be stale.
+                <button className="reconnect-retry" onClick={store.retry}>
+                  Retry now
+                </button>
               </div>
             )}
             {store.loaded && view === "home" && (
@@ -167,6 +177,7 @@ export function App() {
                 onCreate={createProject}
                 onGoInbox={() => setView("queue")}
                 onConfigureFleet={() => setView("fleet")}
+                onOpenSettings={() => setView("settings")}
                 onAssign={() => setView("projects")}
               />
             )}
