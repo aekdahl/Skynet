@@ -22,6 +22,7 @@ import { registerGithubRoutes, configureGithub } from "./github/index.js";
 import { registerEvalsRoutes } from "./evals/index.js";
 import { registerSimulationRoutes } from "./simulation/index.js";
 import { registerRateLimit } from "./rate-limit.js";
+import { isCorsOriginAllowed } from "./cors-policy.js";
 import { configureAuth } from "./auth.js";
 import { MemorySessionStore, type SessionStore } from "./auth/sessions.js";
 import { StoreServiceTokenStore } from "./auth/service-tokens.js";
@@ -119,7 +120,15 @@ async function main() {
       "No operator seeded — UI login is disabled. Set SKYNET_ADMIN_EMAIL + SKYNET_ADMIN_PASSWORD to seed the first admin, or drive the API with service tokens (MCP).",
     );
   }
-  await app.register(cors, { origin: true });
+  // Scoped CORS: dev/test stays permissive (localhost). In production-grade mode
+  // only SKYNET_CORS_ORIGINS are allowed; an empty allowlist is closed (no
+  // reflect-any fall-back). isCorsOriginAllowed is the single source of truth.
+  await app.register(cors, {
+    origin: config.devMode
+      ? true
+      : (origin, cb) =>
+          cb(null, isCorsOriginAllowed(origin, { devMode: config.devMode, allowlist: config.corsOrigins })),
+  });
   await app.register(websocket);
   // Rate limiting runs before auth so a flood is shed early. Guards /api + /mcp
   // (login hardest); exempts loopback in dev. See rate-limit.ts.
