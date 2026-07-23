@@ -94,6 +94,16 @@ export const config = {
   // for longer than this (ms) is presumed dead — its runner is freed and the
   // agent terminated. Catches orphans left by a crash/restart. 0 disables.
   agentReapMs: Number(process.env.SKYNET_AGENT_REAP_MS ?? 180_000),
+  // Worktree GC sweep interval (ms): removes zombie agent worktrees (run done/
+  // archived/unknown — e.g. left behind by a crash or a memory-store restart)
+  // and deletes agent/* branches already merged into their integration branch.
+  // NEVER deletes unmerged work. 0 disables. Runs once at boot regardless of
+  // interval when > 0.
+  worktreeGcMs: Number(process.env.SKYNET_WORKTREE_GC_MS ?? 1_800_000),
+  // A run parked in `review` with no open gate and a heartbeat older than this
+  // many days is SURFACED (log) as limbo — its worktree may hold the only copy
+  // of unmerged work, so GC warns instead of deleting.
+  worktreeTtlDays: Number(process.env.SKYNET_WORKTREE_TTL_DAYS ?? 3),
   // How often the autonomy loop ticks (ms): for projects with `autonomy` on it
   // triages backlog items, starts auto-pick todo tasks, and reviews finished
   // runs. 0 disables it entirely (fully human-driven). Per-project autonomy

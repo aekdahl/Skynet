@@ -10,6 +10,7 @@ import {
   type RunnerHandle,
   type RunnerProvider,
 } from "@skynet/runner-sdk";
+import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
@@ -1048,6 +1049,86 @@ export class Orchestrator {
    * runner awaiting operator approval, so they never beat and are NOT reaped.
    * Runs periodically and once at startup (which clears restart orphans).
    */
+  /** Limbo runs already warned about this process — warn once, not every sweep. */
+  private limboWarned = new Set<string>();
+
+  /**
+   * Worktree GC (boot + interval). Two safe reclaims and one warning:
+   *  1. Remove ZOMBIE worktrees — a worktree under our root whose branch belongs
+   *     to no live run (run done/archived, or unknown entirely — e.g. a crash or
+   *     a memory-store restart forgot it). Live runs (running/waiting/paused/
+   *     review) keep theirs: the revise loop + diff review depend on them.
+   *  2. Delete agent/* BRANCHES already merged into their project's integration
+   *     branch, once no live run uses them — integrated refs are pure clutter
+   *     (and a branch held by a stale worktree blocks checkouts elsewhere).
+   *  3. SURFACE (never delete) limbo: a run parked in `review` with no open gate
+   *     and a heartbeat older than worktreeTtlDays — its worktree may hold the
+   *     only copy of unmerged work, so reclaiming it is a human decision.
+   */
+  async gcWorktrees(): Promise<{ worktreesRemoved: number; branchesDeleted: number; limbo: number }> {
+    const stats = { worktreesRemoved: 0, branchesDeleted: 0, limbo: 0 };
+    const runs = await this.store.listAllRuns().catch(() => [] as TaskRun[]);
+    const fleet = await this.store.listAllAgents().catch(() => [] as Agent[]);
+
+    // Discover every git context we own: the global integration repo + each
+    // git-backed project repo (workspaces derived from what the store knows).
+    const workspaces = new Set<string>([...runs.map((r) => r.workspaceId), ...fleet.map((a) => a.workspaceId)]);
+    const projects: Project[] = [];
+    for (const ws of workspaces) projects.push(...(await this.store.listProjects(ws).catch(() => [] as Project[])));
+    const byRepo = new Map<string, { ctx: GitContext; projects: Project[] }>();
+    if (config.integrationRepo) {
+      const ctx = this.gitContextForRepo(config.integrationRepo);
+      byRepo.set(ctx.repo, { ctx, projects: [] });
+    }
+    for (const p of projects) {
+      const ctx = this.gitContextFor(p);
+      if (!ctx) continue;
+      const entry = byRepo.get(ctx.repo) ?? { ctx, projects: [] };
+      entry.projects.push(p);
+      byRepo.set(ctx.repo, entry);
+    }
+
+    const liveBranches = new Set(runs.filter((r) => r.status !== "done" && !r.archived).map((r) => r.branch));
+    for (const { ctx, projects: ps } of byRepo.values()) {
+      // 1. Zombie worktrees (ours only — list() is scoped to our root).
+      for (const wt of await ctx.worktrees.list().catch(() => [])) {
+        if (basename(wt.path).startsWith("integration-")) continue; // merge-engine scratch, self-managed
+        if (wt.branch && liveBranches.has(wt.branch)) continue;
+        await ctx.worktrees.removeAt(wt.path).catch(() => undefined);
+        stats.worktreesRemoved++;
+      }
+      // 2. Integrated agent branches nobody live is using.
+      for (const p of ps) {
+        const merged = await ctx.worktrees.mergedAgentBranches(ctx.merge.integrationBranch(p.id)).catch(() => []);
+        for (const name of merged) {
+          if (liveBranches.has(name)) continue;
+          await ctx.worktrees.deleteBranch(name).catch(() => undefined);
+          stats.branchesDeleted++;
+        }
+      }
+    }
+
+    // 3. Limbo surfacing — parked reviews with nothing asking for a decision.
+    const cutoff = now() - config.worktreeTtlDays * 24 * 60 * 60 * 1000;
+    for (const r of runs) {
+      if (r.status !== "review" || r.archived || r.lastHeartbeatAt > cutoff) continue;
+      const open = (await this.store.listQueue(r.workspaceId).catch(() => [] as HitlItem[])).some(
+        (q) => q.runId === r.id && q.resolvedAt == null,
+      );
+      if (open) continue; // a gate is waiting — the operator already has a handle
+      stats.limbo++;
+      if (this.limboWarned.has(r.id)) continue;
+      this.limboWarned.add(r.id);
+      await this.hub
+        .runLog(
+          r.id,
+          `parked in review ${config.worktreeTtlDays}+ days with no open gate — worktree kept (may hold unmerged work); resolve, stop, or archive to reclaim`,
+        )
+        .catch(() => undefined);
+    }
+    return stats;
+  }
+
   async reapStaleAgents(): Promise<void> {
     const ms = config.agentReapMs;
     if (!ms || ms <= 0) return; // disabled

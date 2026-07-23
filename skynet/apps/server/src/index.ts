@@ -175,6 +175,22 @@ async function main() {
     setInterval(sweep, every).unref();
   }
 
+  // Worktree GC: remove zombie agent worktrees (run done/archived/unknown) and
+  // integrated agent/* branches; surface limbo reviews. Never deletes unmerged
+  // work. Boot sweep + interval; disabled when worktreeGcMs <= 0.
+  if (config.worktreeGcMs > 0) {
+    const gc = () =>
+      orchestrator
+        .gcWorktrees()
+        .then((s) => {
+          if (s.worktreesRemoved || s.branchesDeleted)
+            app.log.info(`worktree gc: removed ${s.worktreesRemoved} worktree(s), ${s.branchesDeleted} merged branch(es)${s.limbo ? `, ${s.limbo} review(s) in limbo` : ""}`);
+        })
+        .catch((err) => app.log.warn(`worktree gc: ${(err as Error).message}`));
+    await gc();
+    setInterval(gc, Math.max(300_000, config.worktreeGcMs)).unref();
+  }
+
   // Autonomy loop: triage backlog items, start auto-pick tasks, review finished
   // runs — for projects with autonomy on. Disabled when autonomyMs <= 0.
   if (config.autonomyMs > 0) {
