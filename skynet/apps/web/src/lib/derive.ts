@@ -82,6 +82,41 @@ export const backlogTasks = (tasks: Task[], projectId: string) =>
 export const doneTasks = (tasks: Task[], projectId: string) =>
   tasks.filter((t) => t.projectId === projectId && t.state === "done");
 
+// A task is "queued" — a FUTURE station on the subway — when it has no run yet:
+// not started and not done. (ongoing/review/done all carry a runId → already a
+// station on the line.)
+const isQueued = (t: Task) =>
+  t.runId == null && (t.state === "backlog" || t.state === "triage" || t.state === "todo");
+const byPriority = (a: Task, b: Task) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id);
+
+export type ProjectQueue = {
+  // Waiting tasks deterministically AHEAD of one agent (assignment.mode "agents"),
+  // keyed by their primary (first-listed) eligible agent, in priority order.
+  pinned: Map<string, Task[]>;
+  // The shared "up next" lane: waiting tasks any agent could take (mode "any") or
+  // that haven't chosen (legacy/unassigned) — not tied to a single line.
+  shared: Task[];
+};
+
+// Split a project's not-yet-run work into per-agent queues (what's ahead of each
+// agent) and a shared lane. Powers the subway lookahead: done → current → queued
+// → ship. Legacy tasks with no `assignment` fall into the shared lane.
+export function projectQueue(tasks: Task[], projectId: string): ProjectQueue {
+  const queued = tasks.filter((t) => t.projectId === projectId && isQueued(t)).sort(byPriority);
+  const pinned = new Map<string, Task[]>();
+  const shared: Task[] = [];
+  for (const t of queued) {
+    const a = t.assignment;
+    if (a?.mode === "agents" && a.agentIds.length > 0) {
+      const primary = a.agentIds[0]!;
+      pinned.set(primary, [...(pinned.get(primary) ?? []), t]);
+    } else {
+      shared.push(t);
+    }
+  }
+  return { pinned, shared };
+}
+
 export const hitlFor = (queue: HitlItem[], runId: string) =>
   queue.find((q) => q.runId === runId && q.resolvedAt == null);
 

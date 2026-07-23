@@ -562,6 +562,15 @@ button.lg-arow:hover { background: var(--raised); }
 /* a parent station a fork branched off from (re-pointed) */
 .sw-repoint { outline: 2px solid color-mix(in oklch, var(--violet), transparent 20%); outline-offset: 2px; }
 .sw-label-muted { color: var(--faint); }
+/* queued (not-yet-run) stops — the lookahead: what's ahead of an agent + what's
+   left to completion. Hollow, dashed segment leading in, muted label. */
+.swb-seg-pending { background: none; border-top: 2px dashed color-mix(in oklch, var(--faint), transparent 45%); height: 0; }
+.swb-st.sw-queued { width: 10px; height: 10px; background: var(--panel); border: 2px dashed color-mix(in oklch, var(--faint), transparent 25%); cursor: default; }
+.sw-label-queued { color: color-mix(in oklch, var(--faint), transparent 15%); font-style: italic; }
+/* an idle agent (a track with only a queue) / the shared lane's marker */
+.sw-dot-idle { width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--faint); background: none; display: inline-block; flex: none; }
+.swb-name-lane { opacity: 0.85; }
+.swb-row-lane .sw-tname { color: var(--muted); }
 /* ── Subway v2: one line per project, tasks as stations ─────────────────── */
 .swb2 { padding: 30px 46px 34px; }
 .swb2-track { position: relative; height: 2px; }
