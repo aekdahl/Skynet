@@ -57,6 +57,7 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
 8. **Onboarding / first-run** — create workspace → connect repo → add key → add runner; retire seed fixtures.
 9. **Deploy** — GCE VM + Docker (app + runner containers) + Cloud SQL + Memorystore + staging URL/TLS.
 10. **E2E test of the loop + staging env.**
+11. **UX/UI first-run polish to SOTA** — the launch blockers from the pre-release UX/UI review (the first ten minutes, where a new operator meets an empty board): pull QA surfaces (**Acceptance / Simulation**) out of the operator nav; real loading (skeleton + connect→connected lifecycle + retry — no terminal "Connecting to mission control…"); every empty state gets one primary CTA + a one-line mental-model hint; two-column onboarding + fix the **disabled-button** state globally (dim-amber reads as broken); surface **fleet-readiness** ("no provider connected — agents can't run · Add a key") from the first screen. *(Grades the first-run experience from ~3.4 → SOTA; none architectural.)*
 
 **Scope:** Claude-only · one shared hosted instance on GCP · internal testers in separate workspaces.
 **Done =** the loop above runs for a tester on staging. *(~30–50 eng-days; critical path #1, #2, #5.)*
@@ -132,6 +133,13 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease
 features below are white space.)
+
+**UX/UI to SOTA (pre-release review — high &amp; polish):**
+- **Text-contrast ramp** (ink / muted / faint, checked ratios — muted currently sits at the reading floor) + a **systematized button/state token set** (primary / ghost / danger, each with explicit hover · focus-visible · disabled · loading).
+- **Agent picker at Start** + a saved per-task provider/model preference, and always show which agent a run is on — today assignment auto-picks and the fleet premise is invisible.
+- **Structured triage card** (effort pill · full-contrast summary · risks list, not one muted paragraph); **Inbox count badge**; grouped nav (**Operate** / **Configure**).
+- **Humanized time** + stale-heartbeat styling (no raw "79062s ago"); honest empty-**PLAN** state; **provider identity** (real marks + names, not abstract glyphs).
+- **Design tokens published** (type scale, 8px rhythm, motion behind `prefers-reduced-motion`, one focus ring, semantic palette kept separate from the accent); **a11y pass** (icon-button labels, visible focus, keyboard walkthrough of assign→decide→merge); explicit **Inbox-first mobile/PWA shell**.
 
 **Easier to use than anyone else:**
 - **Repo-optional / chat-only mode** — a runner with **no worktree and no merge**; try Skynet in 30s,
