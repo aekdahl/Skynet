@@ -1127,7 +1127,10 @@ export const JOURNEYS: Journey[] = [
  * and spends its verdict explaining them away (or, worse, mis-attributes them).
  * Falls back to the whole Sim-tagged board when no scope is passed.
  */
-export async function captureEvidence(scopeProjectIds?: string[]): Promise<Record<string, unknown>> {
+export async function captureEvidence(
+  scopeProjectIds?: string[],
+  scopeRunnerIds?: string[],
+): Promise<Record<string, unknown>> {
   const [s, audit] = await Promise.all([
     api.fetchSnapshot(),
     api.fetchAudit().catch(() => [] as Awaited<ReturnType<typeof api.fetchAudit>>),
@@ -1139,10 +1142,14 @@ export async function captureEvidence(scopeProjectIds?: string[]): Promise<Recor
   const projectIds = new Set(projects.map((p) => p.id));
   const runs = s.runs.filter((a) => projectIds.has(a.projectId));
   const runIds = new Set(runs.map((a) => a.id));
-  // Only the runners THIS journey's runs actually execute on — not every sim-
-  // runner ever provisioned. Idle spares are noise the judge would flag as an
-  // incoherent "provisioned runner sits idle" gap.
+  // Runners the journey's runs execute on, PLUS runners the journey itself
+  // provisioned (scopeRunnerIds — the fleet before/after diff). The latter
+  // matters for provisioning journeys whose goal IS an idle runner: filtering
+  // to used-only made the judge see `runners: []` and fail an honest journey
+  // ("provisioned runner absent from the board"). Unrelated idle spares from
+  // OTHER journeys stay excluded — they're noise the judge would flag.
   const usedRunnerIds = new Set(runs.map((a) => a.agentId).filter((x): x is string => !!x));
+  for (const id of scopeRunnerIds ?? []) usedRunnerIds.add(id);
   return {
     scope: scoped ? "this journey's own entities only" : "all Sim-tagged",
     projects: projects.map((p) => ({
