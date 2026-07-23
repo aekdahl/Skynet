@@ -867,13 +867,23 @@ export const JOURNEYS: Journey[] = [
       await api.updateTask(p.id, editTask.id, { text: "Sim: task (edited)" });
       s = await settle((sn) => sn.tasks.find((t) => t.id === editTask.id)?.text === "Sim: task (edited)");
       steps.push(step("task text edited", s.tasks.find((t) => t.id === editTask.id)?.text === "Sim: task (edited)"));
+      // Leaving backlog is gated on an agent-eligibility choice: an unassigned
+      // task must be refused, then advance once eligibility is set.
+      let gated = false;
       try {
+        await api.transitionTask(p.id, editTask.id, "triage");
+      } catch {
+        gated = true;
+      }
+      steps.push(step("unassigned task blocked from leaving backlog", gated));
+      try {
+        await api.updateTask(p.id, editTask.id, { assignment: { mode: "any", agentIds: [] } });
         await api.transitionTask(p.id, editTask.id, "triage");
         s = await settle((sn) => sn.tasks.find((t) => t.id === editTask.id)?.state === "triage");
         const st = s.tasks.find((t) => t.id === editTask.id)?.state;
-        steps.push(step("task advanced backlog → triage", st === "triage", st));
+        steps.push(step("task advanced backlog → triage after assigning", st === "triage", st));
       } catch (e) {
-        steps.push(step("task advanced backlog → triage", false, (e as Error).message));
+        steps.push(step("task advanced backlog → triage after assigning", false, (e as Error).message));
       }
       try {
         await api.moveTask(p.id, delTask.id, "up");

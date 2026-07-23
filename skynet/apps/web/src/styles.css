@@ -562,6 +562,15 @@ button.lg-arow:hover { background: var(--raised); }
 /* a parent station a fork branched off from (re-pointed) */
 .sw-repoint { outline: 2px solid color-mix(in oklch, var(--violet), transparent 20%); outline-offset: 2px; }
 .sw-label-muted { color: var(--faint); }
+/* queued (not-yet-run) stops — the lookahead: what's ahead of an agent + what's
+   left to completion. Hollow, dashed segment leading in, muted label. */
+.swb-seg-pending { background: none; border-top: 2px dashed color-mix(in oklch, var(--faint), transparent 45%); height: 0; }
+.swb-st.sw-queued { width: 10px; height: 10px; background: var(--panel); border: 2px dashed color-mix(in oklch, var(--faint), transparent 25%); cursor: default; }
+.sw-label-queued { color: color-mix(in oklch, var(--faint), transparent 15%); font-style: italic; }
+/* an idle agent (a track with only a queue) / the shared lane's marker */
+.sw-dot-idle { width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--faint); background: none; display: inline-block; flex: none; }
+.swb-name-lane { opacity: 0.85; }
+.swb-row-lane .sw-tname { color: var(--muted); }
 /* ── Subway v2: one line per project, tasks as stations ─────────────────── */
 .swb2 { padding: 30px 46px 34px; }
 .swb2-track { position: relative; height: 2px; }
@@ -851,6 +860,16 @@ button.kb-done:hover { opacity: 1; }
 .kb-move:disabled { color: var(--faint); cursor: not-allowed; }
 .kb-move-primary { color: var(--accent); border-color: color-mix(in oklch, var(--accent), transparent 55%); }
 .kb-autopick { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); cursor: pointer; }
+/* agent-eligibility picker (who may take a task) */
+.kb-elig { display: flex; flex-direction: column; gap: 5px; margin: 2px 0; }
+.kb-elig-row { display: inline-flex; align-items: center; gap: 6px; }
+.kb-elig-lbl { font-size: 11px; color: var(--muted); }
+.kb-elig-select { background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-family: var(--font-ui); font-size: 11px; color: var(--text); cursor: pointer; }
+.kb-elig-list { display: flex; flex-wrap: wrap; gap: 4px 12px; padding-left: 2px; }
+.kb-elig-opt { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); cursor: pointer; }
+.kb-elig-ro { margin: 2px 0; }
+.kb-elig-chip { font-size: 11px; color: var(--muted); }
+.kb-elig-chip.kb-elig-unset { color: var(--warn); }
 .kb-assessment { font-size: 11px; color: var(--muted); line-height: 1.4; border-left: 2px solid var(--line); padding-left: 8px; }
 .kb-flag { font-size: 11px; color: var(--warn); line-height: 1.4; }
 .proj-autonomy { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; margin-right: 4px; }

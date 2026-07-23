@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, HitlItem, Project, Resolution, Agent, Task } from "@skynet/shared";
+import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment } from "@skynet/shared";
 import {
   type HitlRaise,
   type RunnerEvents,
@@ -52,8 +52,8 @@ interface GitContext {
 }
 
 export class NoCapacityError extends Error {
-  constructor() {
-    super("No idle runner available");
+  constructor(message?: string) {
+    super(message ?? "No idle runner available");
     this.name = "NoCapacityError";
   }
 }
@@ -468,14 +468,31 @@ export class Orchestrator {
    *  Serialized via acquireExclusive so find-idle → mark-busy is atomic (closes
    *  the double-booking TOCTOU). Empty fleet or no key for any idle agent →
    *  RunnerNotConfiguredError (409); agents exist but all busy → NoCapacityError. */
-  private acquireAgent(workspaceId: string): Promise<{ id: string; provider: TaskRun["provider"]; model: string }> {
+  private acquireAgent(
+    workspaceId: string,
+    eligible?: TaskAssignment,
+  ): Promise<{ id: string; provider: TaskRun["provider"]; model: string }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
       if (runners.length === 0) {
         throw new RunnerNotConfiguredError("No agent configured — add one in Fleet before assigning tasks.");
       }
-      const idle = runners.filter((r) => r.status === "idle");
-      if (idle.length === 0) throw new NoCapacityError();
+      // `agents` mode restricts the pool to the eligible set; `any`/undefined
+      // considers the whole fleet (historical behavior).
+      const inPool = (id: string) =>
+        eligible?.mode === "agents" ? eligible.agentIds.includes(id) : true;
+      const eligibleRunners = runners.filter((r) => inPool(r.id));
+      if (eligible?.mode === "agents" && eligibleRunners.length === 0) {
+        throw new NoCapacityError("None of this task's assigned agents exist in the fleet.");
+      }
+      const idle = eligibleRunners.filter((r) => r.status === "idle");
+      if (idle.length === 0) {
+        throw new NoCapacityError(
+          eligible?.mode === "agents"
+            ? "This task's assigned agents are all busy — it waits until one frees up."
+            : undefined,
+        );
+      }
       for (const r of idle) {
         if (await this.providerUsable(workspaceId, r.provider)) {
           await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
@@ -565,7 +582,14 @@ export class Orchestrator {
       if (existing && existing.status !== "done") return existing;
     }
 
-    const runner = await this.acquireAgent(project.workspaceId);
+    // A human explicitly assigning an `unassigned` task means "any agent" — persist
+    // that so the task carries a real eligibility set once it leaves backlog (the
+    // deterministic autonomy loop never makes this assumption; it parks unassigned
+    // tasks instead). An `agents` pin restricts acquisition to that pool.
+    const current: TaskAssignment = task.assignment ?? { mode: "unassigned", agentIds: [] };
+    const assignment: TaskAssignment =
+      current.mode === "unassigned" ? { mode: "any", agentIds: [] } : current;
+    const runner = await this.acquireAgent(project.workspaceId, assignment);
     const runId = `${this.slug(task.text)}-${++this.seq}`;
     // runId is unique → unique branch & worktree path (two same-named tasks
     // never collide on the same branch).
@@ -611,7 +635,7 @@ export class Orchestrator {
     const provider = await this.getProvider(runner.provider);
 
     await this.hub.createRun(agent);
-    await this.hub.upsertTask({ ...task, state: "ongoing", runId });
+    await this.hub.upsertTask({ ...task, state: "ongoing", runId, assignment });
     await this.hub.upsertProject({ ...project, runIds: [...project.runIds, runId] });
 
     // Git backend for this project's repo (local repoPath, else global) — drives
@@ -1173,18 +1197,27 @@ export class Orchestrator {
           if (idle.length === 0) break; // no capacity left in this workspace
           const mine = tasks.filter((t) => t.projectId === p.id);
           try {
-            // 1) Triage one backlog item → assessment, move to triage.
-            const backlog = mine.find((t) => t.state === "backlog");
+            // 1) Triage one backlog item → assessment, move to triage. Skip
+            //    `unassigned` tasks: leaving backlog requires an eligibility choice,
+            //    and autonomy never guesses one — those stay parked for a human.
+            const backlog = mine.find(
+              (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") !== "unassigned",
+            );
             if (backlog) {
               const assessment = await this.assessTask(ws, idle[0]!, backlog);
               await this.hub.upsertTask({ ...backlog, state: "triage", assessment });
             }
             // 2) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
-            for (const t of mine.filter((t) => t.state === "todo" && t.autoPick)) {
+            //    Each honors its own eligibility set via assignTask → acquireAgent, so
+            //    a task whose pinned agents are busy is skipped (continue) rather than
+            //    stalling pickups for tasks whose agents ARE free.
+            for (const t of mine.filter(
+              (t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned",
+            )) {
               try {
                 await this.assignTask(p.id, t.id);
               } catch {
-                break; // out of capacity / no credential — stop pickups this tick
+                continue; // this task's agents busy / no credential — try the next
               }
             }
             // 3) Review a finished run: approve → merge/done, else flag for a human.

@@ -51,6 +51,32 @@ export const TaskState = z.enum([
 ]);
 export type TaskState = z.infer<typeof TaskState>;
 
+// A task's agent *eligibility* — WHO may take it, distinct from who actually did
+// (that's TaskRun.agentId). The set, not a hard binding: any idle eligible agent
+// runs it.
+//  • unassigned — no choice made yet. Only legal while the task sits in `backlog`;
+//                 leaving backlog requires a real choice (any | agents).
+//  • any         — any idle fleet agent may take it (the historical behavior).
+//  • agents      — only agents in `agentIds` (a pool of ≥1) may take it; whichever
+//                  is idle first runs it. Enables affinity ("agent A must do this")
+//                  and dependency-aware routing; the seam an agent-picks-agent
+//                  feature writes to later.
+export const TaskAssignment = z
+  .object({
+    mode: z.enum(["unassigned", "any", "agents"]).default("unassigned"),
+    agentIds: z.array(z.string()).default([]),
+  })
+  .superRefine((v, ctx) => {
+    if (v.mode === "agents" && v.agentIds.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "assignment mode 'agents' requires at least one agentId",
+        path: ["agentIds"],
+      });
+    }
+  });
+export type TaskAssignment = z.infer<typeof TaskAssignment>;
+
 export const ProjectStatus = z.enum(["active", "paused", "done"]);
 export type ProjectStatus = z.infer<typeof ProjectStatus>;
 
@@ -164,6 +190,9 @@ export const Task = z.object({
   // Set when an autonomous review couldn't confidently approve and flagged the
   // task for a human (the task stays in `review`).
   reviewFlaggedReason: z.string().nullable().default(null),
+  // Agent eligibility — who may take this task (see TaskAssignment). Defaults to
+  // `unassigned`; a task must carry `any`/`agents` before it can leave `backlog`.
+  assignment: TaskAssignment.default({ mode: "unassigned", agentIds: [] }),
   // Manual backlog priority — lower sorts higher (top = next up). Operators
   // promote/demote to reorder; unset sorts as 0 (legacy tasks / pre-ordering).
   order: z.number().int().optional(),
@@ -343,6 +372,9 @@ export const UpdateTaskRequest = z.object({
   text: z.string().min(1).optional(),
   description: z.string().nullable().optional(),
   autoPick: z.boolean().optional(),
+  // Set/clear agent eligibility. `unassigned` is only accepted while the task is
+  // still in backlog (the server enforces the leaving-backlog gate).
+  assignment: TaskAssignment.optional(),
 });
 export type UpdateTaskRequest = z.infer<typeof UpdateTaskRequest>;
 

@@ -62,6 +62,14 @@ export class InvalidTransitionError extends Error {
   }
 }
 
+/** A task can't leave `backlog` until its agent eligibility is set. 400. */
+export class AssignmentRequiredError extends Error {
+  constructor() {
+    super("Set an agent (any, or specific agents) before moving this task out of backlog.");
+    this.name = "AssignmentRequiredError";
+  }
+}
+
 // Legal HUMAN kanban moves (the autonomy loop uses its own paths). `ongoing` is
 // run-driven — a human uses Stop on the run, or abandons back to `todo` (which
 // stops+detaches the run). `todo → ongoing` is "Start now" (assignTask), not here.
@@ -282,6 +290,7 @@ export class Operations {
       autoPick: false,
       assessment: null,
       reviewFlaggedReason: null,
+      assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,
     };
     return this.hub.upsertTask(task);
@@ -289,6 +298,20 @@ export class Operations {
   async updateTask(ws: string, tid: string, patch: UpdateTaskRequest): Promise<Task> {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    if (patch.assignment) {
+      // Clearing eligibility back to `unassigned` is only allowed while parked in
+      // backlog — otherwise a running/queued task could lose the set it left
+      // backlog with, breaking the invariant the transition gate enforces.
+      if (patch.assignment.mode === "unassigned" && task.state !== "backlog") {
+        throw new AssignmentRequiredError();
+      }
+      // Pin only to agents that actually exist in this workspace's fleet.
+      if (patch.assignment.mode === "agents") {
+        const fleet = new Set((await this.store.listAgents(ws)).map((a) => a.id));
+        const unknown = patch.assignment.agentIds.filter((id) => !fleet.has(id));
+        if (unknown.length > 0) throw new NotFoundError(`Agent(s) ${unknown.join(", ")}`);
+      }
+    }
     return this.hub.upsertTask({ ...task, ...patch });
   }
   /**
@@ -338,6 +361,14 @@ export class Operations {
     if (task.state === to) return task; // no-op
     if (!(HUMAN_TRANSITIONS[task.state] ?? []).includes(to)) {
       throw new InvalidTransitionError(task.state, to);
+    }
+
+    // Leaving backlog requires an agent-eligibility choice (who may take it).
+    // Unassigned tasks stay parked in backlog until a human — later, an agent —
+    // sets `any` or a specific pool.
+    // (Legacy tasks persisted before this field default to `unassigned`.)
+    if (task.state === "backlog" && to !== "backlog" && (task.assignment?.mode ?? "unassigned") === "unassigned") {
+      throw new AssignmentRequiredError();
     }
 
     // review → done: if the run still has an open review HITL, approve it — that
