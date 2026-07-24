@@ -235,6 +235,14 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
   role resolve the user's own keys via the existing secret store, metered under the project budget.
   Full sketch: [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) (phased: Charter rides v1.5 ·
   CoS+Leads+QA ride v2 · Security/Spec/Scribe ride v1 governance + v3 triggers · Curator/retro ride v4/v5).
+- **🔗 Product steward & the living Plan** — the concrete substrate under the north star: a
+  first-class, **versioned Plan entity** (the durable roadmap the steward maintains — the proper
+  replacement for the AI's throwaway `ROADMAP.md`/`PLAN.md` scratch files in the repo) plus a
+  **persistent, project-scoped steward conversation** so the operator runs the whole build by
+  talking to one agent and only making decisions, feeding new input as they go. The steward drives
+  Skynet's own MCP `author` tools + an `edit_plan` tool (wrap, don't rebuild); commitments stay HITL.
+  Phase 1 (the Plan entity + a project-view panel) is independently useful and can ride **v1.5**
+  alongside Charter-assisted creation. See [docs/product-steward.md](docs/product-steward.md).
 
 ## v3 — Triggers & integrations (inbound work)  🔗
 Turn Skynet from "I assign tasks" into "work flows in from my stack, human-gated." Every integration
