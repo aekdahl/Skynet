@@ -14,6 +14,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution, Usage } from "@skynet/shared";
+import { fmtDuration, runtimeCapMs } from "./caps.js";
 import { wrapForSandbox } from "./sandbox.js";
 import type {
   HitlRaise,
@@ -104,6 +105,7 @@ class CliRunnerHandle implements RunnerHandle {
   private progress = 0;
   private finished = false;
   private hb?: ReturnType<typeof setInterval>;
+  private cap?: ReturnType<typeof setTimeout>;
   private stderrTail: string[] = [];
   private ctx: ParseCtx = {};
 
@@ -138,6 +140,16 @@ class CliRunnerHandle implements RunnerHandle {
       return;
     }
     this.child = child;
+
+    // Wall-clock resource cap: a runaway/hung agent is force-failed so it can't
+    // hold its fleet slot and burn tokens forever. 0 disables (see caps.ts).
+    const capMs = runtimeCapMs();
+    if (capMs > 0) {
+      this.cap = setTimeout(
+        () => this.fallback(`exceeded max runtime (${fmtDuration(capMs)}) — force-stopped`),
+        capMs,
+      );
+    }
 
     // ENOENT (binary not installed / not on PATH) surfaces here, not as a throw.
     child.on("error", (err) =>
@@ -215,6 +227,7 @@ class CliRunnerHandle implements RunnerHandle {
     if (this.finished) return;
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
+    if (this.cap) clearTimeout(this.cap);
     this.events.onFailed(this.runId, message);
     this.kill();
   }
@@ -223,6 +236,7 @@ class CliRunnerHandle implements RunnerHandle {
     if (this.finished) return;
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
+    if (this.cap) clearTimeout(this.cap);
     this.events.onProgress(this.runId, 1, [] as PlanStep[]);
     // Compute finished, but the orchestrator owns the terminal "done" (after it
     // commits the worktree → review → merge). Emitting "done" here would race
@@ -277,6 +291,7 @@ class CliRunnerHandle implements RunnerHandle {
   async stop() {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
+    if (this.cap) clearTimeout(this.cap);
     this.kill();
   }
 

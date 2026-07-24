@@ -51,7 +51,15 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
 2. [x] **Worktree-per-runner provisioning** — each agent gets an isolated git worktree/branch.
 3. [x] **Repo connection + `.skynet/modules.json`** — a workspace points at a real repo + integration branch.
 4. [x] **Provider credential management** — per-workspace keys, injected into runners, never client-exposed.
-5. [~] **Sandboxed runner** — one container per agent (resource caps, restricted network, command allow/deny).
+5. **Sandboxed runner** — defense-in-depth around each agent. Shipped without a
+   container: **command allow/deny** (safety classifier, enforced at approve-time),
+   **filesystem write-confinement** to the worktree (opt-in OS sandbox — macOS
+   `sandbox-exec` / Linux `bwrap`, `SKYNET_RUNNER_SANDBOX`), and a **wall-clock
+   runtime cap** (`SKYNET_RUNNER_MAX_RUNTIME_MS`, default 30 min) that force-fails
+   a runaway/hung run. **Deferred to the containerized runner (v1, GKE Jobs):**
+   true one-container-per-agent isolation, **memory/CPU caps** (cgroups), and
+   **network egress control** (allowlist via a proxy — agents must still reach
+   their model API, so this needs the container + proxy story, not a local flag).
 6. [x] **Real-execution event fidelity** — real diffs → diff HITL, changed files → modules, branch → preview.
 7. [~] **Auth hardening to test-grade** — real login, `AUTH_REQUIRED` on, scoped CORS, rate limiting.
 8. [x] **Onboarding / first-run** — create workspace → connect repo → add key → add runner; retire seed fixtures.
@@ -119,7 +127,10 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   chat + resolve; optional "also remember" promotes the note to area/workspace memory (v4) so future
   agents inherit it too. Audited via existing streams.
 - [ ] Real **live-preview** pipeline (sandboxed per-branch URLs).
-- [ ] **Scale:** Redis multi-replica fan-out; GKE Jobs for runners.
+- [ ] **Scale + containerized runner:** Redis multi-replica fan-out; **GKE Jobs for
+  runners** — one container per agent, completing the v0 sandbox item's deferred
+  half: memory/CPU caps (cgroups) and network egress allowlist (proxy). The
+  command-deny, worktree write-confinement, and runtime cap already ship locally.
 - [ ] **Guided provider connect** — one-click "Connect Claude / Codex / …": in-app key entry + a live verify,
   so onboarding never requires hand-authing each vendor CLI (the #1 friction rivals impose).
 - [ ] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).** A 6-way
