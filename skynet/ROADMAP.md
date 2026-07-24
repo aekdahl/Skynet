@@ -71,8 +71,12 @@ merges — all **local-first, on their own machine**.
    `AUTH_REQUIRED` secure-by-default (fails closed unless `NODE_ENV` is explicitly dev/test). 🏢 *Real
    multi-user login, SSO/OIDC, scoped CORS, and rate limiting are deferred with the hosted release.*
 8. [x] **Onboarding / first-run** — create workspace → connect repo → add key → add runner; retire seed fixtures.
-9. [~] **Desktop packaging & code-signing** — signed macOS/Windows builds + auto-update; retire seed
-   fixtures. *(The remaining local-release blocker per the first-release audit.)*
+9. [x] **Desktop packaging (beta, unsigned)** — `electron-builder` `.dmg` (mac arm64 + x64) + `.nsis`
+   (win) with the server + SPA bundled, `electron-updater` wired, and a `v*`-tag CI release
+   ([.github/workflows/desktop-release.yml](.github/workflows/desktop-release.yml)) that publishes
+   installers to GitHub Releases. **Beta ships unsigned by decision** — macOS users right-click → Open
+   once (Gatekeeper); Windows background auto-update works unsigned. *(Code-signing + notarization split
+   out to v1 — see below.)*
 10. [x] **E2E of the full loop (manual acceptance)** — operator-run in the app's **QA → Simulation**
    view: the **"Full run pipeline — edit → diff review → merge"** journey drives a **real Claude agent**
    through the entire DoD loop (assign → isolated worktree → diff-review gate → approve → merge → run +
@@ -83,9 +87,8 @@ merges — all **local-first, on their own machine**.
 
 **Scope:** Claude-first · **local-first desktop app** (BYO key, single operator, file-store persistence,
 keys never leave the machine). **Hosted / multi-tenant is out of scope** (🏢 deferred — see below).
-**Done =** the full loop runs on a **signed, packaged desktop build** on an operator's own machine.
-*(Critical path: #9 packaging/signing → #11 UX P0. The loop E2E is accepted via the manual Simulation
-journey, #10.)*
+**Done =** the full loop runs on a **packaged desktop build** (beta, unsigned) on an operator's own
+machine. *(Critical path: **#11 UX P0** — packaging #9 + loop E2E #10 are done; code-signing → v1.)*
 
 ---
 
@@ -164,6 +167,13 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   chat + resolve; optional "also remember" promotes the note to area/workspace memory (v4) so future
   agents inherit it too. Audited via existing streams.
 - [ ] Real **live-preview** pipeline (sandboxed per-branch URLs).
+- [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
+  the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
+  opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign
+  the Windows build (code-signing cert) to clear SmartScreen. The electron-builder config + CI
+  secret-passthrough are straightforward to wire; the gating input is the **certs** — an Apple
+  Developer ID cert + a Windows code-signing cert added as repo secrets. Verifiable only on a real
+  signed tag build (electron-builder skips signing when secrets are absent).
 - [ ] 🏢 **Scale + containerized runner:** Redis multi-replica fan-out; **GKE Jobs for
   runners** — one container per agent, completing the v0 sandbox item's deferred
   half: memory/CPU caps (cgroups) and network egress allowlist (proxy). The
