@@ -10,9 +10,19 @@ import type { GithubConnection, GithubRepo, ProviderInfo } from "@skynet/shared"
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { setOnboarded, setWorkspaceName } from "../lib/firstrun";
+import { PrimaryButton } from "../components/empty";
 import { GithubConnect, emptyConnection } from "./integrations";
 
 const STEPS = ["Workspace", "GitHub", "Module map", "Fleet"];
+
+// Right-column context for each step — the "why" and what happens next, so the
+// form column stays focused on the single input the step asks for.
+const STEP_NOTES = [
+  "Name your team's mission control. Every project, agent, and decision lives under it — you can rename it later.",
+  "Optional now. Runs branch, push, and open PRs through least-privilege tokens. You can also connect GitHub later from Integrations.",
+  "Read-only here. The map comes from .skynet/modules.json in your repo and powers conflict detection and the allowlist.",
+  "Each provider you pick becomes an agent you can assign work to. Add, retire, or tune the fleet anytime.",
+];
 
 function Mark() {
   return (
@@ -92,10 +102,36 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     onDone();
   };
 
+  // Blocked-CTA reason for the current step — shown directly beneath the primary
+  // button at readable contrast, never a faint hint parked elsewhere.
+  const blockReason = !canNext
+    ? step === 0
+      ? "Enter a workspace name to continue."
+      : step === STEPS.length - 1
+        ? "Select at least one provider to start your fleet."
+        : undefined
+    : undefined;
+
   return (
     <div className="ob">
-      <div className="ob-card">
-        <Mark />
+      <div className="ob-layout">
+        <aside className="ob-aside">
+          <Mark />
+          <div className="ob-aside-title">Set up Skynet</div>
+          <ol className="ob-steplist">
+            {STEPS.map((s, i) => (
+              <li
+                key={s}
+                className={"ob-steplist-item" + (i === step ? " on" : i < step ? " done" : "")}
+              >
+                <span className="ob-steplist-num">{i < step ? "✓" : i + 1}</span>
+                <span className="ob-steplist-label">{s}</span>
+              </li>
+            ))}
+          </ol>
+          <p className="ob-aside-note">{STEP_NOTES[step]}</p>
+        </aside>
+        <div className="ob-card">
         <div className="ob-progress">
           {STEPS.map((_, i) => (
             <span key={i} className={"ob-pip" + (i === step ? " on" : i < step ? " done" : "")} />
@@ -172,20 +208,23 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                 );
               })}
             </div>
-            <div className="ob-hint" style={{ textAlign: "center" }}>
-              {providers.length === 0 ? "Select at least one provider." : `Starts your fleet with ${providers.length} agent${providers.length === 1 ? "" : "s"}.`}
-            </div>
+            {providers.length > 0 && (
+              <div className="ob-hint" style={{ textAlign: "center" }}>
+                Starts your fleet with {providers.length} agent{providers.length === 1 ? "" : "s"}.
+              </div>
+            )}
           </>
         )}
 
         <div className="ob-nav">
           {step > 0 && <button className="btn btn-ghost" onClick={() => setStep((s) => Math.max(0, s - 1))}>← Back</button>}
           <span className="ob-spacer" />
-          <button className="btn btn-primary" disabled={!canNext || busy} onClick={next}>
+          <PrimaryButton align="end" disabled={!canNext || busy} reason={blockReason} onClick={next}>
             {last ? (busy ? "Setting up…" : "Enter Skynet →") : "Continue →"}
-          </button>
+          </PrimaryButton>
         </div>
         {step === 0 && <button className="ob-skip" onClick={skip}>Skip setup</button>}
+        </div>
       </div>
     </div>
   );

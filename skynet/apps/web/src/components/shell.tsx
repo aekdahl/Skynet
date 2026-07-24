@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { TaskRun, Project } from "@skynet/shared";
+import type { WsPhase } from "../lib/client";
 import { useStore } from "../lib/store";
 import {
   fmtWait,
@@ -59,6 +60,70 @@ export function TitleBar() {
   );
 }
 
+// First paint before the snapshot lands: a skeleton of the real shell plus an
+// honest connect→connected lifecycle. When the socket can't be reached we say
+// so and offer a Retry, rather than spinning on "Connecting…" forever.
+export function ConnectingShell({
+  phase,
+  onRetry,
+}: {
+  phase: WsPhase;
+  onRetry: () => void;
+}) {
+  const failed = phase === "closed";
+  const status = failed
+    ? "Can't reach mission control."
+    : phase === "open"
+      ? "Connected — loading your workspace…"
+      : "Connecting to mission control…";
+  const navSkeleton = ["44%", "38%", "34%", "46%", "36%", "40%", "32%"];
+  return (
+    <div className="app">
+      <TitleBar />
+      <div className="op-shell">
+        <aside className="op-side" aria-hidden="true">
+          <div className="op-ws">
+            <span className="op-ws-logo">S</span>
+            <span className="sk sk-line" style={{ width: "58%" }} />
+          </div>
+          <div className="op-nav">
+            {navSkeleton.map((w, i) => (
+              <div key={i} className="op-navitem sk-navitem">
+                <span className="sk sk-ic" />
+                <span className="sk sk-line" style={{ width: w }} />
+              </div>
+            ))}
+          </div>
+        </aside>
+        <main className="main">
+          <div className="content">
+            <div className="connect-state" role="status" aria-live="polite">
+              <span className={"connect-dot" + (failed ? " is-off" : "")} />
+              <p className="connect-status">{status}</p>
+              {failed ? (
+                <>
+                  <p className="connect-sub">
+                    The socket auto-reconnects — you can also retry now.
+                  </p>
+                  <button className="btn btn-primary" onClick={onRetry}>
+                    Retry connection
+                  </button>
+                </>
+              ) : (
+                <div className="connect-skeleton" aria-hidden="true">
+                  <span className="sk sk-block" />
+                  <span className="sk sk-block" />
+                  <span className="sk sk-block" />
+                </div>
+              )}
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
 export function OpSidebar({
   view,
   lens,
@@ -74,6 +139,11 @@ export function OpSidebar({
 }) {
   const { projects, runs, queue } = useStore();
   const queueCount = openQueue(queue).length;
+  // QA & testing surfaces live in a secondary, collapsed group so a new
+  // operator's primary nav is just the core loop. Auto-expanded when one of its
+  // views is active (e.g. a deep link), so the highlight is never orphaned.
+  const qaActive = view === "acceptance" || view === "simulation";
+  const [qaOpen, setQaOpen] = useState(qaActive);
 
   const dotColor = (p: Project) => {
     const pa = runs.filter((a) => a.projectId === p.id);
@@ -126,9 +196,21 @@ export function OpSidebar({
         {item("Fleet", "◇", () => setView("fleet"), view === "fleet")}
         {item("Integrations", "⑂", () => setView("integrations"), view === "integrations")}
         {item("Settings", "⚙", () => setView("settings"), view === "settings")}
-        {item("Acceptance", "✓", () => setView("acceptance"), view === "acceptance")}
-        {item("Simulation", "◐", () => setView("simulation"), view === "simulation")}
       </nav>
+      <button
+        className={"op-navsec op-navsec-toggle" + (qaActive ? " on" : "")}
+        aria-expanded={qaOpen || qaActive}
+        onClick={() => setQaOpen((o) => !o)}
+      >
+        QA &amp; TESTING
+        <span className="op-navsec-caret">{qaOpen || qaActive ? "▾" : "▸"}</span>
+      </button>
+      {(qaOpen || qaActive) && (
+        <nav className="op-nav op-nav-sub">
+          {item("Acceptance", "✓", () => setView("acceptance"), view === "acceptance")}
+          {item("Simulation", "◐", () => setView("simulation"), view === "simulation")}
+        </nav>
+      )}
       <div className="op-navsec">PROJECTS</div>
       <div className="op-plist">
         {live.map((p) => (

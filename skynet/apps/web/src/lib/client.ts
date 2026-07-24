@@ -277,11 +277,29 @@ export async function disconnectGithub(): Promise<void> {
 
 // ─── WebSocket with auto-reconnect ─────────────────────────────────────────
 
-export function connect(onMessage: (msg: WsMessage) => void): () => void {
+// The live connection lifecycle, surfaced so the UI can show a real
+// connect→connected state (and a retry affordance) instead of a dead-end
+// "Connecting…" message. "connecting" = socket opening or backing off to
+// retry; "open" = connected; "closed" = dropped, a reconnect is scheduled.
+export type WsPhase = "connecting" | "open" | "closed";
+
+export interface Connection {
+  /** Tear down for good (component unmount). */
+  disconnect(): void;
+  /** Force an immediate reconnect now, resetting backoff — the Retry button. */
+  reconnect(): void;
+}
+
+export function connect(
+  onMessage: (msg: WsMessage) => void,
+  onPhase?: (phase: WsPhase) => void,
+): Connection {
   let socket: WebSocket | null = null;
   let closed = false;
   let backoff = 500;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const phase = (p: WsPhase) => onPhase?.(p);
 
   const wsUrl = () => {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -290,11 +308,13 @@ export function connect(onMessage: (msg: WsMessage) => void): () => void {
 
   const open = () => {
     if (closed) return;
+    phase("connecting");
     const ws = new WebSocket(wsUrl());
     socket = ws;
 
     ws.onopen = () => {
       backoff = 500;
+      phase("open");
     };
     ws.onmessage = (ev) => {
       let parsed: unknown;
@@ -308,6 +328,7 @@ export function connect(onMessage: (msg: WsMessage) => void): () => void {
     };
     ws.onclose = () => {
       if (closed) return;
+      phase("closed");
       reconnectTimer = setTimeout(open, backoff);
       backoff = Math.min(backoff * 2, 10_000);
     };
@@ -318,10 +339,24 @@ export function connect(onMessage: (msg: WsMessage) => void): () => void {
 
   open();
 
-  return () => {
-    closed = true;
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    socket?.close();
+  return {
+    disconnect: () => {
+      closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      socket?.close();
+    },
+    reconnect: () => {
+      if (closed) return;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      backoff = 500;
+      // Closing triggers onclose → schedules open(); short-circuit that and open
+      // right away for a snappy Retry. If already open, this is a no-op reset.
+      if (socket && socket.readyState === WebSocket.OPEN) return;
+      open();
+    },
   };
 }
 

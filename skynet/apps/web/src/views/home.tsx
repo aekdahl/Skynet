@@ -15,12 +15,14 @@ import {
   projectQueue,
   providerOf,
   providerInfo,
+  providerReadiness,
   runnerIdleLabel,
   runnerName,
   stepIdx,
   waitedSecs,
 } from "../lib/derive";
 import { Bar, Prov, StatusDot } from "../components/common";
+import { EmptyState, PrimaryButton } from "../components/empty";
 import { RepoPicker, useConnectedRepos } from "../components/repo-picker";
 import { FolderPicker } from "../components/folder-picker";
 import type { Lens } from "../App";
@@ -34,14 +36,38 @@ function ViewHead({ title, sub }: { title: string; sub: string }) {
   );
 }
 
+// ─── Fleet readiness ─────────────────────────────────────────────────────────
+// The one thing that makes the whole product inert: no provider has a working
+// credential, so nothing an operator does can actually run. Surface it on the
+// first screen with a single fix path into Settings. Renders nothing once at
+// least one provider is ready (the common case), so it's silent when irrelevant.
+function FleetReadinessBanner({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const { providers } = useStore();
+  if (providers.length === 0) return null;
+  if (providers.some((p) => providerReadiness(p).ready)) return null;
+  return (
+    <div className="fleet-warn" role="status">
+      <span className="fleet-warn-dot" />
+      <span className="fleet-warn-txt">
+        <b>No provider connected</b> — agents can't run until a key is added.
+      </span>
+      <button className="fleet-warn-cta" onClick={onOpenSettings}>
+        Add a key →
+      </button>
+    </div>
+  );
+}
+
 // ─── Get started (first run) ────────────────────────────────────────────────
 
 function GetStarted({
   onCreate,
   onConfigureFleet,
+  onOpenSettings,
 }: {
   onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
   onConfigureFleet: () => void;
+  onOpenSettings: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -53,6 +79,7 @@ function GetStarted({
   return (
     <div className="getstarted">
       <div className="gs-inner">
+        <FleetReadinessBanner onOpenSettings={onOpenSettings} />
         <svg className="gs-mark" width="46" height="46" viewBox="0 0 18 18" aria-hidden="true">
           <rect x="1" y="1" width="16" height="16" rx="4" fill="var(--accent)" />
           <text x="9" y="9.6" textAnchor="middle" dominantBaseline="central" fontFamily="var(--font-ui)" fontWeight="700" fontSize="11" fill="var(--bg)">S</text>
@@ -107,9 +134,13 @@ function GetStarted({
             <FolderPicker value={repoPath} onChange={setRepoPath} />
             {!repoPath && <RepoPicker repos={repos} value={repo} onChange={setRepo} />}
             <div className="qx-row">
-              <button
-                className="btn btn-primary"
+              <PrimaryButton
                 disabled={!name.trim() || (!repoPath && hasRepos && !repo)}
+                reason={
+                  !name.trim()
+                    ? "Name your project to continue."
+                    : "Pick a local folder or a connected repo."
+                }
                 onClick={() =>
                   onCreate(name.trim(), goal.trim() || "No goal set yet.", {
                     repo: repoPath ? undefined : repo || undefined,
@@ -118,7 +149,7 @@ function GetStarted({
                 }
               >
                 Create project
-              </button>
+              </PrimaryButton>
               <button className="btn btn-ghost" onClick={() => setOpen(false)}>
                 Cancel
               </button>
@@ -155,6 +186,7 @@ export function HomeView({
   onCreate,
   onGoInbox,
   onConfigureFleet,
+  onOpenSettings,
   onAssign,
 }: {
   lens: Lens;
@@ -165,12 +197,19 @@ export function HomeView({
   onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
   onGoInbox: () => void;
   onConfigureFleet: () => void;
+  onOpenSettings: () => void;
   onAssign: () => void;
 }) {
   const { projects, runs, queue, modules, fleet } = useStore();
 
   if (projects.length === 0)
-    return <GetStarted onCreate={onCreate} onConfigureFleet={onConfigureFleet} />;
+    return (
+      <GetStarted
+        onCreate={onCreate}
+        onConfigureFleet={onConfigureFleet}
+        onOpenSettings={onOpenSettings}
+      />
+    );
 
   const blockers = openQueue(queue).sort(
     (a, b) => waitedSecs(b, now) - waitedSecs(a, now),
@@ -185,6 +224,7 @@ export function HomeView({
   return (
     <div className="home">
       <div className="home-bar">
+        <FleetReadinessBanner onOpenSettings={onOpenSettings} />
         {blockers.length === 0 ? (
           <div className="needs-strip needs-clear">
             <span className="dot dot-running" /> No orders required — all agents
@@ -749,12 +789,20 @@ function SubwayView({
               </div>
               {pa.length > 0 ? (
                 <SwDiagram project={p} onOpenTask={onOpenTask} />
+              ) : tasks.some((t) => t.projectId === p.id) ? (
+                <EmptyState
+                  compact
+                  title="Backlog ready to assign"
+                  hint="Assign a task to an agent and its run line appears here."
+                  cta={{ label: "Open backlog →", onClick: () => onOpenProject(p.id) }}
+                />
               ) : (
-                <div className="kb-empty">
-                  {tasks.some((t) => t.projectId === p.id)
-                    ? "Tasks in the backlog — assign one to see its run line."
-                    : "No tasks yet — add one in the project."}
-                </div>
+                <EmptyState
+                  compact
+                  title="No tasks yet"
+                  hint="Break the goal into tasks, then assign one to an agent to start a run."
+                  cta={{ label: "Add tasks →", onClick: () => onOpenProject(p.id) }}
+                />
               )}
             </div>
           );

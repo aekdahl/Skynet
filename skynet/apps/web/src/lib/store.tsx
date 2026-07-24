@@ -51,6 +51,9 @@ export interface StoreState {
   providers: ProviderInfo[];
   connected: boolean;
   loaded: boolean;
+  // Live socket lifecycle, so the shell can show connect→connected and a retry
+  // affordance rather than a dead-end "Connecting…" message.
+  wsPhase: api.WsPhase;
   // Bumps on any audit.* delta. The trail isn't held in the store (it's fetched
   // over HTTP by the Audit view), so this is the signal the view watches to
   // re-pull after an archive/delete/clear lands — from any operator or tab.
@@ -97,6 +100,8 @@ export interface Store extends StoreState {
   deleteAudit: (hitlId: string) => Promise<void>;
   archiveAllAudit: () => Promise<void>;
   clearAudit: () => Promise<void>;
+  // Re-fetch the snapshot and force the socket to reconnect now (Retry button).
+  retry: () => void;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -215,6 +220,7 @@ const EMPTY: StoreState = {
   providers: [],
   connected: false,
   loaded: false,
+  wsPhase: "connecting",
   auditRev: 0,
 };
 
@@ -230,6 +236,9 @@ function fromSnapshot(snap: Snapshot): StoreState {
     providers: snap.providers,
     connected: true,
     loaded: true,
+    // A snapshot in hand means we're effectively online; a later socket close
+    // will flip this back to "closed" via the phase callback.
+    wsPhase: "open",
     // A fresh snapshot supersedes any prior trail state; the Audit view re-pulls
     // on mount anyway, so reset the revision rather than carrying it across.
     auditRev: 0,
@@ -242,41 +251,54 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<StoreState>(EMPTY);
   const stateRef = useRef(state);
   stateRef.current = state;
+  const connRef = useRef<api.Connection | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-
+  // Seed state from the REST snapshot. Kept as a ref so the Retry button can
+  // re-run it without re-subscribing the socket.
+  const loadSnapshot = useRef(() => {
     api
       .fetchSnapshot()
-      .then((snap) => {
-        if (!cancelled) setState(fromSnapshot(snap));
-      })
+      .then((snap) => setState(fromSnapshot(snap)))
       .catch((err) => {
         // The WS snapshot will seed state if the REST seed fails — but never
         // swallow silently: a schema/contract drift makes fetchSnapshot reject
         // here, and without a log the app just hangs on "Connecting…" with no
         // clue why. Surface it so the next drift is diagnosable in seconds.
-        console.error("[store] initial snapshot fetch failed (will retry via WS):", err);
+        console.error("[store] snapshot fetch failed (will retry via WS):", err);
       });
+  });
 
-    const disconnect = api.connect((msg) => {
-      if (msg.type === "snapshot") {
-        setState(fromSnapshot(msg.state));
-      } else {
-        // A newly-raised HITL is the "needs you" moment → fire an Inbox alert.
-        // notifyInbox no-ops unless the operator turned alerts on (lib/alerts).
-        // Only live deltas fire this; the connect-time snapshot never does, so
-        // reconnecting doesn't re-alert on the existing queue.
-        if (msg.type === "hitl.raised") {
-          void notifyInbox(`Needs you — ${msg.item.title}`, msg.item.why, msg.item.runId);
+  useEffect(() => {
+    let cancelled = false;
+
+    loadSnapshot.current();
+
+    const conn = api.connect(
+      (msg) => {
+        if (cancelled) return;
+        if (msg.type === "snapshot") {
+          setState(fromSnapshot(msg.state));
+        } else {
+          // A newly-raised HITL is the "needs you" moment → fire an Inbox alert.
+          // notifyInbox no-ops unless the operator turned alerts on (lib/alerts).
+          // Only live deltas fire this; the connect-time snapshot never does, so
+          // reconnecting doesn't re-alert on the existing queue.
+          if (msg.type === "hitl.raised") {
+            void notifyInbox(`Needs you — ${msg.item.title}`, msg.item.why, msg.item.runId);
+          }
+          setState((s) => reduce(s, msg));
         }
-        setState((s) => reduce(s, msg));
-      }
-    });
+      },
+      (phase) => {
+        if (!cancelled) setState((s) => ({ ...s, wsPhase: phase, connected: phase === "open" && s.loaded }));
+      },
+    );
+    connRef.current = conn;
 
     return () => {
       cancelled = true;
-      disconnect();
+      conn.disconnect();
+      connRef.current = null;
     };
   }, []);
 
@@ -386,6 +408,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       clearAudit: async () => {
         await api.clearAudit();
+      },
+      retry: () => {
+        setState((s) => ({ ...s, wsPhase: "connecting" }));
+        loadSnapshot.current();
+        connRef.current?.reconnect();
       },
     };
   }, [state]);

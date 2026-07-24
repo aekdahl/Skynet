@@ -28,6 +28,9 @@ export function parseHash(): RoutePatch | null {
     case "projects":
     case "fleet":
     case "integrations":
+    case "settings":
+    case "acceptance":
+    case "simulation":
       return { view: seg };
     case "project":
       return arg ? { view: "project", projectId: arg } : { view: "projects" };
