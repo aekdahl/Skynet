@@ -32,6 +32,8 @@ const ALLOW = new Set<string>([
   "archiveAllAudit", "clearAudit",
   // low-value control-plane (runner rename/model tweak)
   "updateAgent",
+  // read-only doc render for the Roadmap page — no operator journey to exercise
+  "fetchRoadmap",
 ]);
 
 describe("client API coverage", () => {

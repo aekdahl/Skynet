@@ -982,16 +982,13 @@ button.kb-done:hover { opacity: 1; }
 .settings-input:focus { outline: none; border-color: var(--accent); }
 .settings-setup { display: flex; align-items: center; gap: 16px; max-width: 720px; margin-top: var(--sp); padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
 
-/* ── Roadmap in Settings ──────────────────────────────────────────────────── */
-.roadmap-sec { max-width: 720px; margin-top: var(--sp); background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
-.roadmap-toggle {
-  display: flex; align-items: center; gap: 16px; width: 100%; padding: 14px 16px;
-  background: none; border: none; cursor: pointer; text-align: left; font-family: var(--font-ui); color: var(--text);
-}
-.roadmap-toggle:hover .settings-setup-title { color: var(--accent); }
-.roadmap-caret { flex: none; font-size: 11px; color: var(--muted); }
-.roadmap-err { padding: 0 16px 14px; font-size: 12px; color: var(--muted); }
-.roadmap-body { max-height: 560px; overflow-y: auto; padding: 2px 20px 18px; border-top: 1px solid var(--line-soft); }
+/* ── Roadmap page ─────────────────────────────────────────────────────────── */
+.roadmap-vw { max-width: 900px; }
+.roadmap-err { font-size: 13px; color: var(--muted); }
+.roadmap-legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 20px; }
+.roadmap-doc { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px 24px 22px; }
+/* each version section (## heading) reads as a band; its first item follows the rule */
+.roadmap-doc .md h2 { font-size: 16px; margin-top: 26px; }
 
 /* Rendered markdown (docs voice, app skin) */
 .md { font-size: 13px; line-height: 1.65; color: var(--text); }
@@ -1008,6 +1005,23 @@ button.kb-done:hover { opacity: 1; }
 .md a { color: var(--accent); text-decoration: none; }
 .md a:hover { text-decoration: underline; }
 .md hr { border: none; border-top: 1px solid var(--line-soft); margin: 16px 0; }
+/* nested lists keep breathing room + a subtle guide rail so depth reads clearly */
+.md li ol, .md li ul { margin: 4px 0 8px; padding-left: 18px; border-left: 1px solid var(--line-soft); }
+/* status checkbox items: badge sits on the same baseline as the text */
+.md-li-body { display: inline; }
+.md-li-status { list-style: none; margin-left: -20px; }
+.md-status {
+  display: inline-flex; align-items: center; gap: 4px; vertical-align: baseline;
+  font-family: var(--font-ui); font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 1px 7px 1px 6px; border-radius: 999px; margin-right: 7px; white-space: nowrap;
+  border: 1px solid transparent;
+}
+.md-status-mark { font-size: 10px; }
+.md-st-done { color: var(--ok); background: color-mix(in oklch, var(--ok), transparent 88%); border-color: color-mix(in oklch, var(--ok), transparent 70%); }
+.md-st-wip { color: var(--warn); background: color-mix(in oklch, var(--warn), transparent 88%); border-color: color-mix(in oklch, var(--warn), transparent 70%); }
+.md-st-todo { color: var(--muted); background: var(--raised); border-color: var(--line); }
+/* a shipped item's text de-emphasizes slightly; planned stays full for readability */
+.md-li-done > .md-li-body > span:last-child { color: var(--faint); }
 .settings-setup-text { flex: 1; min-width: 0; }
 .settings-setup-title { font-size: 14px; font-weight: 600; }
 .settings-setup-sub { font-size: 12px; color: var(--faint); margin-top: 2px; }
