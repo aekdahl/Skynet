@@ -22,6 +22,14 @@ export const config = {
   // to blunt credential brute-force. Loopback is exempt in devMode (trusted desktop).
   rateMax: Number(process.env.SKYNET_RATE_MAX ?? 600),
   loginRateMax: Number(process.env.SKYNET_LOGIN_RATE_MAX ?? 10),
+  // Cross-origin allowlist for @fastify/cors. In dev/test CORS stays permissive
+  // (localhost dev). In production-grade mode ONLY these origins are allowed and
+  // an empty list is CLOSED (never a silent reflect-any fall-back). See
+  // cors-policy.ts. Comma-separated (e.g. https://app.example.com,https://ops.example.com).
+  corsOrigins: (process.env.SKYNET_CORS_ORIGINS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
   // No silent default: an unset STORE errors at boot rather than quietly using
   // an ephemeral in-memory store. Opt in explicitly (STORE=memory for dev/tests).
   store: (process.env.STORE || undefined) as "memory" | "file" | "postgres" | undefined,
