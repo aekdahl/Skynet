@@ -78,6 +78,17 @@ export class Hub {
     this.bus.publish(a.workspaceId, { type: "run.usage", runId, usage });
   }
 
+  /** Persist the files a finished run actually changed (surfaced to the UI as
+   *  modules, never raw paths). The store is the source of truth every view is
+   *  derived from, so this is what makes the run reflect its real footprint. No
+   *  dedicated delta event: modifiedFiles rides along in the run snapshot, and
+   *  it's written alongside the run.status→review delta raised at review time. */
+  async runModifiedFiles(runId: string, files: string[]): Promise<void> {
+    const a = await this.store.getRun(runId);
+    if (!a) return;
+    await this.store.putRun({ ...a, modifiedFiles: files });
+  }
+
   async runHeartbeat(runId: string): Promise<void> {
     const a = await this.store.getRun(runId);
     if (!a) return;
