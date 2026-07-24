@@ -28,6 +28,7 @@ export function parseHash(): RoutePatch | null {
     case "projects":
     case "fleet":
     case "integrations":
+    case "roadmap":
     case "settings":
     case "acceptance":
     case "simulation":

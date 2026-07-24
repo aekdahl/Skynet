@@ -195,6 +195,7 @@ export function OpSidebar({
         )}
         {item("Fleet", "◇", () => setView("fleet"), view === "fleet")}
         {item("Integrations", "⑂", () => setView("integrations"), view === "integrations")}
+        {item("Roadmap", "◈", () => setView("roadmap"), view === "roadmap")}
         {item("Settings", "⚙", () => setView("settings"), view === "settings")}
       </nav>
       <button

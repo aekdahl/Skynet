@@ -17,6 +17,7 @@ import { isOnboarded } from "./lib/firstrun";
 import { SettingsView } from "./views/settings";
 import { AcceptanceView } from "./views/acceptance";
 import { SimulationView } from "./views/simulation";
+import { RoadmapView } from "./views/roadmap";
 
 export type ViewName =
   | "home"
@@ -29,7 +30,8 @@ export type ViewName =
   | "task"
   | "settings"
   | "acceptance"
-  | "simulation";
+  | "simulation"
+  | "roadmap";
 export type Lens = "subway" | "timeline" | "ledger" | "roster";
 
 const VIEW_LABEL: Record<string, string> = {
@@ -43,6 +45,7 @@ const VIEW_LABEL: Record<string, string> = {
   settings: "Settings",
   acceptance: "Acceptance",
   simulation: "Simulation",
+  roadmap: "Roadmap",
 };
 
 export function App() {
@@ -219,6 +222,7 @@ export function App() {
             )}
             {store.loaded && view === "acceptance" && <AcceptanceView />}
             {store.loaded && view === "simulation" && <SimulationView />}
+            {store.loaded && view === "roadmap" && <RoadmapView />}
             {store.loaded && view === "task" && agent && (
               <TaskDetail
                 agent={agent}

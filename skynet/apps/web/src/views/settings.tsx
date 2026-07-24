@@ -4,7 +4,6 @@ import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import type { McpScope, ServiceTokenMeta } from "../lib/client";
 import { InstallControls } from "../components/install-controls";
-import { Markdown } from "../components/markdown";
 import { providerReadiness } from "../lib/derive";
 
 // Provider keys live in the encrypted secret store, scoped to this workspace.
@@ -185,7 +184,6 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
       </div>
 
       <McpAccessSection />
-      <RoadmapSection />
       <div className="settings-setup">
         <div className="settings-setup-text">
           <div className="settings-setup-title">App</div>
@@ -210,47 +208,6 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
         </div>
       )}
     </section>
-  );
-}
-
-// ─── Roadmap ────────────────────────────────────────────────────────────────
-// ROADMAP.md rendered in-app so the plan is visible product truth, not a file
-// only contributors see. Lazy-fetched on first expand.
-function RoadmapSection() {
-  const [open, setOpen] = useState(false);
-  const [md, setMd] = useState<string | null>(null);
-  const [err, setErr] = useState(false);
-
-  useEffect(() => {
-    if (!open || md !== null) return;
-    api
-      .fetchRoadmap()
-      .then((r) => setMd(r.markdown))
-      .catch(() => setErr(true));
-  }, [open, md]);
-
-  return (
-    <div className="roadmap-sec">
-      <button className="roadmap-toggle" onClick={() => setOpen((o) => !o)}>
-        <div className="settings-setup-text">
-          <div className="settings-setup-title">Roadmap</div>
-          <div className="settings-setup-sub">
-            What's shipping next — v0 is committed scope; later versions are directional.
-          </div>
-        </div>
-        <span className="roadmap-caret mono">{open ? "▾ hide" : "▸ show"}</span>
-      </button>
-      {open &&
-        (err ? (
-          <p className="roadmap-err">Couldn't load the roadmap — see ROADMAP.md in the repository.</p>
-        ) : md === null ? (
-          <p className="roadmap-err">Loading…</p>
-        ) : (
-          <div className="roadmap-body">
-            <Markdown text={md} />
-          </div>
-        ))}
-    </div>
   );
 }
 

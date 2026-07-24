@@ -1,9 +1,10 @@
 import { Fragment, type ReactNode } from "react";
 
 // A tiny, dependency-free markdown renderer covering exactly what our docs use:
-// #/##/### headings, ---, ordered/unordered lists (one nesting level), bold,
-// italic, inline code, and links. Repo-relative links resolve to GitHub so
-// [docs/positioning.md](docs/positioning.md) works from inside the app.
+// #/##/###/#### headings, ---, ordered/unordered lists nested to ANY depth, bold,
+// italic, inline code, links, and GitHub-style status checkboxes ([x] done, [~]
+// in progress, [ ] planned) on list items. Repo-relative links resolve to GitHub
+// so [docs/positioning.md](docs/positioning.md) works from inside the app.
 
 const LINK_BASE = "https://github.com/aekdahl/Skynet/blob/main/skynet/";
 
@@ -37,17 +38,33 @@ function inline(text: string, keyBase: string): ReactNode[] {
   return out;
 }
 
-type Block =
+// A GitHub-style task checkbox at the start of a list item → a status. `[x]` done,
+// `[~]` in progress, `[ ]` planned; anything else → no status.
+export type Status = "done" | "wip" | "todo" | null;
+export function parseStatus(text: string): { status: Status; rest: string } {
+  const m = text.match(/^\[([ xX~])\]\s+(.*)$/);
+  if (!m) return { status: null, rest: text };
+  const c = m[1]!.toLowerCase();
+  return { status: c === "x" ? "done" : c === "~" ? "wip" : "todo", rest: m[2]! };
+}
+
+export type ListItem = { text: string; status: Status; children: ListItem[] };
+export type Block =
   | { kind: "h"; level: number; text: string }
   | { kind: "hr" }
   | { kind: "p"; text: string }
-  | { kind: "list"; ordered: boolean; items: Array<{ text: string; sub: string[] }> };
+  | { kind: "list"; ordered: boolean; items: ListItem[] };
 
-function parse(md: string): Block[] {
+// Indentation → nesting: an item indented deeper than the previous nests under it.
+// A stack tracks open levels (each: its indent width + the item array to push into
+// + the last item, which a deeper level nests beneath).
+export function parseMarkdown(md: string): Block[] {
   const blocks: Block[] = [];
   const lines = md.split("\n");
   let para: string[] = [];
-  let list: { ordered: boolean; items: Array<{ text: string; sub: string[] }> } | null = null;
+  let list: { ordered: boolean; items: ListItem[] } | null = null;
+  let stack: Array<{ indent: number; items: ListItem[]; last: ListItem | null }> = [];
+
   const flushPara = () => {
     if (para.length) blocks.push({ kind: "p", text: para.join(" ") });
     para = [];
@@ -55,70 +72,107 @@ function parse(md: string): Block[] {
   const flushList = () => {
     if (list) blocks.push({ kind: "list", ...list });
     list = null;
+    stack = [];
   };
+
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, "");
-    const h = line.match(/^(#{1,3})\s+(.*)/);
-    const li = line.match(/^([-*]|\d+\.)\s+(.*)/);
-    const sub = line.match(/^\s{2,}([-*]|\d+\.)\s+(.*)/);
-    const cont = line.match(/^\s{2,}(\S.*)/); // wrapped continuation of a list item
+    const h = line.match(/^(#{1,4})\s+(.*)/);
+    const li = line.match(/^(\s*)([-*]|\d+\.)\s+(.*)/);
+    const cont = line.match(/^(\s+)(\S.*)/); // wrapped continuation of a list item
+
     if (h) {
-      flushPara(); flushList();
+      flushPara();
+      flushList();
       blocks.push({ kind: "h", level: h[1]!.length, text: h[2]! });
     } else if (/^---+$/.test(line)) {
-      flushPara(); flushList();
+      flushPara();
+      flushList();
       blocks.push({ kind: "hr" });
     } else if (li) {
       flushPara();
-      const ordered = /^\d+\.$/.test(li[1]!);
-      if (!list || list.ordered !== ordered) { flushList(); list = { ordered, items: [] }; }
-      list.items.push({ text: li[2]!, sub: [] });
-    } else if (sub && list?.items.length) {
-      list.items[list.items.length - 1]!.sub.push(sub[2]!);
-    } else if (cont && list?.items.length) {
-      const last = list.items[list.items.length - 1]!;
-      if (last.sub.length) last.sub[last.sub.length - 1] += " " + cont[1]!;
-      else last.text += " " + cont[1]!;
+      const indent = li[1]!.length;
+      const ordered = /^\d+\.$/.test(li[2]!);
+      const { status, rest } = parseStatus(li[3]!);
+      const item: ListItem = { text: rest, status, children: [] };
+      if (!list) {
+        list = { ordered, items: [] };
+        stack = [{ indent, items: list.items, last: null }];
+      }
+      // Pop deeper levels until the top is at-or-shallower than this item.
+      while (stack.length > 1 && indent < stack[stack.length - 1]!.indent) stack.pop();
+      const top = stack[stack.length - 1]!;
+      if (indent > top.indent && top.last) {
+        // Deeper than the current level → open a nested list under its last item.
+        stack.push({ indent, items: top.last.children, last: null });
+      }
+      const cur = stack[stack.length - 1]!;
+      cur.items.push(item);
+      cur.last = item;
+    } else if (cont && list && stack.length) {
+      // A wrapped line continues the most-recent item at the current level.
+      const cur = stack[stack.length - 1]!;
+      if (cur.last) cur.last.text += " " + cont[2]!;
     } else if (!line.trim()) {
-      flushPara(); flushList();
+      flushPara();
+      flushList();
     } else {
       flushList();
       para.push(line.trim());
     }
   }
-  flushPara(); flushList();
+  flushPara();
+  flushList();
   return blocks;
 }
 
+function StatusPill({ status }: { status: Status }) {
+  if (!status) return null;
+  const meta =
+    status === "done"
+      ? { cls: "md-st-done", mark: "✓", label: "shipped" }
+      : status === "wip"
+        ? { cls: "md-st-wip", mark: "◐", label: "in progress" }
+        : { cls: "md-st-todo", mark: "○", label: "planned" };
+  return (
+    <span className={"md-status " + meta.cls} title={meta.label}>
+      <span className="md-status-mark">{meta.mark}</span>
+      {meta.label}
+    </span>
+  );
+}
+
+function List({ ordered, items, keyBase }: { ordered: boolean; items: ListItem[]; keyBase: string }) {
+  const Tag = ordered ? "ol" : "ul";
+  return (
+    <Tag>
+      {items.map((it, j) => {
+        const k = `${keyBase}-${j}`;
+        return (
+          <li key={k} className={it.status ? "md-li-status md-li-" + it.status : undefined}>
+            <span className="md-li-body">
+              <StatusPill status={it.status} />
+              <span>{inline(it.text, k)}</span>
+            </span>
+            {it.children.length > 0 && <List ordered={false} items={it.children} keyBase={k} />}
+          </li>
+        );
+      })}
+    </Tag>
+  );
+}
+
 export function Markdown({ text }: { text: string }) {
-  const blocks = parse(text);
+  const blocks = parseMarkdown(text);
   return (
     <div className="md">
       {blocks.map((b, i) => {
         if (b.kind === "hr") return <hr key={i} />;
         if (b.kind === "h") {
-          const Tag = (["h1", "h2", "h3"] as const)[b.level - 1]!;
+          const Tag = (["h1", "h2", "h3", "h4"] as const)[b.level - 1] ?? "h4";
           return <Tag key={i}>{inline(b.text, `h${i}`)}</Tag>;
         }
-        if (b.kind === "list") {
-          const Tag = b.ordered ? "ol" : "ul";
-          return (
-            <Tag key={i}>
-              {b.items.map((it, j) => (
-                <li key={j}>
-                  {inline(it.text, `l${i}-${j}`)}
-                  {it.sub.length > 0 && (
-                    <ul>
-                      {it.sub.map((s, k) => (
-                        <li key={k}>{inline(s, `s${i}-${j}-${k}`)}</li>
-                      ))}
-                    </ul>
-                  )}
-                </li>
-              ))}
-            </Tag>
-          );
-        }
+        if (b.kind === "list") return <List key={i} ordered={b.ordered} items={b.items} keyBase={"l" + i} />;
         return <Fragment key={i}>{b.text ? <p>{inline(b.text, `p${i}`)}</p> : null}</Fragment>;
       })}
     </div>
