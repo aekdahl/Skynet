@@ -53,7 +53,7 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
 4. [x] **Provider credential management** — per-workspace keys, injected into runners, never client-exposed.
 5. [~] **Sandboxed runner** — one container per agent (resource caps, restricted network, command allow/deny).
 6. [x] **Real-execution event fidelity** — real diffs → diff HITL, changed files → modules, branch → preview.
-7. [~] **Auth hardening to test-grade** — real login, `AUTH_REQUIRED` on, scoped CORS, rate limiting.
+7. [x] **Auth hardening to test-grade** — real login, `AUTH_REQUIRED` on, scoped CORS, rate limiting.
 8. [x] **Onboarding / first-run** — create workspace → connect repo → add key → add runner; retire seed fixtures.
 9. [ ] **Deploy** — GCE VM + Docker (app + runner containers) + Cloud SQL + Memorystore + staging URL/TLS.
 10. [ ] **E2E test of the loop + staging env.**
