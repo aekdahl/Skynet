@@ -62,7 +62,11 @@ let repo: string, worktreesDir: string;
 
 const git = (...args: string[]) =>
   execFileSync("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
-const waitFor = async (pred: () => Promise<boolean>, ms = 5000): Promise<void> => {
+// Generous default: the merge stage runs real git worktree operations (scratch
+// worktree add + merge + commit) that take ~8s on a busy machine — a 5s timeout
+// flaked this stage intermittently. A genuine hang still fails (well under the
+// 20s vitest testTimeout).
+const waitFor = async (pred: () => Promise<boolean>, ms = 15_000): Promise<void> => {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (await pred()) return;
