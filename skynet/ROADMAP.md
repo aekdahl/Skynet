@@ -73,15 +73,19 @@ merges — all **local-first, on their own machine**.
 8. [x] **Onboarding / first-run** — create workspace → connect repo → add key → add runner; retire seed fixtures.
 9. [~] **Desktop packaging & code-signing** — signed macOS/Windows builds + auto-update; retire seed
    fixtures. *(The remaining local-release blocker per the first-release audit.)*
-10. [~] **E2E of the full loop on the packaged desktop build** — one real end-to-end run (assign →
-   agent works in a worktree → gate → approve → merge) on the signed build, on a real machine.
-   *(Replaces the old hosted-staging E2E; staging is 🏢 deferred.)*
+10. [x] **E2E of the full loop (manual acceptance)** — operator-run in the app's **QA → Simulation**
+   view: the **"Full run pipeline — edit → diff review → merge"** journey drives a **real Claude agent**
+   through the entire DoD loop (assign → isolated worktree → diff-review gate → approve → merge → run +
+   task reach `done`) and is LLM-judged. Run in the packaged desktop build with a real
+   `ANTHROPIC_API_KEY`. *(Replaces the old hosted-staging E2E; staging is 🏢 deferred. An automated
+   deterministic guard of the same loop runs on every PR — `tests/full-loop.test.ts`.)*
 11. [~] **UX/UI first-run polish to SOTA** — the launch blockers from the pre-release UX/UI review (the first ten minutes, where a new operator meets an empty board): pull QA surfaces (**Acceptance / Simulation**) out of the operator nav; real loading (skeleton + connect→connected lifecycle + retry — no terminal "Connecting to mission control…"); every empty state gets one primary CTA + a one-line mental-model hint; two-column onboarding + fix the **disabled-button** state globally (dim-amber reads as broken); surface **fleet-readiness** ("no provider connected — agents can't run · Add a key") from the first screen. *(Grades the first-run experience from ~3.4 → SOTA; none architectural.)*
 
 **Scope:** Claude-first · **local-first desktop app** (BYO key, single operator, file-store persistence,
 keys never leave the machine). **Hosted / multi-tenant is out of scope** (🏢 deferred — see below).
 **Done =** the full loop runs on a **signed, packaged desktop build** on an operator's own machine.
-*(Critical path: #9 packaging/signing → #10 packaged E2E → #11 UX P0.)*
+*(Critical path: #9 packaging/signing → #11 UX P0. The loop E2E is accepted via the manual Simulation
+journey, #10.)*
 
 ---
 
