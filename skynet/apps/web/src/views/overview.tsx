@@ -11,6 +11,7 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
+import { PrimaryButton } from "../components/empty";
 import { RepoPicker, useConnectedRepos } from "../components/repo-picker";
 import { FolderPicker } from "../components/folder-picker";
 
@@ -83,7 +84,9 @@ function ProjectCard({
           <div className="proj-backlog mono">○ {backlog.length} in backlog</div>
         )}
         {empty && backlog.length === 0 && (
-          <div className="proj-backlog mono">No tasks yet — open to add some</div>
+          <div className="proj-empty-hint">
+            No tasks yet · open to add the first one
+          </div>
         )}
       </div>
       {conflictMod && (
@@ -135,9 +138,13 @@ export function NewProjectCard({
       <FolderPicker value={repoPath} onChange={setRepoPath} />
       {!repoPath && <RepoPicker repos={repos} value={repo} onChange={setRepo} />}
       <div className="qx-row">
-        <button
-          className="btn btn-primary"
+        <PrimaryButton
           disabled={!name.trim() || (!repoPath && hasRepos && !repo)}
+          reason={
+            !name.trim()
+              ? "Name your project to continue."
+              : "Pick a local folder or a connected repo."
+          }
           onClick={() => {
             onCreate(name.trim(), goal.trim() || "No goal set yet.", {
               repo: repoPath ? undefined : repo || undefined,
@@ -151,7 +158,7 @@ export function NewProjectCard({
           }}
         >
           Create project
-        </button>
+        </PrimaryButton>
         <button className="btn btn-ghost" onClick={() => setOpen(false)}>
           Cancel
         </button>

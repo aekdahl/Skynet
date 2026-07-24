@@ -1224,7 +1224,27 @@ button.fleet-hist-row:hover { border-color: var(--border); background: var(--hov
 .fleet-hist-time { flex: none; font-size: 11px; color: var(--faint); }
 .btn-retire { color: var(--danger); }
 .btn-retire:hover:not(:disabled) { border-color: color-mix(in oklch, var(--danger), transparent 50%); }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Disabled = obviously inert, not a dim/broken version of the live button. A
+   blocked button goes neutral grey (never dim-amber) and drops its hover. */
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 1;
+  background: var(--panel);
+  color: var(--faint);
+  border-color: var(--line);
+  filter: none;
+}
+.btn:disabled:hover { border-color: var(--line); filter: none; }
+.btn-primary:disabled { background: var(--raised); color: var(--muted); border-color: var(--line); }
+
+/* Blocked-CTA pattern: primary button with its reason directly beneath, at
+   readable contrast (--muted, not faint mono). */
+.pb-wrap { display: inline-flex; flex-direction: column; gap: 7px; }
+.pb-start { align-items: flex-start; }
+.pb-end { align-items: flex-end; }
+.pb-center { align-items: center; }
+.btn-reason { font-size: 12px; line-height: 1.4; color: var(--muted); max-width: 320px; }
+.pb-end .btn-reason { text-align: right; }
 
 /* ===== configure form ===== */
 .cfg-panel { padding: 18px 20px; }
@@ -1320,6 +1340,13 @@ button.fleet-hist-row:hover { border-color: var(--border); background: var(--hov
 .op-navitem.on { background: var(--raised); color: var(--text); }
 .op-navitem:hover:not(.on) { background: var(--raised); color: var(--text); }
 .op-navsec { font-size: 10px; font-weight: 600; letter-spacing: 0.12em; color: var(--faint); padding: 16px 13px 7px; }
+/* Secondary "QA & testing" group — collapsed by default so the primary nav is
+   the core loop. Reuses the section-header look but is a real toggle. */
+.op-navsec-toggle { display: flex; align-items: center; width: 100%; gap: 8px; background: none; border: none; text-align: left; font-family: var(--font-ui); text-transform: inherit; cursor: pointer; }
+.op-navsec-toggle:hover { color: var(--muted); }
+.op-navsec-toggle.on { color: var(--muted); }
+.op-navsec-caret { margin-left: auto; font-size: 9px; line-height: 1; }
+.op-nav-sub { padding-top: 2px; padding-bottom: 2px; }
 .op-plist { padding: 0 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1; }
 .op-pitem { display: flex; align-items: center; gap: 9px; padding: 6px 11px; border-radius: 6px; color: var(--muted); font-size: 12px; background: none; border: none; text-align: left; width: 100%; cursor: pointer; }
 .op-pitem:hover { background: var(--raised); color: var(--text); }
@@ -1360,6 +1387,57 @@ button.fleet-hist-row:hover { border-color: var(--border); background: var(--hov
 .gs-form { width: 100%; display: flex; flex-direction: column; gap: 10px; text-align: left; margin-top: 6px; }
 .gs-secondary { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 13px; color: var(--muted); margin-top: 2px; }
 .gs-secondary:hover { color: var(--accent); }
+
+/* ─── Connect / loading skeleton ─────────────────────────────────────────── */
+@keyframes sk-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+.sk {
+  display: inline-block; border-radius: 6px;
+  background: linear-gradient(90deg, var(--raised) 25%, color-mix(in oklch, var(--raised), var(--line) 60%) 37%, var(--raised) 63%);
+  background-size: 200% 100%; animation: sk-shimmer 1.4s ease-in-out infinite;
+}
+.sk-line { height: 10px; }
+.sk-ic { width: 16px; height: 16px; border-radius: 5px; flex: none; }
+.sk-navitem { pointer-events: none; }
+.connect-state { min-height: 60vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; text-align: center; padding: 40px 24px; }
+.connect-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 12px color-mix(in oklch, var(--accent), transparent 35%); animation: pulse 1.6s ease-in-out infinite; }
+.connect-dot.is-off { background: var(--danger); box-shadow: 0 0 12px color-mix(in oklch, var(--danger), transparent 40%); animation: none; }
+.connect-status { font-size: 15px; color: var(--text); }
+.connect-sub { font-size: 12.5px; color: var(--muted); max-width: 340px; line-height: 1.5; }
+.connect-skeleton { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 460px; margin-top: 10px; }
+.connect-skeleton .sk-block { height: 64px; border-radius: 12px; }
+
+/* Reconnect bar — shown once we're loaded but the socket dropped; the data may
+   be stale until it reconnects (it auto-retries; Retry forces it now). */
+.reconnect-bar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  padding: 9px 14px; border-radius: 9px; font-size: 12.5px; color: var(--text);
+  background: color-mix(in oklch, var(--warn), transparent 90%);
+  border: 1px solid color-mix(in oklch, var(--warn), transparent 65%);
+}
+.reconnect-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--warn); animation: pulse 1.6s ease-in-out infinite; }
+.reconnect-retry { margin-left: auto; background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 12.5px; font-weight: 600; color: var(--accent); }
+.reconnect-retry:hover { text-decoration: underline; }
+
+/* ─── Fleet readiness banner ─────────────────────────────────────────────── */
+.fleet-warn {
+  display: flex; align-items: center; gap: 11px; width: 100%;
+  padding: 11px 15px; border-radius: 11px; text-align: left;
+  background: color-mix(in oklch, var(--danger), transparent 90%);
+  border: 1px solid color-mix(in oklch, var(--danger), transparent 62%);
+}
+.fleet-warn-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--danger); box-shadow: 0 0 10px color-mix(in oklch, var(--danger), transparent 45%); }
+.fleet-warn-txt { font-size: 13px; color: var(--text); line-height: 1.45; }
+.fleet-warn-txt b { font-weight: 600; }
+.fleet-warn-cta { margin-left: auto; flex: none; background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+.fleet-warn-cta:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* ─── Shared empty state ─────────────────────────────────────────────────── */
+.empty-state { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 22px 20px; border: 1px dashed var(--line); border-radius: 12px; background: color-mix(in oklch, var(--panel), transparent 30%); }
+.empty-state-compact { padding: 16px 16px; gap: 6px; }
+.empty-state-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.empty-state-hint { font-size: 12.5px; color: var(--muted); line-height: 1.5; text-wrap: pretty; }
+.empty-state-cta { margin-top: 6px; }
+.proj-empty-hint { font-size: 11.5px; color: var(--muted); }
 
 /* decision audit (W8) */
 .audit { position: relative; z-index: 1; max-width: 860px; margin: 0 auto; padding: calc(var(--sp) * 1.6) calc(var(--sp) * 2) 60px; display: flex; flex-direction: column; gap: 22px; }
@@ -1466,8 +1544,25 @@ button.fleet-hist-row:hover { border-color: var(--border); background: var(--hov
 
 /* ─── First-run onboarding ──────────────────────────────────────────────── */
 .ob { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 32px; overflow-y: auto; }
-.ob-card { width: 100%; max-width: 560px; }
+/* Two-column setup: context / step-list on the left, the step's form on the right. */
+.ob-layout { width: 100%; max-width: 900px; display: grid; grid-template-columns: 264px 1fr; gap: 44px; align-items: start; }
+.ob-aside { position: sticky; top: 0; display: flex; flex-direction: column; gap: 16px; }
+.ob-aside .ob-mark { margin: 0 0 2px; }
+.ob-aside-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.ob-steplist { list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.ob-steplist-item { display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--muted); }
+.ob-steplist-item.on { background: var(--raised); color: var(--text); }
+.ob-steplist-num { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; font-family: var(--font-mono); font-size: 11px; flex: none; border: 1px solid var(--line); color: var(--faint); }
+.ob-steplist-item.on .ob-steplist-num { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.ob-steplist-item.done .ob-steplist-num { background: color-mix(in oklch, var(--ok), transparent 82%); border-color: color-mix(in oklch, var(--ok), transparent 55%); color: var(--ok); }
+.ob-aside-note { font-size: 12.5px; line-height: 1.55; color: var(--muted); text-wrap: pretty; border-top: 1px solid var(--line-soft); padding-top: 14px; margin-top: 2px; }
+.ob-card { width: 100%; }
 .ob-mark { display: block; margin: 0 auto 18px; }
+@media (max-width: 760px) {
+  .ob-layout { grid-template-columns: 1fr; gap: 24px; max-width: 520px; }
+  .ob-aside { position: static; }
+  .ob-steplist { flex-direction: row; flex-wrap: wrap; }
+}
 .ob-progress { display: flex; gap: 8px; justify-content: center; margin-bottom: 28px; }
 .ob-pip { width: 30px; height: 3px; border-radius: 2px; background: var(--line); transition: background .2s; }
 .ob-pip.on { background: var(--accent); }

@@ -10,6 +10,7 @@ import { describe, it, expect } from "vitest";
 import type { FastifyRequest } from "fastify";
 import { authenticate } from "../apps/server/src/auth.js";
 import { isGuardedPath, isPublicLogin, requiresAuth } from "../apps/server/src/auth-guard.js";
+import { isCorsOriginAllowed } from "../apps/server/src/cors-policy.js";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 
 // Minimal FastifyRequest stand-in — authenticate only touches headers + query.
@@ -86,5 +87,35 @@ describe("DEF-007: the /api prefix guard is case-insensitive", () => {
     expect(requiresAuth("/assets/app.js")).toBe(false);
     expect(requiresAuth("/ws")).toBe(false);
     expect(requiresAuth("/")).toBe(false);
+  });
+});
+
+describe("#7: scoped CORS allowlist (no reflect-any in production)", () => {
+  const allowlist = ["https://app.example.com", "https://ops.example.com"];
+
+  it("is permissive in dev/test (localhost dev unaffected)", () => {
+    expect(isCorsOriginAllowed("https://evil.example", { devMode: true, allowlist: [] })).toBe(true);
+    expect(isCorsOriginAllowed("http://localhost:5173", { devMode: true, allowlist })).toBe(true);
+  });
+
+  it("allows an allowlisted origin in production", () => {
+    expect(isCorsOriginAllowed("https://app.example.com", { devMode: false, allowlist })).toBe(true);
+    expect(isCorsOriginAllowed("https://ops.example.com", { devMode: false, allowlist })).toBe(true);
+  });
+
+  it("rejects a non-allowlisted origin in production", () => {
+    expect(isCorsOriginAllowed("https://evil.example", { devMode: false, allowlist })).toBe(false);
+    // Exact match only — no substring/suffix bypass.
+    expect(isCorsOriginAllowed("https://app.example.com.evil.com", { devMode: false, allowlist })).toBe(false);
+  });
+
+  it("allows same-origin / non-CORS requests (no Origin header) in production", () => {
+    expect(isCorsOriginAllowed(undefined, { devMode: false, allowlist })).toBe(true);
+  });
+
+  it("defaults CLOSED when the allowlist is empty in production (no reflect-any)", () => {
+    expect(isCorsOriginAllowed("https://app.example.com", { devMode: false, allowlist: [] })).toBe(false);
+    // A no-Origin request still passes (nothing cross-origin to gate).
+    expect(isCorsOriginAllowed(undefined, { devMode: false, allowlist: [] })).toBe(true);
   });
 });
