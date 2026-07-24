@@ -139,10 +139,16 @@ export function OpSidebar({
 }) {
   const { projects, runs, queue } = useStore();
   const queueCount = openQueue(queue).length;
-  // QA & testing surfaces live in a secondary, collapsed group so a new
-  // operator's primary nav is just the core loop. Auto-expanded when one of its
-  // views is active (e.g. a deep link), so the highlight is never orphaned.
+  // QA & testing surfaces (Acceptance / Simulation) are internal tooling — they
+  // stay OUT of the operator nav for GA. Shown only in a dev build, or when
+  // opted in on any build via localStorage `skynet.devtools=1`, or when one of
+  // their views is already active (a deep link) so the highlight is never
+  // orphaned. Auto-expanded when active.
   const qaActive = view === "acceptance" || view === "simulation";
+  const devTools =
+    (import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV === true ||
+    (typeof localStorage !== "undefined" && localStorage.getItem("skynet.devtools") === "1");
+  const showQa = devTools || qaActive;
   const [qaOpen, setQaOpen] = useState(qaActive);
 
   const dotColor = (p: Project) => {
@@ -198,19 +204,23 @@ export function OpSidebar({
         {item("Roadmap", "◈", () => setView("roadmap"), view === "roadmap")}
         {item("Settings", "⚙", () => setView("settings"), view === "settings")}
       </nav>
-      <button
-        className={"op-navsec op-navsec-toggle" + (qaActive ? " on" : "")}
-        aria-expanded={qaOpen || qaActive}
-        onClick={() => setQaOpen((o) => !o)}
-      >
-        QA &amp; TESTING
-        <span className="op-navsec-caret">{qaOpen || qaActive ? "▾" : "▸"}</span>
-      </button>
-      {(qaOpen || qaActive) && (
-        <nav className="op-nav op-nav-sub">
-          {item("Acceptance", "✓", () => setView("acceptance"), view === "acceptance")}
-          {item("Simulation", "◐", () => setView("simulation"), view === "simulation")}
-        </nav>
+      {showQa && (
+        <>
+          <button
+            className={"op-navsec op-navsec-toggle" + (qaActive ? " on" : "")}
+            aria-expanded={qaOpen || qaActive}
+            onClick={() => setQaOpen((o) => !o)}
+          >
+            QA &amp; TESTING
+            <span className="op-navsec-caret">{qaOpen || qaActive ? "▾" : "▸"}</span>
+          </button>
+          {(qaOpen || qaActive) && (
+            <nav className="op-nav op-nav-sub">
+              {item("Acceptance", "✓", () => setView("acceptance"), view === "acceptance")}
+              {item("Simulation", "◐", () => setView("simulation"), view === "simulation")}
+            </nav>
+          )}
+        </>
       )}
       <div className="op-navsec">PROJECTS</div>
       <div className="op-plist">
