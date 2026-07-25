@@ -545,6 +545,7 @@ button.lg-arow:hover { background: var(--raised); }
 /* START + END anchors — the first agent's frame; every track lives between them */
 .swb-anchor { position: absolute; transform: translate(-50%, -50%); width: 13px; height: 13px; border-radius: 50%; z-index: 2; }
 .swb-start { background: var(--accent); box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent), transparent 82%); }
+.swb-start-done { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in oklch, var(--ok), transparent 82%); }
 .swb-end { background: var(--panel); border: 2px solid var(--faint); }
 .swb-end-live { border-color: var(--ok); box-shadow: 0 0 10px color-mix(in oklch, var(--ok), transparent 55%); }
 .swb-anchor-label { position: absolute; transform: translateX(-50%); font-size: 9.5px; letter-spacing: 0.06em; color: var(--faint); white-space: nowrap; }
