@@ -1199,10 +1199,10 @@ button.kb-done:hover { opacity: 1; }
 .fleet-rn { font-size: 14px; font-weight: 600; flex: 1; }
 .fleet-state { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-family: var(--font-mono); }
 .fleet-state-busy { color: var(--ok); }
-.fleet-state-idle { color: var(--faint); }
+.fleet-state-idle { color: var(--muted); }
 .fleet-meta { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .fleet-pname { font-size: 13px; color: var(--muted); }
-.fleet-model { font-size: 11px; color: var(--faint); }
+.fleet-model { font-size: 11px; color: var(--muted); }
 .fleet-task { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 7px 10px; background: var(--raised); border-radius: 7px; }
 /* Clickable "what it's running" line → opens the agent's live activity. */
 button.fleet-task-link { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid transparent; font: inherit; text-align: left; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
@@ -1211,18 +1211,39 @@ button.fleet-task-link:hover { background: var(--hover, var(--raised)); border-c
 .fleet-task-link .fleet-task-cta { flex: none; font-size: 11px; color: var(--muted, var(--faint)); opacity: 0; transition: opacity 0.12s; }
 button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
 .fleet-actions { display: flex; gap: 8px; border-top: 1px solid var(--line-soft); padding-top: 11px; }
-/* Clickable card header → expands the runner's task history. */
+/* Clickable card header → opens the agent detail view. */
 button.fleet-cardhead { display: flex; flex-direction: column; gap: 11px; width: 100%; padding: 0; margin: 0; border: none; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 button.fleet-cardhead:hover .fleet-rn { color: var(--accent); }
-.fleet-caret { flex: none; color: var(--faint); font-size: 11px; }
-.fleet-histcount { flex: none; color: var(--faint); font-size: 11px; font-family: var(--font-mono); }
-.fleet-hist { display: flex; flex-direction: column; gap: 2px; max-height: 280px; overflow-y: auto; }
-.fleet-hist-empty { font-size: 12px; color: var(--faint); padding: 8px 10px; }
-button.fleet-hist-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: 1px solid transparent; border-radius: 7px; background: var(--raised); font: inherit; text-align: left; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
-button.fleet-hist-row:hover { border-color: var(--border); background: var(--hover, var(--raised)); }
-.fleet-hist-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fleet-hist-state { flex: none; font-size: 11px; }
-.fleet-hist-time { flex: none; font-size: 11px; color: var(--faint); }
+button.fleet-cardhead:hover .fleet-caret { color: var(--accent); transform: translateX(2px); }
+.fleet-caret { flex: none; color: var(--muted); font-size: 15px; transition: transform 0.12s, color 0.12s; }
+.fleet-histcount { flex: none; color: var(--muted); font-size: 11px; font-family: var(--font-mono); }
+
+/* ── Agent detail view ────────────────────────────────────────────────────── */
+.agent-detail { max-width: 820px; }
+.agent-detail .btn-back { align-self: flex-start; }
+.ad-head { display: flex; align-items: center; gap: 14px; margin: 14px 0 6px; }
+.ad-glyph { font-size: 26px; flex: none; line-height: 1; }
+.ad-id { flex: 1; min-width: 0; }
+.ad-name { font-size: 20px; font-weight: 600; margin: 0; }
+.ad-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin-top: 5px; font-size: 12px; }
+.ad-prov { color: var(--text); }
+.ad-model { color: var(--muted); }
+.ad-state { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); }
+.ad-state-busy { color: var(--ok); }
+.ad-state-idle { color: var(--muted); }
+.ad-actions { display: flex; gap: 8px; flex: none; }
+.ad-stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 24px; }
+.ad-stat { display: flex; flex-direction: column; gap: 2px; min-width: 92px; padding: 12px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.ad-stat b { font-size: 20px; font-weight: 600; color: var(--text); font-family: var(--font-mono); }
+.ad-stat span { font-size: 11px; color: var(--muted); letter-spacing: 0.03em; }
+.ad-h2 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 10px; }
+.ad-hist { display: flex; flex-direction: column; gap: 4px; }
+.ad-hist-empty { font-size: 13px; color: var(--muted); padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+button.ad-hist-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); font: inherit; text-align: left; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+button.ad-hist-row:hover { border-color: var(--border); background: var(--raised); }
+.ad-hist-name { flex: 1; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-hist-state { flex: none; font-size: 11px; }
+.ad-hist-time { flex: none; font-size: 11px; color: var(--muted); }
 .btn-retire { color: var(--danger); }
 .btn-retire:hover:not(:disabled) { border-color: color-mix(in oklch, var(--danger), transparent 50%); }
 /* Disabled = obviously inert, not a dim/broken version of the live button. A

@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import type { ProviderId, ProviderInfo, Agent } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { fmtWait, providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy, STATUS_META } from "../lib/derive";
-import { StatusDot } from "../components/common";
+import { providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy } from "../lib/derive";
 
-function ConfigForm({
+export function ConfigForm({
   initial,
   onSave,
   onCancel,
@@ -119,18 +118,20 @@ function ConfigForm({
   );
 }
 
-export function FleetView({ onOpenTask }: { onOpenTask: (id: string) => void }) {
+export function FleetView({
+  onOpenTask,
+  onOpenAgent,
+}: {
+  onOpenTask: (id: string) => void;
+  onOpenAgent: (id: string) => void;
+}) {
   const { fleet, runs, providers, createAgent, updateAgent, deleteAgent } =
     useStore();
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
-  const [openRunner, setOpenRunner] = useState<string | null>(null);
   const now = Date.now();
 
-  // Every agent this runner has executed (live + finished), newest first — a
-  // completed agent keeps its agentId, so this is the runner's full work log.
-  const historyOf = (r: Agent) =>
-    runs.filter((a) => a.agentId === r.id).sort((a, b) => b.startedAt - a.startedAt);
+  const taskCountOf = (r: Agent) => runs.filter((a) => a.agentId === r.id).length;
 
   const busyOf = (r: Agent) =>
     runs.find((a) => a.status !== "done" && a.agentId === r.id);
@@ -186,15 +187,13 @@ export function FleetView({ onOpenTask }: { onOpenTask: (id: string) => void }) 
               ) : (
                 <>
                   {(() => {
-                    const history = historyOf(r);
-                    const open = openRunner === r.id;
+                    const count = taskCountOf(r);
                     return (
                       <>
                         <button
                           className="fleet-cardhead"
-                          aria-expanded={open}
-                          title={history.length ? "Show this agent's task history" : "No task history yet"}
-                          onClick={() => setOpenRunner(open ? null : r.id)}
+                          title="Open this agent's detail & task history"
+                          onClick={() => onOpenAgent(r.id)}
                         >
                           <div className="fleet-top">
                             <span className="fleet-prov" style={{ color: p.color }}>
@@ -212,19 +211,19 @@ export function FleetView({ onOpenTask }: { onOpenTask: (id: string) => void }) 
                                 idle {runnerIdleLabel(r, now)}
                               </span>
                             )}
-                            <span className="fleet-caret">{open ? "▾" : "▸"}</span>
+                            <span className="fleet-caret" aria-hidden="true">›</span>
                           </div>
                           <div className="fleet-meta">
                             <span className="fleet-pname">{p.name}</span>
                             <span className="fleet-model mono">{r.model}</span>
                             <span className="fleet-histcount">
-                              {history.length} task{history.length === 1 ? "" : "s"}
+                              {count} task{count === 1 ? "" : "s"}
                             </span>
                           </div>
                         </button>
 
-                        {/* Collapsed + busy: keep the current task glanceable. */}
-                        {busy && !open && (
+                        {/* Busy: keep the current task glanceable + one-click into it. */}
+                        {busy && (
                           <button
                             className="fleet-task fleet-task-link"
                             onClick={() => onOpenTask(busy.id)}
@@ -233,38 +232,6 @@ export function FleetView({ onOpenTask }: { onOpenTask: (id: string) => void }) 
                             <span className="fleet-task-name">▸ {busy.name}</span>
                             <span className="fleet-task-cta">activity →</span>
                           </button>
-                        )}
-
-                        {/* Expanded: the runner's full task history, each row → that agent. */}
-                        {open && (
-                          <div className="fleet-hist">
-                            {history.length === 0 ? (
-                              <div className="fleet-hist-empty">
-                                No tasks yet — assign one to this fleet from a project.
-                              </div>
-                            ) : (
-                              history.map((a) => (
-                                <button
-                                  key={a.id}
-                                  className="fleet-hist-row"
-                                  onClick={() => onOpenTask(a.id)}
-                                  title="Open this agent's activity & history"
-                                >
-                                  <StatusDot status={a.status} />
-                                  <span className="fleet-hist-name">{a.name}</span>
-                                  <span
-                                    className="fleet-hist-state mono"
-                                    style={{ color: STATUS_META[a.status].color }}
-                                  >
-                                    {STATUS_META[a.status].label}
-                                  </span>
-                                  <span className="fleet-hist-time mono">
-                                    {fmtWait(Math.max(0, (now - a.startedAt) / 1000))} ago
-                                  </span>
-                                </button>
-                              ))
-                            )}
-                          </div>
                         )}
                       </>
                     );
