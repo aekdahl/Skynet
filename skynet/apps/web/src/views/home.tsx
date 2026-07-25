@@ -585,7 +585,11 @@ function SwDiagram({
       )}
       <div className="swb-canvas">
         {/* START + END anchors — the first agent's frame; everything lives between them */}
-        <span className="swb-anchor swb-start" style={{ left: X(0) + "%", top: y0 + "px" }} title="Project start" />
+        <span
+          className={"swb-anchor swb-start" + (order.length > 0 && order.every(isComplete) ? " swb-start-done" : "")}
+          style={{ left: X(0) + "%", top: y0 + "px" }}
+          title="Project start"
+        />
         <span className="swb-anchor-label mono" style={{ left: X(0) + "%", top: y0 + 13 + "px" }}>
           start
         </span>
@@ -605,7 +609,11 @@ function SwDiagram({
           const els: ReactNode[] = [];
           // branch in — backbone starts at START; a fork branches at its junction; other agents fan from START
           if (isBackbone) {
-            els.push(<span key="in" className="swb-seg" style={{ left: X(0) + "%", width: X(base) - X(0) + "%", top: yr + "px" }} />);
+            // The leg out of START is traversed once the agent has left it (has a
+            // run), so it greens like any segment whose preceding stop is done —
+            // START is the always-done origin. (Was stuck grey even when shipped.)
+            const departed = t.runs.length > 0;
+            els.push(<span key="in" className={"swb-seg" + (departed ? " swb-seg-done" : "")} style={{ left: X(0) + "%", width: X(base) - X(0) + "%", top: yr + "px" }} />);
           } else {
             const depCol = p ? (junctionCol.get(t) ?? 0) : 0;
             const depY = p ? rowY(rowOf(p)) : y0;
