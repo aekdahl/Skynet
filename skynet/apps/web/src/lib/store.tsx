@@ -87,7 +87,11 @@ export interface Store extends StoreState {
   deleteTask: (projectId: string, taskId: string) => Promise<void>;
   moveTask: (projectId: string, taskId: string, direction: "up" | "down") => Promise<void>;
   transitionTask: (projectId: string, taskId: string, to: string) => Promise<void>;
-  assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
+  // runnerId optionally targets a specific fleet runner; omit to auto-pick.
+  assignTask: (projectId: string, taskId: string, runnerId?: string) => Promise<TaskRun | null>;
+  // Move an in-flight task onto a different runner: abandon the current run
+  // (stops + detaches it) then start fresh on the chosen runner.
+  reassignTask: (projectId: string, taskId: string, runnerId: string) => Promise<TaskRun | null>;
   createAgent: (provider: string, model: string, name?: string) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
@@ -346,12 +350,35 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteTask: async (projectId, taskId) => {
         await api.deleteTask(projectId, taskId);
       },
-      assignTask: async (projectId, taskId) => {
+      assignTask: async (projectId, taskId, runnerId) => {
         try {
-          return await api.assignTask(projectId, taskId);
+          return await api.assignTask(projectId, taskId, runnerId);
         } catch (e) {
           if (e instanceof api.ApiError && e.status === 409) {
             alert(serverMessage(e, "No idle agent available — configure or free one in Fleet."));
+            return null;
+          }
+          throw e;
+        }
+      },
+      reassignTask: async (projectId, taskId, runnerId) => {
+        // Abandon the current run (server stops + detaches it), then start the
+        // task fresh on the chosen runner. Sequential so the task is detached
+        // before the re-assign reads it.
+        try {
+          await api.transitionTask(projectId, taskId, "todo");
+        } catch (e) {
+          if (e instanceof api.ApiError) {
+            alert(serverMessage(e, "Couldn't free the current run to reassign."));
+            return null;
+          }
+          throw e;
+        }
+        try {
+          return await api.assignTask(projectId, taskId, runnerId);
+        } catch (e) {
+          if (e instanceof api.ApiError && e.status === 409) {
+            alert(serverMessage(e, "That agent is no longer available — pick another in Fleet."));
             return null;
           }
           throw e;

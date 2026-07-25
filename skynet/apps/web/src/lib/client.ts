@@ -181,8 +181,9 @@ export function updateTask(
 export function deleteTask(projectId: string, taskId: string) {
   return req<unknown>("DELETE", `/api/projects/${projectId}/tasks/${taskId}`);
 }
-export function assignTask(projectId: string, taskId: string) {
-  return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
+// runnerId targets a specific fleet runner; omit to auto-pick any idle one.
+export function assignTask(projectId: string, taskId: string, runnerId?: string) {
+  return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`, runnerId ? { runnerId } : undefined);
 }
 // Guarded kanban move (backlog→triage, triage→todo, review→done, demote, …).
 export function transitionTask(projectId: string, taskId: string, to: string) {

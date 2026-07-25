@@ -109,7 +109,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     const { taskId, ...patch } = a;
     return operations.updateTask(ws, taskId, patch);
   });
-  tool("assign_task", "author", "Assign a task to a fresh agent on an idle runner. Idempotent: re-assigning an already-assigned task returns the existing agent.", { projectId: z.string(), taskId: z.string() }, (a) => operations.assignTask(ws, a.projectId, a.taskId));
+  tool("assign_task", "author", "Assign a task to a fresh agent on an idle runner. Pass runnerId to target a specific fleet runner; omit to auto-pick any idle one. Idempotent: re-assigning an already-assigned task returns the existing agent.", { projectId: z.string(), taskId: z.string(), runnerId: z.string().optional() }, (a) => operations.assignTask(ws, a.projectId, a.taskId, a.runnerId));
   tool("message_agent", "author", "Send a chat message to an agent and get its reply.", { runId: z.string(), ...ChatRequest.shape }, async (a) => ({ reply: await operations.chatAgent(ws, a.runId, a.text) }));
   tool("fork_agent", "author", "Fork an agent to explore an alternative from its current step.", { runId: z.string() }, (a) => operations.forkAgent(ws, a.runId));
   tool("stop_agent", "author", "Stop a live agent (frees its runner, retires its worktree).", { runId: z.string() }, async (a) => {

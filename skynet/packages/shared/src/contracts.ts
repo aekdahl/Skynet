@@ -312,6 +312,11 @@ export type UpdateTaskRequest = z.infer<typeof UpdateTaskRequest>;
 export const MoveTaskRequest = z.object({ to: TaskState });
 export type MoveTaskRequest = z.infer<typeof MoveTaskRequest>;
 
+// Starting a task. `runnerId` optionally targets a specific fleet runner (the
+// task drawer's runner picker); omitted = auto-pick any idle, usable runner.
+export const AssignTaskRequest = z.object({ runnerId: z.string().optional() });
+export type AssignTaskRequest = z.infer<typeof AssignTaskRequest>;
+
 export const ConfigureRunnerRequest = z.object({
   provider: ProviderId,
   model: z.string().min(1),

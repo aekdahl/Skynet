@@ -453,6 +453,30 @@ export class Orchestrator {
     });
   }
 
+  /** Acquire a SPECIFIC runner the operator picked (drawer runner picker), by id.
+   *  Same atomic find→mark-busy as acquireAgent, but targeted: the runner must
+   *  exist in this workspace, be idle, and have a usable provider. Busy → 409
+   *  (NoCapacity); missing / no credential → 409 (RunnerNotConfigured). */
+  private acquireSpecificAgent(
+    workspaceId: string,
+    runnerId: string,
+  ): Promise<{ id: string; provider: TaskRun["provider"]; model: string }> {
+    return this.acquireExclusive(async () => {
+      const runner = await this.store.getAgent(runnerId);
+      if (!runner || runner.workspaceId !== workspaceId) {
+        throw new RunnerNotConfiguredError(`Agent "${runnerId}" is not in this workspace.`);
+      }
+      if (runner.status !== "idle") throw new NoCapacityError();
+      if (!(await this.providerUsable(workspaceId, runner.provider))) {
+        throw new RunnerNotConfiguredError(
+          `No credential for "${runner.name}"'s provider (${runner.provider}) — add a key in Settings.`,
+        );
+      }
+      await this.hub.upsertAgent({ ...runner, status: "busy", idleSince: null });
+      return { id: runner.id, provider: runner.provider, model: runner.model };
+    });
+  }
+
   /**
    * Acquire an idle runner, or PROVISION a fresh one on demand when the fleet is
    * fully occupied — used by fork so a family can branch even when every runner
@@ -508,7 +532,7 @@ export class Orchestrator {
   }
 
   // ── assignTask ────────────────────────────────────────────────────────────
-  async assignTask(projectId: string, taskId: string): Promise<TaskRun> {
+  async assignTask(projectId: string, taskId: string, runnerId?: string): Promise<TaskRun> {
     const task = await this.store.getTask(taskId);
     if (!task || task.projectId !== projectId) throw new Error("Task not found");
     const project = await this.store.getProject(projectId);
@@ -530,7 +554,9 @@ export class Orchestrator {
       if (existing && existing.status !== "done") return existing;
     }
 
-    const runner = await this.acquireAgent(project.workspaceId);
+    const runner = runnerId
+      ? await this.acquireSpecificAgent(project.workspaceId, runnerId)
+      : await this.acquireAgent(project.workspaceId);
     const runId = `${this.slug(task.text)}-${++this.seq}`;
     // runId is unique → unique branch & worktree path (two same-named tasks
     // never collide on the same branch).

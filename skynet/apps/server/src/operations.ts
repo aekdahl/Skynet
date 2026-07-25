@@ -314,10 +314,10 @@ export class Operations {
     await this.hub.deleteTask(tid);
   }
   /** Assign a task to a fresh agent (idempotent — see Orchestrator.assignTask). */
-  async assignTask(ws: string, projectId: string, tid: string): Promise<TaskRun> {
+  async assignTask(ws: string, projectId: string, tid: string, runnerId?: string): Promise<TaskRun> {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
-    return this.orchestrator.assignTask(projectId, tid);
+    return this.orchestrator.assignTask(projectId, tid, runnerId);
   }
 
   /**

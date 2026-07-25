@@ -8,6 +8,7 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
+  AssignTaskRequest,
   ConfigureRunnerRequest,
   CreateProjectRequest,
   CreateTaskRequest,
@@ -223,8 +224,11 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   });
 
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/assign", async (req, reply) => {
+    // Body is optional: {} (auto-pick) or { runnerId } to target a fleet runner.
+    const body = AssignTaskRequest.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
-      return await ops.assignTask(ws(req), req.params.id, req.params.tid);
+      return await ops.assignTask(ws(req), req.params.id, req.params.tid, body.data.runnerId);
     } catch (err) {
       return fail(reply, err);
     }

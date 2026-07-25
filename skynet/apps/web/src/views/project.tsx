@@ -12,21 +12,23 @@ import {
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
 import { ProjectDelivery, visualLeadOf } from "../components/preview";
+import { TaskDrawer } from "../components/task-drawer";
 import { QueueCard } from "./queue";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 // One card per Task. For pre-run states (backlog/triage/todo) it shows the task
 // text + stage controls; for ongoing/review/done it joins the linked TaskRun to
-// show live status/progress and opens the Task detail view on click.
+// show live status/progress. Clicking any card opens the task drawer (its
+// description + assigned agent); the stage controls/tools stopPropagation.
 function TaskCard({
   task,
   run,
-  onOpenTask,
+  onOpen,
 }: {
   task: Task;
   run?: TaskRun;
-  onOpenTask: (id: string) => void;
+  onOpen: (taskId: string) => void;
 }) {
   const {
     queue,
@@ -44,7 +46,7 @@ function TaskCard({
   const s = task.state;
   const move = (to: string) => transitionTask(pid, task.id, to);
   const q = run ? openQueue(queue).find((it) => it.runId === run.id) : undefined;
-  const openRun = run ? () => onOpenTask(run.id) : undefined;
+  const open = () => onOpen(task.id);
   const noFleet = fleet.length === 0;
 
   if (editing) {
@@ -78,15 +80,15 @@ function TaskCard({
   return (
     <div
       className={"kb-card kb-card-" + s}
-      {...(openRun
-        ? {
-            role: "button",
-            tabIndex: 0,
-            onClick: openRun,
-            onKeyDown: (e: React.KeyboardEvent) =>
-              (e.key === "Enter" || e.key === " ") && openRun(),
-          }
-        : {})}
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={(e: React.KeyboardEvent) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open();
+        }
+      }}
     >
       <div className="kb-card-top">
         {run && <StatusDot status={run.status} />}
@@ -251,11 +253,16 @@ export function ProjectView({
   const [confirmDel, setConfirmDel] = useState(false);
   const [name, setName] = useState(project.name);
   const [goal, setGoal] = useState(project.goal);
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  // Resolve the drawer's task live from the store so edits/state changes reflect
+  // (and it closes itself if the task is deleted out from under it).
+  const openTask = openTaskId ? tasks.find((t) => t.id === openTaskId) : undefined;
 
   useEffect(() => {
     setName(project.name);
     setGoal(project.goal);
     setFolded(false);
+    setOpenTaskId(null);
   }, [project.id, project.name, project.goal]);
 
   return (
@@ -367,7 +374,7 @@ export function ProjectView({
                   key={t.id}
                   task={t}
                   run={t.runId ? runById.get(t.runId) : undefined}
-                  onOpenTask={onOpenTask}
+                  onOpen={setOpenTaskId}
                 />
               ))}
               {st === "backlog" && <AddTaskCard onAdd={(text) => createTask(project.id, text)} />}
@@ -399,6 +406,21 @@ export function ProjectView({
             </div>
           )}
         </div>
+      )}
+
+      {openTask && (
+        <>
+          <div className="task-drawer-scrim" onClick={() => setOpenTaskId(null)} />
+          <TaskDrawer
+            task={openTask}
+            run={openTask.runId ? runById.get(openTask.runId) : undefined}
+            onClose={() => setOpenTaskId(null)}
+            onOpenRun={(runId) => {
+              setOpenTaskId(null);
+              onOpenTask(runId);
+            }}
+          />
+        </>
       )}
     </section>
   );

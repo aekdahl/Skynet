@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import type { HitlItem, ProviderId, Agent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
-import { Orchestrator } from "../apps/server/src/orchestrator.js";
+import { NoCapacityError, Orchestrator, RunnerNotConfiguredError } from "../apps/server/src/orchestrator.js";
 import { NotFoundError, Operations, RunnerBusyError } from "../apps/server/src/operations.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
 import type { Bus } from "../apps/server/src/bus.js";
@@ -58,6 +58,28 @@ describe("Operations — workspace-scoped domain layer", () => {
     // Same id, wrong workspace → 404, never a cross-tenant mutation.
     await expect(ops.updateProject("resistance", mine.id, { name: "hijack" })).rejects.toBeInstanceOf(NotFoundError);
     await expect(ops.deleteTask(DEFAULT_WORKSPACE, "no-such-task")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("assigns a task to a SPECIFIC runner, and rejects a busy or unknown one", async () => {
+    const { store, ops } = setup();
+    for (const id of ["r1", "r2"]) {
+      await store.putAgent({ id, workspaceId: DEFAULT_WORKSPACE, name: id, provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    }
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repo: undefined });
+    const t1 = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "one" });
+
+    // Targeting r2 must use r2 (not auto-pick r1) and leave r1 idle.
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, project.id, t1.id, "r2");
+    expect(run.agentId).toBe("r2");
+    expect((await store.getAgent("r2"))?.status).toBe("busy");
+    expect((await store.getAgent("r1"))?.status).toBe("idle");
+
+    // Targeting a now-busy runner → NoCapacityError (409).
+    const t2 = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "two" });
+    await expect(ops.assignTask(DEFAULT_WORKSPACE, project.id, t2.id, "r2")).rejects.toBeInstanceOf(NoCapacityError);
+
+    // Targeting a runner that doesn't exist → RunnerNotConfiguredError (409).
+    await expect(ops.assignTask(DEFAULT_WORKSPACE, project.id, t2.id, "ghost")).rejects.toBeInstanceOf(RunnerNotConfiguredError);
   });
 
   it("refuses to retire a busy runner", async () => {

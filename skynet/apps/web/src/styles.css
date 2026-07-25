@@ -742,6 +742,38 @@ button.kb-done:hover { opacity: 1; }
 .kb-archive-branch { font-size: 10px; color: var(--faint); flex: none; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 
+/* Task drawer — side panel opened by clicking a task card */
+.task-drawer-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.32); z-index: 60; }
+.task-drawer {
+  position: fixed; top: 0; right: 0; height: 100vh; width: min(420px, 92vw); z-index: 61;
+  background: var(--panel); border-left: 1px solid var(--line); box-shadow: -12px 0 32px rgba(0, 0, 0, 0.28);
+  display: flex; flex-direction: column; gap: calc(var(--sp) * 1.1);
+  padding: calc(var(--sp) * 1.4) calc(var(--sp) * 1.4) calc(var(--sp) * 2); overflow-y: auto;
+}
+.task-drawer-head { display: flex; align-items: center; gap: 10px; }
+.task-drawer-title { font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.14em; color: var(--faint); flex: 1; }
+.task-drawer-close { background: none; border: none; color: var(--faint); font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px; border-radius: 6px; }
+.task-drawer-close:hover { color: var(--text); background: var(--raised); }
+.task-drawer-sec { display: flex; flex-direction: column; gap: 8px; }
+.task-drawer-sec .panel-head { display: flex; align-items: center; justify-content: space-between; }
+.task-drawer-edit { flex: none; }
+.task-drawer-desc { margin: 0; color: var(--text); font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+.task-drawer-agent { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; }
+.task-drawer-agent-head { display: flex; align-items: center; gap: 8px; background: none; border: none; padding: 0; cursor: pointer; text-align: left; width: 100%; }
+.task-drawer-agent-name { flex: 1; min-width: 0; color: var(--text); font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-drawer-open { color: var(--accent); font-size: 11px; flex: none; }
+.task-drawer-agent-head:hover .task-drawer-open { text-decoration: underline; }
+.task-drawer-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--faint); flex-wrap: wrap; }
+.task-drawer-sep { opacity: 0.5; }
+.task-drawer-step { font-size: 12px; color: var(--muted); }
+.task-drawer-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.task-drawer-reassign { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--line); }
+.task-drawer-label { font-size: 11px; color: var(--faint); }
+.task-drawer-unassigned { display: flex; flex-direction: column; gap: 8px; }
+.task-drawer-none { margin: 0; color: var(--muted); font-size: 13px; }
+.task-drawer-hint { margin: 0; color: var(--faint); font-size: 12px; }
+.qx-select { flex: 1; min-width: 0; }
+
 /* ===== settings (provider keys) ===== */
 .settings-warn { background: color-mix(in oklch, var(--warn), transparent 82%); border: 1px solid color-mix(in oklch, var(--warn), transparent 55%); color: var(--text); border-radius: 9px; padding: 12px 14px; font-size: 13px; line-height: 1.5; margin-bottom: var(--sp); }
 
