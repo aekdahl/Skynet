@@ -126,13 +126,20 @@ function startServer() {
   serverProc = spawn(process.execPath, [serverEntry], { env, stdio: "inherit" });
   serverProc.on("exit", (code, signal) => {
     serverProc = null;
-    if (!app.isQuitting) {
-      dialog.showErrorBox(
-        "Skynet server stopped",
-        `The local Skynet server exited unexpectedly (code ${code ?? signal}). The app will close.`,
-      );
+    if (app.isQuitting) return;
+    // Exit code 42 is an INTENTIONAL remote shutdown (the Telegram /quit kill
+    // switch calls process.exit(42) in the server). Treat it as a clean quit —
+    // no scary "exited unexpectedly" dialog, which is only for genuine crashes.
+    if (code === 42) {
+      app.isQuitting = true;
       app.quit();
+      return;
     }
+    dialog.showErrorBox(
+      "Skynet server stopped",
+      `The local Skynet server exited unexpectedly (code ${code ?? signal}). The app will close.`,
+    );
+    app.quit();
   });
 }
 
