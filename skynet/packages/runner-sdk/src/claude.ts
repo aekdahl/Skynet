@@ -16,6 +16,7 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
+import { fmtDuration, runtimeCapMs } from "./caps.js";
 import type {
   ConsultSpec,
   HitlRaise,
@@ -433,6 +434,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
   private planById = new Map<string, PlanStep>();
   private finished = false;
   private hb?: ReturnType<typeof setInterval>;
+  private cap?: ReturnType<typeof setTimeout>;
   // Retry state (transient API overload → resume the session, bounded).
   private sessionId?: string; // this run's own SDK session, for resume-on-retry
   private baseOptions?: Options; // query options minus resume, reused per relaunch
@@ -532,6 +534,18 @@ class ClaudeRunnerHandle implements RunnerHandle {
 
     this.q = queryImpl({ prompt: this.input, options: firstOptions });
     this.hb = setInterval(() => this.events.onHeartbeat(this.runId), 5_000);
+    // Wall-clock resource cap: force-fail a runaway/hung run so it can't hold
+    // its slot and burn tokens forever. Armed once; survives session resume on
+    // retry (the ceiling is on total run wall-clock). 0 disables (see caps.ts).
+    // fail() before interrupt(): fail() early-returns once `finished` is set, so
+    // it must run first to actually emit onFailed; then tear the query down.
+    const capMs = runtimeCapMs();
+    if (capMs > 0) {
+      this.cap = setTimeout(() => {
+        this.fail(`exceeded max runtime (${fmtDuration(capMs)}) — force-stopped`);
+        void this.q?.interrupt().catch(() => undefined);
+      }, capMs);
+    }
     void this.consume();
   }
 
@@ -745,6 +759,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     if (this.finished) return;
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
+    if (this.cap) clearTimeout(this.cap);
     this.events.onFailed(this.runId, reason);
     this.input.close();
   }
@@ -753,6 +768,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     if (this.finished) return;
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
+    if (this.cap) clearTimeout(this.cap);
     // Keep the real plan visible on completion (all steps done), rather than
     // blanking it — the PLAN panel stays meaningful for a finished agent.
     const donePlan = this.plan.map((p) => ({ ...p, state: "done" as const }));
@@ -890,6 +906,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
   async stop() {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
+    if (this.cap) clearTimeout(this.cap);
     await this.q?.interrupt().catch(() => undefined);
     this.input.close();
   }

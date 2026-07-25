@@ -6,6 +6,12 @@ versions are directional and will be reordered as we learn. Deep detail for big 
 management/memory/leverage layer over off-the-shelf coding agents, not an agent itself
 (see [docs/positioning.md](docs/positioning.md)).
 
+**Committed target = the local desktop app.** The only in-scope release right now is the
+**local-first Electron app** (BYO key, runs on the operator's own machine, keys never leave the host).
+A **hosted / multi-tenant** deployment is **explicitly out of scope** — everything that exists only to
+serve one (GCP infra, multi-replica scale, SSO, CORS/rate-limit hardening, team roles, SIEM export) is
+deferred and tagged 🏢. See **[Deferred — hosted release](#deferred--hosted--multi-tenant-release-not-in-scope-)**.
+
 **Sequencing — ship staggered, not "orchestration then moat."** The memory moat *compounds with
 usage*: it distills from the streams (`hub`) and decisions (`hitl_audit`) that only exist once people
 run agents through Skynet, so waiting for the moat means launching with an empty second brain. We do
@@ -37,30 +43,72 @@ mostly already built) + **guided provider connect**; **(3) v1.5** ease-of-use + 
 makes us not-just-another-orchestrator); **(4) Cross-vendor consensus runs** (needs the v1 providers).
 Everything below stays directional.
 
-Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ = depends on earlier version.
+Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ = depends on earlier version ·
+🏢 = hosted-only (deferred; **not** needed for the local desktop release).
 
 ---
 
-## v0 — MVP · the testable loop  ← committed
+## v0 — MVP · the local desktop app  ← committed
 
-**Goal:** an internal tester points Skynet at a repo + their Anthropic key, assigns a task, and a
-**real Claude agent** does the work in an isolated sandbox under human supervision, then merges.
+**Goal:** an operator installs the **desktop app**, points it at a repo + their Anthropic key, assigns
+a task, and a **real Claude agent** does the work in an isolated worktree under human supervision, then
+merges — all **local-first, on their own machine**.
 
 **Must build / resolve:**
 1. [x] **Live Claude execution** — drive Claude Code via the Agent SDK/CLI; resolve the headless auth (scrub conflicting `CLAUDE_CODE_*`/gateway env so `ANTHROPIC_API_KEY` is used).
 2. [x] **Worktree-per-runner provisioning** — each agent gets an isolated git worktree/branch.
 3. [x] **Repo connection + `.skynet/modules.json`** — a workspace points at a real repo + integration branch.
 4. [x] **Provider credential management** — per-workspace keys, injected into runners, never client-exposed.
-5. [~] **Sandboxed runner** — one container per agent (resource caps, restricted network, command allow/deny).
+5. [x] **Sandboxed runner (local legs)** — defense-in-depth around each agent, shipped without a
+   container: **command allow/deny** (safety classifier, enforced at approve-time),
+   **filesystem write-confinement** to the worktree (opt-in OS sandbox — macOS
+   `sandbox-exec` / Linux `bwrap`, `SKYNET_RUNNER_SANDBOX`), and a **wall-clock
+   runtime cap** (`SKYNET_RUNNER_MAX_RUNTIME_MS`, default 30 min) that force-fails
+   a runaway/hung run. 🏢 *One-container-per-agent isolation, memory/CPU (cgroup) caps,
+   and network-egress allowlist ride the containerized runner with the hosted release.*
 6. [x] **Real-execution event fidelity** — real diffs → diff HITL, changed files → modules, branch → preview.
-7. [x] **Auth hardening to test-grade** — real login, `AUTH_REQUIRED` on, scoped CORS, rate limiting.
+7. [x] **Local auth posture** — the desktop app serves on localhost as the single operator, with
+   `AUTH_REQUIRED` secure-by-default (fails closed unless `NODE_ENV` is explicitly dev/test). 🏢 *Real
+   multi-user login, SSO/OIDC, scoped CORS, and rate limiting are deferred with the hosted release.*
 8. [x] **Onboarding / first-run** — create workspace → connect repo → add key → add runner; retire seed fixtures.
-9. [ ] **Deploy** — GCE VM + Docker (app + runner containers) + Cloud SQL + Memorystore + staging URL/TLS.
-10. [ ] **E2E test of the loop + staging env.**
-11. [x] **UX/UI first-run polish to SOTA** — the launch blockers from the pre-release UX/UI review (the first ten minutes, where a new operator meets an empty board): pull QA surfaces (**Acceptance / Simulation**) out of the operator nav; real loading (skeleton + connect→connected lifecycle + retry — no terminal "Connecting to mission control…"); every empty state gets one primary CTA + a one-line mental-model hint; two-column onboarding + fix the **disabled-button** state globally (dim-amber reads as broken); surface **fleet-readiness** ("no provider connected — agents can't run · Add a key") from the first screen. *(Grades the first-run experience from ~3.4 → SOTA; none architectural.)*
+9. [x] **Desktop packaging (beta, unsigned)** — `electron-builder` `.dmg` (mac arm64 + x64) + `.nsis`
+   (win) with the server + SPA bundled, `electron-updater` wired, and a `v*`-tag CI release
+   ([.github/workflows/desktop-release.yml](.github/workflows/desktop-release.yml)) that publishes
+   installers to GitHub Releases. **Beta ships unsigned by decision** — macOS users right-click → Open
+   once (Gatekeeper); Windows background auto-update works unsigned. *(Code-signing + notarization split
+   out to v1 — see below.)*
+10. [x] **E2E of the full loop (manual acceptance)** — operator-run in the app's **QA → Simulation**
+   view: the **"Full run pipeline — edit → diff review → merge"** journey drives a **real Claude agent**
+   through the entire DoD loop (assign → isolated worktree → diff-review gate → approve → merge → run +
+   task reach `done`) and is LLM-judged. Run in the packaged desktop build with a real
+   `ANTHROPIC_API_KEY`. *(Replaces the old hosted-staging E2E; staging is 🏢 deferred. An automated
+   deterministic guard of the same loop runs on every PR — `tests/full-loop.test.ts`.)*
+11. [~] **UX/UI first-run polish to SOTA** — the launch blockers from the pre-release UX/UI review (the first ten minutes, where a new operator meets an empty board): pull QA surfaces (**Acceptance / Simulation**) out of the operator nav; real loading (skeleton + connect→connected lifecycle + retry — no terminal "Connecting to mission control…"); every empty state gets one primary CTA + a one-line mental-model hint; two-column onboarding + fix the **disabled-button** state globally (dim-amber reads as broken); surface **fleet-readiness** ("no provider connected — agents can't run · Add a key") from the first screen. *(Grades the first-run experience from ~3.4 → SOTA; none architectural.)*
 
-**Scope:** Claude-only · one shared hosted instance on GCP · internal testers in separate workspaces.
-**Done =** the loop above runs for a tester on staging. *(~30–50 eng-days; critical path #1, #2, #5.)*
+**Scope:** Claude-first · **local-first desktop app** (BYO key, single operator, file-store persistence,
+keys never leave the machine). **Hosted / multi-tenant is out of scope** (🏢 deferred — see below).
+**Done =** the full loop runs on a **packaged desktop build** (beta, unsigned) on an operator's own
+machine. *(Critical path: **#11 UX P0** — packaging #9 + loop E2E #10 are done; code-signing → v1.)*
+
+---
+
+### Deferred — hosted / multi-tenant release (not in scope) 🏢
+
+A hosted deployment is **explicitly out of scope** for the current release; the product ships as the
+local desktop app above. These pieces exist **only** to serve a hosted/multi-tenant instance — none
+block the local release, and each is tagged 🏢 where it appears in a later version:
+- **Cloud deploy & infra** — GCE VM + Docker (app + runner containers) + Cloud SQL + Memorystore +
+  staging URL/TLS. *(Pulled out of the v0 must-build list; picked back up when hosting is in scope.)*
+- **Multi-replica scale + containerized runner** — Redis fan-out, GKE Jobs, per-agent container
+  isolation with memory/CPU (cgroup) caps + network-egress allowlist (v1).
+- **Hosted auth & tenancy** — real multi-user login, SSO/OIDC, scoped CORS, rate limiting, the
+  read-only viewer role, and time-limited admin promotion (v1).
+- **Enterprise integrations** — SIEM export of the audit trail; hosted observability
+  (metrics/logging/tracing); hosted memory sync + team sharing (the v4 open-core paid layer).
+
+The **governance wedge itself is local** (safety classifier, HITL Inbox, decision audit all run on the
+desktop build) — only its enterprise *export/sync* surfaces are 🏢. When hosting re-enters scope, this
+is the bucket to pull from.
 
 ---
 
@@ -119,7 +167,17 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   chat + resolve; optional "also remember" promotes the note to area/workspace memory (v4) so future
   agents inherit it too. Audited via existing streams.
 - [ ] Real **live-preview** pipeline (sandboxed per-branch URLs).
-- [ ] **Scale:** Redis multi-replica fan-out; GKE Jobs for runners.
+- [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
+  the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
+  opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign
+  the Windows build (code-signing cert) to clear SmartScreen. The electron-builder config + CI
+  secret-passthrough are straightforward to wire; the gating input is the **certs** — an Apple
+  Developer ID cert + a Windows code-signing cert added as repo secrets. Verifiable only on a real
+  signed tag build (electron-builder skips signing when secrets are absent).
+- [ ] 🏢 **Scale + containerized runner:** Redis multi-replica fan-out; **GKE Jobs for
+  runners** — one container per agent, completing the v0 sandbox item's deferred
+  half: memory/CPU caps (cgroups) and network egress allowlist (proxy). The
+  command-deny, worktree write-confinement, and runtime cap already ship locally.
 - [ ] **Guided provider connect** — one-click "Connect Claude / Codex / …": in-app key entry + a live verify,
   so onboarding never requires hand-authing each vendor CLI (the #1 friction rivals impose).
 - [ ] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).** A 6-way
@@ -139,7 +197,7 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     rivals); policy-driven auto-triage (auto-approve policy-safe, batch similar gates); **approve-with-memory /
     approve-with-rule** (an approval can write a policy or memory fact in-flow — the Inbox becomes *how* policy
     and memory get authored); async / mobile / delegated approval + escalation SLAs + a 2-person rule for high risk.
-  - Secrets at rest; **observability** (metrics/logging/tracing).
+  - Secrets at rest (local); 🏢 **observability** (hosted metrics/logging/tracing) + SIEM export of the audit.
 - [ ] **Runner session-map cleanup** — `ClaudeRunnerProvider.sessions` (agentId→sessionId, kept for fork resume) grows one entry per agent for the server-process lifetime. Evict on agent completion (retain only entries an active fork could resume). Small RAM/tech-debt fix; no behavior change.
 - [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs).* Still to do:
   - **Plan-mode gate (Claude)** — expose `permissionMode: "plan"` as a per-project/runner policy so the agent proposes a plan and `ExitPlanMode` becomes a `plan` HITL approved *before* any writes. Best fit for Skynet's HITL model; native to the Agent SDK.
@@ -161,13 +219,13 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   subway merge draw-in; respect `prefers-reduced-motion`) · one interactive-surface state rule
   (hover/active/focus consistent on every clickable, absent on everything else) · **a11y pass**
   (aria-labels on icon buttons, focus-visible everywhere, contrast audit vs the P0 type floor).
-- [ ] Auth: **SSO/OIDC**.
-- [ ] **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
+- [ ] 🏢 Auth: **SSO/OIDC**.
+- [ ] 🏢 **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
   everything (projects, runs, HITL, audit) but mutate nothing (no assign / resolve / transition /
   settings / provider keys). Wrap, don't rebuild: reuse the existing scoped-principal model — service
   tokens already carry `observe`/`author`/`approver` scopes, so extend the same scopes to human
-  sessions rather than a parallel permission system.
-- [ ] **Time-limited admin promotion** — temporarily elevate a viewer to admin for a bounded,
+  sessions rather than a parallel permission system. *(Multi-user — hosted/team only.)*
+- [ ] 🏢 **Time-limited admin promotion** — temporarily elevate a viewer to admin for a bounded,
   auto-expiring window (break-glass / sudo-style), then revert to their base role automatically; every
   promotion + expiry is audited. Depends on the read-only role above.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap, additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
