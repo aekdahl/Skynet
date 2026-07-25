@@ -60,27 +60,35 @@ function parseUnifiedDiff(patch: string): DiffFile[] {
 
 export function DiffView({
   runId,
+  patch,
+  files: capturedFiles,
   add,
   del,
   defaultOpen = false,
 }: {
-  runId: string;
+  // Live mode: fetch the patch lazily by runId (the Inbox review gate).
+  runId?: string;
+  // Static mode: a patch captured at decision time (the audit trail, where the
+  // worktree is gone and can't be re-fetched). When set, it renders directly.
+  patch?: string;
+  files?: string[];
   add: number;
   del: number;
   defaultOpen?: boolean;
 }) {
+  const isStatic = patch !== undefined;
   const [open, setOpen] = useState(defaultOpen);
-  const [data, setData] = useState<RunDiff | null>(null);
+  const [fetched, setFetched] = useState<RunDiff | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
-    if (!open) return;
+    if (isStatic || !open || !runId) return;
     let live = true;
     setErr(null);
-    setData(null);
+    setFetched(null);
     fetchRunDiff(runId)
-      .then((d) => live && setData(d))
+      .then((d) => live && setFetched(d))
       .catch((e: unknown) => {
         // Surface the real reason so a 404 (server predates this endpoint — a
         // stale build) is obvious rather than a mystery "couldn't load".
@@ -92,8 +100,11 @@ export function DiffView({
     return () => {
       live = false;
     };
-  }, [open, runId, nonce]);
+  }, [isStatic, open, runId, nonce]);
 
+  const data: RunDiff | null = isStatic
+    ? { patch: patch ?? "", add, del, files: capturedFiles ?? [] }
+    : fetched;
   const files = data ? parseUnifiedDiff(data.patch) : [];
   const nFiles = data ? data.files.length : 0;
 

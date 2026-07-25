@@ -1500,6 +1500,8 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .audit-why { font-size: 13px; color: var(--muted); line-height: 1.5; text-wrap: pretty; margin-top: 2px; }
 .audit-reason { font-size: 13px; color: var(--muted); font-style: italic; line-height: 1.5; margin-top: 3px; }
 .audit-cmd { font-size: 12px; color: var(--text); background: var(--bg); border: 1px solid var(--line-soft); border-radius: 6px; padding: 8px 10px; margin-top: 4px; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
+.audit-diff-wrap { margin-top: 8px; }
+.audit-files { font-size: 11px; color: var(--faint); line-height: 1.5; margin: 0 0 6px; word-break: break-all; }
 .audit-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--faint); }
 .audit-op { color: var(--muted); }
 .audit-sep { opacity: 0.6; }

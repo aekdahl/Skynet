@@ -33,7 +33,7 @@ import { resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
 import { now } from "./config.js";
 import { isGitRepo } from "./fs-browse.js";
-import type { Hub } from "./hub.js";
+import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
 import type { Store } from "./store/store.js";
@@ -176,7 +176,15 @@ export class Operations {
       by: operatorId,
       at: now(),
     };
-    const resolved = await this.hub.resolveHitl(hitlId, resolution);
+    // Capture the real diff into the audit record now, while the worktree still
+    // exists — it's retired once the branch merges, so a diff/merge decision
+    // can't be re-fetched afterward. Best-effort; the summary always remains.
+    let capturedDiff: CapturedDiff | undefined;
+    if (item.kind === "diff" || item.kind === "merge") {
+      const d = await this.orchestrator.runDiff(item.runId).catch(() => null);
+      if (d && (d.patch || d.files.length > 0)) capturedDiff = { patch: d.patch, files: d.files };
+    }
+    const resolved = await this.hub.resolveHitl(hitlId, resolution, capturedDiff);
     // Deliver to the agent & resume/merge only on the FIRST resolve (first-writer
     // wins in the Hub; a later resolve returns the existing item, unchanged `at`).
     if (resolved && resolved.resolution?.at === resolution.at) {

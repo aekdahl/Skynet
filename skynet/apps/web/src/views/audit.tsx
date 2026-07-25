@@ -3,6 +3,7 @@ import type { AuditRecord, ResolveAction } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { fmtWait, KIND_META } from "../lib/derive";
 import { RiskChip } from "../components/hitl-context";
+import { DiffView } from "../components/diff-view";
 import * as api from "../lib/client";
 
 // Decision audit trail (W8). The resolved-HITL history lives in its own
@@ -40,9 +41,15 @@ function payloadOf(p: unknown): {
   rationale: string | null;
   risk: string | null;
   options: string[] | null;
+  files: string[] | null;
+  patch: string | null;
+  diff: { add: number; del: number } | null;
 } {
   const o = (p ?? {}) as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
+  const strArr = (v: unknown) =>
+    Array.isArray(v) ? (v as unknown[]).filter((x): x is string => typeof x === "string") : null;
+  const d = o.diff as Record<string, unknown> | null | undefined;
   return {
     optionIndex: typeof o.optionIndex === "number" ? o.optionIndex : null,
     guidance: str(o.guidance),
@@ -52,7 +59,10 @@ function payloadOf(p: unknown): {
     command: str(o.command),
     rationale: str(o.rationale),
     risk: str(o.risk),
-    options: Array.isArray(o.options) ? (o.options as unknown[]).filter((x): x is string => typeof x === "string") : null,
+    options: strArr(o.options),
+    files: strArr(o.files),
+    patch: str(o.patch),
+    diff: d && typeof d === "object" ? { add: Number(d.add) || 0, del: Number(d.del) || 0 } : null,
   };
 }
 
@@ -132,6 +142,20 @@ function AuditRow({
       {rationale && <p className="audit-reason">💭 {rationale}</p>}
       {why && <p className="audit-why">{why}</p>}
       {command && <pre className="audit-cmd mono">{command}</pre>}
+
+      {(kind === "diff" || kind === "merge") && p.patch && (
+        <div className="audit-diff-wrap">
+          {p.files && p.files.length > 0 && (
+            <p className="audit-files mono">{p.files.join("  ·  ")}</p>
+          )}
+          <DiffView
+            patch={p.patch}
+            files={p.files ?? []}
+            add={p.diff?.add ?? 0}
+            del={p.diff?.del ?? 0}
+          />
+        </div>
+      )}
 
       <div className="audit-meta mono">
         <span className="audit-op">{rec.operatorId}</span>
