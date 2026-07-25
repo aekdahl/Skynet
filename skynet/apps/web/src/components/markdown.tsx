@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 
 // A tiny, dependency-free markdown renderer covering exactly what our docs use:
 // #/##/###/#### headings, ---, ordered/unordered lists nested to ANY depth, bold,
@@ -162,19 +162,114 @@ function List({ ordered, items, keyBase }: { ordered: boolean; items: ListItem[]
   );
 }
 
-export function Markdown({ text }: { text: string }) {
+// Render a flat list of blocks — the shared body used by both the plain and the
+// folded paths. `keyBase` namespaces React keys so sections never collide.
+function renderBlocks(blocks: Block[], keyBase: string): ReactNode[] {
+  return blocks.map((b, i) => {
+    const key = `${keyBase}-${i}`;
+    if (b.kind === "hr") return <hr key={key} />;
+    if (b.kind === "h") {
+      const Tag = (["h1", "h2", "h3", "h4"] as const)[b.level - 1] ?? "h4";
+      return <Tag key={key}>{inline(b.text, `h${key}`)}</Tag>;
+    }
+    if (b.kind === "list") return <List key={key} ordered={b.ordered} items={b.items} keyBase={"l" + key} />;
+    return <Fragment key={key}>{b.text ? <p>{inline(b.text, `p${key}`)}</p> : null}</Fragment>;
+  });
+}
+
+// A heading is "shipped" when it carries the ✓ shipped marker.
+export function headingIsShipped(text: string): boolean {
+  return /✓\s*shipped/i.test(text);
+}
+
+// Group a flat block list by level-2 (`##`) headings. Blocks before the first `##`
+// are the `lead`; each `##` opens a section whose `body` runs until the next `##`.
+export function sectionsFromBlocks(blocks: Block[]): {
+  lead: Block[];
+  sections: { heading: string; body: Block[] }[];
+} {
+  const lead: Block[] = [];
+  const sections: { heading: string; body: Block[] }[] = [];
+  let cur: { heading: string; body: Block[] } | null = null;
+  for (const b of blocks) {
+    if (b.kind === "h" && b.level === 2) {
+      cur = { heading: b.text, body: [] };
+      sections.push(cur);
+    } else if (cur) {
+      cur.body.push(b);
+    } else {
+      lead.push(b);
+    }
+  }
+  return { lead, sections };
+}
+
+// Count status-bearing list items (done vs. total) anywhere in a section's body.
+function countStatuses(blocks: Block[]): { done: number; total: number } {
+  let done = 0;
+  let total = 0;
+  const walk = (items: ListItem[]) => {
+    for (const it of items) {
+      if (it.status) {
+        total++;
+        if (it.status === "done") done++;
+      }
+      if (it.children.length) walk(it.children);
+    }
+  };
+  for (const b of blocks) if (b.kind === "list") walk(b.items);
+  return { done, total };
+}
+
+function FoldSection({ heading, body, sIdx }: { heading: string; body: Block[]; sIdx: number }) {
+  const [open, setOpen] = useState(false);
+  const title = heading.replace(/✓\s*shipped/i, "").trim();
+  const { done, total } = countStatuses(body);
+  return (
+    <div className="md-fold">
+      <button
+        type="button"
+        className="md-fold-summary"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="md-fold-caret" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
+        <span className="md-status md-st-done">
+          <span className="md-status-mark">✓</span>shipped
+        </span>
+        <span className="md-fold-title">{inline(title, `fold-h-${sIdx}`)}</span>
+        {total > 0 && (
+          <span className="md-fold-count">
+            {done}/{total}
+          </span>
+        )}
+      </button>
+      {open && <div className="md-fold-body">{renderBlocks(body, `fold-b-${sIdx}`)}</div>}
+    </div>
+  );
+}
+
+export function Markdown({ text, foldShipped = false }: { text: string; foldShipped?: boolean }) {
   const blocks = parseMarkdown(text);
+  if (!foldShipped) {
+    return <div className="md">{renderBlocks(blocks, "b")}</div>;
+  }
+  const { lead, sections } = sectionsFromBlocks(blocks);
   return (
     <div className="md">
-      {blocks.map((b, i) => {
-        if (b.kind === "hr") return <hr key={i} />;
-        if (b.kind === "h") {
-          const Tag = (["h1", "h2", "h3", "h4"] as const)[b.level - 1] ?? "h4";
-          return <Tag key={i}>{inline(b.text, `h${i}`)}</Tag>;
-        }
-        if (b.kind === "list") return <List key={i} ordered={b.ordered} items={b.items} keyBase={"l" + i} />;
-        return <Fragment key={i}>{b.text ? <p>{inline(b.text, `p${i}`)}</p> : null}</Fragment>;
-      })}
+      {renderBlocks(lead, "lead")}
+      {sections.map((s, i) =>
+        headingIsShipped(s.heading) ? (
+          <FoldSection key={`s${i}`} heading={s.heading} body={s.body} sIdx={i} />
+        ) : (
+          <Fragment key={`s${i}`}>
+            <h2>{inline(s.heading, `sh${i}`)}</h2>
+            {renderBlocks(s.body, `sb${i}`)}
+          </Fragment>
+        ),
+      )}
     </div>
   );
 }
