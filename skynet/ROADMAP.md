@@ -83,12 +83,13 @@ merges — all **local-first, on their own machine**.
    task reach `done`) and is LLM-judged. Run in the packaged desktop build with a real
    `ANTHROPIC_API_KEY`. *(Replaces the old hosted-staging E2E; staging is 🏢 deferred. An automated
    deterministic guard of the same loop runs on every PR — `tests/full-loop.test.ts`.)*
-11. [~] **UX/UI first-run polish to SOTA** — the launch blockers from the pre-release UX/UI review (the first ten minutes, where a new operator meets an empty board): pull QA surfaces (**Acceptance / Simulation**) out of the operator nav; real loading (skeleton + connect→connected lifecycle + retry — no terminal "Connecting to mission control…"); every empty state gets one primary CTA + a one-line mental-model hint; two-column onboarding + fix the **disabled-button** state globally (dim-amber reads as broken); surface **fleet-readiness** ("no provider connected — agents can't run · Add a key") from the first screen. *(Grades the first-run experience from ~3.4 → SOTA; none architectural.)*
+11. [x] **UX/UI first-run polish to SOTA** — the launch blockers from the pre-release UX/UI review (the first ten minutes, where a new operator meets an empty board): pull QA surfaces (**Acceptance / Simulation**) out of the operator nav; real loading (skeleton + connect→connected lifecycle + retry — no terminal "Connecting to mission control…"); every empty state gets one primary CTA + a one-line mental-model hint; two-column onboarding + fix the **disabled-button** state globally (dim-amber reads as broken); surface **fleet-readiness** ("no provider connected — agents can't run · Add a key") from the first screen. *(Grades the first-run experience from ~3.4 → SOTA; none architectural.)*
 
 **Scope:** Claude-first · **local-first desktop app** (BYO key, single operator, file-store persistence,
 keys never leave the machine). **Hosted / multi-tenant is out of scope** (🏢 deferred — see below).
 **Done =** the full loop runs on a **packaged desktop build** (beta, unsigned) on an operator's own
-machine. *(Critical path: **#11 UX P0** — packaging #9 + loop E2E #10 are done; code-signing → v1.)*
+machine. *(**All v0 must-build items are done** — the beta is cuttable: tag `v*` → the desktop-release
+CI publishes installers. Code-signing is the one deferred piece, split to v1.)*
 
 ---
 
