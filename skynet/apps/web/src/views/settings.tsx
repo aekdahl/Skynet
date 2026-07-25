@@ -76,6 +76,10 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
           overrides one from an environment variable; the env key is used as a
           fallback when nothing is set here.
         </p>
+        <p>
+          Tip: set a spend limit on your key in the provider's console — a safety
+          net with autonomy or remote (Telegram) control.
+        </p>
       </div>
 
       {disabled && (

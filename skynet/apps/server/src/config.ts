@@ -158,9 +158,13 @@ export const config = {
   telegramBotToken: process.env.SKYNET_TELEGRAM_BOT_TOKEN || undefined,
   // The owner's chat id — the ONLY chat the bridge acts on (all others ignored).
   telegramOwnerChatId: process.env.SKYNET_TELEGRAM_OWNER_CHAT_ID || undefined,
-  // Approve/reject over chat is opt-in (default OFF); the kill switch + status
-  // always work regardless.
-  telegramApprove: process.env.SKYNET_TELEGRAM_APPROVE === "true",
+  // Conversational owner-only control is opt-in (default OFF). This single gate
+  // enables ALL privileged natural-language actions (approve/reject/add_task/
+  // assign/add_agent), each of which is parsed by the operator's OWN LLM into a
+  // CLOSED five-action whitelist and CONFIRMED before it runs. Notifications,
+  // /status, and the kill switch (/stop, /quit) work WITHOUT it and never depend
+  // on the LLM. Replaces the older approve-only SKYNET_TELEGRAM_APPROVE flag.
+  telegramControl: process.env.SKYNET_TELEGRAM_CONTROL === "true",
 };
 
 export const now = (): number => Date.now();

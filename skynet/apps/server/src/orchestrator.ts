@@ -1044,6 +1044,46 @@ export class Orchestrator {
     });
   }
 
+  /**
+   * BYOK intent-parse path for the Telegram conversational bridge. Interpret a
+   * natural-language operator message using the operator's OWN provider key —
+   * never a Skynet-hosted model. Iterate the fleet, pick the FIRST provider that
+   * has a resolvable key AND a stateless `.consult`, and ask it `question` (the
+   * classifier instruction) with `context` (the operator message + workspace
+   * snapshot) as grounding data. Returns the raw model reply, or `null` when no
+   * provider/key/consult is available (the caller then falls back to slash
+   * commands). Reuses the same consult plumbing as assessTask/autoReview.
+   *
+   * The operator message rides inside `context` as DATA (not as the question),
+   * so a misparse or a prompt-injection attempt can only ever produce a reply
+   * the caller re-validates against a closed whitelist — it can never escalate.
+   */
+  async consult(ws: string, question: string, context?: string): Promise<string | null> {
+    const agents = await this.store.listAgents(ws).catch(() => [] as Agent[]);
+    for (const agent of agents) {
+      const apiKey = await secretService.resolve(ws, agent.provider).catch(() => undefined);
+      if (!apiKey) continue;
+      let provider: RunnerProvider;
+      try {
+        provider = await this.getProvider(agent.provider);
+      } catch {
+        continue; // unresolvable provider — try the next agent
+      }
+      if (!provider.consult) continue;
+      try {
+        return await provider.consult(
+          { task: "Classify an operator remote-control message", model: agent.model, cwd: config.runnerCwd, apiKey, context },
+          question,
+        );
+      } catch {
+        // A provider round-trip failure is treated as "no interpretation" — the
+        // caller degrades to slash commands rather than guessing.
+        return null;
+      }
+    }
+    return null;
+  }
+
   /** Answer a follow-up when there's no live session, via the provider's
    *  stateless consult, grounded in the stored log — works even across a server
    *  restart. The reply is truthful about the agent's actual status (DEF-002):

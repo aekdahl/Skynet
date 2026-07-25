@@ -51,7 +51,12 @@ export type BridgeAction = {
     | "resume"
     | "quit"
     | "ignore"
-    | "denied-approve";
+    | "denied-approve"
+    // Owner free text (not a slash-command): index.ts routes it to the confirm
+    // state machine (pending affirmative → run; else the conversational parse).
+    // The deterministic commands above are ALWAYS decided here first, so the
+    // kill switch + status never depend on the LLM.
+    | "freetext";
   /** A trailing argument (e.g. a gate id for approve/reject), when present. */
   arg?: string;
 };
@@ -61,27 +66,30 @@ export interface DecideInput {
   chatId: string;
   /** The configured owner chat id — the ONLY chat we act on. */
   ownerChatId: string;
-  /** Whether approve/reject over chat is enabled (SKYNET_TELEGRAM_APPROVE). */
-  approveEnabled: boolean;
+  /** Whether privileged control over chat is enabled (SKYNET_TELEGRAM_CONTROL).
+   *  Gates the deterministic /approve|/reject AND the conversational actions. */
+  controlEnabled: boolean;
   /** The raw message text. */
   text: string;
 }
 
 /**
- * The single security gate for the whole bridge:
+ * The single deterministic security gate for the whole bridge:
  *  1. Owner-bound — a message from any chat other than the owner → "ignore"
  *     (index.ts logs it WITHOUT echoing content).
- *  2. No free-text execution — anything that isn't an exact slash-command → "help".
- *  3. Approve opt-in — /approve|/reject map to "denied-approve" when disabled; the
- *     kill switch (/stop, /quit) and /status|/gates always work.
+ *  2. Exact slash-commands are decided HERE, before any LLM parse — the kill
+ *     switch (/stop, /quit), /status, /gates, /help never depend on the model.
+ *  3. Control opt-in — /approve|/reject map to "denied-approve" when disabled.
+ *  4. Any other owner text → "freetext" (routed to the confirm state machine).
  */
 export function decide(input: DecideInput): BridgeAction {
   // 1. Owner-bound: never act on a message from a non-owner chat.
   if (String(input.chatId) !== String(input.ownerChatId)) return { kind: "ignore" };
 
-  // 2. Only exact slash-commands are honored; everything else → /help.
+  // 2. Only exact slash-commands are honored deterministically; other owner text
+  //    is free text for the conversational path (NEVER executed as a command).
   const parsed = parseCommand(input.text);
-  if (!parsed) return { kind: "help" };
+  if (!parsed) return { kind: "freetext" };
 
   switch (parsed.cmd) {
     case "start":
@@ -97,13 +105,13 @@ export function decide(input: DecideInput): BridgeAction {
       return { kind: "resume" };
     case "quit":
       return { kind: "quit" };
-    // 3. Approve/reject are gated behind the opt-in flag.
+    // 3. Approve/reject are gated behind the control flag.
     case "approve":
-      return input.approveEnabled
+      return input.controlEnabled
         ? { kind: "approve", arg: parsed.arg }
         : { kind: "denied-approve" };
     case "reject":
-      return input.approveEnabled
+      return input.controlEnabled
         ? { kind: "reject", arg: parsed.arg }
         : { kind: "denied-approve" };
     default:
