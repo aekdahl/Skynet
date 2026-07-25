@@ -42,7 +42,7 @@ export function RoadmapView() {
         <p className="roadmap-err">Loading…</p>
       ) : (
         <div className="roadmap-doc">
-          <Markdown text={md} />
+          <Markdown text={md} foldShipped />
         </div>
       )}
     </section>

@@ -48,7 +48,7 @@ Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ 
 
 ---
 
-## v0 — MVP · the local desktop app  ← committed
+## v0 — MVP · the local desktop app  ✓ shipped
 
 **Goal:** an operator installs the **desktop app**, points it at a repo + their Anthropic key, assigns
 a task, and a **real Claude agent** does the work in an isolated worktree under human supervision, then

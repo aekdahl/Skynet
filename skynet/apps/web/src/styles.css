@@ -1022,6 +1022,22 @@ button.kb-done:hover { opacity: 1; }
 .md-st-todo { color: var(--muted); background: var(--raised); border-color: var(--line); }
 /* a shipped item's text de-emphasizes slightly; planned stays full for readability */
 .md-li-done > .md-li-body > span:last-child { color: var(--faint); }
+
+/* Collapsible shipped section (Roadmap fold) — a whole ## section behind a toggle */
+.md-fold { border-top: 1px solid var(--line-soft); margin-top: 26px; }
+.md-fold-summary {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  margin: 0; padding: 12px 0 4px; background: transparent; border: none;
+  font: inherit; color: var(--text); text-align: left; cursor: pointer;
+}
+.md-fold-caret { flex: none; font-size: 10px; color: var(--faint); width: 12px; }
+.md-fold-title { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+.md-fold-summary:hover .md-fold-title { color: var(--accent); }
+.md-fold-summary:hover .md-fold-caret { color: var(--accent); }
+.md-fold-count { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
+.md-fold-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.md-fold-body { padding-bottom: 4px; }
+
 .settings-setup-text { flex: 1; min-width: 0; }
 .settings-setup-title { font-size: 14px; font-weight: 600; }
 .settings-setup-sub { font-size: 12px; color: var(--faint); margin-top: 2px; }
