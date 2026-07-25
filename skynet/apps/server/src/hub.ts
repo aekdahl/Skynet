@@ -19,6 +19,14 @@ import type { Bus } from "./bus.js";
 import { computeConflicts } from "./derive/conflicts.js";
 import type { Store } from "./store/store.js";
 
+/** The real change reviewed at a diff/merge gate, captured into the audit record
+ *  at resolve time (the worktree is gone once merged, so it can't be re-fetched).
+ *  The patch is size-capped by the worktree layer that produces it. */
+export interface CapturedDiff {
+  patch: string;
+  files: string[];
+}
+
 export class Hub {
   // Per-workspace set of already-emitted conflict keys, to avoid re-emitting.
   private conflictKeys = new Map<string, Set<string>>();
@@ -135,11 +143,15 @@ export class Hub {
    * We chain onto any in-flight resolve for the same id and clean the entry
    * up once this is the tail of the chain.
    */
-  async resolveHitl(id: string, resolution: Resolution): Promise<HitlItem | undefined> {
+  async resolveHitl(
+    id: string,
+    resolution: Resolution,
+    capturedDiff?: CapturedDiff,
+  ): Promise<HitlItem | undefined> {
     const prior = this.hitlLocks.get(id) ?? Promise.resolve();
     const run = prior
       .catch(() => {}) // a prior failure must not poison the queue
-      .then(() => this.doResolveHitl(id, resolution));
+      .then(() => this.doResolveHitl(id, resolution, capturedDiff));
     this.hitlLocks.set(id, run);
     try {
       return await run;
@@ -150,7 +162,11 @@ export class Hub {
     }
   }
 
-  private async doResolveHitl(id: string, resolution: Resolution): Promise<HitlItem | undefined> {
+  private async doResolveHitl(
+    id: string,
+    resolution: Resolution,
+    capturedDiff?: CapturedDiff,
+  ): Promise<HitlItem | undefined> {
     const item = await this.store.getHitl(id);
     if (!item) return undefined;
     if (item.resolution) return item; // already resolved — return existing
@@ -179,6 +195,11 @@ export class Hub {
         options: item.options,
         recommended: item.recommended,
         diff: item.diff,
+        // The real change reviewed, captured at decision time — the worktree is
+        // retired after merge, so the audit can't re-fetch it later. Only present
+        // for diff/merge decisions; the patch is size-capped upstream.
+        files: capturedDiff?.files,
+        patch: capturedDiff?.patch,
       },
     });
     this.bus.publish(item.workspaceId, { type: "hitl.resolved", id, resolution });
