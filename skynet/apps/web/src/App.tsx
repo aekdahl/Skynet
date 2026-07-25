@@ -18,6 +18,7 @@ import { SettingsView } from "./views/settings";
 import { AcceptanceView } from "./views/acceptance";
 import { SimulationView } from "./views/simulation";
 import { RoadmapView } from "./views/roadmap";
+import { AgentDetailView } from "./views/agent-detail";
 
 export type ViewName =
   | "home"
@@ -31,7 +32,8 @@ export type ViewName =
   | "settings"
   | "acceptance"
   | "simulation"
-  | "roadmap";
+  | "roadmap"
+  | "agentDetail";
 export type Lens = "subway" | "timeline" | "ledger" | "roster";
 
 const VIEW_LABEL: Record<string, string> = {
@@ -46,6 +48,7 @@ const VIEW_LABEL: Record<string, string> = {
   acceptance: "Acceptance",
   simulation: "Simulation",
   roadmap: "Roadmap",
+  agentDetail: "Agent",
 };
 
 export function App() {
@@ -59,6 +62,7 @@ export function App() {
   const [lens, setLens] = useState<Lens>(() => route0?.lens ?? "subway");
   const [projectId, setProjectId] = useState<string | null>(() => route0?.projectId ?? null);
   const [runId, setRunId] = useState<string | null>(() => route0?.runId ?? null);
+  const [agentId, setAgentId] = useState<string | null>(() => route0?.agentId ?? null);
   const [from, setFrom] = useState<ViewName>("home");
   const [fromP, setFromP] = useState<ViewName>("home");
   const [selIdx] = useState(0);
@@ -84,9 +88,9 @@ export function App() {
 
   // [w7] Keep the URL hash in sync with router state (shareable deep links).
   useEffect(() => {
-    const desired = toHash({ view, lens, projectId, runId });
+    const desired = toHash({ view, lens, projectId, runId, agentId });
     if (location.hash !== desired) location.hash = desired;
-  }, [view, lens, projectId, runId]);
+  }, [view, lens, projectId, runId, agentId]);
 
   // [w7] Apply hash changes (back/forward, manual edits, shared links).
   useEffect(() => {
@@ -97,6 +101,7 @@ export function App() {
       if (r.lens) setLens(r.lens);
       setProjectId(r.projectId ?? null);
       setRunId(r.runId ?? null);
+      setAgentId(r.agentId ?? null);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -106,6 +111,10 @@ export function App() {
     setFrom(view === "task" ? from : view);
     setRunId(id);
     setView("task");
+  };
+  const openAgent = (id: string) => {
+    setAgentId(id);
+    setView("agentDetail");
   };
   const openProject = (id: string) => {
     setFromP(view === "project" || view === "task" ? fromP : view);
@@ -191,7 +200,17 @@ export function App() {
                 onCreate={createProject}
               />
             )}
-            {store.loaded && view === "fleet" && <FleetView onOpenTask={openTask} />}
+            {store.loaded && view === "fleet" && (
+              <FleetView onOpenTask={openTask} onOpenAgent={openAgent} />
+            )}
+            {store.loaded && view === "agentDetail" && agentId && (
+              <AgentDetailView
+                agentId={agentId}
+                now={now}
+                onBack={() => setView("fleet")}
+                onOpenTask={openTask}
+              />
+            )}
             {store.loaded && view === "integrations" && <IntegrationsView />}
             {store.loaded && view === "project" && project && (
               <ProjectView
