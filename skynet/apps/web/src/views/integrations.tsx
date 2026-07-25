@@ -342,6 +342,27 @@ export function GithubConnect({
   }
 
   if (phase === "idle") {
+    // The PAT connect — the only path that works without the cloud token broker.
+    const patConnect = (
+      <>
+        <div className="gh-row">
+          <input
+            type="password"
+            className="settings-input"
+            autoComplete="off"
+            placeholder="github_pat_… or ghp_…"
+            value={pat}
+            onChange={(e) => setPat(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && connectPat()}
+          />
+          <button className="btn btn-primary" disabled={patBusy || !pat.trim()} onClick={connectPat}>
+            {patBusy ? "Connecting…" : "Connect token"}
+          </button>
+        </div>
+        {patErr && <div className="gh-pat-err">{patErr}</div>}
+      </>
+    );
+
     return (
       <div className="gh-card">
         {!embedded && (
@@ -350,55 +371,50 @@ export function GithubConnect({
             <span className="gh-card-title">Connect GitHub</span>
           </div>
         )}
-        <p className="gh-card-sub">
-          Install the Skynet GitHub App on the account that owns your repositories. Skynet acts through
-          least-privilege, short-lived installation tokens — never your personal credentials.
-        </p>
-        {!brokerConfigured && (
-          <PlaceholderNote>
-            The GitHub App install flow isn't wired yet — this simulates it locally so you can try
-            the rest of the loop. No app is actually installed on GitHub. (Set up the token broker to
-            enable the real install.)
-          </PlaceholderNote>
-        )}
-        <div className="gh-perm">
-          {APP_PERMISSIONS.map((p) => (
-            <div key={p.scope} className="gh-perm-row">
-              <span>{p.scope}</span>
-              <span className="mono">{p.level}</span>
-              <span className="gh-perm-why">{p.why}</span>
-            </div>
-          ))}
-        </div>
-        <div className="gh-row">
-          <button className="btn btn-primary" onClick={() => (brokerConfigured ? beginDevice() : setPhase("account"))}>
-            <Octicon /> &nbsp;Install Skynet GitHub App
-          </button>
-        </div>
-        {berr && <div className="gh-pat-err">{berr}</div>}
 
-        <div className="gh-pat">
-          <div className="gh-pat-or">— or connect with a token (works locally, no cloud) —</div>
-          <p className="gh-card-sub">
-            Paste a GitHub fine-grained personal access token (Contents + Pull requests:
-            read/write on the repos you want). Stored encrypted on this machine; never shown again.
-          </p>
-          <div className="gh-row">
-            <input
-              type="password"
-              className="settings-input"
-              autoComplete="off"
-              placeholder="github_pat_… or ghp_…"
-              value={pat}
-              onChange={(e) => setPat(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && connectPat()}
-            />
-            <button className="btn btn-primary" disabled={patBusy || !pat.trim()} onClick={connectPat}>
-              {patBusy ? "Connecting…" : "Connect token"}
-            </button>
+        {/* The GitHub App install is an org-wide, cloud path that needs the token
+            broker. Without it (local-only), the install can't work — so show
+            ONLY the PAT path rather than a dead/simulated App button. */}
+        {brokerConfigured ? (
+          <>
+            <p className="gh-card-sub">
+              Install the Skynet GitHub App on the account that owns your repositories. Skynet acts through
+              least-privilege, short-lived installation tokens — never your personal credentials.
+            </p>
+            <div className="gh-perm">
+              {APP_PERMISSIONS.map((p) => (
+                <div key={p.scope} className="gh-perm-row">
+                  <span>{p.scope}</span>
+                  <span className="mono">{p.level}</span>
+                  <span className="gh-perm-why">{p.why}</span>
+                </div>
+              ))}
+            </div>
+            <div className="gh-row">
+              <button className="btn btn-primary" onClick={beginDevice}>
+                <Octicon /> &nbsp;Install Skynet GitHub App
+              </button>
+            </div>
+            {berr && <div className="gh-pat-err">{berr}</div>}
+
+            <div className="gh-pat">
+              <div className="gh-pat-or">— or connect with a token (works locally, no cloud) —</div>
+              <p className="gh-card-sub">
+                Paste a GitHub fine-grained personal access token (Contents + Pull requests:
+                read/write on the repos you want). Stored encrypted on this machine; never shown again.
+              </p>
+              {patConnect}
+            </div>
+          </>
+        ) : (
+          <div className="gh-pat gh-pat-solo">
+            <p className="gh-card-sub">
+              Connect with a GitHub fine-grained personal access token (Contents + Pull requests:
+              read/write on the repos you want). Stored encrypted on this machine; never shown again.
+            </p>
+            {patConnect}
           </div>
-          {patErr && <div className="gh-pat-err">{patErr}</div>}
-        </div>
+        )}
       </div>
     );
   }
