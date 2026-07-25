@@ -223,7 +223,11 @@ export function QueueView({
   const open = openQueue(queue).sort(
     (a, b) => waitedSecs(b, now) - waitedSecs(a, now),
   );
-  const resolvedCount = queue.filter((q) => q.resolvedAt != null).length;
+  // Resolved *today* (since local midnight) — a bounded, self-resetting momentum
+  // stat. The old count was every resolved gate the store still held, so it only
+  // ever grew and never reset (it was mislabeled "this session").
+  const startOfToday = new Date(now).setHours(0, 0, 0, 0);
+  const resolvedCount = queue.filter((q) => q.resolvedAt != null && q.resolvedAt >= startOfToday).length;
   // Clear-all = reject every still-open gate. Consequential (each reject bounces
   // that run), so it's a two-step: arm, then confirm.
   const [armed, setArmed] = useState(false);
@@ -258,7 +262,7 @@ export function QueueView({
           <span className="readout-label">
             resolved
             <br />
-            this session
+            today
           </span>
         </div>
         {open.length > 0 && (
