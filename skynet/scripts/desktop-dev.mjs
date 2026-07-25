@@ -43,6 +43,22 @@ if (!existsSync("apps/desktop/node_modules/.bin/electron")) {
   process.exit(1);
 }
 
+// Brand the dev app name. On macOS the application-menu title comes from the
+// running bundle's CFBundleName — in dev that's the prebuilt Electron.app, so the
+// menu reads "Electron" no matter what `app.setName()` does at runtime. Packaged
+// builds already get "Skynet" from electron-builder's productName; this makes
+// `desktop:dev` match by patching the local Electron.app's Info.plist. macOS-only,
+// idempotent, best-effort (a failure just leaves the default name — never fatal).
+function brandDevElectron() {
+  if (process.platform !== "darwin") return;
+  const plist = "apps/desktop/node_modules/electron/dist/Electron.app/Contents/Info.plist";
+  if (!existsSync(plist)) return;
+  for (const key of ["CFBundleName", "CFBundleDisplayName"]) {
+    spawnSync("/usr/libexec/PlistBuddy", ["-c", `Set :${key} Skynet`, plist], { stdio: "ignore" });
+  }
+}
+brandDevElectron();
+
 // Stable dev master key (throwaway, gitignored) so the secret store works.
 const keyFile = `${devDir}/master.key`;
 let masterKey;
