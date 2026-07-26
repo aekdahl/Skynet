@@ -30,8 +30,10 @@ import {
   InvalidEnvValueError,
 } from "./settings/env-settings.js";
 import { CommandDeniedError } from "./command-safety.js";
-import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError } from "./orchestrator.js";
+import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import { NotFoundError, type Operations, RunnerBusyError } from "./operations.js";
+import { simulateConversational } from "./telegram/index.js";
+import { simulationGrade } from "./simulation/grade.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -41,6 +43,8 @@ declare module "fastify" {
 
 export interface ApiDeps {
   operations: Operations;
+  /** Used by the Telegram conversational DRY-RUN endpoint (BYOK consult). */
+  orchestrator: Orchestrator;
 }
 
 const ws = (req: FastifyRequest) => req.principal!.workspaceId;
@@ -160,6 +164,53 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return fail(reply, err);
     }
   });
+
+  // ── Telegram conversational assistant — DRY-RUN ────────────────────────────
+  // Runs the exact assistant pipeline (buildContext → BYOK consult → parse the
+  // {reply, action} envelope) WITHOUT executing anything. This is the seam the
+  // Simulation section drives: it proves the assistant answers questions AND
+  // routes clear requests to a whitelisted action, repeatably and with zero
+  // mutations. No consult-capable key → {reply:null, action:null, error:"no-llm"}.
+  app.post<{ Body: { text?: unknown } }>("/api/telegram/simulate", async (req, reply) => {
+    const text = typeof req.body?.text === "string" ? req.body.text : "";
+    if (!text.trim()) return reply.code(400).send({ error: "text is required" });
+    try {
+      return await simulateConversational(
+        { operations: ops, orchestrator: deps.orchestrator, ws: ws(req) },
+        text,
+      );
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── Simulation step grading — LLM-as-judge ─────────────────────────────────
+  // A generic "did the assistant's response meet an expectation?" grader the
+  // Simulation LLM journeys call to decide each step: the behavior is produced
+  // by a real BYOK LLM, and the per-step verdict is ALSO produced by an LLM (so
+  // a defensible paraphrase / clearly-equivalent action isn't failed by a
+  // brittle `===`). prompt/expectation/actual all ride inside the context as
+  // DATA. No consult-capable key → {pass:null, error:"no-llm"} (HTTP 200) so the
+  // caller can soft-skip, consistent with the conversational dry-run endpoint.
+  app.post<{ Body: { prompt?: unknown; expectation?: unknown; actual?: unknown } }>(
+    "/api/simulation/grade",
+    async (req, reply) => {
+      const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : "";
+      const expectation = typeof req.body?.expectation === "string" ? req.body.expectation : "";
+      const actual = typeof req.body?.actual === "string" ? req.body.actual : "";
+      if (!prompt.trim() || !expectation.trim()) {
+        return reply.code(400).send({ error: "prompt and expectation are required" });
+      }
+      try {
+        return await simulationGrade(
+          { orchestrator: deps.orchestrator, ws: ws(req) },
+          { prompt, expectation, actual },
+        );
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
 
   // ── agent actions ────────────────────────────────────────────────────────
   app.post<{ Params: { id: string } }>("/api/runs/:id/messages", async (req, reply) => {

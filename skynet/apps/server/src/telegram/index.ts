@@ -34,10 +34,11 @@ import { decide } from "./commands.js";
 import {
   buildContext,
   INTENT_SYSTEM_PROMPT,
-  parseIntent,
+  parseResponse,
   renderContext,
   type Action,
   type IntentContext,
+  type IntentOps,
 } from "./intent.js";
 
 const log = (line: string): void => console.log(`[telegram] ${line}`);
@@ -227,8 +228,8 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     }
   };
 
-  /** The free-text (non-slash-command) path: pending affirmation first, then a
-   *  fresh conversational parse. */
+  /** The free-text (non-slash-command) path: pending affirmation first, then the
+   *  helpful assistant (a concise reply, plus an optional confirmed action). */
   const handleFreeText = async (chatId: string, text: string): Promise<void> => {
     // 1. Resolve a pending action first — never send a "yes"/"no" to the LLM.
     const p = pending.get(chatId);
@@ -247,7 +248,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
       return;
     }
 
-    // 2. A fresh intent needs conversational control turned on.
+    // 2. A fresh message needs conversational control turned on.
     if (!deps.controlEnabled) {
       await notify("Conversational control is off (set SKYNET_TELEGRAM_CONTROL=true).");
       return;
@@ -263,28 +264,31 @@ export function createOwnerControl(deps: OwnerControlDeps): {
       return;
     }
 
-    // 4. PURE parse + whitelist/id validation. Unmappable → ask to rephrase.
-    const action = parseIntent(raw, ctx);
-    if (!action || action.kind === "none") {
-      await notify("I couldn't map that — try: approve <gate>, add task …, assign … to …, add agent …");
+    // 4. The assistant ALWAYS replies helpfully, and OPTIONALLY proposes ONE
+    //    validated action. Never a dead end: a chat/question just gets the reply.
+    const { reply, action } = parseResponse(raw, ctx);
+
+    // Read-only status: answer with the live status (nothing to confirm).
+    if (action?.kind === "status") {
+      const status = await statusText();
+      await notify(reply ? `${reply}\n\n${status}` : status);
       return;
     }
 
-    // Read-only status runs immediately (nothing to confirm).
-    if (action.kind === "status") {
-      await notify(await statusText());
-      return;
+    // A privileged action: describe it and wait for an explicit yes. The reply
+    // rides along so the owner always gets context before confirming.
+    if (action && action.kind !== "none") {
+      const next = toPending(action, ctx);
+      if (next) {
+        pending.set(chatId, next);
+        log(`awaiting confirmation for action: ${next.kind}`);
+        await notify([reply, `${next.summary} — reply yes / no`].filter(Boolean).join("\n\n"));
+        return;
+      }
     }
 
-    // 5. A privileged action: describe it and wait for an explicit yes.
-    const next = toPending(action, ctx);
-    if (!next) {
-      await notify("I couldn't map that — try: approve <gate>, add task …, assign … to …, add agent …");
-      return;
-    }
-    pending.set(chatId, next);
-    log(`awaiting confirmation for action: ${next.kind}`);
-    await notify(`${next.summary} — reply yes / no`);
+    // No actionable intent — just the helpful reply.
+    await notify(reply || "I'm here to help — ask me about gates, runs, projects, or tell me what to do.");
   };
 
   const handle = async (chatId: string, text: string): Promise<void> => {
@@ -427,6 +431,38 @@ export function createOwnerControl(deps: OwnerControlDeps): {
   };
 
   return { handle };
+}
+
+/** The narrow slice {@link simulateConversational} needs from the orchestrator. */
+export interface SimulateOrch {
+  consult(ws: string, question: string, context?: string): Promise<string | null>;
+}
+
+export interface SimulateDeps {
+  operations: IntentOps;
+  orchestrator: SimulateOrch;
+  /** Workspace to ground against (defaults to DEFAULT_WORKSPACE). */
+  ws?: string;
+}
+
+/**
+ * DRY-RUN of the conversational assistant: build the grounding context, ask the
+ * operator's own LLM (BYOK, via consult), and parse the {reply, action} envelope
+ * — WITHOUT executing anything. This is the seam the Simulation section drives to
+ * verify the assistant both ANSWERS and ROUTES, repeatably and with no mutations.
+ * When no consult-capable key is available, returns `{reply:null, action:null,
+ * error:"no-llm"}` so the caller can soft-skip rather than fail.
+ */
+export async function simulateConversational(
+  deps: SimulateDeps,
+  text: string,
+): Promise<{ reply: string | null; action: Action | null; error?: string }> {
+  const ws = deps.ws ?? DEFAULT_WORKSPACE;
+  const ctx = await buildContext(deps.operations, ws);
+  const raw = await deps.orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx));
+  if (raw == null) return { reply: null, action: null, error: "no-llm" };
+  const { reply, action } = parseResponse(raw, ctx);
+  return { reply, action };
 }
 
 export interface TelegramBridgeDeps {

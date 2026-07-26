@@ -1125,6 +1125,108 @@ export const JOURNEYS: Journey[] = [
       return steps;
     },
   },
+  {
+    id: "conversational-control",
+    name: "Conversational control (LLM)",
+    desc: "Drives the Telegram assistant's DRY-RUN endpoint: it ANSWERS questions helpfully (never a dead end) AND ROUTES clear requests to a single whitelisted action. Real BYOK LLM; nothing is executed (pure dry-run, repeatable).",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: convo ${tag}`;
+      // Seed a project so add_task/assign have a real name+id to resolve against.
+      await api.createProject({ name: pname, goal: "simulated conversational control" });
+      const s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      steps.push(step("seed project for name-resolution (persists)", !!p, p?.id));
+      if (!p) return steps;
+
+      // Call the dry-run endpoint; a thrown error becomes a soft failure detail.
+      const ask = async (text: string) => {
+        try {
+          return await api.simulateConversational(text);
+        } catch (e) {
+          return { reply: null, action: null, error: (e as Error).message } as api.ConversationalResult;
+        }
+      };
+
+      // Per-step LLM GRADING: the assistant's behavior is produced by a real BYOK
+      // LLM (`ask`), and whether it acceptably handled each phrase is decided by a
+      // SECOND LLM against a plain-English expectation — "done by an LLM, judged
+      // by an LLM". This replaces brittle exact-match (`action?.kind === "…"`)
+      // checks: a defensible paraphrase reply or a clearly-equivalent action still
+      // passes, while a dead-end/error still fails. A thrown grade call soft-fails.
+      const grade = async (prompt: string, expectation: string, r: api.ConversationalResult) => {
+        try {
+          return await api.simulationGrade(prompt, expectation, JSON.stringify({ reply: r.reply, action: r.action }));
+        } catch (e) {
+          return { pass: false, reason: (e as Error).message } as api.GradeResult;
+        }
+      };
+
+      // 1. A help question → a helpful reply and NO action (never a dead end).
+      const help = await ask("what can you help with?");
+      // No consult-capable key → the whole journey soft-skips (keyless, like the
+      // other BYOK journeys it can't prove the LLM behavior without a key).
+      if (help.error === "no-llm") {
+        return [...steps, skipped("assistant answers 'what can you help with?'", "no Claude key — conversational LLM unavailable (BYOK)")];
+      }
+      if (help.error) {
+        return [...steps, step("assistant answers 'what can you help with?'", false, help.error)];
+      }
+      const helpExpect =
+        "Answers helpfully about what it can do and proposes NO action (a dead-end or error is a fail).";
+      const helpVerdict = await grade("what can you help with?", helpExpect, help);
+      // The grader shares the conversational endpoint's BYOK plumbing: a no-llm
+      // grade means the same missing key, so soft-skip the whole journey too.
+      if (helpVerdict.error === "no-llm") {
+        return [...steps, skipped("assistant answers 'what can you help with?'", "no Claude key — grader LLM unavailable (BYOK)")];
+      }
+      steps.push(step("answers 'what can you help with?' — helpful, no action (LLM-graded)", helpVerdict.pass === true, helpVerdict.reason));
+
+      // 2. A clear add-task request against the seeded project → routes to add_task.
+      const addTaskPrompt = `add a task to ${pname}: fix the login bug`;
+      const addTask = await ask(addTaskPrompt);
+      const addTaskVerdict = await grade(
+        addTaskPrompt,
+        "Routes to the add_task action for that project (a clearly-equivalent action is acceptable).",
+        addTask,
+      );
+      steps.push(step("routes 'add a task …' → add_task (LLM-graded)", addTaskVerdict.pass === true, addTaskVerdict.reason));
+
+      // 3. A clear create-project request → routes to create_project.
+      const createProjPrompt = "create a project called Marketing Site";
+      const createProj = await ask(createProjPrompt);
+      const createProjVerdict = await grade(
+        createProjPrompt,
+        "Routes to the create_project action.",
+        createProj,
+      );
+      steps.push(step("routes 'create a project …' → create_project (LLM-graded)", createProjVerdict.pass === true, createProjVerdict.reason));
+
+      // 4. Add a claude agent → routes to add_agent, OR (if Claude isn't available)
+      //    explains it can't rather than dead-ending — the grader judges both.
+      const addAgentPrompt = "add a claude agent";
+      const addAgent = await ask(addAgentPrompt);
+      const addAgentVerdict = await grade(
+        addAgentPrompt,
+        "Routes to the add_agent action, or (if Claude isn't available) explains it can't rather than dead-ending.",
+        addAgent,
+      );
+      steps.push(step("handles 'add a claude agent' (LLM-graded)", addAgentVerdict.pass === true, addAgentVerdict.reason));
+
+      // 5. A status question → a helpful reply (action null, or a read-only status).
+      const statusPrompt = "what's running right now?";
+      const status = await ask(statusPrompt);
+      const statusVerdict = await grade(
+        statusPrompt,
+        "Answers helpfully about current state; no action, or a read-only status action, is fine.",
+        status,
+      );
+      steps.push(step("answers 'what's running right now?' (LLM-graded)", statusVerdict.pass === true, statusVerdict.reason));
+
+      return steps;
+    },
+  },
 ];
 
 /**

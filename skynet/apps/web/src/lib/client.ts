@@ -80,6 +80,33 @@ export function resolveHitl(
 export function sendAgentMessage(id: string, text: string) {
   return req<{ reply: string }>("POST", `/api/runs/${id}/messages`, { text });
 }
+
+// Telegram conversational assistant — DRY-RUN. Runs the assistant pipeline
+// (helpful reply + optional whitelisted action) WITHOUT executing anything, so
+// the Simulation section can exercise it repeatably. `error: "no-llm"` means no
+// consult-capable key is available.
+export interface ConversationalResult {
+  reply: string | null;
+  action: { kind: string } | null;
+  error?: string;
+}
+export function simulateConversational(text: string) {
+  return req<ConversationalResult>("POST", "/api/telegram/simulate", { text });
+}
+
+// Simulation step grading — LLM-as-judge. Given the operator `prompt`, an
+// `expectation`, and the assistant's `actual` response, a second LLM decides
+// whether the response acceptably met the expectation. `pass: null` with
+// `error: "no-llm"` means no consult-capable key is available (the caller then
+// soft-skips), consistent with the conversational dry-run endpoint.
+export interface GradeResult {
+  pass: boolean | null;
+  reason: string;
+  error?: string;
+}
+export function simulationGrade(prompt: string, expectation: string, actual: string) {
+  return req<GradeResult>("POST", "/api/simulation/grade", { prompt, expectation, actual });
+}
 export function forkAgent(id: string) {
   return req<unknown>("POST", `/api/runs/${id}/fork`);
 }
