@@ -21,6 +21,14 @@ import {
 import { readFile } from "node:fs/promises";
 import { authenticate, type Principal } from "./auth.js";
 import { requiresAuth } from "./auth-guard.js";
+import { config, RESTART_EXIT_CODE } from "./config.js";
+import {
+  currentEnvSettings,
+  envSettingsWritable,
+  writeEnvSettings,
+  UnknownEnvKeyError,
+  InvalidEnvValueError,
+} from "./settings/env-settings.js";
 import { CommandDeniedError } from "./command-safety.js";
 import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError } from "./orchestrator.js";
 import { NotFoundError, type Operations, RunnerBusyError } from "./operations.js";
@@ -87,6 +95,38 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     } catch {
       return { markdown: "# Roadmap\n\nROADMAP.md isn't bundled with this build — see the repository." };
     }
+  });
+
+  // Advanced env settings (desktop only). A strict whitelist of operator knobs
+  // the packaged app can set; changes are staged to the userData env file and
+  // applied when the desktop shell restarts the local engine. Gated on
+  // config.desktop so a hosted server never exposes an env-writing surface.
+  app.get("/api/settings/env", async () => currentEnvSettings());
+
+  app.put("/api/settings/env", async (req, reply) => {
+    if (!envSettingsWritable()) return reply.code(400).send({ error: "Advanced env settings are only writable in the desktop app." });
+    const body = (req.body ?? {}) as { updates?: Record<string, unknown> };
+    const updates: Record<string, string> = {};
+    for (const [k, v] of Object.entries(body.updates ?? {})) updates[k] = v == null ? "" : String(v);
+    try {
+      await writeEnvSettings(updates);
+    } catch (err) {
+      if (err instanceof UnknownEnvKeyError || err instanceof InvalidEnvValueError) {
+        return reply.code(422).send({ error: err.message });
+      }
+      throw err;
+    }
+    return { ok: true, restartRequired: true };
+  });
+
+  // Restart the local engine so staged env changes apply. Only the desktop shell
+  // can honor this: the server exits with a sentinel code its parent respawns on.
+  app.post("/api/settings/restart", async (req, reply) => {
+    if (!config.desktop) return reply.code(400).send({ error: "Restart is only available in the desktop app." });
+    // Respond first, then exit so the shell re-launches with the fresh env.
+    reply.send({ restarting: true });
+    setTimeout(() => process.exit(RESTART_EXIT_CODE), 150);
+    return reply;
   });
 
   // Audit maintenance — archive/restore and delete, per-record and bulk. Mirrors

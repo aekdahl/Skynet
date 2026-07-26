@@ -94,6 +94,10 @@ function ensureMasterKey() {
   return key;
 }
 
+// Sentinel exit code the server uses to request a relaunch (Advanced settings →
+// "restart engine to apply"). Keep in sync with RESTART_EXIT_CODE in config.ts.
+const RESTART_EXIT_CODE = 88;
+
 function startServer() {
   const { serverEntry, webDist } = resolvePaths();
   const userEnv = loadUserEnv();
@@ -103,6 +107,11 @@ function startServer() {
     ...process.env,
     ...userEnv,
     ELECTRON_RUN_AS_NODE: "1", // run the Electron binary as plain Node
+    // Mark this as the desktop-managed engine + point the server at the same
+    // overrides file we read above, so the in-app Advanced settings panel can
+    // stage env changes and ask us to relaunch with them applied.
+    SKYNET_DESKTOP: "1",
+    SKYNET_ENV_FILE: path.join(app.getPath("userData"), "skynet.env"),
     // The local app has no login UI, so run in dev-auth mode (open + dev tokens).
     // In production the server requires real sessions and rejects the dev token.
     NODE_ENV: "development",
@@ -127,6 +136,13 @@ function startServer() {
   serverProc.on("exit", (code, signal) => {
     serverProc = null;
     if (app.isQuitting) return;
+    // Requested relaunch (Advanced settings → apply): re-spawn with fresh env
+    // (loadUserEnv re-reads skynet.env), don't treat it as a crash. The window
+    // stays open and reconnects once the new server is up.
+    if (code === RESTART_EXIT_CODE) {
+      startServer();
+      return;
+    }
     // Exit code 42 is an INTENTIONAL remote shutdown (the Telegram /quit kill
     // switch calls process.exit(42) in the server). Treat it as a clean quit —
     // no scary "exited unexpectedly" dialog, which is only for genuine crashes.

@@ -34,6 +34,9 @@ const ALLOW = new Set<string>([
   "updateAgent",
   // read-only doc render for the Roadmap page — no operator journey to exercise
   "fetchRoadmap",
+  // desktop Advanced settings (env editor + engine restart) — a desktop-only
+  // control-plane surface with no in-app operator journey
+  "fetchEnvSettings", "saveEnvSettings", "restartEngine",
 ]);
 
 describe("client API coverage", () => {
