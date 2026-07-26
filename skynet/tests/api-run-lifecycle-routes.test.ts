@@ -45,7 +45,7 @@ describe("HTTP routes: run pause / resume / stop live under /api/runs/:id", () =
     const orchestrator = new Orchestrator(store, hub, new RunningProvider());
     ops = new Operations({ store, hub, orchestrator });
     app = Fastify();
-    await registerApi(app, { operations: ops });
+    await registerApi(app, { operations: ops, orchestrator });
     // Mirror the production not-found handler (static.ts) so an unregistered
     // path returns the same {error:"Not found"} it does in the real server.
     app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: "Not found" }));

@@ -1125,6 +1125,81 @@ export const JOURNEYS: Journey[] = [
       return steps;
     },
   },
+  {
+    id: "conversational-control",
+    name: "Conversational control (LLM)",
+    desc: "Drives the Telegram assistant's DRY-RUN endpoint: it ANSWERS questions helpfully (never a dead end) AND ROUTES clear requests to a single whitelisted action. Real BYOK LLM; nothing is executed (pure dry-run, repeatable).",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: convo ${tag}`;
+      // Seed a project so add_task/assign have a real name+id to resolve against.
+      await api.createProject({ name: pname, goal: "simulated conversational control" });
+      const s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      steps.push(step("seed project for name-resolution (persists)", !!p, p?.id));
+      if (!p) return steps;
+
+      // Call the dry-run endpoint; a thrown error becomes a soft failure detail.
+      const ask = async (text: string) => {
+        try {
+          return await api.simulateConversational(text);
+        } catch (e) {
+          return { reply: null, action: null, error: (e as Error).message } as api.ConversationalResult;
+        }
+      };
+
+      // 1. A help question → a helpful reply and NO action (never a dead end).
+      const help = await ask("what can you help with?");
+      // No consult-capable key → the whole journey soft-skips (keyless, like the
+      // other BYOK journeys it can't prove the LLM behavior without a key).
+      if (help.error === "no-llm") {
+        return [...steps, skipped("assistant answers 'what can you help with?'", "no Claude key — conversational LLM unavailable (BYOK)")];
+      }
+      if (help.error) {
+        return [...steps, step("assistant answers 'what can you help with?'", false, help.error)];
+      }
+      steps.push(
+        step(
+          "answers 'what can you help with?' — reply, no action (no dead end)",
+          help.action == null && !!help.reply && help.reply.trim().length > 0,
+          help.reply ? `“${help.reply.slice(0, 70)}”` : "no reply",
+        ),
+      );
+
+      // 2. A clear add-task request against the seeded project → routes to add_task.
+      const addTask = await ask(`add a task to ${pname}: fix the login bug`);
+      steps.push(step("routes 'add a task …' → add_task", addTask.action?.kind === "add_task", addTask.action?.kind ?? "no action"));
+
+      // 3. A clear create-project request → routes to create_project.
+      const createProj = await ask("create a project called Marketing Site");
+      steps.push(step("routes 'create a project …' → create_project", createProj.action?.kind === "create_project", createProj.action?.kind ?? "no action"));
+
+      // 4. Add a claude agent → routes to add_agent. If claude isn't ready in the
+      //    catalog (no key), add_agent can't validate → soft-pass rather than fail.
+      const addAgent = await ask("add a claude agent");
+      const claudeReady = s.providers.find((pr) => pr.id === "claude")?.available === true;
+      steps.push(
+        addAgent.action?.kind === "add_agent"
+          ? step("routes 'add a claude agent' → add_agent", true, addAgent.action.kind)
+          : !claudeReady
+            ? skipped("routes 'add a claude agent' → add_agent", "claude not ready in the catalog — add_agent can't validate")
+            : step("routes 'add a claude agent' → add_agent", false, addAgent.action?.kind ?? "no action"),
+      );
+
+      // 5. A status question → a helpful reply (action null, or the read-only status).
+      const status = await ask("what's running right now?");
+      steps.push(
+        step(
+          "answers 'what's running right now?' — reply present",
+          !!status.reply && status.reply.trim().length > 0 && (status.action == null || status.action.kind === "status"),
+          status.reply ? `“${status.reply.slice(0, 70)}”` : (status.action?.kind ?? "no reply"),
+        ),
+      );
+
+      return steps;
+    },
+  },
 ];
 
 /**

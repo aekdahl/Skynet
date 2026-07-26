@@ -4,7 +4,7 @@
 // A misparse, an unknown id, or an injected instruction can never escalate past
 // this function — these tests pin that.
 import { describe, it, expect } from "vitest";
-import { parseIntent, type Action, type IntentContext } from "../apps/server/src/telegram/intent.js";
+import { parseIntent, parseResponse, type Action, type IntentContext } from "../apps/server/src/telegram/intent.js";
 
 const ctx: IntentContext = {
   gates: [
@@ -123,5 +123,61 @@ describe("parseIntent — anything unresolved collapses to none (no escalation)"
     expect(isNone(parseIntent('{"action":"approve"}', ctx))).toBe(true);
     expect(isNone(parseIntent('{"action":"add_task","projectId":"p-web"}', ctx))).toBe(true);
     expect(isNone(parseIntent('{"action":"add_task","projectId":"p-web","taskText":"   "}', ctx))).toBe(true);
+  });
+});
+
+// parseResponse is the CURRENT contract: the assistant ALWAYS returns a helpful
+// `reply`, plus an OPTIONAL single whitelisted `action` (nested under `action`).
+// It degrades gracefully so the owner never hits a dead end, and the action is
+// still validated against the closed whitelist + the grounding context.
+describe("parseResponse — {reply, action} envelope extraction", () => {
+  it("extracts both a reply AND a validated action", () => {
+    const raw = JSON.stringify({ reply: "Sure — approving the deploy gate.", action: { action: "approve", gateId: "q-1" } });
+    expect(parseResponse(raw, ctx)).toEqual({
+      reply: "Sure — approving the deploy gate.",
+      action: { kind: "approve", gateId: "q-1" },
+    });
+  });
+
+  it("extracts JSON wrapped in prose (slices first { to last })", () => {
+    const raw = 'Got it! Here you go:\n{"reply":"Adding that task now.","action":{"action":"add_task","projectId":"p-web","taskText":"ship it"}}\nHope that helps.';
+    expect(parseResponse(raw, ctx)).toEqual({
+      reply: "Adding that task now.",
+      action: { kind: "add_task", projectId: "p-web", taskText: "ship it" },
+    });
+  });
+
+  it("extracts JSON wrapped in a ```json code fence", () => {
+    const raw = '```json\n{"reply":"Here is the status.","action":{"action":"status"}}\n```';
+    expect(parseResponse(raw, ctx)).toEqual({ reply: "Here is the status.", action: { kind: "status" } });
+  });
+
+  it("a pure-chat reply has action null and a non-empty reply", () => {
+    const raw = JSON.stringify({ reply: "I can approve gates, add tasks, assign work, add agents, or create projects.", action: null });
+    const r = parseResponse(raw, ctx);
+    expect(r.action).toBeNull();
+    expect(r.reply.length).toBeGreaterThan(0);
+  });
+
+  it("a totally-non-JSON reply degrades to {reply: <raw>, action: null} (never a dead end)", () => {
+    const raw = "Hey! I'm Skynet's ops assistant — ask me anything.";
+    expect(parseResponse(raw, ctx)).toEqual({ reply: raw, action: null });
+  });
+
+  it("keeps the helpful reply even when the proposed action is invalid (unknown id → null)", () => {
+    const raw = JSON.stringify({ reply: "I'll approve that.", action: { action: "approve", gateId: "q-999" } });
+    const r = parseResponse(raw, ctx);
+    expect(r.reply).toBe("I'll approve that.");
+    expect(r.action).toBeNull(); // unknown gate id never escalates
+  });
+
+  it("rejects an action outside the whitelist while keeping the reply", () => {
+    const raw = JSON.stringify({ reply: "Working on it.", action: { action: "delete_everything" } });
+    expect(parseResponse(raw, ctx).action).toBeNull();
+  });
+
+  it("an explicit action:null is just a reply", () => {
+    const raw = JSON.stringify({ reply: "Nothing to do — all clear.", action: null });
+    expect(parseResponse(raw, ctx).action).toBeNull();
   });
 });

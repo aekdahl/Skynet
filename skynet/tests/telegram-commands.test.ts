@@ -148,7 +148,10 @@ function makeControl(opts: { controlEnabled: boolean; consult: () => Promise<str
   return { handle, resolveHitl, stopAll, consult: orchestrator.consult, notes };
 }
 
-const approveJson = async () => JSON.stringify({ action: "approve", gateId: "q-1" });
+// The assistant's {reply, action} envelope (current contract): a helpful reply
+// plus a single nested whitelisted action object.
+const approveJson = async () =>
+  JSON.stringify({ reply: "Sure — I'll approve that gate.", action: { action: "approve", gateId: "q-1" } });
 
 describe("createOwnerControl — confirm state machine", () => {
   it("a parsed intent SETS a pending action but does not execute it", async () => {
@@ -209,10 +212,29 @@ describe("createOwnerControl — confirm state machine", () => {
     expect(c.notes.at(-1)).toMatch(/anthropic .*key|ANTHROPIC_API_KEY|\/task/i);
   });
 
-  it("asks the owner to rephrase when the model can't map the message", async () => {
-    const c = makeControl({ controlEnabled: true, consult: async () => JSON.stringify({ action: "none" }) });
-    await c.handle(OWNER, "do something vague");
+  it("answers helpfully with NO action when the message isn't a request (never a dead end)", async () => {
+    const c = makeControl({
+      controlEnabled: true,
+      consult: async () =>
+        JSON.stringify({ reply: "I can approve gates, add tasks, assign work, add agents, or create projects.", action: null }),
+    });
+    await c.handle(OWNER, "what can you help with?");
+    // Nothing executed, nothing pending — just a helpful reply.
     expect(c.resolveHitl).not.toHaveBeenCalled();
-    expect(c.notes.at(-1)).toMatch(/couldn't map/i);
+    expect(c.notes.at(-1)).toMatch(/approve gates|add tasks/i);
+    expect(c.notes.at(-1)).not.toMatch(/couldn't map/i);
+  });
+
+  it("keeps the helpful reply but proposes NO action when the model's action is invalid", async () => {
+    const c = makeControl({
+      controlEnabled: true,
+      // References a gate id that isn't in the (empty) context → action drops, reply stands.
+      consult: async () =>
+        JSON.stringify({ reply: "I couldn't find that gate — here are your options.", action: { action: "approve", gateId: "q-nope" } }),
+    });
+    await c.handle(OWNER, "approve the thing");
+    expect(c.resolveHitl).not.toHaveBeenCalled();
+    expect(c.notes.at(-1)).toMatch(/couldn't find that gate/i);
+    expect(c.notes.at(-1)).not.toMatch(/reply yes \/ no/i); // no pending action set
   });
 });

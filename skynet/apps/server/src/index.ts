@@ -139,7 +139,7 @@ async function main() {
 
   await registerAuthRoutes(app, { sessions, operators });
   await registerServiceTokenRoutes(app, { serviceTokens });
-  await registerApi(app, { operations });
+  await registerApi(app, { operations, orchestrator });
   // MCP endpoint (Streamable HTTP) — runs drive Skynet through the same
   // scoped-principal auth as the /api routes. stdio clients proxy to this too.
   await registerMcp(app, { operations, bus });

@@ -30,8 +30,9 @@ import {
   InvalidEnvValueError,
 } from "./settings/env-settings.js";
 import { CommandDeniedError } from "./command-safety.js";
-import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError } from "./orchestrator.js";
+import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import { NotFoundError, type Operations, RunnerBusyError } from "./operations.js";
+import { simulateConversational } from "./telegram/index.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -41,6 +42,8 @@ declare module "fastify" {
 
 export interface ApiDeps {
   operations: Operations;
+  /** Used by the Telegram conversational DRY-RUN endpoint (BYOK consult). */
+  orchestrator: Orchestrator;
 }
 
 const ws = (req: FastifyRequest) => req.principal!.workspaceId;
@@ -156,6 +159,25 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.resolveHitl(ws(req), req.params.id, body.data, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── Telegram conversational assistant — DRY-RUN ────────────────────────────
+  // Runs the exact assistant pipeline (buildContext → BYOK consult → parse the
+  // {reply, action} envelope) WITHOUT executing anything. This is the seam the
+  // Simulation section drives: it proves the assistant answers questions AND
+  // routes clear requests to a whitelisted action, repeatably and with zero
+  // mutations. No consult-capable key → {reply:null, action:null, error:"no-llm"}.
+  app.post<{ Body: { text?: unknown } }>("/api/telegram/simulate", async (req, reply) => {
+    const text = typeof req.body?.text === "string" ? req.body.text : "";
+    if (!text.trim()) return reply.code(400).send({ error: "text is required" });
+    try {
+      return await simulateConversational(
+        { operations: ops, orchestrator: deps.orchestrator, ws: ws(req) },
+        text,
+      );
     } catch (err) {
       return fail(reply, err);
     }

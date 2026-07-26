@@ -80,6 +80,19 @@ export function resolveHitl(
 export function sendAgentMessage(id: string, text: string) {
   return req<{ reply: string }>("POST", `/api/runs/${id}/messages`, { text });
 }
+
+// Telegram conversational assistant — DRY-RUN. Runs the assistant pipeline
+// (helpful reply + optional whitelisted action) WITHOUT executing anything, so
+// the Simulation section can exercise it repeatably. `error: "no-llm"` means no
+// consult-capable key is available.
+export interface ConversationalResult {
+  reply: string | null;
+  action: { kind: string } | null;
+  error?: string;
+}
+export function simulateConversational(text: string) {
+  return req<ConversationalResult>("POST", "/api/telegram/simulate", { text });
+}
 export function forkAgent(id: string) {
   return req<unknown>("POST", `/api/runs/${id}/fork`);
 }
