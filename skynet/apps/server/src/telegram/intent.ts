@@ -88,6 +88,11 @@ export const INTENT_SYSTEM_PROMPT = [
   "references a gate/task/project/agent/provider/model NOT present in the context, DO NOT",
   "guess an action — set action to null and use your reply to ask a clarifying question",
   "or explain what's available.",
+  "PREFER ACTING OVER INTERROGATING: when a request is clear but a minor detail has a",
+  "sensible default, propose the action WITH that default instead of asking — the owner",
+  "confirms (and can change it) before anything runs. In particular, for add_agent, if",
+  "the owner names a provider but no model, use that provider's FIRST listed model from",
+  "the context; do NOT reply with a bare 'which model?' question.",
   "",
   "ALWAYS return STRICT JSON with EXACTLY this shape and nothing else:",
   '  {"reply": "<your helpful message to the owner>", "action": <one action object above> or null}',
@@ -223,10 +228,17 @@ export function validateAction(obj: unknown, ctx: IntentContext): Action | null 
 
     case "add_agent": {
       const provider = isStr(o.provider) ? o.provider : "";
-      const model = isStr(o.model) ? o.model : "";
       const cat = ctx.providers.find((p) => p.id === provider);
       if (!cat) return none(`unknown provider "${provider}"`);
       if (!cat.available) return none(`provider "${provider}" is not ready (no credential)`);
+      // Default the model when the owner named a provider but no model — pick the
+      // provider's first catalog model rather than dead-ending. The owner still
+      // sees + confirms the model at the confirmation step and can change it, so a
+      // bare "add a claude agent" routes instead of interrogating. A model that IS
+      // named but isn't offered is still rejected (they asked for something real).
+      const requested = isStr(o.model) ? o.model.trim() : "";
+      const model = requested || cat.models[0] || "";
+      if (!model) return none(`provider "${provider}" offers no models`);
       if (!cat.models.includes(model)) return none(`model "${model}" not offered by "${provider}"`);
       const agentName = isStr(o.agentName) ? o.agentName.trim() : undefined;
       return {

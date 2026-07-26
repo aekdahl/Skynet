@@ -58,6 +58,20 @@ describe("parseIntent — the five whitelisted actions map when ids resolve", ()
       agentName: "beta",
     });
   });
+  it("add_agent defaults to the provider's first model when none is named (no dead-end)", () => {
+    // "add a claude agent" (no model) → route with claude's first catalog model,
+    // not a dead-end clarifying question.
+    expect(parseIntent('{"action":"add_agent","provider":"claude"}', ctx)).toEqual({
+      kind: "add_agent",
+      provider: "claude",
+      model: "opus", // ctx.providers claude.models[0]
+    });
+    expect(parseIntent('{"action":"add_agent","provider":"claude","model":"  "}', ctx)).toEqual({
+      kind: "add_agent",
+      provider: "claude",
+      model: "opus",
+    });
+  });
   it("create_project (requires a non-empty name; goal optional)", () => {
     expect(parseIntent('{"action":"create_project","projectName":"  Web  "}', ctx)).toEqual({
       kind: "create_project",
