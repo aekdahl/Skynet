@@ -29,6 +29,7 @@ import { StoreServiceTokenStore } from "./auth/service-tokens.js";
 import { seedBootstrapToken } from "./auth/bootstrap.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
 import { registerAuthRoutes, registerServiceTokenRoutes } from "./auth/routes.js";
+import { startTelegramBridge } from "./telegram/index.js";
 import { MemoryStore } from "./store/memory.js";
 import type { Store } from "./store/store.js";
 
@@ -208,6 +209,12 @@ async function main() {
     const every = Math.max(8_000, Math.min(config.autonomyMs, 60_000));
     setInterval(tick, every).unref();
   }
+
+  // Telegram messaging bridge + remote kill switch: connects OUT to Telegram
+  // (long-poll, no open ports), pushes gate/run notifications to the owner, and
+  // accepts owner-only slash-commands (/status, /stop, /quit, …). Fire-and-forget
+  // — no-op unless SKYNET_TELEGRAM_BOT_TOKEN + SKYNET_TELEGRAM_OWNER_CHAT_ID are set.
+  startTelegramBridge({ config, bus, operations, orchestrator });
 
   await app.listen({ port: config.port, host: "0.0.0.0" });
   if (servingSpa) app.log.info("serving built web SPA from this server");

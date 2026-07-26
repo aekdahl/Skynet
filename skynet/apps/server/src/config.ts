@@ -149,6 +149,18 @@ export const config = {
   // public (Device Flow needs no secret).
   githubBrokerUrl: process.env.SKYNET_GITHUB_BROKER_URL || undefined,
   githubClientId: process.env.GITHUB_CLIENT_ID || undefined,
+
+  // ── Telegram messaging bridge (outbound-only remote control) ───────────────
+  // The desktop app connects OUT to Telegram (no hosting, no open ports): it
+  // pushes gate/run notifications to the owner and accepts a few owner-only
+  // slash-commands (status, kill switch). BYO bot via @BotFather. Unset either of
+  // the first two → the bridge stays disabled. NEVER log the token.
+  telegramBotToken: process.env.SKYNET_TELEGRAM_BOT_TOKEN || undefined,
+  // The owner's chat id — the ONLY chat the bridge acts on (all others ignored).
+  telegramOwnerChatId: process.env.SKYNET_TELEGRAM_OWNER_CHAT_ID || undefined,
+  // Approve/reject over chat is opt-in (default OFF); the kill switch + status
+  // always work regardless.
+  telegramApprove: process.env.SKYNET_TELEGRAM_APPROVE === "true",
 };
 
 export const now = (): number => Date.now();

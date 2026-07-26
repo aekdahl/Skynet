@@ -79,6 +79,12 @@ export class TaskAlreadyAssignedError extends Error {
 
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
+  // Global kill switch. When paused, the autonomy loop is a no-op (no new work is
+  // triaged, picked, or auto-reviewed) — set by the Telegram /stop kill switch and
+  // cleared by /resume. The janitorial loops (reaper/GC) are deliberately NOT
+  // gated by this: "stop all processing" means halt live runs + pause autonomy,
+  // not freeze orphan cleanup.
+  private paused = false;
   private chatWaiters = new Map<string, (reply: string) => void>();
   // Pending no-operator-answer timers for open `question` HITLs, keyed by item id.
   private questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1210,6 +1216,7 @@ export class Orchestrator {
    */
   async tickAutonomy(): Promise<void> {
     if (!config.autonomyMs || config.autonomyMs <= 0) return;
+    if (this.paused) return; // kill switch engaged — no autonomous work until /resume
     if (this.autonomyTicking) return; // never overlap ticks
     this.autonomyTicking = true;
     try {
@@ -1396,5 +1403,40 @@ export class Orchestrator {
   isBusy(agentId: string): boolean {
     for (const l of this.live.values()) if (l.agentId === agentId) return true;
     return false;
+  }
+
+  /** Kill switch state — read/write the pause flag. When paused, tickAutonomy is
+   *  a no-op; live runs are unaffected until {@link stopAll} halts them. */
+  setPaused(p: boolean): void {
+    this.paused = p;
+  }
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  /**
+   * Remote kill switch: pause autonomy AND halt every in-flight run. "Stop all
+   * processing" = no new autonomous work + no live runs still executing. The
+   * janitorial loops (reaper/GC) keep running by design. Each run is halted
+   * independently (a per-run failure is logged and skipped so one bad run can't
+   * abort the sweep). Returns how many runs were stopped.
+   */
+  async stopAll(reason: string): Promise<number> {
+    this.paused = true;
+    // Snapshot the fleet first (haltAgent mutates run status as we go).
+    const runs = await this.store.listAllRuns().catch(() => [] as TaskRun[]);
+    const live = runs.filter((r) => r.status === "running" || r.status === "waiting");
+    let stopped = 0;
+    for (const run of live) {
+      try {
+        await this.haltAgent(run.id);
+        stopped++;
+      } catch (err) {
+        // One run failing to halt must not abort the sweep — record and continue.
+        await this.hub.runLog(run.id, `kill switch: failed to halt — ${(err as Error).message}`).catch(() => undefined);
+      }
+    }
+    console.log(`[orchestrator] kill switch: ${reason} — paused autonomy, halted ${stopped} run(s)`);
+    return stopped;
   }
 }
