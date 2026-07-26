@@ -24,7 +24,7 @@
 
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import type { Agent, HitlItem, Project, ProviderInfo, ServerEvent, Task, TaskRun } from "@skynet/shared";
-import type { ConfigureRunnerRequest, CreateTaskRequest, ResolveRequest } from "@skynet/shared";
+import type { ConfigureRunnerRequest, CreateProjectRequest, CreateTaskRequest, ResolveRequest } from "@skynet/shared";
 import type { config as Config } from "../config.js";
 import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
@@ -59,13 +59,14 @@ const HELP =
     "/approve <id> — approve a gate (needs SKYNET_TELEGRAM_CONTROL=true)",
     "/reject <id> — reject a gate (needs SKYNET_TELEGRAM_CONTROL=true)",
     "/task <text> — add a backlog item (no LLM needed; needs SKYNET_TELEGRAM_CONTROL=true)",
+    "/newproject <name> — create a project (needs SKYNET_TELEGRAM_CONTROL=true)",
     "/stop — kill switch: halt all runs + pause autonomy",
     "/resume — re-enable autonomy",
     "/quit — shut down the Skynet app",
     "/help — this list",
     "",
     "With control on you can also just say what you want, e.g.:",
-    "  approve the deploy gate · add task \"fix login\" to Web · assign that task · add a claude agent",
+    "  approve the deploy gate · add task \"fix login\" to Web · assign that task · add a claude agent · create a project called Web",
     "I'll confirm before doing anything — reply yes to run, anything else cancels.",
   ].join("\n");
 
@@ -84,6 +85,7 @@ export interface ControlOps {
   listAgents(ws: string): Promise<Agent[]>;
   listProviders(ws: string): Promise<ProviderInfo[]>;
   resolveHitl(ws: string, id: string, input: ResolveRequest, operatorId: string): Promise<HitlItem>;
+  createProject(ws: string, input: CreateProjectRequest): Promise<Project>;
   createTask(ws: string, projectId: string, input: CreateTaskRequest): Promise<Task>;
   assignTask(ws: string, projectId: string, taskId: string): Promise<TaskRun>;
   configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent>;
@@ -202,6 +204,20 @@ export function createOwnerControl(deps: OwnerControlDeps): {
               ...(action.agentName ? { name: action.agentName } : {}),
             });
             return `🤖 Agent ${agent.id} added (${action.provider}/${action.model}).`;
+          },
+        };
+      }
+      case "create_project": {
+        const summary = `Create project "${action.projectName}"${action.projectGoal ? ` — goal: ${action.projectGoal}` : ""}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            const p = await operations.createProject(ws, {
+              name: action.projectName!,
+              goal: action.projectGoal ?? "",
+            });
+            return `📁 Project "${p.name}" created (${p.id}). Add a repo in the app to run agents.`;
           },
         };
       }
@@ -355,9 +371,26 @@ export function createOwnerControl(deps: OwnerControlDeps): {
         return;
       }
 
+      case "newproject": {
+        // Deterministic project creation — no LLM. Creates a project shell (bind a
+        // repo in the app to run agents on it).
+        const name = action.arg?.trim();
+        if (!name) {
+          await notify("Usage: /newproject <name>");
+          return;
+        }
+        try {
+          const p = await operations.createProject(ws, { name, goal: "" });
+          await notify(`📁 Project "${p.name}" created. Add a repo in the app to run agents.`);
+        } catch (err) {
+          await notify(`Couldn't create the project: ${(err as Error).message}`);
+        }
+        return;
+      }
+
       case "denied-control":
         await notify(
-          "Control over chat is disabled (set SKYNET_TELEGRAM_CONTROL=true). Or add the task in the app.",
+          "Control over chat is disabled (set SKYNET_TELEGRAM_CONTROL=true). Or add the task/project in the app.",
         );
         return;
 

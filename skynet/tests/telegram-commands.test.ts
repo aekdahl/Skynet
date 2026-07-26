@@ -91,6 +91,14 @@ describe("decide — control opt-in", () => {
     });
     expect(decideAs(OWNER, "/task fix the login bug", false).kind).toBe("denied-control");
   });
+
+  it("maps /newproject (deterministic project create) with its name, gated by control", () => {
+    expect(decideAs(OWNER, "/newproject Marketing Site", true)).toEqual({
+      kind: "newproject",
+      arg: "Marketing Site",
+    });
+    expect(decideAs(OWNER, "/newproject Marketing Site", false).kind).toBe("denied-control");
+  });
 });
 
 // ── Confirm state machine (createOwnerControl) ───────────────────────────────

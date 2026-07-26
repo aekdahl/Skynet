@@ -41,7 +41,7 @@ export interface IntentContext {
 
 /** A normalized, validated action. `none` = could not confidently map. */
 export interface Action {
-  kind: "approve" | "reject" | "add_task" | "assign" | "add_agent" | "status" | "none";
+  kind: "approve" | "reject" | "add_task" | "assign" | "add_agent" | "create_project" | "status" | "none";
   gateId?: string;
   taskText?: string;
   projectId?: string;
@@ -50,6 +50,8 @@ export interface Action {
   provider?: ProviderId;
   model?: string;
   agentName?: string;
+  projectName?: string;
+  projectGoal?: string;
   reason?: string;
 }
 
@@ -59,12 +61,13 @@ export interface Action {
 export const INTENT_SYSTEM_PROMPT = [
   "You translate a Skynet operator's message into EXACTLY ONE action.",
   "Return STRICT JSON only — no prose, no code fences.",
-  'Allowed actions: approve | reject | add_task | assign | add_agent | status | none.',
+  'Allowed actions: approve | reject | add_task | assign | add_agent | create_project | status | none.',
   "Shapes:",
   '  approve/reject: {"action":"approve","gateId":"<gate id from context>"}',
   '  add_task:       {"action":"add_task","projectId":"<project id>","taskText":"<the task>"}',
   '  assign:         {"action":"assign","taskId":"<task id>"}',
   '  add_agent:      {"action":"add_agent","provider":"<provider id>","model":"<model>","agentName":"<optional>"}',
+  '  create_project: {"action":"create_project","projectName":"<name>","projectGoal":"<optional>"}',
   '  status:         {"action":"status"}',
   '  none:           {"action":"none","reason":"<why>"}',
   "Resolve names to ids using ONLY the provided context. If the message is",
@@ -207,6 +210,13 @@ export function parseIntent(rawLlmJson: string, ctx: IntentContext): Action | nu
         model,
         ...(agentName ? { agentName } : {}),
       };
+    }
+
+    case "create_project": {
+      const projectName = isStr(o.projectName) ? o.projectName.trim() : "";
+      if (!projectName) return none("empty project name");
+      const projectGoal = isStr(o.projectGoal) ? o.projectGoal.trim() : "";
+      return { kind: "create_project", projectName, ...(projectGoal ? { projectGoal } : {}) };
     }
 
     case "status":
