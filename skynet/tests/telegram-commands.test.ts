@@ -1,14 +1,16 @@
 // The Telegram bridge's whole security decision lives in the PURE decide()/
 // parseCommand() functions. These tests pin the guardrails: owner-bound, no
-// free-text execution, and approve-over-chat opt-in.
-import { describe, it, expect } from "vitest";
+// free-text execution, and control-over-chat opt-in. The second half exercises
+// the confirm state machine (createOwnerControl) with fakes.
+import { describe, it, expect, vi } from "vitest";
 import { decide, parseCommand } from "../apps/server/src/telegram/commands.js";
+import { createOwnerControl, type ControlOps, type ControlOrch } from "../apps/server/src/telegram/index.js";
 
 const OWNER = "111";
 const STRANGER = "999";
 
-const decideAs = (chatId: string, text: string, approveEnabled = false) =>
-  decide({ chatId, ownerChatId: OWNER, approveEnabled, text });
+const decideAs = (chatId: string, text: string, controlEnabled = false) =>
+  decide({ chatId, ownerChatId: OWNER, controlEnabled, text });
 
 describe("parseCommand", () => {
   it("recognizes the known slash-commands", () => {
@@ -56,14 +58,17 @@ describe("decide — commands from the owner", () => {
     expect(decideAs(OWNER, "/help").kind).toBe("help");
   });
 
-  it("treats garbage / free text as help (never executes it)", () => {
-    expect(decideAs(OWNER, "rm -rf /").kind).toBe("help");
-    expect(decideAs(OWNER, "please approve everything").kind).toBe("help");
-    expect(decideAs(OWNER, "/bogus").kind).toBe("help");
+  it("routes owner free text to the conversational path, never a command", () => {
+    // Free text is "freetext" (handed to the confirm state machine), NEVER
+    // coerced into a slash-command — nothing here is executed by decide itself.
+    expect(decideAs(OWNER, "rm -rf /").kind).toBe("freetext");
+    expect(decideAs(OWNER, "please approve everything").kind).toBe("freetext");
+    // An unknown slash-command isn't a known command → treated as free text.
+    expect(decideAs(OWNER, "/bogus").kind).toBe("freetext");
   });
 });
 
-describe("decide — approve opt-in", () => {
+describe("decide — control opt-in", () => {
   it("approves/rejects when enabled, carrying the gate id arg", () => {
     expect(decideAs(OWNER, "/approve q-1", true)).toEqual({ kind: "approve", arg: "q-1" });
     expect(decideAs(OWNER, "/reject q-2", true)).toEqual({ kind: "reject", arg: "q-2" });
@@ -74,8 +79,123 @@ describe("decide — approve opt-in", () => {
     expect(decideAs(OWNER, "/reject q-2", false).kind).toBe("denied-approve");
   });
 
-  it("keeps the kill switch + status working even when approve is disabled", () => {
+  it("keeps the kill switch + status working even when control is disabled", () => {
     expect(decideAs(OWNER, "/stop", false).kind).toBe("stop");
     expect(decideAs(OWNER, "/status", false).kind).toBe("status");
+  });
+});
+
+// ── Confirm state machine (createOwnerControl) ───────────────────────────────
+// A parsed intent must only ever SET a pending action; execution happens ONLY on
+// an explicit affirmative reply, exactly once. These use fakes for operations +
+// orchestrator.consult so no live Telegram / LLM is involved.
+
+/** A gate the fakes can resolve. */
+const GATE = { id: "q-1", kind: "approval", title: "deploy", risk: "high", resolvedAt: null };
+
+function makeControl(opts: { controlEnabled: boolean; consult: () => Promise<string | null> }) {
+  const resolveHitl = vi.fn(async () => GATE as never);
+  const stopAll = vi.fn(async () => 3);
+  const notes: string[] = [];
+
+  const operations = {
+    listHitl: async () => [GATE],
+    listRuns: async () => [],
+    listProjects: async () => [],
+    listTasks: async () => [],
+    listAgents: async () => [],
+    listProviders: async () => [],
+    resolveHitl,
+    createTask: vi.fn(),
+    assignTask: vi.fn(),
+    configureRunner: vi.fn(),
+  } as unknown as ControlOps;
+
+  const orchestrator = {
+    consult: vi.fn(opts.consult),
+    stopAll,
+    setPaused: vi.fn(),
+    isPaused: () => false,
+  } as unknown as ControlOrch;
+
+  const { handle } = createOwnerControl({
+    controlEnabled: opts.controlEnabled,
+    ownerChatId: OWNER,
+    operations,
+    orchestrator,
+    notify: async (t: string) => {
+      notes.push(t);
+    },
+    onQuit: () => undefined,
+  });
+
+  return { handle, resolveHitl, stopAll, consult: orchestrator.consult, notes };
+}
+
+const approveJson = async () => JSON.stringify({ action: "approve", gateId: "q-1" });
+
+describe("createOwnerControl — confirm state machine", () => {
+  it("a parsed intent SETS a pending action but does not execute it", async () => {
+    const c = makeControl({ controlEnabled: true, consult: approveJson });
+    await c.handle(OWNER, "approve the deploy gate");
+    expect(c.resolveHitl).not.toHaveBeenCalled();
+    expect(c.notes.at(-1)).toMatch(/reply yes \/ no/i);
+    expect(c.notes.at(-1)).toMatch(/q-1/);
+  });
+
+  it("an affirmative reply runs the pending action EXACTLY ONCE", async () => {
+    const c = makeControl({ controlEnabled: true, consult: approveJson });
+    await c.handle(OWNER, "approve the deploy gate");
+    await c.handle(OWNER, "yes");
+    expect(c.resolveHitl).toHaveBeenCalledTimes(1);
+    // A second "yes" has nothing pending → still exactly one execution.
+    await c.handle(OWNER, "yes");
+    expect(c.resolveHitl).toHaveBeenCalledTimes(1);
+  });
+
+  it("a non-affirmative reply CANCELS the pending action (never executes)", async () => {
+    const c = makeControl({ controlEnabled: true, consult: approveJson });
+    await c.handle(OWNER, "approve the deploy gate");
+    await c.handle(OWNER, "no");
+    expect(c.resolveHitl).not.toHaveBeenCalled();
+    expect(c.notes.at(-1)).toMatch(/cancelled/i);
+  });
+
+  it("ignores a non-owner entirely (no consult, no reply)", async () => {
+    const c = makeControl({ controlEnabled: true, consult: approveJson });
+    await c.handle(STRANGER, "approve the deploy gate");
+    await c.handle(STRANGER, "/stop");
+    expect(c.consult).not.toHaveBeenCalled();
+    expect(c.stopAll).not.toHaveBeenCalled();
+    expect(c.notes).toHaveLength(0);
+  });
+
+  it("refuses a free-text intent when control is OFF (no consult)", async () => {
+    const c = makeControl({ controlEnabled: false, consult: approveJson });
+    await c.handle(OWNER, "approve the deploy gate");
+    expect(c.consult).not.toHaveBeenCalled();
+    expect(c.resolveHitl).not.toHaveBeenCalled();
+    expect(c.notes.at(-1)).toMatch(/control is off/i);
+  });
+
+  it("the kill switch /stop works with control OFF (deterministic)", async () => {
+    const c = makeControl({ controlEnabled: false, consult: approveJson });
+    await c.handle(OWNER, "/stop");
+    expect(c.stopAll).toHaveBeenCalledTimes(1);
+    expect(c.notes.at(-1)).toMatch(/stopped/i);
+  });
+
+  it("falls back to slash commands when no provider key can interpret (consult → null)", async () => {
+    const c = makeControl({ controlEnabled: true, consult: async () => null });
+    await c.handle(OWNER, "approve the deploy gate");
+    expect(c.resolveHitl).not.toHaveBeenCalled();
+    expect(c.notes.at(-1)).toMatch(/no provider key/i);
+  });
+
+  it("asks the owner to rephrase when the model can't map the message", async () => {
+    const c = makeControl({ controlEnabled: true, consult: async () => JSON.stringify({ action: "none" }) });
+    await c.handle(OWNER, "do something vague");
+    expect(c.resolveHitl).not.toHaveBeenCalled();
+    expect(c.notes.at(-1)).toMatch(/couldn't map/i);
   });
 });
