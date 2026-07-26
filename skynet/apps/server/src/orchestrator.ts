@@ -79,6 +79,12 @@ export class TaskAlreadyAssignedError extends Error {
 
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
+  // Global kill switch. When paused, the autonomy loop is a no-op (no new work is
+  // triaged, picked, or auto-reviewed) — set by the Telegram /stop kill switch and
+  // cleared by /resume. The janitorial loops (reaper/GC) are deliberately NOT
+  // gated by this: "stop all processing" means halt live runs + pause autonomy,
+  // not freeze orphan cleanup.
+  private paused = false;
   private chatWaiters = new Map<string, (reply: string) => void>();
   // Pending no-operator-answer timers for open `question` HITLs, keyed by item id.
   private questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1038,6 +1044,46 @@ export class Orchestrator {
     });
   }
 
+  /**
+   * BYOK intent-parse path for the Telegram conversational bridge. Interpret a
+   * natural-language operator message using the operator's OWN provider key —
+   * never a Skynet-hosted model. Iterate the fleet, pick the FIRST provider that
+   * has a resolvable key AND a stateless `.consult`, and ask it `question` (the
+   * classifier instruction) with `context` (the operator message + workspace
+   * snapshot) as grounding data. Returns the raw model reply, or `null` when no
+   * provider/key/consult is available (the caller then falls back to slash
+   * commands). Reuses the same consult plumbing as assessTask/autoReview.
+   *
+   * The operator message rides inside `context` as DATA (not as the question),
+   * so a misparse or a prompt-injection attempt can only ever produce a reply
+   * the caller re-validates against a closed whitelist — it can never escalate.
+   */
+  async consult(ws: string, question: string, context?: string): Promise<string | null> {
+    const agents = await this.store.listAgents(ws).catch(() => [] as Agent[]);
+    for (const agent of agents) {
+      const apiKey = await secretService.resolve(ws, agent.provider).catch(() => undefined);
+      if (!apiKey) continue;
+      let provider: RunnerProvider;
+      try {
+        provider = await this.getProvider(agent.provider);
+      } catch {
+        continue; // unresolvable provider — try the next agent
+      }
+      if (!provider.consult) continue;
+      try {
+        return await provider.consult(
+          { task: "Classify an operator remote-control message", model: agent.model, cwd: config.runnerCwd, apiKey, context },
+          question,
+        );
+      } catch {
+        // A provider round-trip failure is treated as "no interpretation" — the
+        // caller degrades to slash commands rather than guessing.
+        return null;
+      }
+    }
+    return null;
+  }
+
   /** Answer a follow-up when there's no live session, via the provider's
    *  stateless consult, grounded in the stored log — works even across a server
    *  restart. The reply is truthful about the agent's actual status (DEF-002):
@@ -1210,6 +1256,7 @@ export class Orchestrator {
    */
   async tickAutonomy(): Promise<void> {
     if (!config.autonomyMs || config.autonomyMs <= 0) return;
+    if (this.paused) return; // kill switch engaged — no autonomous work until /resume
     if (this.autonomyTicking) return; // never overlap ticks
     this.autonomyTicking = true;
     try {
@@ -1396,5 +1443,40 @@ export class Orchestrator {
   isBusy(agentId: string): boolean {
     for (const l of this.live.values()) if (l.agentId === agentId) return true;
     return false;
+  }
+
+  /** Kill switch state — read/write the pause flag. When paused, tickAutonomy is
+   *  a no-op; live runs are unaffected until {@link stopAll} halts them. */
+  setPaused(p: boolean): void {
+    this.paused = p;
+  }
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  /**
+   * Remote kill switch: pause autonomy AND halt every in-flight run. "Stop all
+   * processing" = no new autonomous work + no live runs still executing. The
+   * janitorial loops (reaper/GC) keep running by design. Each run is halted
+   * independently (a per-run failure is logged and skipped so one bad run can't
+   * abort the sweep). Returns how many runs were stopped.
+   */
+  async stopAll(reason: string): Promise<number> {
+    this.paused = true;
+    // Snapshot the fleet first (haltAgent mutates run status as we go).
+    const runs = await this.store.listAllRuns().catch(() => [] as TaskRun[]);
+    const live = runs.filter((r) => r.status === "running" || r.status === "waiting");
+    let stopped = 0;
+    for (const run of live) {
+      try {
+        await this.haltAgent(run.id);
+        stopped++;
+      } catch (err) {
+        // One run failing to halt must not abort the sweep — record and continue.
+        await this.hub.runLog(run.id, `kill switch: failed to halt — ${(err as Error).message}`).catch(() => undefined);
+      }
+    }
+    console.log(`[orchestrator] kill switch: ${reason} — paused autonomy, halted ${stopped} run(s)`);
+    return stopped;
   }
 }

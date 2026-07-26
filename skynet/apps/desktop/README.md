@@ -52,19 +52,60 @@ pnpm --filter @skynet/web build
 cd apps/desktop && pnpm dev
 ```
 
-## Configuring a real runner
+## Environment, settings & data
 
-By default the app uses the **mock** runner. To use a real provider, drop a
-`skynet.env` file in the app's user-data dir (the path is printed by the OS;
-e.g. `~/Library/Application Support/Skynet/skynet.env` on macOS):
+All state and config live under the app's **user-data dir** — macOS
+`~/Library/Application Support/Skynet/`, Windows `%APPDATA%/Skynet/`, Linux
+`~/.config/Skynet/`. There is **no `.env` in the app bundle**; the shell builds
+the server's environment at launch:
+
+| File | What it is |
+|------|------------|
+| `skynet-data.json` | projects / runs / audit — `STORE=file` |
+| `skynet-master.key` | per-install key (mode `0600`) for the encrypted secret store; generated on first run |
+| `skynet.env` | optional `KEY=value` overrides, read at engine boot |
+
+### Provider keys → in-app **Settings** (recommended)
+
+Add your `ANTHROPIC_API_KEY` (and other provider keys) in **Settings**. They're
+encrypted with the master key and applied **live — no restart**. This is the
+normal path; no file editing.
+
+### Operator knobs → **Settings → Advanced**
+
+Everything that isn't a provider key (Telegram, runner-safety limits, pre-merge
+check, vendor CLI paths) lives in the **Advanced** panel. It writes a curated
+**whitelist** (source of truth: `apps/server/src/settings/env-settings.ts`) to
+`skynet.env` and applies changes with the panel's **"Restart engine"** button:
+
+- **Telegram** — `SKYNET_TELEGRAM_BOT_TOKEN` (secret), `SKYNET_TELEGRAM_OWNER_CHAT_ID`,
+  `SKYNET_TELEGRAM_CONTROL`. *(The notification/control feature that reads these
+  ships separately; the panel just makes them configurable + applied.)*
+- **Runner safety** — `SKYNET_RUNNER_SANDBOX`, `SKYNET_RUNNER_MAX_RUNTIME_MS`.
+- **Integration** — `SKYNET_CHECK_CMD`.
+- **Vendor CLI paths** — `CODEX_BIN`, `GEMINI_BIN`, `SKYNET_CURSOR_BIN`,
+  `SKYNET_COPILOT_BIN`, `SKYNET_HERMES_BIN`.
+
+**Why restart:** most of the server's `config` is read **once at boot**, so a
+changed value only applies on the next engine launch. The panel stages the change
+to `skynet.env`, then the server exits with a sentinel code the shell **respawns**
+on (with the fresh env) — the window stays open and reconnects. Provider keys are
+the exception (live, above).
+
+### Editing `skynet.env` directly (power users / headless)
+
+You can hand-edit the same file the Advanced panel writes — handy for scripting
+or a no-UI setup:
 
 ```
-RUNNER=claude
 ANTHROPIC_API_KEY=sk-ant-...
 SKYNET_INTEGRATION_REPO=/path/to/your/repo
+RUNNER=mock            # optional: keyless demo (no provider needed)
 ```
 
-(An in-app onboarding/settings screen will replace this file later.)
+Values the shell sets itself (`NODE_ENV`, `STORE`, `WEB_DIST`, `PORT`, `HOST`,
+`SKYNET_DB_PATH`, `SKYNET_MASTER_KEY`) always win — the plumbing can't be
+overridden here.
 
 ## Build installers locally
 

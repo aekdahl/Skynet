@@ -76,6 +76,10 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
           overrides one from an environment variable; the env key is used as a
           fallback when nothing is set here.
         </p>
+        <p>
+          Tip: set a spend limit on your key in the provider's console — a safety
+          net with autonomy or remote (Telegram) control.
+        </p>
       </div>
 
       {disabled && (
@@ -184,6 +188,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
       </div>
 
       <McpAccessSection />
+      <TelegramSetup />
       <AdvancedSettingsSection />
       <div className="settings-setup">
         <div className="settings-setup-text">
@@ -209,6 +214,83 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
         </div>
       )}
     </section>
+  );
+}
+
+// ─── Remote control · Telegram ──────────────────────────────────────────────
+// In-app setup guide for the outbound-only Telegram bridge (BYO bot). Config
+// lives in the desktop app's <userData>/skynet.env, so this is instructional —
+// it doesn't hold the token. Collapsed by default to keep Settings tidy.
+function TelegramSetup() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="settings-setup tg-setup">
+      <button className="tg-setup-head" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <span className="tg-caret">{open ? "▾" : "▸"}</span>
+        <div className="settings-setup-text">
+          <div className="settings-setup-title">Remote control · Telegram</div>
+          <div className="settings-setup-sub">
+            Get gate alerts and control the fleet from your phone — including a remote kill switch.
+            Uses your own Telegram bot; the app connects out (no hosting, no open ports).
+          </div>
+        </div>
+      </button>
+      {open && (
+        <div className="tg-guide">
+          <ol className="tg-steps">
+            <li>
+              <strong>Create a bot.</strong> In Telegram, message <code>@BotFather</code> →{" "}
+              <code>/newbot</code> → follow the prompts, then copy the token it gives you.
+            </li>
+            <li>
+              <strong>Get your chat id.</strong> Send your new bot any message, then message{" "}
+              <code>@userinfobot</code> — it replies with your numeric id.
+            </li>
+            <li>
+              <strong>Add three lines to <code>skynet.env</code></strong> in the app's data folder
+              (<code>~/Library/Application&nbsp;Support/Skynet/</code> on macOS,{" "}
+              <code>%APPDATA%\Skynet\</code> on Windows):
+              <pre className="tg-env">{`SKYNET_TELEGRAM_BOT_TOKEN=123456:AA…your-token
+SKYNET_TELEGRAM_OWNER_CHAT_ID=987654321
+SKYNET_TELEGRAM_CONTROL=true   # optional — approve / commands`}</pre>
+              The first two enable notifications + the kill switch.{" "}
+              <code>SKYNET_TELEGRAM_CONTROL=true</code> also allows approving gates and issuing
+              commands from chat (off by default).
+            </li>
+            <li>
+              <strong>Restart Skynet</strong> so it re-reads <code>skynet.env</code>, then message
+              your bot <code>/status</code> to confirm it's live.
+            </li>
+          </ol>
+
+          <div className="tg-cmds">
+            <div className="settings-setup-title">Commands</div>
+            <ul>
+              <li>
+                <code>/status</code> · <code>/gates</code> — what's running / open gates
+              </li>
+              <li>
+                <code>/stop</code> — halt all runs + pause autonomy · <code>/resume</code> — re-enable
+              </li>
+              <li>
+                <code>/quit</code> — stop everything and close the app <em>(kill switch)</em>
+              </li>
+              <li>
+                <code>/approve &lt;id&gt;</code> · <code>/reject &lt;id&gt;</code>, or just chat
+                naturally (e.g. “approve the payments gate”) — needs control on; every action asks you
+                to confirm first
+              </li>
+            </ul>
+          </div>
+
+          <div className="tg-safety">
+            <strong>Safety:</strong> only your chat id is honored, and the kill switch never needs the
+            control flag. As a passive backstop, set a spend limit on your API key in the provider's
+            console.
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
