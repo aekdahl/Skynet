@@ -83,6 +83,14 @@ describe("decide — control opt-in", () => {
     expect(decideAs(OWNER, "/stop", false).kind).toBe("stop");
     expect(decideAs(OWNER, "/status", false).kind).toBe("status");
   });
+
+  it("maps /task (deterministic backlog add) with its text, gated by control", () => {
+    expect(decideAs(OWNER, "/task fix the login bug", true)).toEqual({
+      kind: "task",
+      arg: "fix the login bug",
+    });
+    expect(decideAs(OWNER, "/task fix the login bug", false).kind).toBe("denied-control");
+  });
 });
 
 // ── Confirm state machine (createOwnerControl) ───────────────────────────────
@@ -189,7 +197,8 @@ describe("createOwnerControl — confirm state machine", () => {
     const c = makeControl({ controlEnabled: true, consult: async () => null });
     await c.handle(OWNER, "approve the deploy gate");
     expect(c.resolveHitl).not.toHaveBeenCalled();
-    expect(c.notes.at(-1)).toMatch(/no provider key/i);
+    // Accurate, actionable fallback: names the Claude key and the /task escape hatch.
+    expect(c.notes.at(-1)).toMatch(/anthropic .*key|ANTHROPIC_API_KEY|\/task/i);
   });
 
   it("asks the owner to rephrase when the model can't map the message", async () => {

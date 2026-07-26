@@ -58,6 +58,7 @@ const HELP =
     "/gates — list open gates",
     "/approve <id> — approve a gate (needs SKYNET_TELEGRAM_CONTROL=true)",
     "/reject <id> — reject a gate (needs SKYNET_TELEGRAM_CONTROL=true)",
+    "/task <text> — add a backlog item (no LLM needed; needs SKYNET_TELEGRAM_CONTROL=true)",
     "/stop — kill switch: halt all runs + pause autonomy",
     "/resume — re-enable autonomy",
     "/quit — shut down the Skynet app",
@@ -240,7 +241,9 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     const ctx = await buildContext(operations, ws);
     const raw = await orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx));
     if (raw == null) {
-      await notify("No provider key available to interpret messages — use /approve <id>, or add a key.");
+      await notify(
+        "Conversational control needs an Anthropic (Claude) key to interpret messages — set ANTHROPIC_API_KEY (or add a Claude agent), then retry. Meanwhile you can add a backlog item with: /task <text>",
+      );
       return;
     }
 
@@ -322,6 +325,41 @@ export function createOwnerControl(deps: OwnerControlDeps): {
         }
         return;
       }
+
+      case "task": {
+        // Deterministic backlog add — no LLM involved, so it works even without a
+        // consult-capable provider key.
+        const taskText = action.arg?.trim();
+        if (!taskText) {
+          await notify("Usage: /task <what to add to the backlog>");
+          return;
+        }
+        const projects = await operations.listProjects(ws).catch(() => [] as Project[]);
+        if (projects.length === 0) {
+          await notify("No project yet — create one in the app first, then /task <text>.");
+          return;
+        }
+        if (projects.length > 1) {
+          await notify(
+            `You have ${projects.length} projects — name one (e.g. “add a task to ${projects[0]!.name}: ${taskText}”), or add it in the app.`,
+          );
+          return;
+        }
+        const proj = projects[0]!;
+        try {
+          const t = await operations.createTask(ws, proj.id, { text: taskText });
+          await notify(`➕ Added to ${proj.name} backlog: “${t.text}”`);
+        } catch (err) {
+          await notify(`Couldn't add the task: ${(err as Error).message}`);
+        }
+        return;
+      }
+
+      case "denied-control":
+        await notify(
+          "Control over chat is disabled (set SKYNET_TELEGRAM_CONTROL=true). Or add the task in the app.",
+        );
+        return;
 
       case "denied-approve":
         await notify(
