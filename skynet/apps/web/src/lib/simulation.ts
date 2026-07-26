@@ -1149,6 +1149,20 @@ export const JOURNEYS: Journey[] = [
         }
       };
 
+      // Per-step LLM GRADING: the assistant's behavior is produced by a real BYOK
+      // LLM (`ask`), and whether it acceptably handled each phrase is decided by a
+      // SECOND LLM against a plain-English expectation — "done by an LLM, judged
+      // by an LLM". This replaces brittle exact-match (`action?.kind === "…"`)
+      // checks: a defensible paraphrase reply or a clearly-equivalent action still
+      // passes, while a dead-end/error still fails. A thrown grade call soft-fails.
+      const grade = async (prompt: string, expectation: string, r: api.ConversationalResult) => {
+        try {
+          return await api.simulationGrade(prompt, expectation, JSON.stringify({ reply: r.reply, action: r.action }));
+        } catch (e) {
+          return { pass: false, reason: (e as Error).message } as api.GradeResult;
+        }
+      };
+
       // 1. A help question → a helpful reply and NO action (never a dead end).
       const help = await ask("what can you help with?");
       // No consult-capable key → the whole journey soft-skips (keyless, like the
@@ -1159,43 +1173,56 @@ export const JOURNEYS: Journey[] = [
       if (help.error) {
         return [...steps, step("assistant answers 'what can you help with?'", false, help.error)];
       }
-      steps.push(
-        step(
-          "answers 'what can you help with?' — reply, no action (no dead end)",
-          help.action == null && !!help.reply && help.reply.trim().length > 0,
-          help.reply ? `“${help.reply.slice(0, 70)}”` : "no reply",
-        ),
-      );
+      const helpExpect =
+        "Answers helpfully about what it can do and proposes NO action (a dead-end or error is a fail).";
+      const helpVerdict = await grade("what can you help with?", helpExpect, help);
+      // The grader shares the conversational endpoint's BYOK plumbing: a no-llm
+      // grade means the same missing key, so soft-skip the whole journey too.
+      if (helpVerdict.error === "no-llm") {
+        return [...steps, skipped("assistant answers 'what can you help with?'", "no Claude key — grader LLM unavailable (BYOK)")];
+      }
+      steps.push(step("answers 'what can you help with?' — helpful, no action (LLM-graded)", helpVerdict.pass === true, helpVerdict.reason));
 
       // 2. A clear add-task request against the seeded project → routes to add_task.
-      const addTask = await ask(`add a task to ${pname}: fix the login bug`);
-      steps.push(step("routes 'add a task …' → add_task", addTask.action?.kind === "add_task", addTask.action?.kind ?? "no action"));
+      const addTaskPrompt = `add a task to ${pname}: fix the login bug`;
+      const addTask = await ask(addTaskPrompt);
+      const addTaskVerdict = await grade(
+        addTaskPrompt,
+        "Routes to the add_task action for that project (a clearly-equivalent action is acceptable).",
+        addTask,
+      );
+      steps.push(step("routes 'add a task …' → add_task (LLM-graded)", addTaskVerdict.pass === true, addTaskVerdict.reason));
 
       // 3. A clear create-project request → routes to create_project.
-      const createProj = await ask("create a project called Marketing Site");
-      steps.push(step("routes 'create a project …' → create_project", createProj.action?.kind === "create_project", createProj.action?.kind ?? "no action"));
-
-      // 4. Add a claude agent → routes to add_agent. If claude isn't ready in the
-      //    catalog (no key), add_agent can't validate → soft-pass rather than fail.
-      const addAgent = await ask("add a claude agent");
-      const claudeReady = s.providers.find((pr) => pr.id === "claude")?.available === true;
-      steps.push(
-        addAgent.action?.kind === "add_agent"
-          ? step("routes 'add a claude agent' → add_agent", true, addAgent.action.kind)
-          : !claudeReady
-            ? skipped("routes 'add a claude agent' → add_agent", "claude not ready in the catalog — add_agent can't validate")
-            : step("routes 'add a claude agent' → add_agent", false, addAgent.action?.kind ?? "no action"),
+      const createProjPrompt = "create a project called Marketing Site";
+      const createProj = await ask(createProjPrompt);
+      const createProjVerdict = await grade(
+        createProjPrompt,
+        "Routes to the create_project action.",
+        createProj,
       );
+      steps.push(step("routes 'create a project …' → create_project (LLM-graded)", createProjVerdict.pass === true, createProjVerdict.reason));
 
-      // 5. A status question → a helpful reply (action null, or the read-only status).
-      const status = await ask("what's running right now?");
-      steps.push(
-        step(
-          "answers 'what's running right now?' — reply present",
-          !!status.reply && status.reply.trim().length > 0 && (status.action == null || status.action.kind === "status"),
-          status.reply ? `“${status.reply.slice(0, 70)}”` : (status.action?.kind ?? "no reply"),
-        ),
+      // 4. Add a claude agent → routes to add_agent, OR (if Claude isn't available)
+      //    explains it can't rather than dead-ending — the grader judges both.
+      const addAgentPrompt = "add a claude agent";
+      const addAgent = await ask(addAgentPrompt);
+      const addAgentVerdict = await grade(
+        addAgentPrompt,
+        "Routes to the add_agent action, or (if Claude isn't available) explains it can't rather than dead-ending.",
+        addAgent,
       );
+      steps.push(step("handles 'add a claude agent' (LLM-graded)", addAgentVerdict.pass === true, addAgentVerdict.reason));
+
+      // 5. A status question → a helpful reply (action null, or a read-only status).
+      const statusPrompt = "what's running right now?";
+      const status = await ask(statusPrompt);
+      const statusVerdict = await grade(
+        statusPrompt,
+        "Answers helpfully about current state; no action, or a read-only status action, is fine.",
+        status,
+      );
+      steps.push(step("answers 'what's running right now?' (LLM-graded)", statusVerdict.pass === true, statusVerdict.reason));
 
       return steps;
     },
