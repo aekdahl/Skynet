@@ -1043,6 +1043,21 @@ button.kb-done:hover { opacity: 1; }
 .settings-setup-title { font-size: 14px; font-weight: 600; }
 .settings-setup-sub { font-size: 12px; color: var(--faint); margin-top: 2px; }
 
+/* Remote control · Telegram setup guide (collapsible) */
+.tg-setup { flex-direction: column; align-items: stretch; gap: 0; }
+.tg-setup-head { display: flex; align-items: center; gap: 12px; width: 100%; background: none; border: none; padding: 0; cursor: pointer; color: var(--text); font: inherit; text-align: left; }
+.tg-setup-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+.tg-setup-head:hover .settings-setup-title { color: var(--accent); }
+.tg-caret { color: var(--faint); width: 1em; flex: none; }
+.tg-guide { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); font-size: 13px; color: var(--muted); line-height: 1.5; }
+.tg-guide code { font-family: var(--font-mono); font-size: 12px; color: var(--text); background: var(--bg); padding: 1px 5px; border-radius: 5px; }
+.tg-guide strong { color: var(--text); }
+.tg-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; }
+.tg-env { margin: 8px 0 4px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font-family: var(--font-mono); font-size: 11.5px; color: var(--text); line-height: 1.5; overflow-x: auto; white-space: pre; }
+.tg-cmds { margin-top: 16px; }
+.tg-cmds ul { margin: 6px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 5px; }
+.tg-safety { margin-top: 16px; padding: 10px 12px; background: color-mix(in srgb, var(--warn) 8%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); border-radius: 8px; font-size: 12.5px; }
+
 /* Loud, consistent marker for placeholder / demo / not-yet-wired UI. */
 .placeholder-note { display: flex; align-items: flex-start; gap: 9px; margin: 10px 0; padding: 9px 11px; font-size: 12px; line-height: 1.45; color: var(--text); background: repeating-linear-gradient(45deg, color-mix(in oklch, var(--warn), transparent 90%), color-mix(in oklch, var(--warn), transparent 90%) 9px, transparent 9px, transparent 18px), color-mix(in oklch, var(--warn), transparent 92%); border: 1px solid color-mix(in oklch, var(--warn), transparent 55%); border-radius: 8px; }
 .placeholder-note-tag { flex: none; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em; color: var(--bg); background: var(--warn); border-radius: 4px; padding: 2px 6px; margin-top: 1px; }
