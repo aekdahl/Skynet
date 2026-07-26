@@ -14,6 +14,8 @@ const KNOWN_COMMANDS = [
   "stop",
   "resume",
   "quit",
+  "task",
+  "newproject",
 ] as const;
 
 export type Command = (typeof KNOWN_COMMANDS)[number];
@@ -52,6 +54,12 @@ export type BridgeAction = {
     | "quit"
     | "ignore"
     | "denied-approve"
+    // Deterministic backlog add: `/task <text>` creates a task WITHOUT the LLM,
+    // so backlogging works even with no consult-capable provider key. Gated by
+    // the control flag (creating tasks is privileged) → "denied-control" when off.
+    | "task"
+    | "newproject"
+    | "denied-control"
     // Owner free text (not a slash-command): index.ts routes it to the confirm
     // state machine (pending affirmative → run; else the conversational parse).
     // The deterministic commands above are ALWAYS decided here first, so the
@@ -114,6 +122,12 @@ export function decide(input: DecideInput): BridgeAction {
       return input.controlEnabled
         ? { kind: "reject", arg: parsed.arg }
         : { kind: "denied-approve" };
+    // Deterministic backlog add (no LLM). Privileged → gated by the control flag.
+    case "task":
+      return input.controlEnabled ? { kind: "task", arg: parsed.arg } : { kind: "denied-control" };
+    // Deterministic project creation (no LLM). Privileged → gated by control.
+    case "newproject":
+      return input.controlEnabled ? { kind: "newproject", arg: parsed.arg } : { kind: "denied-control" };
     default:
       return { kind: "help" };
   }

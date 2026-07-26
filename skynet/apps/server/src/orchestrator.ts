@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment } from "@skynet/shared";
+import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo } from "@skynet/shared";
 import {
   type HitlRaise,
   type RunnerEvents,
@@ -1059,20 +1059,45 @@ export class Orchestrator {
    * the caller re-validates against a closed whitelist — it can never escalate.
    */
   async consult(ws: string, question: string, context?: string): Promise<string | null> {
+    // Candidate (provider, model) pairs to interpret with: the configured fleet
+    // agents first (real model choices), THEN a fallback to a consult-capable
+    // provider that has a resolvable key even when NO agent is configured yet —
+    // so conversational control works before the fleet exists. Without this
+    // fallback, a key set in .env/skynet.env was ignored unless a Claude *agent*
+    // happened to be in the fleet. (Today Claude is the only provider with
+    // `.consult`; the catalog lookup keeps this correct if others gain it.)
     const agents = await this.store.listAgents(ws).catch(() => [] as Agent[]);
-    for (const agent of agents) {
-      const apiKey = await secretService.resolve(ws, agent.provider).catch(() => undefined);
+    const candidates: Array<{ provider: ProviderId; model: string }> = agents.map((a) => ({
+      provider: a.provider,
+      model: a.model,
+    }));
+    if (!candidates.some((c) => c.provider === "claude")) {
+      const claude = (await this.store.listProviders().catch(() => [] as ProviderInfo[])).find(
+        (p) => p.id === "claude",
+      );
+      const models = claude?.models ?? [];
+      // Prefer a cheap/fast model for a tiny classification call.
+      const model =
+        models.find((m) => /haiku/i.test(m)) ??
+        models.find((m) => /sonnet/i.test(m)) ??
+        models[0] ??
+        "sonnet-4.6";
+      candidates.push({ provider: "claude", model });
+    }
+
+    for (const c of candidates) {
+      const apiKey = await secretService.resolve(ws, c.provider).catch(() => undefined);
       if (!apiKey) continue;
       let provider: RunnerProvider;
       try {
-        provider = await this.getProvider(agent.provider);
+        provider = await this.getProvider(c.provider);
       } catch {
-        continue; // unresolvable provider — try the next agent
+        continue; // unresolvable provider — try the next candidate
       }
       if (!provider.consult) continue;
       try {
         return await provider.consult(
-          { task: "Classify an operator remote-control message", model: agent.model, cwd: config.runnerCwd, apiKey, context },
+          { task: "Classify an operator remote-control message", model: c.model, cwd: config.runnerCwd, apiKey, context },
           question,
         );
       } catch {

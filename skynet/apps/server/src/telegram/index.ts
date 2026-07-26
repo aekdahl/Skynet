@@ -24,7 +24,7 @@
 
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import type { Agent, HitlItem, Project, ProviderInfo, ServerEvent, Task, TaskRun } from "@skynet/shared";
-import type { ConfigureRunnerRequest, CreateTaskRequest, ResolveRequest } from "@skynet/shared";
+import type { ConfigureRunnerRequest, CreateProjectRequest, CreateTaskRequest, ResolveRequest } from "@skynet/shared";
 import type { config as Config } from "../config.js";
 import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
@@ -58,13 +58,15 @@ const HELP =
     "/gates — list open gates",
     "/approve <id> — approve a gate (needs SKYNET_TELEGRAM_CONTROL=true)",
     "/reject <id> — reject a gate (needs SKYNET_TELEGRAM_CONTROL=true)",
+    "/task <text> — add a backlog item (no LLM needed; needs SKYNET_TELEGRAM_CONTROL=true)",
+    "/newproject <name> — create a project (needs SKYNET_TELEGRAM_CONTROL=true)",
     "/stop — kill switch: halt all runs + pause autonomy",
     "/resume — re-enable autonomy",
     "/quit — shut down the Skynet app",
     "/help — this list",
     "",
     "With control on you can also just say what you want, e.g.:",
-    "  approve the deploy gate · add task \"fix login\" to Web · assign that task · add a claude agent",
+    "  approve the deploy gate · add task \"fix login\" to Web · assign that task · add a claude agent · create a project called Web",
     "I'll confirm before doing anything — reply yes to run, anything else cancels.",
   ].join("\n");
 
@@ -83,6 +85,7 @@ export interface ControlOps {
   listAgents(ws: string): Promise<Agent[]>;
   listProviders(ws: string): Promise<ProviderInfo[]>;
   resolveHitl(ws: string, id: string, input: ResolveRequest, operatorId: string): Promise<HitlItem>;
+  createProject(ws: string, input: CreateProjectRequest): Promise<Project>;
   createTask(ws: string, projectId: string, input: CreateTaskRequest): Promise<Task>;
   assignTask(ws: string, projectId: string, taskId: string): Promise<TaskRun>;
   configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent>;
@@ -204,6 +207,20 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           },
         };
       }
+      case "create_project": {
+        const summary = `Create project "${action.projectName}"${action.projectGoal ? ` — goal: ${action.projectGoal}` : ""}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            const p = await operations.createProject(ws, {
+              name: action.projectName!,
+              goal: action.projectGoal ?? "",
+            });
+            return `📁 Project "${p.name}" created (${p.id}). Add a repo in the app to run agents.`;
+          },
+        };
+      }
       // status / none are handled before this point.
       default:
         return null;
@@ -240,7 +257,9 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     const ctx = await buildContext(operations, ws);
     const raw = await orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx));
     if (raw == null) {
-      await notify("No provider key available to interpret messages — use /approve <id>, or add a key.");
+      await notify(
+        "Conversational control needs an Anthropic (Claude) key to interpret messages — set ANTHROPIC_API_KEY (or add a Claude agent), then retry. Meanwhile you can add a backlog item with: /task <text>",
+      );
       return;
     }
 
@@ -322,6 +341,58 @@ export function createOwnerControl(deps: OwnerControlDeps): {
         }
         return;
       }
+
+      case "task": {
+        // Deterministic backlog add — no LLM involved, so it works even without a
+        // consult-capable provider key.
+        const taskText = action.arg?.trim();
+        if (!taskText) {
+          await notify("Usage: /task <what to add to the backlog>");
+          return;
+        }
+        const projects = await operations.listProjects(ws).catch(() => [] as Project[]);
+        if (projects.length === 0) {
+          await notify("No project yet — create one in the app first, then /task <text>.");
+          return;
+        }
+        if (projects.length > 1) {
+          await notify(
+            `You have ${projects.length} projects — name one (e.g. “add a task to ${projects[0]!.name}: ${taskText}”), or add it in the app.`,
+          );
+          return;
+        }
+        const proj = projects[0]!;
+        try {
+          const t = await operations.createTask(ws, proj.id, { text: taskText });
+          await notify(`➕ Added to ${proj.name} backlog: “${t.text}”`);
+        } catch (err) {
+          await notify(`Couldn't add the task: ${(err as Error).message}`);
+        }
+        return;
+      }
+
+      case "newproject": {
+        // Deterministic project creation — no LLM. Creates a project shell (bind a
+        // repo in the app to run agents on it).
+        const name = action.arg?.trim();
+        if (!name) {
+          await notify("Usage: /newproject <name>");
+          return;
+        }
+        try {
+          const p = await operations.createProject(ws, { name, goal: "" });
+          await notify(`📁 Project "${p.name}" created. Add a repo in the app to run agents.`);
+        } catch (err) {
+          await notify(`Couldn't create the project: ${(err as Error).message}`);
+        }
+        return;
+      }
+
+      case "denied-control":
+        await notify(
+          "Control over chat is disabled (set SKYNET_TELEGRAM_CONTROL=true). Or add the task/project in the app.",
+        );
+        return;
 
       case "denied-approve":
         await notify(

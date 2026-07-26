@@ -58,6 +58,18 @@ describe("parseIntent — the five whitelisted actions map when ids resolve", ()
       agentName: "beta",
     });
   });
+  it("create_project (requires a non-empty name; goal optional)", () => {
+    expect(parseIntent('{"action":"create_project","projectName":"  Web  "}', ctx)).toEqual({
+      kind: "create_project",
+      projectName: "Web",
+    });
+    expect(
+      parseIntent('{"action":"create_project","projectName":"Web","projectGoal":"the marketing site"}', ctx),
+    ).toEqual({ kind: "create_project", projectName: "Web", projectGoal: "the marketing site" });
+    // Empty name → none (never create an unnamed project).
+    expect(parseIntent('{"action":"create_project","projectName":"  "}', ctx).kind).toBe("none");
+  });
+
   it("status", () => {
     expect(parseIntent('{"action":"status"}', ctx)).toEqual({ kind: "status" });
   });
