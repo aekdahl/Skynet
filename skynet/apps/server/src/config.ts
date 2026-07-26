@@ -13,6 +13,13 @@ export const config = {
   nodeEnv,
   // Explicit dev/test only — gates the open-auth fallback + dev-token map.
   devMode,
+  // Set by the desktop shell (apps/desktop/main.cjs) when the server is running
+  // as the local packaged app. Gates the in-app Advanced env-settings panel +
+  // engine-restart, which only make sense (and are only safe) there.
+  desktop: process.env.SKYNET_DESKTOP === "1",
+  // The `<userData>/skynet.env` overrides file the desktop shell reads at boot;
+  // the Advanced settings panel writes staged env changes here. Null elsewhere.
+  envFile: process.env.SKYNET_ENV_FILE || null,
   // Trust an upstream reverse proxy's X-Forwarded-For for the client IP (needed
   // so rate limiting keys on the real caller in a hosted deploy). Off by default
   // — only enable behind a proxy you control (XFF is spoofable otherwise).
@@ -152,3 +159,8 @@ export const config = {
 };
 
 export const now = (): number => Date.now();
+
+// Sentinel exit code the server uses to ask the desktop shell to relaunch it
+// (so staged env changes apply). apps/desktop/main.cjs respawns on this code
+// instead of treating the exit as a crash. Keep in sync with main.cjs.
+export const RESTART_EXIT_CODE = 88;

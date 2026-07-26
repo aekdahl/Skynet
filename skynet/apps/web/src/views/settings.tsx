@@ -184,6 +184,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
       </div>
 
       <McpAccessSection />
+      <AdvancedSettingsSection />
       <div className="settings-setup">
         <div className="settings-setup-text">
           <div className="settings-setup-title">App</div>
@@ -219,6 +220,152 @@ const SCOPE_INFO: { id: McpScope; label: string; hint: string }[] = [
   { id: "author", label: "Author", hint: "create & assign tasks, drive runs, manage agents" },
   { id: "approver", label: "Approver", hint: "resolve HITL — approve diffs & pushes without a human" },
 ];
+
+// ─── Advanced (env) settings ────────────────────────────────────────────────
+// A curated whitelist of operator env knobs (the server owns the list). In the
+// desktop app these stage to the userData env file and apply when the engine
+// restarts; elsewhere the panel is read-only with a note. Collapsed by default.
+function AdvancedSettingsSection() {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<{ writable: boolean; fields: api.EnvSettingField[] } | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [staged, setStaged] = useState(false); // saved, awaiting restart
+  const [restarting, setRestarting] = useState(false);
+
+  const load = useCallback(() => {
+    api.fetchEnvSettings().then(setData).catch(() => setErr("Couldn't load advanced settings."));
+  }, []);
+  useEffect(() => {
+    if (open && data === null) load();
+  }, [open, data, load]);
+
+  if (!open) {
+    return (
+      <div className="settings-setup adv-toggle" onClick={() => setOpen(true)} role="button" tabIndex={0}>
+        <div className="settings-setup-text">
+          <div className="settings-setup-title">Advanced</div>
+          <div className="settings-setup-sub">
+            Telegram, runner safety limits, pre-merge checks, and vendor CLI paths.
+          </div>
+        </div>
+        <span className="adv-caret mono">▸ show</span>
+      </div>
+    );
+  }
+
+  const dirty = Object.keys(drafts);
+  const groups = data ? [...new Set(data.fields.map((f) => f.group))] : [];
+
+  const save = async () => {
+    if (dirty.length === 0) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.saveEnvSettings(drafts);
+      setDrafts({});
+      setStaged(true);
+      setData(null); // refetch to reflect stored state (masked secrets, `set`)
+      load();
+    } catch (e) {
+      setErr(e instanceof api.ApiError ? e.message : "Couldn't save.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const restart = async () => {
+    setRestarting(true);
+    try {
+      await api.restartEngine();
+      // The socket drops while the engine relaunches; App's ConnectingShell
+      // handles the reconnect. Clear the banner optimistically.
+      setStaged(false);
+    } catch {
+      /* the disconnect itself often races the response — treat as in-progress */
+    }
+  };
+
+  return (
+    <div className="adv-sec">
+      <button className="adv-head" onClick={() => setOpen(false)}>
+        <div className="settings-setup-text">
+          <div className="settings-setup-title">Advanced</div>
+          <div className="settings-setup-sub">Operator env settings — applied on engine restart.</div>
+        </div>
+        <span className="adv-caret mono">▾ hide</span>
+      </button>
+
+      {err && <div className="settings-warn">{err}</div>}
+      {data && !data.writable && (
+        <div className="adv-note mono">
+          Read-only here — these apply in the packaged desktop app, where changes are staged and the
+          engine restarts to apply them.
+        </div>
+      )}
+
+      {data &&
+        groups.map((g) => (
+          <div className="adv-group" key={g}>
+            <div className="adv-group-title mono">{g}</div>
+            {data.fields
+              .filter((f) => f.group === g)
+              .map((f) => {
+                const draftVal = drafts[f.key];
+                const val = draftVal ?? f.value;
+                const set = (v: string) => setDrafts((d) => ({ ...d, [f.key]: v }));
+                return (
+                  <div className="adv-field" key={f.key}>
+                    <label className="adv-field-label">
+                      {f.label}
+                      {f.unit && <span className="adv-unit mono"> ({f.unit})</span>}
+                      <code className="adv-key">{f.key}</code>
+                    </label>
+                    {f.type === "toggle" ? (
+                      <input
+                        type="checkbox"
+                        className="adv-check"
+                        disabled={!data.writable}
+                        checked={/^(1|true|yes|on)$/i.test(val)}
+                        onChange={(e) => set(e.target.checked ? "true" : " ")}
+                      />
+                    ) : (
+                      <input
+                        className="adv-input"
+                        type={f.type === "secret" ? "password" : f.type === "number" ? "number" : "text"}
+                        autoComplete="off"
+                        disabled={!data.writable}
+                        placeholder={f.type === "secret" && f.set ? "•••• stored — leave blank to keep" : f.placeholder}
+                        value={draftVal ?? (f.type === "secret" ? "" : f.value)}
+                        onChange={(e) => set(e.target.value)}
+                      />
+                    )}
+                    <div className="adv-hint">{f.hint}</div>
+                  </div>
+                );
+              })}
+          </div>
+        ))}
+
+      {data?.writable && (
+        <div className="adv-actions">
+          <button className="btn btn-primary" disabled={busy || dirty.length === 0} onClick={save}>
+            {busy ? "Saving…" : dirty.length ? `Save ${dirty.length} change${dirty.length === 1 ? "" : "s"}` : "Saved"}
+          </button>
+          {staged && (
+            <div className="adv-restart">
+              <span className="adv-restart-msg">Saved — restart the engine to apply.</span>
+              <button className="btn btn-ghost" disabled={restarting} onClick={restart}>
+                {restarting ? "Restarting…" : "Restart engine"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function McpAccessSection() {
   const [tokens, setTokens] = useState<ServiceTokenMeta[] | null>(null);

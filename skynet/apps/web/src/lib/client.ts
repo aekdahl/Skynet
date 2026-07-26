@@ -111,6 +111,32 @@ export function fetchRoadmap() {
   return req<{ markdown: string }>("GET", "/api/roadmap");
 }
 
+// ─── Advanced env settings (desktop) ───────────────────────────────────────
+export type EnvFieldType = "text" | "number" | "toggle" | "secret";
+export interface EnvSettingField {
+  key: string;
+  group: string;
+  label: string;
+  hint: string;
+  type: EnvFieldType;
+  placeholder?: string;
+  unit?: string;
+  value: string; // empty for secrets + unset keys
+  set: boolean;
+}
+/** Read the Advanced settings whitelist + current staged values. */
+export function fetchEnvSettings() {
+  return req<{ writable: boolean; fields: EnvSettingField[] }>("GET", "/api/settings/env");
+}
+/** Stage env changes to the desktop overrides file (applied on restart). */
+export function saveEnvSettings(updates: Record<string, string>) {
+  return req<{ ok: true; restartRequired: boolean }>("PUT", "/api/settings/env", { updates });
+}
+/** Ask the desktop shell to relaunch the local engine so staged changes apply. */
+export function restartEngine() {
+  return req<{ restarting: boolean }>("POST", "/api/settings/restart");
+}
+
 // Provider secrets (Settings). `env` = providers a server env var supplies a
 // key for (a stored key overrides it).
 export function fetchSecrets() {
