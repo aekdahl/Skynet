@@ -33,6 +33,10 @@ const ALLOW = new Set<string>([
   "archiveAllAudit", "clearAudit",
   // low-value control-plane (runner rename/model tweak)
   "updateAgent",
+  // auth primitive (POST /api/auth/login) — the local/desktop build runs
+  // open-auth (dev tokens), so no fleet journey signs in; auth is guarded by
+  // auth-hardening.test.ts, not an operator journey.
+  "login",
   // read-only doc render for the Roadmap page — no operator journey to exercise
   "fetchRoadmap",
   // auth handshake — needs live operator credentials + a session token exchange,
