@@ -275,6 +275,7 @@ features below are white space.)
   Charter is what the auto dev team (v2 north star) later sizes itself from, and what **auto task/milestone
   proposal** plans against. See [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §1.
 - [ ] **Parallelism nudge** — "idle runners + deep backlog → spin up more?" turns the fleet's own state into guidance.
+- [ ] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain.
 - [ ] **Operator ergonomics (P3 of [docs/ux-review.md](docs/ux-review.md)):** **⌘K command palette**
   (navigation + verbs: assign, approve latest gate, open project) · **keyboard-first Inbox**
   (j/k navigate, a/r/m approve/reject/modify, ↵ opens the run — `QueueView.selectedIdx` already
