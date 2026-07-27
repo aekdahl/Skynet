@@ -1699,3 +1699,26 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .gh-chev.open { transform: rotate(90deg); }
 .gh-int-body { margin-top: 12px; }
 .gh-pill-off { color: var(--faint); border-color: var(--line); }
+
+/* ── Project assistant (repo-aware chat) ─────────────────────────────────── */
+.proj-assistant { margin-top: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.proj-assistant-head { display: flex; align-items: center; gap: 10px; width: 100%; background: none; border: 0; cursor: pointer; padding: 13px 16px; text-align: left; color: var(--ink); }
+.proj-assistant-head:hover .proj-assistant-title { color: var(--accent); }
+.proj-assistant-head .fold-caret { color: var(--faint); font-size: 12px; }
+.proj-assistant-title { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; color: var(--ink); }
+.proj-assistant-sub { font-size: 12px; color: var(--faint); }
+.proj-assistant-body { border-top: 1px solid var(--line); padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+.proj-assistant-thread { display: flex; flex-direction: column; gap: 14px; max-height: 440px; overflow-y: auto; }
+.asst-welcome p { color: var(--muted); font-size: 13.5px; margin: 0 0 10px; }
+.asst-sugg { display: flex; flex-wrap: wrap; gap: 8px; }
+.asst-chip { font-family: var(--font-ui); font-size: 12.5px; color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 20px; padding: 6px 12px; cursor: pointer; }
+.asst-chip:hover { color: var(--ink); border-color: var(--faint); }
+.asst-msg { display: flex; flex-direction: column; gap: 4px; }
+.asst-who { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.asst-user .asst-who { color: var(--accent); }
+.asst-text { font-size: 13.5px; line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+.asst-user .asst-text { color: var(--muted); }
+.asst-think { color: var(--faint); font-style: italic; }
+.asst-err { font-size: 12.5px; color: var(--danger); }
+.asst-input { display: flex; gap: 8px; }
+.asst-input .qx-input { flex: 1; }

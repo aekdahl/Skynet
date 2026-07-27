@@ -163,14 +163,69 @@ async function oneShotConsult(opts: {
  *  (via {@link buildRunnerEnv} — so it works standalone AND nested inside a
  *  Claude Code session, where a raw `fetch` to the API has no egress). Used by
  *  out-of-band callers such as the eval judge. Returns the model's text. */
-export async function oneShotText(opts: { prompt: string; model?: string; cwd?: string }): Promise<string> {
+export async function oneShotText(opts: { prompt: string; model?: string; cwd?: string; apiKey?: string }): Promise<string> {
+  const env = buildRunnerEnv();
+  if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
   return oneShotConsult({
     prompt: opts.prompt,
     cwd: opts.cwd ?? process.cwd(),
     model: opts.model ?? "opus",
-    env: buildRunnerEnv(),
+    env,
     fallback: "",
   });
+}
+
+// Read-only tools a repo-aware assistant may use — inspect the tree/files, never
+// mutate. Everything else (Bash, Write, Edit, …) is denied.
+const ASSISTANT_READ_TOOLS = new Set(["Read", "LS", "Glob", "Grep", "NotebookRead"]);
+
+/**
+ * A repo-aware one-shot assistant: same auth path as {@link oneShotText}, but it
+ * can READ the repository at `cwd` (Read/LS/Glob/Grep) to ground its answer in
+ * actual file content — e.g. opening ROADMAP.md — while every mutating tool is
+ * denied. Bounded turns; returns the final text. Used by the project assistant.
+ */
+export async function oneShotRepoAssistant(opts: {
+  prompt: string;
+  cwd: string;
+  model?: string;
+  apiKey?: string;
+}): Promise<string> {
+  const env = buildRunnerEnv();
+  if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
+  try {
+    const q = query({
+      prompt: opts.prompt,
+      options: {
+        cwd: opts.cwd,
+        model: mapModel(opts.model ?? "opus"),
+        permissionMode: "default",
+        // The preset loads the full tool suite (so Read/Grep/Glob exist); the
+        // gate narrows it to read-only.
+        systemPrompt: { type: "preset", preset: "claude_code" },
+        canUseTool: (name, input) =>
+          Promise.resolve(
+            ASSISTANT_READ_TOOLS.has(name)
+              ? ({ behavior: "allow", updatedInput: input } as PermissionResult)
+              : ({ behavior: "deny", message: "Read-only assistant — only Read/LS/Glob/Grep are allowed." } as PermissionResult),
+          ),
+        maxTurns: 14,
+        env,
+      },
+    });
+    let answer = "";
+    for await (const msg of q as AsyncIterable<SDKMessage>) {
+      if (msg.type === "assistant") {
+        const { text } = readAssistant((msg as { message: { content?: unknown } }).message);
+        if (text) answer = answer ? `${answer}\n${text}` : text;
+      } else if (msg.type === "result") {
+        break;
+      }
+    }
+    return answer.trim() || "(no answer)";
+  } catch (err) {
+    return `couldn't look into that right now (${(err as Error).message}).`;
+  }
 }
 
 // A tool call the assistant requested: its name, input args, and id (to pair

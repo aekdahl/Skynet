@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { TaskRun, Project, Task, TaskAssignment, Agent } from "@skynet/shared";
 import { useStore } from "../lib/store";
+import * as api from "../lib/client";
 import {
   agentsForProject,
   curStep,
@@ -349,6 +350,106 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
   );
 }
 
+// ─── Project assistant ──────────────────────────────────────────────────────
+// A repo-aware chat: ask about the project's current status or its content
+// (the assistant reads files like ROADMAP.md). Uses the same general-purpose
+// LLM as the rest of Skynet, via POST /api/projects/:id/chat.
+
+type AsstMsg = { role: "user" | "assistant"; content: string };
+const ASSISTANT_SUGGESTIONS = [
+  "What's the current status of this project?",
+  "Summarize the roadmap",
+  "What's blocked or waiting on me?",
+];
+
+function ProjectAssistant({ projectId }: { projectId: string }) {
+  const [open, setOpen] = useState(false);
+  const [msgs, setMsgs] = useState<AsstMsg[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
+  }, [msgs, busy]);
+
+  const ask = async (q: string) => {
+    const question = q.trim();
+    if (!question || busy) return;
+    setErr(null);
+    const history = msgs.slice();
+    setMsgs([...msgs, { role: "user", content: question }]);
+    setInput("");
+    setBusy(true);
+    try {
+      const { reply } = await api.projectChat(projectId, question, history);
+      setMsgs((m) => [...m, { role: "assistant", content: reply }]);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't reach the assistant — try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="proj-assistant">
+      <button className="proj-assistant-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <span className="fold-caret">{open ? "▾" : "▸"}</span>
+        <span className="proj-assistant-title">ASK ABOUT THIS PROJECT</span>
+        <span className="proj-assistant-sub">status &amp; repo content · reads files like ROADMAP.md</span>
+      </button>
+      {open && (
+        <div className="proj-assistant-body">
+          <div className="proj-assistant-thread" ref={threadRef}>
+            {msgs.length === 0 && (
+              <div className="asst-welcome">
+                <p>Ask about this project’s current status, or what’s in the repository.</p>
+                <div className="asst-sugg">
+                  {ASSISTANT_SUGGESTIONS.map((s) => (
+                    <button key={s} className="asst-chip" onClick={() => void ask(s)}>{s}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {msgs.map((m, i) => (
+              <div key={i} className={"asst-msg asst-" + m.role}>
+                <span className="asst-who mono">{m.role === "user" ? "you" : "assistant"}</span>
+                <div className="asst-text">{m.content}</div>
+              </div>
+            ))}
+            {busy && (
+              <div className="asst-msg asst-assistant">
+                <span className="asst-who mono">assistant</span>
+                <div className="asst-text asst-think">reading the project…</div>
+              </div>
+            )}
+          </div>
+          {err && <div className="asst-err">{err}</div>}
+          <form
+            className="asst-input"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void ask(input);
+            }}
+          >
+            <input
+              className="qx-input"
+              placeholder="Ask about status, the roadmap, a file…"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              disabled={busy}
+            />
+            <button className="btn btn-primary" type="submit" disabled={busy || !input.trim()}>
+              Ask
+            </button>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ProjectView({
   project,
   now,
@@ -534,6 +635,8 @@ export function ProjectView({
           );
         })}
       </div>
+
+      <ProjectAssistant projectId={project.id} />
 
       {archived.length > 0 && (
         <div className="kb-archive-sec">
