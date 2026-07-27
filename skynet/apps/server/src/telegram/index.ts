@@ -37,6 +37,7 @@ import {
   parseResponse,
   renderContext,
   type Action,
+  type HistoryEntry,
   type IntentContext,
   type IntentOps,
 } from "./intent.js";
@@ -60,6 +61,7 @@ const HELP =
     "/approve <id> — approve a gate (needs SKYNET_TELEGRAM_CONTROL=true)",
     "/reject <id> — reject a gate (needs SKYNET_TELEGRAM_CONTROL=true)",
     "/task <text> — add a backlog item (no LLM needed; needs SKYNET_TELEGRAM_CONTROL=true)",
+    "/removetask <id> — archive a task (reversible; recoverable in the app; needs SKYNET_TELEGRAM_CONTROL=true)",
     "/newproject <name> — create a project (needs SKYNET_TELEGRAM_CONTROL=true)",
     "/stop — kill switch: halt all runs + pause autonomy",
     "/resume — re-enable autonomy",
@@ -75,6 +77,10 @@ const HELP =
 const isAffirmative = (text: string): boolean =>
   ["yes", "y", "confirm", "ok", "okay", "yep", "yeah"].includes(text.trim().toLowerCase());
 
+/** Rolling per-chat conversation buffer cap (turns). Oldest dropped past this.
+ *  Short by design — enough to resolve immediate back-references, no more. */
+const HISTORY_CAP = 8;
+
 // ── Narrow dependency slices (so the confirm state machine is unit-testable) ──
 
 /** The Operations methods the control handler needs. */
@@ -89,6 +95,7 @@ export interface ControlOps {
   createProject(ws: string, input: CreateProjectRequest): Promise<Project>;
   createTask(ws: string, projectId: string, input: CreateTaskRequest): Promise<Task>;
   assignTask(ws: string, projectId: string, taskId: string): Promise<TaskRun>;
+  archiveTask(ws: string, projectId: string, taskId: string, archived: boolean): Promise<Task>;
   configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent>;
 }
 
@@ -136,6 +143,18 @@ export function createOwnerControl(deps: OwnerControlDeps): {
   const operatorId = `telegram:${deps.ownerChatId}`;
   const onQuit = deps.onQuit ?? (() => process.exit(REMOTE_SHUTDOWN_CODE));
   const pending = new Map<string, Pending>();
+
+  // Short conversational memory (in-memory, owner-scoped, capped, cleared on
+  // restart). Lets back-references ("remove that task", "it") resolve to a
+  // concrete id: confirmed-action OUTCOMES are recorded WITH ids. We never log
+  // message contents (see the module header) — this buffer stays in memory only.
+  const history = new Map<string, HistoryEntry[]>();
+  const pushHistory = (chatId: string, entry: HistoryEntry): void => {
+    const buf = history.get(chatId) ?? [];
+    buf.push(entry);
+    while (buf.length > HISTORY_CAP) buf.shift(); // drop oldest past the cap
+    history.set(chatId, buf);
+  };
 
   const openGates = async (): Promise<HitlItem[]> =>
     (await operations.listHitl(ws)).filter((h) => !h.resolvedAt);
@@ -222,6 +241,18 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           },
         };
       }
+      case "remove_task": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        const summary = `Remove (archive) task ${action.taskId} — "${task?.text ?? "?"}"? (recoverable in the app)`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            await operations.archiveTask(ws, action.projectId!, action.taskId!, true);
+            return `🗃 Archived task ${action.taskId}${task?.text ? ` — "${task.text}"` : ""}. Recoverable in the app (un-archive to restore).`;
+          },
+        };
+      }
       // status / none are handled before this point.
       default:
         return null;
@@ -241,7 +272,11 @@ export function createOwnerControl(deps: OwnerControlDeps): {
       }
       log(`executing confirmed action: ${p.kind}`);
       try {
-        await notify(await p.run());
+        const outcome = await p.run();
+        // Record the OUTCOME (with ids) so later back-references ("remove that
+        // task", "it") can resolve. This is the memory that makes undo work.
+        pushHistory(chatId, { role: "assistant", text: outcome });
+        await notify(outcome);
       } catch (err) {
         await notify(`Couldn't complete that: ${(err as Error).message}`);
       }
@@ -255,8 +290,14 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     }
 
     // 3. Interpret via the operator's OWN provider key (BYOK). No key → fall back.
+    //    Snapshot the PRIOR history (before this message) to ground back-references,
+    //    then record this owner message BEFORE the consult (it becomes context for
+    //    the next turn). The current message rides as the OPERATOR MESSAGE, so it is
+    //    not duplicated into RECENT CONVERSATION.
+    const priorHistory = [...(history.get(chatId) ?? [])];
+    pushHistory(chatId, { role: "owner", text });
     const ctx = await buildContext(operations, ws);
-    const raw = await orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx));
+    const raw = await orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx, priorHistory));
     if (raw == null) {
       await notify(
         "Conversational control needs an Anthropic (Claude) key to interpret messages — set ANTHROPIC_API_KEY (or add a Claude agent), then retry. Meanwhile you can add a backlog item with: /task <text>",
@@ -271,7 +312,9 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     // Read-only status: answer with the live status (nothing to confirm).
     if (action?.kind === "status") {
       const status = await statusText();
-      await notify(reply ? `${reply}\n\n${status}` : status);
+      const out = reply ? `${reply}\n\n${status}` : status;
+      pushHistory(chatId, { role: "assistant", text: reply || status });
+      await notify(out);
       return;
     }
 
@@ -282,13 +325,17 @@ export function createOwnerControl(deps: OwnerControlDeps): {
       if (next) {
         pending.set(chatId, next);
         log(`awaiting confirmation for action: ${next.kind}`);
-        await notify([reply, `${next.summary} — reply yes / no`].filter(Boolean).join("\n\n"));
+        const out = [reply, `${next.summary} — reply yes / no`].filter(Boolean).join("\n\n");
+        pushHistory(chatId, { role: "assistant", text: out });
+        await notify(out);
         return;
       }
     }
 
     // No actionable intent — just the helpful reply.
-    await notify(reply || "I'm here to help — ask me about gates, runs, projects, or tell me what to do.");
+    const out = reply || "I'm here to help — ask me about gates, runs, projects, or tell me what to do.";
+    pushHistory(chatId, { role: "assistant", text: out });
+    await notify(out);
   };
 
   const handle = async (chatId: string, text: string): Promise<void> => {
@@ -388,6 +435,30 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           await notify(`📁 Project "${p.name}" created. Add a repo in the app to run agents.`);
         } catch (err) {
           await notify(`Couldn't create the project: ${(err as Error).message}`);
+        }
+        return;
+      }
+
+      case "removetask": {
+        // Deterministic reversible archive by id — the no-LLM undo path. Resolves
+        // the task's project id from the workspace; archiveTask refuses a task that
+        // still owns a live run. Recoverable (un-archive in the app).
+        const id = action.arg?.trim();
+        if (!id) {
+          await notify("Usage: /removetask <task id>");
+          return;
+        }
+        const task = (await operations.listTasks(ws).catch(() => [] as Task[])).find((t) => t.id === id);
+        if (!task) {
+          await notify(`No task ${id} found.`);
+          return;
+        }
+        log("executing slash-command action: removetask");
+        try {
+          await operations.archiveTask(ws, task.projectId, id, true);
+          await notify(`🗃 Archived task ${id} — recoverable in the app (un-archive to restore).`);
+        } catch (err) {
+          await notify(`Couldn't remove task ${id}: ${(err as Error).message}`);
         }
         return;
       }

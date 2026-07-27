@@ -191,10 +191,11 @@ export const TASK_STATE_META: Record<TaskState, { label: string; color: string }
   done: { label: "DONE", color: "var(--muted)" },
 };
 
-/** A project's tasks in one pipeline state, ordered by manual priority. */
+/** A project's tasks in one pipeline state, ordered by manual priority.
+ *  Archived tasks are soft-hidden — kept in the store but excluded from the board. */
 export function tasksInState(tasks: Task[], projectId: string, state: TaskState): Task[] {
   return tasks
-    .filter((t) => t.projectId === projectId && t.state === state)
+    .filter((t) => t.projectId === projectId && t.state === state && !t.archived)
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
 }
 

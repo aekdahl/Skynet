@@ -300,6 +300,7 @@ export class Operations {
       reviewFlaggedReason: null,
       assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,
+      archived: false,
     };
     return this.hub.upsertTask(task);
   }
@@ -349,6 +350,27 @@ export class Operations {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
     await this.hub.deleteTask(tid);
+  }
+  /**
+   * REVERSIBLE soft-hide: mark a task `archived` (hidden from the board + the
+   * assistant's grounding context) without deleting it — un-archive (archived:
+   * false) restores it. NEVER a hard delete; the record stays in the store.
+   *
+   * Refuses to archive a task that currently owns a LIVE run — one in `ongoing`/
+   * `review` with a runId whose run hasn't finished. Archiving that would orphan
+   * a running agent from the board; stop the run first. Un-archiving is always
+   * allowed (nothing in flight to protect).
+   */
+  async archiveTask(ws: string, projectId: string, tid: string, archived: boolean): Promise<Task> {
+    const task = await this.store.getTask(tid);
+    if (!task || task.workspaceId !== ws || task.projectId !== projectId) throw new NotFoundError("Task");
+    if (archived && task.runId && (task.state === "ongoing" || task.state === "review")) {
+      const run = await this.store.getRun(task.runId);
+      if (run && run.status !== "done") {
+        throw new Error("stop the run first (/stop) or handle it in the app");
+      }
+    }
+    return this.hub.upsertTask({ ...task, archived });
   }
   /** Assign a task to a fresh agent (idempotent — see Orchestrator.assignTask). */
   async assignTask(ws: string, projectId: string, tid: string): Promise<TaskRun> {
