@@ -68,6 +68,7 @@ export interface Store extends StoreState {
     extra?: { optionIndex?: number; guidance?: string },
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
+  streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
   forkAgent: (id: string) => Promise<void>;
   archiveAgent: (id: string, archived: boolean) => Promise<void>;
   pauseAgent: (id: string) => Promise<void>;
@@ -315,6 +316,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const { reply } = await api.sendAgentMessage(id, text);
         return reply;
       },
+      streamAgentMessage: (id, text, onDelta) => api.streamAgentMessage(id, text, onDelta),
       forkAgent: async (id) => {
         try {
           await api.forkAgent(id);

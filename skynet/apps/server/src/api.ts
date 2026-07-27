@@ -235,6 +235,37 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Streaming chat: the same reply as /messages, but written as text/plain
+  // chunks so the UI renders it as it's generated. Ownership is validated BEFORE
+  // we take over the socket, so a bad id / cross-workspace run still returns a
+  // clean JSON error; once streaming starts we can only append.
+  app.post<{ Params: { id: string } }>("/api/runs/:id/messages/stream", async (req, reply) => {
+    const body = ChatRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      await ops.getRun(ws(req), req.params.id); // 404 / cross-ws → JSON error, no stream
+    } catch (err) {
+      return fail(reply, err);
+    }
+    reply.hijack(); // we own the raw response from here
+    const raw = reply.raw;
+    raw.writeHead(200, {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      "x-accel-buffering": "no", // don't let a proxy buffer the stream
+    });
+    try {
+      for await (const delta of ops.chatAgentStream(ws(req), req.params.id, body.data.text)) {
+        raw.write(delta);
+      }
+    } catch (err) {
+      // Headers are already sent — surface the failure inline rather than a 500.
+      raw.write(`\n[stream error] ${(err as Error).message}`);
+    } finally {
+      raw.end();
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/runs/:id/fork", async (req, reply) => {
     try {
       return await ops.forkAgent(ws(req), req.params.id);
@@ -343,6 +374,44 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
         return { reply: answer };
       } catch (err) {
         return fail(reply, err);
+      }
+    },
+  );
+
+  // Streaming form of the project assistant — same answer, written as text/plain
+  // chunks so "Ask about this project" renders it as it's generated. Ownership /
+  // bad-request errors stay JSON (validated before we hijack the socket).
+  app.post<{ Params: { id: string }; Body: { question?: string; history?: ChatTurn[] } }>(
+    "/api/projects/:id/chat/stream",
+    async (req, reply) => {
+      const question = (req.body?.question ?? "").trim();
+      if (!question) return reply.code(400).send({ error: "Ask a question about the project." });
+      const history = Array.isArray(req.body?.history)
+        ? req.body!.history
+            .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
+            .slice(-16)
+        : undefined;
+      // Validate the project exists / is ours before taking over the socket.
+      try {
+        await ops.getProject(ws(req), req.params.id);
+      } catch (err) {
+        return fail(reply, err);
+      }
+      reply.hijack();
+      const raw = reply.raw;
+      raw.writeHead(200, {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        "x-accel-buffering": "no",
+      });
+      try {
+        for await (const delta of ops.projectAssistantStream(ws(req), req.params.id, question, history)) {
+          raw.write(delta);
+        }
+      } catch (err) {
+        raw.write(`\n[stream error] ${(err as Error).message}`);
+      } finally {
+        raw.end();
       }
     },
   );

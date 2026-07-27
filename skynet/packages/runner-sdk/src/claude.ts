@@ -122,8 +122,72 @@ export function buildRunnerEnv(): Record<string, string> {
   return env;
 }
 
-/** A one-shot, tool-less query — used for consults (gate questions, follow-ups
- *  about finished work). Returns the answer text, or `fallback` if empty. */
+/**
+ * Yield an SDK query's answer as text deltas. With `includePartialMessages` the
+ * SDK emits `stream_event`s carrying token-level `text_delta`s — we yield those
+ * live. The final `assistant` message is a safety net: if partials didn't arrive
+ * (older transport / tool turns), emit any text not already streamed. A failure
+ * yields one apologetic chunk, but only if nothing was emitted yet. Shared by
+ * every one-shot streaming helper below.
+ */
+async function* streamQueryText(q: AsyncIterable<SDKMessage>): AsyncGenerator<string> {
+  let emitted = "";
+  try {
+    for await (const msg of q) {
+      if (msg.type === "stream_event") {
+        // Anthropic streaming: content_block_delta → { delta: { type:"text_delta", text } }.
+        const ev = (msg as { event?: { type?: string; delta?: { type?: string; text?: string } } }).event;
+        if (ev?.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
+          emitted += ev.delta.text;
+          yield ev.delta.text;
+        }
+      } else if (msg.type === "assistant") {
+        // Safety net: emit any final text the partial stream didn't already cover.
+        // (A tool-using assistant emits a fresh text block per turn; only the
+        // trailing answer extends `emitted`, so guard on the startsWith prefix.)
+        const { text } = readAssistant((msg as { message: { content?: unknown } }).message);
+        if (text && text.length > emitted.length && text.startsWith(emitted)) {
+          const suffix = text.slice(emitted.length);
+          emitted += suffix;
+          yield suffix;
+        } else if (text && !emitted) {
+          emitted = text;
+          yield text;
+        }
+      } else if (msg.type === "result") {
+        break;
+      }
+    }
+  } catch (err) {
+    if (!emitted) yield `couldn't look into that right now (${(err as Error).message}).`;
+  }
+}
+
+/** A one-shot, tool-less consult that STREAMS the answer as text deltas. */
+async function* oneShotConsultStream(opts: {
+  prompt: string;
+  cwd: string;
+  model: string;
+  env: Record<string, string>;
+}): AsyncGenerator<string> {
+  const q = query({
+    prompt: opts.prompt,
+    options: {
+      cwd: opts.cwd,
+      model: mapModel(opts.model),
+      permissionMode: "default",
+      // Deny every tool so this stays a pure text answer.
+      canUseTool: () => Promise.resolve({ behavior: "deny", message: "Answer in text only; do not use tools." } as PermissionResult),
+      maxTurns: 4,
+      env: opts.env,
+      includePartialMessages: true,
+    },
+  });
+  yield* streamQueryText(q as AsyncIterable<SDKMessage>);
+}
+
+/** Accumulating (non-streaming) consult — the whole answer, or `fallback` if
+ *  empty. Delegates to {@link oneShotConsultStream} so both share one query. */
 async function oneShotConsult(opts: {
   prompt: string;
   cwd: string;
@@ -131,32 +195,9 @@ async function oneShotConsult(opts: {
   env: Record<string, string>;
   fallback: string;
 }): Promise<string> {
-  try {
-    const q = query({
-      prompt: opts.prompt,
-      options: {
-        cwd: opts.cwd,
-        model: mapModel(opts.model),
-        permissionMode: "default",
-        // Deny every tool so this stays a pure text answer.
-        canUseTool: () => Promise.resolve({ behavior: "deny", message: "Answer in text only; do not use tools." } as PermissionResult),
-        maxTurns: 4,
-        env: opts.env,
-      },
-    });
-    let answer = "";
-    for await (const msg of q as AsyncIterable<SDKMessage>) {
-      if (msg.type === "assistant") {
-        const { text } = readAssistant((msg as { message: { content?: unknown } }).message);
-        if (text) answer += (answer ? "\n" : "") + text;
-      } else if (msg.type === "result") {
-        break;
-      }
-    }
-    return answer.trim() || opts.fallback;
-  } catch (err) {
-    return `couldn't look into that right now (${(err as Error).message}).`;
-  }
+  let answer = "";
+  for await (const delta of oneShotConsultStream(opts)) answer += delta;
+  return answer.trim() || opts.fallback;
 }
 
 /** A one-shot, tool-less text query authenticated exactly like a live runner
@@ -164,14 +205,25 @@ async function oneShotConsult(opts: {
  *  Claude Code session, where a raw `fetch` to the API has no egress). Used by
  *  out-of-band callers such as the eval judge. Returns the model's text. */
 export async function oneShotText(opts: { prompt: string; model?: string; cwd?: string; apiKey?: string }): Promise<string> {
+  let out = "";
+  for await (const delta of oneShotTextStream(opts)) out += delta;
+  return out;
+}
+
+/** Streaming variant of {@link oneShotText} — yields the answer as text deltas. */
+export function oneShotTextStream(opts: {
+  prompt: string;
+  model?: string;
+  cwd?: string;
+  apiKey?: string;
+}): AsyncIterable<string> {
   const env = buildRunnerEnv();
   if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
-  return oneShotConsult({
+  return oneShotConsultStream({
     prompt: opts.prompt,
     cwd: opts.cwd ?? process.cwd(),
     model: opts.model ?? "opus",
     env,
-    fallback: "",
   });
 }
 
@@ -191,41 +243,43 @@ export async function oneShotRepoAssistant(opts: {
   model?: string;
   apiKey?: string;
 }): Promise<string> {
+  let answer = "";
+  for await (const delta of oneShotRepoAssistantStream(opts)) answer += delta;
+  return answer.trim() || "(no answer)";
+}
+
+/** Streaming variant of {@link oneShotRepoAssistant} — yields the answer as text
+ *  deltas. Read-only tool turns (Read/Grep/…) interleave; only the model's text
+ *  is yielded, so the reply appears as it's written after any file lookups. */
+export function oneShotRepoAssistantStream(opts: {
+  prompt: string;
+  cwd: string;
+  model?: string;
+  apiKey?: string;
+}): AsyncIterable<string> {
   const env = buildRunnerEnv();
   if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
-  try {
-    const q = query({
-      prompt: opts.prompt,
-      options: {
-        cwd: opts.cwd,
-        model: mapModel(opts.model ?? "opus"),
-        permissionMode: "default",
-        // The preset loads the full tool suite (so Read/Grep/Glob exist); the
-        // gate narrows it to read-only.
-        systemPrompt: { type: "preset", preset: "claude_code" },
-        canUseTool: (name, input) =>
-          Promise.resolve(
-            ASSISTANT_READ_TOOLS.has(name)
-              ? ({ behavior: "allow", updatedInput: input } as PermissionResult)
-              : ({ behavior: "deny", message: "Read-only assistant — only Read/LS/Glob/Grep are allowed." } as PermissionResult),
-          ),
-        maxTurns: 14,
-        env,
-      },
-    });
-    let answer = "";
-    for await (const msg of q as AsyncIterable<SDKMessage>) {
-      if (msg.type === "assistant") {
-        const { text } = readAssistant((msg as { message: { content?: unknown } }).message);
-        if (text) answer = answer ? `${answer}\n${text}` : text;
-      } else if (msg.type === "result") {
-        break;
-      }
-    }
-    return answer.trim() || "(no answer)";
-  } catch (err) {
-    return `couldn't look into that right now (${(err as Error).message}).`;
-  }
+  const q = query({
+    prompt: opts.prompt,
+    options: {
+      cwd: opts.cwd,
+      model: mapModel(opts.model ?? "opus"),
+      permissionMode: "default",
+      // The preset loads the full tool suite (so Read/Grep/Glob exist); the
+      // gate narrows it to read-only.
+      systemPrompt: { type: "preset", preset: "claude_code" },
+      canUseTool: (name, input) =>
+        Promise.resolve(
+          ASSISTANT_READ_TOOLS.has(name)
+            ? ({ behavior: "allow", updatedInput: input } as PermissionResult)
+            : ({ behavior: "deny", message: "Read-only assistant — only Read/LS/Glob/Grep are allowed." } as PermissionResult),
+        ),
+      maxTurns: 14,
+      env,
+      includePartialMessages: true,
+    },
+  });
+  return streamQueryText(q as AsyncIterable<SDKMessage>);
 }
 
 // A tool call the assistant requested: its name, input args, and id (to pair
@@ -985,20 +1039,32 @@ export class ClaudeRunnerProvider implements RunnerProvider {
   /** Answer a follow-up about a finished agent with no live handle (e.g. after a
    *  server restart) — a fresh tool-less query grounded in the agent's state. */
   async consult(spec: ConsultSpec, question: string): Promise<string> {
-    const base = buildRunnerEnv();
-    const env = spec.apiKey ? { ...base, ANTHROPIC_API_KEY: spec.apiKey } : base;
-    const prompt =
-      "You are an AI coding agent that has FINISHED a task. Answer the operator's follow-up " +
-      "question directly and concisely, based on what you did. Do NOT use any tools — just explain.\n\n" +
-      `Task: ${spec.task}\n` +
-      (spec.context ? `What you did (your log / final answer):\n${spec.context}\n` : "") +
-      `\nOperator's question: ${question}`;
-    return oneShotConsult({
-      prompt,
-      cwd: spec.cwd ?? process.cwd(),
-      model: spec.model,
-      env,
+    const answer = await oneShotConsult({
+      ...consultQuery(spec, question),
       fallback: "The task is complete — ask me anything about what I did.",
     });
+    return answer;
   }
+
+  /** Streaming variant of {@link consult} — yields the answer as text deltas. */
+  consultStream(spec: ConsultSpec, question: string): AsyncIterable<string> {
+    return oneShotConsultStream(consultQuery(spec, question));
+  }
+}
+
+/** The shared (prompt, cwd, model, env) for a consult — used by both the
+ *  accumulating and streaming paths so they ask identically. */
+function consultQuery(
+  spec: ConsultSpec,
+  question: string,
+): { prompt: string; cwd: string; model: string; env: Record<string, string> } {
+  const base = buildRunnerEnv();
+  const env = spec.apiKey ? { ...base, ANTHROPIC_API_KEY: spec.apiKey } : base;
+  const prompt =
+    "You are an AI coding agent that has FINISHED a task. Answer the operator's follow-up " +
+    "question directly and concisely, based on what you did. Do NOT use any tools — just explain.\n\n" +
+    `Task: ${spec.task}\n` +
+    (spec.context ? `What you did (your log / final answer):\n${spec.context}\n` : "") +
+    `\nOperator's question: ${question}`;
+  return { prompt, cwd: spec.cwd ?? process.cwd(), model: spec.model, env };
 }

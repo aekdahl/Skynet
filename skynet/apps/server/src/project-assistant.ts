@@ -14,7 +14,12 @@
 // content or project state.
 
 import type { Project, Task, TaskRun } from "@skynet/shared";
-import { oneShotRepoAssistant, oneShotText } from "@skynet/runner-sdk/claude";
+import {
+  oneShotRepoAssistant,
+  oneShotRepoAssistantStream,
+  oneShotText,
+  oneShotTextStream,
+} from "@skynet/runner-sdk/claude";
 import { githubService } from "./github/index.js";
 import { secretService } from "./secrets/index.js";
 import type { Store } from "./store/store.js";
@@ -80,10 +85,15 @@ function buildPrompt(context: string, docs: string, history: ChatTurn[], questio
     .join("\n");
 }
 
-export async function answerProjectQuestion(
+/** The prepared model call for a project question — the prompt (grounded in
+ *  status + repo docs), whether it runs against a local checkout, and the key.
+ *  Shared by the accumulating and streaming answer paths so they ask identically. */
+type AssistantCall = { repo: boolean; prompt: string; cwd?: string; apiKey?: string };
+
+async function prepareAssistantCall(
   store: Store,
   opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
-): Promise<string> {
+): Promise<AssistantCall> {
   const { workspaceId, project, question } = opts;
   const history = opts.history ?? [];
 
@@ -96,15 +106,11 @@ export async function answerProjectQuestion(
     allTasks.filter((t) => t.projectId === project.id),
     allRuns.filter((r) => r.projectId === project.id),
   );
-  const apiKey = await secretService.resolve(workspaceId, "claude");
+  const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
 
   // Local checkout → read the working tree directly.
   if (project.repoPath) {
-    return oneShotRepoAssistant({
-      prompt: buildPrompt(context, "", history, question),
-      cwd: project.repoPath,
-      apiKey,
-    });
+    return { repo: true, prompt: buildPrompt(context, "", history, question), cwd: project.repoPath, apiKey };
   }
 
   // GitHub-connected but not cloned → prefetch key docs + the top-level tree.
@@ -120,5 +126,26 @@ export async function answerProjectQuestion(
       docs = "\n\n(Repo is connected but no README/ROADMAP was found and files aren't cloned locally — answer from project status.)";
     }
   }
-  return oneShotText({ prompt: buildPrompt(context, docs, history, question), apiKey });
+  return { repo: false, prompt: buildPrompt(context, docs, history, question), apiKey };
+}
+
+export async function answerProjectQuestion(
+  store: Store,
+  opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
+): Promise<string> {
+  const c = await prepareAssistantCall(store, opts);
+  return c.repo
+    ? oneShotRepoAssistant({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey })
+    : oneShotText({ prompt: c.prompt, apiKey: c.apiKey });
+}
+
+/** Streaming form of {@link answerProjectQuestion} — yields the answer as text
+ *  deltas so the "Ask about this project" panel renders it as it's generated. */
+export async function* answerProjectQuestionStream(
+  store: Store,
+  opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
+): AsyncGenerator<string> {
+  const c = await prepareAssistantCall(store, opts);
+  if (c.repo) yield* oneShotRepoAssistantStream({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey });
+  else yield* oneShotTextStream({ prompt: c.prompt, apiKey: c.apiKey });
 }
