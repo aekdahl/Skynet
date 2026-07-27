@@ -560,10 +560,12 @@ export function ProjectView({
             <label className="proj-autonomy" title="When on, agents autonomously triage backlog items, pick up auto-pick tasks, and review finished work.">
               <input
                 type="checkbox"
+                className="proj-autonomy-cb"
                 checked={project.autonomy}
                 onChange={(e) => updateProject(project.id, { autonomy: e.target.checked })}
-              />{" "}
-              Autonomy
+              />
+              <span className="proj-autonomy-switch" aria-hidden="true" />
+              <span className="proj-autonomy-label">Autonomy</span>
             </label>
             <button className="btn btn-ghost" onClick={() => setEditing(true)}>Edit</button>
             {confirmDel ? (
@@ -617,20 +619,24 @@ export function ProjectView({
           const colTasks = tasksInState(tasks, project.id, st).filter((t) => !hidden(t));
           const meta = TASK_STATE_META[st];
           return (
-            <div className="kb-col" key={st}>
+            <div className={"kb-col kb-col-" + st} key={st}>
               <div className="kb-head" style={{ color: meta.color }}>
-                {meta.label} · {colTasks.length}
+                <span className="kb-pip" style={{ background: meta.color }} aria-hidden="true" />
+                {meta.label}
+                <span className="kb-count">{colTasks.length}</span>
               </div>
-              {colTasks.map((t) => (
-                <TaskCard
-                  key={t.id}
-                  task={t}
-                  run={t.runId ? runById.get(t.runId) : undefined}
-                  onOpenTask={onOpenTask}
-                />
-              ))}
-              {st === "backlog" && <AddTaskCard onAdd={(text, description) => createTask(project.id, text, description)} />}
-              {colTasks.length === 0 && st !== "backlog" && <div className="kb-empty">—</div>}
+              <div className="kb-lane-body">
+                {colTasks.map((t) => (
+                  <TaskCard
+                    key={t.id}
+                    task={t}
+                    run={t.runId ? runById.get(t.runId) : undefined}
+                    onOpenTask={onOpenTask}
+                  />
+                ))}
+                {st === "backlog" && <AddTaskCard onAdd={(text, description) => createTask(project.id, text, description)} />}
+                {colTasks.length === 0 && st !== "backlog" && <div className="kb-empty">No tasks</div>}
+              </div>
             </div>
           );
         })}
