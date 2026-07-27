@@ -23,6 +23,7 @@ const referenced = new Set([...surfaces.matchAll(/api\.(\w+)/g)].map((m) => m[1]
 const ALLOW = new Set<string>([
   // transport / plumbing
   "connect", // raw WebSocket
+  "login", // real email/password → session; journeys use the dev-token path, so there's no offline flow to exercise it
   "fetchEvals", "runEval", "fetchEvalJob", "judgeSimulation", // eval + judge machinery
   // needs a live GitHub remote / OS dialog — can't run offline in a journey
   "browseFolder",

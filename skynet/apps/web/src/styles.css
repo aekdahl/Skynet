@@ -1664,6 +1664,18 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .ob-prov-models { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--faint); margin-top: 2px; }
 .ob-prov-check { margin-left: auto; font-family: var(--font-mono); font-size: 12px; color: var(--ok); opacity: 0; }
 .ob-prov.on .ob-prov-check { opacity: 1; }
+/* Fleet builder — one row per agent (provider + model), add/remove */
+.ob-fleet-rows { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+.ob-fleet-row { display: flex; align-items: center; gap: 10px; }
+.ob-fleet-glyph { font-size: 16px; width: 18px; text-align: center; flex: none; }
+.ob-fleet-select { flex: 1; min-width: 0; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--text); font-family: var(--font-ui); font-size: 13px; cursor: pointer; }
+.ob-fleet-select:disabled { opacity: 0.5; cursor: not-allowed; }
+.ob-fleet-del { flex: none; width: 32px; height: 32px; background: none; border: 1px solid var(--line); border-radius: 8px; color: var(--faint); font-size: 18px; line-height: 1; cursor: pointer; transition: color .12s, border-color .12s, background .12s; }
+.ob-fleet-del:hover { color: var(--danger); border-color: var(--danger); background: var(--raised); }
+.ob-fleet-add { align-self: flex-start; margin-top: 2px; background: none; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-family: var(--font-ui); font-size: 13px; padding: 9px 14px; cursor: pointer; transition: color .12s, border-color .12s; }
+.ob-fleet-add:hover:not(:disabled) { color: var(--text); border-color: var(--faint); }
+.ob-fleet-add:disabled { opacity: 0.4; cursor: not-allowed; }
+
 .ob-nav { display: flex; align-items: center; gap: 10px; margin-top: 28px; }
 .ob-nav .ob-spacer { flex: 1; }
 .ob-skip { display: block; margin: 22px auto 0; background: none; border: none; color: var(--faint); font-family: var(--font-ui); font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }

@@ -33,6 +33,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
 import { config, now } from "./config.js";
+import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { githubService } from "./github/index.js";
 import type { CapturedDiff, Hub } from "./hub.js";
@@ -482,11 +483,17 @@ export class Operations {
     // is a 400 (fail() maps a plain Error → 400), matching the HTTP contract.
     const invalid = modelValidForProvider(await this.store.listProviders(), input.provider, input.model);
     if (invalid) throw new Error(invalid);
-    const id = input.name ?? this.uid("runner");
+    // The id is a stable, opaque handle (runs reference it as agentId); the name
+    // is the human-facing label shown on the board. Keeping them separate means
+    // a rename never moves the id, and two agents can share a display name
+    // without colliding. Auto-name to `<provider>-<name>` when none is given.
+    const id = this.uid("runner");
+    const existing = await this.store.listAgents(ws);
+    const name = input.name?.trim() || generateAgentName(input.provider, existing.map((a) => a.name));
     const runner: Agent = {
       id,
       workspaceId: ws,
-      name: id,
+      name,
       provider: input.provider,
       model: input.model,
       status: "idle",
