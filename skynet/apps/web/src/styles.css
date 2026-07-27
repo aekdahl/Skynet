@@ -1454,7 +1454,6 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .op-ws { display: flex; align-items: center; gap: 9px; padding: 13px 14px; border-bottom: 1px solid var(--line-soft); }
 .op-ws-logo { width: 24px; height: 24px; border-radius: 6px; background: var(--accent); color: #0B0D11; font-weight: 700; display: flex; align-items: center; justify-content: center; font-size: 13px; flex: none; }
 .op-ws-name { font-size: 13px; font-weight: 600; flex: 1; }
-.op-ws-caret { color: var(--faint); font-size: 10px; }
 .op-nav { padding: 10px 8px; display: flex; flex-direction: column; gap: 1px; }
 .op-navitem { display: flex; align-items: center; gap: 11px; padding: 8px 11px; border-radius: 7px; color: var(--muted); border: none; background: none; text-align: left; font-family: var(--font-ui); font-size: 13px; width: 100%; cursor: pointer; }
 .op-navitem .ic { width: 16px; text-align: center; opacity: 0.85; }
