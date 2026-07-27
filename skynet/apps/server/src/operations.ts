@@ -29,10 +29,12 @@ import type {
   UpdateTaskRequest,
 } from "@skynet/shared";
 import { modelValidForProvider } from "@skynet/shared";
-import { resolve as resolvePath } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
-import { now } from "./config.js";
+import { config, now } from "./config.js";
 import { isGitRepo } from "./fs-browse.js";
+import { githubService } from "./github/index.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -240,7 +242,7 @@ export class Operations {
   }
 
   // ── projects ──────────────────────────────────────────────────────────────
-  createProject(ws: string, input: CreateProjectRequest): Promise<Project> {
+  async createProject(ws: string, input: CreateProjectRequest): Promise<Project> {
     // A local repoPath that contains a .git is git-backed → Skynet auto-manages a
     // worktree per agent + the merge queue against it (desktop-first default).
     const repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
@@ -256,7 +258,9 @@ export class Operations {
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo: input.repo,
     };
-    return this.hub.upsertProject(project);
+    const created = await this.hub.upsertProject(project);
+    this.maybeAutoClone(ws, created);
+    return created;
   }
   async updateProject(ws: string, id: string, patch: UpdateProjectRequest): Promise<Project> {
     const existing = await this.store.getProject(id);
@@ -269,7 +273,46 @@ export class Operations {
             return { repoPath: rp, gitBacked: rp ? isGitRepo(rp) : false };
           })()
         : {};
-    return this.hub.upsertProject({ ...existing, ...patch, ...rebind });
+    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind });
+    this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
+    return updated;
+  }
+  /**
+   * On a headless SERVER (not the desktop), a repo-bound project with no local
+   * checkout is cloned in the BACKGROUND so it's immediately workable — no manual
+   * "clone" step. Best-effort: failures (GitHub not connected yet, network) are
+   * logged (the token is already redacted by the clone path) and leave the
+   * project un-cloned; the operator can retry via the "Clone repo" button. On the
+   * desktop this is a no-op — you pick a local folder or click Clone explicitly.
+   */
+  private maybeAutoClone(ws: string, project: Project): void {
+    if (config.desktop || !project.repo || project.repoPath) return;
+    void this.cloneRepoIntoProject(ws, project.id).catch((err) =>
+      console.warn(`[project ${project.id}] auto-clone failed: ${(err as Error).message}`),
+    );
+  }
+  /**
+   * Clone a GitHub-connected project's repo into a managed local checkout and
+   * mark it git-backed — the missing link for headless/server (GCP) use, where
+   * (unlike the desktop) there's no folder to point at. Uses the workspace's
+   * GitHub token (via githubService; token never exposed). Idempotent: an
+   * existing checkout is reused. After this, the orchestrator cuts worktrees
+   * from `repoPath` and the normal edit→diff→push(PR) loop works.
+   */
+  async cloneRepoIntoProject(ws: string, id: string): Promise<Project> {
+    const project = await this.store.getProject(id);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repo) throw new Error("Project is not bound to a GitHub repo — set its repo first.");
+    // Default clone root: co-located with the durable file store, so on the
+    // desktop it lands in the per-user data dir (dbPath = <userData>/…) and on a
+    // server next to STORE=file — both persistent + writable. SKYNET_REPOS_DIR
+    // overrides (e.g. /data/repos on a VM's mounted disk).
+    const base = config.reposDir ? resolvePath(config.reposDir) : resolvePath(dirname(config.dbPath), "repos");
+    const dest = join(base, project.id);
+    if (!existsSync(join(dest, ".git"))) {
+      await githubService.cloneRepo(ws, project.repo, dest);
+    }
+    return this.hub.upsertProject({ ...project, repoPath: dest, gitBacked: true });
   }
   async deleteProject(ws: string, id: string): Promise<void> {
     const existing = await this.store.getProject(id);

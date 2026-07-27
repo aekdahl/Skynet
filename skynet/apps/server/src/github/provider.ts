@@ -15,6 +15,12 @@ import type { GitProvider, MergeResult, PrRef, PrStatus } from "./types.js";
 
 const exec = promisify(execFile);
 
+/** Strip a token from a message (git echoes the authed remote URL on failure),
+ *  so a clone/push error can never leak the credential into logs or the UI. */
+export function redactToken(msg: string, token: string): string {
+  return token ? msg.split(token).join("***") : msg;
+}
+
 const b64url = (input: string | Buffer): string => Buffer.from(input).toString("base64url");
 
 interface CachedToken {
@@ -117,6 +123,20 @@ export class GitHubProvider implements GitProvider {
     const args = ["-C", worktreePath, "push", remote, `${branch}:refs/heads/${branch}`];
     if (force) args.push("--force-with-lease");
     await exec("git", args);
+  }
+
+  /** Clone `repo` (owner/name) into `dest` over a token-authenticated HTTPS
+   *  remote. Used to bring a GitHub repo down onto a headless server (GCP) so
+   *  agents have a local checkout to cut worktrees from. The token is redacted
+   *  from any error git surfaces (git echoes the remote URL on failure). */
+  async cloneRepo(token: string, repo: string, dest: string): Promise<void> {
+    const remote = `https://x-access-token:${token}@github.com/${repo}.git`;
+    try {
+      await exec("git", ["clone", "--", remote, dest]);
+    } catch (err) {
+      const msg = (err as { stderr?: string; message?: string }).stderr || (err as Error).message || String(err);
+      throw new Error(redactToken(msg, token));
+    }
   }
 
   async openPr(token: string, repo: string, head: string, base: string, title: string, body: string): Promise<PrRef> {

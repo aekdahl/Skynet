@@ -82,6 +82,7 @@ export interface Store extends StoreState {
     patch: { name?: string; goal?: string; status?: string; autonomy?: boolean },
   ) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
+  cloneProjectRepo: (id: string) => Promise<void>;
   createTask: (projectId: string, text: string, description?: string) => Promise<void>;
   updateTask: (
     projectId: string,
@@ -349,6 +350,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       deleteProject: async (id) => {
         await api.deleteProject(id);
+      },
+      cloneProjectRepo: async (id) => {
+        // Clones the project's GitHub repo into a local checkout server-side; the
+        // updated project (repoPath + gitBacked) arrives via the WS upsert.
+        await api.cloneProjectRepo(id);
       },
       createTask: async (projectId, text, description) => {
         await api.createTask(projectId, text, description);

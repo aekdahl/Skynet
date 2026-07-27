@@ -306,6 +306,16 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Clone a GitHub-connected project's repo into a managed local checkout (for a
+  // headless server with no folder to point at). Sets repoPath + gitBacked.
+  app.post<{ Params: { id: string } }>("/api/projects/:id/clone", async (req, reply) => {
+    try {
+      return await ops.cloneRepoIntoProject(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // ── tasks ──────────────────────────────────────────────────────────────
   app.post<{ Params: { id: string } }>("/api/projects/:id/tasks", async (req, reply) => {
     const body = CreateTaskRequest.safeParse(req.body);

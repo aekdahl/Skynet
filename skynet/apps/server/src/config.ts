@@ -105,6 +105,11 @@ export const config = {
   // integration repo (.skynet-worktrees) so working copies never show as
   // untracked inside the repo.
   worktreesDir: process.env.SKYNET_WORKTREES_DIR || undefined,
+  // Where GitHub-connected projects are cloned to on a server with no local
+  // checkout (e.g. GCP): each project gets `<reposDir>/<projectId>`, set as its
+  // repoPath. On the desktop you pick a local folder instead, so this is unset.
+  // Default (when unset) is a `.skynet-repos` dir next to the cwd.
+  reposDir: process.env.SKYNET_REPOS_DIR || undefined,
   // Auto-reap window: a running/waiting agent whose heartbeat has been silent
   // for longer than this (ms) is presumed dead — its runner is freed and the
   // agent terminated. Catches orphans left by a crash/restart. 0 disables.

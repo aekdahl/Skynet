@@ -366,9 +366,23 @@ export function ProjectView({
     tasks,
     updateProject,
     deleteProject,
+    cloneProjectRepo,
     createTask,
     archiveAgent,
   } = useStore();
+  const [cloning, setCloning] = useState(false);
+  const [cloneErr, setCloneErr] = useState<string | null>(null);
+  const cloneRepo = async () => {
+    setCloning(true);
+    setCloneErr(null);
+    try {
+      await cloneProjectRepo(project.id);
+    } catch (e) {
+      setCloneErr(e instanceof Error ? e.message : "Clone failed");
+    } finally {
+      setCloning(false);
+    }
+  };
   const runById = new Map(runs.map((r) => [r.id, r]));
   const pa = agentsForProject(runs, project.id);
   const items = openQueue(queue).filter((q) => pa.some((a) => a.id === q.runId));
@@ -428,6 +442,17 @@ export function ProjectView({
             )}
             {project.repo && (
               <div className="mono proj-repo-line">⑂ {project.repo} · runs branch &amp; PR here</div>
+            )}
+            {/* Repo bound but no local checkout → offer a server-side clone so
+                agents have code to work on (needed on a headless/GCP instance;
+                also handy on desktop instead of the folder picker). */}
+            {project.repo && !project.gitBacked && (
+              <div className="proj-clone">
+                <button className="btn btn-ghost" disabled={cloning} onClick={() => void cloneRepo()}>
+                  {cloning ? "Cloning…" : "⬇ Clone repo to work locally"}
+                </button>
+                {cloneErr && <span className="proj-clone-err">{cloneErr}</span>}
+              </div>
             )}
           </div>
           <div className="projview-head-tools">
