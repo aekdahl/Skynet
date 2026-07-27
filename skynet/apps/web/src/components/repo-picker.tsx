@@ -39,7 +39,15 @@ export function RepoPicker({
 }) {
   if (repos === null) return <div className="rp-note">Loading repositories…</div>;
   if (repos.length === 0)
-    return <div className="rp-note">Connect GitHub (Integrations) to bind a repository to this project.</div>;
+    return (
+      <div className="rp-note">
+        Connect GitHub in{" "}
+        <a className="rp-link" href="#/integrations">
+          Integrations
+        </a>{" "}
+        to bind a repository to this project.
+      </div>
+    );
   return (
     <label className="rp">
       <span className="rp-label">
