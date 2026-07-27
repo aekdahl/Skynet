@@ -21,7 +21,7 @@ const STEP_NOTES = [
   "Name your team's mission control. Every project, agent, and decision lives under it — you can rename it later.",
   "Optional now. Runs branch, push, and open PRs through least-privilege tokens. You can also connect GitHub later from Integrations.",
   "Read-only here. The map comes from .skynet/modules.json in your repo and powers conflict detection and the allowlist.",
-  "Each provider you pick becomes an agent you can assign work to. Add, retire, or tune the fleet anytime.",
+  "Each row becomes an agent you can assign work to — same provider on different models is fine. Agents are auto-named; add, retire, rename, or retune the fleet anytime.",
 ];
 
 function Mark() {
@@ -40,7 +40,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(0);
   const [workspace, setWorkspace] = useState("");
   const [operator, setOperator] = useState("");
-  const [providers, setProviders] = useState<string[]>(["claude"]);
+  // The fleet to stand up: one row per agent (provider + model). Multiple rows
+  // may share a provider on different models. Seeded with one row on the first
+  // credentialed provider once the catalog is available.
+  const [fleetRows, setFleetRows] = useState<{ provider: string; model: string }[]>([]);
   const [github, setGithub] = useState<GithubConnection>(emptyConnection);
   const [brokerConfigured, setBrokerConfigured] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -58,7 +61,24 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     };
   }, []);
 
-  const valid = [workspace.trim().length > 0, true, true, providers.length > 0];
+  const firstReadyProvider = (): ProviderInfo | undefined =>
+    store.providers.find((p) => p.available !== false) ?? store.providers[0];
+
+  // Seed a first agent row once the provider catalog has loaded (onboarding only
+  // renders when the store is loaded, so this normally fires on mount).
+  useEffect(() => {
+    if (fleetRows.length > 0) return;
+    const p = firstReadyProvider();
+    if (p) setFleetRows([{ provider: p.id, model: p.models[0] ?? "" }]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.providers]);
+
+  const valid = [
+    workspace.trim().length > 0,
+    true,
+    true,
+    fleetRows.length > 0 && fleetRows.every((r) => r.model),
+  ];
   const last = step === STEPS.length - 1;
   const canNext = valid[step];
 
@@ -75,12 +95,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     setBusy(true);
     try {
       setWorkspaceName(workspace.trim());
-      // Stand up the fleet: one runner per selected provider, on its first model.
-      const catalog = store.providers;
-      for (const id of providers) {
-        const info = catalog.find((p) => p.id === id);
-        const model = info?.models[0] ?? "";
-        if (model) await store.createAgent(id, model);
+      // Stand up the fleet: one runner per row. Names are auto-assigned
+      // server-side (<provider>-<name>); the operator renames later in Fleet.
+      for (const row of fleetRows) {
+        if (row.model) await store.createAgent(row.provider, row.model);
       }
       setOnboarded();
       onDone();
@@ -94,8 +112,23 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     if (last) void finish();
     else setStep((s) => s + 1);
   };
-  const toggleProv = (id: string) =>
-    setProviders((ps) => (ps.includes(id) ? ps.filter((p) => p !== id) : [...ps, id]));
+  const patchRow = (i: number, patch: Partial<{ provider: string; model: string }>) =>
+    setFleetRows((rows) =>
+      rows.map((r, j) => {
+        if (j !== i) return r;
+        const next = { ...r, ...patch };
+        // Switching provider resets the model to that provider's first offering.
+        if (patch.provider && patch.provider !== r.provider) {
+          next.model = store.providers.find((p) => p.id === patch.provider)?.models[0] ?? "";
+        }
+        return next;
+      }),
+    );
+  const addRow = () => {
+    const p = firstReadyProvider();
+    if (p) setFleetRows((rows) => [...rows, { provider: p.id, model: p.models[0] ?? "" }]);
+  };
+  const removeRow = (i: number) => setFleetRows((rows) => rows.filter((_, j) => j !== i));
 
   const skip = () => {
     setOnboarded();
@@ -190,27 +223,33 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         {step === 3 && (
           <>
             <h1 className="ob-h">Configure your fleet</h1>
-            <p className="ob-sub">Pick the agent providers Skynet can spin up. Each becomes an agent; add, retire, or tune them anytime in Fleet.</p>
-            <div className="ob-prov-grid">
-              {store.providers.map((p: ProviderInfo) => {
-                const on = providers.includes(p.id);
-                const disabled = p.available === false;
+            <p className="ob-sub">Add the agents Skynet can spin up — a provider and model each. Add several (even the same provider on different models); rename, retire, or tune them anytime in Fleet.</p>
+            <div className="ob-fleet-rows">
+              {fleetRows.map((row, i) => {
+                const info = store.providers.find((p) => p.id === row.provider);
+                const models = info?.models ?? [];
                 return (
-                  <button key={p.id} className={"ob-prov" + (on ? " on" : "")} disabled={disabled}
-                    style={on ? { borderColor: p.color } : undefined} onClick={() => toggleProv(p.id)}>
-                    <span className="ob-prov-glyph" style={{ color: p.color }}>{p.glyph}</span>
-                    <span>
-                      {p.name}
-                      <span className="ob-prov-models">{disabled ? "no credential" : p.models[0]}</span>
-                    </span>
-                    <span className="ob-prov-check">✓</span>
-                  </button>
+                  <div key={i} className="ob-fleet-row">
+                    <span className="ob-fleet-glyph" style={{ color: info?.color }}>{info?.glyph ?? "◆"}</span>
+                    <select className="ob-fleet-select" value={row.provider} onChange={(e) => patchRow(i, { provider: e.target.value })}>
+                      {store.providers.map((p) => (
+                        <option key={p.id} value={p.id} disabled={p.available === false}>
+                          {p.name}{p.available === false ? " — no credential" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <select className="ob-fleet-select" value={row.model} onChange={(e) => patchRow(i, { model: e.target.value })} disabled={models.length === 0}>
+                      {models.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <button className="ob-fleet-del" title="Remove agent" onClick={() => removeRow(i)}>×</button>
+                  </div>
                 );
               })}
+              <button className="ob-fleet-add" onClick={addRow} disabled={!firstReadyProvider()}>+ Add agent</button>
             </div>
-            {providers.length > 0 && (
+            {fleetRows.length > 0 && (
               <div className="ob-hint" style={{ textAlign: "center" }}>
-                Starts your fleet with {providers.length} agent{providers.length === 1 ? "" : "s"}.
+                Starts your fleet with {fleetRows.length} agent{fleetRows.length === 1 ? "" : "s"} · auto-named like claude-ada (rename anytime in Fleet).
               </div>
             )}
           </>
