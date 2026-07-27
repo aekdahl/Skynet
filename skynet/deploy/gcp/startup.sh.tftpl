@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Skynet VM startup (Debian 12). Mounts the data disk, installs Docker, fetches
+# secrets from Secret Manager via the VM's service account, and runs the headless
+# Skynet server. Re-runs safely on reboot. (Terraform template vars are the plain
+# dollar-brace form; shell vars are written with a doubled dollar so Terraform
+# leaves them literal.)
+set -euo pipefail
+exec > >(tee -a /var/log/skynet-startup.log) 2>&1
+echo "[skynet] startup $(date -u)"
+
+# ── 1. Data disk → /data (format only if brand new; never reformat) ──────────
+DEV=/dev/disk/by-id/google-skynet-data
+mkdir -p /data
+if ! blkid "$${DEV}" >/dev/null 2>&1; then
+  echo "[skynet] formatting new data disk"
+  mkfs.ext4 -m 0 -F -E lazy_itable_init=0,lazy_journal_init=0,discard "$${DEV}"
+fi
+grep -q "/data" /etc/fstab || echo "$${DEV} /data ext4 discard,defaults,nofail 0 2" >>/etc/fstab
+mount -a
+mkdir -p /data
+
+# ── 2. Docker ────────────────────────────────────────────────────────────────
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[skynet] installing docker"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y docker.io curl python3
+  systemctl enable --now docker
+fi
+
+# ── 3. Access token + secret helper (Secret Manager REST via metadata SA) ────
+TOKEN=$(curl -s -H "Metadata-Flavor: Google" \
+  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+get_secret() { # $1 = short name; prints value, empty if not set
+  curl -s -H "Authorization: Bearer $${TOKEN}" \
+    "https://secretmanager.googleapis.com/v1/projects/${project_id}/secrets/${name_prefix}-$${1}/versions/latest:access" \
+    | python3 -c 'import sys,json,base64
+try:
+  d=json.load(sys.stdin); sys.stdout.write(base64.b64decode(d["payload"]["data"]).decode())
+except Exception:
+  pass'
+}
+
+ANTHROPIC_API_KEY=$(get_secret anthropic-api-key)
+TG_TOKEN=$(get_secret telegram-bot-token)
+TG_CHAT=$(get_secret telegram-owner-chat-id)
+ADMIN_PASSWORD=$(get_secret admin-password)
+GITHUB_TOKEN=$(get_secret github-token)
+
+# Master key: prefer the secret; else persist a generated one on /data (stable
+# across reboots) so file-store encryption keeps working.
+MASTER_KEY=$(get_secret master-key)
+if [ -z "$${MASTER_KEY}" ]; then
+  if [ ! -f /data/master.key ]; then openssl rand -base64 32 >/data/master.key; chmod 600 /data/master.key; fi
+  MASTER_KEY=$(cat /data/master.key)
+fi
+
+# ── 4. Env file (tmpfs, 0600) ────────────────────────────────────────────────
+ENVF=/run/skynet.env
+umask 077
+cat >"$${ENVF}" <<EOF
+NODE_ENV=production
+AUTH_REQUIRED=true
+STORE=file
+SKYNET_DB_PATH=/data/skynet-data.json
+SKYNET_MASTER_KEY=$${MASTER_KEY}
+PORT=${app_port}
+SKYNET_ADMIN_EMAIL=${admin_email}
+SKYNET_ADMIN_PASSWORD=$${ADMIN_PASSWORD}
+SKYNET_ADMIN_WORKSPACE=${admin_workspace}
+ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}
+SKYNET_TELEGRAM_BOT_TOKEN=$${TG_TOKEN}
+SKYNET_TELEGRAM_OWNER_CHAT_ID=$${TG_CHAT}
+SKYNET_TELEGRAM_CONTROL=${telegram_control}
+GITHUB_TOKEN=$${GITHUB_TOKEN}
+EOF
+
+# ── 5. Pull + run the app ────────────────────────────────────────────────────
+echo "$${TOKEN}" | docker login -u oauth2accesstoken --password-stdin "https://${region}-docker.pkg.dev"
+docker pull "${image}"
+docker rm -f skynet >/dev/null 2>&1 || true
+docker run -d --restart=always --name skynet \
+  -p ${app_port}:${app_port} \
+  --env-file "$${ENVF}" \
+  -v /data:/data \
+  "${image}"
+echo "[skynet] up on :${app_port}"
