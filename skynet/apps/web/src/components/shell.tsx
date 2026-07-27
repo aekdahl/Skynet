@@ -103,7 +103,7 @@ export function ConnectingShell({
               {failed ? (
                 <>
                   <p className="connect-sub">
-                    The socket auto-reconnects — you can also retry now.
+                    Reconnecting on its own — or retry now if it doesn't come back.
                   </p>
                   <button className="btn btn-primary" onClick={onRetry}>
                     Retry connection

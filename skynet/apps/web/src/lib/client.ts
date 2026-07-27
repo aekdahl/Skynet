@@ -355,7 +355,14 @@ export function connect(
   let socket: WebSocket | null = null;
   let closed = false;
   let backoff = 500;
+  let attempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let stableTimer: ReturnType<typeof setTimeout> | null = null;
+  // Give up auto-reconnecting after this many consecutive failures and fall back
+  // to the manual Retry button. A backend that isn't coming back (or a transport
+  // that keeps dropping the socket) must not spin reconnects — and flood a
+  // fragile tunnel — forever.
+  const MAX_ATTEMPTS = 30;
 
   const phase = (p: WsPhase) => onPhase?.(p);
 
@@ -371,8 +378,16 @@ export function connect(
     socket = ws;
 
     ws.onopen = () => {
-      backoff = 500;
       phase("open");
+      // Only treat the connection as healthy — resetting the backoff + attempt
+      // budget — once it has STAYED open a few seconds. Resetting eagerly here
+      // means a flapping socket (opens, then drops mid-snapshot) never backs
+      // off: it reconnects every 500ms forever, hammering the transport and
+      // never finishing the initial snapshot.
+      stableTimer = setTimeout(() => {
+        backoff = 500;
+        attempts = 0;
+      }, 3_000);
     };
     ws.onmessage = (ev) => {
       let parsed: unknown;
@@ -386,7 +401,13 @@ export function connect(
     };
     ws.onclose = () => {
       if (closed) return;
+      if (stableTimer) {
+        clearTimeout(stableTimer);
+        stableTimer = null;
+      }
       phase("closed");
+      attempts += 1;
+      if (attempts >= MAX_ATTEMPTS) return; // stop; the Retry button revives it
       reconnectTimer = setTimeout(open, backoff);
       backoff = Math.min(backoff * 2, 10_000);
     };
@@ -401,6 +422,7 @@ export function connect(
     disconnect: () => {
       closed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (stableTimer) clearTimeout(stableTimer);
       socket?.close();
     },
     reconnect: () => {
@@ -410,6 +432,7 @@ export function connect(
         reconnectTimer = null;
       }
       backoff = 500;
+      attempts = 0; // a manual Retry restores the full auto-retry budget
       // Closing triggers onclose → schedules open(); short-circuit that and open
       // right away for a snappy Retry. If already open, this is a no-op reset.
       if (socket && socket.readyState === WebSocket.OPEN) return;
