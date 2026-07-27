@@ -343,6 +343,24 @@ supervision layer, it doesn't host or resell those services.
   *(Agent Orchestrator-style; ties directly to the responders below.)*
 - [ ] **Interop surface (adopted)** — beyond `/mcp`, expose the fleet via an **OpenAI-compatible endpoint + REST**
   so external tools can drive it as a model/service. *(claw-orchestrator-style; broadens who can call Skynet.)*
+- [ ] **⭐ GitHub Issues ↔ tasks (two-way sync).** Read issues from a project's connected repo as Skynet
+  tasks, work them through the normal loop, and keep the *issue* updated as they progress — the first
+  concrete instance of the inbound-trigger + tools-back pattern, specialized for the tracker people
+  already live in. **Proposed approach:**
+  - **Read (issue → task):** an "import issues" action pulls open issues (optionally filtered by
+    label/assignee/query) from the connected repo; each becomes a Task (title→name, body→description,
+    with the issue number + URL kept as a link). Pull-on-demand first; a webhook trigger
+    (issue opened/labeled → task) follows once the inbound-trigger primitive lands.
+  - **Work:** the task runs the standard loop (assign → worktree → diff → PR), with the PR body
+    auto-linked (`Closes #123`) so a merge closes the issue.
+  - **Update as worked (task → issue):** Skynet comments back at lifecycle transitions — work started
+    (which agent + branch), PR opened (link), merged/closed — and optionally mirrors the kanban stage as
+    a label (`skynet:triage|ongoing|review|done`). Every write goes through the existing GitHub **safety
+    policy** + human approval where risky; the operator's own token, nothing resold.
+  - **Reuses:** the GitHub provider's REST client (it already creates/reads PRs — issue read/comment/
+    close is the same client + token), **clone-on-connect** (the repo's local checkout), the Task model +
+    PR flow, and the v3 inbound-trigger for the push path. Supersedes the bare "GitHub issue → PR"
+    candidate below with the full round-trip.
 - [ ] **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
   fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
 - [ ] Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.
