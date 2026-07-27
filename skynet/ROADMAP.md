@@ -420,4 +420,3 @@ memory (v4) + thin runner adapters.
 
 ## Parked / explicitly out
 - **Building our own coding agent** — never. Wrap, don't rebuild ([docs/positioning.md](docs/positioning.md)).
-- Older Tower explorations live in `../Project Skynet DRAFT/` (reference only).
