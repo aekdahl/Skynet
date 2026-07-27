@@ -9,8 +9,8 @@ output "artifact_registry_image_base" {
 }
 
 output "iap_tunnel_command" {
-  value       = "gcloud compute start-iap-tunnel ${google_compute_instance.vm.name} ${var.app_port} --local-host-port=localhost:${var.app_port} --zone=${var.zone} --project=${var.project_id}"
-  description = "Run this, then open the app on the matching localhost port — private, IAM-gated, no public IP."
+  value       = "gcloud compute start-iap-tunnel ${google_compute_instance.vm.name} ${var.app_port} --local-host-port=127.0.0.1:${var.local_port} --zone=${var.zone} --project=${var.project_id}"
+  description = "Run this, then open http://127.0.0.1:<local_port> — private, IAM-gated, no public IP. (Bind to 127.0.0.1, not localhost: on macOS localhost prefers IPv6 ::1, which the IAP tunnel mishandles and drops the board's WebSocket.)"
 }
 
 output "set_secrets_hint" {

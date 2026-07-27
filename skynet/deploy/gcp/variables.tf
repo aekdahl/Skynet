@@ -5,14 +5,14 @@ variable "project_id" {
 
 variable "region" {
   type        = string
-  default     = "us-central1"
+  default     = "europe-west1"
   description = "Region for the subnet + Artifact Registry."
 }
 
 variable "zone" {
   type        = string
-  default     = "us-central1-a"
-  description = "Zone for the VM + its data disk (must be in region)."
+  default     = "europe-west1-b"
+  description = "Zone for the VM + its data disk (must be in region). NB: europe-west1 has no -a zone (b/c/d only)."
 }
 
 variable "machine_type" {
@@ -24,7 +24,13 @@ variable "machine_type" {
 variable "app_port" {
   type        = number
   default     = 8080
-  description = "Port the Skynet server listens on (reached privately via the IAP tunnel)."
+  description = "Port the Skynet server listens on inside the VM (the remote end of the IAP tunnel)."
+}
+
+variable "local_port" {
+  type        = number
+  default     = 48080
+  description = "Local port the IAP tunnel binds on your machine (what the browser connects to). Off the common dev-server ports (3000/8000/8080/5173) to avoid conflicts; the app still listens on app_port remotely."
 }
 
 variable "data_disk_gb" {

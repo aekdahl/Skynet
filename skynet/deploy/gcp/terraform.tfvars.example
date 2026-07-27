@@ -2,10 +2,11 @@
 # Secret Manager (setup.sh prints the commands). This file is git-ignored.
 
 project_id     = "your-gcp-project-id"
-region         = "us-central1"
-zone           = "us-central1-a"
+region         = "europe-west1"
+zone           = "europe-west1-b" # NB: europe-west1 has no -a zone (b/c/d only)
 machine_type   = "e2-small" # bump to e2-medium / e2-standard-2 for heavier builds
-app_port       = 8080
+app_port       = 8080                 # remote: port the app listens on inside the VM
+local_port     = 48080                # local: port the IAP tunnel binds on your machine (uncommon, avoids conflicts)
 data_disk_gb   = 20
 operator_email = "you@example.com"    # your Google account — gets IAP tunnel access
 admin_email    = "you@example.com"    # seed login for the Skynet web UI

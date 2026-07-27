@@ -45,8 +45,10 @@ skip the config prompts.
 
 ## Reach the board
 ```bash
-gcloud compute start-iap-tunnel skynet-server 8080 --local-host-port=localhost:8080 --zone=us-central1-a --project=YOUR_PROJECT
-# then open http://localhost:8080  (log in with the admin_email + the admin-password secret)
+gcloud compute start-iap-tunnel skynet-server 8080 --local-host-port=127.0.0.1:48080 --zone=europe-west1-b --project=YOUR_PROJECT
+# then open http://127.0.0.1:48080  (log in with the admin_email + the admin-password secret)
+# the remote 8080 is the app's port inside the VM; 48080 is the local port (set via local_port) — pick any free one
+# bind to 127.0.0.1 (not localhost): on macOS localhost prefers IPv6 ::1, which the IAP tunnel mishandles → dropped WebSocket ("Reconnecting…")
 ```
 Access is IAM-gated (your `operator_email`), fully private — no public IP, no open ports, no TLS to manage.
 
