@@ -171,13 +171,21 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   // Simulation section drives: it proves the assistant answers questions AND
   // routes clear requests to a whitelisted action, repeatably and with zero
   // mutations. No consult-capable key → {reply:null, action:null, error:"no-llm"}.
-  app.post<{ Body: { text?: unknown } }>("/api/telegram/simulate", async (req, reply) => {
+  app.post<{ Body: { text?: unknown; history?: unknown } }>("/api/telegram/simulate", async (req, reply) => {
     const text = typeof req.body?.text === "string" ? req.body.text : "";
     if (!text.trim()) return reply.code(400).send({ error: "text is required" });
+    // Optional prior turns, so the Simulation surface can exercise memory-backed
+    // back-references ("remove that task") in a dry run. Coerced defensively.
+    const history = Array.isArray(req.body?.history)
+      ? (req.body.history as unknown[])
+          .filter((h): h is { role?: unknown; text: unknown } => !!h && typeof h === "object" && typeof (h as { text?: unknown }).text === "string")
+          .map((h) => ({ role: (h as { role?: unknown }).role === "assistant" ? ("assistant" as const) : ("owner" as const), text: String((h as { text: unknown }).text) }))
+      : undefined;
     try {
       return await simulateConversational(
         { operations: ops, orchestrator: deps.orchestrator, ws: ws(req) },
         text,
+        history,
       );
     } catch (err) {
       return fail(reply, err);

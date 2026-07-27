@@ -527,10 +527,14 @@ export interface SimulateDeps {
 export async function simulateConversational(
   deps: SimulateDeps,
   text: string,
+  history?: HistoryEntry[],
 ): Promise<{ reply: string | null; action: Action | null; error?: string }> {
   const ws = deps.ws ?? DEFAULT_WORKSPACE;
   const ctx = await buildContext(deps.operations, ws);
-  const raw = await deps.orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx));
+  // Optional `history` lets a caller (the Simulation surface) exercise the
+  // memory-backed back-reference path ("remove that task") in a repeatable
+  // dry-run, without the live per-chat buffer. Nothing is executed either way.
+  const raw = await deps.orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx, history));
   if (raw == null) return { reply: null, action: null, error: "no-llm" };
   const { reply, action } = parseResponse(raw, ctx);
   return { reply, action };

@@ -90,8 +90,12 @@ export interface ConversationalResult {
   action: { kind: string } | null;
   error?: string;
 }
-export function simulateConversational(text: string) {
-  return req<ConversationalResult>("POST", "/api/telegram/simulate", { text });
+export type ConversationTurn = { role: "owner" | "assistant"; text: string };
+export function simulateConversational(text: string, history?: ConversationTurn[]) {
+  return req<ConversationalResult>("POST", "/api/telegram/simulate", {
+    text,
+    ...(history && history.length > 0 ? { history } : {}),
+  });
 }
 
 // Simulation step grading — LLM-as-judge. Given the operator `prompt`, an

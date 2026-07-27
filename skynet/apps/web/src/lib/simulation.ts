@@ -1141,9 +1141,10 @@ export const JOURNEYS: Journey[] = [
       if (!p) return steps;
 
       // Call the dry-run endpoint; a thrown error becomes a soft failure detail.
-      const ask = async (text: string) => {
+      // `history` (optional) exercises the memory-backed back-reference path.
+      const ask = async (text: string, history?: api.ConversationTurn[]) => {
         try {
-          return await api.simulateConversational(text);
+          return await api.simulateConversational(text, history);
         } catch (e) {
           return { reply: null, action: null, error: (e as Error).message } as api.ConversationalResult;
         }
@@ -1223,6 +1224,48 @@ export const JOURNEYS: Journey[] = [
         status,
       );
       steps.push(step("answers 'what's running right now?' (LLM-graded)", statusVerdict.pass === true, statusVerdict.reason));
+
+      // 6. Seed TWO real tasks so a bare back-reference is ambiguous WITHOUT the
+      //    conversation history — the memory step below only passes if history
+      //    disambiguates. (Persists: these + the project are a dry-run's only
+      //    side effect; nothing the assistant does is executed.)
+      const tA = `Write the API docs ${tag}`;
+      const tB = `Draft the release notes ${tag}`;
+      await api.createTask(p.id, tA);
+      await api.createTask(p.id, tB);
+      const st = await settle((sn) => {
+        const ts = sn.tasks.filter((t) => t.projectId === p.id);
+        return ts.some((t) => t.text === tA) && ts.some((t) => t.text === tB);
+      });
+      const seededB = st.tasks.find((t) => t.projectId === p.id && t.text === tB);
+      steps.push(step("seed two tasks (for remove + memory) (persists)", !!seededB, seededB?.id));
+
+      if (seededB) {
+        // P1 — reversible remove_task: an explicit remove-by-content request.
+        const rmPrompt = `remove the "${tB}" task`;
+        const rm = await ask(rmPrompt);
+        const rmVerdict = await grade(
+          rmPrompt,
+          "Routes to the remove_task action for that specific task (archiving/removing it is the intent).",
+          rm,
+        );
+        steps.push(step("P1 · routes 'remove the … task' → remove_task (LLM-graded)", rmVerdict.pass === true, rmVerdict.reason));
+
+        // P2 — conversational memory: the recent turn created task B; a bare
+        // "remove that task" must resolve to B via that history (ambiguous
+        // among the two tasks WITHOUT it) and route to remove_task for B.
+        const memHistory: api.ConversationTurn[] = [
+          { role: "owner", text: `add a task to ${pname}: ${tB}` },
+          { role: "assistant", text: `Created task ${seededB.id} "${tB}" in ${pname}` },
+        ];
+        const mem = await ask("remove that task", memHistory);
+        const memVerdict = await grade(
+          `remove that task  (recent turn created task ${seededB.id} "${tB}"; the other task is "${tA}")`,
+          `Uses the recent conversation to resolve "that task" to task ${seededB.id} ("${tB}") and routes to remove_task for THAT task — not the other one, and not a dead-end.`,
+          mem,
+        );
+        steps.push(step("P2 · memory: 'remove that task' → remove_task for the right one (LLM-graded)", memVerdict.pass === true, memVerdict.reason));
+      }
 
       return steps;
     },
