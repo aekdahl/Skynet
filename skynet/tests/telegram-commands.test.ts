@@ -99,6 +99,14 @@ describe("decide — control opt-in", () => {
     });
     expect(decideAs(OWNER, "/newproject Marketing Site", false).kind).toBe("denied-control");
   });
+
+  it("maps /removetask (deterministic reversible archive) with its id, gated by control", () => {
+    expect(decideAs(OWNER, "/removetask t-abc-2", true)).toEqual({
+      kind: "removetask",
+      arg: "t-abc-2",
+    });
+    expect(decideAs(OWNER, "/removetask t-abc-2", false).kind).toBe("denied-control");
+  });
 });
 
 // ── Confirm state machine (createOwnerControl) ───────────────────────────────
@@ -124,6 +132,7 @@ function makeControl(opts: { controlEnabled: boolean; consult: () => Promise<str
     resolveHitl,
     createTask: vi.fn(),
     assignTask: vi.fn(),
+    archiveTask: vi.fn(),
     configureRunner: vi.fn(),
   } as unknown as ControlOps;
 
@@ -236,5 +245,64 @@ describe("createOwnerControl — confirm state machine", () => {
     expect(c.resolveHitl).not.toHaveBeenCalled();
     expect(c.notes.at(-1)).toMatch(/couldn't find that gate/i);
     expect(c.notes.at(-1)).not.toMatch(/reply yes \/ no/i); // no pending action set
+  });
+});
+
+// ── Short conversational memory (per-owner history buffer) ───────────────────
+// After a confirmed action executes, its OUTCOME (with ids) is recorded and fed
+// into the NEXT consult's context — this is what lets "remove that task" resolve
+// a back-reference to the id that was just created. In-memory + owner-scoped.
+
+describe("createOwnerControl — conversational memory", () => {
+  it("records the create OUTCOME (with the new task id) and feeds it into the next consult", async () => {
+    const PROJECT = { id: "p-1", name: "Sim: convo idbhy" };
+    // A create action, then a follow-up so we can inspect the 2nd consult's context.
+    const consult = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({ reply: "Sure — adding that.", action: { action: "add_task", projectId: "p-1", taskText: "Start planning" } }),
+      )
+      .mockResolvedValueOnce(JSON.stringify({ reply: "Here's what I know.", action: null }));
+
+    const createTask = vi.fn(async () => ({ id: "t-convo-2", text: "Start planning" }) as never);
+    const operations = {
+      listHitl: async () => [],
+      listRuns: async () => [],
+      listProjects: async () => [PROJECT],
+      listTasks: async () => [],
+      listAgents: async () => [],
+      listProviders: async () => [],
+      resolveHitl: vi.fn(),
+      createTask,
+      assignTask: vi.fn(),
+      archiveTask: vi.fn(),
+      configureRunner: vi.fn(),
+    } as unknown as ControlOps;
+
+    const notes: string[] = [];
+    const orchestrator = { consult, stopAll: vi.fn(), setPaused: vi.fn(), isPaused: () => false } as unknown as ControlOrch;
+    const { handle } = createOwnerControl({
+      controlEnabled: true,
+      ownerChatId: OWNER,
+      operations,
+      orchestrator,
+      notify: async (t: string) => {
+        notes.push(t);
+      },
+      onQuit: () => undefined,
+    });
+
+    await handle(OWNER, "create a start-planning task"); // → proposes add_task
+    await handle(OWNER, "yes"); // → executes; outcome note (with id) recorded
+    // The executed outcome names the new id — it's the memory that makes undo work.
+    expect(createTask).toHaveBeenCalledTimes(1);
+    expect(notes.at(-1)).toMatch(/t-convo-2/);
+
+    await handle(OWNER, "remove that task"); // → next consult must SEE the prior outcome
+    // The 2nd consult (index 1) received the created-task id in its context arg.
+    expect(consult).toHaveBeenCalledTimes(2);
+    const secondContext = (consult.mock.calls[1]?.[2] ?? "") as string;
+    expect(secondContext).toContain("RECENT CONVERSATION");
+    expect(secondContext).toContain("t-convo-2");
   });
 });

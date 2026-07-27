@@ -336,6 +336,20 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Reversible soft-hide (archive) — body {archived?:boolean}, default true.
+  // Un-archive with {archived:false}. Never deletes; the record stays recoverable.
+  app.post<{ Params: { id: string; tid: string }; Body: { archived?: boolean } }>(
+    "/api/projects/:id/tasks/:tid/archive",
+    async (req, reply) => {
+      const archived = req.body?.archived ?? true;
+      try {
+        return await ops.archiveTask(ws(req), req.params.id, req.params.tid, archived);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/assign", async (req, reply) => {
     try {
       return await ops.assignTask(ws(req), req.params.id, req.params.tid);

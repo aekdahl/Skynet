@@ -104,6 +104,32 @@ describe("Operations — workspace-scoped domain layer", () => {
     await expect(ops.moveTask("resistance", a.id, "up")).rejects.toBeInstanceOf(NotFoundError);
   });
 
+  it("archiveTask soft-hides a quiet task reversibly, and refuses a task with a live run", async () => {
+    const { store, ops } = setup();
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repo: undefined });
+
+    // A quiet backlog task archives (recoverable) — never a hard delete.
+    const quiet = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "start planning" });
+    const archived = await ops.archiveTask(DEFAULT_WORKSPACE, project.id, quiet.id, true);
+    expect(archived.archived).toBe(true);
+    // The record is STILL in the store (recoverable), not deleted.
+    expect((await store.getTask(quiet.id))?.archived).toBe(true);
+    // Un-archive restores it — the action is reversible.
+    const restored = await ops.archiveTask(DEFAULT_WORKSPACE, project.id, quiet.id, false);
+    expect(restored.archived).toBe(false);
+
+    // A task that owns a LIVE run (ongoing, running) is refused.
+    const live = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "ship it" });
+    await ops.assignTask(DEFAULT_WORKSPACE, project.id, live.id); // → ongoing + running run
+    await expect(ops.archiveTask(DEFAULT_WORKSPACE, project.id, live.id, true)).rejects.toThrow(/stop the run first/i);
+    // It was NOT archived — the refusal left the task untouched.
+    expect((await store.getTask(live.id))?.archived).toBeFalsy();
+
+    // Cross-workspace / unknown → 404, never a silent mutation.
+    await expect(ops.archiveTask("resistance", project.id, quiet.id, true)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
   it("pause / resume drive the agent status and are workspace-scoped", async () => {
     const { store, ops } = setup();
     await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });

@@ -84,6 +84,20 @@ describe("parseIntent — the five whitelisted actions map when ids resolve", ()
     expect(parseIntent('{"action":"create_project","projectName":"  "}', ctx).kind).toBe("none");
   });
 
+  it("remove_task (resolves the task's project id from context — reversible archive)", () => {
+    expect(parseIntent('{"action":"remove_task","taskId":"t-1"}', ctx)).toEqual({
+      kind: "remove_task",
+      taskId: "t-1",
+      projectId: "p-web",
+    });
+  });
+
+  it("remove_task with an unknown task id → none (never archives an arbitrary task)", () => {
+    expect(isNone(parseIntent('{"action":"remove_task","taskId":"t-999"}', ctx))).toBe(true);
+    // Missing taskId entirely → none.
+    expect(isNone(parseIntent('{"action":"remove_task"}', ctx))).toBe(true);
+  });
+
   it("status", () => {
     expect(parseIntent('{"action":"status"}', ctx)).toEqual({ kind: "status" });
   });

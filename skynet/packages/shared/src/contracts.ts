@@ -196,6 +196,10 @@ export const Task = z.object({
   // Manual backlog priority — lower sorts higher (top = next up). Operators
   // promote/demote to reorder; unset sorts as 0 (legacy tasks / pre-ordering).
   order: z.number().int().optional(),
+  // Soft-hide flag, mirroring `TaskRun.archived`: an archived task is kept in the
+  // store (recoverable) but hidden from the board and the assistant's grounding
+  // context. Reversible — un-archive restores it. Never a hard delete.
+  archived: z.boolean().default(false),
 });
 export type Task = z.infer<typeof Task>;
 

@@ -16,6 +16,7 @@ const KNOWN_COMMANDS = [
   "quit",
   "task",
   "newproject",
+  "removetask",
 ] as const;
 
 export type Command = (typeof KNOWN_COMMANDS)[number];
@@ -59,6 +60,10 @@ export type BridgeAction = {
     // the control flag (creating tasks is privileged) → "denied-control" when off.
     | "task"
     | "newproject"
+    // Deterministic reversible archive: `/removetask <id>` archives a task by id
+    // WITHOUT the LLM (the no-LLM undo path). Privileged → gated by the control
+    // flag → "denied-control" when off.
+    | "removetask"
     | "denied-control"
     // Owner free text (not a slash-command): index.ts routes it to the confirm
     // state machine (pending affirmative → run; else the conversational parse).
@@ -128,6 +133,9 @@ export function decide(input: DecideInput): BridgeAction {
     // Deterministic project creation (no LLM). Privileged → gated by control.
     case "newproject":
       return input.controlEnabled ? { kind: "newproject", arg: parsed.arg } : { kind: "denied-control" };
+    // Deterministic reversible archive by id (no LLM). Privileged → gated by control.
+    case "removetask":
+      return input.controlEnabled ? { kind: "removetask", arg: parsed.arg } : { kind: "denied-control" };
     default:
       return { kind: "help" };
   }
