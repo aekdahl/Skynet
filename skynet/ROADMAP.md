@@ -168,6 +168,27 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   chat + resolve; optional "also remember" promotes the note to area/workspace memory (v4) so future
   agents inherit it too. Audited via existing streams.
 - [ ] Real **live-preview** pipeline (sandboxed per-branch URLs).
+- [ ] **🔗 Per-project live preview — "see what it builds", any software.** Today's W5 preview is
+  per-agent-*branch* and effectively static/web. Generalize to a **stable per-project preview of the
+  integration branch** that handles any software, not just SPAs. **Proposed approach:**
+  - **A per-project preview descriptor** — `.skynet/preview.json` in the repo (auto-detected defaults
+    from `package.json`/framework, operator-overridable in the project settings) declaring a `kind`
+    plus `install`/`build`/`start`/`outputDir`/`port`/`healthPath`. Reuses the module-map pattern
+    (repo-native config, per project).
+  - **Three preview kinds, one seam:**
+    · **static** (SPA/site) → build → serve `outputDir` (today's artifact mode, made per-project).
+    · **service** (web app + server, API) → run `start` in the project's **sandboxed runner
+    container** (v1) / opt-in OS sandbox (desktop), health-check the `port`, and expose it through a
+    Skynet **reverse proxy** at a stable `preview.<project>.<host>` URL (desktop: a localhost port in
+    an embedded webview). Streams build+runtime logs; auto-rebuilds on merge to the integration branch.
+    · **command** (CLI/lib/other) → run a command and surface **output/exit/artifacts** (no URL) —
+    "preview" = run it and show the result. Covers "any software".
+  - **Per project + per branch:** the project preview tracks the **integration branch** (what the fleet
+    has merged); the existing per-run branch preview stays for reviewing a single agent's diff. One
+    "Preview" affordance on the project view; the runtime kind decides URL vs. logs.
+  - **Reuses** the existing preview builder, the **container/OS sandbox** (v0 #5 / v1), command-safety
+    bounds, and the merge integration branch. Wrap, don't rebuild — Skynet orchestrates the build/run
+    + proxy; it doesn't reimplement a PaaS. *(Deep sketch belongs in a `docs/live-preview.md` brief.)*
 - [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign
