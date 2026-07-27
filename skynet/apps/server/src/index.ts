@@ -18,7 +18,8 @@ import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
 import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
 import { registerSecretsRoutes } from "./secrets/index.js";
-import { registerGithubRoutes, configureGithub } from "./github/index.js";
+import { registerGithubRoutes, configureGithub, githubService } from "./github/index.js";
+import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { registerEvalsRoutes } from "./evals/index.js";
 import { registerSimulationRoutes } from "./simulation/index.js";
 import { registerRateLimit } from "./rate-limit.js";
@@ -63,6 +64,31 @@ async function main() {
   // Persist the GitHub connection in the same Store as the rest of the domain
   // (file for the desktop app, Postgres for hosted) — durable, no side-store.
   configureGithub(store);
+
+  // Deploy-time convenience: if a GITHUB_TOKEN is present (the GCP self-host
+  // loads it from Secret Manager) and the workspace has no GitHub connection
+  // yet, connect it via PAT at boot — so repo ops (branch/push/PR) work without
+  // re-pasting the same token in the UI. Best-effort: a bad/expired token,
+  // missing scopes, or no network just leaves the in-app connect prompt; it
+  // never blocks startup.
+  const githubSeedToken = process.env.GITHUB_TOKEN;
+  if (githubSeedToken) {
+    const seedWs = config.adminWorkspace || DEFAULT_WORKSPACE;
+    void githubService
+      .get(seedWs)
+      .then(async (existing) => {
+        if (existing?.connected) return;
+        await githubService.connectViaPat(seedWs, githubSeedToken);
+        console.log(`[github] connected from GITHUB_TOKEN for workspace=${seedWs}`);
+      })
+      .catch((err) =>
+        console.warn(
+          `[github] GITHUB_TOKEN present but auto-connect failed (connect in the UI): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        ),
+      );
+  }
 
   // Auth: real login issues sessions (W6); dev tokens resolve in dev only. The
   // session backend is durable (Postgres) or multi-replica (Redis) when
