@@ -52,6 +52,15 @@ gcloud compute start-iap-tunnel skynet-server 8080 --local-host-port=127.0.0.1:4
 ```
 Access is IAM-gated (your `operator_email`), fully private — no public IP, no open ports, no TLS to manage.
 
+> **Install NumPy for the tunnel** (one-time, on your machine). The board holds a
+> live WebSocket; without NumPy gcloud pumps the tunnel's frames in slow pure
+> Python and drops data under load (`Failed to send all data` / `Bad file
+> descriptor`), so the UI hangs on "loading your workspace…". Fix it once:
+> ```bash
+> "$(gcloud info --format='value(basic.python_location)')" -m pip install numpy
+> ```
+> Then restart the tunnel — the "consider installing NumPy" warning should be gone.
+
 ## Control from your phone
 Set the Telegram secrets and message your bot (`/status`, `/task …`, approve gates, `/stop`, `/quit`). Outbound-only, so it works with the VM fully locked down. See `../../docs/…` / the in-app Settings → "Remote control · Telegram" for bot setup.
 
