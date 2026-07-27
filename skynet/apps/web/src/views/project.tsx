@@ -549,7 +549,7 @@ export function ProjectView({
                 also handy on desktop instead of the folder picker). */}
             {project.repo && !project.gitBacked && (
               <div className="proj-clone">
-                <button className="btn btn-ghost" disabled={cloning} onClick={() => void cloneRepo()}>
+                <button className="btn" disabled={cloning} onClick={() => void cloneRepo()}>
                   {cloning ? "Cloning…" : "⬇ Clone repo to work locally"}
                 </button>
                 {cloneErr && <span className="proj-clone-err">{cloneErr}</span>}
