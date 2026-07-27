@@ -148,9 +148,9 @@ fi
 if [ -n "$HEALTHY" ]; then say "✅ Done — the app is live."; else say "⚠️  Provisioned, but the app isn't healthy yet (see the logs above)."; fi
 TUNNEL=$(terraform output -raw iap_tunnel_command)
 PORT=$(echo 'var.local_port' | terraform console)
-echo "Reach the board privately (IAM-gated, no public IP):"
+echo "Reach the board privately (IAM-gated, no public IP) — an SSH-forward over IAP:"
 echo "  ${TUNNEL}"
-echo "  …then open http://127.0.0.1:${PORT} and log in with your email + admin password."
+echo "  …leave it running, then open http://127.0.0.1:${PORT} and log in with your email + admin password."
 echo "Control it anytime from Telegram: /status, /task, approve gates, /stop."
-read -r -p $'\nOpen the tunnel now? [Y/n]: ' T
+read -r -p $'\nOpen the tunnel now? (stays open in this terminal) [Y/n]: ' T
 [[ "${T:-y}" =~ ^[Nn] ]] || exec bash -c "${TUNNEL}"
