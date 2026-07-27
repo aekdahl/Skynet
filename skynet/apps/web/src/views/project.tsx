@@ -379,14 +379,23 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
     if (!question || busy) return;
     setErr(null);
     const history = msgs.slice();
-    setMsgs([...msgs, { role: "user", content: question }]);
+    // Add the operator line + an empty assistant bubble the stream fills in-place.
+    setMsgs([...msgs, { role: "user", content: question }, { role: "assistant", content: "" }]);
     setInput("");
     setBusy(true);
+    const appendToLast = (chunk: string) =>
+      setMsgs((m) => {
+        const next = m.slice();
+        const last = next[next.length - 1];
+        if (last && last.role === "assistant") next[next.length - 1] = { role: "assistant", content: last.content + chunk };
+        return next;
+      });
     try {
-      const { reply } = await api.projectChat(projectId, question, history);
-      setMsgs((m) => [...m, { role: "assistant", content: reply }]);
+      await api.streamProjectChat(projectId, question, history, appendToLast);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't reach the assistant — try again.");
+      // Drop the empty assistant bubble on failure so the thread isn't left blank.
+      setMsgs((m) => (m[m.length - 1]?.content === "" ? m.slice(0, -1) : m));
     } finally {
       setBusy(false);
     }

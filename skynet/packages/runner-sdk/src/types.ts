@@ -98,4 +98,11 @@ export interface RunnerProvider {
    * tool-less query seeded from stored state — returns the answer text.
    */
   consult?(spec: ConsultSpec, question: string): Promise<string>;
+  /**
+   * Optional streaming variant of {@link consult}: yields the answer as text
+   * deltas (token-level when the provider supports it) so the UI can render the
+   * reply as it's generated. Callers fall back to `consult` (a single chunk)
+   * when a provider doesn't implement this.
+   */
+  consultStream?(spec: ConsultSpec, question: string): AsyncIterable<string>;
 }

@@ -36,7 +36,7 @@ import { config, now } from "./config.js";
 import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { githubService } from "./github/index.js";
-import { answerProjectQuestion, type ChatTurn } from "./project-assistant.js";
+import { answerProjectQuestion, answerProjectQuestionStream, type ChatTurn } from "./project-assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -124,6 +124,19 @@ export class Operations {
     return answerProjectQuestion(this.store, { workspaceId, project, question, history });
   }
 
+  /** Streaming form of {@link projectAssistant} — yields the answer as text
+   *  deltas. Ownership is validated before the first yield (404 stays JSON). */
+  async *projectAssistantStream(
+    workspaceId: string,
+    projectId: string,
+    question: string,
+    history?: ChatTurn[],
+  ): AsyncGenerator<string> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== workspaceId) throw new NotFoundError("Project");
+    yield* answerProjectQuestionStream(this.store, { workspaceId, project, question, history });
+  }
+
   // ── reads (workspace-scoped) ──────────────────────────────────────────────
   async snapshot(ws: string): Promise<Snapshot> {
     const snap = await this.store.snapshot(ws);
@@ -174,6 +187,13 @@ export class Operations {
     return agent;
   }
 
+  /** Fetch a project scoped to the workspace, or throw NotFoundError (404). */
+  async getProject(ws: string, projectId: string): Promise<Project> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return project;
+  }
+
   // ── HITL ──────────────────────────────────────────────────────────────────
   /** Resolve a HITL item and deliver the decision to the agent (idempotent). */
   async resolveHitl(ws: string, hitlId: string, input: ResolveRequest, operatorId: string): Promise<HitlItem> {
@@ -214,6 +234,12 @@ export class Operations {
   async chatAgent(ws: string, runId: string, text: string): Promise<string> {
     await this.getRun(ws, runId); // 404 unless it's in this workspace
     return this.orchestrator.chat(runId, text);
+  }
+  /** Streaming chat — yields the reply as text deltas. Caller (the streaming
+   *  route) checks ownership first via getRun, so the generator can stream. */
+  async *chatAgentStream(ws: string, runId: string, text: string): AsyncGenerator<string> {
+    await this.getRun(ws, runId); // 404 unless it's in this workspace
+    yield* this.orchestrator.chatStream(runId, text);
   }
   async forkAgent(ws: string, runId: string): Promise<TaskRun> {
     await this.getRun(ws, runId);

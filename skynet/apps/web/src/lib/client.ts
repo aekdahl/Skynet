@@ -104,6 +104,47 @@ export function sendAgentMessage(id: string, text: string) {
   return req<{ reply: string }>("POST", `/api/runs/${id}/messages`, { text });
 }
 
+/**
+ * Streaming chat: POST the question and read the text/plain reply as it streams,
+ * calling `onDelta` with each chunk. Resolves with the full reply. Falls back to
+ * the non-streaming endpoint if the browser/response can't stream (older
+ * runtime, or the body isn't readable) so the caller always gets an answer.
+ */
+export async function streamAgentMessage(
+  id: string,
+  text: string,
+  onDelta: (chunk: string) => void,
+): Promise<string> {
+  const res = await fetch(`/api/runs/${encodeURIComponent(id)}/messages/stream`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(res.status, body || res.statusText);
+  }
+  if (!res.body) {
+    // No readable stream — fall back to the whole reply, delivered as one chunk.
+    const { reply } = await sendAgentMessage(id, text);
+    onDelta(reply);
+    return reply;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let full = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    if (chunk) {
+      full += chunk;
+      onDelta(chunk);
+    }
+  }
+  return full;
+}
+
 // Telegram conversational assistant — DRY-RUN. Runs the assistant pipeline
 // (helpful reply + optional whitelisted action) WITHOUT executing anything, so
 // the Simulation section can exercise it repeatably. `error: "no-llm"` means no
@@ -298,6 +339,44 @@ export function projectChat(
   history: { role: "user" | "assistant"; content: string }[],
 ) {
   return req<{ reply: string }>("POST", `/api/projects/${projectId}/chat`, { question, history });
+}
+
+/** Streaming "ask about this project" — reads the text/plain reply as it streams,
+ *  calling `onDelta` per chunk. Resolves with the full reply. Falls back to the
+ *  non-streaming endpoint when the response body can't be read. */
+export async function streamProjectChat(
+  projectId: string,
+  question: string,
+  history: { role: "user" | "assistant"; content: string }[],
+  onDelta: (chunk: string) => void,
+): Promise<string> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/chat/stream`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" },
+    body: JSON.stringify({ question, history }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(res.status, body || res.statusText);
+  }
+  if (!res.body) {
+    const { reply } = await projectChat(projectId, question, history);
+    onDelta(reply);
+    return reply;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let full = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    if (chunk) {
+      full += chunk;
+      onDelta(chunk);
+    }
+  }
+  return full;
 }
 // Guarded kanban move (backlog→triage, triage→todo, review→done, demote, …).
 export function transitionTask(projectId: string, taskId: string, to: string) {

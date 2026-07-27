@@ -19,20 +19,27 @@ import { PreviewFor } from "../components/preview";
 import { HitlContext, RiskChip } from "../components/hitl-context";
 
 function AgentChat({ agent }: { agent: TaskRun }) {
-  const { sendAgentMessage } = useStore();
+  const { streamAgentMessage } = useStore();
   const now = agent.plan.find((p) => p.state === "now");
   const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
   const [draft, setDraft] = useState("");
   const send = async () => {
     if (!draft.trim()) return;
     const text = draft.trim();
-    setMsgs((m) => [...m, { who: "you", text }]);
+    // Operator line + an empty agent bubble the stream fills in-place.
+    setMsgs((m) => [...m, { who: "you", text }, { who: "agent", text: "" }]);
     setDraft("");
+    const appendToLast = (chunk: string) =>
+      setMsgs((m) => {
+        const next = [...m];
+        const last = next[next.length - 1];
+        if (last && last.who === "agent") next[next.length - 1] = { who: "agent", text: last.text + chunk };
+        return next;
+      });
     try {
-      const reply = await sendAgentMessage(agent.id, text);
-      setMsgs((m) => [...m, { who: "agent", text: reply }]);
+      await streamAgentMessage(agent.id, text, appendToLast);
     } catch {
-      /* ignore */
+      appendToLast("(couldn't get a reply)");
     }
   };
   return (
@@ -119,7 +126,7 @@ export function TaskDetail({
     modules,
     resolveHitl,
     forkAgent,
-    sendAgentMessage,
+    streamAgentMessage,
     pauseAgent,
     resumeAgent,
     stopAgent,
@@ -140,13 +147,20 @@ export function TaskDetail({
   const send = async () => {
     if (!draft.trim()) return;
     const text = draft.trim();
-    setMsgs((m) => [...m, { who: "you", text }]);
+    // Operator line + an empty agent bubble the stream fills in-place.
+    setMsgs((m) => [...m, { who: "you", text }, { who: "agent", text: "" }]);
     setDraft("");
+    const appendToLast = (chunk: string) =>
+      setMsgs((m) => {
+        const next = [...m];
+        const last = next[next.length - 1];
+        if (last && last.who === "agent") next[next.length - 1] = { who: "agent", text: last.text + chunk };
+        return next;
+      });
     try {
-      const reply = await sendAgentMessage(agent.id, text);
-      setMsgs((m) => [...m, { who: "agent", text: reply }]);
+      await streamAgentMessage(agent.id, text, appendToLast);
     } catch {
-      /* ignore */
+      appendToLast("(couldn't get a reply)");
     }
   };
 

@@ -34,6 +34,12 @@ const ALLOW = new Set<string>([
   "archiveAllAudit", "clearAudit",
   // low-value control-plane (runner rename/model tweak)
   "updateAgent",
+  // streaming variant of sendAgentMessage (which IS journey-covered) — same
+  // chat surface, just delta-rendered; no separate journey needed.
+  "streamAgentMessage",
+  // "ask about this project" assistant (+ its streaming variant) — a UI-only
+  // conversational surface with no fleet journey; needs a real provider key.
+  "projectChat", "streamProjectChat",
   // auth primitive (POST /api/auth/login) — the local/desktop build runs
   // open-auth (dev tokens), so no fleet journey signs in; auth is guarded by
   // auth-hardening.test.ts, not an operator journey.
