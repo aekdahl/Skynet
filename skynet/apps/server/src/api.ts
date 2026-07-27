@@ -22,6 +22,7 @@ import { readFile } from "node:fs/promises";
 import { authenticate, type Principal } from "./auth.js";
 import { requiresAuth } from "./auth-guard.js";
 import { config, RESTART_EXIT_CODE } from "./config.js";
+import { listDir } from "./fs-browse.js";
 import {
   currentEnvSettings,
   envSettingsWritable,
@@ -88,6 +89,15 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.get("/api/fleet/runners", (req) => ops.listAgents(ws(req)));
   // Decision audit trail — resolved HITL items, newest first (W8, Backend Brief §11).
   app.get("/api/audit", (req) => ops.listAudit(ws(req)));
+
+  // Local folder browser powering the project folder picker. Gated by
+  // config.allowLocalFs — it reveals the server machine's filesystem, so it's on
+  // only outside production (desktop = server = the same machine), never hosted.
+  app.get<{ Querystring: { path?: string } }>("/api/fs/list", async (req, reply) => {
+    if (!config.allowLocalFs)
+      return reply.code(403).send({ error: "Local folder browsing is disabled on this server" });
+    return listDir(req.query.path);
+  });
 
   // The product roadmap (ROADMAP.md at the repo root), served so the Settings
   // view can render it in-app. Read per request (it's small and edited often in

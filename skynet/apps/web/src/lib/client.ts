@@ -238,6 +238,8 @@ export interface FsListing {
   path: string;
   parent: string | null;
   entries: FsEntry[];
+  exists: boolean;
+  isGitRepo: boolean;
 }
 /** List subfolders of `path` (default: home) on the server machine. */
 export function browseFolder(path?: string) {
