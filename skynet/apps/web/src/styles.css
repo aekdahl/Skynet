@@ -1289,6 +1289,15 @@ button.kb-done:hover { opacity: 1; }
 }
 .kb-add:hover { border-color: var(--accent); color: var(--accent); }
 
+/* Inline "add task" form — compact so it reads well inside a narrow lane. */
+.kb-addcard { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+.kb-addcard .qx-input { padding: 8px 10px; font-size: 12.5px; }
+.kb-addcard .task-name-wrap .qx-input { padding-right: 46px; }
+.kb-addcard-desc { resize: none; min-height: 66px; line-height: 1.45; }
+.kb-addcard-actions { gap: 6px; }
+.kb-addcard-actions .btn { white-space: nowrap; }
+.kb-addcard-actions .btn-primary { flex: 1 1 auto; }
+
 /* ===== fleet ===== */
 .fleet-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
 .fleet-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--sp); }
