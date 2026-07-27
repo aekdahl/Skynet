@@ -289,6 +289,14 @@ export function deleteTask(projectId: string, taskId: string) {
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
 }
+// Repo-aware project assistant — chat about the project's status + repo content.
+export function projectChat(
+  projectId: string,
+  question: string,
+  history: { role: "user" | "assistant"; content: string }[],
+) {
+  return req<{ reply: string }>("POST", `/api/projects/${projectId}/chat`, { question, history });
+}
 // Guarded kanban move (backlog→triage, triage→todo, review→done, demote, …).
 export function transitionTask(projectId: string, taskId: string, to: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/state`, { to });

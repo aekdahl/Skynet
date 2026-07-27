@@ -35,6 +35,7 @@ import { assertApprovable, CommandDeniedError } from "./command-safety.js";
 import { config, now } from "./config.js";
 import { isGitRepo } from "./fs-browse.js";
 import { githubService } from "./github/index.js";
+import { answerProjectQuestion, type ChatTurn } from "./project-assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -107,6 +108,19 @@ export class Operations {
   }
   private slug(t: string): string {
     return t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
+  }
+
+  /** Repo-aware project chat assistant — answers about the project's live status
+   *  and its repository content (see project-assistant.ts). */
+  async projectAssistant(
+    workspaceId: string,
+    projectId: string,
+    question: string,
+    history?: ChatTurn[],
+  ): Promise<string> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== workspaceId) throw new NotFoundError("Project");
+    return answerProjectQuestion(this.store, { workspaceId, project, question, history });
   }
 
   // ── reads (workspace-scoped) ──────────────────────────────────────────────

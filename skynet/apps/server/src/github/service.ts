@@ -128,6 +128,41 @@ export class GithubService {
     return this.provider.listInstallationRepos(await this.userToken(workspaceId), installationId);
   }
 
+  /** Read a single file's text from a connected repo via the GitHub contents
+   *  API. Returns null if the file/repo is absent. Read-only; used by the
+   *  project assistant to ground answers in repo content (e.g. ROADMAP.md). */
+  async readRepoFile(workspaceId: string, repo: string, path: string, ref?: string): Promise<string | null> {
+    const conn = await this.store.get(workspaceId);
+    if (!conn) throw new Error("GitHub is not connected for this workspace");
+    const token = await this.resolveToken(conn);
+    const url = `https://api.github.com/repos/${repo}/contents/${path.replace(/^\/+/, "")}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.raw+json", "User-Agent": "skynet" },
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`GitHub contents ${res.status}`);
+    return res.text();
+  }
+
+  /** Top-level entries of a connected repo (names; directories keep a trailing
+   *  slash). Best-effort — returns [] on any error. */
+  async listRepoRoot(workspaceId: string, repo: string, ref?: string): Promise<string[]> {
+    const conn = await this.store.get(workspaceId);
+    if (!conn) return [];
+    try {
+      const token = await this.resolveToken(conn);
+      const url = `https://api.github.com/repos/${repo}/contents${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "User-Agent": "skynet" },
+      });
+      if (!res.ok) return [];
+      const entries = (await res.json()) as Array<{ name: string; type: string }>;
+      return entries.map((e) => (e.type === "dir" ? `${e.name}/` : e.name));
+    } catch {
+      return [];
+    }
+  }
+
   /** Patch the safety policy. Returns undefined if the workspace isn't connected. */
   async updateSafety(workspaceId: string, patch: Partial<SafetyPolicy>): Promise<GithubConnection | undefined> {
     const existing = await this.store.get(workspaceId);

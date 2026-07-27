@@ -32,6 +32,7 @@ import {
 import { CommandDeniedError } from "./command-safety.js";
 import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import { NotFoundError, type Operations, RunnerBusyError } from "./operations.js";
+import type { ChatTurn } from "./project-assistant.js";
 import { simulateConversational } from "./telegram/index.js";
 import { simulationGrade } from "./simulation/grade.js";
 
@@ -315,6 +316,26 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return fail(reply, err);
     }
   });
+
+  // Repo-aware project assistant — chat about this project's status + content.
+  app.post<{ Params: { id: string }; Body: { question?: string; history?: ChatTurn[] } }>(
+    "/api/projects/:id/chat",
+    async (req, reply) => {
+      const question = (req.body?.question ?? "").trim();
+      if (!question) return reply.code(400).send({ error: "Ask a question about the project." });
+      const history = Array.isArray(req.body?.history)
+        ? req.body!.history
+            .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
+            .slice(-16)
+        : undefined;
+      try {
+        const answer = await ops.projectAssistant(ws(req), req.params.id, question, history);
+        return { reply: answer };
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
 
   // ── tasks ──────────────────────────────────────────────────────────────
   app.post<{ Params: { id: string } }>("/api/projects/:id/tasks", async (req, reply) => {
