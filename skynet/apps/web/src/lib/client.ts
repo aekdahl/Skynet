@@ -13,9 +13,32 @@ import {
 } from "@skynet/shared";
 
 // ─── auth ───────────────────────────────────────────────────────────────────
-// Dev token; swap via localStorage.setItem('skynet_token', '…'). Real auth later.
+// The session token drives both REST (Bearer) and the WS (?token=). It's set by
+// login() below; the "dev-cyberdyne" fallback only resolves in a dev server
+// (production disables dev tokens, so there the login screen is required).
+const TOKEN_KEY = "skynet_token";
 const token = () =>
-  (typeof localStorage !== "undefined" && localStorage.getItem("skynet_token")) || "dev-cyberdyne";
+  (typeof localStorage !== "undefined" && localStorage.getItem(TOKEN_KEY)) || "dev-cyberdyne";
+
+/**
+ * Exchange operator credentials for a session token (the one public route,
+ * /api/auth/login) and persist it. On success the stored token authorizes both
+ * REST and the WebSocket; callers reload so the app re-connects with it.
+ */
+export async function login(email: string, password: string): Promise<void> {
+  const res = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("Invalid email or password.");
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Login failed (${res.status}).`);
+  }
+  const data = (await res.json()) as { token: string };
+  if (typeof localStorage !== "undefined") localStorage.setItem(TOKEN_KEY, data.token);
+}
 
 // ─── REST helpers ─────────────────────────────────────────────────────────
 
@@ -338,8 +361,10 @@ export async function disconnectGithub(): Promise<void> {
 // The live connection lifecycle, surfaced so the UI can show a real
 // connect→connected state (and a retry affordance) instead of a dead-end
 // "Connecting…" message. "connecting" = socket opening or backing off to
-// retry; "open" = connected; "closed" = dropped, a reconnect is scheduled.
-export type WsPhase = "connecting" | "open" | "closed";
+// retry; "open" = connected; "closed" = dropped, a reconnect is scheduled;
+// "unauthorized" = the server rejected our token (1008) — show the login screen,
+// don't reconnect (retrying the same bad token is futile).
+export type WsPhase = "connecting" | "open" | "closed" | "unauthorized";
 
 export interface Connection {
   /** Tear down for good (component unmount). */
@@ -399,11 +424,18 @@ export function connect(
       const result = WsMessage.safeParse(parsed);
       if (result.success) onMessage(result.data);
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (closed) return;
       if (stableTimer) {
         clearTimeout(stableTimer);
         stableTimer = null;
+      }
+      // 1008 = the server rejected our token. Retrying with the same token is
+      // futile, so surface an explicit "unauthorized" (→ login screen) instead
+      // of spinning reconnects.
+      if (ev.code === 1008) {
+        phase("unauthorized");
+        return;
       }
       phase("closed");
       attempts += 1;

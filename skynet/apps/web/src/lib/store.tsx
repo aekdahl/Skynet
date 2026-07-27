@@ -103,6 +103,8 @@ export interface Store extends StoreState {
   clearAudit: () => Promise<void>;
   // Re-fetch the snapshot and force the socket to reconnect now (Retry button).
   retry: () => void;
+  // Exchange operator credentials for a session token, then reconnect with it.
+  login: (email: string, password: string) => Promise<void>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -419,6 +421,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setState((s) => ({ ...s, wsPhase: "connecting" }));
         loadSnapshot.current();
         connRef.current?.reconnect();
+      },
+      login: async (email, password) => {
+        await api.login(email, password);
+        // Re-init the whole app with the new token — simplest + bulletproof:
+        // token() now returns the session, so REST + the WS reconnect authorized.
+        location.reload();
       },
     };
   }, [state]);
