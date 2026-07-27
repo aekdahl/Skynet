@@ -291,13 +291,39 @@ export function deleteTask(projectId: string, taskId: string) {
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
 }
-// Repo-aware project assistant — chat about the project's status + repo content.
+// A project/task action the assistant proposes (confirm-first). Kept in sync with
+// AssistantAction in apps/server/src/project-assistant.ts; `summary` is the label.
+export interface AssistantAction {
+  kind:
+    | "add_task"
+    | "move_task"
+    | "rename_task"
+    | "set_task_desc"
+    | "remove_task"
+    | "reorder_task"
+    | "rename_project"
+    | "set_goal"
+    | "set_autonomy"
+    | "set_status";
+  summary: string;
+  taskId?: string;
+  text?: string;
+  description?: string;
+  to?: string;
+  direction?: "up" | "down";
+  name?: string;
+  goal?: string;
+  autonomy?: boolean;
+  status?: string;
+}
+// Repo-aware project assistant — chat about the project's status + repo content,
+// and optionally propose a confirm-first project/task action.
 export function projectChat(
   projectId: string,
   question: string,
   history: { role: "user" | "assistant"; content: string }[],
 ) {
-  return req<{ reply: string; proposeTask?: string | null }>(
+  return req<{ reply: string; action?: AssistantAction | null }>(
     "POST",
     `/api/projects/${projectId}/chat`,
     { question, history },

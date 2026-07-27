@@ -36,7 +36,7 @@ import { config, now } from "./config.js";
 import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { githubService } from "./github/index.js";
-import { answerProjectQuestion, type ChatTurn } from "./project-assistant.js";
+import { answerProjectQuestion, type AssistantAction, type ChatTurn } from "./project-assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -118,7 +118,7 @@ export class Operations {
     projectId: string,
     question: string,
     history?: ChatTurn[],
-  ): Promise<{ reply: string; proposeTask: string | null }> {
+  ): Promise<{ reply: string; action: AssistantAction | null }> {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== workspaceId) throw new NotFoundError("Project");
     return answerProjectQuestion(this.store, { workspaceId, project, question, history });
