@@ -125,11 +125,20 @@ terraform apply -input=false -var "image=${IMAGE}"
 # the VM until it answers, and on failure dump the real container logs right here
 # — so a bad deploy is loud and self-diagnosing, not a cryptic tunnel error later.
 # (First boot installs Docker + pulls the image, so allow a few minutes.)
-say "▸ Waiting for the app to come up (first boot pulls the image — a few minutes)…"
+say "▸ Rolling the VM onto the new image, then waiting for it to serve…"
 APP_PORT=$(echo 'var.app_port' | terraform console)
 ZONE=$(echo 'var.zone' | terraform console | tr -d '"')
 VM=$(terraform output -raw vm_name)
 ssh_vm() { gcloud compute ssh "$VM" --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap --quiet --command="$1" 2>/dev/null; }
+# terraform apply updates the VM's startup-script metadata but does NOT re-pull
+# on a RUNNING instance: the image tag is always :latest, so there's no diff for
+# it to act on, and an updated deploy would silently keep serving the old image.
+# Re-run the startup script in place — it re-logins to the registry with a fresh
+# token, pulls :latest, and recreates the container. (A brand-new VM already did
+# this on first boot; re-running is idempotent.)
+echo "  re-running startup on the VM (fresh registry login + pull + restart)…"
+ssh_vm "sudo google_metadata_script_runner startup" >/dev/null 2>&1 \
+  || echo "  (couldn't re-run startup over IAP SSH — the VM keeps serving the previous image until it's rebooted)"
 HEALTHY=""
 for _ in $(seq 1 30); do
   if ssh_vm "curl -fsS -o /dev/null http://localhost:${APP_PORT}"; then HEALTHY=1; break; fi
