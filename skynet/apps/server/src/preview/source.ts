@@ -12,6 +12,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { gitBin } from "../git-bin.js";
 import { config } from "../config.js";
 import { previewConfig } from "./config.js";
 
@@ -32,15 +33,15 @@ export async function resolveSource(runId: string, branch: string): Promise<Reso
   if (repo) {
     try {
       // Only proceed if the branch actually exists in the repo.
-      await exec("git", ["-C", repo, "rev-parse", "--verify", "--quiet", `${branch}^{commit}`], { timeout: 10_000 });
+      await exec(gitBin(), ["-C", repo, "rev-parse", "--verify", "--quiet", `${branch}^{commit}`], { timeout: 10_000 });
       const dir = mkdtempSync(join(tmpdir(), `skynet-preview-${runId}-`));
-      await exec("git", ["-C", repo, "worktree", "add", "--detach", "--force", dir, branch], { timeout: 30_000 });
+      await exec(gitBin(), ["-C", repo, "worktree", "add", "--detach", "--force", dir, branch], { timeout: 30_000 });
       return {
         dir,
         kind: "worktree",
         cleanup: async () => {
           try {
-            await exec("git", ["-C", repo, "worktree", "remove", "--force", dir], { timeout: 15_000 });
+            await exec(gitBin(), ["-C", repo, "worktree", "remove", "--force", dir], { timeout: 15_000 });
           } catch {
             await rm(dir, { recursive: true, force: true });
           }

@@ -14,6 +14,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { gitBin } from "./git-bin.js";
 
 const exec = promisify(execFile);
 
@@ -55,7 +56,7 @@ export class WorktreeProvisioner {
   }
 
   private async git(cwd: string, ...args: string[]): Promise<string> {
-    const { stdout } = await exec("git", ["-C", cwd, ...args]);
+    const { stdout } = await exec(gitBin(), ["-C", cwd, ...args]);
     return stdout.trim();
   }
 
@@ -139,7 +140,7 @@ export class WorktreeProvisioner {
    */
   async patch(runId: string, baseRef: string, maxBytes = 200_000): Promise<string> {
     try {
-      const { stdout } = await exec("git", ["-C", this.pathFor(runId), "diff", `${baseRef}...HEAD`], {
+      const { stdout } = await exec(gitBin(), ["-C", this.pathFor(runId), "diff", `${baseRef}...HEAD`], {
         maxBuffer: 8 * 1024 * 1024,
       });
       return stdout.length > maxBytes ? stdout.slice(0, maxBytes) + "\n… (diff truncated — review the full branch)" : stdout;
