@@ -43,7 +43,7 @@ export function RepoPicker({
   return (
     <label className="rp">
       <span className="rp-label">
-        Repository <span className="rp-hint">· one per project</span>
+        Repository <span className="rp-hint">· one per project, cloned locally</span>
       </span>
       <select className="rp-select" value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">Select repository…</option>

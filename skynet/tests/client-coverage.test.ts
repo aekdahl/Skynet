@@ -35,6 +35,9 @@ const ALLOW = new Set<string>([
   "updateAgent",
   // read-only doc render for the Roadmap page — no operator journey to exercise
   "fetchRoadmap",
+  // auth handshake — needs live operator credentials + a session token exchange,
+  // so it can't run in an offline journey (the login screen exercises it live)
+  "login",
   // desktop Advanced settings (env editor + engine restart) — a desktop-only
   // control-plane surface with no in-app operator journey
   "fetchEnvSettings", "saveEnvSettings", "restartEngine",

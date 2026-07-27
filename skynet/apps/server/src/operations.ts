@@ -278,15 +278,16 @@ export class Operations {
     return updated;
   }
   /**
-   * On a headless SERVER (not the desktop), a repo-bound project with no local
-   * checkout is cloned in the BACKGROUND so it's immediately workable — no manual
-   * "clone" step. Best-effort: failures (GitHub not connected yet, network) are
-   * logged (the token is already redacted by the clone path) and leave the
-   * project un-cloned; the operator can retry via the "Clone repo" button. On the
-   * desktop this is a no-op — you pick a local folder or click Clone explicitly.
+   * A repo-bound project with no local checkout is cloned in the BACKGROUND so
+   * it's immediately workable — no manual "clone" step — whether that's a
+   * headless server or the desktop. This is what makes a GitHub-only project
+   * (pick a repo, no folder) exactly as ready as a folder-only one. Best-effort:
+   * failures (GitHub not connected yet, network) are logged (the token is
+   * already redacted by the clone path) and leave the project un-cloned; the
+   * operator can retry via the "Clone repo" button.
    */
   private maybeAutoClone(ws: string, project: Project): void {
-    if (config.desktop || !project.repo || project.repoPath) return;
+    if (!project.repo || project.repoPath) return;
     void this.cloneRepoIntoProject(ws, project.id).catch((err) =>
       console.warn(`[project ${project.id}] auto-clone failed: ${(err as Error).message}`),
     );
