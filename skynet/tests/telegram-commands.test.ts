@@ -107,6 +107,14 @@ describe("decide — control opt-in", () => {
     });
     expect(decideAs(OWNER, "/removetask t-abc-2", false).kind).toBe("denied-control");
   });
+
+  it("maps /move (deterministic kanban move) with its 'id state' arg, gated by control", () => {
+    expect(decideAs(OWNER, "/move t-abc-2 review", true)).toEqual({
+      kind: "move",
+      arg: "t-abc-2 review",
+    });
+    expect(decideAs(OWNER, "/move t-abc-2 review", false).kind).toBe("denied-control");
+  });
 });
 
 // ── Confirm state machine (createOwnerControl) ───────────────────────────────

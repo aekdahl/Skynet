@@ -98,6 +98,28 @@ describe("parseIntent — the five whitelisted actions map when ids resolve", ()
     expect(isNone(parseIntent('{"action":"remove_task"}', ctx))).toBe(true);
   });
 
+  it("move_task (resolves the task's project id; validates the target state)", () => {
+    expect(parseIntent('{"action":"move_task","taskId":"t-1","to":"triage"}', ctx)).toEqual({
+      kind: "move_task",
+      taskId: "t-1",
+      projectId: "p-web",
+      to: "triage",
+    });
+    // Case-insensitive target.
+    expect(parseIntent('{"action":"move_task","taskId":"t-2","to":"REVIEW"}', ctx)).toEqual({
+      kind: "move_task",
+      taskId: "t-2",
+      projectId: "p-api",
+      to: "review",
+    });
+  });
+
+  it("move_task with an unknown task or invalid state → none", () => {
+    expect(isNone(parseIntent('{"action":"move_task","taskId":"t-999","to":"todo"}', ctx))).toBe(true);
+    expect(isNone(parseIntent('{"action":"move_task","taskId":"t-1","to":"shipped"}', ctx))).toBe(true);
+    expect(isNone(parseIntent('{"action":"move_task","taskId":"t-1"}', ctx))).toBe(true);
+  });
+
   it("status", () => {
     expect(parseIntent('{"action":"status"}', ctx)).toEqual({ kind: "status" });
   });

@@ -17,6 +17,7 @@ const KNOWN_COMMANDS = [
   "task",
   "newproject",
   "removetask",
+  "move",
 ] as const;
 
 export type Command = (typeof KNOWN_COMMANDS)[number];
@@ -64,6 +65,9 @@ export type BridgeAction = {
     // WITHOUT the LLM (the no-LLM undo path). Privileged → gated by the control
     // flag → "denied-control" when off.
     | "removetask"
+    // Deterministic kanban move: `/move <id> <state>` transitions a task WITHOUT
+    // the LLM (the server still enforces which transitions are legal).
+    | "move"
     | "denied-control"
     // Owner free text (not a slash-command): index.ts routes it to the confirm
     // state machine (pending affirmative → run; else the conversational parse).
@@ -136,6 +140,9 @@ export function decide(input: DecideInput): BridgeAction {
     // Deterministic reversible archive by id (no LLM). Privileged → gated by control.
     case "removetask":
       return input.controlEnabled ? { kind: "removetask", arg: parsed.arg } : { kind: "denied-control" };
+    // Deterministic kanban move `/move <id> <state>` (no LLM). Privileged → gated.
+    case "move":
+      return input.controlEnabled ? { kind: "move", arg: parsed.arg } : { kind: "denied-control" };
     default:
       return { kind: "help" };
   }

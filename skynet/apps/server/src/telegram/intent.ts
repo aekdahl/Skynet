@@ -56,12 +56,15 @@ export interface Action {
     | "add_agent"
     | "create_project"
     | "remove_task"
+    | "move_task"
     | "status"
     | "none";
   gateId?: string;
   taskText?: string;
   projectId?: string;
   taskId?: string;
+  /** Target kanban state for move_task. */
+  to?: string;
   agentId?: string;
   provider?: ProviderId;
   model?: string;
@@ -85,7 +88,7 @@ export const INTENT_SYSTEM_PROMPT = [
   "(open gates, runs/fleet, projects, tasks, providers) — never invent ids or state.",
   "",
   "You may ALSO perform ONE action, but ONLY when the owner is clearly asking to do it.",
-  "Allowed actions: approve | reject | add_task | assign | add_agent | create_project | remove_task | status.",
+  "Allowed actions: approve | reject | add_task | assign | add_agent | create_project | remove_task | move_task | status.",
   "Action object shapes (used as the `action` field below):",
   '  approve/reject: {"action":"approve","gateId":"<gate id from context>"}',
   '  add_task:       {"action":"add_task","projectId":"<project id>","taskText":"<the task>"}',
@@ -93,6 +96,7 @@ export const INTENT_SYSTEM_PROMPT = [
   '  add_agent:      {"action":"add_agent","provider":"<provider id>","model":"<model>","agentName":"<optional>"}',
   '  create_project: {"action":"create_project","projectName":"<name>","projectGoal":"<optional>"}',
   '  remove_task:    {"action":"remove_task","taskId":"<task id from context>"}',
+  '  move_task:      {"action":"move_task","taskId":"<task id from context>","to":"<backlog|triage|todo|ongoing|review|done>"}',
   '  status:         {"action":"status"}',
   "remove_task archives a task (a reversible soft-hide, recoverable in the app) — it is",
   "never a hard delete; use it when the owner asks to remove/delete/undo a task.",
@@ -300,6 +304,19 @@ export function validateAction(obj: unknown, ctx: IntentContext): Action | null 
       const task = ctx.tasks.find((t) => t.id === taskId);
       if (!task) return none(`unknown task "${taskId}"`);
       return { kind: "remove_task", taskId, projectId: task.projectId };
+    }
+
+    case "move_task": {
+      // The task id must exist in context; the target must be a real kanban
+      // state. The server (transitionTask) still enforces which transitions are
+      // LEGAL — this only ensures a well-formed, grounded request.
+      const taskId = isStr(o.taskId) ? o.taskId : "";
+      const task = ctx.tasks.find((t) => t.id === taskId);
+      if (!task) return none(`unknown task "${taskId}"`);
+      const to = isStr(o.to) ? o.to.trim().toLowerCase() : "";
+      const STATES = ["backlog", "triage", "todo", "ongoing", "review", "done"];
+      if (!STATES.includes(to)) return none(`invalid target state "${to}"`);
+      return { kind: "move_task", taskId, projectId: task.projectId, to };
     }
 
     case "status":

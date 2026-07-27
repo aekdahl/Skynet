@@ -62,6 +62,7 @@ const HELP =
     "/reject <id> — reject a gate (needs SKYNET_TELEGRAM_CONTROL=true)",
     "/task <text> — add a backlog item (no LLM needed; needs SKYNET_TELEGRAM_CONTROL=true)",
     "/removetask <id> — archive a task (reversible; recoverable in the app; needs SKYNET_TELEGRAM_CONTROL=true)",
+    "/move <id> <state> — move a task along the kanban (backlog|triage|todo|ongoing|review|done)",
     "/newproject <name> — create a project (needs SKYNET_TELEGRAM_CONTROL=true)",
     "/stop — kill switch: halt all runs + pause autonomy",
     "/resume — re-enable autonomy",
@@ -69,7 +70,7 @@ const HELP =
     "/help — this list",
     "",
     "With control on you can also just say what you want, e.g.:",
-    "  approve the deploy gate · add task \"fix login\" to Web · assign that task · add a claude agent · create a project called Web",
+    "  approve the deploy gate · add task \"fix login\" to Web · assign that task · add a claude agent · create a project called Web · move that task to review",
     "I'll confirm before doing anything — reply yes to run, anything else cancels.",
   ].join("\n");
 
@@ -96,6 +97,7 @@ export interface ControlOps {
   createTask(ws: string, projectId: string, input: CreateTaskRequest): Promise<Task>;
   assignTask(ws: string, projectId: string, taskId: string): Promise<TaskRun>;
   archiveTask(ws: string, projectId: string, taskId: string, archived: boolean): Promise<Task>;
+  transitionTask(ws: string, taskId: string, to: Task["state"], operatorId: string): Promise<Task>;
   configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent>;
 }
 
@@ -250,6 +252,20 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           run: async () => {
             await operations.archiveTask(ws, action.projectId!, action.taskId!, true);
             return `🗃 Archived task ${action.taskId}${task?.text ? ` — "${task.text}"` : ""}. Recoverable in the app (un-archive to restore).`;
+          },
+        };
+      }
+      case "move_task": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        const summary = `Move task ${action.taskId} — "${task?.text ?? "?"}" to ${action.to}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            // transitionTask enforces the LEGAL kanban transitions + operator
+            // gate; an illegal move throws and the reply carries the reason.
+            const t = await operations.transitionTask(ws, action.taskId!, action.to as Task["state"], operatorId);
+            return `↦ Task ${action.taskId} moved to ${t.state}.`;
           },
         };
       }
@@ -459,6 +475,28 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           await notify(`🗃 Archived task ${id} — recoverable in the app (un-archive to restore).`);
         } catch (err) {
           await notify(`Couldn't remove task ${id}: ${(err as Error).message}`);
+        }
+        return;
+      }
+
+      case "move": {
+        // Deterministic kanban move `/move <id> <state>` — no LLM. transitionTask
+        // enforces which transitions are legal + the operator gate; an illegal
+        // move throws and the reason is reported.
+        const parts = (action.arg ?? "").trim().split(/\s+/);
+        const id = parts[0] ?? "";
+        const to = (parts[1] ?? "").toLowerCase();
+        const STATES = ["backlog", "triage", "todo", "ongoing", "review", "done"];
+        if (!id || !STATES.includes(to)) {
+          await notify("Usage: /move <task id> <backlog|triage|todo|ongoing|review|done>");
+          return;
+        }
+        log("executing slash-command action: move");
+        try {
+          const t = await operations.transitionTask(ws, id, to as Task["state"], operatorId);
+          await notify(`↦ Task ${id} moved to ${t.state}.`);
+        } catch (err) {
+          await notify(`Couldn't move task ${id} to ${to}: ${(err as Error).message}`);
         }
         return;
       }
