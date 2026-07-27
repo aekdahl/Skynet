@@ -355,7 +355,15 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
 // (the assistant reads files like ROADMAP.md). Uses the same general-purpose
 // LLM as the rest of Skynet, via POST /api/projects/:id/chat.
 
-type AsstMsg = { role: "user" | "assistant"; content: string };
+// `propose` carries a task title the assistant offered to create; the operator
+// confirms (or dismisses) via a chip under the message — mirrors Telegram's
+// confirm-before-execute. `proposeState` tracks the chip once acted on.
+type AsstMsg = {
+  role: "user" | "assistant";
+  content: string;
+  propose?: string;
+  proposeState?: "pending" | "created" | "dismissed";
+};
 const ASSISTANT_SUGGESTIONS = [
   "What's the current status of this project?",
   "Summarize the roadmap",
@@ -363,6 +371,7 @@ const ASSISTANT_SUGGESTIONS = [
 ];
 
 function ProjectAssistant({ projectId }: { projectId: string }) {
+  const { createTask } = useStore();
   const [open, setOpen] = useState(false);
   const [msgs, setMsgs] = useState<AsstMsg[]>([]);
   const [input, setInput] = useState("");
@@ -378,17 +387,41 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
     const question = q.trim();
     if (!question || busy) return;
     setErr(null);
-    const history = msgs.slice();
+    const history = msgs.slice().map(({ role, content }) => ({ role, content }));
     setMsgs([...msgs, { role: "user", content: question }]);
     setInput("");
     setBusy(true);
     try {
-      const { reply } = await api.projectChat(projectId, question, history);
-      setMsgs((m) => [...m, { role: "assistant", content: reply }]);
+      const { reply, proposeTask } = await api.projectChat(projectId, question, history);
+      setMsgs((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content: reply,
+          ...(proposeTask ? { propose: proposeTask, proposeState: "pending" as const } : {}),
+        },
+      ]);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't reach the assistant — try again.");
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Confirm (or dismiss) a proposed task. On confirm, create it via the same
+  // store action the board uses, then mark the chip done.
+  const resolvePropose = async (idx: number, accept: boolean) => {
+    const msg = msgs[idx];
+    if (!msg?.propose || msg.proposeState !== "pending") return;
+    if (!accept) {
+      setMsgs((m) => m.map((x, i) => (i === idx ? { ...x, proposeState: "dismissed" } : x)));
+      return;
+    }
+    try {
+      await createTask(projectId, msg.propose);
+      setMsgs((m) => m.map((x, i) => (i === idx ? { ...x, proposeState: "created" } : x)));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't create the task — try again.");
     }
   };
 
@@ -397,14 +430,14 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
       <button className="proj-assistant-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <span className="fold-caret">{open ? "▾" : "▸"}</span>
         <span className="proj-assistant-title">ASK ABOUT THIS PROJECT</span>
-        <span className="proj-assistant-sub">status &amp; repo content · reads files like ROADMAP.md</span>
+        <span className="proj-assistant-sub">status &amp; repo content · reads files like ROADMAP.md · can create tasks</span>
       </button>
       {open && (
         <div className="proj-assistant-body">
           <div className="proj-assistant-thread" ref={threadRef}>
             {msgs.length === 0 && (
               <div className="asst-welcome">
-                <p>Ask about this project’s current status, or what’s in the repository.</p>
+                <p>Ask about this project’s current status or repository — or ask me to add a task.</p>
                 <div className="asst-sugg">
                   {ASSISTANT_SUGGESTIONS.map((s) => (
                     <button key={s} className="asst-chip" onClick={() => void ask(s)}>{s}</button>
@@ -416,6 +449,27 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
               <div key={i} className={"asst-msg asst-" + m.role}>
                 <span className="asst-who mono">{m.role === "user" ? "you" : "assistant"}</span>
                 <div className="asst-text">{m.content}</div>
+                {m.propose && (
+                  <div className="asst-propose">
+                    {m.proposeState === "created" ? (
+                      <span className="asst-propose-done">✓ Task created: {m.propose}</span>
+                    ) : m.proposeState === "dismissed" ? (
+                      <span className="asst-propose-done muted">Dismissed: {m.propose}</span>
+                    ) : (
+                      <>
+                        <span className="asst-propose-label">Create task: {m.propose}</span>
+                        <span className="asst-propose-actions">
+                          <button className="btn btn-primary btn-sm" onClick={() => void resolvePropose(i, true)}>
+                            Create
+                          </button>
+                          <button className="btn btn-ghost btn-sm" onClick={() => void resolvePropose(i, false)}>
+                            Dismiss
+                          </button>
+                        </span>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
             {busy && (

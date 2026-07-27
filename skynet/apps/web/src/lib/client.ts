@@ -297,7 +297,11 @@ export function projectChat(
   question: string,
   history: { role: "user" | "assistant"; content: string }[],
 ) {
-  return req<{ reply: string }>("POST", `/api/projects/${projectId}/chat`, { question, history });
+  return req<{ reply: string; proposeTask?: string | null }>(
+    "POST",
+    `/api/projects/${projectId}/chat`,
+    { question, history },
+  );
 }
 // Guarded kanban move (backlog→triage, triage→todo, review→done, demote, …).
 export function transitionTask(projectId: string, taskId: string, to: string) {
