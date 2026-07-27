@@ -166,6 +166,19 @@ export class GithubService {
     const pr = await this.provider.openPr(token, req.repo, req.branch, req.baseBranch, req.title, req.body);
     return { ok: true, pushed: true, violations: [], pr };
   }
+
+  /** Clone a connected repo (owner/name) into `dest` using the workspace's git
+   *  token — the token stays inside the service, never returned. This is what
+   *  lets a project bound to a GitHub repo get a local checkout on a headless
+   *  server (e.g. GCP), so the orchestrator can cut worktrees from it. */
+  async cloneRepo(workspaceId: string, repo: string, dest: string): Promise<void> {
+    const conn = await this.store.get(workspaceId);
+    const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
+    if (!conn || !ready) throw new Error("GitHub is not connected for this workspace");
+    if (conn.auth === "app" && !this.appHasCreds) throw new Error("GitHub App is not configured on the server");
+    const token = await this.resolveToken(conn);
+    await this.provider.cloneRepo(token, repo, dest);
+  }
 }
 
 const appHasCreds = (): boolean => !!(config.githubAppId && config.githubPrivateKey);

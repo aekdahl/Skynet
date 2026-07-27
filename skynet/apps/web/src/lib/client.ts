@@ -235,6 +235,11 @@ export function updateProject(
 export function deleteProject(id: string) {
   return req<unknown>("DELETE", `/api/projects/${id}`);
 }
+/** Clone a GitHub-connected project's repo into a local checkout on the server
+ *  (headless/GCP), so agents can work on it. Sets repoPath + gitBacked. */
+export function cloneProjectRepo(id: string) {
+  return req<unknown>("POST", `/api/projects/${id}/clone`);
+}
 
 // Tasks
 export function createTask(projectId: string, text: string, description?: string) {

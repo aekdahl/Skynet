@@ -69,6 +69,7 @@ export interface GitProvider {
   listInstallationRepos(token: string, installationId: number): Promise<GithubRepo[]>;
   /** Push the agent branch from its worktree to the remote. */
   pushBranch(token: string, repo: string, worktreePath: string, branch: string, force: boolean): Promise<void>;
+  cloneRepo(token: string, repo: string, dest: string): Promise<void>;
   openPr(token: string, repo: string, head: string, base: string, title: string, body: string): Promise<PrRef>;
   prStatus(token: string, repo: string, number: number): Promise<PrStatus>;
   mergePr(token: string, repo: string, number: number, method: "merge" | "squash" | "rebase"): Promise<MergeResult>;

@@ -29,10 +29,12 @@ import type {
   UpdateTaskRequest,
 } from "@skynet/shared";
 import { modelValidForProvider } from "@skynet/shared";
-import { resolve as resolvePath } from "node:path";
+import { existsSync } from "node:fs";
+import { join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
-import { now } from "./config.js";
+import { config, now } from "./config.js";
 import { isGitRepo } from "./fs-browse.js";
+import { githubService } from "./github/index.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -270,6 +272,25 @@ export class Operations {
           })()
         : {};
     return this.hub.upsertProject({ ...existing, ...patch, ...rebind });
+  }
+  /**
+   * Clone a GitHub-connected project's repo into a managed local checkout and
+   * mark it git-backed — the missing link for headless/server (GCP) use, where
+   * (unlike the desktop) there's no folder to point at. Uses the workspace's
+   * GitHub token (via githubService; token never exposed). Idempotent: an
+   * existing checkout is reused. After this, the orchestrator cuts worktrees
+   * from `repoPath` and the normal edit→diff→push(PR) loop works.
+   */
+  async cloneRepoIntoProject(ws: string, id: string): Promise<Project> {
+    const project = await this.store.getProject(id);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repo) throw new Error("Project is not bound to a GitHub repo — set its repo first.");
+    const base = config.reposDir ? resolvePath(config.reposDir) : resolvePath(".skynet-repos");
+    const dest = join(base, project.id);
+    if (!existsSync(join(dest, ".git"))) {
+      await githubService.cloneRepo(ws, project.repo, dest);
+    }
+    return this.hub.upsertProject({ ...project, repoPath: dest, gitBacked: true });
   }
   async deleteProject(ws: string, id: string): Promise<void> {
     const existing = await this.store.getProject(id);

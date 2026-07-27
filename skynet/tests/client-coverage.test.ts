@@ -28,6 +28,7 @@ const ALLOW = new Set<string>([
   "browseFolder",
   "startGithubDevice", "pollGithubDevice", "fetchGithubInstallations",
   "fetchGithubInstallationRepos", "connectGithub", "disconnectGithub",
+  "cloneProjectRepo", // clones a connected GitHub repo — needs a live remote + token
   // destructive bulk variants (the per-record paths ARE covered)
   "archiveAllAudit", "clearAudit",
   // low-value control-plane (runner rename/model tweak)
