@@ -1,0 +1,14 @@
+# Copy to terraform.tfvars and fill in. No secret VALUES go here — those live in
+# Secret Manager (setup.sh prints the commands). This file is git-ignored.
+
+project_id     = "your-gcp-project-id"
+region         = "us-central1"
+zone           = "us-central1-a"
+machine_type   = "e2-small" # bump to e2-medium / e2-standard-2 for heavier builds
+app_port       = 8080
+data_disk_gb   = 20
+operator_email = "you@example.com"    # your Google account — gets IAP tunnel access
+admin_email    = "you@example.com"    # seed login for the Skynet web UI
+admin_workspace = "skynet"
+telegram_control = false              # true = allow approve/create/etc. over Telegram (kill switch always works)
+# name_prefix  = "skynet"             # prefix for created resource names
