@@ -124,7 +124,7 @@ function TaskCard({
 
   if (editing) {
     return (
-      <div className={"kb-card kb-card-" + s}>
+      <div className={"kb-card kb-addcard kb-card-" + s}>
         <div className="task-name-wrap">
           <input
             className="qx-input"
@@ -138,15 +138,15 @@ function TaskCard({
           </span>
         </div>
         <textarea
-          className="qx-input"
+          className="qx-input kb-addcard-desc"
           rows={3}
           placeholder="Description (optional) — the full brief the agent gets…"
           value={descDraft}
           onChange={(e) => setDescDraft(e.target.value)}
         />
-        <div className="qx-row">
+        <div className="qx-row kb-addcard-actions">
           <button
-            className="btn btn-primary"
+            className="btn btn-primary btn-sm"
             onClick={() => {
               if (draft.trim())
                 updateTask(pid, task.id, { text: draft.trim(), description: descDraft.trim() || null });
@@ -155,7 +155,7 @@ function TaskCard({
           >
             Save
           </button>
-          <button className="btn btn-ghost" onClick={() => { setDraft(task.text); setDescDraft(task.description ?? ""); setEditing(false); }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => { setDraft(task.text); setDescDraft(task.description ?? ""); setEditing(false); }}>
             Cancel
           </button>
         </div>
@@ -316,13 +316,13 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
     setOpen(false);
   };
   return (
-    <div className="kb-card kb-card-backlog">
+    <div className="kb-card kb-card-backlog kb-addcard">
       <div className="task-name-wrap">
         <input
           className="qx-input"
           autoFocus
           maxLength={TASK_NAME_MAX}
-          placeholder="Task name — short, like a commit subject"
+          placeholder="Task name — like a commit subject"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && draft.trim() && submit()}
@@ -332,17 +332,17 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
         </span>
       </div>
       <textarea
-        className="qx-input"
+        className="qx-input kb-addcard-desc"
         rows={3}
-        placeholder="Description (optional) — the full brief the agent gets: context, constraints, what done looks like…"
+        placeholder="Description (optional) — context, constraints, what “done” looks like…"
         value={desc}
         onChange={(e) => setDesc(e.target.value)}
       />
-      <div className="qx-row">
-        <button className="btn btn-primary" disabled={!draft.trim()} onClick={submit}>
-          Add to backlog
+      <div className="qx-row kb-addcard-actions">
+        <button className="btn btn-primary btn-sm" disabled={!draft.trim()} onClick={submit}>
+          Add task
         </button>
-        <button className="btn btn-ghost" onClick={() => { setDraft(""); setDesc(""); setOpen(false); }}>
+        <button className="btn btn-ghost btn-sm" onClick={() => { setDraft(""); setDesc(""); setOpen(false); }}>
           Cancel
         </button>
       </div>
