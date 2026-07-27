@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNow, useStore } from "./lib/store";
 import { initialView, onNavigate } from "./pwa/launch"; // [pwa] Inbox-first launch + push deep-link
 import { parseHash, toHash } from "./lib/routing"; // [w7] deep links
+import { gateView } from "./lib/dev"; // dev-only pages hidden from release builds
 import { TitleBar, OpSidebar, OpStatusBar, ConnectingShell } from "./components/shell";
 import { useTweaks } from "./components/tweaks";
 import { HomeView } from "./views/home";
@@ -59,7 +60,11 @@ export function App() {
 
   // [w7] A URL hash deep-link wins over the PWA launch default.
   const route0 = parseHash();
-  const [view, setView] = useState<ViewName>(() => route0?.view ?? initialView() ?? "home");
+  // setView is gated: a dev-only view (see lib/dev) coerces to "home" on a
+  // release build, so a deep link / stale hash / PWA nav can't reach it. Every
+  // navigation path flows through here, so guarding it once covers them all.
+  const [view, setViewRaw] = useState<ViewName>(() => gateView(route0?.view ?? initialView() ?? "home"));
+  const setView = useCallback((v: ViewName) => setViewRaw(gateView(v)), []);
   const [lens, setLens] = useState<Lens>(() => route0?.lens ?? "subway");
   const [projectId, setProjectId] = useState<string | null>(() => route0?.projectId ?? null);
   const [runId, setRunId] = useState<string | null>(() => route0?.runId ?? null);
