@@ -12,6 +12,7 @@ import { createSign } from "node:crypto";
 import { promisify } from "node:util";
 import type { GithubInstallation, GithubRepo } from "@skynet/shared";
 import type { GitProvider, MergeResult, PrRef, PrStatus } from "./types.js";
+import { gitBin } from "../git-bin.js";
 
 const exec = promisify(execFile);
 
@@ -122,7 +123,7 @@ export class GitHubProvider implements GitProvider {
     const remote = `https://x-access-token:${token}@github.com/${repo}.git`;
     const args = ["-C", worktreePath, "push", remote, `${branch}:refs/heads/${branch}`];
     if (force) args.push("--force-with-lease");
-    await exec("git", args);
+    await exec(gitBin(), args);
   }
 
   /** Clone `repo` (owner/name) into `dest` over a token-authenticated HTTPS
@@ -132,7 +133,7 @@ export class GitHubProvider implements GitProvider {
   async cloneRepo(token: string, repo: string, dest: string): Promise<void> {
     const remote = `https://x-access-token:${token}@github.com/${repo}.git`;
     try {
-      await exec("git", ["clone", "--", remote, dest]);
+      await exec(gitBin(), ["clone", "--", remote, dest]);
     } catch (err) {
       const msg = (err as { stderr?: string; message?: string }).stderr || (err as Error).message || String(err);
       throw new Error(redactToken(msg, token));
@@ -190,7 +191,7 @@ export class GitHubProvider implements GitProvider {
 
   async syncBase(token: string, repo: string, worktreePath: string, baseBranch: string): Promise<void> {
     const remote = `https://x-access-token:${token}@github.com/${repo}.git`;
-    await exec("git", ["-C", worktreePath, "fetch", remote, baseBranch]);
-    await exec("git", ["-C", worktreePath, "merge", "--no-edit", "FETCH_HEAD"]);
+    await exec(gitBin(), ["-C", worktreePath, "fetch", remote, baseBranch]);
+    await exec(gitBin(), ["-C", worktreePath, "merge", "--no-edit", "FETCH_HEAD"]);
   }
 }

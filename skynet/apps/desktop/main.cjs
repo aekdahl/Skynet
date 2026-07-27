@@ -28,6 +28,22 @@ app.setName("Skynet");
 const PORT = Number(process.env.SKYNET_DESKTOP_PORT) || 8099;
 const HOST = "127.0.0.1";
 
+// Common bin dirs a GUI-launched app's bare PATH omits (git, node, the runner
+// CLIs). Prepend them so child spawns resolve; keep the inherited PATH last and
+// drop dupes so nothing already present is shadowed. Windows installers put
+// tools on the system PATH, so this is a no-op there.
+function enrichPath(current) {
+  const extra =
+    process.platform === "win32"
+      ? []
+      : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+  const sep = process.platform === "win32" ? ";" : ":";
+  const seen = new Set();
+  return [...extra, ...(current ? current.split(sep) : [])]
+    .filter((d) => d && !seen.has(d) && seen.add(d))
+    .join(sep);
+}
+
 // Dev (hot reload): the `desktop:dev` launcher runs the server (watch) + Vite
 // (HMR) externally, so the window loads Vite and we don't spawn/serve anything.
 const DEV = process.env.SKYNET_DEV === "1";
@@ -106,6 +122,12 @@ function startServer() {
   const env = {
     ...process.env,
     ...userEnv,
+    // A Finder-launched GUI app inherits only a bare PATH (/usr/bin:/bin:…), so
+    // Homebrew CLIs — git at /opt/homebrew/bin, the runner's `claude`/`cursor`,
+    // etc. — are invisible and spawns die with `spawn <cmd> ENOENT`. Prepend the
+    // common install dirs so every child process (server + runner subprocesses)
+    // can find them. Deduped, existing PATH kept last so nothing is shadowed.
+    PATH: enrichPath(process.env.PATH),
     ELECTRON_RUN_AS_NODE: "1", // run the Electron binary as plain Node
     // Mark this as the desktop-managed engine + point the server at the same
     // overrides file we read above, so the in-app Advanced settings panel can
