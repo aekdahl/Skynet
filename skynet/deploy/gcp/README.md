@@ -45,10 +45,19 @@ skip the config prompts.
 
 ## Reach the board
 ```bash
-gcloud compute start-iap-tunnel skynet-server 8080 --local-host-port=localhost:8080 --zone=us-central1-a --project=YOUR_PROJECT
-# then open http://localhost:8080  (log in with the admin_email + the admin-password secret)
+gcloud compute ssh skynet-server --zone=europe-west1-b --project=YOUR_PROJECT --tunnel-through-iap -- -N -L 48080:localhost:8080
+# leave it running, then open http://127.0.0.1:48080  (log in with the admin_email + the admin-password secret)
+# 8080 = the app's port inside the VM; 48080 = the local port (var.local_port) — pick any free one
 ```
 Access is IAM-gated (your `operator_email`), fully private — no public IP, no open ports, no TLS to manage.
+
+> **Why an SSH-forward and not `start-iap-tunnel`?** The board holds a live
+> WebSocket. `gcloud compute start-iap-tunnel` turns every browser connection
+> into its own fragile IAP proxy socket and drops the WS mid-snapshot — the UI
+> hangs on "loading your workspace…" while gcloud floods `Bad file descriptor` /
+> `Failed to send all data`. The SSH local-forward multiplexes everything over
+> one stable stream, so the WebSocket holds. (It still rides IAP under the hood —
+> same IAM gate, no public IP.)
 
 ## Control from your phone
 Set the Telegram secrets and message your bot (`/status`, `/task …`, approve gates, `/stop`, `/quit`). Outbound-only, so it works with the VM fully locked down. See `../../docs/…` / the in-app Settings → "Remote control · Telegram" for bot setup.

@@ -15,6 +15,7 @@ import { IntegrationsView } from "./views/integrations";
 import { Onboarding } from "./views/onboarding";
 import { isOnboarded } from "./lib/firstrun";
 import { SettingsView } from "./views/settings";
+import { LoginView } from "./views/login";
 import { AcceptanceView } from "./views/acceptance";
 import { SimulationView } from "./views/simulation";
 import { RoadmapView } from "./views/roadmap";
@@ -135,6 +136,12 @@ export function App() {
   // connect→connected lifecycle and a retry affordance — never a dead-end
   // "Connecting…" message. The socket auto-reconnects; ConnectingShell surfaces
   // that state and lets the operator force a retry.
+  // The server rejected our token (dev token in production, or a wiped/expired
+  // session) — sign in rather than spinning on reconnect.
+  if (store.wsPhase === "unauthorized") {
+    return <LoginView onLogin={store.login} />;
+  }
+
   if (!store.loaded) {
     return <ConnectingShell phase={store.wsPhase} onRetry={store.retry} />;
   }

@@ -63,7 +63,12 @@ umask 077
 cat >"$${ENVF}" <<EOF
 NODE_ENV=production
 AUTH_REQUIRED=true
+# Single-node self-host: durable data on the /data disk (STORE=file); the bus and
+# session store are in-process (no Redis/Postgres here). NB: SESSIONS=memory means
+# a restart logs you out (re-login) — data itself stays on /data.
 STORE=file
+BUS=memory
+SESSIONS=memory
 SKYNET_DB_PATH=/data/skynet-data.json
 SKYNET_MASTER_KEY=$${MASTER_KEY}
 PORT=${app_port}

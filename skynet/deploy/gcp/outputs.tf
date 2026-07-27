@@ -9,8 +9,8 @@ output "artifact_registry_image_base" {
 }
 
 output "iap_tunnel_command" {
-  value       = "gcloud compute start-iap-tunnel ${google_compute_instance.vm.name} ${var.app_port} --local-host-port=localhost:${var.app_port} --zone=${var.zone} --project=${var.project_id}"
-  description = "Run this, then open the app on the matching localhost port — private, IAM-gated, no public IP."
+  value       = "gcloud compute ssh ${google_compute_instance.vm.name} --zone=${var.zone} --project=${var.project_id} --tunnel-through-iap -- -N -L ${var.local_port}:localhost:${var.app_port}"
+  description = "Run this (leave it running), then open http://127.0.0.1:${var.local_port} — private, IAM-gated, no public IP. It's an SSH local-forward over IAP: one stable stream that carries the board's live WebSocket reliably. (Raw `start-iap-tunnel` makes each browser connection its own fragile proxy socket and drops the WS mid-snapshot → the UI hangs on 'loading your workspace…'.)"
 }
 
 output "set_secrets_hint" {
