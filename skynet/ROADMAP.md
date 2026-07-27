@@ -188,7 +188,17 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     "Preview" affordance on the project view; the runtime kind decides URL vs. logs.
   - **Reuses** the existing preview builder, the **container/OS sandbox** (v0 #5 / v1), command-safety
     bounds, and the merge integration branch. Wrap, don't rebuild — Skynet orchestrates the build/run
-    + proxy; it doesn't reimplement a PaaS. *(Deep sketch belongs in a `docs/live-preview.md` brief.)*
+    + proxy; it doesn't reimplement a PaaS.
+  - **⭐ The overwatch loop + UX (the point of it):** the preview tracks the **integration branch** and
+    **refreshes as the fleet merges** (dev-server HMR, or debounced rebuild + soft reload) so a human
+    verifying agents watches the app change live. Opens **split-screen** beside the board or as a
+    **pop-out modal**, with device-frame, a URL bar, freshness, logs, and manual restart/refresh. A
+    per-run "Preview this change" button on a visual diff gate verifies *before* approving.
+  - **Agent-assisted start:** the recipe resolves descriptor → heuristic → the **repo-aware assistant**
+    (the same BYOK agent behind "Ask about this project" / Telegram) proposing + starting the preview.
+  - Full design + phasing: **[docs/live-preview.md](docs/live-preview.md)**. Phase 1 (web/sites) is
+    committed; a **Phase-1 v0** (project preview manager + split-screen pane + refresh-on-merge) is
+    landing now. Phases 2 (services) & 3 (command/artifacts) follow.
 - [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign

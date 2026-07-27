@@ -506,6 +506,7 @@ export function ProjectView({
   const [showArchived, setShowArchived] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [name, setName] = useState(project.name);
   const [goal, setGoal] = useState(project.goal);
 
@@ -576,6 +577,11 @@ export function ProjectView({
               <span className="proj-autonomy-switch" aria-hidden="true" />
               <span className="proj-autonomy-label">Autonomy</span>
             </label>
+            {project.repoPath && (
+              <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
+                ▶ Preview app
+              </button>
+            )}
             <button className="btn btn-ghost" onClick={() => setEditing(true)}>Edit</button>
             {confirmDel ? (
               <span className="del-confirm">
@@ -676,6 +682,105 @@ export function ProjectView({
           )}
         </div>
       )}
+
+      {previewOpen && <LivePreviewModal projectId={project.id} projectName={project.name} onClose={() => setPreviewOpen(false)} />}
     </section>
+  );
+}
+
+// ─── Live preview modal (Phase-1 v0) ────────────────────────────────────────
+// Runs the project's web app (server-side, sandboxed) and iframes it here,
+// refreshing as the fleet merges. Polls status while open; the app runs on its
+// own localhost origin so its code can't reach the console. See docs/live-preview.md.
+const DEVICES: Record<string, number | null> = { Desktop: null, Tablet: 768, Mobile: 390 };
+
+function LivePreviewModal({
+  projectId,
+  projectName,
+  onClose,
+}: {
+  projectId: string;
+  projectName: string;
+  onClose: () => void;
+}) {
+  const [st, setSt] = useState<api.PreviewState | null>(null);
+  const [device, setDevice] = useState<string>("Desktop");
+  const [showLogs, setShowLogs] = useState(false);
+  const [nonce, setNonce] = useState(0); // bump to reload the iframe
+  const startedRef = useRef(false);
+
+  // Start on open (once), then poll status while the modal is mounted.
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const s = startedRef.current ? await api.previewStatus(projectId) : (startedRef.current = true, await api.previewStart(projectId));
+        if (alive) setSt(s);
+      } catch {
+        /* transient */
+      }
+    };
+    void tick();
+    const iv = setInterval(tick, 1500);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  }, [projectId]);
+
+  const width = DEVICES[device];
+  const live = st?.status === "live" && st.url;
+
+  return (
+    <div className="lp-backdrop" onClick={onClose}>
+      <div className="lp-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="lp-bar">
+          <span className="lp-title">Live preview · {projectName}</span>
+          <span className={"lp-status lp-status-" + (st?.status ?? "idle")}>
+            {st?.status === "live" ? "● live" : st?.status === "starting" ? "◐ starting…" : st?.status === "failed" ? "✕ failed" : st?.status ?? "…"}
+          </span>
+          {live && <span className="lp-url mono">{st!.url}</span>}
+          <span className="lp-spacer" />
+          <div className="lp-devices">
+            {Object.keys(DEVICES).map((d) => (
+              <button key={d} className={"lp-dev" + (d === device ? " on" : "")} onClick={() => setDevice(d)}>{d}</button>
+            ))}
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={() => setNonce((n) => n + 1)} title="Reload the app in the frame">↻ Reload</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { startedRef.current = false; void api.previewRestart(projectId).then(setSt); }} title="Restart the preview server">⟳ Restart</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { setShowLogs((s) => !s); }}>Logs</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { void api.previewStop(projectId); onClose(); }}>✕ Close</button>
+        </div>
+
+        <div className="lp-body">
+          {live ? (
+            <div className="lp-frame-wrap">
+              <iframe
+                key={nonce}
+                className="lp-frame"
+                style={width ? { width, margin: "0 auto" } : undefined}
+                src={st!.url!}
+                title="app preview"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              />
+            </div>
+          ) : (
+            <div className="lp-placeholder">
+              <div className={"lp-ph-dot lp-status-" + (st?.status ?? "idle")} />
+              <div className="lp-ph-msg">
+                {st?.status === "failed" ? (st.error ?? "Preview failed.") : st?.status === "starting" ? "Starting the app…" : "Preparing preview…"}
+              </div>
+              {st?.recipe && <div className="lp-ph-cmd mono">$ {st.recipe.cmd}</div>}
+              {st?.status === "failed" && (
+                <button className="btn btn-primary btn-sm" onClick={() => { startedRef.current = false; void api.previewRestart(projectId).then(setSt); }}>Retry</button>
+              )}
+            </div>
+          )}
+          {showLogs && (
+            <pre className="lp-logs mono">{(st?.logs ?? []).join("\n") || "(no output yet)"}</pre>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

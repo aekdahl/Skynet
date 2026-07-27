@@ -341,6 +341,32 @@ export function projectChat(
   return req<{ reply: string }>("POST", `/api/projects/${projectId}/chat`, { question, history });
 }
 
+// ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
+export interface PreviewState {
+  status: "idle" | "starting" | "live" | "failed" | "stopped";
+  url: string | null;
+  port: number | null;
+  recipe: { cmd: string; source: string } | null;
+  error: string | null;
+  logs: string[];
+  startedAt: number | null;
+}
+export function previewStatus(projectId: string) {
+  return req<PreviewState>("GET", `/api/projects/${projectId}/preview`);
+}
+export function previewStart(projectId: string) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/start`);
+}
+export function previewStop(projectId: string) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/stop`);
+}
+export function previewRestart(projectId: string) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/restart`);
+}
+export function previewRefresh(projectId: string) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/refresh`);
+}
+
 /** Streaming "ask about this project" — reads the text/plain reply as it streams,
  *  calling `onDelta` per chunk. Resolves with the full reply. Falls back to the
  *  non-streaming endpoint when the response body can't be read. */

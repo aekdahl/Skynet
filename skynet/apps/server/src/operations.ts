@@ -35,6 +35,7 @@ import { assertApprovable, CommandDeniedError } from "./command-safety.js";
 import { config, now } from "./config.js";
 import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
+import { projectPreview, type PreviewState } from "./preview/project-preview.js";
 import { githubService } from "./github/index.js";
 import { answerProjectQuestion, answerProjectQuestionStream, type ChatTurn } from "./project-assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
@@ -192,6 +193,29 @@ export class Operations {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
     return project;
+  }
+
+  // ── live preview (Phase-1 v0) ─────────────────────────────────────────────
+  previewState(ws: string, projectId: string): Promise<PreviewState> {
+    return this.getProject(ws, projectId).then(() => projectPreview.state(projectId));
+  }
+  async previewStart(ws: string, projectId: string): Promise<PreviewState> {
+    const project = await this.getProject(ws, projectId);
+    if (!project.repoPath) throw new Error("This project has no local folder to preview.");
+    return projectPreview.start(projectId, project.repoPath);
+  }
+  async previewRestart(ws: string, projectId: string): Promise<PreviewState> {
+    const project = await this.getProject(ws, projectId);
+    if (!project.repoPath) throw new Error("This project has no local folder to preview.");
+    return projectPreview.restart(projectId, project.repoPath);
+  }
+  async previewStop(ws: string, projectId: string): Promise<PreviewState> {
+    await this.getProject(ws, projectId);
+    return projectPreview.stop(projectId);
+  }
+  async previewRefresh(ws: string, projectId: string): Promise<PreviewState> {
+    await this.getProject(ws, projectId);
+    return projectPreview.refresh(projectId);
   }
 
   // ── HITL ──────────────────────────────────────────────────────────────────

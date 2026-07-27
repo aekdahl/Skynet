@@ -14,6 +14,10 @@
       "types": "./dist/claude.d.ts",
       "default": "./dist/claude.js"
     },
+    "./sandbox": {
+      "types": "./dist/sandbox.d.ts",
+      "default": "./dist/sandbox.js"
+    },
     "./codex": {
       "types": "./dist/codex.d.ts",
       "default": "./dist/codex.js"
