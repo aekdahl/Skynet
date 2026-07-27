@@ -27,11 +27,21 @@ persistent disk (`STORE=file`); secrets live in **Secret Manager**.
 
 ## Run it
 ```bash
-cd skynet/deploy/gcp
-cp terraform.tfvars.example terraform.tfvars   # fill in project_id, emails, etc.
-./setup.sh
+cd skynet/deploy/gcp && ./setup.sh
 ```
-`setup.sh` will: init → bootstrap APIs + Artifact Registry + the (empty) secret containers → **pause for you to load the secret values** (it prints the exact `gcloud secrets versions add` commands) → build+push the image via Cloud Build → `terraform apply` the VM (interactive — you confirm the plan) → print the tunnel command.
+That's the whole deploy — `setup.sh` is a **prompt-driven wizard**. It runs the
+`gcloud` logins if needed, then asks you (in order) for your project id, region,
+email, and machine type (writing `terraform.tfvars` for you), then prompts for
+each **secret** (Anthropic key, admin password, and optional Telegram/GitHub) and
+loads them **directly into Secret Manager** — no hand-edited tfvars, no pasted
+`gcloud secrets` commands. It generates the master key itself, builds + pushes
+the image (Cloud Build), runs `terraform apply` (interactive — you review the
+plan and type `yes`, since it creates billable resources), and finally offers to
+open the tunnel. **Re-running is safe:** existing config + already-set secrets
+are kept — it only asks for what's missing (so adding the GitHub token later, or
+bumping the machine type, is just another run). Prefer to fill things in by hand
+instead? Copy `terraform.tfvars.example` → `terraform.tfvars` first and it'll
+skip the config prompts.
 
 ## Reach the board
 ```bash
