@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 import type { GithubConnection, GithubRepo, ProviderInfo } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
-import { setOnboarded, setWorkspaceName } from "../lib/firstrun";
+import { operatorHandle, setOnboarded, setOperatorHandle, setWorkspaceName, workspaceName } from "../lib/firstrun";
 import { PrimaryButton } from "../components/empty";
 import { GithubConnect, emptyConnection } from "./integrations";
 
@@ -38,8 +38,10 @@ function Mark() {
 export function Onboarding({ onDone }: { onDone: () => void }) {
   const store = useStore();
   const [step, setStep] = useState(0);
-  const [workspace, setWorkspace] = useState("");
-  const [operator, setOperator] = useState("");
+  // Prefill from anything a previous setup already saved, so re-running the
+  // wizard shows the current values rather than blank fields.
+  const [workspace, setWorkspace] = useState(() => workspaceName());
+  const [operator, setOperator] = useState(() => operatorHandle());
   // The fleet to stand up: one row per agent (provider + model). Multiple rows
   // may share a provider on different models. Seeded with one row on the first
   // credentialed provider once the catalog is available.
@@ -95,6 +97,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     setBusy(true);
     try {
       setWorkspaceName(workspace.trim());
+      setOperatorHandle(operator.trim());
       // Stand up the fleet: one runner per row. Names are auto-assigned
       // server-side (<provider>-<name>); the operator renames later in Fleet.
       for (const row of fleetRows) {
