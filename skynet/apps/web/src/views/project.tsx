@@ -753,6 +753,24 @@ export function LivePreviewModal({
     return () => root.classList.remove("lp-docked");
   }, [mode]);
 
+  // Drag the dock's left edge to resize it. Writes --lp-dock-w on :root, which
+  // both the dock width and the board's reserved padding read (see CSS).
+  const onResizeStart = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const move = (ev: PointerEvent) => {
+      const w = Math.min(Math.max(window.innerWidth - ev.clientX, 360), window.innerWidth * 0.85);
+      document.documentElement.style.setProperty("--lp-dock-w", w + "px");
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.style.userSelect = "";
+    };
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
   const width = DEVICES[device];
   const live = st?.status === "live" && st.url;
 
@@ -815,6 +833,9 @@ export function LivePreviewModal({
   return mode === "modal" ? (
     <div className="lp-backdrop" onClick={onClose}>{inner}</div>
   ) : (
-    <div className="lp-dock">{inner}</div>
+    <div className="lp-dock">
+      <div className="lp-resize" onPointerDown={onResizeStart} title="Drag to resize" />
+      {inner}
+    </div>
   );
 }

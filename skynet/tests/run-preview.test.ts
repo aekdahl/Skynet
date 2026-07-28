@@ -140,3 +140,71 @@ describe("HTTP + engine: per-run pre-merge preview (/api/runs/:id/preview)", () 
     expect(list).not.toMatch(/preview-run_/);
   }, 30_000);
 });
+
+// The reported failure: a fresh detached worktree has no node_modules, so a dev
+// script that runs a locally-installed binary (concurrently, vite, …) dies with
+// "not found". The preview must PROVISION deps — symlinking the operator's
+// already-installed node_modules — so the dev command's local bin resolves. And
+// tearing down must never touch the operator's real node_modules.
+describe("engine: preview provisions node_modules for a dev script's local bin", () => {
+  let app: FastifyInstance;
+  let store: MemoryStore;
+  let repo: string;
+  const wtRoot = join(process.cwd(), ".skynet-worktrees");
+
+  beforeEach(async () => {
+    store = new MemoryStore({ seed: false });
+    const hub = new Hub(store, new NullBus());
+    const orchestrator = new Orchestrator(store, hub, new NoopProvider());
+    const ops = new Operations({ store, hub, orchestrator });
+    app = Fastify();
+    await registerApi(app, { operations: ops, orchestrator });
+    app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: "Not found" }));
+    await app.ready();
+
+    // A repo whose committed dev script runs a LOCAL bin (only in node_modules/
+    // .bin) — the concurrently case. node_modules is NOT committed; it lives in
+    // the operator's checkout, exactly as after `npm install`.
+    repo = mkdtempSync(join(tmpdir(), "skynet-deps-"));
+    git(repo, "init", "-q", ".");
+    git(repo, "config", "user.email", "t@t");
+    git(repo, "config", "user.name", "t");
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.0.0", scripts: { dev: "devbin" } }) + "\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-q", "-m", "app (dev script uses a local bin)");
+    // The operator's installed deps: a bin that serves a marker on $PORT.
+    mkdirSync(join(repo, "node_modules", ".bin"), { recursive: true });
+    const bin = join(repo, "node_modules", ".bin", "devbin");
+    writeFileSync(
+      bin,
+      '#!/usr/bin/env node\nrequire("http").createServer((_q,r)=>{r.end("DEP-PREVIEW-OK")}).listen(Number(process.env.PORT),"127.0.0.1");\n',
+      { mode: 0o755 },
+    );
+    await store.putProject(
+      Project.parse({ id: "p-deps", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active", repoPath: repo, gitBacked: true }),
+    );
+  });
+
+  afterEach(async () => {
+    await projectPreview.stopAll().catch(() => undefined);
+    await app.close();
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(wtRoot, { recursive: true, force: true });
+  });
+
+  it("links node_modules so `npm run dev` finds its local bin, then leaves the real node_modules intact", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/projects/p-deps/preview/start", headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    const state = res.json();
+    expect(state.status).toBe("live");
+    expect(state.recipe).toMatchObject({ cmd: "npm run dev", source: "heuristic" });
+    expect(state.logs.join("\n")).toMatch(/linked node_modules/i);
+
+    const body = await fetch(state.url).then((r) => r.text());
+    expect(body).toContain("DEP-PREVIEW-OK");
+
+    await app.inject({ method: "POST", url: "/api/projects/p-deps/preview/stop", headers: AUTH });
+    // Teardown must NOT have followed the symlink into the operator's deps.
+    expect(existsSync(join(repo, "node_modules", ".bin", "devbin"))).toBe(true);
+  }, 30_000);
+});
