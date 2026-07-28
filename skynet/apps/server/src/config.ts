@@ -136,6 +136,17 @@ export const config = {
   // run doesn't hang. 0 (default) disables it — interactive workspaces wait for a
   // human indefinitely; headless/eval runs set a bound (e.g. 120_000).
   hitlQuestionTimeoutMs: Number(process.env.SKYNET_HITL_QUESTION_TIMEOUT_MS ?? 0),
+  // Escalation guards — when a run can't finish on its own, hand it to a human
+  // (an "escalation" HITL: help & resume, reassign, or stop) instead of spinning
+  // or failing silently. The agent can also escalate itself at any time.
+  //   • runMaxFailures: after this many failed attempts on the SAME run, escalate
+  //     instead of parking it in `review`. >0 enables (default 3); 0 disables.
+  //   • runStuckMs: a run actively `running` this long (ms) without finishing is
+  //     escalated as "too long". 0 (default) disables — the runner already has a
+  //     hard wall-clock cap (SKYNET_RUNNER_MAX_RUNTIME_MS); set this BELOW that to
+  //     get a soft, human-recoverable escalation before the hard fail.
+  runMaxFailures: Number(process.env.SKYNET_RUN_MAX_FAILURES ?? 3),
+  runStuckMs: Number(process.env.SKYNET_RUN_STUCK_MS ?? 0),
   // Expose the local folder browser (/api/fs/list) so the desktop UI can offer a
   // folder *picker* for connecting a project to a local repo. Local-only: it
   // reveals the server machine's filesystem, so it's ON only outside production
