@@ -27,11 +27,32 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { githubService } from "../github/index.js";
 import { secretService } from "../secrets/index.js";
-import type { Store } from "../store/store.js";
 
 export interface ChatTurn {
   role: "user" | "assistant";
   content: string;
+}
+
+/** The narrow data access Steward needs to ground an answer — satisfied by both
+ *  the full Store and Operations, so either surface (web or Telegram) can call it. */
+export interface StewardData {
+  listTasks(workspaceId: string): Promise<Task[]>;
+  listRuns(workspaceId: string): Promise<TaskRun[]>;
+}
+
+/** Pick the single project a message is about — a case-insensitive match of a
+ *  project's name in the text — but only when it has a LOCAL checkout, since that's
+ *  what the repo tool-loop reads. Returns null when zero or MORE THAN ONE match
+ *  (ambiguous → fall back to workspace-wide grounding). Pure. */
+export function resolveFocusedProject<P extends { name: string; repoPath?: string | null }>(
+  text: string,
+  projects: P[],
+): P | null {
+  const hay = (text ?? "").toLowerCase();
+  const hits = projects.filter(
+    (p) => !!p.repoPath && p.name.trim().length > 0 && hay.includes(p.name.trim().toLowerCase()),
+  );
+  return hits.length === 1 ? hits[0]! : null;
 }
 
 const STAGES: Task["state"][] = ["backlog", "triage", "todo", "ongoing", "review", "done"];
@@ -307,7 +328,7 @@ export type StewardCall = { repo: boolean; prompt: string; cwd?: string; apiKey?
  *  surfaces build the prompt + pick the repo tool-loop vs prefetch path, so they
  *  get identical repo access. */
 export async function prepareStewardCall(
-  store: Store,
+  store: StewardData,
   opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
 ): Promise<StewardCall> {
   const { workspaceId, project, question } = opts;
@@ -347,7 +368,7 @@ export async function prepareStewardCall(
  * out any confirm-first proposed action. The shared brain both surfaces call.
  */
 export async function askSteward(
-  store: Store,
+  store: StewardData,
   opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
 ): Promise<{ reply: string; action: AssistantAction | null }> {
   const c = await prepareStewardCall(store, opts);
@@ -361,7 +382,7 @@ export async function askSteward(
  *  web "Ask about this project" panel renders it live. Display-only: proposed
  *  actions come from the accumulating {@link askSteward}. */
 export async function* askStewardStream(
-  store: Store,
+  store: StewardData,
   opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
 ): AsyncGenerator<string> {
   const c = await prepareStewardCall(store, opts);

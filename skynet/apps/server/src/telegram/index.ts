@@ -30,6 +30,7 @@ import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
 import type { Orchestrator } from "../orchestrator.js";
 import { prefetchProjectDocs } from "../project-assistant.js";
+import { askSteward, resolveFocusedProject, type ChatTurn } from "../steward/assistant.js";
 import { TelegramClient } from "./client.js";
 import { decide } from "./commands.js";
 import {
@@ -319,6 +320,32 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     //    not duplicated into RECENT CONVERSATION.
     const priorHistory = [...(history.get(chatId) ?? [])];
     pushHistory(chatId, { role: "owner", text });
+
+    // 3a. Repo-grounded answer for a FOCUSED project — a project named in the
+    //     message that has a LOCAL checkout. Steward reads its working tree via the
+    //     same read-only tool-loop (Read/Grep/Glob) the in-app assistant uses, so
+    //     Telegram gets identical repo access. A question answers here; a change
+    //     request (Steward proposes an action) falls through to the workspace
+    //     action path below. Best-effort — if the tool-loop can't run (no Claude
+    //     key / SDK), we fall through so the workspace path handles it.
+    try {
+      const focus = resolveFocusedProject(text, await operations.listProjects(ws));
+      if (focus) {
+        const turns: ChatTurn[] = priorHistory.map((h) => ({
+          role: h.role === "owner" ? "user" : "assistant",
+          content: h.text,
+        }));
+        const res = await askSteward(operations, { workspaceId: ws, project: focus, question: text, history: turns });
+        if (res.reply && !res.action) {
+          pushHistory(chatId, { role: "assistant", text: res.reply });
+          await notify(res.reply);
+          return;
+        }
+      }
+    } catch (err) {
+      log(`focused repo answer unavailable (${(err as Error).message}) — using workspace path`);
+    }
+
     const [ctx, docs] = await Promise.all([buildContext(operations, ws), gatherProjectDocs(operations, ws)]);
     const raw = await orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx, priorHistory, docs));
     if (raw == null) {
