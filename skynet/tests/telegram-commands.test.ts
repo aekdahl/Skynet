@@ -306,3 +306,79 @@ describe("createOwnerControl — conversational memory", () => {
     expect(secondContext).toContain("t-convo-2");
   });
 });
+
+// Regression: the Telegram bridge must scope to the SAME workspace the web/admin
+// uses (config.adminWorkspace when set, else DEFAULT_WORKSPACE). Before this fix,
+// it was hardcoded to DEFAULT_WORKSPACE — so when a deployer set e.g.
+// SKYNET_ADMIN_WORKSPACE=skynet (as the GCP setup.sh does), projects created in
+// the web landed in "skynet" while Telegram read from "cyberdyne" and appeared
+// empty. Pin the injected `ws` reaches every ops call.
+describe("createOwnerControl — workspace scoping (regression)", () => {
+  it("passes the injected ws through to every operations call, not DEFAULT_WORKSPACE", async () => {
+    const listHitl = vi.fn(async () => []);
+    const listRuns = vi.fn(async () => []);
+    const listProjects = vi.fn(async () => []);
+    const listTasks = vi.fn(async () => []);
+    const listAgents = vi.fn(async () => []);
+    const listProviders = vi.fn(async () => []);
+    const resolveHitl = vi.fn(async () => ({}) as never);
+    const operations = {
+      listHitl, listRuns, listProjects, listTasks, listAgents, listProviders, resolveHitl,
+      createTask: vi.fn(), assignTask: vi.fn(), archiveTask: vi.fn(),
+      createProject: vi.fn(), configureRunner: vi.fn(),
+    } as unknown as ControlOps;
+    const orchestrator = {
+      consult: vi.fn(async () => JSON.stringify({ reply: "ok", action: null })),
+      stopAll: vi.fn(), setPaused: vi.fn(), isPaused: () => false,
+    } as unknown as ControlOrch;
+
+    const { handle } = createOwnerControl({
+      controlEnabled: true,
+      ownerChatId: OWNER,
+      operations,
+      orchestrator,
+      notify: async () => undefined,
+      onQuit: () => undefined,
+      ws: "custom-ws", // ← the fix: bridge scopes here, not DEFAULT_WORKSPACE
+    });
+
+    // A conversational turn calls buildContext (listHitl/Projects/Tasks/Agents/
+    // Providers) and gatherProjectDocs (listProjects). listRuns isn't in the
+    // conversational path today — assert on the ones actually invoked.
+    void listRuns; // referenced above to satisfy the shape; not called by handle
+    await handle(OWNER, "what's the status?");
+
+    for (const fn of [listHitl, listProjects, listTasks, listAgents, listProviders]) {
+      expect(fn).toHaveBeenCalled();
+      for (const call of fn.mock.calls) expect(call[0]).toBe("custom-ws");
+    }
+  });
+
+  it("defaults to DEFAULT_WORKSPACE only when no ws is injected", async () => {
+    const listHitl = vi.fn(async () => []);
+    const operations = {
+      listHitl, listRuns: vi.fn(async () => []), listProjects: vi.fn(async () => []),
+      listTasks: vi.fn(async () => []), listAgents: vi.fn(async () => []),
+      listProviders: vi.fn(async () => []),
+      resolveHitl: vi.fn(async () => ({}) as never),
+      createTask: vi.fn(), assignTask: vi.fn(), archiveTask: vi.fn(),
+      createProject: vi.fn(), configureRunner: vi.fn(),
+    } as unknown as ControlOps;
+    const orchestrator = {
+      consult: vi.fn(async () => JSON.stringify({ reply: "ok", action: null })),
+      stopAll: vi.fn(), setPaused: vi.fn(), isPaused: () => false,
+    } as unknown as ControlOrch;
+
+    const { handle } = createOwnerControl({
+      controlEnabled: true,
+      ownerChatId: OWNER,
+      operations,
+      orchestrator,
+      notify: async () => undefined,
+      onQuit: () => undefined,
+      // no ws — should default
+    });
+    await handle(OWNER, "status");
+    expect(listHitl.mock.calls[0]?.[0]).toBe("cyberdyne"); // DEFAULT_WORKSPACE
+  });
+});
