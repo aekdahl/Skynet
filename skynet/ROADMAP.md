@@ -168,7 +168,7 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   chat + resolve; optional "also remember" promotes the note to area/workspace memory (v4) so future
   agents inherit it too. Audited via existing streams.
 - [ ] Real **live-preview** pipeline (sandboxed per-branch URLs).
-- [ ] **🔗 Per-project live preview — "see what it builds", any software.** Today's W5 preview is
+- [~] **🔗 Per-project live preview — "see what it builds", any software.** Today's W5 preview is
   per-agent-*branch* and effectively static/web. Generalize to a **stable per-project preview of the
   integration branch** that handles any software, not just SPAs. **Proposed approach:**
   - **A per-project preview descriptor** — `.skynet/preview.json` in the repo (auto-detected defaults
@@ -193,12 +193,18 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     **refreshes as the fleet merges** (dev-server HMR, or debounced rebuild + soft reload) so a human
     verifying agents watches the app change live. Opens **split-screen** beside the board or as a
     **pop-out modal**, with device-frame, a URL bar, freshness, logs, and manual restart/refresh. A
-    per-run "Preview this change" button on a visual diff gate verifies *before* approving.
+    per-run "Preview this change" button verifies a change *before* approving its merge.
+    *(Shipped for web/sites: the split-screen dock ⇄ modal, refresh-on-merge, and the per-run
+    "▶ Preview this change" button — the run's branch, pinned, pre-merge.)*
   - **Agent-assisted start:** the recipe resolves descriptor → heuristic → the **repo-aware assistant**
     (the same BYOK agent behind "Ask about this project" / Telegram) proposing + starting the preview.
-  - Full design + phasing: **[docs/live-preview.md](docs/live-preview.md)**. Phase 1 (web/sites) is
-    committed; a **Phase-1 v0** (project preview manager + split-screen pane + refresh-on-merge) is
-    landing now. Phases 2 (services) & 3 (command/artifacts) follow.
+  - Full design + phasing: **[docs/live-preview.md](docs/live-preview.md)**. **Phase-1 v0 (web/sites)
+    shipped:** project + per-run preview managers (detached worktrees, opt-in sandbox, free-port +
+    health-check), descriptor → heuristic → **agent-assisted** recipe resolution (proposal persisted to
+    `.skynet/preview.json`), refresh-on-merge, and the split-screen dock ⇄ modal with a
+    "▶ Preview app" (project) and "▶ Preview this change" (run) affordance. **Still to do:** Phase 2
+    (services — reverse proxy + auto-rebuild) & Phase 3 (command/artifacts, "any software"); a
+    drag-to-resize handle on the dock.
 - [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign
