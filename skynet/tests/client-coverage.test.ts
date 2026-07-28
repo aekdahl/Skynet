@@ -29,6 +29,7 @@ const ALLOW = new Set<string>([
   "browseFolder",
   "startGithubDevice", "pollGithubDevice", "fetchGithubInstallations",
   "fetchGithubInstallationRepos", "connectGithub", "disconnectGithub",
+  "fetchGithubOwners", // lists org/user owners for repo creation — needs a live remote
   "cloneProjectRepo", // clones a connected GitHub repo — needs a live remote + token
   // destructive bulk variants (the per-record paths ARE covered)
   "archiveAllAudit", "clearAudit",
@@ -52,6 +53,10 @@ const ALLOW = new Set<string>([
   "login",
   // read-only doc render for the Roadmap page — no operator journey to exercise
   "fetchRoadmap",
+  // repo-aware project chat (status + repo content + propose-a-task) — needs a
+  // live provider key and a real repo to ground against, so there's no offline
+  // journey; the parse contract is covered by project-assistant.test.ts
+  "projectChat",
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",

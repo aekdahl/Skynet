@@ -356,14 +356,23 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
 // (the assistant reads files like ROADMAP.md). Uses the same general-purpose
 // LLM as the rest of Skynet, via POST /api/projects/:id/chat.
 
-type AsstMsg = { role: "user" | "assistant"; content: string };
+// `action` carries a project/task change the assistant offered; the operator
+// confirms (or dismisses) via a chip under the message — mirrors Telegram's
+// confirm-before-execute. `actionState` tracks the chip once acted on.
+type AsstMsg = {
+  role: "user" | "assistant";
+  content: string;
+  action?: api.AssistantAction;
+  actionState?: "pending" | "done" | "dismissed";
+};
 const ASSISTANT_SUGGESTIONS = [
   "What's the current status of this project?",
   "Summarize the roadmap",
-  "What's blocked or waiting on me?",
+  "Add a task to write onboarding docs",
 ];
 
 function ProjectAssistant({ projectId }: { projectId: string }) {
+  const { createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject } = useStore();
   const [open, setOpen] = useState(false);
   const [msgs, setMsgs] = useState<AsstMsg[]>([]);
   const [input, setInput] = useState("");
@@ -393,7 +402,9 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
     setMsgs((m) => {
       const next = m.slice();
       const last = next[next.length - 1];
-      if (last && last.role === "assistant") next[next.length - 1] = { role: "assistant", content };
+      // Preserve any proposed action attached to the bubble while the reveal loop
+      // fills in its text.
+      if (last && last.role === "assistant") next[next.length - 1] = { ...last, content };
       return next;
     });
 
@@ -417,8 +428,9 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
     const question = q.trim();
     if (!question || busy) return;
     setErr(null);
-    const history = msgs.slice();
-    // Add the operator line + an empty assistant bubble the stream fills in-place.
+    // Strip any attached action fields from history — the API takes plain turns.
+    const history = msgs.slice().map(({ role, content }) => ({ role, content }));
+    // Add the operator line + an empty assistant bubble the reveal loop fills in.
     setMsgs([...msgs, { role: "user", content: question }, { role: "assistant", content: "" }]);
     setInput("");
     setBusy(true);
@@ -429,10 +441,22 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
     if (timerRef.current) clearTimeout(timerRef.current);
     tick();
     try {
-      await api.streamProjectChat(projectId, question, history, (chunk) => {
-        targetRef.current += chunk;
-        if (timerRef.current === null) tick(); // loop had caught up and parked — restart it
-      });
+      // Non-streaming so we also get any proposed action (confirm-first). The
+      // reply is fed into the reveal loop to animate in-place, and the action (if
+      // any) is attached to the same assistant bubble.
+      const { reply, action } = await api.projectChat(projectId, question, history);
+      targetRef.current = reply;
+      if (timerRef.current === null) tick(); // loop had parked — restart it
+      if (action) {
+        setMsgs((m) => {
+          const next = m.slice();
+          const last = next[next.length - 1];
+          if (last && last.role === "assistant")
+            next[next.length - 1] = { ...last, action, actionState: "pending" as const };
+          return next;
+        });
+      }
+
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't reach the assistant — try again.");
       // Drop the assistant bubble on failure if nothing was received.
@@ -443,19 +467,53 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
     }
   };
 
+  // Execute a confirmed action via the SAME guarded store methods the board uses
+  // (transitionTask enforces legal moves; updateProject/updateTask are validated
+  // server-side). The assistant only ever proposes — nothing runs without this.
+  const runAction = async (a: api.AssistantAction): Promise<void> => {
+    switch (a.kind) {
+      case "add_task": return createTask(projectId, a.text ?? "");
+      case "move_task": return transitionTask(projectId, a.taskId!, a.to!);
+      case "rename_task": return updateTask(projectId, a.taskId!, { text: a.text });
+      case "set_task_desc": return updateTask(projectId, a.taskId!, { description: a.description });
+      case "remove_task": return deleteTask(projectId, a.taskId!);
+      case "reorder_task": return moveTask(projectId, a.taskId!, a.direction!);
+      case "rename_project": return updateProject(projectId, { name: a.name });
+      case "set_goal": return updateProject(projectId, { goal: a.goal });
+      case "set_autonomy": return updateProject(projectId, { autonomy: a.autonomy });
+      case "set_status": return updateProject(projectId, { status: a.status });
+    }
+  };
+
+  // Confirm (or dismiss) a proposed action.
+  const resolveAction = async (idx: number, accept: boolean) => {
+    const msg = msgs[idx];
+    if (!msg?.action || msg.actionState !== "pending") return;
+    if (!accept) {
+      setMsgs((m) => m.map((x, i) => (i === idx ? { ...x, actionState: "dismissed" } : x)));
+      return;
+    }
+    try {
+      await runAction(msg.action);
+      setMsgs((m) => m.map((x, i) => (i === idx ? { ...x, actionState: "done" } : x)));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't apply that — try again.");
+    }
+  };
+
   return (
     <div className="proj-assistant">
       <button className="proj-assistant-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <span className="fold-caret">{open ? "▾" : "▸"}</span>
         <span className="proj-assistant-title">ASK ABOUT THIS PROJECT</span>
-        <span className="proj-assistant-sub">status &amp; repo content · reads files like ROADMAP.md</span>
+        <span className="proj-assistant-sub">status &amp; repo content · reads files like ROADMAP.md · manages tasks &amp; project settings</span>
       </button>
       {open && (
         <div className="proj-assistant-body">
           <div className="proj-assistant-thread" ref={threadRef}>
             {msgs.length === 0 && (
               <div className="asst-welcome">
-                <p>Ask about this project’s current status, or what’s in the repository.</p>
+                <p>Ask about this project’s status or repository — or tell me to add, move, rename tasks, or change project settings. I’ll confirm before anything changes.</p>
                 <div className="asst-sugg">
                   {ASSISTANT_SUGGESTIONS.map((s) => (
                     <button key={s} className="asst-chip" onClick={() => void ask(s)}>{s}</button>
@@ -476,6 +534,27 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
                   )
                 ) : (
                   <div className="asst-text">{m.content}</div>
+                )}
+                {m.action && (
+                  <div className="asst-propose">
+                    {m.actionState === "done" ? (
+                      <span className="asst-propose-done">✓ {m.action.summary}</span>
+                    ) : m.actionState === "dismissed" ? (
+                      <span className="asst-propose-done muted">Dismissed: {m.action.summary}</span>
+                    ) : (
+                      <>
+                        <span className="asst-propose-label">{m.action.summary}</span>
+                        <span className="asst-propose-actions">
+                          <button className="btn btn-primary btn-sm" onClick={() => void resolveAction(i, true)}>
+                            Confirm
+                          </button>
+                          <button className="btn btn-ghost btn-sm" onClick={() => void resolveAction(i, false)}>
+                            Dismiss
+                          </button>
+                        </span>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
             ))}

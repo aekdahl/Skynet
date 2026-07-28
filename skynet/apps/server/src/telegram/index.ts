@@ -29,6 +29,7 @@ import type { config as Config } from "../config.js";
 import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
 import type { Orchestrator } from "../orchestrator.js";
+import { prefetchProjectDocs } from "../project-assistant.js";
 import { TelegramClient } from "./client.js";
 import { decide } from "./commands.js";
 import {
@@ -43,6 +44,28 @@ import {
 } from "./intent.js";
 
 const log = (line: string): void => console.log(`[telegram] ${line}`);
+
+// Repo grounding for the conversational assistant: prefetch each project's key
+// docs + file tree so the owner can ask about roadmap items, features, or bugs
+// over Telegram. Bounded hard — Telegram context is workspace-wide, so we trim
+// each doc small and cap the total, and skip projects with no repo bound.
+const TG_DOC_PER_DOC_CHARS = 2500;
+const TG_DOC_TOTAL_CAP = 12000;
+
+async function gatherProjectDocs(
+  operations: Pick<ControlOps, "listProjects">,
+  ws: string,
+): Promise<string> {
+  const projects = await operations.listProjects(ws).catch(() => [] as Project[]);
+  let out = "";
+  for (const p of projects) {
+    if (out.length >= TG_DOC_TOTAL_CAP) break;
+    if (!p.repo && !p.repoPath) continue;
+    const docs = await prefetchProjectDocs(ws, p, TG_DOC_PER_DOC_CHARS).catch(() => "");
+    if (docs) out += `\n\n### PROJECT ${p.name} (${p.id})${docs}`;
+  }
+  return out.slice(0, TG_DOC_TOTAL_CAP);
+}
 
 /** Exit code the desktop main (main.cjs) treats as an intentional remote quit. */
 const REMOTE_SHUTDOWN_CODE = 42;
@@ -296,8 +319,8 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     //    not duplicated into RECENT CONVERSATION.
     const priorHistory = [...(history.get(chatId) ?? [])];
     pushHistory(chatId, { role: "owner", text });
-    const ctx = await buildContext(operations, ws);
-    const raw = await orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx, priorHistory));
+    const [ctx, docs] = await Promise.all([buildContext(operations, ws), gatherProjectDocs(operations, ws)]);
+    const raw = await orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx, priorHistory, docs));
     if (raw == null) {
       await notify(
         "Conversational control needs an Anthropic (Claude) key to interpret messages — set ANTHROPIC_API_KEY (or add a Claude agent), then retry. Meanwhile you can add a backlog item with: /task <text>",
@@ -529,8 +552,8 @@ export async function simulateConversational(
   text: string,
 ): Promise<{ reply: string | null; action: Action | null; error?: string }> {
   const ws = deps.ws ?? DEFAULT_WORKSPACE;
-  const ctx = await buildContext(deps.operations, ws);
-  const raw = await deps.orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx));
+  const [ctx, docs] = await Promise.all([buildContext(deps.operations, ws), gatherProjectDocs(deps.operations, ws)]);
+  const raw = await deps.orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx, undefined, docs));
   if (raw == null) return { reply: null, action: null, error: "no-llm" };
   const { reply, action } = parseResponse(raw, ctx);
   return { reply, action };

@@ -375,8 +375,8 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
             .slice(-16)
         : undefined;
       try {
-        const answer = await ops.projectAssistant(ws(req), req.params.id, question, history);
-        return { reply: answer };
+        const { reply, action } = await ops.projectAssistant(ws(req), req.params.id, question, history);
+        return { reply, action };
       } catch (err) {
         return fail(reply, err);
       }
