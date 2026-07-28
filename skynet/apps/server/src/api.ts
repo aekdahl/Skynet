@@ -33,7 +33,7 @@ import {
 import { CommandDeniedError } from "./command-safety.js";
 import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import { NotFoundError, type Operations, RunnerBusyError } from "./operations.js";
-import type { ChatTurn } from "./project-assistant.js";
+import { MAX_HISTORY, type ChatTurn } from "./project-assistant.js";
 import { simulateConversational } from "./telegram/index.js";
 import { simulationGrade } from "./simulation/grade.js";
 
@@ -372,7 +372,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       const history = Array.isArray(req.body?.history)
         ? req.body!.history
             .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
-            .slice(-16)
+            .slice(-MAX_HISTORY)
         : undefined;
       try {
         const { reply, action, actions } = await ops.projectAssistant(ws(req), req.params.id, question, history);
@@ -394,7 +394,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       const history = Array.isArray(req.body?.history)
         ? req.body!.history
             .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
-            .slice(-16)
+            .slice(-MAX_HISTORY)
         : undefined;
       // Validate the project exists / is ours before taking over the socket.
       try {

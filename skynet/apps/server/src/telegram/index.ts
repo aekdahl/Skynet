@@ -41,6 +41,7 @@ import {
   askSteward,
   resolveFocusedProject,
   parseConfirmation,
+  MAX_HISTORY,
   type ChatTurn,
   type AssistantAction,
 } from "../steward/assistant.js";
@@ -111,9 +112,11 @@ const HELP =
   ].join("\n");
 
 
-/** Rolling per-chat conversation buffer cap (turns). Oldest dropped past this.
- *  Short by design — enough to resolve immediate back-references, no more. */
-const HISTORY_CAP = 8;
+/** Rolling per-chat conversation buffer cap (turns; each owner/assistant message
+ *  is one). Kept in step with Steward's MAX_HISTORY so the buffer feeds the full
+ *  window the prompt can use — Steward shouldn't "forget" after a few messages.
+ *  In-memory + owner-scoped + cleared on restart, so a larger buffer is cheap. */
+const HISTORY_CAP = MAX_HISTORY;
 
 // ── Narrow dependency slices (so the confirm state machine is unit-testable) ──
 

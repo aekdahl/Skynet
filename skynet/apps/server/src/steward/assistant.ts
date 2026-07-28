@@ -63,7 +63,14 @@ const STAGES: Task["state"][] = ["backlog", "triage", "todo", "ongoing", "review
 // Docs worth prefetching for a GitHub-only project, in priority order.
 const KEY_DOCS = ["README.md", "ROADMAP.md", "docs/ROADMAP.md", "AGENTS.md", "CLAUDE.md"];
 const MAX_DOC_CHARS = 8000;
-const MAX_HISTORY = 8;
+// Conversation memory carried into the prompt. Kept generous so Steward doesn't
+// "forget" after a few turns; bounded by BOTH a turn cap AND a total character
+// budget, with any single overlong turn clipped, so long chats never blow up the
+// prompt. `MAX_HISTORY` is exported so the API route caps client-sent history to
+// the same window (no point shipping more than the prompt will use).
+export const MAX_HISTORY = 40; // conversation turns (each user/assistant message = 1)
+const MAX_TURN_CHARS = 1500; // clip a single overlong message
+const MAX_CONVO_CHARS = 16000; // total budget for the CONVERSATION SO FAR block
 
 const SYSTEM =
   "You are Steward, the repo-aware project assistant for a Skynet workspace — you help the operator understand the CURRENT STATUS and CONTENT of one project, and you can perform project & task actions on request. " +
@@ -344,11 +351,26 @@ function statusContext(project: Project, tasks: Task[], runs: TaskRun[]): string
   return lines.join("\n");
 }
 
+/** Render recent conversation for the prompt: keep the most recent turns within
+ *  BOTH the turn cap and a total character budget (walk newest→oldest, then emit
+ *  chronologically), clipping any single overlong message. Long chats retain far
+ *  more context than a flat slice while the block stays bounded. */
+function renderHistory(history: ChatTurn[]): string {
+  const clip = (s: string) => (s.length > MAX_TURN_CHARS ? s.slice(0, MAX_TURN_CHARS - 1) + "…" : s);
+  const picked: string[] = [];
+  let used = 0;
+  for (const t of history.slice(-MAX_HISTORY).reverse()) {
+    const line = `${t.role === "user" ? "Operator" : "Assistant"}: ${clip(t.content)}`;
+    // Always keep at least the most recent turn, even if it alone exceeds budget.
+    if (picked.length > 0 && used + line.length + 1 > MAX_CONVO_CHARS) break;
+    picked.push(line);
+    used += line.length + 1;
+  }
+  return picked.reverse().join("\n");
+}
+
 function buildPrompt(context: string, docs: string, history: ChatTurn[], question: string): string {
-  const convo = history
-    .slice(-MAX_HISTORY)
-    .map((t) => `${t.role === "user" ? "Operator" : "Assistant"}: ${t.content}`)
-    .join("\n");
+  const convo = renderHistory(history);
   return [
     SYSTEM,
     "",

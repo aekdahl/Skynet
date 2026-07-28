@@ -12,6 +12,7 @@ export type {
   StewardCall,
 } from "./steward/assistant.js";
 export {
+  MAX_HISTORY,
   prefetchProjectDocs,
   validateProjectAction,
   splitProposedAction,
