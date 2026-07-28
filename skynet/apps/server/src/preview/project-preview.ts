@@ -14,7 +14,7 @@
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { get as httpGet } from "node:http";
 import { join, resolve } from "node:path";
@@ -145,6 +145,8 @@ export class ProjectPreviewManager {
     port: number,
     projectId: string,
     workspaceId?: string,
+    repoPath?: string,
+    log?: (line: string) => void,
   ): Promise<PreviewRecipe | null> {
     const cached = this.agentRecipe.get(projectId);
     if (cached) return { cmd: cached.cmd, port, source: "agent" };
@@ -156,7 +158,28 @@ export class ProjectPreviewManager {
     const cmd = await this.askAgentForRecipe(dir, apiKey);
     if (!cmd) return null;
     this.agentRecipe.set(projectId, { cmd });
+    // Persist the proposal to the operator's repo so it becomes the deterministic
+    // descriptor — reviewable, editable, and (once committed) used everywhere
+    // without re-asking. Never clobber a descriptor a human already wrote.
+    if (repoPath) await this.persistRecipe(repoPath, cmd, log);
     return { cmd, port, source: "agent" };
+  }
+
+  /** Write the agent's proposal to `<repo>/.skynet/preview.json` (if absent) so
+   *  a human can review + commit it; committing makes it the descriptor. */
+  private async persistRecipe(repoPath: string, cmd: string, log?: (line: string) => void): Promise<void> {
+    const descPath = join(repoPath, ".skynet", "preview.json");
+    if (existsSync(descPath)) return; // respect an existing human-authored descriptor
+    try {
+      await mkdir(join(repoPath, ".skynet"), { recursive: true });
+      await writeFile(
+        descPath,
+        JSON.stringify({ dev: cmd, _note: "Proposed by the Skynet preview assistant — edit or commit to keep." }, null, 2) + "\n",
+      );
+      log?.(`wrote .skynet/preview.json (dev: ${cmd}) — commit it to make this the default preview command`);
+    } catch (err) {
+      log?.(`couldn't write .skynet/preview.json: ${(err as Error).message}`);
+    }
   }
 
   /** Ask the repo-aware assistant to propose a dev/serve command as strict JSON.
@@ -246,7 +269,7 @@ export class ProjectPreviewManager {
       if (this.previews.get(projectId) === p && !this.resolveRecipeStatic(p.dir, port) && !this.agentRecipe.has(projectId)) {
         this.log(p, "no dev/start script found — asking the assistant how to run this project…");
       }
-      const recipe = await this.resolveRecipe(p.dir, port, projectId, workspaceId);
+      const recipe = await this.resolveRecipe(p.dir, port, projectId, workspaceId, repoPath, (l) => this.log(p, l));
       if (this.previews.get(projectId) !== p) return this.state(projectId); // superseded during async resolve
       if (!recipe) {
         p.status = "failed";

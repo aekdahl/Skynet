@@ -707,9 +707,12 @@ function LivePreviewModal({
   const [device, setDevice] = useState<string>("Desktop");
   const [showLogs, setShowLogs] = useState(false);
   const [nonce, setNonce] = useState(0); // bump to reload the iframe
+  // Split-screen dock (default — watch the board + the app together) vs a
+  // full-bleed modal. Dock reserves board space via a root class (see CSS).
+  const [mode, setMode] = useState<"dock" | "modal">("dock");
   const startedRef = useRef(false);
 
-  // Start on open (once), then poll status while the modal is mounted.
+  // Start on open (once), then poll status while the pane is mounted.
   useEffect(() => {
     let alive = true;
     const tick = async () => {
@@ -728,12 +731,19 @@ function LivePreviewModal({
     };
   }, [projectId]);
 
+  // Reserve right-hand board space while docked (removed on close / when modal).
+  useEffect(() => {
+    const root = document.documentElement;
+    if (mode === "dock") root.classList.add("lp-docked");
+    else root.classList.remove("lp-docked");
+    return () => root.classList.remove("lp-docked");
+  }, [mode]);
+
   const width = DEVICES[device];
   const live = st?.status === "live" && st.url;
 
-  return (
-    <div className="lp-backdrop" onClick={onClose}>
-      <div className="lp-modal" onClick={(e) => e.stopPropagation()}>
+  const inner = (
+      <div className={"lp-modal lp-mode-" + mode} onClick={(e) => e.stopPropagation()}>
         <div className="lp-bar">
           <span className="lp-title">Live preview · {projectName}</span>
           <span className={"lp-status lp-status-" + (st?.status ?? "idle")}>
@@ -746,6 +756,9 @@ function LivePreviewModal({
               <button key={d} className={"lp-dev" + (d === device ? " on" : "")} onClick={() => setDevice(d)}>{d}</button>
             ))}
           </div>
+          <button className="btn btn-ghost btn-sm" onClick={() => setMode((m) => (m === "dock" ? "modal" : "dock"))} title={mode === "dock" ? "Expand to full screen" : "Dock beside the board"}>
+            {mode === "dock" ? "⤢ Expand" : "⇔ Dock"}
+          </button>
           <button className="btn btn-ghost btn-sm" onClick={() => setNonce((n) => n + 1)} title="Reload the app in the frame">↻ Reload</button>
           <button className="btn btn-ghost btn-sm" onClick={() => { startedRef.current = false; void api.previewRestart(projectId).then(setSt); }} title="Restart the preview server">⟳ Restart</button>
           <button className="btn btn-ghost btn-sm" onClick={() => { setShowLogs((s) => !s); }}>Logs</button>
@@ -781,6 +794,13 @@ function LivePreviewModal({
           )}
         </div>
       </div>
-    </div>
+  );
+
+  // Modal dims the board behind it; dock sits beside it (no backdrop) so the
+  // operator can keep working while the app updates live.
+  return mode === "modal" ? (
+    <div className="lp-backdrop" onClick={onClose}>{inner}</div>
+  ) : (
+    <div className="lp-dock">{inner}</div>
   );
 }
