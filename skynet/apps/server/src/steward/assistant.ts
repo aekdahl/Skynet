@@ -55,6 +55,10 @@ export function resolveFocusedProject<P extends { name: string; repoPath?: strin
   return hits.length === 1 ? hits[0]! : null;
 }
 
+// Confirmation parsing lives in @skynet/shared so the web client shares one source
+// of truth with the server; re-exported here for the Telegram surface and tests.
+export { parseConfirmation, type Confirmation } from "@skynet/shared";
+
 const STAGES: Task["state"][] = ["backlog", "triage", "todo", "ongoing", "review", "done"];
 // Docs worth prefetching for a GitHub-only project, in priority order.
 const KEY_DOCS = ["README.md", "ROADMAP.md", "docs/ROADMAP.md", "AGENTS.md", "CLAUDE.md"];
@@ -65,7 +69,7 @@ const SYSTEM =
   "You are Steward, the repo-aware project assistant for a Skynet workspace — you help the operator understand the CURRENT STATUS and CONTENT of one project, and you can perform project & task actions on request. " +
   "Answer conversationally and concisely. Ground every answer in the PROJECT STATUS below, and when the question is about the code or docs, in the repository content (open files such as ROADMAP.md / README.md as needed). " +
   "If a file or fact isn't available to you, say so plainly — never invent repo content or project state.\n" +
-  'ACTIONS: ONLY when the operator is clearly asking you to CHANGE something, append as the FINAL line a JSON object exactly {"proposeAction": <one action object>} and nothing after it — the operator confirms before it runs. Never include it for questions, summaries, or chat, and never more than one. ' +
+  'ACTIONS: ONLY when the operator is clearly asking you to CHANGE something, append as the FINAL line a JSON object exactly {"proposeActions": [<one or more action objects>]} and nothing after it — the operator confirms before anything runs. Propose SEVERAL actions when the operator asks for several changes at once (e.g. "add these three tasks"); they can accept them all with one reply. Never include it for questions, summaries, or chat. ' +
   "Use the task ids from PROJECT STATUS (each task is listed as `[id] text`); if a request references a task that isn't listed, ask instead of guessing. Valid action objects:\n" +
   '  {"kind":"add_task","text":"<title>","description":"<optional — the full brief the agent gets>"}\n' +
   '  {"kind":"move_task","taskId":"<id>","to":"backlog|triage|todo|ongoing|review|done"}\n' +
@@ -274,6 +278,46 @@ export function splitProposedAction(
   return { reply: trimmed, action: null };
 }
 
+/**
+ * PURE: like {@link splitProposedAction} but returns a LIST — the model may append
+ * `{"proposeActions": [<action>, ...]}` when the operator asked for several changes
+ * at once (the operator can "accept all"). Back-compat: a single
+ * `{"proposeAction": <action>}` is treated as a one-element list. Invalid actions
+ * are dropped; the JSON tail is always stripped from the shown reply.
+ */
+export function splitProposedActions(
+  text: string,
+  ctx: ProjectActionContext,
+): { reply: string; actions: AssistantAction[] } {
+  const trimmed = (text ?? "").trim();
+  const body = trimmed.replace(/\n?```\s*$/, "").trimEnd();
+  const found = lastTopLevelObject(body);
+  if (!found) return { reply: trimmed, actions: [] };
+  try {
+    const obj = JSON.parse(found.json) as Record<string, unknown>;
+    const has = obj && typeof obj === "object" && ("proposeActions" in obj || "proposeAction" in obj);
+    if (has) {
+      const raw = "proposeActions" in obj ? obj.proposeActions : [obj.proposeAction];
+      const list = Array.isArray(raw) ? raw : [raw];
+      const actions = list
+        .map((a) => validateProjectAction(a, ctx))
+        .filter((a): a is AssistantAction => a !== null);
+      const stripped = body.slice(0, found.start).replace(/```[a-zA-Z]*\s*$/, "").trim();
+      const reply = stripped
+        ? stripped
+        : actions.length === 1
+          ? `Want me to ${actions[0]!.summary[0]!.toLowerCase()}${actions[0]!.summary.slice(1)}?`
+          : actions.length > 1
+            ? `Want me to make these ${actions.length} changes?`
+            : "Hmm — I couldn't map that to something on this board.";
+      return { reply, actions };
+    }
+  } catch {
+    /* not a JSON tail — the whole answer is the reply */
+  }
+  return { reply: trimmed, actions: [] };
+}
+
 function statusContext(project: Project, tasks: Task[], runs: TaskRun[]): string {
   const lines: string[] = [
     `PROJECT: ${project.name}`,
@@ -370,12 +414,15 @@ export async function prepareStewardCall(
 export async function askSteward(
   store: StewardData,
   opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
-): Promise<{ reply: string; action: AssistantAction | null }> {
+): Promise<{ reply: string; action: AssistantAction | null; actions: AssistantAction[] }> {
   const c = await prepareStewardCall(store, opts);
   const answer = c.repo
     ? await oneShotRepoAssistant({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey })
     : await oneShotText({ prompt: c.prompt, apiKey: c.apiKey });
-  return splitProposedAction(answer, c.actionCtx);
+  const { reply, actions } = splitProposedActions(answer, c.actionCtx);
+  // `action` is the first proposed action (back-compat with single-action callers);
+  // `actions` is the full batch the operator can "accept all".
+  return { reply, action: actions[0] ?? null, actions };
 }
 
 /** Streaming form of {@link askSteward} — yields the answer as text deltas so the

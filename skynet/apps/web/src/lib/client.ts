@@ -365,13 +365,14 @@ export interface AssistantAction {
   status?: string;
 }
 // Repo-aware project assistant — chat about the project's status + repo content,
-// and optionally propose a confirm-first project/task action.
+// and optionally propose confirm-first project/task actions. `actions` is the full
+// batch the operator can "accept all"; `action` is the first (back-compat).
 export function projectChat(
   projectId: string,
   question: string,
   history: { role: "user" | "assistant"; content: string }[],
 ) {
-  return req<{ reply: string; action?: AssistantAction | null }>(
+  return req<{ reply: string; action?: AssistantAction | null; actions?: AssistantAction[] }>(
     "POST",
     `/api/projects/${projectId}/chat`,
     { question, history },

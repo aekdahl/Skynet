@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { TaskRun, Project, Task, TaskAssignment, Agent } from "@skynet/shared";
+import { parseConfirmation } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import {
@@ -356,14 +357,16 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
 // (the assistant reads files like ROADMAP.md). Uses the same general-purpose
 // LLM as the rest of Skynet, via POST /api/projects/:id/chat.
 
-// `action` carries a project/task change the assistant offered; the operator
-// confirms (or dismisses) via a chip under the message — mirrors Telegram's
-// confirm-before-execute. `actionState` tracks the chip once acted on.
+// `actions` carries one or more project/task changes Steward offered; the operator
+// confirms (or dismisses) each via a chip under the message — or confirms them
+// conversationally by typing "yes" / "accept all" in the input (mirrors Telegram's
+// confirm-before-execute). `actionStates[k]` tracks chip k once acted on.
+type ActState = "pending" | "done" | "dismissed";
 type AsstMsg = {
   role: "user" | "assistant";
   content: string;
-  action?: api.AssistantAction;
-  actionState?: "pending" | "done" | "dismissed";
+  actions?: api.AssistantAction[];
+  actionStates?: ActState[];
 };
 const ASSISTANT_SUGGESTIONS = [
   "What's the current status of this project?",
@@ -424,10 +427,43 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
     timerRef.current = setTimeout(tick, 16);
   };
 
+  // Every still-pending proposed action in the thread, in order. `{m,a}` indexes
+  // msgs[m].actions[a]. Used for conversational confirmation ("yes" / "accept all").
+  const pendingRefs = (list: AsstMsg[]): { m: number; a: number }[] => {
+    const refs: { m: number; a: number }[] = [];
+    list.forEach((msg, m) =>
+      msg.actions?.forEach((_, a) => {
+        if ((msg.actionStates?.[a] ?? "pending") === "pending") refs.push({ m, a });
+      }),
+    );
+    return refs;
+  };
+
+  // Return a fresh actionStates array for a bubble with `states[idx]` set to `val`.
+  const withState = (states: ActState[] | undefined, len: number, idx: number, val: ActState): ActState[] => {
+    const arr = states ? states.slice() : (Array.from({ length: len }, () => "pending" as ActState));
+    arr[idx] = val;
+    return arr;
+  };
+
   const ask = async (q: string) => {
     const question = q.trim();
     if (!question || busy) return;
     setErr(null);
+
+    // Conversational confirmation: if Steward has open proposals and the operator
+    // typed "yes" / "accept all", apply them here instead of asking Steward again.
+    // "all" confirms every open proposal; "yes" confirms just the most recent one.
+    const confirm = parseConfirmation(question);
+    const pend = pendingRefs(msgs);
+    if (confirm !== "no" && pend.length > 0) {
+      const targets = confirm === "all" ? pend : [pend[pend.length - 1]!];
+      setMsgs((m) => [...m, { role: "user", content: question }]);
+      setInput("");
+      await applyConfirmed(msgs, targets);
+      return;
+    }
+
     // Strip any attached action fields from history — the API takes plain turns.
     const history = msgs.slice().map(({ role, content }) => ({ role, content }));
     // Add the operator line + an empty assistant bubble the reveal loop fills in.
@@ -441,22 +477,22 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
     if (timerRef.current) clearTimeout(timerRef.current);
     tick();
     try {
-      // Non-streaming so we also get any proposed action (confirm-first). The
-      // reply is fed into the reveal loop to animate in-place, and the action (if
-      // any) is attached to the same assistant bubble.
-      const { reply, action } = await api.projectChat(projectId, question, history);
+      // Non-streaming so we also get any proposed actions (confirm-first). The
+      // reply is fed into the reveal loop to animate in-place, and the actions (if
+      // any) are attached to the same assistant bubble as one chip each.
+      const { reply, action, actions } = await api.projectChat(projectId, question, history);
+      const acts = actions ?? (action ? [action] : []);
       targetRef.current = reply;
       if (timerRef.current === null) tick(); // loop had parked — restart it
-      if (action) {
+      if (acts.length) {
         setMsgs((m) => {
           const next = m.slice();
           const last = next[next.length - 1];
           if (last && last.role === "assistant")
-            next[next.length - 1] = { ...last, action, actionState: "pending" as const };
+            next[next.length - 1] = { ...last, actions: acts, actionStates: acts.map(() => "pending" as ActState) };
           return next;
         });
       }
-
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't reach the assistant — try again.");
       // Drop the assistant bubble on failure if nothing was received.
@@ -485,20 +521,62 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
     }
   };
 
-  // Confirm (or dismiss) a proposed action.
-  const resolveAction = async (idx: number, accept: boolean) => {
-    const msg = msgs[idx];
-    if (!msg?.action || msg.actionState !== "pending") return;
+  // Apply a batch of confirmed proposals (from a typed "yes" / "accept all"), then
+  // append a short acknowledgement. `snapshot` is msgs at confirm time so indices
+  // stay valid. Each applied chip flips to "done"; failures surface but don't abort.
+  const applyConfirmed = async (snapshot: AsstMsg[], targets: { m: number; a: number }[]) => {
+    setBusy(true);
+    let ok = 0;
+    try {
+      for (const t of targets) {
+        const act = snapshot[t.m]?.actions?.[t.a];
+        if (!act) continue;
+        try {
+          await runAction(act);
+          ok++;
+          setMsgs((m) =>
+            m.map((x, i) =>
+              i === t.m ? { ...x, actionStates: withState(x.actionStates, x.actions?.length ?? 0, t.a, "done") } : x,
+            ),
+          );
+        } catch (e) {
+          setErr(e instanceof Error ? e.message : "Couldn't apply that — try again.");
+        }
+      }
+      const label = ok === 0 ? "Nothing to apply." : ok === 1 ? "Done — applied that change." : `Done — applied ${ok} changes.`;
+      setMsgs((m) => [...m, { role: "assistant", content: label }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Confirm (or dismiss) a single proposed action chip.
+  const resolveAction = async (mIdx: number, aIdx: number, accept: boolean) => {
+    const msg = msgs[mIdx];
+    const act = msg?.actions?.[aIdx];
+    if (!act || (msg.actionStates?.[aIdx] ?? "pending") !== "pending") return;
     if (!accept) {
-      setMsgs((m) => m.map((x, i) => (i === idx ? { ...x, actionState: "dismissed" } : x)));
+      setMsgs((m) =>
+        m.map((x, i) => (i === mIdx ? { ...x, actionStates: withState(x.actionStates, x.actions!.length, aIdx, "dismissed") } : x)),
+      );
       return;
     }
     try {
-      await runAction(msg.action);
-      setMsgs((m) => m.map((x, i) => (i === idx ? { ...x, actionState: "done" } : x)));
+      await runAction(act);
+      setMsgs((m) =>
+        m.map((x, i) => (i === mIdx ? { ...x, actionStates: withState(x.actionStates, x.actions!.length, aIdx, "done") } : x)),
+      );
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't apply that — try again.");
     }
+  };
+
+  // Confirm every still-pending chip in one bubble ("Accept all" button).
+  const resolveAllIn = async (mIdx: number) => {
+    const msg = msgs[mIdx];
+    if (!msg?.actions) return;
+    const targets = msg.actions.map((_, a) => ({ m: mIdx, a })).filter((t) => (msg.actionStates?.[t.a] ?? "pending") === "pending");
+    await applyConfirmed(msgs, targets);
   };
 
   return (
@@ -535,25 +613,36 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
                 ) : (
                   <div className="asst-text">{m.content}</div>
                 )}
-                {m.action && (
-                  <div className="asst-propose">
-                    {m.actionState === "done" ? (
-                      <span className="asst-propose-done">✓ {m.action.summary}</span>
-                    ) : m.actionState === "dismissed" ? (
-                      <span className="asst-propose-done muted">Dismissed: {m.action.summary}</span>
-                    ) : (
-                      <>
-                        <span className="asst-propose-label">{m.action.summary}</span>
-                        <span className="asst-propose-actions">
-                          <button className="btn btn-primary btn-sm" onClick={() => void resolveAction(i, true)}>
-                            Confirm
-                          </button>
-                          <button className="btn btn-ghost btn-sm" onClick={() => void resolveAction(i, false)}>
-                            Dismiss
-                          </button>
-                        </span>
-                      </>
-                    )}
+                {m.actions?.map((act, a) => {
+                  const state = m.actionStates?.[a] ?? "pending";
+                  return (
+                    <div className="asst-propose" key={a}>
+                      {state === "done" ? (
+                        <span className="asst-propose-done">✓ {act.summary}</span>
+                      ) : state === "dismissed" ? (
+                        <span className="asst-propose-done muted">Dismissed: {act.summary}</span>
+                      ) : (
+                        <>
+                          <span className="asst-propose-label">{act.summary}</span>
+                          <span className="asst-propose-actions">
+                            <button className="btn btn-primary btn-sm" onClick={() => void resolveAction(i, a, true)}>
+                              Confirm
+                            </button>
+                            <button className="btn btn-ghost btn-sm" onClick={() => void resolveAction(i, a, false)}>
+                              Dismiss
+                            </button>
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+                {(m.actions?.filter((_, a) => (m.actionStates?.[a] ?? "pending") === "pending").length ?? 0) > 1 && (
+                  <div className="asst-propose asst-propose-all">
+                    <span className="asst-propose-hint mono">or reply “accept all”</span>
+                    <button className="btn btn-primary btn-sm" onClick={() => void resolveAllIn(i)}>
+                      Accept all
+                    </button>
                   </div>
                 )}
               </div>

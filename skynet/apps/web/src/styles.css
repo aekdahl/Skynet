@@ -1812,6 +1812,8 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .asst-propose-actions { display: flex; gap: 6px; }
 .asst-propose-done { font-size: 12.5px; color: var(--ok); }
 .asst-propose-done.muted { color: var(--faint); }
+.asst-propose-all { background: none; border: none; padding: 2px 2px 0; justify-content: flex-end; }
+.asst-propose-hint { font-size: 11px; color: var(--faint); flex: 1; }
 .asst-input { display: flex; gap: 8px; }
 .asst-input .qx-input { flex: 1; }
 

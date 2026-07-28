@@ -30,7 +30,7 @@ import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
 import type { Orchestrator } from "../orchestrator.js";
 import { prefetchProjectDocs } from "../project-assistant.js";
-import { askSteward, resolveFocusedProject, type ChatTurn } from "../steward/assistant.js";
+import { askSteward, resolveFocusedProject, parseConfirmation, type ChatTurn } from "../steward/assistant.js";
 import { TelegramClient } from "./client.js";
 import { decide } from "./commands.js";
 import {
@@ -97,9 +97,6 @@ const HELP =
     "I'll confirm before doing anything — reply yes to run, anything else cancels.",
   ].join("\n");
 
-/** An affirmative confirmation of a pending action. Anything else cancels. */
-const isAffirmative = (text: string): boolean =>
-  ["yes", "y", "confirm", "ok", "okay", "yep", "yeah"].includes(text.trim().toLowerCase());
 
 /** Rolling per-chat conversation buffer cap (turns). Oldest dropped past this.
  *  Short by design — enough to resolve immediate back-references, no more. */
@@ -290,7 +287,11 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     const p = pending.get(chatId);
     if (p) {
       pending.delete(chatId);
-      if (!isAffirmative(text)) {
+      // Shared confirmation vocabulary with the in-app assistant: "yes" / "accept
+      // all" / "approve" / "sure" all confirm this pending action; anything else
+      // cancels. (Telegram proposes one action per turn, so "one" and "all" both
+      // run it — batch proposals live in the in-app Steward chat.)
+      if (parseConfirmation(text) === "no") {
         await notify("Cancelled.");
         return;
       }

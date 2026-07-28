@@ -124,7 +124,7 @@ export class Operations {
     projectId: string,
     question: string,
     history?: ChatTurn[],
-  ): Promise<{ reply: string; action: AssistantAction | null }> {
+  ): Promise<{ reply: string; action: AssistantAction | null; actions: AssistantAction[] }> {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== workspaceId) throw new NotFoundError("Project");
     return answerProjectQuestion(this.store, { workspaceId, project, question, history });
