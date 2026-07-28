@@ -24,13 +24,26 @@
 
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import type { Agent, HitlItem, Project, ProviderInfo, ServerEvent, Task, TaskRun } from "@skynet/shared";
-import type { ConfigureRunnerRequest, CreateProjectRequest, CreateTaskRequest, ResolveRequest } from "@skynet/shared";
+import type {
+  ConfigureRunnerRequest,
+  CreateProjectRequest,
+  CreateTaskRequest,
+  ResolveRequest,
+  UpdateProjectRequest,
+  UpdateTaskRequest,
+} from "@skynet/shared";
 import type { config as Config } from "../config.js";
 import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
 import type { Orchestrator } from "../orchestrator.js";
 import { prefetchProjectDocs } from "../project-assistant.js";
-import { askSteward, resolveFocusedProject, parseConfirmation, type ChatTurn } from "../steward/assistant.js";
+import {
+  askSteward,
+  resolveFocusedProject,
+  parseConfirmation,
+  type ChatTurn,
+  type AssistantAction,
+} from "../steward/assistant.js";
 import { TelegramClient } from "./client.js";
 import { decide } from "./commands.js";
 import {
@@ -118,6 +131,14 @@ export interface ControlOps {
   assignTask(ws: string, projectId: string, taskId: string): Promise<TaskRun>;
   archiveTask(ws: string, projectId: string, taskId: string, archived: boolean): Promise<Task>;
   configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent>;
+  // Board mutations Steward's project actions execute over Telegram (same set the
+  // in-app assistant drives). Task ids are workspace-unique, so these take no
+  // projectId; the server validates workspace ownership.
+  transitionTask(ws: string, taskId: string, to: Task["state"], operatorId: string): Promise<Task>;
+  updateTask(ws: string, taskId: string, patch: UpdateTaskRequest): Promise<Task>;
+  moveTask(ws: string, taskId: string, direction: "up" | "down"): Promise<Task>;
+  deleteTask(ws: string, taskId: string): Promise<void>;
+  updateProject(ws: string, id: string, patch: UpdateProjectRequest): Promise<Project>;
 }
 
 /** The Orchestrator methods the control handler needs. */
@@ -146,8 +167,9 @@ interface Pending {
   summary: string;
   /** Runs the confirmed action; resolves to a short success string. */
   run: () => Promise<string>;
-  /** The action kind, for logging only (never the message contents). */
-  kind: Action["kind"];
+  /** The action kind, for logging only (never the message contents). Widened to
+   *  string because Steward's board actions add kinds beyond the intent whitelist. */
+  kind: string;
 }
 
 /**
@@ -163,7 +185,10 @@ export function createOwnerControl(deps: OwnerControlDeps): {
   const ws = deps.ws ?? DEFAULT_WORKSPACE;
   const operatorId = `telegram:${deps.ownerChatId}`;
   const onQuit = deps.onQuit ?? (() => process.exit(REMOTE_SHUTDOWN_CODE));
-  const pending = new Map<string, Pending>();
+  // A QUEUE of pending actions per owner chat. The intent path enqueues one; a
+  // Steward change request can enqueue several. "yes" runs the head, "accept all"
+  // runs them all, anything else cancels the queue. Empty ⇒ nothing pending.
+  const pending = new Map<string, Pending[]>();
 
   // Short conversational memory (in-memory, owner-scoped, capped, cleared on
   // restart). Lets back-references ("remove that task", "it") resolve to a
@@ -280,31 +305,102 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     }
   };
 
+  /**
+   * Turn one of Steward's 10 project/task actions into a deferred executor for the
+   * confirm queue — the SAME board mutations the in-app assistant runs, so Steward
+   * behaves identically on both surfaces. `action.summary` is Steward's own confirm
+   * label (already built at validation time); the run returns a short outcome.
+   * `projectId` is the focused project the actions were validated against, so task
+   * ids are guaranteed to belong to it. remove_task hard-deletes (matching the web
+   * Steward); the legacy `/removetask` slash command still archives (reversible).
+   */
+  const stewardPending = (action: AssistantAction, projectId: string): Pending => ({
+    kind: `steward:${action.kind}`,
+    summary: action.summary,
+    run: async () => {
+      switch (action.kind) {
+        case "add_task": {
+          const t = await operations.createTask(ws, projectId, {
+            text: action.text!,
+            ...(action.description ? { description: action.description } : {}),
+          });
+          return `➕ Task created (${t.id})${action.text ? ` — "${action.text}"` : ""}.`;
+        }
+        case "move_task":
+          await operations.transitionTask(ws, action.taskId!, action.to!, operatorId);
+          return `➡️ Moved task ${action.taskId} → ${action.to}.`;
+        case "rename_task":
+          await operations.updateTask(ws, action.taskId!, { text: action.text });
+          return `✏️ Renamed task ${action.taskId}.`;
+        case "set_task_desc":
+          await operations.updateTask(ws, action.taskId!, { description: action.description ?? "" });
+          return `📝 Updated the description for task ${action.taskId}.`;
+        case "remove_task":
+          await operations.deleteTask(ws, action.taskId!);
+          return `🗑 Removed task ${action.taskId}.`;
+        case "reorder_task":
+          await operations.moveTask(ws, action.taskId!, action.direction!);
+          return `↕️ Reordered task ${action.taskId} (${action.direction}).`;
+        case "rename_project": {
+          const pr = await operations.updateProject(ws, projectId, { name: action.name });
+          return `✏️ Project renamed to "${pr.name}".`;
+        }
+        case "set_goal":
+          await operations.updateProject(ws, projectId, { goal: action.goal ?? "" });
+          return `🎯 Project goal updated.`;
+        case "set_autonomy":
+          await operations.updateProject(ws, projectId, { autonomy: action.autonomy });
+          return `⚙️ Autonomy ${action.autonomy ? "ON" : "OFF"}.`;
+        case "set_status":
+          await operations.updateProject(ws, projectId, { status: action.status });
+          return `🚦 Project status → ${action.status}.`;
+        default:
+          throw new Error(`unsupported action`);
+      }
+    },
+  });
+
   /** The free-text (non-slash-command) path: pending affirmation first, then the
    *  helpful assistant (a concise reply, plus an optional confirmed action). */
   const handleFreeText = async (chatId: string, text: string): Promise<void> => {
-    // 1. Resolve a pending action first — never send a "yes"/"no" to the LLM.
-    const p = pending.get(chatId);
-    if (p) {
+    // 1. Resolve pending actions first — never send a "yes"/"no" to the LLM.
+    //    Shared confirmation vocabulary with the in-app assistant: "yes" runs the
+    //    head of the queue, "accept all" runs the whole batch, anything else
+    //    cancels it. A single proposal (the common case) is a one-item queue.
+    const queue = pending.get(chatId);
+    if (queue && queue.length > 0) {
       pending.delete(chatId);
-      // Shared confirmation vocabulary with the in-app assistant: "yes" / "accept
-      // all" / "approve" / "sure" all confirm this pending action; anything else
-      // cancels. (Telegram proposes one action per turn, so "one" and "all" both
-      // run it — batch proposals live in the in-app Steward chat.)
-      if (parseConfirmation(text) === "no") {
+      const confirm = parseConfirmation(text);
+      if (confirm === "no") {
         await notify("Cancelled.");
         return;
       }
-      log(`executing confirmed action: ${p.kind}`);
-      try {
-        const outcome = await p.run();
-        // Record the OUTCOME (with ids) so later back-references ("remove that
-        // task", "it") can resolve. This is the memory that makes undo work.
-        pushHistory(chatId, { role: "assistant", text: outcome });
-        await notify(outcome);
-      } catch (err) {
-        await notify(`Couldn't complete that: ${(err as Error).message}`);
+      const toRun = confirm === "all" ? queue : [queue[0]!];
+      const outcomes: string[] = [];
+      for (const p of toRun) {
+        log(`executing confirmed action: ${p.kind}`);
+        try {
+          const outcome = await p.run();
+          // Record each OUTCOME (with ids) so later back-references ("remove that
+          // task", "it") can resolve. This is the memory that makes undo work.
+          pushHistory(chatId, { role: "assistant", text: outcome });
+          outcomes.push(outcome);
+        } catch (err) {
+          outcomes.push(`⚠️ Couldn't complete "${p.summary}": ${(err as Error).message}`);
+        }
       }
+      // "yes" on a multi-item queue runs only the head; re-offer the remainder.
+      const rest = confirm === "all" ? [] : queue.slice(1);
+      if (rest.length > 0) {
+        pending.set(chatId, rest);
+        const remaining =
+          rest.length === 1
+            ? `1 more pending: ${rest[0]!.summary} — reply yes / no`
+            : `${rest.length} more pending — reply "accept all", "yes" for the next, or "no" to cancel:\n` +
+              rest.map((r, i) => `${i + 1}. ${r.summary}`).join("\n");
+        outcomes.push(remaining);
+      }
+      await notify(outcomes.join("\n\n"));
       return;
     }
 
@@ -326,9 +422,10 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     //     message that has a LOCAL checkout. Steward reads its working tree via the
     //     same read-only tool-loop (Read/Grep/Glob) the in-app assistant uses, so
     //     Telegram gets identical repo access. A question answers here; a change
-    //     request (Steward proposes an action) falls through to the workspace
-    //     action path below. Best-effort — if the tool-loop can't run (no Claude
-    //     key / SDK), we fall through so the workspace path handles it.
+    //     request enqueues Steward's proposed board action(s) for confirm-first
+    //     execution — the SAME 10-kind action set the in-app assistant runs, so
+    //     one "accept all" applies a whole batch. Best-effort — if the tool-loop
+    //     can't run (no Claude key / SDK), we fall through to the workspace path.
     try {
       const focus = resolveFocusedProject(text, await operations.listProjects(ws));
       if (focus) {
@@ -337,7 +434,23 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           content: h.text,
         }));
         const res = await askSteward(operations, { workspaceId: ws, project: focus, question: text, history: turns });
-        if (res.reply && !res.action) {
+        if (res.actions.length > 0) {
+          // Change request: queue the proposals and ask for confirmation.
+          const q = res.actions.map((a) => stewardPending(a, focus.id));
+          pending.set(chatId, q);
+          log(`awaiting confirmation for ${q.length} steward action(s) on ${focus.name}`);
+          const list =
+            q.length === 1
+              ? `${q[0]!.summary} — reply yes / no`
+              : `${q.length} changes — reply "accept all", "yes" for the first, or "no" to cancel:\n` +
+                q.map((p, i) => `${i + 1}. ${p.summary}`).join("\n");
+          const out = [res.reply, list].filter(Boolean).join("\n\n");
+          pushHistory(chatId, { role: "assistant", text: out });
+          await notify(out);
+          return;
+        }
+        if (res.reply) {
+          // Pure answer (question about the repo/status).
           pushHistory(chatId, { role: "assistant", text: res.reply });
           await notify(res.reply);
           return;
@@ -374,7 +487,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     if (action && action.kind !== "none") {
       const next = toPending(action, ctx);
       if (next) {
-        pending.set(chatId, next);
+        pending.set(chatId, [next]); // the intent path proposes exactly one action
         log(`awaiting confirmation for action: ${next.kind}`);
         const out = [reply, `${next.summary} — reply yes / no`].filter(Boolean).join("\n\n");
         pushHistory(chatId, { role: "assistant", text: out });
