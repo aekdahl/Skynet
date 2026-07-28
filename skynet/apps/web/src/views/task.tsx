@@ -17,22 +17,30 @@ import {
 import { StatusDot } from "../components/common";
 import { PreviewFor } from "../components/preview";
 import { HitlContext, RiskChip } from "../components/hitl-context";
+import { LivePreviewModal } from "./project";
 
 function AgentChat({ agent }: { agent: TaskRun }) {
-  const { sendAgentMessage } = useStore();
+  const { streamAgentMessage } = useStore();
   const now = agent.plan.find((p) => p.state === "now");
   const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
   const [draft, setDraft] = useState("");
   const send = async () => {
     if (!draft.trim()) return;
     const text = draft.trim();
-    setMsgs((m) => [...m, { who: "you", text }]);
+    // Operator line + an empty agent bubble the stream fills in-place.
+    setMsgs((m) => [...m, { who: "you", text }, { who: "agent", text: "" }]);
     setDraft("");
+    const appendToLast = (chunk: string) =>
+      setMsgs((m) => {
+        const next = [...m];
+        const last = next[next.length - 1];
+        if (last && last.who === "agent") next[next.length - 1] = { who: "agent", text: last.text + chunk };
+        return next;
+      });
     try {
-      const reply = await sendAgentMessage(agent.id, text);
-      setMsgs((m) => [...m, { who: "agent", text: reply }]);
+      await streamAgentMessage(agent.id, text, appendToLast);
     } catch {
-      /* ignore */
+      appendToLast("(couldn't get a reply)");
     }
   };
   return (
@@ -117,14 +125,17 @@ export function TaskDetail({
     tasks,
     fleet,
     modules,
+    projects,
     resolveHitl,
     forkAgent,
-    sendAgentMessage,
+    streamAgentMessage,
     pauseAgent,
     resumeAgent,
     stopAgent,
     archiveAgent,
   } = useStore();
+  const project = projects.find((p) => p.id === agent.projectId);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const q = openQueue(queue).find((it) => it.runId === agent.id);
   // The backing task's longer description (the run's name is the short task text).
   const taskDesc = tasks.find((t) => t.runId === agent.id)?.description ?? null;
@@ -140,13 +151,20 @@ export function TaskDetail({
   const send = async () => {
     if (!draft.trim()) return;
     const text = draft.trim();
-    setMsgs((m) => [...m, { who: "you", text }]);
+    // Operator line + an empty agent bubble the stream fills in-place.
+    setMsgs((m) => [...m, { who: "you", text }, { who: "agent", text: "" }]);
     setDraft("");
+    const appendToLast = (chunk: string) =>
+      setMsgs((m) => {
+        const next = [...m];
+        const last = next[next.length - 1];
+        if (last && last.who === "agent") next[next.length - 1] = { who: "agent", text: last.text + chunk };
+        return next;
+      });
     try {
-      const reply = await sendAgentMessage(agent.id, text);
-      setMsgs((m) => [...m, { who: "agent", text: reply }]);
+      await streamAgentMessage(agent.id, text, appendToLast);
     } catch {
-      /* ignore */
+      appendToLast("(couldn't get a reply)");
     }
   };
 
@@ -178,6 +196,18 @@ export function TaskDetail({
           >
             ⑂ Fork run
           </button>
+
+          {/* Pre-merge preview: run this change's branch and see it before it
+              merges. Needs a local project folder to spin a worktree from. */}
+          {project?.repoPath && !agent.archived && (
+            <button
+              className="btn btn-ghost"
+              title="Run this change on its own branch and preview it live — before it merges"
+              onClick={() => setPreviewOpen(true)}
+            >
+              ▶ Preview this change
+            </button>
+          )}
 
           {/* Lifecycle controls */}
           {agent.status === "paused" ? (
@@ -461,6 +491,15 @@ export function TaskDetail({
           </div>
         </div>
       </div>
+
+      {previewOpen && (
+        <LivePreviewModal
+          id={agent.id}
+          kind="run"
+          title={"Preview change · " + agent.name}
+          onClose={() => setPreviewOpen(false)}
+        />
+      )}
     </section>
   );
 }

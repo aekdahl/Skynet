@@ -20,6 +20,7 @@ import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { providerUsableFromEnv } from "./provider-env.js";
 import { secretService } from "./secrets/index.js";
 import { previewService } from "./preview/index.js";
+import { projectPreview } from "./preview/project-preview.js";
 import type { Store } from "./store/store.js";
 import { WorktreeProvisioner } from "./worktrees.js";
 
@@ -892,6 +893,9 @@ export class Orchestrator {
     // Integrated — retire the agent's worktree (the branch is kept in history).
     const ctx = await this.gitContextForAgent(runId).catch(() => undefined);
     if (ctx) await ctx.worktrees.retire(runId).catch(() => undefined);
+    // A change just landed on the integration branch → nudge a live preview to
+    // re-point at the new tip so the operator sees the app update (docs/live-preview.md).
+    if (agent?.projectId) void projectPreview.refresh(agent.projectId).catch(() => undefined);
   }
 
   /**
@@ -1030,6 +1034,35 @@ export class Orchestrator {
       return reply;
     }
 
+    return this.liveChat(runId, text, live);
+  }
+
+  /**
+   * Streaming counterpart of {@link chat}: yields the reply as text deltas so
+   * the UI can render it live. The stateless (finished / no-live-session) path —
+   * the "ask me anything about what shipped" case — streams token-level deltas
+   * from the provider's consultStream. The live-session path has no delta
+   * protocol yet, so it yields the single reply as one chunk (same content as
+   * chat(), just over the streaming transport — keeps the client uniform).
+   */
+  async *chatStream(runId: string, text: string): AsyncGenerator<string> {
+    await this.hub.runLog(runId, `you: ${text}`);
+    const live = this.live.get(runId);
+    if (!live || (await this.store.getRun(runId))?.status === "done") {
+      let full = "";
+      for await (const delta of this.consultFinishedStream(runId, text)) {
+        full += delta;
+        yield delta;
+      }
+      await this.hub.runLog(runId, `↳ ${full}`);
+      return;
+    }
+    yield await this.liveChat(runId, text, live);
+  }
+
+  /** The live-session chat turn: relay to the running handle and resolve with
+   *  its reply (or a timeout note). Shared by chat() + chatStream(). */
+  private liveChat(runId: string, text: string, live: { handle: RunnerHandle }): Promise<string> {
     return new Promise<string>((resolve) => {
       // A real model turn can take well over 5s; give it room before giving up.
       const timer = setTimeout(() => {
@@ -1114,27 +1147,41 @@ export class Orchestrator {
    *  restart. The reply is truthful about the agent's actual status (DEF-002):
    *  we only say "finished" when the agent is really done. */
   private async consultFinished(runId: string, question: string): Promise<string> {
+    let reply = "";
+    for await (const delta of this.consultFinishedStream(runId, question)) reply += delta;
+    return reply;
+  }
+
+  /** Streaming form of {@link consultFinished}: yields the provider's answer as
+   *  text deltas (via consultStream when available, else the whole consult() as
+   *  one chunk). The status/availability guard replies are yielded whole. */
+  private async *consultFinishedStream(runId: string, question: string): AsyncGenerator<string> {
     const agent = await this.store.getRun(runId);
-    if (!agent) return `(${runId}) no such agent.`;
+    if (!agent) {
+      yield `(${runId}) no such agent.`;
+      return;
+    }
     const provider = await this.getProvider(agent.provider);
-    if (!provider.consult) {
+    if (!provider.consult && !provider.consultStream) {
       // No stateless consult available. Don't claim the agent "finished" unless
       // it actually did — otherwise chatting a running/waiting agent gets a
       // misleading canned reply.
-      if (agent.status === "done") {
-        return "This agent has finished; follow-up chat isn't supported for its runner.";
-      }
-      return `This agent is ${agent.status}, but chat isn't wired to a live runner in this config, so I can't relay your message to it right now.`;
+      yield agent.status === "done"
+        ? "This agent has finished; follow-up chat isn't supported for its runner."
+        : `This agent is ${agent.status}, but chat isn't wired to a live runner in this config, so I can't relay your message to it right now.`;
+      return;
     }
     const apiKey = await secretService.resolve(agent.workspaceId, agent.provider);
     const context = agent.log.slice(-40).map((l) => l.line).join("\n").slice(-4000);
+    const spec = { task: agent.name, model: agent.model, cwd: config.runnerCwd, apiKey, context };
     try {
-      return await provider.consult(
-        { task: agent.name, model: agent.model, cwd: config.runnerCwd, apiKey, context },
-        question,
-      );
+      if (provider.consultStream) {
+        yield* provider.consultStream(spec, question);
+      } else {
+        yield await provider.consult!(spec, question);
+      }
     } catch (err) {
-      return `couldn't look into that right now (${(err as Error).message}).`;
+      yield `couldn't look into that right now (${(err as Error).message}).`;
     }
   }
 

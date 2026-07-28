@@ -13,6 +13,7 @@ import {
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
 import { ProjectDelivery, visualLeadOf } from "../components/preview";
+import { Markdown } from "../components/markdown";
 import { QueueCard } from "./queue";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -124,7 +125,7 @@ function TaskCard({
 
   if (editing) {
     return (
-      <div className={"kb-card kb-card-" + s}>
+      <div className={"kb-card kb-addcard kb-card-" + s}>
         <div className="task-name-wrap">
           <input
             className="qx-input"
@@ -138,15 +139,15 @@ function TaskCard({
           </span>
         </div>
         <textarea
-          className="qx-input"
+          className="qx-input kb-addcard-desc"
           rows={3}
           placeholder="Description (optional) — the full brief the agent gets…"
           value={descDraft}
           onChange={(e) => setDescDraft(e.target.value)}
         />
-        <div className="qx-row">
+        <div className="qx-row kb-addcard-actions">
           <button
-            className="btn btn-primary"
+            className="btn btn-primary btn-sm"
             onClick={() => {
               if (draft.trim())
                 updateTask(pid, task.id, { text: draft.trim(), description: descDraft.trim() || null });
@@ -155,7 +156,7 @@ function TaskCard({
           >
             Save
           </button>
-          <button className="btn btn-ghost" onClick={() => { setDraft(task.text); setDescDraft(task.description ?? ""); setEditing(false); }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => { setDraft(task.text); setDescDraft(task.description ?? ""); setEditing(false); }}>
             Cancel
           </button>
         </div>
@@ -316,13 +317,13 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
     setOpen(false);
   };
   return (
-    <div className="kb-card kb-card-backlog">
+    <div className="kb-card kb-card-backlog kb-addcard">
       <div className="task-name-wrap">
         <input
           className="qx-input"
           autoFocus
           maxLength={TASK_NAME_MAX}
-          placeholder="Task name — short, like a commit subject"
+          placeholder="Task name — like a commit subject"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && draft.trim() && submit()}
@@ -332,17 +333,17 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
         </span>
       </div>
       <textarea
-        className="qx-input"
+        className="qx-input kb-addcard-desc"
         rows={3}
-        placeholder="Description (optional) — the full brief the agent gets: context, constraints, what done looks like…"
+        placeholder="Description (optional) — context, constraints, what “done” looks like…"
         value={desc}
         onChange={(e) => setDesc(e.target.value)}
       />
-      <div className="qx-row">
-        <button className="btn btn-primary" disabled={!draft.trim()} onClick={submit}>
-          Add to backlog
+      <div className="qx-row kb-addcard-actions">
+        <button className="btn btn-primary btn-sm" disabled={!draft.trim()} onClick={submit}>
+          Add task
         </button>
-        <button className="btn btn-ghost" onClick={() => { setDraft(""); setDesc(""); setOpen(false); }}>
+        <button className="btn btn-ghost btn-sm" onClick={() => { setDraft(""); setDesc(""); setOpen(false); }}>
           Cancel
         </button>
       </div>
@@ -379,27 +380,89 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
   const [err, setErr] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
+  // Typewriter smoothing: the server streams in coarse chunks (often whole
+  // sentences), which reads as a stutter. We collect the received text in a ref
+  // and reveal it a few characters per frame, so the bubble fills in smoothly
+  // regardless of chunk size. `target` is everything received; `shown` is how
+  // much is currently visible; `done` flips when the stream ends so the loop can
+  // stop once it has caught up.
+  const targetRef = useRef("");
+  const shownRef = useRef(0);
+  const doneRef = useRef(true);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
   }, [msgs, busy]);
+
+  // Stop the typewriter loop if the view unmounts mid-stream.
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+  const paintLast = (content: string) =>
+    setMsgs((m) => {
+      const next = m.slice();
+      const last = next[next.length - 1];
+      // Preserve any proposed action attached to the bubble while the reveal loop
+      // fills in its text.
+      if (last && last.role === "assistant") next[next.length - 1] = { ...last, content };
+      return next;
+    });
+
+  const tick = () => {
+    const target = targetRef.current;
+    if (shownRef.current < target.length) {
+      // Reveal faster when we're further behind, so we never lag the stream.
+      const backlog = target.length - shownRef.current;
+      const step = Math.max(2, Math.ceil(backlog / 8));
+      shownRef.current = Math.min(target.length, shownRef.current + step);
+      paintLast(target.slice(0, shownRef.current));
+    }
+    if (shownRef.current >= target.length && doneRef.current) {
+      timerRef.current = null;
+      return;
+    }
+    timerRef.current = setTimeout(tick, 16);
+  };
 
   const ask = async (q: string) => {
     const question = q.trim();
     if (!question || busy) return;
     setErr(null);
+    // Strip any attached action fields from history — the API takes plain turns.
     const history = msgs.slice().map(({ role, content }) => ({ role, content }));
-    setMsgs([...msgs, { role: "user", content: question }]);
+    // Add the operator line + an empty assistant bubble the reveal loop fills in.
+    setMsgs([...msgs, { role: "user", content: question }, { role: "assistant", content: "" }]);
     setInput("");
     setBusy(true);
+    // Reset + start the reveal loop.
+    targetRef.current = "";
+    shownRef.current = 0;
+    doneRef.current = false;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    tick();
     try {
+      // Non-streaming so we also get any proposed action (confirm-first). The
+      // reply is fed into the reveal loop to animate in-place, and the action (if
+      // any) is attached to the same assistant bubble.
       const { reply, action } = await api.projectChat(projectId, question, history);
-      setMsgs((m) => [
-        ...m,
-        { role: "assistant", content: reply, ...(action ? { action, actionState: "pending" as const } : {}) },
-      ]);
+      targetRef.current = reply;
+      if (timerRef.current === null) tick(); // loop had parked — restart it
+      if (action) {
+        setMsgs((m) => {
+          const next = m.slice();
+          const last = next[next.length - 1];
+          if (last && last.role === "assistant")
+            next[next.length - 1] = { ...last, action, actionState: "pending" as const };
+          return next;
+        });
+      }
+
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't reach the assistant — try again.");
+      // Drop the assistant bubble on failure if nothing was received.
+      if (targetRef.current === "") setMsgs((m) => m.slice(0, -1));
     } finally {
+      doneRef.current = true; // let the reveal loop finish and park itself
       setBusy(false);
     }
   };
@@ -461,7 +524,17 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
             {msgs.map((m, i) => (
               <div key={i} className={"asst-msg asst-" + m.role}>
                 <span className="asst-who mono">{m.role === "user" ? "you" : "assistant"}</span>
-                <div className="asst-text">{m.content}</div>
+                {m.role === "assistant" ? (
+                  m.content === "" ? (
+                    <div className="asst-text asst-think">reading the project…</div>
+                  ) : (
+                    <div className="asst-text asst-md">
+                      <Markdown text={m.content} />
+                    </div>
+                  )
+                ) : (
+                  <div className="asst-text">{m.content}</div>
+                )}
                 {m.action && (
                   <div className="asst-propose">
                     {m.actionState === "done" ? (
@@ -485,12 +558,6 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
                 )}
               </div>
             ))}
-            {busy && (
-              <div className="asst-msg asst-assistant">
-                <span className="asst-who mono">assistant</span>
-                <div className="asst-text asst-think">reading the project…</div>
-              </div>
-            )}
           </div>
           {err && <div className="asst-err">{err}</div>}
           <form
@@ -564,6 +631,7 @@ export function ProjectView({
   const [showArchived, setShowArchived] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [name, setName] = useState(project.name);
   const [goal, setGoal] = useState(project.goal);
 
@@ -634,6 +702,11 @@ export function ProjectView({
               <span className="proj-autonomy-switch" aria-hidden="true" />
               <span className="proj-autonomy-label">Autonomy</span>
             </label>
+            {project.repoPath && (
+              <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
+                ▶ Preview app
+              </button>
+            )}
             <button className="btn btn-ghost" onClick={() => setEditing(true)}>Edit</button>
             {confirmDel ? (
               <span className="del-confirm">
@@ -734,6 +807,139 @@ export function ProjectView({
           )}
         </div>
       )}
+
+      {previewOpen && <LivePreviewModal id={project.id} kind="project" title={"Live preview · " + project.name} onClose={() => setPreviewOpen(false)} />}
     </section>
+  );
+}
+
+// ─── Live preview modal (Phase-1 v0) ────────────────────────────────────────
+// Runs a web app (server-side, sandboxed) and iframes it here. Two callers:
+//   • PROJECT — the integration branch, refreshing as the fleet merges.
+//   • RUN ("Preview this change") — a single run's branch, PRE-merge, so an
+//     operator can verify a change before approving it. Pinned to the branch.
+// Polls status while open; the app runs on its own localhost origin so its code
+// can't reach the console. See docs/live-preview.md.
+const DEVICES: Record<string, number | null> = { Desktop: null, Tablet: 768, Mobile: 390 };
+
+export function LivePreviewModal({
+  id,
+  kind,
+  title,
+  onClose,
+}: {
+  id: string;
+  kind: "project" | "run";
+  title: string;
+  onClose: () => void;
+}) {
+  // Bind the four preview actions to the right surface (project vs run). Kept in
+  // a ref so the poll effect can stay keyed on the stable [id, kind].
+  const ctl =
+    kind === "run"
+      ? { status: () => api.runPreviewStatus(id), start: () => api.runPreviewStart(id), stop: () => api.runPreviewStop(id), restart: () => api.runPreviewRestart(id) }
+      : { status: () => api.previewStatus(id), start: () => api.previewStart(id), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
+  const ctlRef = useRef(ctl);
+  ctlRef.current = ctl;
+
+  const [st, setSt] = useState<api.PreviewState | null>(null);
+  const [device, setDevice] = useState<string>("Desktop");
+  const [showLogs, setShowLogs] = useState(false);
+  const [nonce, setNonce] = useState(0); // bump to reload the iframe
+  // Split-screen dock (default — watch the board + the app together) vs a
+  // full-bleed modal. Dock reserves board space via a root class (see CSS).
+  const [mode, setMode] = useState<"dock" | "modal">("dock");
+  const startedRef = useRef(false);
+
+  // Start on open (once), then poll status while the pane is mounted.
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const s = startedRef.current ? await ctlRef.current.status() : (startedRef.current = true, await ctlRef.current.start());
+        if (alive) setSt(s);
+      } catch {
+        /* transient */
+      }
+    };
+    void tick();
+    const iv = setInterval(tick, 1500);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  }, [id, kind]);
+
+  // Reserve right-hand board space while docked (removed on close / when modal).
+  useEffect(() => {
+    const root = document.documentElement;
+    if (mode === "dock") root.classList.add("lp-docked");
+    else root.classList.remove("lp-docked");
+    return () => root.classList.remove("lp-docked");
+  }, [mode]);
+
+  const width = DEVICES[device];
+  const live = st?.status === "live" && st.url;
+
+  const inner = (
+      <div className={"lp-modal lp-mode-" + mode} onClick={(e) => e.stopPropagation()}>
+        <div className="lp-bar">
+          <span className="lp-title">{title}</span>
+          <span className={"lp-status lp-status-" + (st?.status ?? "idle")}>
+            {st?.status === "live" ? "● live" : st?.status === "starting" ? "◐ starting…" : st?.status === "failed" ? "✕ failed" : st?.status ?? "…"}
+          </span>
+          {live && <span className="lp-url mono">{st!.url}</span>}
+          <span className="lp-spacer" />
+          <div className="lp-devices">
+            {Object.keys(DEVICES).map((d) => (
+              <button key={d} className={"lp-dev" + (d === device ? " on" : "")} onClick={() => setDevice(d)}>{d}</button>
+            ))}
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={() => setMode((m) => (m === "dock" ? "modal" : "dock"))} title={mode === "dock" ? "Expand to full screen" : "Dock beside the board"}>
+            {mode === "dock" ? "⤢ Expand" : "⇔ Dock"}
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setNonce((n) => n + 1)} title="Reload the app in the frame">↻ Reload</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { startedRef.current = false; void ctl.restart().then(setSt); }} title="Restart the preview server">⟳ Restart</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { setShowLogs((s) => !s); }}>Logs</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { void ctl.stop(); onClose(); }}>✕ Close</button>
+        </div>
+
+        <div className="lp-body">
+          {live ? (
+            <div className="lp-frame-wrap">
+              <iframe
+                key={nonce}
+                className="lp-frame"
+                style={width ? { width, margin: "0 auto" } : undefined}
+                src={st!.url!}
+                title="app preview"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              />
+            </div>
+          ) : (
+            <div className="lp-placeholder">
+              <div className={"lp-ph-dot lp-status-" + (st?.status ?? "idle")} />
+              <div className="lp-ph-msg">
+                {st?.status === "failed" ? (st.error ?? "Preview failed.") : st?.status === "starting" ? "Starting the app…" : "Preparing preview…"}
+              </div>
+              {st?.recipe && <div className="lp-ph-cmd mono">$ {st.recipe.cmd}</div>}
+              {st?.status === "failed" && (
+                <button className="btn btn-primary btn-sm" onClick={() => { startedRef.current = false; void ctl.restart().then(setSt); }}>Retry</button>
+              )}
+            </div>
+          )}
+          {showLogs && (
+            <pre className="lp-logs mono">{(st?.logs ?? []).join("\n") || "(no output yet)"}</pre>
+          )}
+        </div>
+      </div>
+  );
+
+  // Modal dims the board behind it; dock sits beside it (no backdrop) so the
+  // operator can keep working while the app updates live.
+  return mode === "modal" ? (
+    <div className="lp-backdrop" onClick={onClose}>{inner}</div>
+  ) : (
+    <div className="lp-dock">{inner}</div>
   );
 }

@@ -68,6 +68,7 @@ export interface Store extends StoreState {
     extra?: { optionIndex?: number; guidance?: string },
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
+  streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
   forkAgent: (id: string) => Promise<void>;
   archiveAgent: (id: string, archived: boolean) => Promise<void>;
   pauseAgent: (id: string) => Promise<void>;
@@ -76,7 +77,11 @@ export interface Store extends StoreState {
   // Local optimistic flip after a key is set/cleared in Settings (the snapshot
   // recomputes availability from the secret store on next load).
   setProviderAvailable: (id: string, available: boolean) => void;
-  createProject: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => Promise<void>;
+  createProject: (
+    name: string,
+    goal: string,
+    opts?: { repo?: string; repoPath?: string; createRepo?: { name: string; private: boolean; owner?: string } },
+  ) => Promise<void>;
   updateProject: (
     id: string,
     patch: { name?: string; goal?: string; status?: string; autonomy?: boolean },
@@ -315,6 +320,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const { reply } = await api.sendAgentMessage(id, text);
         return reply;
       },
+      streamAgentMessage: (id, text, onDelta) => api.streamAgentMessage(id, text, onDelta),
       forkAgent: async (id) => {
         try {
           await api.forkAgent(id);
@@ -345,7 +351,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }));
       },
       createProject: async (name, goal, opts) => {
-        await api.createProject({ name, goal, repo: opts?.repo, repoPath: opts?.repoPath });
+        await api.createProject({
+          name,
+          goal,
+          repo: opts?.repo,
+          repoPath: opts?.repoPath,
+          createRepo: opts?.createRepo,
+        });
       },
       updateProject: async (id, patch) => {
         await api.updateProject(id, patch);

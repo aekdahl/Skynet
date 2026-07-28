@@ -1289,6 +1289,15 @@ button.kb-done:hover { opacity: 1; }
 }
 .kb-add:hover { border-color: var(--accent); color: var(--accent); }
 
+/* Inline "add task" form — compact so it reads well inside a narrow lane. */
+.kb-addcard { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+.kb-addcard .qx-input { padding: 8px 10px; font-size: 12.5px; }
+.kb-addcard .task-name-wrap .qx-input { padding-right: 46px; }
+.kb-addcard-desc { resize: none; min-height: 66px; line-height: 1.45; }
+.kb-addcard-actions { gap: 6px; }
+.kb-addcard-actions .btn { white-space: nowrap; }
+.kb-addcard-actions .btn-primary { flex: 1 1 auto; }
+
 /* ===== fleet ===== */
 .fleet-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
 .fleet-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--sp); }
@@ -1454,7 +1463,6 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .op-ws { display: flex; align-items: center; gap: 9px; padding: 13px 14px; border-bottom: 1px solid var(--line-soft); }
 .op-ws-logo { width: 24px; height: 24px; border-radius: 6px; background: var(--accent); color: #0B0D11; font-weight: 700; display: flex; align-items: center; justify-content: center; font-size: 13px; flex: none; }
 .op-ws-name { font-size: 13px; font-weight: 600; flex: 1; }
-.op-ws-caret { color: var(--faint); font-size: 10px; }
 .op-nav { padding: 10px 8px; display: flex; flex-direction: column; gap: 1px; }
 .op-navitem { display: flex; align-items: center; gap: 11px; padding: 8px 11px; border-radius: 7px; color: var(--muted); border: none; background: none; text-align: left; font-family: var(--font-ui); font-size: 13px; width: 100%; cursor: pointer; }
 .op-navitem .ic { width: 16px; text-align: center; opacity: 0.85; }
@@ -1665,6 +1673,25 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .rp-note { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
 .rp-link { color: var(--accent); text-decoration: none; }
 .rp-link:hover { text-decoration: underline; }
+
+/* New-project binding-mode selector (folder / existing repo / new repo) */
+.np-modes { display: inline-flex; gap: 2px; padding: 3px; background: var(--raised); border: 1px solid var(--line); border-radius: 9px; align-self: flex-start; }
+.np-mode { font-family: var(--font-ui); font-size: 12px; color: var(--muted); background: none; border: 0; border-radius: 7px; padding: 5px 11px; cursor: pointer; white-space: nowrap; }
+.np-mode:hover { color: var(--text); }
+.np-mode-on { background: var(--panel); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.25); }
+/* New-repo fields */
+.np-newrepo { display: flex; flex-direction: column; gap: 10px; }
+.np-newrepo-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.np-owner { flex: 0 1 auto; width: auto; max-width: 45%; }
+.np-slash { color: var(--faint); font-family: var(--font-mono); }
+.np-reponame { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono); }
+.np-private { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; align-self: flex-start; }
+.np-private-label { font-size: 12.5px; color: var(--muted); }
+/* Confirm gate before creating a real repo */
+.np-confirm { display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--warn); border-radius: 10px; padding: 12px; background: color-mix(in oklch, var(--warn), transparent 92%); }
+.np-confirm-text { font-size: 13px; line-height: 1.5; color: var(--text); margin: 0; }
+.np-confirm-repo { font-family: var(--font-mono); font-size: 12.5px; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+.np-error { font-size: 12.5px; color: var(--danger); }
 .proj-repo { color: var(--faint); font-size: 11px; margin: 2px 0 8px; }
 .proj-repo-line { color: var(--faint); font-size: 12px; margin-top: 4px; }
 .proj-clone { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
@@ -1760,6 +1787,19 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .asst-user .asst-who { color: var(--accent); }
 .asst-text { font-size: 13.5px; line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
 .asst-user .asst-text { color: var(--muted); }
+/* Assistant replies render as markdown — tighten the doc-scale spacing so it
+   reads as a compact chat bubble, and drop the pre-wrap (blocks handle layout). */
+.asst-md { white-space: normal; }
+.asst-md .md { font-size: 13.5px; line-height: 1.55; color: var(--ink); }
+.asst-md .md > :first-child { margin-top: 0; }
+.asst-md .md > :last-child { margin-bottom: 0; }
+.asst-md .md p { margin: 6px 0; color: var(--ink); }
+.asst-md .md h1 { font-size: 15px; margin: 10px 0 6px; }
+.asst-md .md h2 { font-size: 14px; margin: 12px 0 6px; padding-top: 10px; }
+.asst-md .md h3 { font-size: 13.5px; margin: 10px 0 4px; }
+.asst-md .md ul, .asst-md .md ol { margin: 6px 0; padding-left: 18px; color: var(--ink); }
+.asst-md .md li { margin: 3px 0; }
+.asst-md .md hr { margin: 10px 0; }
 .asst-think { color: var(--faint); font-style: italic; }
 .asst-err { font-size: 12.5px; color: var(--danger); }
 /* Confirm-before-create chip under an assistant message that proposed a task. */
@@ -1774,3 +1814,35 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .asst-propose-done.muted { color: var(--faint); }
 .asst-input { display: flex; gap: 8px; }
 .asst-input .qx-input { flex: 1; }
+
+/* ── Live preview (Phase-1 v0) — split-screen dock or full modal ──────────── */
+.lp-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 2147483646; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.lp-modal { display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+/* Modal: centered, large. */
+.lp-mode-modal { width: min(1200px, 96vw); height: min(860px, 92vh); }
+/* Dock: a fixed right-hand pane; the board (below) reserves space via lp-docked. */
+.lp-dock { position: fixed; top: 40px; right: 0; bottom: 0; width: 44vw; min-width: 420px; z-index: 2147483645; display: flex; padding: 8px 8px 8px 0; }
+.lp-dock .lp-modal { flex: 1; height: 100%; border-radius: 10px; box-shadow: -8px 0 24px rgba(0,0,0,.35); }
+:root.lp-docked .main { padding-right: 44vw; }
+@media (max-width: 1100px) { .lp-dock { width: 60vw; } :root.lp-docked .main { padding-right: 60vw; } }
+.lp-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); flex-wrap: wrap; }
+.lp-title { font-weight: 600; font-size: 13px; }
+.lp-status { font-size: 11px; font-family: var(--font-mono, monospace); }
+.lp-status-live { color: var(--ok); }
+.lp-status-starting { color: var(--warn); }
+.lp-status-failed { color: var(--danger, #e66); }
+.lp-url { font-size: 11px; color: var(--muted); }
+.lp-spacer { flex: 1; }
+.lp-devices { display: flex; gap: 2px; }
+.lp-dev { font-size: 11px; padding: 3px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); border-radius: 6px; cursor: pointer; }
+.lp-dev.on { color: var(--text); border-color: var(--accent); }
+.lp-body { flex: 1; display: flex; flex-direction: column; min-height: 0; background: #fff0; }
+.lp-frame-wrap { flex: 1; min-height: 0; background: var(--bg); overflow: auto; }
+.lp-frame { width: 100%; height: 100%; min-height: 400px; border: none; background: #fff; display: block; }
+.lp-placeholder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--muted); }
+.lp-ph-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--faint); }
+.lp-ph-dot.lp-status-starting { background: var(--warn); }
+.lp-ph-dot.lp-status-failed { background: var(--danger, #e66); }
+.lp-ph-msg { font-size: 13px; max-width: 60ch; text-align: center; }
+.lp-ph-cmd { font-size: 11px; color: var(--faint); }
+.lp-logs { max-height: 30%; overflow: auto; margin: 0; padding: 10px 12px; font-size: 11px; color: var(--muted); background: var(--bg); border-top: 1px solid var(--line-soft); white-space: pre-wrap; }

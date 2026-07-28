@@ -95,6 +95,29 @@ export class GitHubProvider implements GitProvider {
     return repos.map((r) => ({ id: r.id, name: r.full_name, defaultBranch: r.default_branch, private: r.private, selected: false }));
   }
 
+  /** Orgs the token's user belongs to (login only). PAT/user-token path; an App
+   *  installation token can't list a user's orgs and will throw (caller catches). */
+  async listOrgs(token: string): Promise<string[]> {
+    const orgs = await this.api<Array<{ login: string }>>(token, "GET", "/user/orgs?per_page=100");
+    return orgs.map((o) => o.login);
+  }
+
+  /** Create a new repo under the user (`org` omitted) or an org, initialized with
+   *  a README so it has a default branch to clone. Returns it as a GithubRepo. */
+  async createRepo(
+    token: string,
+    spec: { name: string; private: boolean; description?: string; org?: string },
+  ): Promise<GithubRepo> {
+    const path = spec.org ? `/orgs/${spec.org}/repos` : "/user/repos";
+    const r = await this.api<{ id: number; full_name: string; default_branch: string; private: boolean }>(
+      token,
+      "POST",
+      path,
+      { name: spec.name, private: spec.private, description: spec.description, auto_init: true },
+    );
+    return { id: r.id, name: r.full_name, defaultBranch: r.default_branch, private: r.private, selected: true };
+  }
+
   async listInstallations(token: string): Promise<GithubInstallation[]> {
     const data = await this.api<{ installations: Array<{ id: number; account: { login: string; type: string }; app_slug: string }> }>(
       token,

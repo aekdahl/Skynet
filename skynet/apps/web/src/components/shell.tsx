@@ -178,7 +178,6 @@ export function OpSidebar({
       <div className="op-ws">
         <span className="op-ws-logo">S</span>
         <span className="op-ws-name">{workspaceName() || "Skynet"}</span>
-        <span className="op-ws-caret">▾</span>
       </div>
       <nav className="op-nav">
         {item(

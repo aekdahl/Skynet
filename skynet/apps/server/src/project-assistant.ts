@@ -15,7 +15,12 @@
 
 import type { Project, Task, TaskRun } from "@skynet/shared";
 import { ProjectStatus, TaskState } from "@skynet/shared";
-import { oneShotRepoAssistant, oneShotText } from "@skynet/runner-sdk/claude";
+import {
+  oneShotRepoAssistant,
+  oneShotRepoAssistantStream,
+  oneShotText,
+  oneShotTextStream,
+} from "@skynet/runner-sdk/claude";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { githubService } from "./github/index.js";
@@ -291,10 +296,15 @@ function buildPrompt(context: string, docs: string, history: ChatTurn[], questio
     .join("\n");
 }
 
-export async function answerProjectQuestion(
+/** The prepared model call for a project question — the prompt (grounded in
+ *  status + repo docs), whether it runs against a local checkout, and the key.
+ *  Shared by the accumulating and streaming answer paths so they ask identically. */
+type AssistantCall = { repo: boolean; prompt: string; cwd?: string; apiKey?: string; actionCtx: ProjectActionContext };
+
+async function prepareAssistantCall(
   store: Store,
   opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
-): Promise<{ reply: string; action: AssistantAction | null }> {
+): Promise<AssistantCall> {
   const { workspaceId, project, question } = opts;
   const history = opts.history ?? [];
 
@@ -312,17 +322,12 @@ export async function answerProjectQuestion(
     project: { id: project.id, name: project.name },
     tasks: projectTasks.map((t) => ({ id: t.id, text: t.text, state: t.state })),
   };
-  const apiKey = await secretService.resolve(workspaceId, "claude");
+  const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
 
   // Local checkout → read the working tree directly (Read/Grep/Glob), so the
   // assistant can open any source file, not just the prefetched docs.
   if (project.repoPath) {
-    const answer = await oneShotRepoAssistant({
-      prompt: buildPrompt(context, "", history, question),
-      cwd: project.repoPath,
-      apiKey,
-    });
-    return splitProposedAction(answer, actionCtx);
+    return { repo: true, prompt: buildPrompt(context, "", history, question), cwd: project.repoPath, apiKey, actionCtx };
   }
 
   // GitHub-connected but not cloned → prefetch key docs + the top-level tree.
@@ -330,6 +335,30 @@ export async function answerProjectQuestion(
   if (project.repo && !docs) {
     docs = "\n\n(Repo is connected but no README/ROADMAP was found and files aren't cloned locally — answer from project status.)";
   }
-  const answer = await oneShotText({ prompt: buildPrompt(context, docs, history, question), apiKey });
-  return splitProposedAction(answer, actionCtx);
+  return { repo: false, prompt: buildPrompt(context, docs, history, question), apiKey, actionCtx };
+}
+
+// Accumulating answer path — runs the prepared call to completion, then splits
+// out any assistant-proposed action (confirm-first) from the reply.
+export async function answerProjectQuestion(
+  store: Store,
+  opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
+): Promise<{ reply: string; action: AssistantAction | null }> {
+  const c = await prepareAssistantCall(store, opts);
+  const answer = c.repo
+    ? await oneShotRepoAssistant({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey })
+    : await oneShotText({ prompt: c.prompt, apiKey: c.apiKey });
+  return splitProposedAction(answer, c.actionCtx);
+}
+
+/** Streaming form of {@link answerProjectQuestion} — yields the answer as text
+ *  deltas so the "Ask about this project" panel renders it as it's generated.
+ *  Display-only: proposed actions come from the accumulating path above. */
+export async function* answerProjectQuestionStream(
+  store: Store,
+  opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
+): AsyncGenerator<string> {
+  const c = await prepareAssistantCall(store, opts);
+  if (c.repo) yield* oneShotRepoAssistantStream({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey });
+  else yield* oneShotTextStream({ prompt: c.prompt, apiKey: c.apiKey });
 }
