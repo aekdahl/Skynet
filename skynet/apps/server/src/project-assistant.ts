@@ -25,6 +25,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { githubService } from "./github/index.js";
 import { secretService } from "./secrets/index.js";
+import { rememberableRisk } from "./approval-policy.js";
 import type { Store } from "./store/store.js";
 
 export interface ChatTurn {
@@ -53,7 +54,8 @@ const SYSTEM =
   '  {"kind":"rename_project","name":"<new name>"}\n' +
   '  {"kind":"set_goal","goal":"<goal>"}\n' +
   '  {"kind":"set_autonomy","autonomy":true|false}\n' +
-  '  {"kind":"set_status","status":"active|paused|done"}';
+  '  {"kind":"set_status","status":"active|paused|done"}\n' +
+  '  {"kind":"allow_command","command":"<exact shell command>"}  (use when the operator says to "always allow" / "stop asking about" / "auto-approve" a command — only low/medium commands; refuse high-risk ones like git push, rm -rf, deploys)';
 
 /**
  * Prefetch a bounded snapshot of a project's repo — the top-level file list plus
@@ -102,7 +104,8 @@ export type ProjectActionKind =
   | "rename_project"
   | "set_goal"
   | "set_autonomy"
-  | "set_status";
+  | "set_status"
+  | "allow_command";
 
 export interface AssistantAction {
   kind: ProjectActionKind;
@@ -116,6 +119,7 @@ export interface AssistantAction {
   goal?: string;
   autonomy?: boolean;
   status?: Project["status"];
+  command?: string;
 }
 
 /** The grounding the action validator resolves ids against (this project only). */
@@ -190,6 +194,14 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
       const status = str(o.status) as Project["status"];
       if (!ProjectStatus.options.includes(status)) return null;
       return { kind, status, summary: `Set project status → ${status}` };
+    }
+    case "allow_command": {
+      // "Always allow <cmd>": add a standing auto-approval rule. Only low/medium
+      // commands are rememberable — high-risk / boundary ops always need a human,
+      // so the assistant can never turn them into a standing auto-approval.
+      const command = str(o.command);
+      if (!command || !rememberableRisk(command)) return null;
+      return { kind, command, summary: `Always allow: ${clip(command)}` };
     }
     default:
       return null;

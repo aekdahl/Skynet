@@ -374,10 +374,12 @@ export const ResolveRequest = z.object({
   action: ResolveAction,
   optionIndex: z.number().int().optional(),
   guidance: z.string().optional(),
-  // Approve-and-remember: on an `approve` of a command gate, add a standing
-  // "approve always" rule for this exact command to the project (only honored for
-  // rememberable — low/medium, non-deny — commands). Ignored otherwise.
-  remember: z.boolean().optional(),
+  // Approve-and-remember scope, on an `approve` of a command gate (ignored
+  // otherwise, and only honored for rememberable low/medium non-deny commands):
+  //   "project" — add a standing "approve always" rule to the project (persists)
+  //   "run"     — trust the rest of THIS run: its remaining low/medium command
+  //               gates auto-approve without asking (ephemeral, cleared at run end)
+  remember: z.enum(["run", "project"]).optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
 

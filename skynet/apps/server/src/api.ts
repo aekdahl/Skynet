@@ -353,6 +353,21 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Add a standing "approve always" rule (an exact low/medium command) to a
+  // project's approval policy. High-risk / deny commands are refused (400).
+  app.post<{ Params: { id: string }; Body: { command?: string } }>(
+    "/api/projects/:id/approval-rules",
+    async (req, reply) => {
+      const command = (req.body?.command ?? "").trim();
+      if (!command) return reply.code(400).send({ error: "A command is required." });
+      try {
+        return await ops.addApprovalRule(ws(req), req.params.id, command, req.principal!.operatorId);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
   // Revoke one standing "approve always" rule from a project's approval policy.
   app.delete<{ Params: { id: string; ruleId: string } }>(
     "/api/projects/:id/approval-rules/:ruleId",

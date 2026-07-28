@@ -281,12 +281,16 @@ export class Operations {
     // wins in the Hub; a later resolve returns the existing item, unchanged `at`).
     if (resolved && resolved.resolution?.at === resolution.at) {
       await this.orchestrator.deliver(item, resolution);
-      // Approve-and-remember: add a standing "approve always" rule for this exact
-      // command to the project, so identical future commands auto-approve. Honored
-      // only for rememberable (low/medium, non-deny) commands — boundary/high-risk
-      // ops can never become a persistent auto-approval. De-duped by command.
-      if (input.remember && input.action === "approve" && item.kind === "approval" && item.command) {
-        await this.rememberApproval(item.runId, item.command, operatorId);
+      // Approve-and-remember, on an approve of a command gate. `project` adds a
+      // standing "approve always" rule (persists); `run` trusts the rest of THIS
+      // run (ephemeral). Both honored only for rememberable low/medium commands —
+      // boundary/high-risk ops can never become an auto-approval.
+      if (input.action === "approve" && item.kind === "approval" && item.command) {
+        if (input.remember === "project") {
+          await this.rememberApproval(item.runId, item.command, operatorId);
+        } else if (input.remember === "run" && rememberableRisk(item.command)) {
+          this.orchestrator.trustRunCommands(item.runId);
+        }
       }
     }
     return resolved ?? item;
@@ -297,15 +301,23 @@ export class Operations {
    *  Best-effort — a non-rememberable command or a missing project is a silent
    *  no-op (the approval itself already succeeded). */
   private async rememberApproval(runId: string, command: string, operatorId: string): Promise<void> {
-    const cap = rememberableRisk(command);
-    if (!cap) return; // high-risk / boundary ops can never become a standing rule
     const run = await this.store.getRun(runId);
-    const project = run ? await this.store.getProject(run.projectId) : undefined;
-    if (!project) return;
+    if (!run) return;
+    await this.addApprovalRule(run.workspaceId, run.projectId, command, operatorId).catch(() => {});
+  }
+  /** Add a standing "approve always" rule for an exact command to a project (from
+   *  the assistant's "always allow" action, or a manual add). Rejects a command
+   *  that isn't rememberable (high-risk / deny can never become a standing rule);
+   *  de-dupes by normalized command. Returns the updated project. */
+  async addApprovalRule(ws: string, projectId: string, command: string, operatorId: string): Promise<Project> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const cap = rememberableRisk(command);
+    if (!cap) throw new Error("Only low/medium-risk commands can be always-allowed — high-risk / boundary ops always need a human.");
     const norm = normalizeCommand(command);
-    if (project.approvalRules.some((r) => normalizeCommand(r.command) === norm)) return; // de-dupe
+    if (project.approvalRules.some((r) => normalizeCommand(r.command) === norm)) return project; // de-dupe
     const rule = { id: this.uid("ar"), command: norm, riskCap: cap, createdBy: operatorId, createdAt: now() };
-    await this.hub.upsertProject({ ...project, approvalRules: [...project.approvalRules, rule] });
+    return this.hub.upsertProject({ ...project, approvalRules: [...project.approvalRules, rule] });
   }
 
   // ── agent actions ───────────────────────────────────────────────────────

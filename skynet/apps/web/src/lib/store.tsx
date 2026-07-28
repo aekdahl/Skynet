@@ -65,7 +65,7 @@ export interface Store extends StoreState {
   resolveHitl: (
     id: string,
     action: ResolveAction,
-    extra?: { optionIndex?: number; guidance?: string; remember?: boolean },
+    extra?: { optionIndex?: number; guidance?: string; remember?: "run" | "project" },
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
@@ -86,6 +86,7 @@ export interface Store extends StoreState {
     id: string,
     patch: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string },
   ) => Promise<void>;
+  addApprovalRule: (projectId: string, command: string) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   cloneProjectRepo: (id: string) => Promise<void>;
@@ -362,6 +363,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       updateProject: async (id, patch) => {
         await api.updateProject(id, patch);
+      },
+      addApprovalRule: async (projectId, command) => {
+        await api.addApprovalRule(projectId, command);
       },
       removeApprovalRule: async (projectId, ruleId) => {
         await api.removeApprovalRule(projectId, ruleId);

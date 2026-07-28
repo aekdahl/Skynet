@@ -68,6 +68,17 @@ describe("validateProjectAction — whitelist + project-scoped id resolution", (
     expect(a?.summary.length).toBeGreaterThan(0);
   });
 
+  it("allow_command only accepts low/medium commands (never high-risk / boundary)", () => {
+    expect(validateProjectAction({ kind: "allow_command", command: "npm test" }, ctx)).toMatchObject({
+      kind: "allow_command",
+      command: "npm test",
+    });
+    // High-risk / boundary ops can never become a standing auto-approval.
+    expect(validateProjectAction({ kind: "allow_command", command: "git push origin main" }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "allow_command", command: "rm -rf /" }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "allow_command", command: "" }, ctx)).toBeNull();
+  });
+
   it("rejects unknown kinds", () => {
     expect(validateProjectAction({ kind: "delete_project" }, ctx)).toBeNull();
     expect(validateProjectAction({}, ctx)).toBeNull();

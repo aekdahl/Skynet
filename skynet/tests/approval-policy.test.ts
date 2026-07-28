@@ -55,6 +55,17 @@ describe("decideAutoApproval — risk tier", () => {
   });
 });
 
+describe("decideAutoApproval — run trust ('approve rest of run')", () => {
+  it("auto-approves low+medium under a manual project when the run is trusted", () => {
+    expect(decideAutoApproval({ command: "ls", level: "manual", rules: [], runTrusted: true })?.by).toBe("policy:run");
+    expect(decideAutoApproval({ command: "npm install x", level: "manual", rules: [], runTrusted: true })?.by).toBe("policy:run");
+  });
+  it("still gates a high-risk / boundary command even when the run is trusted", () => {
+    expect(decideAutoApproval({ command: "git push origin main", level: "trusted", rules: [], runTrusted: true })).toBeNull();
+    expect(decideAutoApproval({ command: "rm -rf /", level: "trusted", rules: [], runTrusted: true })).toBeNull();
+  });
+});
+
 describe("decideAutoApproval — standing rules", () => {
   it("auto-approves an exact remembered command even under manual", () => {
     const d = decideAutoApproval({ command: "npm test", level: "manual", rules: [rule("npm test", "medium")] });

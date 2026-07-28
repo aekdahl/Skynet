@@ -31,13 +31,16 @@ export type AutoApproval = { by: string } | null;
  *  1. hard-DENY command → null (never auto-approve; also blocked at approve time).
  *  2. a standing rule matching the EXACT command → approve, but only while the
  *     command's CURRENT risk is still within the rule's cap (a rule can't widen).
- *  3. risk TIER: manual approves nothing; assisted approves low; trusted approves
+ *  3. run trust ("approve the rest of this run") → approve low+medium, overriding
+ *     the level for this run only. high-risk still gates.
+ *  4. risk TIER: manual approves nothing; assisted approves low; trusted approves
  *     low+medium. high-risk always gates (the trust boundary).
  */
 export function decideAutoApproval(input: {
   command: string | null | undefined;
   level: ApprovalLevel;
   rules: ApprovalRule[];
+  runTrusted?: boolean; // the operator chose "approve the rest of this run"
 }): AutoApproval {
   if (!input.command) return null; // commandless approval → always gate
   const command = normalizeCommand(input.command);
@@ -51,6 +54,10 @@ export function decideAutoApproval(input: {
     (r) => normalizeCommand(r.command) === command && RANK[verdict.risk] <= RANK[r.riskCap],
   );
   if (rule) return { by: `policy:rule:${rule.id}` };
+
+  // Run trust: the operator approved the rest of this run — auto-approve its
+  // low/medium commands regardless of level (high-risk still gates).
+  if (input.runTrusted && verdict.risk !== "high") return { by: "policy:run" };
 
   // Risk tier.
   if (input.level === "manual") return null;

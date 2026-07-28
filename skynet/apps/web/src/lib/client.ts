@@ -95,7 +95,7 @@ export function clearAudit() {
 // HITL
 export function resolveHitl(
   id: string,
-  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean },
+  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: "run" | "project" },
 ) {
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
 }
@@ -305,6 +305,10 @@ export function updateProject(
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
 }
+/** Add a standing "approve always" rule (exact low/medium command) to a project. */
+export function addApprovalRule(projectId: string, command: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/approval-rules`, { command });
+}
 /** Revoke one standing "approve always" rule from a project's approval policy. */
 export function removeApprovalRule(projectId: string, ruleId: string) {
   return req<unknown>("DELETE", `/api/projects/${projectId}/approval-rules/${ruleId}`);
@@ -356,7 +360,8 @@ export interface AssistantAction {
     | "rename_project"
     | "set_goal"
     | "set_autonomy"
-    | "set_status";
+    | "set_status"
+    | "allow_command";
   summary: string;
   taskId?: string;
   text?: string;
@@ -367,6 +372,7 @@ export interface AssistantAction {
   goal?: string;
   autonomy?: boolean;
   status?: string;
+  command?: string;
 }
 // Repo-aware project assistant — chat about the project's status + repo content,
 // and optionally propose a confirm-first project/task action.

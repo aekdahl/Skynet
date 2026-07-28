@@ -95,7 +95,7 @@ afterAll(() => {
 
 /** Assign a task to a fresh run whose scripted agent raises `command` at `risk`,
  *  under a project with the given approval `level`. Returns handles for asserting. */
-async function run(level: ApprovalLevel, command: string, risk: "low" | "medium" | "high") {
+async function run(level: ApprovalLevel, command: string, risk: "low" | "medium" | "high", opts: { trustRun?: boolean } = {}) {
   const store = new MemoryStore({ seed: false });
   const hub = new Hub(store, new NullBus());
   const provider = new ApprovalProvider(command, risk);
@@ -108,6 +108,9 @@ async function run(level: ApprovalLevel, command: string, risk: "low" | "medium"
   await store.putAgent({ id: `a-${pid}`, workspaceId: DEFAULT_WORKSPACE, name: "a", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 } as Agent);
   await store.putTask({ id: `t-${pid}`, workspaceId: DEFAULT_WORKSPACE, projectId: pid, text: "do it", state: "backlog", runId: null } as Task);
   const r = await orchestrator.assignTask(pid, `t-${pid}`);
+  // Trust the run BEFORE its (setTimeout-scheduled) gate fires, mirroring an
+  // operator picking "Allow rest of run" earlier in the run.
+  if (opts.trustRun) orchestrator.trustRunCommands(r.id);
   const openApproval = async (): Promise<HitlItem | undefined> =>
     (await store.listQueue(DEFAULT_WORKSPACE)).find((q) => q.runId === r.id && q.kind === "approval" && q.resolvedAt == null);
   const anyApproval = async (): Promise<HitlItem | undefined> =>
@@ -138,5 +141,12 @@ describe("approval policy — auto-resolve in the orchestrator", () => {
     await waitFor(async () => (await t.anyApproval()) != null);
     expect(await t.openApproval()).toBeDefined(); // boundary op — always a human
     expect(t.provider.resumes).toHaveLength(0);
+  });
+
+  it("run trust ('allow rest of run') auto-approves a manual project's medium command", async () => {
+    const t = await run("manual", "npm test", "medium", { trustRun: true });
+    await waitFor(async () => t.provider.resumes.length > 0);
+    expect(t.provider.resumes[0]!.by).toBe("policy:run");
+    expect(await t.openApproval()).toBeUndefined();
   });
 });

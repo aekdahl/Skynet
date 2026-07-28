@@ -930,6 +930,10 @@ button.kb-done:hover { opacity: 1; }
 .approval-rule-cmd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
 .approval-rule-x { border: none; background: none; color: var(--faint); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
 .approval-rule-x:hover { color: var(--danger); }
+.proj-approval-empty { font-size: 11.5px; color: var(--faint); }
+.approval-rule-add { display: inline-flex; align-items: center; gap: 4px; }
+.approval-rule-input { font-size: 11.5px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); width: 200px; }
+.approval-rule-err { font-size: 11px; color: var(--danger); flex-basis: 100%; }
 .kb-archive:hover { color: var(--text); background: var(--raised); }
 
 /* project-level Archived section */

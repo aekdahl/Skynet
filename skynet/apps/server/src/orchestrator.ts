@@ -90,6 +90,9 @@ export class Orchestrator {
   private chatWaiters = new Map<string, (reply: string) => void>();
   // Pending no-operator-answer timers for open `question` HITLs, keyed by item id.
   private questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Runs the operator chose to "approve the rest of this run" for: their remaining
+  // low/medium command gates auto-approve. Ephemeral — cleared when the run ends.
+  private runTrust = new Set<string>();
   private seq = 0;
   // Serializes runner acquisition (find-idle → mark-busy). The find and the busy
   // write are separated by an `await`, so without this two concurrent acquires
@@ -302,6 +305,7 @@ export class Orchestrator {
         command: raise.command,
         level: project?.approvalLevel ?? "trusted",
         rules: project?.approvalRules ?? [],
+        runTrusted: this.runTrust.has(runId),
       });
       if (auto) {
         await this.hub.raiseHitl(item);
@@ -316,6 +320,17 @@ export class Orchestrator {
     if (expiresAt != null) {
       this.questionTimers.set(item.id, setTimeout(() => void this.expireQuestion(item), timeout));
     }
+  }
+
+  /** "Approve the rest of this run": trust the run's remaining low/medium command
+   *  gates so they auto-approve without asking (high-risk / deny still gate).
+   *  Ephemeral — dropped when the run ends (see forgetRun). */
+  trustRunCommands(runId: string): void {
+    this.runTrust.add(runId);
+  }
+  /** Drop any ephemeral run-scoped trust once a run is no longer live. */
+  private forgetRun(runId: string): void {
+    this.runTrust.delete(runId);
   }
 
   /** No operator answered a `question` within its window: auto-resolve it as
@@ -380,6 +395,7 @@ export class Orchestrator {
         // revision — its worktree survives (retire only happens on merge).
         this.reviews.set(runId, { git: live.git, baseRef: live.baseRef, taskId: live.taskId });
         this.live.delete(runId);
+        this.forgetRun(runId);
         return;
       }
 
@@ -389,6 +405,7 @@ export class Orchestrator {
         await this.freeRunner(live.agentId);
         await this.hub.runStatus(runId, "review");
         this.live.delete(runId);
+        this.forgetRun(runId);
         return;
       }
 
@@ -407,6 +424,7 @@ export class Orchestrator {
       await this.hub.runStatus(runId, "review");
       await this.hub.runLog(runId, "concluded without an answer to its question — needs attention (no change made)");
       this.live.delete(runId);
+      this.forgetRun(runId);
       return;
     }
 
@@ -422,6 +440,7 @@ export class Orchestrator {
     await this.hub.runStatus(runId, "done");
     await this.hub.runCompleted(runId, branch);
     this.live.delete(runId);
+    this.forgetRun(runId);
   }
 
   /**
@@ -436,6 +455,7 @@ export class Orchestrator {
     await this.hub.runStatus(runId, "review"); // visible needs-attention, NOT "done"
     if (live?.git) await live.git.worktrees.retire(runId).catch(() => undefined);
     this.live.delete(runId);
+    this.forgetRun(runId);
   }
 
   /** Startup failed (no runner configured, worktree provisioning, runner.start
@@ -449,6 +469,7 @@ export class Orchestrator {
     const ctx = await this.gitContextForAgent(runId).catch(() => undefined);
     if (ctx) await ctx.worktrees.retire(runId).catch(() => undefined);
     this.live.delete(runId);
+    this.forgetRun(runId);
   }
 
   /** Return a runner to the idle pool (no-op if it's already gone). */
@@ -912,6 +933,7 @@ export class Orchestrator {
     if (live) {
       await live.handle.stop().catch(() => undefined);
       this.live.delete(runId);
+      this.forgetRun(runId);
     }
     // Integrated — retire the agent's worktree (the branch is kept in history).
     const ctx = await this.gitContextForAgent(runId).catch(() => undefined);
@@ -1232,6 +1254,7 @@ export class Orchestrator {
     if (ctx) await ctx.worktrees.retire(runId).catch(() => undefined);
     await this.hub.runLog(runId, reason);
     this.live.delete(runId);
+    this.forgetRun(runId);
   }
 
   /**

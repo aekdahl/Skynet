@@ -372,7 +372,7 @@ const ASSISTANT_SUGGESTIONS = [
 ];
 
 function ProjectAssistant({ projectId }: { projectId: string }) {
-  const { createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject } = useStore();
+  const { createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject, addApprovalRule } = useStore();
   const [open, setOpen] = useState(false);
   const [msgs, setMsgs] = useState<AsstMsg[]>([]);
   const [input, setInput] = useState("");
@@ -482,6 +482,7 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
       case "set_goal": return updateProject(projectId, { goal: a.goal });
       case "set_autonomy": return updateProject(projectId, { autonomy: a.autonomy });
       case "set_status": return updateProject(projectId, { status: a.status });
+      case "allow_command": return addApprovalRule(projectId, a.command ?? "");
     }
   };
 
@@ -584,6 +585,62 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
   );
 }
 
+// Manage a project's standing "approve always" commands: the list (with revoke)
+// plus a manual add. The server refuses high-risk / boundary commands, so a
+// rejected add surfaces its reason inline. Complements the header level selector.
+function ApprovalRulesPanel({ project }: { project: Project }) {
+  const { addApprovalRule, removeApprovalRule } = useStore();
+  const [draft, setDraft] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const rules = project.approvalRules ?? [];
+  const add = async () => {
+    const cmd = draft.trim();
+    if (!cmd || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await addApprovalRule(project.id, cmd);
+      setDraft("");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't add that command.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="proj-approval-rules">
+      <span className="proj-approval-rules-label mono">Always allowed</span>
+      {rules.length === 0 && (
+        <span className="proj-approval-empty">nothing yet — approve a command with “Always allow”, or add one →</span>
+      )}
+      {rules.map((r) => (
+        <span key={r.id} className="approval-rule-chip mono" title={`auto-approved (${r.riskCap}-risk) in this project`}>
+          <span className="approval-rule-cmd">$ {r.command}</span>
+          <button
+            className="approval-rule-x"
+            title="Revoke — this command will ask again"
+            onClick={() => removeApprovalRule(project.id, r.id)}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      <form className="approval-rule-add" onSubmit={(e) => { e.preventDefault(); void add(); }}>
+        <input
+          className="approval-rule-input mono"
+          placeholder="add a command…"
+          value={draft}
+          onChange={(e) => { setDraft(e.target.value); setErr(null); }}
+          disabled={busy}
+        />
+        <button className="btn btn-ghost btn-sm" type="submit" disabled={busy || !draft.trim()}>Add</button>
+      </form>
+      {err && <span className="approval-rule-err">{err}</span>}
+    </div>
+  );
+}
+
 export function ProjectView({
   project,
   now,
@@ -600,7 +657,6 @@ export function ProjectView({
     queue,
     tasks,
     updateProject,
-    removeApprovalRule,
     deleteProject,
     cloneProjectRepo,
     createTask,
@@ -737,23 +793,7 @@ export function ProjectView({
         </div>
       )}
 
-      {(project.approvalRules?.length ?? 0) > 0 && (
-        <div className="proj-approval-rules">
-          <span className="proj-approval-rules-label mono">Always allowed</span>
-          {project.approvalRules!.map((r) => (
-            <span key={r.id} className="approval-rule-chip mono" title={`auto-approved (${r.riskCap}-risk) in this project`}>
-              <span className="approval-rule-cmd">$ {r.command}</span>
-              <button
-                className="approval-rule-x"
-                title="Revoke — this command will ask again"
-                onClick={() => removeApprovalRule(project.id, r.id)}
-              >
-                ×
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
+      <ApprovalRulesPanel project={project} />
 
       {lead && (
         <div className="proj-delivery">
