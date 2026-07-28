@@ -920,6 +920,16 @@ button.kb-done:hover { opacity: 1; }
 .proj-autonomy-cb:checked + .proj-autonomy-switch::after { transform: translateX(14px); background: var(--bg); }
 .proj-autonomy-cb:focus-visible + .proj-autonomy-switch { outline: 2px solid var(--accent); outline-offset: 2px; }
 .proj-autonomy-label { font-weight: 500; }
+/* Approval-level selector + standing "always allowed" rules */
+.proj-approval { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-right: 4px; }
+.proj-approval-label { font-size: 11px; color: var(--faint); letter-spacing: 0.03em; }
+.proj-approval-select { font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; }
+.proj-approval-rules { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0; }
+.proj-approval-rules-label { font-size: 11px; color: var(--faint); letter-spacing: 0.03em; margin-right: 2px; }
+.approval-rule-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; font-size: 11.5px; padding: 2px 4px 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--raised); color: var(--muted); }
+.approval-rule-cmd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+.approval-rule-x { border: none; background: none; color: var(--faint); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+.approval-rule-x:hover { color: var(--danger); }
 .kb-archive:hover { color: var(--text); background: var(--raised); }
 
 /* project-level Archived section */

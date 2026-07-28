@@ -31,6 +31,7 @@ const ALLOW = new Set<string>([
   "fetchGithubInstallationRepos", "connectGithub", "disconnectGithub",
   "fetchGithubOwners", // lists org/user owners for repo creation — needs a live remote
   "cloneProjectRepo", // clones a connected GitHub repo — needs a live remote + token
+  "removeApprovalRule", // revokes a standing approval rule — needs a run that raised + remembered a command gate; no offline journey (covered by approval-policy.test.ts + the server route)
   // destructive bulk variants (the per-record paths ARE covered)
   "archiveAllAudit", "clearAudit",
   // low-value control-plane (runner rename/model tweak)
