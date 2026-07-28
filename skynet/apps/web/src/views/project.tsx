@@ -552,6 +552,7 @@ export function ProjectView({
   const [showArchived, setShowArchived] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [name, setName] = useState(project.name);
   const [goal, setGoal] = useState(project.goal);
 
@@ -622,6 +623,11 @@ export function ProjectView({
               <span className="proj-autonomy-switch" aria-hidden="true" />
               <span className="proj-autonomy-label">Autonomy</span>
             </label>
+            {project.repoPath && (
+              <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
+                ▶ Preview app
+              </button>
+            )}
             <button className="btn btn-ghost" onClick={() => setEditing(true)}>Edit</button>
             {confirmDel ? (
               <span className="del-confirm">
@@ -722,6 +728,139 @@ export function ProjectView({
           )}
         </div>
       )}
+
+      {previewOpen && <LivePreviewModal id={project.id} kind="project" title={"Live preview · " + project.name} onClose={() => setPreviewOpen(false)} />}
     </section>
+  );
+}
+
+// ─── Live preview modal (Phase-1 v0) ────────────────────────────────────────
+// Runs a web app (server-side, sandboxed) and iframes it here. Two callers:
+//   • PROJECT — the integration branch, refreshing as the fleet merges.
+//   • RUN ("Preview this change") — a single run's branch, PRE-merge, so an
+//     operator can verify a change before approving it. Pinned to the branch.
+// Polls status while open; the app runs on its own localhost origin so its code
+// can't reach the console. See docs/live-preview.md.
+const DEVICES: Record<string, number | null> = { Desktop: null, Tablet: 768, Mobile: 390 };
+
+export function LivePreviewModal({
+  id,
+  kind,
+  title,
+  onClose,
+}: {
+  id: string;
+  kind: "project" | "run";
+  title: string;
+  onClose: () => void;
+}) {
+  // Bind the four preview actions to the right surface (project vs run). Kept in
+  // a ref so the poll effect can stay keyed on the stable [id, kind].
+  const ctl =
+    kind === "run"
+      ? { status: () => api.runPreviewStatus(id), start: () => api.runPreviewStart(id), stop: () => api.runPreviewStop(id), restart: () => api.runPreviewRestart(id) }
+      : { status: () => api.previewStatus(id), start: () => api.previewStart(id), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
+  const ctlRef = useRef(ctl);
+  ctlRef.current = ctl;
+
+  const [st, setSt] = useState<api.PreviewState | null>(null);
+  const [device, setDevice] = useState<string>("Desktop");
+  const [showLogs, setShowLogs] = useState(false);
+  const [nonce, setNonce] = useState(0); // bump to reload the iframe
+  // Split-screen dock (default — watch the board + the app together) vs a
+  // full-bleed modal. Dock reserves board space via a root class (see CSS).
+  const [mode, setMode] = useState<"dock" | "modal">("dock");
+  const startedRef = useRef(false);
+
+  // Start on open (once), then poll status while the pane is mounted.
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const s = startedRef.current ? await ctlRef.current.status() : (startedRef.current = true, await ctlRef.current.start());
+        if (alive) setSt(s);
+      } catch {
+        /* transient */
+      }
+    };
+    void tick();
+    const iv = setInterval(tick, 1500);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  }, [id, kind]);
+
+  // Reserve right-hand board space while docked (removed on close / when modal).
+  useEffect(() => {
+    const root = document.documentElement;
+    if (mode === "dock") root.classList.add("lp-docked");
+    else root.classList.remove("lp-docked");
+    return () => root.classList.remove("lp-docked");
+  }, [mode]);
+
+  const width = DEVICES[device];
+  const live = st?.status === "live" && st.url;
+
+  const inner = (
+      <div className={"lp-modal lp-mode-" + mode} onClick={(e) => e.stopPropagation()}>
+        <div className="lp-bar">
+          <span className="lp-title">{title}</span>
+          <span className={"lp-status lp-status-" + (st?.status ?? "idle")}>
+            {st?.status === "live" ? "● live" : st?.status === "starting" ? "◐ starting…" : st?.status === "failed" ? "✕ failed" : st?.status ?? "…"}
+          </span>
+          {live && <span className="lp-url mono">{st!.url}</span>}
+          <span className="lp-spacer" />
+          <div className="lp-devices">
+            {Object.keys(DEVICES).map((d) => (
+              <button key={d} className={"lp-dev" + (d === device ? " on" : "")} onClick={() => setDevice(d)}>{d}</button>
+            ))}
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={() => setMode((m) => (m === "dock" ? "modal" : "dock"))} title={mode === "dock" ? "Expand to full screen" : "Dock beside the board"}>
+            {mode === "dock" ? "⤢ Expand" : "⇔ Dock"}
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setNonce((n) => n + 1)} title="Reload the app in the frame">↻ Reload</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { startedRef.current = false; void ctl.restart().then(setSt); }} title="Restart the preview server">⟳ Restart</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { setShowLogs((s) => !s); }}>Logs</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { void ctl.stop(); onClose(); }}>✕ Close</button>
+        </div>
+
+        <div className="lp-body">
+          {live ? (
+            <div className="lp-frame-wrap">
+              <iframe
+                key={nonce}
+                className="lp-frame"
+                style={width ? { width, margin: "0 auto" } : undefined}
+                src={st!.url!}
+                title="app preview"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              />
+            </div>
+          ) : (
+            <div className="lp-placeholder">
+              <div className={"lp-ph-dot lp-status-" + (st?.status ?? "idle")} />
+              <div className="lp-ph-msg">
+                {st?.status === "failed" ? (st.error ?? "Preview failed.") : st?.status === "starting" ? "Starting the app…" : "Preparing preview…"}
+              </div>
+              {st?.recipe && <div className="lp-ph-cmd mono">$ {st.recipe.cmd}</div>}
+              {st?.status === "failed" && (
+                <button className="btn btn-primary btn-sm" onClick={() => { startedRef.current = false; void ctl.restart().then(setSt); }}>Retry</button>
+              )}
+            </div>
+          )}
+          {showLogs && (
+            <pre className="lp-logs mono">{(st?.logs ?? []).join("\n") || "(no output yet)"}</pre>
+          )}
+        </div>
+      </div>
+  );
+
+  // Modal dims the board behind it; dock sits beside it (no backdrop) so the
+  // operator can keep working while the app updates live.
+  return mode === "modal" ? (
+    <div className="lp-backdrop" onClick={onClose}>{inner}</div>
+  ) : (
+    <div className="lp-dock">{inner}</div>
   );
 }

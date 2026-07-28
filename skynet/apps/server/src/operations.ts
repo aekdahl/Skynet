@@ -35,6 +35,7 @@ import { assertApprovable, CommandDeniedError } from "./command-safety.js";
 import { config, now } from "./config.js";
 import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
+import { projectPreview, type PreviewState } from "./preview/project-preview.js";
 import { githubService } from "./github/index.js";
 import { answerProjectQuestion, answerProjectQuestionStream, type ChatTurn } from "./project-assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
@@ -192,6 +193,54 @@ export class Operations {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
     return project;
+  }
+
+  // ── live preview (Phase-1 v0) ─────────────────────────────────────────────
+  previewState(ws: string, projectId: string): Promise<PreviewState> {
+    return this.getProject(ws, projectId).then(() => projectPreview.state(projectId));
+  }
+  async previewStart(ws: string, projectId: string): Promise<PreviewState> {
+    const project = await this.getProject(ws, projectId);
+    if (!project.repoPath) throw new Error("This project has no local folder to preview.");
+    return projectPreview.start(projectId, project.repoPath, ws);
+  }
+  async previewRestart(ws: string, projectId: string): Promise<PreviewState> {
+    const project = await this.getProject(ws, projectId);
+    if (!project.repoPath) throw new Error("This project has no local folder to preview.");
+    return projectPreview.restart(projectId, project.repoPath, ws);
+  }
+  async previewStop(ws: string, projectId: string): Promise<PreviewState> {
+    await this.getProject(ws, projectId);
+    return projectPreview.stop(projectId);
+  }
+  async previewRefresh(ws: string, projectId: string): Promise<PreviewState> {
+    await this.getProject(ws, projectId);
+    return projectPreview.refresh(projectId);
+  }
+
+  // ── per-run pre-merge preview ("Preview this change") ─────────────────────
+  // Preview a single run's branch (`agent/<runId>`) BEFORE it merges, so an
+  // operator can verify the change visually. Scoped to the run's workspace; the
+  // run's project must have a local folder.
+  async runPreviewState(ws: string, runId: string): Promise<PreviewState> {
+    await this.getRun(ws, runId);
+    return projectPreview.state(`run:${runId}`);
+  }
+  private async runPreviewOpts(ws: string, runId: string) {
+    const run = await this.getRun(ws, runId);
+    const project = await this.getProject(ws, run.projectId);
+    if (!project.repoPath) throw new Error("This project has no local folder to preview.");
+    return { repoPath: project.repoPath, projectId: run.projectId, branch: run.branch, workspaceId: ws };
+  }
+  async runPreviewStart(ws: string, runId: string): Promise<PreviewState> {
+    return projectPreview.startRun(runId, await this.runPreviewOpts(ws, runId));
+  }
+  async runPreviewRestart(ws: string, runId: string): Promise<PreviewState> {
+    return projectPreview.restartRun(runId, await this.runPreviewOpts(ws, runId));
+  }
+  async runPreviewStop(ws: string, runId: string): Promise<PreviewState> {
+    await this.getRun(ws, runId);
+    return projectPreview.stop(`run:${runId}`);
   }
 
   // ── HITL ──────────────────────────────────────────────────────────────────

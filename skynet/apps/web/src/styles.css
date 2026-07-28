@@ -1785,3 +1785,35 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .asst-err { font-size: 12.5px; color: var(--danger); }
 .asst-input { display: flex; gap: 8px; }
 .asst-input .qx-input { flex: 1; }
+
+/* ── Live preview (Phase-1 v0) — split-screen dock or full modal ──────────── */
+.lp-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 2147483646; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.lp-modal { display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+/* Modal: centered, large. */
+.lp-mode-modal { width: min(1200px, 96vw); height: min(860px, 92vh); }
+/* Dock: a fixed right-hand pane; the board (below) reserves space via lp-docked. */
+.lp-dock { position: fixed; top: 40px; right: 0; bottom: 0; width: 44vw; min-width: 420px; z-index: 2147483645; display: flex; padding: 8px 8px 8px 0; }
+.lp-dock .lp-modal { flex: 1; height: 100%; border-radius: 10px; box-shadow: -8px 0 24px rgba(0,0,0,.35); }
+:root.lp-docked .main { padding-right: 44vw; }
+@media (max-width: 1100px) { .lp-dock { width: 60vw; } :root.lp-docked .main { padding-right: 60vw; } }
+.lp-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); flex-wrap: wrap; }
+.lp-title { font-weight: 600; font-size: 13px; }
+.lp-status { font-size: 11px; font-family: var(--font-mono, monospace); }
+.lp-status-live { color: var(--ok); }
+.lp-status-starting { color: var(--warn); }
+.lp-status-failed { color: var(--danger, #e66); }
+.lp-url { font-size: 11px; color: var(--muted); }
+.lp-spacer { flex: 1; }
+.lp-devices { display: flex; gap: 2px; }
+.lp-dev { font-size: 11px; padding: 3px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); border-radius: 6px; cursor: pointer; }
+.lp-dev.on { color: var(--text); border-color: var(--accent); }
+.lp-body { flex: 1; display: flex; flex-direction: column; min-height: 0; background: #fff0; }
+.lp-frame-wrap { flex: 1; min-height: 0; background: var(--bg); overflow: auto; }
+.lp-frame { width: 100%; height: 100%; min-height: 400px; border: none; background: #fff; display: block; }
+.lp-placeholder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--muted); }
+.lp-ph-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--faint); }
+.lp-ph-dot.lp-status-starting { background: var(--warn); }
+.lp-ph-dot.lp-status-failed { background: var(--danger, #e66); }
+.lp-ph-msg { font-size: 13px; max-width: 60ch; text-align: center; }
+.lp-ph-cmd { font-size: 11px; color: var(--faint); }
+.lp-logs { max-height: 30%; overflow: auto; margin: 0; padding: 10px 12px; font-size: 11px; color: var(--muted); background: var(--bg); border-top: 1px solid var(--line-soft); white-space: pre-wrap; }

@@ -20,6 +20,7 @@ import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { providerUsableFromEnv } from "./provider-env.js";
 import { secretService } from "./secrets/index.js";
 import { previewService } from "./preview/index.js";
+import { projectPreview } from "./preview/project-preview.js";
 import type { Store } from "./store/store.js";
 import { WorktreeProvisioner } from "./worktrees.js";
 
@@ -892,6 +893,9 @@ export class Orchestrator {
     // Integrated — retire the agent's worktree (the branch is kept in history).
     const ctx = await this.gitContextForAgent(runId).catch(() => undefined);
     if (ctx) await ctx.worktrees.retire(runId).catch(() => undefined);
+    // A change just landed on the integration branch → nudge a live preview to
+    // re-point at the new tip so the operator sees the app update (docs/live-preview.md).
+    if (agent?.projectId) void projectPreview.refresh(agent.projectId).catch(() => undefined);
   }
 
   /**
