@@ -383,6 +383,22 @@ kbd {
 .log-foldable > summary { cursor: pointer; color: var(--muted); }
 .log-foldable > summary:hover { color: var(--text); }
 .log-detail { margin: 4px 0 6px 14px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line-soft); border-radius: 6px; color: var(--faint); white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow: auto; font-size: 11.5px; }
+/* Conversation turns inside the log — operator + agent bubbles interleaved with
+   telemetry, so the log reads as one timeline you can also talk in. */
+.log-turn { display: flex; flex-direction: column; gap: 3px; max-width: 88%; margin: 5px 0; padding: 8px 11px; border-radius: 10px; font-family: var(--font-ui); font-size: 13px; line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+.log-turn-agent { align-self: flex-start; background: var(--raised); border: 1px solid var(--line-soft); }
+.log-turn-you { align-self: flex-end; background: color-mix(in oklch, var(--accent), transparent 88%); border: 1px solid color-mix(in oklch, var(--accent), transparent 70%); }
+.log-who { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.log-turn-you .log-who { color: var(--accent); }
+.log-turn-text .log-cursor { margin-left: 1px; }
+/* Respond-here footer: decision quick-actions (when waiting) + composer */
+.log-compose { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.log-compose-blocked { margin: 12px -14px -14px; padding: 12px 14px; border-top: 1px solid var(--warn); background: color-mix(in oklch, var(--warn), transparent 93%); border-radius: 0 0 12px 12px; }
+.log-decision { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.log-decision-title { font-size: 13px; color: var(--text); font-weight: 500; min-width: 0; }
+.log-decision-actions { display: inline-flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.log-composer { display: flex; gap: 8px; }
+.log-composer .qx-line { flex: 1; }
 @media (prefers-reduced-motion: no-preference) {
   .log-cursor { animation: blink 1.1s step-end infinite; }
   @keyframes blink { 50% { opacity: 0; } }
@@ -1174,8 +1190,6 @@ button.kb-done:hover { opacity: 1; }
 
 /* ===== agent chat ===== */
 .detail-blocked-hint { font-size: 11px; color: var(--faint); padding: 8px 2px 0; }
-.panel-chat { margin-top: var(--sp); display: flex; flex-direction: column; gap: 10px; }
-.panel-chat .qx-thread { max-height: 260px; }
 
 .detail-blocked-wrap { display: flex; flex-direction: column; gap: 0; }
 .detail-modify { background: var(--panel); border: 1px solid var(--line); border-top: none; border-radius: 0 0 10px 10px; padding: 14px; margin-top: -4px; }
