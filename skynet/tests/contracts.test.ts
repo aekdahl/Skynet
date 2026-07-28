@@ -23,6 +23,7 @@ const agent: TaskRun = {
   status: "waiting",
   agentId: "runner-01",
   provider: "claude",
+  credentialId: null,
   model: "opus-4.5",
   branch: "agent/billing-hooks",
   modules: ["api/billing", "db/migrations"],
