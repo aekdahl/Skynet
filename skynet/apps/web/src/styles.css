@@ -1027,6 +1027,13 @@ button.kb-done:hover { opacity: 1; }
 .settings-key { display: flex; align-items: center; gap: 8px; }
 .settings-input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; color: var(--text); font-family: var(--font-mono); font-size: 12px; }
 .settings-input:focus { outline: none; border-color: var(--accent); }
+/* named credentials ("duplicates") beneath a provider row */
+.settings-cred { display: flex; align-items: center; gap: 8px; border-top: 1px dashed var(--line); padding-top: 10px; }
+.settings-cred-name { flex: none; min-width: 180px; font-size: 12px; color: var(--text); }
+.settings-dup { display: flex; align-items: center; gap: 8px; }
+.settings-dup-add { background: none; border: none; padding: 2px 0; font-family: var(--font-ui); font-size: 12px; color: var(--muted); cursor: pointer; text-align: left; }
+.settings-dup-add:hover { color: var(--accent); }
+.cfg-cred { max-width: 320px; }
 .settings-setup { display: flex; align-items: center; gap: 16px; max-width: 720px; margin-top: var(--sp); padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
 
 /* ── Advanced (env) settings ──────────────────────────────────────────────── */

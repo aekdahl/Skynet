@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import type { ProviderId, ProviderInfo, Agent } from "@skynet/shared";
+import type { ProviderId, ProviderInfo, Agent, SecretMeta } from "@skynet/shared";
 import { useStore } from "../lib/store";
+import * as api from "../lib/client";
 import { providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy } from "../lib/derive";
 
 export function ConfigForm({
@@ -9,7 +10,7 @@ export function ConfigForm({
   onCancel,
 }: {
   initial?: Agent;
-  onSave: (r: { name: string; provider: ProviderId; model: string }) => void;
+  onSave: (r: { name: string; provider: ProviderId; model: string; credentialId?: string }) => void;
   onCancel: () => void;
 }) {
   const { providers } = useStore();
@@ -24,11 +25,22 @@ export function ConfigForm({
   const selectedReq = selected.requirements;
   const models = selected.models;
   const [model, setModel] = useState(initial ? initial.model : (models[0] ?? ""));
+  // Named credentials for the picker (default + any "duplicates" of the provider).
+  const [creds, setCreds] = useState<SecretMeta[]>([]);
+  const [credentialId, setCredentialId] = useState<string>(initial?.credentialId ?? "");
+
+  useEffect(() => {
+    void api.fetchSecrets().then((r) => setCreds(r.secrets)).catch(() => setCreds([]));
+  }, []);
 
   useEffect(() => {
     if (!models.includes(model)) setModel(models[0] ?? "");
+    setCredentialId(""); // a credential belongs to one provider — reset on switch
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
+
+  // Named credentials for the selected provider (the default is the "" option).
+  const namedCreds = creds.filter((c) => c.provider === provider && !c.isDefault);
 
   return (
     <div className="cfg">
@@ -103,10 +115,27 @@ export function ConfigForm({
           ))}
         </div>
       </div>
+      {namedCreds.length > 0 && (
+        <div className="cfg-row">
+          <label className="cfg-label">Credential</label>
+          <select
+            className="qx-input cfg-cred"
+            value={credentialId}
+            onChange={(e) => setCredentialId(e.target.value)}
+          >
+            <option value="">Default {selected.name} key</option>
+            {namedCreds.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} ····{c.last4}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <div className="qx-row">
         <button
           className="btn btn-primary"
-          onClick={() => onSave({ name: name.trim(), provider, model })}
+          onClick={() => onSave({ name: name.trim(), provider, model, credentialId: credentialId || undefined })}
         >
           {initial ? "Save changes" : "Add to fleet"}
         </button>
@@ -161,7 +190,7 @@ export function FleetView({
           <div className="panel-head">NEW AGENT</div>
           <ConfigForm
             onSave={(r) => {
-              createAgent(r.provider, r.model, r.name || undefined);
+              createAgent(r.provider, r.model, r.name || undefined, r.credentialId);
               setAdding(false);
             }}
             onCancel={() => setAdding(false)}

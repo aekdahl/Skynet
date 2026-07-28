@@ -17,6 +17,10 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [disabled, setDisabled] = useState(false);
+  // "Duplicate a provider" — a named second key. Keyed by provider id.
+  const [dupOpen, setDupOpen] = useState<string | null>(null);
+  const [dupName, setDupName] = useState("");
+  const [dupKey, setDupKey] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -31,7 +35,25 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
     void load();
   }, [load]);
 
-  const configured = new Map((metas ?? []).map((m) => [m.provider, m]));
+  const duplicate = async (provider: string) => {
+    const name = dupName.trim();
+    const key = dupKey.trim();
+    if (!name || !key) return;
+    setBusy(`dup:${provider}`);
+    setErr(null);
+    try {
+      await api.createCredential({ provider, name, apiKey: key });
+      setDupOpen(null);
+      setDupName("");
+      setDupKey("");
+      await load();
+    } catch (e) {
+      if (e instanceof api.ApiError && e.status === 501) setDisabled(true);
+      else setErr(`Couldn't add the credential: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const save = async (id: string) => {
     const key = (drafts[id] ?? "").trim();
@@ -93,7 +115,10 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
 
       <div className="settings-list">
         {providers.map((p) => {
-          const meta = configured.get(p.id);
+          // The default credential (id === provider) is this row's main key; any
+          // named "duplicates" of the provider list beneath it.
+          const meta = (metas ?? []).find((m) => m.provider === p.id && m.isDefault);
+          const named = (metas ?? []).filter((m) => m.provider === p.id && !m.isDefault);
           const envBacked = envSet.has(p.id);
           const draft = drafts[p.id] ?? "";
           const req = p.requirements;
@@ -182,6 +207,68 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                   )}
                 </div>
               )}
+
+              {/* Named credentials ("duplicates") for this provider + add-another. */}
+              {named.map((c) => (
+                <div className="settings-cred" key={c.id}>
+                  <span className="settings-cred-name">
+                    {c.name} <span className="settings-ok mono">····{c.last4}</span>
+                  </span>
+                  <input
+                    type="password"
+                    className="settings-input"
+                    autoComplete="off"
+                    placeholder="Rotate key…"
+                    value={drafts[c.id] ?? ""}
+                    onChange={(e) => setDrafts((d) => ({ ...d, [c.id]: e.target.value }))}
+                    onKeyDown={(e) => e.key === "Enter" && save(c.id)}
+                  />
+                  <button className="btn btn-ghost" disabled={busy === c.id || !(drafts[c.id] ?? "").trim()} onClick={() => save(c.id)}>
+                    Rotate
+                  </button>
+                  <button className="btn btn-ghost btn-retire" disabled={busy === c.id} onClick={() => remove(c.id)}>
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <div className="settings-dup">
+                {dupOpen === p.id ? (
+                  <>
+                    <input
+                      className="settings-input"
+                      placeholder={`Name (e.g. ${p.name} for Business)`}
+                      value={dupName}
+                      onChange={(e) => setDupName(e.target.value)}
+                    />
+                    <input
+                      type="password"
+                      className="settings-input"
+                      autoComplete="off"
+                      placeholder="API key"
+                      value={dupKey}
+                      onChange={(e) => setDupKey(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && duplicate(p.id)}
+                    />
+                    <button
+                      className="btn btn-primary"
+                      disabled={busy === `dup:${p.id}` || !dupName.trim() || !dupKey.trim()}
+                      onClick={() => duplicate(p.id)}
+                    >
+                      Add credential
+                    </button>
+                    <button className="btn btn-ghost" onClick={() => { setDupOpen(null); setDupName(""); setDupKey(""); }}>
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="settings-dup-add"
+                    onClick={() => { setDupOpen(p.id); setDupName(""); setDupKey(""); }}
+                  >
+                    + Duplicate — add another {p.name} key (e.g. a work account)
+                  </button>
+                )}
+              </div>
             </div>
           );
         })}

@@ -234,11 +234,17 @@ export function restartEngine() {
 export function fetchSecrets() {
   return req<{ secrets: SecretMeta[]; env: string[] }>("GET", "/api/secrets");
 }
-export function setSecret(provider: string, apiKey: string) {
-  return req<{ secret: SecretMeta }>("PUT", `/api/secrets/${provider}`, { apiKey });
+// `id` is a credential id: a provider (e.g. "claude") targets that provider's
+// default credential; a `cred-…` id targets a named one.
+export function setSecret(id: string, apiKey: string) {
+  return req<{ secret: SecretMeta }>("PUT", `/api/secrets/${id}`, { apiKey });
 }
-export function deleteSecret(provider: string) {
-  return req<unknown>("DELETE", `/api/secrets/${provider}`);
+export function deleteSecret(id: string) {
+  return req<unknown>("DELETE", `/api/secrets/${id}`);
+}
+/** Create a NAMED credential (a "duplicate" of a provider) with its own key. */
+export function createCredential(body: { provider: string; name: string; apiKey: string }) {
+  return req<{ secret: SecretMeta }>("POST", "/api/credentials", body);
 }
 
 // ─── Service tokens (MCP / programmatic access) ────────────────────────────
@@ -464,7 +470,7 @@ export function moveTask(projectId: string, taskId: string, direction: "up" | "d
 }
 
 // Fleet
-export function createAgent(body: { provider: string; model: string; name?: string }) {
+export function createAgent(body: { provider: string; model: string; name?: string; credentialId?: string }) {
   return req<unknown>("POST", "/api/fleet/runners", body);
 }
 export function updateAgent(id: string, body: { model?: string; name?: string }) {

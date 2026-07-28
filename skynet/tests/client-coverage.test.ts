@@ -30,6 +30,7 @@ const ALLOW = new Set<string>([
   "startGithubDevice", "pollGithubDevice", "fetchGithubInstallations",
   "fetchGithubInstallationRepos", "connectGithub", "disconnectGithub",
   "fetchGithubOwners", // lists org/user owners for repo creation — needs a live remote
+  "createCredential", // adds a named provider key — needs a live provider key, no offline journey
   "cloneProjectRepo", // clones a connected GitHub repo — needs a live remote + token
   // destructive bulk variants (the per-record paths ARE covered)
   "archiveAllAudit", "clearAudit",
