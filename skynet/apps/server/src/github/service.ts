@@ -4,7 +4,7 @@
 // workspace's policy, runs the safety preflight, and only then mints a token and
 // performs the remote push + PR. Agents never see any of this.
 
-import { SAFETY_DEFAULTS, type GithubConnection, type GithubInstallation, type GithubRepo, type SafetyPolicy } from "@skynet/shared";
+import { SAFETY_DEFAULTS, type GithubConnection, type GithubInstallation, type GithubOwner, type GithubRepo, type SafetyPolicy } from "@skynet/shared";
 import { config } from "../config.js";
 import { masterKey, open, seal } from "../secrets/crypto.js";
 import { mintViaBroker } from "./broker.js";
@@ -161,6 +161,52 @@ export class GithubService {
     } catch {
       return [];
     }
+  }
+
+  /** Accounts a new repo can be created under: the authenticated user, plus any
+   *  orgs they belong to. Orgs are best-effort (an App installation token can't
+   *  list a user's orgs — that path just returns the user). */
+  async listRepoOwners(workspaceId: string): Promise<GithubOwner[]> {
+    const conn = await this.store.get(workspaceId);
+    const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
+    if (!conn || !ready) return [];
+    const token = await this.resolveToken(conn);
+    const me = await this.provider.viewer(token);
+    const owners: GithubOwner[] = [{ login: me.login, type: "user" }];
+    try {
+      for (const org of await this.provider.listOrgs(token)) owners.push({ login: org, type: "org" });
+    } catch {
+      /* orgs are best-effort */
+    }
+    return owners;
+  }
+
+  /** Create a new GitHub repo for this workspace and register it on the
+   *  connection (selected) so it shows up in pickers. `owner` is the user's login
+   *  (→ /user/repos) or an org login (→ /orgs/:org/repos). The repo is
+   *  auto-initialized so a project bound to it can clone immediately. */
+  async createRepo(
+    workspaceId: string,
+    spec: { name: string; private: boolean; owner?: string },
+    opts: { description?: string } = {},
+  ): Promise<GithubRepo> {
+    const conn = await this.store.get(workspaceId);
+    const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
+    if (!conn || !ready) throw new Error("GitHub is not connected for this workspace");
+    if (conn.auth === "app" && !this.appHasCreds) throw new Error("GitHub App is not configured on the server");
+    const token = await this.resolveToken(conn);
+    const me = await this.provider.viewer(token);
+    const org = spec.owner && spec.owner !== me.login ? spec.owner : undefined;
+    const repo = await this.provider.createRepo(token, {
+      name: spec.name,
+      private: spec.private,
+      description: opts.description,
+      org,
+    });
+    if (!conn.repos.some((r) => r.name === repo.name)) {
+      await this.store.put({ ...conn, repos: [{ ...repo, selected: true }, ...conn.repos] });
+    }
+    return repo;
   }
 
   /** Patch the safety policy. Returns undefined if the workspace isn't connected. */

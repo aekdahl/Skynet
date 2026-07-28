@@ -326,7 +326,12 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post("/api/projects", async (req, reply) => {
     const body = CreateProjectRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
-    return ops.createProject(ws(req), body.data);
+    try {
+      return await ops.createProject(ws(req), body.data);
+    } catch (err) {
+      // createRepo can fail (bad token, name taken, missing scope) — surface it.
+      return fail(reply, err);
+    }
   });
 
   app.patch<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {

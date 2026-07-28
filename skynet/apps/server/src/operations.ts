@@ -284,9 +284,20 @@ export class Operations {
 
   // ── projects ──────────────────────────────────────────────────────────────
   async createProject(ws: string, input: CreateProjectRequest): Promise<Project> {
+    // "Create a new repo" binding: make the GitHub repo FIRST (outward-facing, so
+    // it's gated behind an explicit confirm in the UI) and bind the project to it.
+    // If this throws (bad token, name taken, missing scope) the project is never
+    // created — the operator sees the GitHub error, not an orphaned project. A new
+    // repo supersedes any local folder; the fresh repo is auto-cloned below.
+    let repo = input.repo;
+    let repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
+    if (input.createRepo) {
+      const created = await githubService.createRepo(ws, input.createRepo, { description: input.goal });
+      repo = created.name; // "owner/repo"
+      repoPath = null;
+    }
     // A local repoPath that contains a .git is git-backed → Skynet auto-manages a
     // worktree per agent + the merge queue against it (desktop-first default).
-    const repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
     const project: Project = {
       id: this.uid("p"),
       workspaceId: ws,
@@ -297,7 +308,7 @@ export class Operations {
       autonomy: true,
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
-      repo: input.repo,
+      repo,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);

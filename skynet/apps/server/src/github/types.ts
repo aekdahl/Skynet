@@ -63,6 +63,13 @@ export interface GitProvider {
   viewer(token: string): Promise<{ login: string }>;
   /** Repos a token can access (PAT mode), as selectable GithubRepo records. */
   listRepos(token: string): Promise<GithubRepo[]>;
+  /** Org logins the token's user belongs to (owner picker for new repos). */
+  listOrgs(token: string): Promise<string[]>;
+  /** Create a new repo under the user or an org; returns it as a GithubRepo. */
+  createRepo(
+    token: string,
+    spec: { name: string; private: boolean; description?: string; org?: string },
+  ): Promise<GithubRepo>;
   /** App installations the user token can see (broker mode — install picker). */
   listInstallations(token: string): Promise<GithubInstallation[]>;
   /** Repos within one installation the user token can see (broker mode). */

@@ -346,13 +346,33 @@ export type ResolveRequest = z.infer<typeof ResolveRequest>;
 export const ChatRequest = z.object({ text: z.string().min(1) });
 export type ChatRequest = z.infer<typeof ChatRequest>;
 
+// Ask Skynet to create a brand-new GitHub repo at project-creation time, then
+// bind the project to it. `owner` is the authenticated user's login or one of
+// their org logins (defaults to the user). GitHub repo names allow letters,
+// digits, `.`, `-`, `_`.
+export const CreateRepoSpec = z.object({
+  name: z.string().min(1).max(100).regex(/^[A-Za-z0-9._-]+$/, "letters, digits, . - _ only"),
+  private: z.boolean().default(true),
+  owner: z.string().optional(),
+});
+export type CreateRepoSpec = z.infer<typeof CreateRepoSpec>;
+
 export const CreateProjectRequest = z.object({
   name: z.string().min(1),
   goal: z.string().default(""),
   repoPath: z.string().optional(), // absolute path to a local folder to work in
   repo: z.string().optional(), // or bind to one connected GitHub repo at creation
+  createRepo: CreateRepoSpec.optional(), // or have Skynet create a new repo and bind it
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
+
+// A GitHub account a new repo can be created under: the authenticated user, or
+// an org they belong to. Used to populate the "New repo" owner picker.
+export const GithubOwner = z.object({
+  login: z.string(),
+  type: z.enum(["user", "org"]),
+});
+export type GithubOwner = z.infer<typeof GithubOwner>;
 
 export const UpdateProjectRequest = z.object({
   name: z.string().min(1).optional(),
