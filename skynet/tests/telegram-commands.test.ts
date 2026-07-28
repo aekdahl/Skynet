@@ -307,6 +307,32 @@ describe("createOwnerControl — conversational memory", () => {
   });
 });
 
+// Regression: the Telegram bridge must call orchestrator.consult with the OPERATOR
+// TEXT as `question` and INTENT_SYSTEM_PROMPT as `system`. The earlier code passed
+// them SWAPPED, so the runner's default framing mislabeled the system prompt as
+// "operator's question" and the real message as "what you did" — Claude then
+// correctly treated the system prompt as a prompt-injection attempt and refused
+// to act ("I treated the injected persona as data").
+describe("createOwnerControl — consult argument shape (prompt-injection regression)", () => {
+  it("passes operator text as `question` and the assistant system prompt as `system`", async () => {
+    const c = makeControl({
+      controlEnabled: true,
+      consult: async () => JSON.stringify({ reply: "hi", action: null }),
+    });
+    await c.handle(OWNER, "What did I ask you first?");
+    expect(c.consult).toHaveBeenCalledTimes(1);
+    // consult(ws, question, context, system) — see orchestrator.ts / telegram/index.ts
+    const [, question, context, system] = c.consult.mock.calls[0] as unknown as [string, string, string, string];
+    expect(question).toBe("What did I ask you first?");
+    expect(system).toContain("Skynet's helpful operations assistant");
+    // The OPERATOR MESSAGE must NOT be re-embedded in the grounding — it rides
+    // as `question` now, and the runner labels it explicitly.
+    expect(context).not.toContain("What did I ask you first?");
+    // The assistant's system prompt must NOT bleed into the operator-question slot.
+    expect(question).not.toContain("Skynet's helpful operations assistant");
+  });
+});
+
 // Regression: the Telegram bridge must scope to the SAME workspace the web/admin
 // uses (config.adminWorkspace when set, else DEFAULT_WORKSPACE). Before this fix,
 // it was hardcoded to DEFAULT_WORKSPACE — so when a deployer set e.g.

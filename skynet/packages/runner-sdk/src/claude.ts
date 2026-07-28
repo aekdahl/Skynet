@@ -1060,11 +1060,22 @@ function consultQuery(
 ): { prompt: string; cwd: string; model: string; env: Record<string, string> } {
   const base = buildRunnerEnv();
   const env = spec.apiKey ? { ...base, ANTHROPIC_API_KEY: spec.apiKey } : base;
-  const prompt =
-    "You are an AI coding agent that has FINISHED a task. Answer the operator's follow-up " +
-    "question directly and concisely, based on what you did. Do NOT use any tools — just explain.\n\n" +
-    `Task: ${spec.task}\n` +
-    (spec.context ? `What you did (your log / final answer):\n${spec.context}\n` : "") +
-    `\nOperator's question: ${question}`;
+  // Two framings share this function:
+  //   • spec.system set  → caller owns the ROLE (e.g. Telegram intent classifier
+  //     with its own "you are Skynet's assistant, return {reply, action}" prompt).
+  //     `question` is the actual operator message (untrusted data — the caller's
+  //     system prompt already says how to treat it); `context` is the grounding.
+  //   • spec.system unset → the original use case: a FINISHED agent answering an
+  //     operator follow-up about what it did. `context` is the agent's own log,
+  //     `question` the operator's follow-up.
+  const prompt = spec.system
+    ? `${spec.system}\n\n` +
+      (spec.context ? `=== GROUNDING ===\n${spec.context}\n\n` : "") +
+      `=== OPERATOR MESSAGE ===\n${question}`
+    : "You are an AI coding agent that has FINISHED a task. Answer the operator's follow-up " +
+      "question directly and concisely, based on what you did. Do NOT use any tools — just explain.\n\n" +
+      `Task: ${spec.task}\n` +
+      (spec.context ? `What you did (your log / final answer):\n${spec.context}\n` : "") +
+      `\nOperator's question: ${question}`;
   return { prompt, cwd: spec.cwd ?? process.cwd(), model: spec.model, env };
 }

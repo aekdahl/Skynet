@@ -101,7 +101,7 @@ export interface ControlOps {
 
 /** The Orchestrator methods the control handler needs. */
 export interface ControlOrch {
-  consult(ws: string, question: string, context?: string): Promise<string | null>;
+  consult(ws: string, question: string, context?: string, system?: string): Promise<string | null>;
   stopAll(reason: string): Promise<number>;
   setPaused(p: boolean): void;
   isPaused(): boolean;
@@ -297,7 +297,11 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     const priorHistory = [...(history.get(chatId) ?? [])];
     pushHistory(chatId, { role: "owner", text });
     const ctx = await buildContext(operations, ws);
-    const raw = await orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx, priorHistory));
+    // The operator's own text rides as `question` (runner labels it OPERATOR
+    // MESSAGE); INTENT_SYSTEM_PROMPT rides as `system` (the role framing);
+    // `renderContext` is now GROUNDING only. Reversing this made Claude read the
+    // system prompt as a prompt-injection attempt in the operator's message.
+    const raw = await orchestrator.consult(ws, text, renderContext(ctx, priorHistory), INTENT_SYSTEM_PROMPT);
     if (raw == null) {
       await notify(
         "Conversational control needs an Anthropic (Claude) key to interpret messages — set ANTHROPIC_API_KEY (or add a Claude agent), then retry. Meanwhile you can add a backlog item with: /task <text>",
@@ -506,7 +510,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
 
 /** The narrow slice {@link simulateConversational} needs from the orchestrator. */
 export interface SimulateOrch {
-  consult(ws: string, question: string, context?: string): Promise<string | null>;
+  consult(ws: string, question: string, context?: string, system?: string): Promise<string | null>;
 }
 
 export interface SimulateDeps {
@@ -530,7 +534,7 @@ export async function simulateConversational(
 ): Promise<{ reply: string | null; action: Action | null; error?: string }> {
   const ws = deps.ws ?? DEFAULT_WORKSPACE;
   const ctx = await buildContext(deps.operations, ws);
-  const raw = await deps.orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx));
+  const raw = await deps.orchestrator.consult(ws, text, renderContext(ctx), INTENT_SYSTEM_PROMPT);
   if (raw == null) return { reply: null, action: null, error: "no-llm" };
   const { reply, action } = parseResponse(raw, ctx);
   return { reply, action };
