@@ -8,8 +8,8 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AuditRecord, GithubConnection } from "@skynet/shared";
-import { Agent, Dependency, HitlItem, Module, Project, Task, TaskRun } from "@skynet/shared";
+import type { GithubConnection } from "@skynet/shared";
+import { Agent, AuditRecord, Dependency, HitlItem, Module, Project, Task, TaskRun } from "@skynet/shared";
 import type { z } from "zod";
 import { MemoryStore } from "./memory.js";
 
@@ -79,7 +79,12 @@ export class FileStore extends MemoryStore {
       fill(this.fleet, d.fleet, Agent, "agent");
       this.modules = fillArray(d.modules, Module, "module");
       this.deps = fillArray(d.deps, Dependency, "dependency");
-      if (Array.isArray(d.audit)) this.audit = d.audit as AuditRecord[];
+      // Validate audit rows on load, like every other collection — the earlier
+      // raw cast let a legacy/half-migrated row survive here, then the client's
+      // strict `AuditRecord.array().parse()` on /api/audit blew up on the whole
+      // list and blanked the audit page (approvals looked lost). fillArray drops
+      // the few bad rows with a warning; the rest still show.
+      this.audit = fillArray(d.audit, AuditRecord, "audit record");
       // GitHub connections are keyed by workspaceId (not id), so fill directly.
       if (Array.isArray(d.github)) for (const c of d.github as GithubConnection[]) this.github.set(c.workspaceId, c);
       if (d.githubTokens && typeof d.githubTokens === "object")
