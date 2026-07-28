@@ -202,12 +202,12 @@ export class Operations {
   async previewStart(ws: string, projectId: string): Promise<PreviewState> {
     const project = await this.getProject(ws, projectId);
     if (!project.repoPath) throw new Error("This project has no local folder to preview.");
-    return projectPreview.start(projectId, project.repoPath);
+    return projectPreview.start(projectId, project.repoPath, ws);
   }
   async previewRestart(ws: string, projectId: string): Promise<PreviewState> {
     const project = await this.getProject(ws, projectId);
     if (!project.repoPath) throw new Error("This project has no local folder to preview.");
-    return projectPreview.restart(projectId, project.repoPath);
+    return projectPreview.restart(projectId, project.repoPath, ws);
   }
   async previewStop(ws: string, projectId: string): Promise<PreviewState> {
     await this.getProject(ws, projectId);

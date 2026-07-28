@@ -20,7 +20,9 @@ import { get as httpGet } from "node:http";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { wrapForSandbox } from "@skynet/runner-sdk/sandbox";
+import { oneShotRepoAssistant } from "@skynet/runner-sdk/claude";
 import { gitBin } from "../git-bin.js";
+import { secretService } from "../secrets/index.js";
 
 const exec = promisify(execFile);
 
@@ -31,7 +33,7 @@ export interface PreviewRecipe {
   cmd: string;
   /** Where the app will listen; injected as PORT and used to health-check. */
   port: number;
-  source: "descriptor" | "heuristic";
+  source: "descriptor" | "heuristic" | "agent";
 }
 
 export interface PreviewState {
@@ -64,6 +66,9 @@ const HEALTH_TIMEOUT_MS = 45_000;
 
 export class ProjectPreviewManager {
   private previews = new Map<string, Live>();
+  // Cache an agent-proposed recipe per project so a restart doesn't re-ask the
+  // model (persisting it to a committed .skynet/preview.json is the next step).
+  private agentRecipe = new Map<string, { cmd: string }>();
 
   constructor(private worktreesDir?: string) {}
 
@@ -101,9 +106,9 @@ export class ProjectPreviewManager {
     if (p.logs.length > LOG_CAP) p.logs.splice(0, p.logs.length - LOG_CAP);
   }
 
-  /** Resolve HOW to start the preview: descriptor first, then a package.json
-   *  heuristic. (Agent-assisted resolution is the documented next step.) */
-  private resolveRecipe(dir: string, port: number): PreviewRecipe | null {
+  /** Deterministic recipe: `.skynet/preview.json` descriptor, then a
+   *  package.json script heuristic. No I/O beyond reading two files. */
+  private resolveRecipeStatic(dir: string, port: number): PreviewRecipe | null {
     const descPath = join(dir, ".skynet", "preview.json");
     if (existsSync(descPath)) {
       try {
@@ -126,6 +131,61 @@ export class ProjectPreviewManager {
       }
     }
     return null;
+  }
+
+  /**
+   * Resolve HOW to start the preview: descriptor → heuristic → agent. When the
+   * deterministic checks can't tell (no descriptor, no obvious dev script), ask
+   * the repo-aware assistant — the same BYOK agent behind "Ask about this
+   * project" — to read the repo and PROPOSE a start command. It's cached per
+   * project (a restart doesn't re-ask) and used with the current free port.
+   */
+  private async resolveRecipe(
+    dir: string,
+    port: number,
+    projectId: string,
+    workspaceId?: string,
+  ): Promise<PreviewRecipe | null> {
+    const cached = this.agentRecipe.get(projectId);
+    if (cached) return { cmd: cached.cmd, port, source: "agent" };
+    const stat = this.resolveRecipeStatic(dir, port);
+    if (stat) return stat;
+    if (!workspaceId) return null; // no key context → can't ask the agent
+    const apiKey = (await secretService.resolve(workspaceId, "claude").catch(() => undefined)) ?? undefined;
+    if (!apiKey) return null;
+    const cmd = await this.askAgentForRecipe(dir, apiKey);
+    if (!cmd) return null;
+    this.agentRecipe.set(projectId, { cmd });
+    return { cmd, port, source: "agent" };
+  }
+
+  /** Ask the repo-aware assistant to propose a dev/serve command as strict JSON.
+   *  `$PORT` in the command is honoured — we inject PORT into the child env. */
+  private async askAgentForRecipe(dir: string, apiKey: string): Promise<string | null> {
+    const prompt =
+      "You are configuring a LIVE PREVIEW for this web project. Inspect the repo (package.json, " +
+      "framework config, an index.html, etc.) and decide the single command that starts its web dev " +
+      "server or serves the site for local viewing. The server MUST listen on the port given by the " +
+      "$PORT environment variable (use $PORT literally in the command).\n\n" +
+      'Reply with ONLY a JSON object, no prose, no code fence: {"cmd": "<command>"}. ' +
+      'If you cannot determine one, reply {"cmd": null}.';
+    let text = "";
+    try {
+      text = await oneShotRepoAssistant({ prompt, cwd: dir, apiKey });
+    } catch {
+      return null;
+    }
+    // Tolerant parse: strip fences, take the first {...} block.
+    const m = text.replace(/```(?:json)?/gi, "").match(/\{[\s\S]*?\}/);
+    if (!m) return null;
+    try {
+      const obj = JSON.parse(m[0]) as { cmd?: unknown };
+      const cmd = typeof obj.cmd === "string" ? obj.cmd.trim() : "";
+      // Guard: must look like a runnable command that references the port.
+      return cmd && /\$PORT|\bPORT\b|\d{2,5}/.test(cmd) ? cmd : cmd || null;
+    } catch {
+      return null;
+    }
   }
 
   private freePort(): Promise<number> {
@@ -170,7 +230,7 @@ export class ProjectPreviewManager {
     return dir;
   }
 
-  async start(projectId: string, repoPath: string): Promise<PreviewState> {
+  async start(projectId: string, repoPath: string, workspaceId?: string): Promise<PreviewState> {
     if (!repoPath) throw new Error("This project has no local folder to preview.");
     await this.stop(projectId); // idempotent — a start replaces any existing preview
 
@@ -183,10 +243,16 @@ export class ProjectPreviewManager {
     try {
       p.dir = await this.prepareWorktree(projectId, repoPath);
       const port = await this.freePort();
-      const recipe = this.resolveRecipe(p.dir, port);
+      if (this.previews.get(projectId) === p && !this.resolveRecipeStatic(p.dir, port) && !this.agentRecipe.has(projectId)) {
+        this.log(p, "no dev/start script found — asking the assistant how to run this project…");
+      }
+      const recipe = await this.resolveRecipe(p.dir, port, projectId, workspaceId);
+      if (this.previews.get(projectId) !== p) return this.state(projectId); // superseded during async resolve
       if (!recipe) {
         p.status = "failed";
-        p.error = "Couldn't tell how to start this project — add a dev/start script or a .skynet/preview.json.";
+        p.error =
+          "Couldn't tell how to start this project — no dev/start script, and the assistant couldn't propose one " +
+          "(add a provider key so it can, or a .skynet/preview.json with a \"dev\" command).";
         return this.state(projectId);
       }
       p.recipe = recipe;
@@ -248,8 +314,8 @@ export class ProjectPreviewManager {
     return this.state(projectId);
   }
 
-  async restart(projectId: string, repoPath: string): Promise<PreviewState> {
-    return this.start(projectId, repoPath);
+  async restart(projectId: string, repoPath: string, workspaceId?: string): Promise<PreviewState> {
+    return this.start(projectId, repoPath, workspaceId);
   }
 
   async stop(projectId: string): Promise<PreviewState> {
