@@ -13,6 +13,7 @@ import {
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
 import { ProjectDelivery, visualLeadOf } from "../components/preview";
+import { Markdown } from "../components/markdown";
 import { QueueCard } from "./queue";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -370,9 +371,47 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
   const [err, setErr] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
+  // Typewriter smoothing: the server streams in coarse chunks (often whole
+  // sentences), which reads as a stutter. We collect the received text in a ref
+  // and reveal it a few characters per frame, so the bubble fills in smoothly
+  // regardless of chunk size. `target` is everything received; `shown` is how
+  // much is currently visible; `done` flips when the stream ends so the loop can
+  // stop once it has caught up.
+  const targetRef = useRef("");
+  const shownRef = useRef(0);
+  const doneRef = useRef(true);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
   }, [msgs, busy]);
+
+  // Stop the typewriter loop if the view unmounts mid-stream.
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+  const paintLast = (content: string) =>
+    setMsgs((m) => {
+      const next = m.slice();
+      const last = next[next.length - 1];
+      if (last && last.role === "assistant") next[next.length - 1] = { role: "assistant", content };
+      return next;
+    });
+
+  const tick = () => {
+    const target = targetRef.current;
+    if (shownRef.current < target.length) {
+      // Reveal faster when we're further behind, so we never lag the stream.
+      const backlog = target.length - shownRef.current;
+      const step = Math.max(2, Math.ceil(backlog / 8));
+      shownRef.current = Math.min(target.length, shownRef.current + step);
+      paintLast(target.slice(0, shownRef.current));
+    }
+    if (shownRef.current >= target.length && doneRef.current) {
+      timerRef.current = null;
+      return;
+    }
+    timerRef.current = setTimeout(tick, 16);
+  };
 
   const ask = async (q: string) => {
     const question = q.trim();
@@ -383,20 +422,23 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
     setMsgs([...msgs, { role: "user", content: question }, { role: "assistant", content: "" }]);
     setInput("");
     setBusy(true);
-    const appendToLast = (chunk: string) =>
-      setMsgs((m) => {
-        const next = m.slice();
-        const last = next[next.length - 1];
-        if (last && last.role === "assistant") next[next.length - 1] = { role: "assistant", content: last.content + chunk };
-        return next;
-      });
+    // Reset + start the reveal loop.
+    targetRef.current = "";
+    shownRef.current = 0;
+    doneRef.current = false;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    tick();
     try {
-      await api.streamProjectChat(projectId, question, history, appendToLast);
+      await api.streamProjectChat(projectId, question, history, (chunk) => {
+        targetRef.current += chunk;
+        if (timerRef.current === null) tick(); // loop had caught up and parked — restart it
+      });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't reach the assistant — try again.");
-      // Drop the empty assistant bubble on failure so the thread isn't left blank.
-      setMsgs((m) => (m[m.length - 1]?.content === "" ? m.slice(0, -1) : m));
+      // Drop the assistant bubble on failure if nothing was received.
+      if (targetRef.current === "") setMsgs((m) => m.slice(0, -1));
     } finally {
+      doneRef.current = true; // let the reveal loop finish and park itself
       setBusy(false);
     }
   };
@@ -424,15 +466,19 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
             {msgs.map((m, i) => (
               <div key={i} className={"asst-msg asst-" + m.role}>
                 <span className="asst-who mono">{m.role === "user" ? "you" : "assistant"}</span>
-                <div className="asst-text">{m.content}</div>
+                {m.role === "assistant" ? (
+                  m.content === "" ? (
+                    <div className="asst-text asst-think">reading the project…</div>
+                  ) : (
+                    <div className="asst-text asst-md">
+                      <Markdown text={m.content} />
+                    </div>
+                  )
+                ) : (
+                  <div className="asst-text">{m.content}</div>
+                )}
               </div>
             ))}
-            {busy && (
-              <div className="asst-msg asst-assistant">
-                <span className="asst-who mono">assistant</span>
-                <div className="asst-text asst-think">reading the project…</div>
-              </div>
-            )}
           </div>
           {err && <div className="asst-err">{err}</div>}
           <form

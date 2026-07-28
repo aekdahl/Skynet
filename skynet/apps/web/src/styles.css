@@ -1768,6 +1768,19 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .asst-user .asst-who { color: var(--accent); }
 .asst-text { font-size: 13.5px; line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
 .asst-user .asst-text { color: var(--muted); }
+/* Assistant replies render as markdown — tighten the doc-scale spacing so it
+   reads as a compact chat bubble, and drop the pre-wrap (blocks handle layout). */
+.asst-md { white-space: normal; }
+.asst-md .md { font-size: 13.5px; line-height: 1.55; color: var(--ink); }
+.asst-md .md > :first-child { margin-top: 0; }
+.asst-md .md > :last-child { margin-bottom: 0; }
+.asst-md .md p { margin: 6px 0; color: var(--ink); }
+.asst-md .md h1 { font-size: 15px; margin: 10px 0 6px; }
+.asst-md .md h2 { font-size: 14px; margin: 12px 0 6px; padding-top: 10px; }
+.asst-md .md h3 { font-size: 13.5px; margin: 10px 0 4px; }
+.asst-md .md ul, .asst-md .md ol { margin: 6px 0; padding-left: 18px; color: var(--ink); }
+.asst-md .md li { margin: 3px 0; }
+.asst-md .md hr { margin: 10px 0; }
 .asst-think { color: var(--faint); font-style: italic; }
 .asst-err { font-size: 12.5px; color: var(--danger); }
 .asst-input { display: flex; gap: 8px; }
