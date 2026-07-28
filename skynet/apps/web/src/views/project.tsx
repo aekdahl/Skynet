@@ -683,26 +683,40 @@ export function ProjectView({
         </div>
       )}
 
-      {previewOpen && <LivePreviewModal projectId={project.id} projectName={project.name} onClose={() => setPreviewOpen(false)} />}
+      {previewOpen && <LivePreviewModal id={project.id} kind="project" title={"Live preview · " + project.name} onClose={() => setPreviewOpen(false)} />}
     </section>
   );
 }
 
 // ─── Live preview modal (Phase-1 v0) ────────────────────────────────────────
-// Runs the project's web app (server-side, sandboxed) and iframes it here,
-// refreshing as the fleet merges. Polls status while open; the app runs on its
-// own localhost origin so its code can't reach the console. See docs/live-preview.md.
+// Runs a web app (server-side, sandboxed) and iframes it here. Two callers:
+//   • PROJECT — the integration branch, refreshing as the fleet merges.
+//   • RUN ("Preview this change") — a single run's branch, PRE-merge, so an
+//     operator can verify a change before approving it. Pinned to the branch.
+// Polls status while open; the app runs on its own localhost origin so its code
+// can't reach the console. See docs/live-preview.md.
 const DEVICES: Record<string, number | null> = { Desktop: null, Tablet: 768, Mobile: 390 };
 
-function LivePreviewModal({
-  projectId,
-  projectName,
+export function LivePreviewModal({
+  id,
+  kind,
+  title,
   onClose,
 }: {
-  projectId: string;
-  projectName: string;
+  id: string;
+  kind: "project" | "run";
+  title: string;
   onClose: () => void;
 }) {
+  // Bind the four preview actions to the right surface (project vs run). Kept in
+  // a ref so the poll effect can stay keyed on the stable [id, kind].
+  const ctl =
+    kind === "run"
+      ? { status: () => api.runPreviewStatus(id), start: () => api.runPreviewStart(id), stop: () => api.runPreviewStop(id), restart: () => api.runPreviewRestart(id) }
+      : { status: () => api.previewStatus(id), start: () => api.previewStart(id), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
+  const ctlRef = useRef(ctl);
+  ctlRef.current = ctl;
+
   const [st, setSt] = useState<api.PreviewState | null>(null);
   const [device, setDevice] = useState<string>("Desktop");
   const [showLogs, setShowLogs] = useState(false);
@@ -717,7 +731,7 @@ function LivePreviewModal({
     let alive = true;
     const tick = async () => {
       try {
-        const s = startedRef.current ? await api.previewStatus(projectId) : (startedRef.current = true, await api.previewStart(projectId));
+        const s = startedRef.current ? await ctlRef.current.status() : (startedRef.current = true, await ctlRef.current.start());
         if (alive) setSt(s);
       } catch {
         /* transient */
@@ -729,7 +743,7 @@ function LivePreviewModal({
       alive = false;
       clearInterval(iv);
     };
-  }, [projectId]);
+  }, [id, kind]);
 
   // Reserve right-hand board space while docked (removed on close / when modal).
   useEffect(() => {
@@ -745,7 +759,7 @@ function LivePreviewModal({
   const inner = (
       <div className={"lp-modal lp-mode-" + mode} onClick={(e) => e.stopPropagation()}>
         <div className="lp-bar">
-          <span className="lp-title">Live preview · {projectName}</span>
+          <span className="lp-title">{title}</span>
           <span className={"lp-status lp-status-" + (st?.status ?? "idle")}>
             {st?.status === "live" ? "● live" : st?.status === "starting" ? "◐ starting…" : st?.status === "failed" ? "✕ failed" : st?.status ?? "…"}
           </span>
@@ -760,9 +774,9 @@ function LivePreviewModal({
             {mode === "dock" ? "⤢ Expand" : "⇔ Dock"}
           </button>
           <button className="btn btn-ghost btn-sm" onClick={() => setNonce((n) => n + 1)} title="Reload the app in the frame">↻ Reload</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => { startedRef.current = false; void api.previewRestart(projectId).then(setSt); }} title="Restart the preview server">⟳ Restart</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { startedRef.current = false; void ctl.restart().then(setSt); }} title="Restart the preview server">⟳ Restart</button>
           <button className="btn btn-ghost btn-sm" onClick={() => { setShowLogs((s) => !s); }}>Logs</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => { void api.previewStop(projectId); onClose(); }}>✕ Close</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { void ctl.stop(); onClose(); }}>✕ Close</button>
         </div>
 
         <div className="lp-body">
@@ -785,7 +799,7 @@ function LivePreviewModal({
               </div>
               {st?.recipe && <div className="lp-ph-cmd mono">$ {st.recipe.cmd}</div>}
               {st?.status === "failed" && (
-                <button className="btn btn-primary btn-sm" onClick={() => { startedRef.current = false; void api.previewRestart(projectId).then(setSt); }}>Retry</button>
+                <button className="btn btn-primary btn-sm" onClick={() => { startedRef.current = false; void ctl.restart().then(setSt); }}>Retry</button>
               )}
             </div>
           )}

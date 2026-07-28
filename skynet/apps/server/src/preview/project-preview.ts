@@ -3,14 +3,21 @@
 // fleet is building — split-screen beside the board — and watch it update as
 // changes merge in. See docs/live-preview.md.
 //
-// Model: one preview process per project, running in a DETACHED worktree of the
-// project's integration branch (never the operator's own checkout). The recipe
-// (how to start it) resolves from `.skynet/preview.json` → a package.json
-// heuristic (the agent-assisted resolver is the documented next step). The child
-// is spawned through the opt-in OS sandbox (write-confined when enabled) on a
-// loopback port; the SPA iframes that port directly (desktop = same machine, no
-// proxy). `refresh()` re-points the worktree at the branch tip on merge so a
-// dev server's HMR shows the change; the UI can also reload/restart manually.
+// Two flavours, same machinery:
+//   • PROJECT preview — a DETACHED worktree of the integration branch (the
+//     cumulative merged fleet state). Refreshes on merge so a dev server's HMR
+//     shows the change (the overwatch loop).
+//   • RUN preview ("Preview this change") — a DETACHED worktree of a single
+//     run's branch (`agent/<runId>`), so an operator can SEE a proposed change
+//     BEFORE approving its merge. Pinned to that branch (no refresh-on-merge);
+//     manual reload/restart pick up new commits.
+//
+// Previews are keyed (projectId, or `run:<runId>`) so a project preview and a
+// run preview can run side by side on different ports. The recipe (how to start
+// it) resolves from `.skynet/preview.json` → a package.json heuristic → the
+// repo-aware assistant, and is cached per project. The child is spawned through
+// the opt-in OS sandbox (write-confined when enabled) on a loopback port; the
+// SPA iframes that port directly (desktop = same machine, no proxy).
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -51,13 +58,27 @@ interface Live {
   child?: ChildProcess;
   port?: number;
   recipe?: PreviewRecipe;
-  dir: string;
-  repoPath: string;
+  key: string; // map key: projectId, or `run:<runId>`
+  dir: string; // detached worktree dir
+  gitRepo: string; // repo the worktree was added in (for cleanup)
+  recipeKey: string; // agentRecipe cache key (the project id)
+  refreshBranch?: string; // moving branch to re-point to on merge (project previews only)
   logs: string[];
   error: string | null;
   startedAt: number | null;
   lastTouched: number;
   idleTimer?: ReturnType<typeof setTimeout>;
+}
+
+/** What to start — the parameterization shared by project + run previews. */
+interface StartSpec {
+  key: string;
+  gitRepo: string;
+  ref: string; // detach-checkout target (branch or HEAD)
+  recipeKey: string; // per-project recipe cache key
+  workspaceId?: string; // for BYOK key resolution (agent recipe)
+  persistTo?: string; // repo working tree to write .skynet/preview.json (project previews only)
+  refreshBranch?: string; // branch to re-point to on refresh (project previews only)
 }
 
 const LOG_CAP = 200;
@@ -66,8 +87,9 @@ const HEALTH_TIMEOUT_MS = 45_000;
 
 export class ProjectPreviewManager {
   private previews = new Map<string, Live>();
-  // Cache an agent-proposed recipe per project so a restart doesn't re-ask the
-  // model (persisting it to a committed .skynet/preview.json is the next step).
+  // Cache an agent-proposed recipe per project so a restart (or a run preview of
+  // the same project) doesn't re-ask the model. Committing the persisted
+  // .skynet/preview.json makes it the deterministic descriptor instead.
   private agentRecipe = new Map<string, { cmd: string }>();
 
   constructor(private worktreesDir?: string) {}
@@ -76,9 +98,9 @@ export class ProjectPreviewManager {
     return exec(gitBin(), ["-C", cwd, ...args]);
   }
 
-  private previewDir(projectId: string): string {
+  private previewDir(key: string): string {
     const root = this.worktreesDir ?? resolve(process.cwd(), ".skynet-worktrees");
-    return join(root, `preview-${projectId.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
+    return join(root, `preview-${key.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
   }
 
   private integrationBranch(projectId: string): string {
@@ -86,8 +108,8 @@ export class ProjectPreviewManager {
   }
 
   /** A serializable snapshot for the API/UI. */
-  state(projectId: string): PreviewState {
-    const p = this.previews.get(projectId);
+  state(key: string): PreviewState {
+    const p = this.previews.get(key);
     if (!p) return { status: "idle", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null };
     p.lastTouched = Date.now(); // polling status counts as "watching" → defers idle stop
     return {
@@ -137,18 +159,18 @@ export class ProjectPreviewManager {
    * Resolve HOW to start the preview: descriptor → heuristic → agent. When the
    * deterministic checks can't tell (no descriptor, no obvious dev script), ask
    * the repo-aware assistant — the same BYOK agent behind "Ask about this
-   * project" — to read the repo and PROPOSE a start command. It's cached per
-   * project (a restart doesn't re-ask) and used with the current free port.
+   * project" — to read the repo and PROPOSE a start command. Cached per project
+   * (a restart, or a run preview of the same project, doesn't re-ask).
    */
   private async resolveRecipe(
     dir: string,
     port: number,
-    projectId: string,
+    recipeKey: string,
     workspaceId?: string,
-    repoPath?: string,
+    persistTo?: string,
     log?: (line: string) => void,
   ): Promise<PreviewRecipe | null> {
-    const cached = this.agentRecipe.get(projectId);
+    const cached = this.agentRecipe.get(recipeKey);
     if (cached) return { cmd: cached.cmd, port, source: "agent" };
     const stat = this.resolveRecipeStatic(dir, port);
     if (stat) return stat;
@@ -157,11 +179,13 @@ export class ProjectPreviewManager {
     if (!apiKey) return null;
     const cmd = await this.askAgentForRecipe(dir, apiKey);
     if (!cmd) return null;
-    this.agentRecipe.set(projectId, { cmd });
+    this.agentRecipe.set(recipeKey, { cmd });
     // Persist the proposal to the operator's repo so it becomes the deterministic
     // descriptor — reviewable, editable, and (once committed) used everywhere
-    // without re-asking. Never clobber a descriptor a human already wrote.
-    if (repoPath) await this.persistRecipe(repoPath, cmd, log);
+    // without re-asking. Never clobber a descriptor a human already wrote. Only
+    // for project previews (persistTo set) — a pre-merge run preview must not
+    // write into the shared repo.
+    if (persistTo) await this.persistRecipe(persistTo, cmd, log);
     return { cmd, port, source: "agent" };
   }
 
@@ -238,45 +262,91 @@ export class ProjectPreviewManager {
     });
   }
 
-  /** Prepare (or refresh) a detached worktree at the integration branch tip.
-   *  Detached so it never collides with the merge engine's own worktree on the
-   *  same branch. Falls back to the base branch / HEAD when integration is new. */
-  private async prepareWorktree(projectId: string, repoPath: string): Promise<string> {
-    const dir = this.previewDir(projectId);
-    const branch = this.integrationBranch(projectId);
-    const hasBranch = (await this.git(repoPath, "branch", "--list", branch).catch(() => ({ stdout: "" }))).stdout.trim();
-    const ref = hasBranch ? branch : "HEAD";
-    // Clean any stale worktree, then add fresh, detached at the ref.
-    await this.git(repoPath, "worktree", "remove", "--force", dir).catch(() => undefined);
+  /** Prepare (or refresh) a detached worktree at `ref`. Detached so it never
+   *  collides with a worktree that HOLDS the branch (the merge engine on the
+   *  integration branch, or the agent's own worktree on a run branch). */
+  private async prepareWorktree(key: string, gitRepo: string, ref: string): Promise<string> {
+    const dir = this.previewDir(key);
+    await this.git(gitRepo, "worktree", "remove", "--force", dir).catch(() => undefined);
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-    await this.git(repoPath, "worktree", "add", "--force", "--detach", dir, ref);
+    await this.git(gitRepo, "worktree", "add", "--force", "--detach", dir, ref);
     return dir;
   }
 
+  /** Start the PROJECT preview — the integration branch (cumulative merged fleet
+   *  state), refreshed on merge. */
   async start(projectId: string, repoPath: string, workspaceId?: string): Promise<PreviewState> {
     if (!repoPath) throw new Error("This project has no local folder to preview.");
-    await this.stop(projectId); // idempotent — a start replaces any existing preview
+    const branch = this.integrationBranch(projectId);
+    const hasBranch = (await this.git(repoPath, "branch", "--list", branch).catch(() => ({ stdout: "" }))).stdout.trim();
+    return this.startSpec({
+      key: projectId,
+      gitRepo: repoPath,
+      ref: hasBranch ? branch : "HEAD",
+      recipeKey: projectId,
+      workspaceId,
+      persistTo: repoPath,
+      refreshBranch: hasBranch ? branch : undefined,
+    });
+  }
+
+  /** Start a per-run PRE-MERGE preview — the run's own branch, so an operator
+   *  can SEE a change before approving its merge. Pinned to the branch (no
+   *  refresh-on-merge); reload/restart pick up new commits the run makes. */
+  async startRun(
+    runId: string,
+    opts: { repoPath: string; projectId: string; branch: string; workspaceId?: string },
+  ): Promise<PreviewState> {
+    const key = `run:${runId}`;
+    if (!opts.repoPath) throw new Error("This project has no local folder to preview.");
+    // The run branch must exist (the agent has to have committed at least once).
+    // Guard here so the operator sees a clear reason rather than a raw git error.
+    const hasBranch = (await this.git(opts.repoPath, "branch", "--list", opts.branch).catch(() => ({ stdout: "" }))).stdout.trim();
+    if (!hasBranch) {
+      await this.stop(key);
+      const p: Live = {
+        status: "failed", key, dir: this.previewDir(key), gitRepo: opts.repoPath, recipeKey: opts.projectId,
+        logs: [], error: `This run has no commits to preview yet (branch ${opts.branch} doesn't exist).`,
+        startedAt: Date.now(), lastTouched: Date.now(),
+      };
+      this.previews.set(key, p);
+      return this.state(key);
+    }
+    return this.startSpec({
+      key,
+      gitRepo: opts.repoPath,
+      ref: opts.branch,
+      recipeKey: opts.projectId,
+      workspaceId: opts.workspaceId,
+      // No persistTo (don't write into the shared repo for a pre-merge preview);
+      // no refreshBranch (pinned to the change under review).
+    });
+  }
+
+  private async startSpec(spec: StartSpec): Promise<PreviewState> {
+    await this.stop(spec.key); // idempotent — a start replaces any existing preview
 
     const p: Live = {
-      status: "starting", dir: this.previewDir(projectId), repoPath,
+      status: "starting", key: spec.key, dir: this.previewDir(spec.key), gitRepo: spec.gitRepo,
+      recipeKey: spec.recipeKey, refreshBranch: spec.refreshBranch,
       logs: [], error: null, startedAt: Date.now(), lastTouched: Date.now(),
     };
-    this.previews.set(projectId, p);
+    this.previews.set(spec.key, p);
 
     try {
-      p.dir = await this.prepareWorktree(projectId, repoPath);
+      p.dir = await this.prepareWorktree(spec.key, spec.gitRepo, spec.ref);
       const port = await this.freePort();
-      if (this.previews.get(projectId) === p && !this.resolveRecipeStatic(p.dir, port) && !this.agentRecipe.has(projectId)) {
+      if (this.previews.get(spec.key) === p && !this.resolveRecipeStatic(p.dir, port) && !this.agentRecipe.has(spec.recipeKey)) {
         this.log(p, "no dev/start script found — asking the assistant how to run this project…");
       }
-      const recipe = await this.resolveRecipe(p.dir, port, projectId, workspaceId, repoPath, (l) => this.log(p, l));
-      if (this.previews.get(projectId) !== p) return this.state(projectId); // superseded during async resolve
+      const recipe = await this.resolveRecipe(p.dir, port, spec.recipeKey, spec.workspaceId, spec.persistTo, (l) => this.log(p, l));
+      if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded during async resolve
       if (!recipe) {
         p.status = "failed";
         p.error =
           "Couldn't tell how to start this project — no dev/start script, and the assistant couldn't propose one " +
           "(add a provider key so it can, or a .skynet/preview.json with a \"dev\" command).";
-        return this.state(projectId);
+        return this.state(spec.key);
       }
       p.recipe = recipe;
       p.port = recipe.port;
@@ -295,7 +365,7 @@ export class ProjectPreviewManager {
       child.stdout?.on("data", (b) => this.log(p, b.toString()));
       child.stderr?.on("data", (b) => this.log(p, b.toString()));
       child.on("exit", (code) => {
-        if (this.previews.get(projectId) !== p) return; // superseded
+        if (this.previews.get(spec.key) !== p) return; // superseded
         if (p.status !== "stopped") {
           p.status = "failed";
           p.error = p.error ?? `preview process exited (code ${code ?? "?"})`;
@@ -307,10 +377,10 @@ export class ProjectPreviewManager {
       });
 
       const ok = await this.waitForPort(recipe.port, Date.now() + HEALTH_TIMEOUT_MS);
-      if (this.previews.get(projectId) !== p) return this.state(projectId); // superseded mid-wait
+      if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded mid-wait
       if (ok && p.status === "starting") {
         p.status = "live";
-        this.armIdle(projectId, p);
+        this.armIdle(spec.key, p);
       } else if (p.status === "starting") {
         p.status = "failed";
         p.error = p.error ?? `the app didn't start listening on port ${recipe.port} within ${HEALTH_TIMEOUT_MS / 1000}s`;
@@ -319,46 +389,55 @@ export class ProjectPreviewManager {
       p.status = "failed";
       p.error = (err as Error).message;
     }
-    return this.state(projectId);
+    return this.state(spec.key);
   }
 
-  /** Re-point the worktree at the integration branch tip (called on merge). A
-   *  dev server's file-watcher then HMR-updates; the UI reloads for the rest. */
-  async refresh(projectId: string): Promise<PreviewState> {
-    const p = this.previews.get(projectId);
-    if (!p || p.status !== "live") return this.state(projectId);
-    const branch = this.integrationBranch(projectId);
-    const hasBranch = (await this.git(p.repoPath, "branch", "--list", branch).catch(() => ({ stdout: "" }))).stdout.trim();
+  /** Re-point the worktree at a moving branch tip (called on merge for PROJECT
+   *  previews). A dev server's file-watcher then HMR-updates; the UI reloads for
+   *  the rest. A no-op for pinned run previews (no refreshBranch). */
+  async refresh(key: string): Promise<PreviewState> {
+    const p = this.previews.get(key);
+    if (!p || p.status !== "live" || !p.refreshBranch) return this.state(key);
+    const hasBranch = (await this.git(p.gitRepo, "branch", "--list", p.refreshBranch).catch(() => ({ stdout: "" }))).stdout.trim();
     if (hasBranch) {
-      await this.git(p.dir, "checkout", "--detach", branch).catch((e) => this.log(p, `refresh: ${(e as Error).message}`));
+      await this.git(p.dir, "checkout", "--detach", p.refreshBranch).catch((e) => this.log(p, `refresh: ${(e as Error).message}`));
       this.log(p, "↻ refreshed to integration branch tip");
     }
     p.lastTouched = Date.now();
-    return this.state(projectId);
+    return this.state(key);
   }
 
   async restart(projectId: string, repoPath: string, workspaceId?: string): Promise<PreviewState> {
     return this.start(projectId, repoPath, workspaceId);
   }
 
-  async stop(projectId: string): Promise<PreviewState> {
-    const p = this.previews.get(projectId);
+  /** Restart a run preview — re-adds the worktree at the branch tip (picks up
+   *  new commits the run made). Same as startRun (idempotent). */
+  async restartRun(
+    runId: string,
+    opts: { repoPath: string; projectId: string; branch: string; workspaceId?: string },
+  ): Promise<PreviewState> {
+    return this.startRun(runId, opts);
+  }
+
+  async stop(key: string): Promise<PreviewState> {
+    const p = this.previews.get(key);
     if (p) {
       p.status = "stopped";
       if (p.idleTimer) clearTimeout(p.idleTimer);
       if (p.child && !p.child.killed) p.child.kill("SIGTERM");
-      await this.git(p.repoPath, "worktree", "remove", "--force", p.dir).catch(() => undefined);
-      this.previews.delete(projectId);
+      await this.git(p.gitRepo, "worktree", "remove", "--force", p.dir).catch(() => undefined);
+      this.previews.delete(key);
     }
     return { status: "stopped", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null };
   }
 
   /** Auto-stop a preview nothing has polled in IDLE_MS (bounds resource use). */
-  private armIdle(projectId: string, p: Live) {
+  private armIdle(key: string, p: Live) {
     if (p.idleTimer) clearTimeout(p.idleTimer);
     p.idleTimer = setTimeout(() => {
-      if (Date.now() - p.lastTouched >= IDLE_MS) void this.stop(projectId);
-      else this.armIdle(projectId, p);
+      if (Date.now() - p.lastTouched >= IDLE_MS) void this.stop(key);
+      else this.armIdle(key, p);
     }, IDLE_MS);
   }
 
