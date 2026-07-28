@@ -12,7 +12,7 @@ import type { Store } from "../store/store.js";
 import { MemoryGithubStore } from "./memory.js";
 import { GitHubProvider } from "./provider.js";
 import { evaluateSafety } from "./safety.js";
-import type { GitProvider, GithubConnectionStore, PushRequest, PushResult } from "./types.js";
+import type { GitProvider, GithubConnectionStore, MergeResult, PushRequest, PushResult } from "./types.js";
 
 export class GithubService {
   constructor(
@@ -246,6 +246,21 @@ export class GithubService {
     await this.provider.pushBranch(token, req.repo, req.worktreePath, req.branch, req.force);
     const pr = await this.provider.openPr(token, req.repo, req.branch, req.baseBranch, req.title, req.body);
     return { ok: true, pushed: true, violations: [], pr };
+  }
+
+  /**
+   * Merge an open PR via the API — the operator's Skynet approval IS the
+   * approval. Returns the provider's result; `merged:false` when GitHub blocks it
+   * (branch protection / required checks or reviews), which the caller surfaces
+   * rather than pretending the work integrated.
+   */
+  async mergePr(workspaceId: string, repo: string, prNumber: number, method: "merge" | "squash" | "rebase" = "squash"): Promise<MergeResult> {
+    const conn = await this.store.get(workspaceId);
+    const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
+    if (!conn || !ready) throw new Error("GitHub is not connected for this workspace");
+    if (conn.auth === "app" && !this.appHasCreds) throw new Error("GitHub App is not configured on the server");
+    const token = await this.resolveToken(conn);
+    return this.provider.mergePr(token, repo, prNumber, method);
   }
 
   /** Clone a connected repo (owner/name) into `dest` using the workspace's git
