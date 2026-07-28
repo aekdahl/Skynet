@@ -579,7 +579,12 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
       void notify(`✅ Run ${event.runId} merged/done`);
     }
   };
-  bus.subscribe(DEFAULT_WORKSPACE, handler);
+  // Scope to the SAME workspace the web/admin uses. `config.adminWorkspace` is
+  // set by the deployer (e.g. GCP setup.sh writes "skynet") and by the seed path
+  // in index.ts — hardcoding DEFAULT_WORKSPACE here made Telegram query a
+  // different empty universe than the web (the "workspace looks empty" bug).
+  const ws = config.adminWorkspace || DEFAULT_WORKSPACE;
+  bus.subscribe(ws, handler);
 
   // ── Inbound: owner-only control (deterministic commands + confirmed intents) ─
   const control = createOwnerControl({
@@ -588,6 +593,7 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     operations,
     orchestrator,
     notify,
+    ws,
   });
 
   // Long-poll loop — fire-and-forget (never awaited at boot). Each iteration is
