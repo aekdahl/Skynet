@@ -6,6 +6,7 @@ import {
   type TaskRun,
   type TaskAssignment,
   type GithubInstallation,
+  type GithubOwner,
   type GithubRepo,
   type ResolveAction,
   type SafetyPolicy,
@@ -289,7 +290,13 @@ export function browseFolder(path?: string) {
 }
 
 // Projects
-export function createProject(body: { name: string; goal: string; repoPath?: string; repo?: string }) {
+export function createProject(body: {
+  name: string;
+  goal: string;
+  repoPath?: string;
+  repo?: string;
+  createRepo?: { name: string; private: boolean; owner?: string };
+}) {
   return req<unknown>("POST", "/api/projects", body);
 }
 export function updateProject(
@@ -457,6 +464,10 @@ export function startGithubDevice() {
 }
 export function pollGithubDevice(deviceCode: string) {
   return req<{ authorized: boolean }>("POST", "/api/github/device/poll", { device_code: deviceCode });
+}
+export async function fetchGithubOwners(): Promise<GithubOwner[]> {
+  const raw = await req<{ owners: GithubOwner[] }>("GET", "/api/github/owners");
+  return raw.owners;
 }
 export async function fetchGithubInstallations(): Promise<GithubInstallation[]> {
   const raw = await req<{ installations: GithubInstallation[] }>("GET", "/api/github/installations");
