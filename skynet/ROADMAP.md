@@ -201,10 +201,11 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   - Full design + phasing: **[docs/live-preview.md](docs/live-preview.md)**. **Phase-1 v0 (web/sites)
     shipped:** project + per-run preview managers (detached worktrees, opt-in sandbox, free-port +
     health-check), descriptor → heuristic → **agent-assisted** recipe resolution (proposal persisted to
-    `.skynet/preview.json`), refresh-on-merge, and the split-screen dock ⇄ modal with a
-    "▶ Preview app" (project) and "▶ Preview this change" (run) affordance. **Still to do:** Phase 2
-    (services — reverse proxy + auto-rebuild) & Phase 3 (command/artifacts, "any software"); a
-    drag-to-resize handle on the dock.
+    `.skynet/preview.json`), refresh-on-merge, node_modules provisioning (symlink the checkout's
+    deps, else install) so a dev script's local bin resolves in the fresh worktree, and the
+    **resizable** split-screen dock ⇄ modal (scrollable/resizable logs) with a "▶ Preview app"
+    (project) and "▶ Preview this change" (run) affordance. **Still to do:** Phase 2 (services —
+    reverse proxy + auto-rebuild) & Phase 3 (command/artifacts, "any software").
 - [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign
