@@ -126,7 +126,12 @@ describe("autonomy loop", () => {
     expect(flog?.detail).toContain("missing tests");
   });
 
-  it("auto-review that APPROVEs resolves the review HITL", async () => {
+  it("auto-review that APPROVEs resolves the review HITL AND moves the task to done", async () => {
+    // When the AGENT signs off, the task advances to `done` (and its run's
+    // status flips to done) regardless of the downstream integration path.
+    // For local merges completeMerged() ALSO writes done (idempotent); for the
+    // GitHub PR path pushToGithub stops at review waiting for a human — this
+    // guarantees the KANBAN task doesn't strand there.
     const { store, orch } = await setup("APPROVE: looks good");
     const run: TaskRun = {
       id: "r1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "do X", status: "review",
@@ -144,6 +149,9 @@ describe("autonomy loop", () => {
     await store.putTask(mkTask({ state: "review", runId: "r1" }));
     await orch.tickAutonomy();
     expect((await store.getHitl("q1"))?.resolution?.action).toBe("approve");
+    // Task advanced to done + run.status synced.
+    expect((await store.getTask("t1"))?.state).toBe("done");
+    expect((await store.getRun("r1"))?.status).toBe("done");
     const alog = (await store.getRun("r1"))?.log.find((l) => /auto-reviewed by a1/i.test(l.line));
     expect(alog?.line).toMatch(/approved/i);
     expect(alog?.detail).toContain("looks good");

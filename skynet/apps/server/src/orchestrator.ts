@@ -1777,6 +1777,20 @@ export class Orchestrator {
       const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "autonomy", at: now() };
       const resolved = await this.hub.resolveHitl(hitl.id, resolution);
       if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(hitl, resolution);
+      // Once an agent has approved a review-state task, move it to `done` and
+      // sync the run's status — regardless of the downstream integration path.
+      // The local merge queue's completeMerged() ALSO writes this on merge
+      // (idempotent no-op), but for the GitHub-PR path pushToGithub deliberately
+      // leaves the run in `review` waiting for a human to merge the PR — that
+      // would strand the KANBAN task in `review` too. Advancing the card here
+      // reflects Skynet's view: the AGENT signed off; the PR is the follow-
+      // through on GitHub, not a Skynet blocker. Re-fetch to avoid a stale-
+      // snapshot clobber, and only advance if the task is still ours to move.
+      const afterDeliver = await this.store.getTask(task.id);
+      if (afterDeliver && afterDeliver.state === "review" && afterDeliver.runId === task.runId) {
+        await this.hub.upsertTask({ ...afterDeliver, state: "done" });
+        if (afterDeliver.runId) await this.hub.runStatus(afterDeliver.runId, "done").catch(() => undefined);
+      }
     } else {
       await this.hub.upsertTask({ ...freshTask, reviewFlaggedReason: reason });
     }
