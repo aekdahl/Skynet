@@ -12,11 +12,23 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { existsSync } from "node:fs";
 import { mkdir, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { gitBin } from "./git-bin.js";
 
 const exec = promisify(execFile);
+
+// Files whose change (folding in main) means the worktree's deps may be stale.
+const DEP_MANIFESTS = new Set(["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"]);
+
+/** Infer the install command from the lockfile present, else npm. */
+function pmInstallCmd(dir: string): string {
+  if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm install";
+  if (existsSync(join(dir, "yarn.lock"))) return "yarn install";
+  if (existsSync(join(dir, "bun.lockb"))) return "bun install";
+  return "npm install";
+}
 
 export interface ProvisionOpts {
   /** Preferred ref to branch from — the project's integration branch for a
@@ -111,20 +123,49 @@ export class WorktreeProvisioner {
    * merge is ABORTED (worktree left clean) and `{ok:false, conflicts}` is returned
    * so the caller can escalate instead of pushing a broken branch.
    */
-  async mergeBase(runId: string): Promise<{ ok: boolean; conflicts?: string[] }> {
+  async mergeBase(runId: string): Promise<{ ok: boolean; conflicts?: string[]; depsChanged?: boolean }> {
     const path = this.pathFor(runId);
     await this.fetchBase();
     const base = await this.freshBase();
+    const before = await this.git(path, "rev-parse", "HEAD").catch(() => "");
     // A merge when already current is a harmless "Already up to date" no-op.
     try {
       await this.git(path, "-c", "user.name=Skynet", "-c", "user.email=skynet@local", "merge", "--no-edit", base);
-      return { ok: true };
+      // Did folding in main touch a dependency manifest? (so the caller can
+      // re-install — node_modules is gitignored, but a revise/checks/preview
+      // running in this worktree afterward needs the new deps.)
+      const after = await this.git(path, "rev-parse", "HEAD").catch(() => "");
+      let depsChanged = false;
+      if (before && after && before !== after) {
+        const changed = (await this.git(path, "diff", "--name-only", before, after).catch(() => "")).split("\n");
+        depsChanged = changed.some((f) => DEP_MANIFESTS.has(f.split("/").pop() ?? ""));
+      }
+      return { ok: true, depsChanged };
     } catch {
       const conflicts = (await this.git(path, "diff", "--name-only", "--diff-filter=U").catch(() => ""))
         .split("\n")
         .filter(Boolean);
       await this.git(path, "merge", "--abort").catch(() => undefined);
       return { ok: false, conflicts };
+    }
+  }
+
+  /**
+   * Re-install dependencies in an agent's worktree — for use after a mergeBase
+   * that changed a dependency manifest. Only runs when node_modules already
+   * exists (deps were installed for this run); otherwise there's nothing to
+   * reconcile and we skip (the agent/preview installs on demand). Best-effort +
+   * time-boxed; a failure is reported, never fatal (the PR's source is correct
+   * regardless — node_modules is gitignored). */
+  async installDeps(runId: string): Promise<{ installed: boolean; note?: string }> {
+    const path = this.pathFor(runId);
+    if (!existsSync(join(path, "node_modules"))) return { installed: false };
+    const cmd = pmInstallCmd(path);
+    try {
+      await exec("/bin/sh", ["-c", cmd], { cwd: path, timeout: 3 * 60_000 });
+      return { installed: true, note: cmd };
+    } catch (err) {
+      return { installed: false, note: `${cmd} failed: ${(err as Error).message}` };
     }
   }
 

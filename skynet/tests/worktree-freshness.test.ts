@@ -68,8 +68,25 @@ describe("worktree freshness — branch from latest origin/main, sync before PR"
     advanceOrigin("unrelated.md", "meanwhile on main\n", "unrelated merge"); // main moves, no overlap
     const res = await prov.mergeBase("r2");
     expect(res.ok).toBe(true);
+    expect(res.depsChanged).toBe(false); // main didn't touch a dependency manifest
     expect(existsSync(join(cwd, "unrelated.md"))).toBe(true); // latest main folded in
     expect(existsSync(join(cwd, "agent-work.md"))).toBe(true); // agent work preserved
+  });
+
+  it("flags a dependency-manifest change on merge, and only reconciles when node_modules exists", async () => {
+    const { cwd } = await prov.provision("r5", "agent/r5");
+    writeFileSync(join(cwd, "code.ts"), "export const x = 1;\n");
+    git(cwd, "add", "-A");
+    git(cwd, "commit", "-q", "-m", "agent code");
+    advanceOrigin("package.json", '{"name":"app","dependencies":{"left-pad":"^1.0.0"}}\n', "main adds a dependency");
+    const res = await prov.mergeBase("r5");
+    expect(res.ok).toBe(true);
+    expect(res.depsChanged).toBe(true); // package.json changed → deps may be stale
+    // No node_modules in this worktree → nothing to reconcile; installDeps skips
+    // (rather than installing from scratch on every PR).
+    expect(existsSync(join(cwd, "node_modules"))).toBe(false);
+    const inst = await prov.installDeps("r5");
+    expect(inst.installed).toBe(false);
   });
 
   it("mergeBase reports a conflict and ABORTS (leaves the worktree clean) → caller escalates", async () => {

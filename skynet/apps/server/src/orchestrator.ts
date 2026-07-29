@@ -1186,6 +1186,17 @@ export class Orchestrator {
       await this.escalate(agent.id, `merge conflict with ${config.baseBranch}${files} — rebase the branch, then re-approve to open the PR.`, "conflict");
       return;
     }
+    // If folding in main changed a dependency manifest, reconcile the worktree's
+    // deps so a revise loop / checks / preview run against the right ones.
+    if (sync.depsChanged) {
+      const r = await git.worktrees.installDeps(agent.id);
+      await this.hub.runLog(
+        agent.id,
+        r.installed
+          ? `${config.baseBranch} changed dependencies — re-installed (${r.note}).`
+          : `${config.baseBranch} changed dependencies${r.note ? ` — ${r.note}` : " — no local node_modules to reconcile, skipped install"}.`,
+      );
+    }
     const worktreePath = git.worktrees.pathFor(agent.id);
     const stat = await git.worktrees.diffStat(agent.id, config.baseBranch);
     const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
