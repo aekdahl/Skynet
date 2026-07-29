@@ -22,6 +22,7 @@ import { registerGithubRoutes, configureGithub, githubService } from "./github/i
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { registerEvalsRoutes } from "./evals/index.js";
 import { registerSimulationRoutes } from "./simulation/index.js";
+import { startModelCatalogRefresh } from "./provider-catalog-refresh.js";
 import { registerRateLimit } from "./rate-limit.js";
 import { isCorsOriginAllowed } from "./cors-policy.js";
 import { configureAuth } from "./auth.js";
@@ -235,6 +236,11 @@ async function main() {
     const every = Math.max(8_000, Math.min(config.autonomyMs, 60_000));
     setInterval(tick, every).unref();
   }
+
+  // Model-catalog auto-refresh: keep the Fleet picker's model SUGGESTIONS current
+  // from a maintained public catalog, so new models appear without a code edit.
+  // Fail-safe (curated defaults on any error); disabled when the interval is 0.
+  startModelCatalogRefresh(config.modelCatalogUrl, config.modelCatalogRefreshMs, (m) => app.log.info(m));
 
   // Telegram messaging bridge + remote kill switch: connects OUT to Telegram
   // (long-poll, no open ports), pushes gate/run notifications to the owner, and

@@ -218,6 +218,14 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   command-deny, worktree write-confinement, and runtime cap already ship locally.
 - [ ] **Guided provider connect** — one-click "Connect Claude / Codex / …": in-app key entry + a live verify,
   so onboarding never requires hand-authing each vendor CLI (the #1 friction rivals impose).
+- [ ] **Live per-provider model discovery (Approach C)** — build on the shipped model-catalog work
+  (custom model ids + advisory validation; auto-refreshed *suggestions* from the public models.dev catalog).
+  For the API providers, fetch the vendor's own model list with the workspace's key — Anthropic `/v1/models`,
+  OpenAI `/v1/models`, OpenRouter `/api/v1/models` (Hermes) — and merge, so suggestions are vendor-authoritative
+  and account-scoped (only models the key can actually use), not a shared external best-effort. CLI-only
+  providers (Cursor/Copilot/Gemini-CLI) with no clean models endpoint keep the external/curated fallback.
+  Reuses the `setModelOverrides`/`providerCatalog` seam already in place. *(Most robust; most per-provider code —
+  needs a key per provider and per-vendor adapters, so it waits behind guided provider connect.)*
 - [ ] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).** A 6-way
   competitor deep-dive found *none* ship a real safety/policy layer, decision audit, or (bar one) a HITL
   inbox — so this is where we win now:

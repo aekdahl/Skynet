@@ -129,6 +129,14 @@ export const config = {
   // runs. 0 disables it entirely (fully human-driven). Per-project autonomy
   // flag still gates each project.
   autonomyMs: Number(process.env.SKYNET_AUTONOMY_MS ?? 15_000),
+  // Auto-refresh the Fleet model-picker SUGGESTIONS from a maintained public
+  // catalog (models.dev by default), so new models appear without a code edit.
+  // A read-only GET of a public catalog — no keys or data leave the host; the
+  // result only augments the picker's suggestions (validation stays advisory).
+  // Fail-safe: a failed/blocked fetch just keeps the curated defaults. Set the
+  // interval to 0 to disable the network call entirely (e.g. fully-offline use).
+  modelCatalogUrl: process.env.SKYNET_MODEL_CATALOG_URL ?? "https://models.dev/api.json",
+  modelCatalogRefreshMs: Number(process.env.SKYNET_MODEL_CATALOG_REFRESH_MS ?? 6 * 60 * 60 * 1000),
   // Auto-resolve window for an unanswered `question` HITL (ms). When an agent
   // asks the operator something (e.g. "I can't reproduce this — what's the
   // stack trace?") and no one answers within this window, the question is

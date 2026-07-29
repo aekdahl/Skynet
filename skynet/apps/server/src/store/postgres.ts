@@ -21,7 +21,7 @@ import type {
 import { now } from "../config.js";
 import type { Store } from "./store.js";
 import type { StoredServiceToken } from "../auth/service-tokens.js";
-import { PROVIDERS } from "./providers.js";
+import { providerCatalog } from "./providers.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS runs     (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
@@ -157,7 +157,7 @@ export class PostgresStore implements Store {
 
   listModules(ws: string) { return this.list<Module>("modules", ws); }
   listDeps(ws: string) { return this.list<Dependency>("deps", ws); }
-  async listProviders(): Promise<ProviderInfo[]> { return PROVIDERS; }
+  async listProviders(): Promise<ProviderInfo[]> { return providerCatalog(); }
 
   async recordAudit(e: AuditRecord): Promise<void> {
     await this.pool.query(
@@ -261,6 +261,6 @@ export class PostgresStore implements Store {
       this.listModules(ws),
       this.listDeps(ws),
     ]);
-    return { runs, queue, projects, tasks, fleet, modules, deps, providers: PROVIDERS, serverTime: now() };
+    return { runs, queue, projects, tasks, fleet, modules, deps, providers: providerCatalog(), serverTime: now() };
   }
 }

@@ -19,7 +19,7 @@ import type { AuditRecord } from "@skynet/shared";
 import { now } from "../config.js";
 import type { Store } from "./store.js";
 import type { StoredServiceToken } from "../auth/service-tokens.js";
-import { PROVIDERS } from "./providers.js";
+import { providerCatalog } from "./providers.js";
 
 export class MemoryStore implements Store {
   // `protected` so a persistence subclass (FileStore) can load/serialize them.
@@ -34,7 +34,6 @@ export class MemoryStore implements Store {
   protected github = new Map<string, GithubConnection>(); // keyed by workspaceId
   protected githubTokens = new Map<string, string>(); // workspaceId → sealed PAT ciphertext
   protected serviceTokens = new Map<string, StoredServiceToken>(); // keyed by id (holds a hash, never the raw token)
-  private providers: ProviderInfo[] = PROVIDERS;
 
   /** Hook called after every mutation. No-op in memory; FileStore overrides it
    *  to schedule a debounced write to disk. */
@@ -53,7 +52,7 @@ export class MemoryStore implements Store {
       fleet: await this.listAgents(workspaceId),
       modules: this.modules,
       deps: this.deps,
-      providers: this.providers,
+      providers: providerCatalog(),
       serverTime: now(),
     };
   }
@@ -89,7 +88,7 @@ export class MemoryStore implements Store {
 
   async listModules(_ws: string) { return this.modules; }
   async listDeps(_ws: string) { return this.deps; }
-  async listProviders() { return this.providers; }
+  async listProviders() { return providerCatalog(); }
 
   async recordAudit(entry: AuditRecord) { this.audit.push(entry); this.persist(); }
   async listAudit(ws: string) { return this.audit.filter((e) => e.workspaceId === ws).reverse(); }
