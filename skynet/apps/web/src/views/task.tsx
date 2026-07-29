@@ -15,9 +15,17 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { StatusDot } from "../components/common";
+import { Markdown } from "../components/markdown";
 import { PreviewFor } from "../components/preview";
 import { HitlContext, RiskChip } from "../components/hitl-context";
 import { LivePreviewModal } from "./project";
+
+// Cheap guard: does this text actually contain markdown worth rendering (bold,
+// inline code, a bullet/number/heading line, or a link)? Agent prose does; plain
+// telemetry ("3m elapsed", "installing dependencies…") doesn't — so we only route
+// the former through <Markdown/> and leave everything else rendering verbatim.
+const looksMarkdown = (t: string): boolean =>
+  /\*\*|`|\[[^\]]+\]\([^)]+\)|(^|\n)\s*(?:[-*]\s|\d+\.\s|#{1,4}\s)/.test(t);
 
 // A log line is either a conversation turn (the orchestrator records chat as
 // `you: …` and the agent's reply as `↳ …`) or plain telemetry. Classifying here
@@ -254,7 +262,11 @@ export function TaskDetail({
       {answer && (
         <div className="detail-result">
           <div className="detail-result-label mono">ANSWER</div>
-          <div className="detail-result-body">{answer}</div>
+          {looksMarkdown(answer) ? (
+            <div className="detail-result-body log-md"><Markdown text={answer} /></div>
+          ) : (
+            <div className="detail-result-body">{answer}</div>
+          )}
         </div>
       )}
 
@@ -330,7 +342,11 @@ export function TaskDetail({
                   return (
                     <div key={i} className={"log-turn log-turn-" + turn.who}>
                       <span className="log-who mono">{turn.who === "you" ? "you" : agent.name}</span>
-                      <span className="log-turn-text">{turn.text}</span>
+                      {looksMarkdown(turn.text) ? (
+                        <div className="log-turn-text log-md"><Markdown text={turn.text} /></div>
+                      ) : (
+                        <span className="log-turn-text">{turn.text}</span>
+                      )}
                     </div>
                   );
                 }
@@ -347,6 +363,12 @@ export function TaskDetail({
                     <summary>{l.line}</summary>
                     <pre className="log-detail">{l.detail}</pre>
                   </details>
+                ) : looksMarkdown(l.line) ? (
+                  // Marker-less agent prose (e.g. the final answer) — render its
+                  // markdown instead of showing raw **bold**/`code`/- bullets.
+                  <div key={i} className="log-prose log-md">
+                    <Markdown text={l.line} />
+                  </div>
                 ) : (
                   <div key={i} className={cls}>
                     {l.line}

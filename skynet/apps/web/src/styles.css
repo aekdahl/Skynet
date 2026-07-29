@@ -362,7 +362,10 @@ kbd {
   border: 1px solid color-mix(in oklch, var(--danger), transparent 75%);
   border-radius: 10px; padding: 12px var(--card-pad);
 }
-.detail-cols { display: grid; grid-template-columns: 5fr 7fr; gap: var(--sp); align-items: start; }
+/* Thin, fixed left column (plan + modules) so the LIVE LOG gets the width; on a
+   narrow viewport it stacks to one column with the plan on top of the log. */
+.detail-cols { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: var(--sp); align-items: start; }
+@media (max-width: 900px) { .detail-cols { grid-template-columns: 1fr; } }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: var(--card-pad); }
 .panel-head { font-size: 11px; font-weight: 600; letter-spacing: 0.14em; color: var(--faint); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
 .panel-head + .panel-head { margin-top: 20px; }
@@ -394,6 +397,17 @@ kbd {
 .log-who { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
 .log-turn-you .log-who { color: var(--accent); }
 .log-turn-text .log-cursor { margin-left: 1px; }
+/* Agent prose (chat turns / the final answer) rendered as markdown inside the log:
+   marker-less lines that carry **bold** / `code` / - bullets. Tight margins so it
+   sits like a log entry, not a document. */
+.log-prose { margin: 6px 0; font-size: 13px; line-height: 1.5; color: var(--ink); word-break: break-word; }
+.log-md { white-space: normal; }
+.log-md .md { font-size: 13px; line-height: 1.5; color: inherit; }
+.log-md .md > :first-child { margin-top: 0; }
+.log-md .md > :last-child { margin-bottom: 0; }
+.log-md .md p { margin: 6px 0; color: inherit; }
+.log-md .md ul, .log-md .md ol { margin: 6px 0; padding-left: 18px; }
+.log-md .md li { margin: 3px 0; }
 /* Respond-here footer: decision quick-actions (when waiting) + composer */
 .log-compose { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .log-compose-blocked { margin: 12px -14px -14px; padding: 12px 14px; border-top: 1px solid var(--warn); background: color-mix(in oklch, var(--warn), transparent 93%); border-radius: 0 0 12px 12px; }
