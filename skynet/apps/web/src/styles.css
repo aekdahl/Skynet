@@ -1103,6 +1103,19 @@ button.kb-done:hover { opacity: 1; }
 .settings-req-hint { font-size: 11.5px; color: var(--faint); line-height: 1.45; }
 .settings-req-hint a, .cfg-prov-req a { color: var(--accent); text-decoration: none; }
 .settings-req-hint a:hover, .cfg-prov-req a:hover { text-decoration: underline; }
+/* CLI installer — button + shown-command on one row, streaming log below when
+   running. The `<code>` element makes the exact `npm i -g …` visible before
+   the operator commits to running it. */
+.settings-install-cta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.settings-install-cmd { font-family: var(--font-mono); font-size: 11px; color: var(--muted); background: var(--raised); border: 1px solid var(--line-soft); border-radius: 5px; padding: 2px 6px; }
+.settings-install-live { display: flex; flex-direction: column; gap: 6px; }
+.settings-install-log {
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.45; color: var(--text);
+  background: var(--raised); border: 1px solid var(--line); border-radius: 6px;
+  padding: 8px 10px; max-height: 240px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  margin: 0;
+}
+.settings-install-actions { display: flex; gap: 6px; }
 .cfg-prov-req { margin: 8px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
 .settings-key { display: flex; align-items: center; gap: 8px; }
 .settings-input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; color: var(--text); font-family: var(--font-mono); font-size: 12px; }

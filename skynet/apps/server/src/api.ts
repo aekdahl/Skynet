@@ -11,6 +11,7 @@ import {
   ConfigureRunnerRequest,
   CreateProjectRequest,
   CreateTaskRequest,
+  ProviderId,
   ResolveRequest,
   ChatRequest,
   UpdateProjectRequest,
@@ -18,6 +19,8 @@ import {
   UpdateTaskRequest,
   MoveTaskRequest,
 } from "@skynet/shared";
+import { installProviderCli } from "./provider-install.js";
+import { installCommandFor } from "./provider-requirements.js";
 import { readFile } from "node:fs/promises";
 import { authenticate, type Principal } from "./auth.js";
 import { requiresAuth } from "./auth-guard.js";
@@ -86,6 +89,38 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   // ── reads (workspace-scoped) ──────────────────────────────────────────────
   app.get("/api/snapshot", (req) => ops.snapshot(ws(req)));
   app.get("/api/providers", (req) => ops.listProviders(ws(req)));
+
+  // Install a provider's CLI in-place, streaming stdout+stderr as text/plain
+  // so the Settings UI can render live output. The command is FIXED per
+  // provider on the server (see provider-requirements.ts INSTALL_COMMAND) —
+  // the client only sends the provider id; there's no way for a caller to
+  // inject shell text. Providers without a scriptable install (brew/manual)
+  // return 400. Post-install the client refreshes the snapshot to pick up
+  // the re-probed `binOnPath`.
+  app.post<{ Params: { id: string } }>("/api/providers/:id/install", async (req, reply) => {
+    const parsed = ProviderId.safeParse(req.params.id);
+    if (!parsed.success) return reply.code(400).send({ error: "unknown provider id" });
+    const id = parsed.data;
+    if (!installCommandFor(id)) {
+      return reply.code(400).send({ error: `no auto-install available for "${id}"; use the docs link on the provider card` });
+    }
+    reply.header("content-type", "text/plain; charset=utf-8");
+    reply.hijack();
+    const raw = reply.raw;
+    raw.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-cache" });
+    try {
+      for await (const ev of installProviderCli(id)) {
+        if (ev.kind === "line" || ev.kind === "error") raw.write((ev.text ?? "") + "\n");
+        else if (ev.kind === "done") {
+          raw.write(`\n[done] exit=${ev.exitCode ?? "spawn-failed"} binOnPath=${ev.binOnPath ? "yes" : "no"}\n`);
+        }
+      }
+    } catch (err) {
+      raw.write(`\n[error] ${(err as Error).message}\n`);
+    } finally {
+      raw.end();
+    }
+  });
   app.get("/api/projects", (req) => ops.listProjects(ws(req)));
   app.get("/api/fleet/runners", (req) => ops.listAgents(ws(req)));
   // Decision audit trail — resolved HITL items, newest first (W8, Backend Brief §11).

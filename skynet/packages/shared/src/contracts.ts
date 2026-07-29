@@ -369,6 +369,24 @@ export const ProviderRequirements = z.object({
   // One-line "how to install / set up" hint, and a docs link if we have one.
   installHint: z.string().nullable().default(null),
   docsUrl: z.string().nullable().default(null),
+  // Structured install: when set, the UI can offer a one-click "Install CLI"
+  // button that runs this exact command server-side and streams the output.
+  // Only set for providers whose install is scriptable (`npm i -g <pkg>`); brew,
+  // sign-in-required, or manual installs stay null and rely on `installHint` +
+  // `docsUrl`. This is what the CLI-installer feature reads to decide whether
+  // to expose the button.
+  install: z
+    .object({
+      // Package manager the command uses. Today only "npm" is auto-installable
+      // by the server; others are declarative for UI copy / future support.
+      packageManager: z.enum(["npm", "brew", "pip", "manual"]),
+      // The EXACT command the server will spawn (no shell interpolation). A
+      // fixed constant, never user-derived — the UI displays it verbatim before
+      // running so the operator sees what's about to happen.
+      command: z.string(),
+    })
+    .nullable()
+    .default(null),
 });
 export type ProviderRequirements = z.infer<typeof ProviderRequirements>;
 
