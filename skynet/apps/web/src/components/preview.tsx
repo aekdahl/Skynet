@@ -54,53 +54,6 @@ function PreviewFrame({ url, title }: { url: string; title: string }) {
 
 const hostPath = (url: string) => url.replace(/^https?:\/\//, "");
 
-export function PreviewFor({ agent }: { agent: TaskRun }) {
-  const now = agent.plan.find((p) => p.state === "now");
-
-  if (agent.visual) {
-    return (
-      <PvShell label={agent.name + " · live UI"} fresh="just now" tone="light" done={agent.status === "done"}>
-        <div className="dlv-app">
-          <div className="dlv-appbar">
-            <span className="dlv-dotrow">
-              <i />
-              <i />
-              <i />
-            </span>
-            <span className="dlv-url">
-              {agent.previewUrl ? hostPath(agent.previewUrl) : "app.cyberdyne.net/" + agent.branch.split("/").pop()}
-            </span>
-          </div>
-          {agent.previewUrl ? (
-            <PreviewFrame url={agent.previewUrl} title={agent.name + " preview"} />
-          ) : (
-            <div className="dlv-pad dlv-center">
-              <div className="dlv-buildspin" />
-              <div className="dlv-h1">{agent.name}</div>
-              <div className="dlv-sub">
-                {agent.status === "done"
-                  ? "shipped"
-                  : "Building: " + (now ? now.text : "wrap-up")}
-              </div>
-            </div>
-          )}
-        </div>
-      </PvShell>
-    );
-  }
-
-  // Non-visual agent: no renderable delivery. Don't fabricate a terminal — the
-  // agent's real activity is in the LIVE LOG panel. Callers fold this panel away
-  // for non-visual runs; this is the defensive fallback if one renders it.
-  return (
-    <PvShell label={agent.name} fresh="just now" done={agent.status === "done"}>
-      <div className="pv-none">
-        No live preview — this agent has no renderable delivery. Follow its work in the log.
-      </div>
-    </PvShell>
-  );
-}
-
 // ─── project-level delivery preview ─────────────────────────────────────────
 
 export function visualLeadOf(project: Project, runs: TaskRun[]): TaskRun | null {

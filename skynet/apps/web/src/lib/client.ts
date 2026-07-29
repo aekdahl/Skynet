@@ -451,20 +451,6 @@ export function previewRefresh(projectId: string) {
   return req<PreviewState>("POST", `/api/projects/${projectId}/preview/refresh`);
 }
 
-// Per-run pre-merge preview ("Preview this change") — runs the run's own branch.
-export function runPreviewStatus(runId: string) {
-  return req<PreviewState>("GET", `/api/runs/${runId}/preview`);
-}
-export function runPreviewStart(runId: string) {
-  return req<PreviewState>("POST", `/api/runs/${runId}/preview/start`);
-}
-export function runPreviewStop(runId: string) {
-  return req<PreviewState>("POST", `/api/runs/${runId}/preview/stop`);
-}
-export function runPreviewRestart(runId: string) {
-  return req<PreviewState>("POST", `/api/runs/${runId}/preview/restart`);
-}
-
 /** Streaming "ask about this project" — reads the text/plain reply as it streams,
  *  calling `onDelta` per chunk. Resolves with the full reply. Falls back to the
  *  non-streaming endpoint when the response body can't be read. */

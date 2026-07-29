@@ -45,9 +45,6 @@ const ALLOW = new Set<string>([
   // live preview (Phase-1 v0) — spawns a real dev server + iframes it; a
   // stateful UI control surface with no offline journey (needs a repo + toolchain).
   "previewStatus", "previewStart", "previewStop", "previewRestart", "previewRefresh",
-  // per-run pre-merge preview ("Preview this change") — same stateful dev-server
-  // surface, scoped to a run's branch; no offline journey (needs a repo + toolchain).
-  "runPreviewStatus", "runPreviewStart", "runPreviewStop", "runPreviewRestart",
   // auth primitive (POST /api/auth/login) — the local/desktop build runs
   // open-auth (dev tokens), so no fleet journey signs in; auth is guarded by
   // auth-hardening.test.ts, not an operator journey.

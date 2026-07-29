@@ -16,9 +16,7 @@ import {
 } from "../lib/derive";
 import { StatusDot } from "../components/common";
 import { Markdown } from "../components/markdown";
-import { PreviewFor } from "../components/preview";
 import { HitlContext, RiskChip } from "../components/hitl-context";
-import { LivePreviewModal } from "./project";
 
 // Cheap guard: does this text actually contain markdown worth rendering (bold,
 // inline code, a bullet/number/heading line, or a link)? Agent prose does; plain
@@ -88,7 +86,6 @@ export function TaskDetail({
     tasks,
     fleet,
     modules,
-    projects,
     resolveHitl,
     forkAgent,
     streamAgentMessage,
@@ -97,8 +94,6 @@ export function TaskDetail({
     stopAgent,
     archiveAgent,
   } = useStore();
-  const project = projects.find((p) => p.id === agent.projectId);
-  const [previewOpen, setPreviewOpen] = useState(false);
   const q = openQueue(queue).find((it) => it.runId === agent.id);
   // The backing task carries the operator's brief AND the autonomous triage
   // metadata (assessment note + duration estimate) — surface both here so
@@ -186,18 +181,6 @@ export function TaskDetail({
             >
               <span className="btn-gly" aria-hidden="true">⑂</span> Fork
             </button>
-
-            {/* Pre-merge preview: run this change's branch and see it before it
-                merges. Needs a local project folder to spin a worktree from. */}
-            {project?.repoPath && !agent.archived && (
-              <button
-                className="btn btn-ghost btn-icon"
-                title="Run this change on its own branch and preview it live — before it merges"
-                onClick={() => setPreviewOpen(true)}
-              >
-                <span className="btn-gly" aria-hidden="true">▶</span> Preview
-              </button>
-            )}
 
             {/* Lifecycle controls */}
             {agent.status === "paused" ? (
@@ -343,15 +326,6 @@ export function TaskDetail({
           </div>
         </div>
         <div className="detail-right">
-          {agent.visual && (
-            <div className="panel panel-preview">
-              <div className="panel-head">
-                LIVE PREVIEW{" "}
-                <span className="panel-sub">what's actually built right now</span>
-              </div>
-              <PreviewFor agent={agent} />
-            </div>
-          )}
           <div className="panel panel-log">
             <div className="panel-head">
               LIVE LOG <span className="panel-sub">activity + conversation — reply below</span>
@@ -488,15 +462,6 @@ export function TaskDetail({
           </div>
         </div>
       </div>
-
-      {previewOpen && (
-        <LivePreviewModal
-          id={agent.id}
-          kind="run"
-          title={"Preview change · " + agent.name}
-          onClose={() => setPreviewOpen(false)}
-        />
-      )}
     </section>
   );
 }
