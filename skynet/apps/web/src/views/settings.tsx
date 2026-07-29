@@ -10,7 +10,12 @@ import { providerReadiness } from "../lib/derive";
 // A vendor's runners are only selectable in create-agent once its key is set
 // (the snapshot recomputes provider availability from the secret store).
 export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
-  const { providers, setProviderAvailable } = useStore();
+  const { providers, retry, setProviderAvailable } = useStore();
+  // Installer modal state — one at a time; the panel below the provider card
+  // renders its live log while running, and locks to that provider until done.
+  const [installFor, setInstallFor] = useState<string | null>(null);
+  const [installLog, setInstallLog] = useState<string>("");
+  const [installing, setInstalling] = useState(false);
   const [metas, setMetas] = useState<SecretMeta[] | null>(null);
   const [envSet, setEnvSet] = useState<Set<string>>(new Set());
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -179,6 +184,50 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                         </>
                       )}
                     </span>
+                  )}
+                  {/* Install-from-app: only when the CLI runtime is expected,
+                      the binary isn't on PATH, and the provider has a
+                      scriptable install command (npm today). The button shows
+                      the EXACT command it will run so nothing runs silently. */}
+                  {req.runtime === "cli" && p.binOnPath === false && req.install && (
+                    installFor === p.id ? (
+                      <div className="settings-install-live">
+                        <pre className="settings-install-log">{installLog || "starting…"}</pre>
+                        {!installing && (
+                          <div className="settings-install-actions">
+                            <button className="btn btn-ghost btn-sm" onClick={() => { setInstallFor(null); setInstallLog(""); }}>
+                              Close
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="settings-install-cta">
+                        <button
+                          className="btn btn-primary btn-sm"
+                          disabled={installing}
+                          title={`Runs: ${req.install.command}`}
+                          onClick={async () => {
+                            setInstallFor(p.id);
+                            setInstallLog("");
+                            setInstalling(true);
+                            try {
+                              await api.streamInstallProvider(p.id, (chunk) => setInstallLog((s) => s + chunk));
+                            } catch (e) {
+                              setInstallLog((s) => s + `\n[error] ${(e as Error).message}\n`);
+                            } finally {
+                              setInstalling(false);
+                              // Re-pull the snapshot so the re-probed binOnPath lands
+                              // and the readiness badge updates automatically.
+                              retry();
+                            }
+                          }}
+                        >
+                          ↓ Install CLI
+                        </button>
+                        <code className="settings-install-cmd">{req.install.command}</code>
+                      </div>
+                    )
                   )}
                 </div>
               )}

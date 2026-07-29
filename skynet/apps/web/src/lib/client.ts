@@ -488,6 +488,38 @@ export async function streamProjectChat(
   }
   return full;
 }
+
+// Provider CLI installer — POSTs to /api/providers/:id/install and streams the
+// npm output as text/plain deltas so the Settings modal can render live. On
+// completion the caller re-fetches the snapshot to pick up the re-probed
+// `binOnPath`. Falls back to a synchronous body read when the response isn't
+// streamable (older runtime); the whole body is delivered as one onDelta call.
+export async function streamInstallProvider(
+  providerId: string,
+  onDelta: (chunk: string) => void,
+): Promise<void> {
+  const res = await fetch(`/api/providers/${encodeURIComponent(providerId)}/install`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token()}` },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(res.status, body || res.statusText);
+  }
+  if (!res.body) {
+    onDelta(await res.text().catch(() => ""));
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    if (chunk) onDelta(chunk);
+  }
+}
+
 // Guarded kanban move (backlog→triage, triage→todo, review→done, demote, …).
 export function transitionTask(projectId: string, taskId: string, to: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/state`, { to });

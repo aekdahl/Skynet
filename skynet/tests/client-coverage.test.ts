@@ -39,6 +39,10 @@ const ALLOW = new Set<string>([
   // streaming variant of sendAgentMessage (which IS journey-covered) — same
   // chat surface, just delta-rendered; no separate journey needed.
   "streamAgentMessage",
+  // one-click provider CLI installer — spawns a real `npm i -g …` server-side
+  // and streams the output; not runnable in an offline journey. The runner
+  // + fixed-command guarantees are covered by provider-install.test.ts.
+  "streamInstallProvider",
   // "ask about this project" assistant (+ its streaming variant) — a UI-only
   // conversational surface with no fleet journey; needs a real provider key.
   "projectChat", "streamProjectChat",
