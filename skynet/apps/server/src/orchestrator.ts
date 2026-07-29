@@ -12,6 +12,7 @@ import {
 } from "@skynet/runner-sdk";
 import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
+import { decideAutoApproval } from "./approval-policy.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
@@ -20,6 +21,7 @@ import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { providerUsableFromEnv } from "./provider-env.js";
 import { secretService } from "./secrets/index.js";
 import { previewService } from "./preview/index.js";
+import { projectPreview } from "./preview/project-preview.js";
 import type { Store } from "./store/store.js";
 import { WorktreeProvisioner } from "./worktrees.js";
 
@@ -288,6 +290,28 @@ export class Orchestrator {
       diff: raise.diff ?? null,
       flags,
     };
+    // Auto-approve a reversible, in-sandbox command gate per the project's
+    // approval policy (see approval-policy.ts), so the operator isn't asked to
+    // confirm every command. Boundary ops (high-risk / deny) and non-command
+    // gates fall through to a human. The gate is still raised + recorded, then
+    // immediately resolved through the normal path, so the audit trail shows
+    // exactly what was auto-approved and by which policy — nothing runs invisibly.
+    if (raise.kind === "approval") {
+      const project = await this.store.getProject(agent.projectId);
+      const auto = decideAutoApproval({
+        command: raise.command,
+        level: project?.approvalLevel ?? "trusted",
+        rules: project?.approvalRules ?? [],
+      });
+      if (auto) {
+        await this.hub.raiseHitl(item);
+        const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: auto.by, at: now() };
+        await this.hub.runLog(runId, `auto-approved (${auto.by}): ${item.command ?? item.title}`);
+        const resolved = await this.hub.resolveHitl(item.id, resolution);
+        if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(item, resolution);
+        return;
+      }
+    }
     await this.hub.raiseHitl(item);
     if (expiresAt != null) {
       this.questionTimers.set(item.id, setTimeout(() => void this.expireQuestion(item), timeout));
@@ -476,13 +500,24 @@ export class Orchestrator {
    * copilot), a provider with a credential env var, or one with a stored
    * per-workspace secret. There is no mock — no credential means nothing runs.
    */
-  private async providerUsable(workspaceId: string, provider: Agent["provider"]): Promise<boolean> {
+  private async providerUsable(
+    workspaceId: string,
+    provider: Agent["provider"],
+    credentialId?: string | null,
+  ): Promise<boolean> {
     // An injected provider (test seam / a deliberately-supplied backend, see
     // getProvider) is a working provider — credentialing is the injector's
     // responsibility, so it's usable regardless of env/secret.
     if (this.providerOverride) return true;
-    if (providerUsableFromEnv(provider)) return true;
-    return (await secretService.resolve(workspaceId, provider)) !== undefined;
+    const credId = credentialId ?? provider;
+    if (credId === provider) {
+      // Default credential: broad ambient-env detection (OAuth/gateway tokens too)
+      // OR a stored default key.
+      if (providerUsableFromEnv(provider)) return true;
+      return (await secretService.resolve(workspaceId, provider)) !== undefined;
+    }
+    // Named credential: no ambient-env fallback — it must carry its own stored key.
+    return (await secretService.resolve(workspaceId, credId)) !== undefined;
   }
 
   /**
@@ -505,7 +540,7 @@ export class Orchestrator {
   private acquireAgent(
     workspaceId: string,
     eligible?: TaskAssignment,
-  ): Promise<{ id: string; provider: TaskRun["provider"]; model: string }> {
+  ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
       if (runners.length === 0) {
@@ -528,13 +563,13 @@ export class Orchestrator {
         );
       }
       for (const r of idle) {
-        if (await this.providerUsable(workspaceId, r.provider)) {
+        if (await this.providerUsable(workspaceId, r.provider, r.credentialId)) {
           await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
-          return { id: r.id, provider: r.provider, model: r.model };
+          return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
         }
       }
       throw new RunnerNotConfiguredError(
-        "No credential for any available agent's provider — add a provider key in Settings (or sign in a CLI-login provider). Nothing runs without one.",
+        "No credential for any available agent — add a key for its provider/credential in Settings (or sign in a CLI-login provider). Nothing runs without one.",
       );
     });
   }
@@ -550,27 +585,28 @@ export class Orchestrator {
     workspaceId: string,
     provider: TaskRun["provider"],
     model: string,
-  ): Promise<{ id: string; provider: TaskRun["provider"]; model: string }> {
+    credentialId?: string | null,
+  ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
-      // Prefer an idle agent whose provider can actually execute.
+      // Prefer an idle agent whose provider/credential can actually execute.
       for (const r of runners.filter((r) => r.status === "idle")) {
-        if (await this.providerUsable(workspaceId, r.provider)) {
+        if (await this.providerUsable(workspaceId, r.provider, r.credentialId)) {
           await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
-          return { id: r.id, provider: r.provider, model: r.model };
+          return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
         }
       }
-      // None idle+usable → provision one for the requested provider, but only if
-      // that provider is usable (else nothing can run).
-      if (!(await this.providerUsable(workspaceId, provider))) {
+      // None idle+usable → provision one for the requested provider + credential,
+      // but only if that credential is usable (else nothing can run).
+      if (!(await this.providerUsable(workspaceId, provider, credentialId))) {
         throw new RunnerNotConfiguredError(
           `No credential for provider "${provider}" — add a key in Settings (or sign in a CLI-login provider). Nothing runs without one.`,
         );
       }
       const id = `runner-auto-${++this.seq}`;
-      const runner: Agent = { id, workspaceId, name: id, provider, model, status: "busy", idleSince: null };
+      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null };
       await this.hub.upsertAgent(runner);
-      return { id, provider, model };
+      return { id, provider, model, credentialId: credentialId ?? null };
     });
   }
 
@@ -646,6 +682,7 @@ export class Orchestrator {
       status: "running",
       agentId: runner.id,
       provider: runner.provider,
+      credentialId: runner.credentialId,
       model: runner.model,
       branch,
       modules: [],
@@ -679,7 +716,7 @@ export class Orchestrator {
       // Isolated worktree cut from the project's integration tip (or base).
       const { cwd, baseRef } = await this.provisionCwd(git, runId, branch, git?.merge.integrationBranch(projectId));
       // Inject this workspace's provider key (env fallback when none is stored).
-      const apiKey = await secretService.resolve(project.workspaceId, runner.provider);
+      const apiKey = await secretService.resolve(project.workspaceId, runner.credentialId ?? runner.provider);
       // The agent gets the full brief: the short name plus the longer
       // description when one exists (the run's display name stays the short text).
       const brief = task.description ? `${task.text}\n\n${task.description}` : task.text;
@@ -702,7 +739,7 @@ export class Orchestrator {
 
     // Fork provisions capacity on demand: if no runner is idle, spin one up
     // (inheriting the parent's provider/model) rather than refusing the fork.
-    const runner = await this.acquireOrProvisionRunner(parent.workspaceId, parent.provider, parent.model);
+    const runner = await this.acquireOrProvisionRunner(parent.workspaceId, parent.provider, parent.model, parent.credentialId);
     const runId = `${this.slug(parent.name)}-fork-${++this.seq}`;
     const stepIndex = Math.max(0, parent.plan.findIndex((s) => s.state === "now"));
     const forkBranch = `${parent.branch}-fork`;
@@ -725,6 +762,7 @@ export class Orchestrator {
       status: "running",
       agentId: runner.id,
       provider: runner.provider,
+      credentialId: runner.credentialId,
       model: runner.model,
       branch: `agent/${runId}`,
       progress: parent.progress,
@@ -746,7 +784,7 @@ export class Orchestrator {
     try {
       // A fork branches from its parent (family-internal integration, §7).
       const { cwd, baseRef } = await this.provisionCwd(git, runId, agent.branch, parent.branch);
-      const apiKey = await secretService.resolve(parent.workspaceId, runner.provider);
+      const apiKey = await secretService.resolve(parent.workspaceId, runner.credentialId ?? runner.provider);
       const handle = await provider.start(
         { runId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex, apiKey },
         this.events(),
@@ -830,14 +868,14 @@ export class Orchestrator {
     }
     let acq: { id: string; provider: TaskRun["provider"]; model: string };
     try {
-      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model);
+      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId);
     } catch (err) {
       await this.hub.runLog(runId, `cannot revise — ${(err as Error).message}`);
       return;
     }
     const provider = await this.getProvider(acq.provider);
     const cwd = review.git.worktrees.pathFor(runId);
-    const apiKey = await secretService.resolve(run.workspaceId, run.provider);
+    const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
     const revisePrompt =
       `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
       `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
@@ -892,6 +930,9 @@ export class Orchestrator {
     // Integrated — retire the agent's worktree (the branch is kept in history).
     const ctx = await this.gitContextForAgent(runId).catch(() => undefined);
     if (ctx) await ctx.worktrees.retire(runId).catch(() => undefined);
+    // A change just landed on the integration branch → nudge a live preview to
+    // re-point at the new tip so the operator sees the app update (docs/live-preview.md).
+    if (agent?.projectId) void projectPreview.refresh(agent.projectId).catch(() => undefined);
   }
 
   /**
@@ -945,6 +986,25 @@ export class Orchestrator {
         return;
       }
       await this.hub.runLog(agent.id, `pushed ${agent.branch} → opened PR ${result.pr?.url ?? "(opened)"}`);
+
+      // The operator's approval IS the approval — merge the PR and complete the
+      // task (→ done). If GitHub blocks the merge (branch protection / required
+      // checks or reviews), surface that and leave the run in review rather than
+      // pretending it integrated. Without this the run/task sat in review forever.
+      if (!result.pr) {
+        await this.hub.runLog(agent.id, "PR did not return a number — can't merge automatically; merge it on GitHub to complete.");
+        return;
+      }
+      const merge = await githubService
+        .mergePr(agent.workspaceId, repo, result.pr.number)
+        .catch((err: unknown) => ({ merged: false, reason: (err as Error).message }));
+      if (merge.merged) {
+        await this.hub.runLog(agent.id, `merged PR ${result.pr.url ?? `#${result.pr.number}`}`);
+        await this.completeMerged(agent.id, agent.branch);
+      } else {
+        await this.hub.runStatus(agent.id, "review");
+        await this.hub.runLog(agent.id, `PR opened but not merged — ${merge.reason ?? "blocked by GitHub"}. Merge it on GitHub to complete.`);
+      }
     } catch (err) {
       await this.hub.runLog(agent.id, `GitHub push failed: ${(err as Error).message}`);
     }
@@ -1179,7 +1239,7 @@ export class Orchestrator {
         : `This agent is ${agent.status}, but chat isn't wired to a live runner in this config, so I can't relay your message to it right now.`;
       return;
     }
-    const apiKey = await secretService.resolve(agent.workspaceId, agent.provider);
+    const apiKey = await secretService.resolve(agent.workspaceId, agent.credentialId ?? agent.provider);
     const context = agent.log.slice(-40).map((l) => l.line).join("\n").slice(-4000);
     const spec = { task: agent.name, model: agent.model, cwd: config.runnerCwd, apiKey, context };
     try {
@@ -1399,7 +1459,7 @@ export class Orchestrator {
     try {
       const provider = await this.getProvider(agent.provider);
       if (!provider.consult) return `Auto-triaged — "${task.text}" looks actionable; no blockers noted.`;
-      const apiKey = await secretService.resolve(ws, agent.provider);
+      const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
       const reply = await provider.consult(
         { task: task.description ? `${task.text}\n\n${task.description}` : task.text, model: agent.model, cwd: config.runnerCwd, apiKey },
         "You are triaging a backlog item for a coding project. In 2-3 short lines: is the ask clear, rough effort (S/M/L), and any risks? Be terse.",
@@ -1419,7 +1479,7 @@ export class Orchestrator {
     try {
       const provider = await this.getProvider(agent.provider);
       if (provider.consult && run) {
-        const apiKey = await secretService.resolve(ws, agent.provider);
+        const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
         const context = run.log.slice(-30).map((l) => l.line).join("\n").slice(-3000);
         const reply = await provider.consult(
           { task: task.text, model: agent.model, cwd: config.runnerCwd, apiKey, context },

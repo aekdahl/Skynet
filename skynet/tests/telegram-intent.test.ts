@@ -4,7 +4,13 @@
 // A misparse, an unknown id, or an injected instruction can never escalate past
 // this function — these tests pin that.
 import { describe, it, expect } from "vitest";
-import { parseIntent, parseResponse, type Action, type IntentContext } from "../apps/server/src/telegram/intent.js";
+import {
+  parseIntent,
+  parseResponse,
+  renderContext,
+  type Action,
+  type IntentContext,
+} from "../apps/server/src/telegram/intent.js";
 
 const ctx: IntentContext = {
   gates: [
@@ -207,5 +213,27 @@ describe("parseResponse — {reply, action} envelope extraction", () => {
   it("an explicit action:null is just a reply", () => {
     const raw = JSON.stringify({ reply: "Nothing to do — all clear.", action: null });
     expect(parseResponse(raw, ctx).action).toBeNull();
+  });
+});
+
+// The assistant is grounded in repo content so it can answer roadmap/bug/feature
+// questions over Telegram — the docs ride in a dedicated, clearly-labelled section.
+describe("renderContext — PROJECT DOCS grounding", () => {
+  const docs = "\n\n### PROJECT Web (p-web)\n\n=== ROADMAP.md ===\n- item 1: dark mode\n- item 2: SSO";
+
+  it("appends a PROJECT DOCS section when docs are provided", () => {
+    const out = renderContext(ctx, undefined, docs);
+    expect(out).toContain("WORKSPACE CONTEXT");
+    expect(out).toContain("PROJECT DOCS");
+    expect(out).toContain("item 1: dark mode");
+    // Docs ground answers AFTER the workspace context. The operator message is no
+    // longer concatenated here — it's passed separately as the runner's question
+    // (prompt-injection fix), so this data blob is pure grounding.
+    expect(out.indexOf("WORKSPACE CONTEXT")).toBeLessThan(out.indexOf("PROJECT DOCS"));
+  });
+
+  it("omits the section entirely when there are no docs", () => {
+    expect(renderContext(ctx)).not.toContain("PROJECT DOCS");
+    expect(renderContext(ctx, undefined, "   ")).not.toContain("PROJECT DOCS");
   });
 });

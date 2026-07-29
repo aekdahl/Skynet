@@ -124,6 +124,9 @@ export const TaskRun = z.object({
   status: TaskRunStatus,
   agentId: z.string().nullable(), // which fleet runner executes it
   provider: ProviderId,
+  // Which named credential the run authenticates with (copied from the agent at
+  // spawn). null → the provider's default credential (id === provider).
+  credentialId: z.string().nullable().default(null),
   model: z.string(),
   branch: z.string(),
   modules: z.array(z.string()), // architectural module ids it touches
@@ -146,6 +149,34 @@ export const TaskRun = z.object({
 });
 export type TaskRun = z.infer<typeof TaskRun>;
 
+// ─── Approval policy (agent-action gating) ──────────────────────────────────
+// How aggressively a project auto-approves an agent's GATED actions, so the
+// operator isn't asked to confirm every reversible in-sandbox command. The
+// medium/high line is the trust boundary: everything genuinely dangerous or
+// outward-facing (git push, merge, infra CLIs, destructive git) classifies as
+// high-risk or is hard-denied by command-safety, so it ALWAYS needs a human
+// regardless of level. Agents run in isolated worktrees, so low/medium commands
+// are reversible and contained until the (always-gated) diff review.
+//   manual   — gate every gated action (nothing auto-approved; today's behavior)
+//   assisted — auto-approve LOW-risk commands; gate medium/high
+//   trusted  — auto-approve LOW+MEDIUM commands; gate high (deny stays deny)
+export const ApprovalLevel = z.enum(["manual", "assisted", "trusted"]);
+export type ApprovalLevel = z.infer<typeof ApprovalLevel>;
+
+// A standing "approve always" allowance: an exact command the operator approved
+// once and chose to remember, so future identical commands auto-approve without
+// asking again. Bounded by the safety floor — a rule NEVER auto-approves a
+// command that classifies above `riskCap` or is hard-denied, and high-risk /
+// boundary commands can never be remembered in the first place.
+export const ApprovalRule = z.object({
+  id: z.string(),
+  command: z.string(), // normalized (whitespace-collapsed) command matched exactly
+  riskCap: Risk, // the command's risk when remembered — the ceiling this rule may auto-approve
+  createdBy: z.string(),
+  createdAt: Timestamp,
+});
+export type ApprovalRule = z.infer<typeof ApprovalRule>;
+
 // ─── Project · Task ───────────────────────────────────────────────────────
 
 export const Project = z.object({
@@ -158,6 +189,12 @@ export const Project = z.object({
   // When true, the autonomy loop may act on this project's tasks (triage,
   // auto-pick, auto-review). Off = the board is fully human-driven.
   autonomy: z.boolean().default(true),
+  // Agent-action approval policy (see ApprovalLevel). Defaults to `trusted` so
+  // reversible in-sandbox commands flow without a confirm each time; high-risk /
+  // boundary ops still gate. `approvalRules` are this project's standing
+  // "approve always" exact-command allowances (see ApprovalRule).
+  approvalLevel: ApprovalLevel.default("trusted"),
+  approvalRules: z.array(ApprovalRule).default([]),
   // A project binds to a repository one of two ways (they can coexist):
   //  • repoPath — an absolute local folder the runs work in. When it contains
   //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
@@ -262,6 +299,9 @@ export const Agent = z.object({
   workspaceId: z.string(),
   name: z.string(),
   provider: ProviderId,
+  // Which named credential this agent authenticates with. null → the provider's
+  // default credential (id === provider), i.e. the historical single-key path.
+  credentialId: z.string().nullable().default(null),
   model: z.string(),
   status: AgentStatus,
   idleSince: Timestamp.nullable().default(null),
@@ -340,25 +380,50 @@ export const ResolveRequest = z.object({
   action: ResolveAction,
   optionIndex: z.number().int().optional(),
   guidance: z.string().optional(),
+  // Approve-and-remember: on an `approve` of a command gate, add a standing
+  // "approve always" rule for this exact command to the project (only honored for
+  // rememberable — low/medium, non-deny — commands). Ignored otherwise.
+  remember: z.boolean().optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
 
 export const ChatRequest = z.object({ text: z.string().min(1) });
 export type ChatRequest = z.infer<typeof ChatRequest>;
 
+// Ask Skynet to create a brand-new GitHub repo at project-creation time, then
+// bind the project to it. `owner` is the authenticated user's login or one of
+// their org logins (defaults to the user). GitHub repo names allow letters,
+// digits, `.`, `-`, `_`.
+export const CreateRepoSpec = z.object({
+  name: z.string().min(1).max(100).regex(/^[A-Za-z0-9._-]+$/, "letters, digits, . - _ only"),
+  private: z.boolean().default(true),
+  owner: z.string().optional(),
+});
+export type CreateRepoSpec = z.infer<typeof CreateRepoSpec>;
+
 export const CreateProjectRequest = z.object({
   name: z.string().min(1),
   goal: z.string().default(""),
   repoPath: z.string().optional(), // absolute path to a local folder to work in
   repo: z.string().optional(), // or bind to one connected GitHub repo at creation
+  createRepo: CreateRepoSpec.optional(), // or have Skynet create a new repo and bind it
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
+
+// A GitHub account a new repo can be created under: the authenticated user, or
+// an org they belong to. Used to populate the "New repo" owner picker.
+export const GithubOwner = z.object({
+  login: z.string(),
+  type: z.enum(["user", "org"]),
+});
+export type GithubOwner = z.infer<typeof GithubOwner>;
 
 export const UpdateProjectRequest = z.object({
   name: z.string().min(1).optional(),
   goal: z.string().optional(),
   status: ProjectStatus.optional(),
   autonomy: z.boolean().optional(),
+  approvalLevel: ApprovalLevel.optional(),
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
 });
@@ -391,6 +456,9 @@ export const ConfigureRunnerRequest = z.object({
   provider: ProviderId,
   model: z.string().min(1),
   name: z.string().optional(),
+  // Which named credential this agent authenticates with. Omit → the provider's
+  // default credential (id === provider).
+  credentialId: z.string().optional(),
 });
 export type ConfigureRunnerRequest = z.infer<typeof ConfigureRunnerRequest>;
 
@@ -405,20 +473,37 @@ export type UpdateRunnerRequest = z.infer<typeof UpdateRunnerRequest>;
 // ever sees this metadata (which provider has a key, and a last-4 fingerprint
 // so an operator can confirm which key is stored).
 
+// A named provider CREDENTIAL — a key + a display name for a given provider. A
+// provider can have several (e.g. "Claude — personal" and "Claude for Business"),
+// each with its own key; agents are built from one. `id` is the credential id an
+// agent references (Agent.credentialId). The DEFAULT credential per provider has
+// `id === provider` and `isDefault: true` — that's the historical single key, so
+// existing keys and agents keep working with no migration.
 export const SecretMeta = z.object({
+  id: z.string().default(""), // credential id (defaults to the provider for legacy rows)
+  name: z.string().default(""), // display name ("" → provider's catalog name)
   workspaceId: z.string(),
   provider: ProviderId,
+  isDefault: z.boolean().default(false),
   last4: z.string(), // last 4 chars of the key — for recognition, not reuse
   updatedAt: Timestamp,
   updatedBy: z.string(), // operator id — audit trail
 });
 export type SecretMeta = z.infer<typeof SecretMeta>;
 
-/** Body for setting/rotating a workspace's provider key. */
+/** Body for setting/rotating a credential's key. */
 export const SetSecretRequest = z.object({
   apiKey: z.string().min(1),
 });
 export type SetSecretRequest = z.infer<typeof SetSecretRequest>;
+
+/** Body for creating a NAMED credential (a "duplicate" of a provider). */
+export const CreateCredentialRequest = z.object({
+  provider: ProviderId,
+  name: z.string().min(1).max(60),
+  apiKey: z.string().min(1),
+});
+export type CreateCredentialRequest = z.infer<typeof CreateCredentialRequest>;
 
 // ─── GitHub integration ─────────────────────────────────────────────────────
 // A workspace connects via a GitHub *App* installation (least-privilege,

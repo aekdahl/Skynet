@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ProviderId, ProviderInfo, Agent } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy } from "../lib/derive";
@@ -24,9 +24,23 @@ export function ConfigForm({
   const selectedReq = selected.requirements;
   const models = selected.models;
   const [model, setModel] = useState(initial ? initial.model : (models[0] ?? ""));
+  // Custom-model mode: the operator typed a model id not in the suggestions —
+  // e.g. one released after this catalog. Starts on when editing an agent whose
+  // model isn't a known suggestion, or when a provider offers none.
+  const [custom, setCustom] = useState(
+    initial ? !models.includes(initial.model) : models.length === 0,
+  );
 
+  // Reset the model to the new provider's default when the provider CHANGES (but
+  // never on first mount — that would clobber an existing agent's model).
+  const mounted = useRef(false);
   useEffect(() => {
-    if (!models.includes(model)) setModel(models[0] ?? "");
+    if (!mounted.current) {
+      mounted.current = true;
+      return;
+    }
+    setModel(models[0] ?? "");
+    setCustom(models.length === 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
 
@@ -95,18 +109,46 @@ export function ConfigForm({
           {models.map((m) => (
             <button
               key={m}
-              className={"cfg-model-btn" + (model === m ? " on" : "")}
-              onClick={() => setModel(m)}
+              className={"cfg-model-btn" + (!custom && model === m ? " on" : "")}
+              onClick={() => {
+                setCustom(false);
+                setModel(m);
+              }}
             >
               {m}
             </button>
           ))}
+          <button
+            className={"cfg-model-btn" + (custom ? " on" : "")}
+            title="Use a model that isn't listed yet — e.g. one released after this build. The provider's CLI/SDK validates it."
+            onClick={() => {
+              setCustom(true);
+              setModel("");
+            }}
+          >
+            + Custom…
+          </button>
         </div>
+        {custom && (
+          <input
+            className="qx-input cfg-model-custom"
+            autoFocus
+            placeholder="model id — e.g. claude-opus-4-9 · gpt-5.3-codex · gemini-3-ultra"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          />
+        )}
+        {custom && model.trim() && !models.includes(model.trim()) && (
+          <p className="cfg-model-note">
+            Custom model — Skynet won’t verify this; {selected.name} accepts it or the run fails loudly.
+          </p>
+        )}
       </div>
       <div className="qx-row">
         <button
           className="btn btn-primary"
-          onClick={() => onSave({ name: name.trim(), provider, model })}
+          disabled={!model.trim()}
+          onClick={() => onSave({ name: name.trim(), provider, model: model.trim() })}
         >
           {initial ? "Save changes" : "Add to fleet"}
         </button>

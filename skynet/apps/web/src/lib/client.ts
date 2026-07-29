@@ -6,6 +6,7 @@ import {
   type TaskRun,
   type TaskAssignment,
   type GithubInstallation,
+  type GithubOwner,
   type GithubRepo,
   type ResolveAction,
   type SafetyPolicy,
@@ -73,9 +74,26 @@ export async function fetchSnapshot(): Promise<Snapshot> {
 }
 
 // Decision audit trail — resolved HITL decisions, newest first (W8).
+//
+// Parses each row INDEPENDENTLY (safeParse) and drops any that don't match the
+// current schema. A `.array().parse()` throws on the first bad row and blanks
+// the entire audit page — so one legacy record from an older schema (or from a
+// half-applied migration) makes it look like every approval was lost. Per-row
+// parse keeps the good rows visible; drops are logged so we can diagnose.
 export async function fetchAudit(): Promise<AuditRecord[]> {
   const raw = await req<unknown>("GET", "/api/audit");
-  return AuditRecord.array().parse(raw);
+  if (!Array.isArray(raw)) return [];
+  const out: AuditRecord[] = [];
+  for (const row of raw) {
+    const parsed = AuditRecord.safeParse(row);
+    if (parsed.success) out.push(parsed.data);
+    else {
+      const id = row && typeof row === "object" ? (row as { hitlId?: unknown }).hitlId : undefined;
+      const paths = parsed.error.issues.map((i) => i.path.join(".")).join(", ");
+      console.warn(`[audit] dropped invalid record ${String(id ?? "(no id)")}: ${paths}`);
+    }
+  }
+  return out;
 }
 // Audit maintenance — archive/restore + delete, per-record and bulk.
 export function archiveAudit(hitlId: string, archived: boolean) {
@@ -94,7 +112,7 @@ export function clearAudit() {
 // HITL
 export function resolveHitl(
   id: string,
-  body: { action: ResolveAction; optionIndex?: number; guidance?: string },
+  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean },
 ) {
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
 }
@@ -289,14 +307,24 @@ export function browseFolder(path?: string) {
 }
 
 // Projects
-export function createProject(body: { name: string; goal: string; repoPath?: string; repo?: string }) {
+export function createProject(body: {
+  name: string;
+  goal: string;
+  repoPath?: string;
+  repo?: string;
+  createRepo?: { name: string; private: boolean; owner?: string };
+}) {
   return req<unknown>("POST", "/api/projects", body);
 }
 export function updateProject(
   id: string,
-  body: { name?: string; goal?: string; status?: string; autonomy?: boolean; repoPath?: string | null },
+  body: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string; repoPath?: string | null },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
+}
+/** Revoke one standing "approve always" rule from a project's approval policy. */
+export function removeApprovalRule(projectId: string, ruleId: string) {
+  return req<unknown>("DELETE", `/api/projects/${projectId}/approval-rules/${ruleId}`);
 }
 export function deleteProject(id: string) {
   return req<unknown>("DELETE", `/api/projects/${id}`);
@@ -332,13 +360,83 @@ export function deleteTask(projectId: string, taskId: string) {
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
 }
-// Repo-aware project assistant — chat about the project's status + repo content.
+// A project/task action the assistant proposes (confirm-first). Kept in sync with
+// AssistantAction in apps/server/src/project-assistant.ts; `summary` is the label.
+export interface AssistantAction {
+  kind:
+    | "add_task"
+    | "move_task"
+    | "rename_task"
+    | "set_task_desc"
+    | "remove_task"
+    | "reorder_task"
+    | "rename_project"
+    | "set_goal"
+    | "set_autonomy"
+    | "set_status";
+  summary: string;
+  taskId?: string;
+  text?: string;
+  description?: string;
+  to?: string;
+  direction?: "up" | "down";
+  name?: string;
+  goal?: string;
+  autonomy?: boolean;
+  status?: string;
+}
+// Repo-aware project assistant — chat about the project's status + repo content,
+// and optionally propose a confirm-first project/task action.
 export function projectChat(
   projectId: string,
   question: string,
   history: { role: "user" | "assistant"; content: string }[],
 ) {
-  return req<{ reply: string }>("POST", `/api/projects/${projectId}/chat`, { question, history });
+  return req<{ reply: string; action?: AssistantAction | null }>(
+    "POST",
+    `/api/projects/${projectId}/chat`,
+    { question, history },
+  );
+}
+
+// ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
+export interface PreviewState {
+  status: "idle" | "starting" | "live" | "failed" | "stopped";
+  url: string | null;
+  port: number | null;
+  recipe: { cmd: string; source: string } | null;
+  error: string | null;
+  logs: string[];
+  startedAt: number | null;
+}
+export function previewStatus(projectId: string) {
+  return req<PreviewState>("GET", `/api/projects/${projectId}/preview`);
+}
+export function previewStart(projectId: string) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/start`);
+}
+export function previewStop(projectId: string) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/stop`);
+}
+export function previewRestart(projectId: string) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/restart`);
+}
+export function previewRefresh(projectId: string) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/refresh`);
+}
+
+// Per-run pre-merge preview ("Preview this change") — runs the run's own branch.
+export function runPreviewStatus(runId: string) {
+  return req<PreviewState>("GET", `/api/runs/${runId}/preview`);
+}
+export function runPreviewStart(runId: string) {
+  return req<PreviewState>("POST", `/api/runs/${runId}/preview/start`);
+}
+export function runPreviewStop(runId: string) {
+  return req<PreviewState>("POST", `/api/runs/${runId}/preview/stop`);
+}
+export function runPreviewRestart(runId: string) {
+  return req<PreviewState>("POST", `/api/runs/${runId}/preview/restart`);
 }
 
 /** Streaming "ask about this project" — reads the text/plain reply as it streams,
@@ -417,6 +515,10 @@ export function startGithubDevice() {
 }
 export function pollGithubDevice(deviceCode: string) {
   return req<{ authorized: boolean }>("POST", "/api/github/device/poll", { device_code: deviceCode });
+}
+export async function fetchGithubOwners(): Promise<GithubOwner[]> {
+  const raw = await req<{ owners: GithubOwner[] }>("GET", "/api/github/owners");
+  return raw.owners;
 }
 export async function fetchGithubInstallations(): Promise<GithubInstallation[]> {
   const raw = await req<{ installations: GithubInstallation[] }>("GET", "/api/github/installations");

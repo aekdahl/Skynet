@@ -29,7 +29,9 @@ const ALLOW = new Set<string>([
   "browseFolder",
   "startGithubDevice", "pollGithubDevice", "fetchGithubInstallations",
   "fetchGithubInstallationRepos", "connectGithub", "disconnectGithub",
+  "fetchGithubOwners", // lists org/user owners for repo creation — needs a live remote
   "cloneProjectRepo", // clones a connected GitHub repo — needs a live remote + token
+  "removeApprovalRule", // revokes a standing approval rule — needs a run that raised + remembered a command gate; no offline journey (covered by approval-policy.test.ts + the server route)
   // destructive bulk variants (the per-record paths ARE covered)
   "archiveAllAudit", "clearAudit",
   // low-value control-plane (runner rename/model tweak)
@@ -40,12 +42,22 @@ const ALLOW = new Set<string>([
   // "ask about this project" assistant (+ its streaming variant) — a UI-only
   // conversational surface with no fleet journey; needs a real provider key.
   "projectChat", "streamProjectChat",
+  // live preview (Phase-1 v0) — spawns a real dev server + iframes it; a
+  // stateful UI control surface with no offline journey (needs a repo + toolchain).
+  "previewStatus", "previewStart", "previewStop", "previewRestart", "previewRefresh",
+  // per-run pre-merge preview ("Preview this change") — same stateful dev-server
+  // surface, scoped to a run's branch; no offline journey (needs a repo + toolchain).
+  "runPreviewStatus", "runPreviewStart", "runPreviewStop", "runPreviewRestart",
   // auth primitive (POST /api/auth/login) — the local/desktop build runs
   // open-auth (dev tokens), so no fleet journey signs in; auth is guarded by
   // auth-hardening.test.ts, not an operator journey.
   "login",
   // read-only doc render for the Roadmap page — no operator journey to exercise
   "fetchRoadmap",
+  // repo-aware project chat (status + repo content + propose-a-task) — needs a
+  // live provider key and a real repo to ground against, so there's no offline
+  // journey; the parse contract is covered by project-assistant.test.ts
+  "projectChat",
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",

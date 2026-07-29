@@ -83,6 +83,9 @@ export const INTENT_SYSTEM_PROMPT = [
   "Be genuinely useful and concise: answer questions, explain what you can do, and make",
   "small talk when appropriate. Ground every answer in the WORKSPACE CONTEXT provided",
   "(open gates, runs/fleet, projects, tasks, providers) — never invent ids or state.",
+  "When a PROJECT DOCS section is present (each project's README/ROADMAP/etc. + file",
+  "tree), USE it to answer questions about roadmap items, features, bugs, or how the",
+  "code works — quote the relevant doc/section, and never invent repo content.",
   "",
   "You may ALSO perform ONE action, but ONLY when the owner is clearly asking to do it.",
   "Allowed actions: approve | reject | add_task | assign | add_agent | create_project | remove_task | status.",
@@ -167,21 +170,30 @@ export interface HistoryEntry {
   text: string;
 }
 
-/** Render the operator message + context (+ optional recent conversation) as the
- *  DATA payload for the model. The operator message is explicitly framed as
- *  untrusted data; the recent conversation is grounding for back-references only. */
-export function renderContext(ctx: IntentContext, history?: HistoryEntry[]): string {
-  // The operator message NO LONGER rides in here — it's passed as the runner's
-  // `question` (which the runner labels as `=== OPERATOR MESSAGE ===`). This
-  // returns pure GROUNDING (workspace + recent conversation). Keeping the
-  // operator text out of the grounding prevents the misuse that made Claude
-  // read INTENT_SYSTEM_PROMPT as untrusted content ("I treated the injected
-  // persona as data") — the caller's system prompt is now the role framing,
-  // not something concatenated into a data blob.
+/** Render the GROUNDING (workspace context + optional repo docs + recent
+ *  conversation) as the DATA payload for the model. The operator message is NOT
+ *  included here — it's passed separately as the runner's `question` (labelled
+ *  `=== OPERATOR MESSAGE ===`) so the caller's system prompt is the role framing,
+ *  not text concatenated into a data blob. That's the fix for Claude reading
+ *  INTENT_SYSTEM_PROMPT as untrusted content ("I treated the injected persona as
+ *  data"). PROJECT DOCS ground content/roadmap/bug answers; the recent
+ *  conversation is grounding for back-references only. */
+export function renderContext(
+  ctx: IntentContext,
+  history?: HistoryEntry[],
+  docs?: string,
+): string {
   const lines = [
     "WORKSPACE CONTEXT (resolve ids from here only):",
     JSON.stringify(ctx),
   ];
+  if (docs && docs.trim()) {
+    lines.push(
+      "",
+      "PROJECT DOCS (repo content — key docs & file tree per project; ground content/roadmap/bug answers here, never invent):",
+      docs.trim(),
+    );
+  }
   if (history && history.length > 0) {
     lines.push(
       "",

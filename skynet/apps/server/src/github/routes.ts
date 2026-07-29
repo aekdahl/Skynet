@@ -49,6 +49,16 @@ export async function registerGithubRoutes(app: FastifyInstance): Promise<void> 
     }
   });
 
+  // Accounts a new repo can be created under (the user + their orgs), for the
+  // "create new repo" flow in project creation.
+  app.get("/api/github/owners", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      return { owners: await githubService.listRepoOwners(req.principal!.workspaceId) };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
   // Record an installation after the App is installed on GitHub.
   app.put("/api/github", async (req: FastifyRequest, reply: FastifyReply) => {
     const body = ConnectGithubRequest.safeParse(req.body);

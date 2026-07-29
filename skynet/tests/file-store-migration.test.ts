@@ -52,6 +52,33 @@ describe("FileStore legacy HITL migration", () => {
     expect(Snapshot.safeParse(snap).success).toBe(true);
   });
 
+  it("drops audit records that no longer satisfy the schema, keeps the valid ones", async () => {
+    // Regression: audit rows were loaded via a raw cast (skipping the schema
+    // check every other collection did), so a legacy row from an older schema
+    // stayed in memory. `/api/audit` returned the mix; the client's strict
+    // `.array().parse()` blew up on the first bad row and blanked the audit
+    // page — every approval looked lost. Load now validates per-row.
+    const good = {
+      workspaceId: DEFAULT_WORKSPACE,
+      hitlId: "q-1",
+      runId: "run-1",
+      action: "approve",
+      operatorId: "op-1",
+      at: 100,
+      payload: { kind: "approval" },
+    };
+    // Missing required `runId` / `operatorId` — the older schema didn't require them.
+    const legacy = { workspaceId: DEFAULT_WORKSPACE, hitlId: "q-legacy", action: "approve", at: 50 };
+    const path = join(mkdtempSync(join(tmpdir(), "file-store-migration-")), "skynet-data.json");
+    writeFileSync(path, JSON.stringify({ audit: [good, legacy] }));
+
+    const store = FileStore.create(path);
+    const rows = await store.listAudit(DEFAULT_WORKSPACE);
+    const ids = rows.map((r) => r.hitlId);
+    expect(ids).toContain("q-1");
+    expect(ids).not.toContain("q-legacy");
+  });
+
   it("drops a task whose state the enum no longer allows (e.g. legacy 'assigned')", async () => {
     // Real regression: persistent sim data held a task in state "assigned" after
     // the state enum switched to the kanban pipeline — one such row blanked the app.

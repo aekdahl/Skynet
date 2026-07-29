@@ -128,7 +128,11 @@ export function App() {
     setView("project");
   };
 
-  const createProject = async (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => {
+  const createProject = async (
+    name: string,
+    goal: string,
+    opts?: { repo?: string; repoPath?: string; createRepo?: { name: string; private: boolean; owner?: string } },
+  ) => {
     await store.createProject(name, goal, opts);
     setFromP("projects");
     setView("projects");
