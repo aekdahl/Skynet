@@ -350,6 +350,9 @@ export function updateTask(
     description?: string | null;
     autoPick?: boolean;
     assignment?: TaskAssignment;
+    // Scheduling — null clears the field on the task.
+    estimatedDurationMs?: number | null;
+    plannedStartAt?: number | null;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${projectId}/tasks/${taskId}`, body);
@@ -373,7 +376,8 @@ export interface AssistantAction {
     | "rename_project"
     | "set_goal"
     | "set_autonomy"
-    | "set_status";
+    | "set_status"
+    | "set_schedule";
   summary: string;
   taskId?: string;
   text?: string;
@@ -384,6 +388,8 @@ export interface AssistantAction {
   goal?: string;
   autonomy?: boolean;
   status?: string;
+  estimatedDurationMs?: number | null;
+  plannedStartAt?: number | null;
 }
 // Repo-aware project assistant — chat about the project's status + repo content,
 // and optionally propose a confirm-first project/task action.

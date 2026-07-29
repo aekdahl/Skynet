@@ -93,7 +93,14 @@ export interface Store extends StoreState {
   updateTask: (
     projectId: string,
     taskId: string,
-    patch: { text?: string; description?: string | null; autoPick?: boolean; assignment?: TaskAssignment },
+    patch: {
+      text?: string;
+      description?: string | null;
+      autoPick?: boolean;
+      assignment?: TaskAssignment;
+      estimatedDurationMs?: number | null;
+      plannedStartAt?: number | null;
+    },
   ) => Promise<void>;
   deleteTask: (projectId: string, taskId: string) => Promise<void>;
   moveTask: (projectId: string, taskId: string, direction: "up" | "down") => Promise<void>;

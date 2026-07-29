@@ -241,6 +241,16 @@ export const Task = z.object({
   // store (recoverable) but hidden from the board and the assistant's grounding
   // context. Reversible — un-archive restores it. Never a hard delete.
   archived: z.boolean().default(false),
+  // ── Scheduling (see docs/scheduling.md) ─────────────────────────────────
+  // How long we EXPECT this task to take, in ms. Produced by the autonomous
+  // triage step (LLM estimate from the task text + description) OR set by the
+  // operator via Steward / the UI. Nullable = we haven't estimated it.
+  estimatedDurationMs: z.number().int().positive().nullable().default(null),
+  // Operator-set start time (when the task should begin). Optional — many
+  // tasks never get scheduled, they just flow through the board. When both
+  // `plannedStartAt` and `estimatedDurationMs` are set, the timeline can
+  // render a scheduled bar (start + duration → end).
+  plannedStartAt: Timestamp.nullable().default(null),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -449,6 +459,9 @@ export const UpdateTaskRequest = z.object({
   // Set/clear agent eligibility. `unassigned` is only accepted while the task is
   // still in backlog (the server enforces the leaving-backlog gate).
   assignment: TaskAssignment.optional(),
+  // Scheduling: set or clear (null) the LLM/operator estimate + planned start.
+  estimatedDurationMs: z.number().int().positive().nullable().optional(),
+  plannedStartAt: Timestamp.nullable().optional(),
 });
 export type UpdateTaskRequest = z.infer<typeof UpdateTaskRequest>;
 

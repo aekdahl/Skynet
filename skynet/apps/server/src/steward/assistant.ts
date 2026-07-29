@@ -55,7 +55,11 @@ const SYSTEM =
   '  {"kind":"rename_project","name":"<new name>"}\n' +
   '  {"kind":"set_goal","goal":"<goal>"}\n' +
   '  {"kind":"set_autonomy","autonomy":true|false}\n' +
-  '  {"kind":"set_status","status":"active|paused|done"}';
+  '  {"kind":"set_status","status":"active|paused|done"}\n' +
+  '  {"kind":"set_schedule","taskId":"<id>","estimatedDurationMs":<ms or null>,"plannedStartAt":<epoch ms or null>}\n' +
+  "Notes on set_schedule: either or both fields may be present. `estimatedDurationMs` = how long you think the task takes; " +
+  "`plannedStartAt` = when it should start (epoch ms). Pass `null` for a field to clear it (e.g. unschedule). " +
+  "For durations, prefer minutes-to-milliseconds math (30m = 1_800_000).";
 
 /**
  * Prefetch a bounded snapshot of a project's repo — the top-level file list plus
@@ -104,7 +108,8 @@ export type ProjectActionKind =
   | "rename_project"
   | "set_goal"
   | "set_autonomy"
-  | "set_status";
+  | "set_status"
+  | "set_schedule";
 
 export interface AssistantAction {
   kind: ProjectActionKind;
@@ -118,6 +123,10 @@ export interface AssistantAction {
   goal?: string;
   autonomy?: boolean;
   status?: Project["status"];
+  // Scheduling. Either / both may be set. `null` clears the field on the task
+  // (so an operator can undo a scheduled start or drop an estimate).
+  estimatedDurationMs?: number | null;
+  plannedStartAt?: number | null;
 }
 
 /** The grounding the action validator resolves ids against (this project only). */
@@ -199,6 +208,43 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
       const status = str(o.status) as Project["status"];
       if (!ProjectStatus.options.includes(status)) return null;
       return { kind, status, summary: `Set project status → ${status}` };
+    }
+    case "set_schedule": {
+      // Either field may be present. Both explicitly null = clear both.
+      // A number is required to be positive (durations) or a valid timestamp;
+      // an unknown taskId is refused. At least ONE of the two fields must be
+      // supplied — otherwise the action is a no-op we should reject.
+      const t = task(o.taskId);
+      if (!t) return null;
+      const hasDur = "estimatedDurationMs" in o;
+      const hasStart = "plannedStartAt" in o;
+      if (!hasDur && !hasStart) return null;
+      let dur: number | null | undefined;
+      if (hasDur) {
+        if (o.estimatedDurationMs === null) dur = null;
+        else if (typeof o.estimatedDurationMs === "number" && o.estimatedDurationMs > 0)
+          dur = Math.min(Math.round(o.estimatedDurationMs), 24 * 60 * 60 * 1000);
+        else return null;
+      }
+      let start: number | null | undefined;
+      if (hasStart) {
+        if (o.plannedStartAt === null) start = null;
+        else if (typeof o.plannedStartAt === "number" && Number.isFinite(o.plannedStartAt))
+          start = Math.round(o.plannedStartAt);
+        else return null;
+      }
+      const parts: string[] = [];
+      if (dur === null) parts.push("clear estimate");
+      else if (dur != null) parts.push(`~${Math.round(dur / 60000)}m`);
+      if (start === null) parts.push("clear start");
+      else if (start != null) parts.push(`start ${new Date(start).toISOString().slice(0, 16).replace("T", " ")}`);
+      return {
+        kind,
+        taskId: t.id,
+        ...(dur !== undefined ? { estimatedDurationMs: dur } : {}),
+        ...(start !== undefined ? { plannedStartAt: start } : {}),
+        summary: `Schedule “${clip(t.text)}” — ${parts.join(", ") || "no change"}`,
+      };
     }
     default:
       return null;

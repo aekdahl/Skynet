@@ -935,6 +935,15 @@ button.kb-done:hover { opacity: 1; }
 .kb-elig-chip.kb-elig-unset { color: var(--warn); }
 .kb-assessment { font-size: 11px; color: var(--muted); line-height: 1.4; border-left: 2px solid var(--line); padding-left: 8px; }
 .kb-flag { font-size: 11px; color: var(--warn); line-height: 1.4; }
+/* Scheduling chips on a task card — ⏱ duration and/or 📅 planned start. */
+.kb-sched { display: flex; flex-wrap: wrap; gap: 4px; }
+.kb-sched-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10.5px; color: var(--muted);
+  padding: 1px 6px; border-radius: 10px;
+  border: 1px solid var(--line-soft); background: var(--raised);
+  font-variant-numeric: tabular-nums;
+}
 .proj-autonomy { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); cursor: pointer; margin-right: 4px; }
 .proj-autonomy-cb { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .proj-autonomy-switch { position: relative; width: 34px; height: 20px; border-radius: 20px; background: var(--line); flex: none; transition: background 0.15s ease; }
