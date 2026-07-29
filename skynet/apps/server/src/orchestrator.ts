@@ -1147,7 +1147,12 @@ export class Orchestrator {
    * so a misparse or a prompt-injection attempt can only ever produce a reply
    * the caller re-validates against a closed whitelist — it can never escalate.
    */
-  async consult(ws: string, question: string, context?: string): Promise<string | null> {
+  async consult(
+    ws: string,
+    question: string,
+    context?: string,
+    system?: string,
+  ): Promise<string | null> {
     // Candidate (provider, model) pairs to interpret with: the configured fleet
     // agents first (real model choices), THEN a fallback to a consult-capable
     // provider that has a resolvable key even when NO agent is configured yet —
@@ -1186,7 +1191,14 @@ export class Orchestrator {
       if (!provider.consult) continue;
       try {
         return await provider.consult(
-          { task: "Classify an operator remote-control message", model: c.model, cwd: config.runnerCwd, apiKey, context },
+          {
+            task: system ? "Interpret an operator remote-control message" : "Classify an operator remote-control message",
+            model: c.model,
+            cwd: config.runnerCwd,
+            apiKey,
+            context,
+            ...(system ? { system } : {}),
+          },
           question,
         );
       } catch {

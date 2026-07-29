@@ -222,15 +222,18 @@ describe("renderContext — PROJECT DOCS grounding", () => {
   const docs = "\n\n### PROJECT Web (p-web)\n\n=== ROADMAP.md ===\n- item 1: dark mode\n- item 2: SSO";
 
   it("appends a PROJECT DOCS section when docs are provided", () => {
-    const out = renderContext("what's on the roadmap?", ctx, undefined, docs);
+    const out = renderContext(ctx, undefined, docs);
+    expect(out).toContain("WORKSPACE CONTEXT");
     expect(out).toContain("PROJECT DOCS");
     expect(out).toContain("item 1: dark mode");
-    // The operator message is still framed as untrusted data, before the docs.
-    expect(out.indexOf("OPERATOR MESSAGE")).toBeLessThan(out.indexOf("PROJECT DOCS"));
+    // Docs ground answers AFTER the workspace context. The operator message is no
+    // longer concatenated here — it's passed separately as the runner's question
+    // (prompt-injection fix), so this data blob is pure grounding.
+    expect(out.indexOf("WORKSPACE CONTEXT")).toBeLessThan(out.indexOf("PROJECT DOCS"));
   });
 
   it("omits the section entirely when there are no docs", () => {
-    expect(renderContext("hi", ctx)).not.toContain("PROJECT DOCS");
-    expect(renderContext("hi", ctx, undefined, "   ")).not.toContain("PROJECT DOCS");
+    expect(renderContext(ctx)).not.toContain("PROJECT DOCS");
+    expect(renderContext(ctx, undefined, "   ")).not.toContain("PROJECT DOCS");
   });
 });
