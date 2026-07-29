@@ -51,6 +51,7 @@ const SYSTEM =
   '  {"kind":"rename_task","taskId":"<id>","text":"<new title>"}\n' +
   '  {"kind":"set_task_desc","taskId":"<id>","description":"<text>"}\n' +
   '  {"kind":"remove_task","taskId":"<id>"}\n' +
+  '  {"kind":"archive_task","taskId":"<id>"}\n' +
   '  {"kind":"reorder_task","taskId":"<id>","direction":"up|down"}\n' +
   '  {"kind":"rename_project","name":"<new name>"}\n' +
   '  {"kind":"set_goal","goal":"<goal>"}\n' +
@@ -59,7 +60,10 @@ const SYSTEM =
   '  {"kind":"set_schedule","taskId":"<id>","estimatedDurationMs":<ms or null>,"plannedStartAt":<epoch ms or null>}\n' +
   "Notes on set_schedule: either or both fields may be present. `estimatedDurationMs` = how long you think the task takes; " +
   "`plannedStartAt` = when it should start (epoch ms). Pass `null` for a field to clear it (e.g. unschedule). " +
-  "For durations, prefer minutes-to-milliseconds math (30m = 1_800_000).";
+  "For durations, prefer minutes-to-milliseconds math (30m = 1_800_000).\n" +
+  "Notes on archive_task vs remove_task: PREFER archive_task when the operator says 'archive', 'hide', 'shelve', 'set aside', " +
+  "or wants the task out of the way but recoverable (soft-hide — stays in the store, hidden from the board). " +
+  "Only use remove_task for an unambiguous 'delete' / 'remove for good' — that's a hard delete.";
 
 /**
  * Prefetch a bounded snapshot of a project's repo — the top-level file list plus
@@ -104,6 +108,7 @@ export type ProjectActionKind =
   | "rename_task"
   | "set_task_desc"
   | "remove_task"
+  | "archive_task"
   | "reorder_task"
   | "rename_project"
   | "set_goal"
@@ -185,6 +190,13 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
     case "remove_task": {
       const t = task(o.taskId);
       return t ? { kind, taskId: t.id, summary: `Delete task “${clip(t.text)}”` } : null;
+    }
+    case "archive_task": {
+      // Soft-hide (recoverable) — distinct from remove_task's hard delete. The
+      // grounding filters archived tasks out, so once archived Steward can't
+      // reference the task to unarchive it; unarchive stays a UI-only action.
+      const t = task(o.taskId);
+      return t ? { kind, taskId: t.id, summary: `Archive task “${clip(t.text)}” (hide, recoverable)` } : null;
     }
     case "reorder_task": {
       const t = task(o.taskId);
