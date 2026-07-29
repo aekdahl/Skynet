@@ -411,6 +411,12 @@ type AsstMsg = {
   action?: api.AssistantAction;
   actionState?: "pending" | "done" | "dismissed";
 };
+
+// Steward's project chat is kept per-project in memory so it survives navigating
+// away and back within a session (the panel is remounted on each visit). A full
+// reload / new session starts fresh — persisting across sessions isn't required.
+type ChatState = { open: boolean; msgs: AsstMsg[]; input: string };
+const chatCache = new Map<string, ChatState>();
 const ASSISTANT_SUGGESTIONS = [
   "What's the current status of this project?",
   "Summarize the roadmap",
@@ -419,9 +425,12 @@ const ASSISTANT_SUGGESTIONS = [
 
 function ProjectAssistant({ projectId }: { projectId: string }) {
   const { createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject } = useStore();
-  const [open, setOpen] = useState(false);
-  const [msgs, setMsgs] = useState<AsstMsg[]>([]);
-  const [input, setInput] = useState("");
+  // Restore this project's chat if we've talked here already this session (the
+  // component is keyed by projectId, so this read is correct on every mount).
+  const cached = chatCache.get(projectId);
+  const [open, setOpen] = useState(cached?.open ?? false);
+  const [msgs, setMsgs] = useState<AsstMsg[]>(cached?.msgs ?? []);
+  const [input, setInput] = useState(cached?.input ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
@@ -442,8 +451,30 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
   }, [msgs, busy]);
 
-  // Stop the typewriter loop if the view unmounts mid-stream.
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+  // Persist the chat per-project so it's restored on the next visit this session.
+  useEffect(() => {
+    chatCache.set(projectId, { open, msgs, input });
+  }, [projectId, open, msgs, input]);
+
+  // On unmount: stop the typewriter loop, and if we leave mid-reveal, persist the
+  // FULL received reply (not the partially typed-out text) so returning shows the
+  // complete message rather than a truncated one.
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    const target = targetRef.current;
+    if (target && shownRef.current < target.length) {
+      const prev = chatCache.get(projectId);
+      if (prev && prev.msgs.length) {
+        const m = prev.msgs.slice();
+        const last = m[m.length - 1];
+        if (last && last.role === "assistant") {
+          m[m.length - 1] = { ...last, content: target };
+          chatCache.set(projectId, { ...prev, msgs: m });
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   // Auto-grow was set on the DOM element imperatively (style.height); when the
   // controlled value clears after send, reset it so the textarea snaps back to
@@ -894,7 +925,7 @@ export function ProjectView({
         })}
       </div>
 
-      <ProjectAssistant projectId={project.id} />
+      <ProjectAssistant key={project.id} projectId={project.id} />
 
       {archived.length > 0 && (
         <div className="kb-archive-sec">
