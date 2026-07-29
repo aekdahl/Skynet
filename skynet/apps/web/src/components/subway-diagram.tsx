@@ -117,6 +117,16 @@ export function SwDiagram({
   const END_COL = Math.max(2, sharedLastCol, ...order.map(lastColOf)) + 1;
   const totalCols = END_COL + 1;
   const X = (c: number) => (c / (totalCols - 1)) * 100;
+  // Positions are percentages of the canvas, so a project with many stations
+  // (a long "up next" lane, several runs) would crush columns together until the
+  // labels overlap. Enforce a minimum per-column pitch: the diagram grows to that
+  // width and its container scrolls horizontally when it exceeds the viewport.
+  // (When there are few columns, minWidth stays below the container, so it just
+  // fills the width as before — spacing only ever increases.)
+  const SWB_COL_PX = 132; // min horizontal gap between adjacent stations
+  const NAME_W = 274,
+    PAD_R = 56; // must match .swb-canvas left/right in styles.css
+  const minWidth = NAME_W + PAD_R + Math.max(1, totalCols - 1) * SWB_COL_PX;
   const ROW0 = 44,
     ROW_H = 76,
     TY = 28;
@@ -126,7 +136,8 @@ export function SwDiagram({
   const laneRow = order.length; // the shared "up next" lane sits below the agents
   const totalRows = order.length + (shared.length ? 1 : 0);
   return (
-    <div className="swb" style={{ height: ROW0 + totalRows * ROW_H + 6 + "px" }}>
+    <div className="swb-scroll">
+    <div className="swb" style={{ height: ROW0 + totalRows * ROW_H + 6 + "px", minWidth: minWidth + "px" }}>
       {order.map((t, r) => {
         const head = t.runs.find((x) => x.status !== "done") ?? t.runs[t.runs.length - 1];
         const p = parentOf(t);
@@ -310,6 +321,7 @@ export function SwDiagram({
           return <Fragment key="lane">{els}</Fragment>;
         })()}
       </div>
+    </div>
     </div>
   );
 }
