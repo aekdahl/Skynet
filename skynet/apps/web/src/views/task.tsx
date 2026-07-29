@@ -162,70 +162,73 @@ export function TaskDetail({
           <span className="status-word" style={{ color: STATUS_META[agent.status].color }}>
             {STATUS_META[agent.status].label}
           </span>
-          <button
-            className="btn btn-ghost btn-fork"
-            disabled={fleet.length === 0}
-            title={
-              fleet.length === 0
-                ? "Configure an agent in Fleet before forking runs."
-                : "Duplicate this run with the same context to work on something else"
-            }
-            onClick={() => forkAgent(agent.id)}
-          >
-            ⑂ Fork run
-          </button>
-
-          {/* Pre-merge preview: run this change's branch and see it before it
-              merges. Needs a local project folder to spin a worktree from. */}
-          {project?.repoPath && !agent.archived && (
+          <div className="detail-actions">
             <button
-              className="btn btn-ghost"
-              title="Run this change on its own branch and preview it live — before it merges"
-              onClick={() => setPreviewOpen(true)}
+              className="btn btn-ghost btn-icon btn-fork"
+              disabled={fleet.length === 0}
+              title={
+                fleet.length === 0
+                  ? "Configure an agent in Fleet before forking runs."
+                  : "Duplicate this run with the same context to work on something else"
+              }
+              onClick={() => forkAgent(agent.id)}
             >
-              ▶ Preview this change
+              <span className="btn-gly" aria-hidden="true">⑂</span> Fork
             </button>
-          )}
 
-          {/* Lifecycle controls */}
-          {agent.status === "paused" ? (
-            <button
-              className="btn btn-ghost"
-              title="Resume this agent"
-              onClick={() => resumeAgent(agent.id)}
-            >
-              ▶ Resume
-            </button>
-          ) : (
-            agent.status !== "done" && (
+            {/* Pre-merge preview: run this change's branch and see it before it
+                merges. Needs a local project folder to spin a worktree from. */}
+            {project?.repoPath && !agent.archived && (
               <button
-                className="btn btn-ghost"
-                title="Pause this run; resume later"
-                onClick={() => pauseAgent(agent.id)}
+                className="btn btn-ghost btn-icon"
+                title="Run this change on its own branch and preview it live — before it merges"
+                onClick={() => setPreviewOpen(true)}
               >
-                ⏸ Pause
+                <span className="btn-gly" aria-hidden="true">▶</span> Preview
               </button>
-            )
-          )}
-          {agent.status !== "done" && (
+            )}
+
+            {/* Lifecycle controls */}
+            {agent.status === "paused" ? (
+              <button
+                className="btn btn-ghost btn-icon"
+                title="Resume this agent"
+                onClick={() => resumeAgent(agent.id)}
+              >
+                <span className="btn-gly" aria-hidden="true">▶</span> Resume
+              </button>
+            ) : (
+              agent.status !== "done" && (
+                <button
+                  className="btn btn-ghost btn-icon"
+                  title="Pause this run; resume later"
+                  onClick={() => pauseAgent(agent.id)}
+                >
+                  <span className="btn-gly" aria-hidden="true">⏸</span> Pause
+                </button>
+              )
+            )}
+            {agent.status !== "done" && (
+              <button
+                className="btn btn-ghost btn-icon btn-stop"
+                title="Stop this run — halts execution and frees its agent"
+                onClick={() => {
+                  if (confirm(`Stop “${agent.name}”? This frees its agent; the run won't resume.`))
+                    void stopAgent(agent.id);
+                }}
+              >
+                <span className="btn-gly" aria-hidden="true">◼</span> Stop
+              </button>
+            )}
             <button
-              className="btn btn-ghost btn-stop"
-              title="Stop this run — halts execution and frees its agent"
-              onClick={() => {
-                if (confirm(`Stop “${agent.name}”? This frees its agent; the run won't resume.`))
-                  void stopAgent(agent.id);
-              }}
+              className="btn btn-ghost btn-icon"
+              title={agent.archived ? "Restore to the board" : "Archive — hide from the board (kept in history)"}
+              onClick={() => archiveAgent(agent.id, !agent.archived)}
             >
-              ◼ Stop run
+              <span className="btn-gly" aria-hidden="true">{agent.archived ? "⊕" : "⊘"}</span>{" "}
+              {agent.archived ? "Unarchive" : "Archive"}
             </button>
-          )}
-          <button
-            className="btn btn-ghost"
-            title={agent.archived ? "Restore to the board" : "Archive — hide from the board (kept in history)"}
-            onClick={() => archiveAgent(agent.id, !agent.archived)}
-          >
-            {agent.archived ? "⊕ Unarchive" : "⊘ Archive"}
-          </button>
+          </div>
         </div>
         <div className="detail-meta">
           <span className="mono">{agent.branch}</span>
