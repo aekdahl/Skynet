@@ -114,6 +114,7 @@ function TaskCard({
     archiveAgent,
   } = useStore();
   const [editing, setEditing] = useState(false);
+  const [detail, setDetail] = useState(false); // full-detail modal for a card with no run
   const [draft, setDraft] = useState(task.text);
   const [descDraft, setDescDraft] = useState(task.description ?? "");
   const pid = task.projectId;
@@ -121,6 +122,9 @@ function TaskCard({
   const move = (to: string) => transitionTask(pid, task.id, to);
   const q = run ? openQueue(queue).find((it) => it.runId === run.id) : undefined;
   const openRun = run ? () => onOpenTask(run.id) : undefined;
+  // A card is always openable: a run card opens its live activity; a card with no
+  // run opens a read-only detail modal (the card itself clamps title/description).
+  const openCard = openRun ?? (() => setDetail(true));
   const noFleet = fleet.length === 0;
 
   if (editing) {
@@ -165,17 +169,13 @@ function TaskCard({
   }
 
   return (
+    <>
     <div
       className={"kb-card kb-card-" + s}
-      {...(openRun
-        ? {
-            role: "button",
-            tabIndex: 0,
-            onClick: openRun,
-            onKeyDown: (e: React.KeyboardEvent) =>
-              (e.key === "Enter" || e.key === " ") && openRun(),
-          }
-        : {})}
+      role="button"
+      tabIndex={0}
+      onClick={openCard}
+      onKeyDown={(e: React.KeyboardEvent) => (e.key === "Enter" || e.key === " ") && openCard()}
     >
       <div className="kb-card-top">
         {run && <StatusDot status={run.status} />}
@@ -292,7 +292,26 @@ function TaskCard({
           </>
         )}
       </div>
-    </div>
+      </div>
+      {detail && (
+        <div className="kb-detail-overlay" onClick={() => setDetail(false)}>
+          <div className="kb-detail" role="dialog" aria-modal="true" onClick={stop}>
+            <div className="kb-detail-head">
+              <span className="kb-detail-state mono">{s}</span>
+              <button className="kb-detail-close" onClick={() => setDetail(false)} aria-label="Close">
+                ×
+              </button>
+            </div>
+            <h3 className="kb-detail-title">{task.text}</h3>
+            {task.description ? (
+              <p className="kb-detail-desc">{task.description}</p>
+            ) : (
+              <p className="kb-detail-desc kb-detail-empty">No description.</p>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
