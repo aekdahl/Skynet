@@ -13,11 +13,18 @@ import type {
 
 // ─── time formatting ───────────────────────────────────────────────────────
 
+// A compact elapsed duration that rolls up as it grows, so a long wait never
+// reads as "504m 02s". Keeps second precision under a minute (live gate waits),
+// minute+second under an hour, then h+m under a day, then d+h beyond.
 export function fmtWait(sec: number): string {
   const s = Math.max(0, Math.floor(sec));
+  if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
-  const r = s % 60;
-  return m > 0 ? `${m}m ${String(r).padStart(2, "0")}s` : `${r}s`;
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${String(h % 24).padStart(2, "0")}h`;
 }
 
 export function fmtClock(sec: number): string {
