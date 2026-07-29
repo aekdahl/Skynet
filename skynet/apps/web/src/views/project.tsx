@@ -5,6 +5,8 @@ import * as api from "../lib/client";
 import {
   agentsForProject,
   curStep,
+  fmtDurMs,
+  fmtWait,
   openQueue,
   STATUS_META,
   TASK_STATES,
@@ -20,28 +22,14 @@ import { TimelineView } from "./home";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
-/** Human-readable duration for the task-card ⏱ chip. Small ms values render
- *  as seconds; up to an hour as minutes; then hours (one decimal). */
-function fmtDurationChip(ms: number): string {
-  if (ms < 60_000) return Math.max(1, Math.round(ms / 1000)) + "s";
-  if (ms < 3_600_000) return Math.round(ms / 60_000) + "m";
-  const h = ms / 3_600_000;
-  return (h < 10 ? h.toFixed(1) : Math.round(h)) + "h";
-}
-/** Relative-when-close, absolute-when-not planned-start chip. */
+/** Relative-when-close, absolute-when-not planned-start chip. Uses the shared
+ *  single-unit rule (fmtWait) — never compound — with an "in" / "ago" wrapper. */
 function fmtStartChip(at: number): string {
-  const now = Date.now();
-  const dSec = Math.round((at - now) / 1000);
-  if (Math.abs(dSec) < 60) return dSec >= 0 ? "in <1m" : "started";
-  if (Math.abs(dSec) < 3600) {
-    const m = Math.round(dSec / 60);
-    return m >= 0 ? `in ${m}m` : `${-m}m ago`;
-  }
-  if (Math.abs(dSec) < 86400) {
-    const h = Math.round(dSec / 3600);
-    return h >= 0 ? `in ${h}h` : `${-h}h ago`;
-  }
-  return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const dSec = Math.round((at - Date.now()) / 1000);
+  const abs = Math.abs(dSec);
+  if (abs < 1) return "now";
+  if (abs >= 86400) return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return dSec >= 0 ? `in ${fmtWait(abs)}` : `${fmtWait(abs)} ago`;
 }
 
 // Agent-eligibility picker: who may take this task. `unassigned` blocks leaving
@@ -249,7 +237,7 @@ function TaskCard({
       {(task.estimatedDurationMs != null || task.plannedStartAt != null) && (
         <div className="kb-sched" onClick={stop}>
           {task.estimatedDurationMs != null && (
-            <span className="kb-sched-chip" title="Estimated duration">⏱ {fmtDurationChip(task.estimatedDurationMs)}</span>
+            <span className="kb-sched-chip" title="Estimated duration">⏱ {fmtDurMs(task.estimatedDurationMs)}</span>
           )}
           {task.plannedStartAt != null && (
             <span className="kb-sched-chip" title={new Date(task.plannedStartAt).toLocaleString()}>
@@ -760,12 +748,6 @@ function fmtCost(usd: number): string {
   if (usd < 100) return "$" + usd.toFixed(2);
   return "$" + Math.round(usd).toLocaleString();
 }
-function fmtDurationMs(ms: number): string {
-  if (ms < 60_000) return Math.round(ms / 1000) + "s";
-  if (ms < 3_600_000) return Math.round(ms / 60_000) + "m";
-  return (ms / 3_600_000).toFixed(1) + "h";
-}
-
 function ProjectStats({
   project,
   runs,
@@ -805,7 +787,7 @@ function ProjectStats({
     { label: "Tokens in", value: inTok ? fmtNum(inTok) : "—", title: "Prompt tokens sent to the model, summed across runs" },
     { label: "Tokens out", value: outTok ? fmtNum(outTok) : "—", title: "Completion tokens the model generated" },
     { label: "Spend", value: usdKnown ? fmtCost(usdTotal) : "—", title: "Cost in USD (vendor-reported; may be — if the provider didn't include it)" },
-    { label: "Run time", value: durKnown ? fmtDurationMs(dur) : "—", title: "Cumulative wall-clock across runs (vendor-reported)" },
+    { label: "Run time", value: durKnown ? fmtDurMs(dur) : "—", title: "Cumulative wall-clock across runs (vendor-reported)" },
     {
       label: "Models used",
       value: modelPairs.size ? String(modelPairs.size) : "—",
