@@ -110,6 +110,7 @@ function TaskCard({
     deleteTask,
     moveTask,
     transitionTask,
+    forceTaskDone,
     assignTask,
     archiveAgent,
   } = useStore();
@@ -274,18 +275,43 @@ function TaskCard({
           </>
         )}
         {s === "ongoing" && (
-          <button className="kb-move" onClick={() => move("todo")}>↩ Abandon</button>
+          <>
+            <button className="kb-move" onClick={() => move("todo")}>↩ Abandon</button>
+            <button
+              className="kb-move kb-move-force"
+              title="Skip the normal approval + merge path — mark this task done and sync the run's status. Use when the run has finished the work outside the fleet or is stuck."
+              onClick={() => forceTaskDone(pid, task.id)}
+            >
+              ⚡ Force done
+            </button>
+          </>
         )}
         {s === "review" && (
           <>
             <button className="kb-move kb-move-primary" onClick={() => move("done")}>✓ Approve → Done</button>
             <button className="kb-move" onClick={() => move("todo")}>↩ Redo</button>
+            <button
+              className="kb-move kb-move-force"
+              title="Fallback if the normal approve → merge path fails (merge queue stuck, HITL wedged). Marks done and syncs the run's status; does NOT merge the branch."
+              onClick={() => forceTaskDone(pid, task.id)}
+            >
+              ⚡ Force done
+            </button>
           </>
         )}
         {s === "done" && (
           <>
             <button className="kb-move" onClick={() => move("triage")}>↩ Triage</button>
             <button className="kb-move" onClick={() => move("backlog")}>↩ Backlog</button>
+            {run && run.status !== "done" && (
+              <button
+                className="kb-move kb-move-force"
+                title={`Task is Done but the run's status is "${run.status}" — click to resync.`}
+                onClick={() => forceTaskDone(pid, task.id)}
+              >
+                ⚡ Sync run → done
+              </button>
+            )}
             {run && (
               <button className="kb-archive" title="Archive — hide from the board" onClick={() => archiveAgent(run.id, true)}>⤓</button>
             )}

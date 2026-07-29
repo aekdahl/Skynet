@@ -530,6 +530,19 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Force a task to `done` — bypasses HUMAN_TRANSITIONS and always syncs the
+  // linked run's status to "done". The escape hatch when the normal
+  // review → done path fails (merge queue stuck, HITL wedged, run finished
+  // without advancing the card). Never merges the branch: it's a
+  // "call it done" operator override, not a work-completion signal.
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/force-done", async (req, reply) => {
+    try {
+      return await ops.forceTaskDone(ws(req), req.params.tid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // Manually promote (up) / demote (down) a task's backlog priority.
   app.post<{ Params: { id: string; tid: string }; Body: { direction?: string } }>("/api/projects/:id/tasks/:tid/move", async (req, reply) => {
     const direction = req.body?.direction;

@@ -74,3 +74,101 @@ describe("task transition guard", () => {
     expect((await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "triage", "op-1")).state).toBe("triage");
   });
 });
+
+// A task landing in `done` MUST also flip its linked run's status to "done".
+// The "review → done" path with no open HITL used to fall through to a plain
+// upsertTask (no sync), so a card in Done could sit next to a run still shown
+// as "review"/"running" on the board and detail view. These pin the sync.
+describe("transitionTask — task.done syncs run.status", () => {
+  const seedRunAndTask = async (
+    store: MemoryStore,
+    runStatus: "running" | "review" | "done",
+    taskState: Task["state"],
+  ): Promise<void> => {
+    await store.putRun({
+      id: "run-1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "r",
+      taskId: "t1", provider: "claude", model: "opus", branch: "main", status: runStatus,
+      progress: 1, plan: [], log: [], startedAt: 0, lastHeartbeatAt: 0,
+    } as never);
+    await store.putTask({ ...mkTask(taskState), runId: "run-1" });
+  };
+
+  it("review → done (no open HITL) also flips the linked run to status 'done'", async () => {
+    const store = new MemoryStore();
+    const hub = new Hub(store, new NullBus());
+    const orchestrator = new Orchestrator(store, hub);
+    const ops = new Operations({ store, hub, orchestrator });
+    await store.putProject(project);
+    await seedRunAndTask(store, "review", "review");
+
+    const t = await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "done", "op-1");
+    expect(t.state).toBe("done");
+    expect((await store.getRun("run-1"))?.status).toBe("done");
+  });
+
+  it("demoting done → backlog does NOT force the run back to done (it archives + detaches)", async () => {
+    const store = new MemoryStore();
+    const hub = new Hub(store, new NullBus());
+    const orchestrator = new Orchestrator(store, hub);
+    const ops = new Operations({ store, hub, orchestrator });
+    await store.putProject(project);
+    // Task in `done` but with a `review` run — the abandonsRun path stops+archives
+    // it. The done-sync must NOT fire (we're LEAVING done, not landing on it).
+    await seedRunAndTask(store, "review", "done");
+
+    const t = await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "backlog", "op-1");
+    expect(t.state).toBe("backlog");
+    expect(t.runId).toBeNull(); // detached
+    // Run wasn't promoted to done just because we passed through the state=done branch.
+    expect((await store.getRun("run-1"))?.status).toBe("review");
+  });
+});
+
+// Escape hatch: forceTaskDone bypasses HUMAN_TRANSITIONS and always syncs the
+// linked run's status. Only used when the normal path is stuck (merge queue,
+// wedged HITL, run finished without advancing the card).
+describe("forceTaskDone — escape hatch", () => {
+  let store: MemoryStore;
+  let ops: Operations;
+
+  beforeEach(async () => {
+    store = new MemoryStore();
+    const hub = new Hub(store, new NullBus());
+    const orchestrator = new Orchestrator(store, hub);
+    ops = new Operations({ store, hub, orchestrator });
+    await store.putProject(project);
+  });
+
+  it("forces a task to done from any state (e.g. ongoing) and syncs the run", async () => {
+    await store.putRun({
+      id: "run-1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "r",
+      taskId: "t1", provider: "claude", model: "opus", branch: "main", status: "running",
+      progress: 0.5, plan: [], log: [], startedAt: 0, lastHeartbeatAt: 0,
+    } as never);
+    await store.putTask({ ...mkTask("ongoing"), runId: "run-1" });
+
+    const t = await ops.forceTaskDone(DEFAULT_WORKSPACE, "t1");
+    expect(t.state).toBe("done");
+    expect((await store.getRun("run-1"))?.status).toBe("done");
+  });
+
+  it("idempotent — task already done + run already done → no-op success", async () => {
+    await store.putRun({
+      id: "run-1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "r",
+      taskId: "t1", provider: "claude", model: "opus", branch: "main", status: "done",
+      progress: 1, plan: [], log: [], startedAt: 0, lastHeartbeatAt: 0,
+    } as never);
+    await store.putTask({ ...mkTask("done"), runId: "run-1" });
+
+    const t = await ops.forceTaskDone(DEFAULT_WORKSPACE, "t1");
+    expect(t.state).toBe("done");
+    expect((await store.getRun("run-1"))?.status).toBe("done");
+  });
+
+  it("works even with no linked run (nothing to sync)", async () => {
+    await store.putTask({ ...mkTask("review"), runId: null });
+    const t = await ops.forceTaskDone(DEFAULT_WORKSPACE, "t1");
+    expect(t.state).toBe("done");
+    expect(t.runId).toBeNull();
+  });
+});

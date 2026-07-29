@@ -916,6 +916,9 @@ button.kb-done:hover { opacity: 1; }
 .kb-move:hover:not(:disabled) { border-color: var(--border); }
 .kb-move:disabled { color: var(--faint); cursor: not-allowed; }
 .kb-move-primary { color: var(--accent); border-color: color-mix(in oklch, var(--accent), transparent 55%); }
+/* Escape-hatch: forces a task done bypassing the normal review/merge path.
+   Muted amber so it reads as "use sparingly" without competing with the primary. */
+.kb-move-force { color: var(--warn); border-color: color-mix(in oklch, var(--warn), transparent 60%); }
 .kb-autopick { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); cursor: pointer; }
 /* agent-eligibility picker (who may take a task) */
 .kb-elig { display: flex; flex-direction: column; gap: 5px; margin: 2px 0; min-width: 0; }

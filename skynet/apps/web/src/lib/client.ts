@@ -480,6 +480,11 @@ export async function streamProjectChat(
 export function transitionTask(projectId: string, taskId: string, to: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/state`, { to });
 }
+// Escape hatch — force a task to `done` bypassing HUMAN_TRANSITIONS, and always
+// sync the linked run's status. For when the normal review → done path fails.
+export function forceTaskDone(projectId: string, taskId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/force-done`);
+}
 export function moveTask(projectId: string, taskId: string, direction: "up" | "down") {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/move`, { direction });
 }
