@@ -46,6 +46,21 @@ function ProjectCard({
     ? conflictModulesForAgent(conflictAgent, runs)[0]
     : undefined;
 
+  // A card is a glance, not a changelog. Only in-flight runs earn their own row
+  // (waiting-on-you first, then running); finished runs collapse to a single
+  // "✓ N merged" count so a shipped project doesn't stack 15 "merged" rows.
+  const MAX_RUN_ROWS = 4;
+  const activeSorted = pa
+    .filter((a) => a.status !== "done")
+    .sort(
+      (x, y) =>
+        (waiting.some((q) => q.runId === x.id) ? 0 : 1) -
+        (waiting.some((q) => q.runId === y.id) ? 0 : 1),
+    );
+  const activeRuns = activeSorted.slice(0, MAX_RUN_ROWS);
+  const hiddenActive = activeSorted.length - activeRuns.length;
+  const mergedCount = pa.filter((a) => a.status === "done").length;
+
   return (
     <button className={"proj" + (allDone ? " proj-done" : "")} onClick={onOpen}>
       <div className="proj-top">
@@ -68,7 +83,7 @@ function ProjectCard({
         status={waiting.length > 0 ? "waiting" : allDone ? "done" : "running"}
       />
       <div className="proj-runs">
-        {pa.map((a) => {
+        {activeRuns.map((a) => {
           const q = waiting.find((it) => it.runId === a.id);
           return (
             <div key={a.id} className="proj-agent">
@@ -77,13 +92,17 @@ function ProjectCard({
               <span className="proj-agent-state mono">
                 {q
                   ? "waiting " + fmtWait(waitedSecs(q, now))
-                  : a.status === "done"
-                    ? "merged"
-                    : Math.round(a.progress * 100) + "%"}
+                  : Math.round(a.progress * 100) + "%"}
               </span>
             </div>
           );
         })}
+        {hiddenActive > 0 && (
+          <div className="proj-backlog mono">+ {hiddenActive} more running</div>
+        )}
+        {mergedCount > 0 && (
+          <div className="proj-merged mono">✓ {mergedCount} merged</div>
+        )}
         {backlog.length > 0 && (
           <div className="proj-backlog mono">○ {backlog.length} in backlog</div>
         )}

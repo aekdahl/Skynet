@@ -1212,6 +1212,7 @@ button.kb-done:hover { opacity: 1; }
 .placeholder-note-tag { flex: none; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em; color: var(--bg); background: var(--warn); border-radius: 4px; padding: 2px 6px; margin-top: 1px; }
 .placeholder-note-text { color: var(--muted); }
 .proj-backlog { font-size: 11px; color: var(--faint); padding-top: 2px; }
+.proj-merged { font-size: 11px; color: var(--ok, var(--muted)); padding-top: 2px; }
 
 /* ===== MCP access (Settings) ===== */
 .mcp-access { max-width: 720px; margin-top: calc(var(--sp) * 1.4); }
