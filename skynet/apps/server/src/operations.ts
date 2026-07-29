@@ -44,6 +44,7 @@ import {
   type AssistantAction,
   type ChatTurn,
 } from "./project-assistant.js";
+import { askStewardWorkspace } from "./steward/assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -129,6 +130,28 @@ export class Operations {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== workspaceId) throw new NotFoundError("Project");
     return answerProjectQuestion(this.store, { workspaceId, project, question, history });
+  }
+
+  /** Global Steward chat (the sidebar dock, available on every page). When a
+   *  project is in focus (the page you're on, passed as `focusProjectId`) it's the
+   *  full project assistant — repo-aware, proposes confirm-first actions. With no
+   *  focus it answers workspace-wide (cross-project status), answer-only. */
+  async stewardChat(
+    workspaceId: string,
+    question: string,
+    history?: ChatTurn[],
+    focusProjectId?: string,
+  ): Promise<{ reply: string; action: AssistantAction | null; projectId: string | null }> {
+    if (focusProjectId) {
+      const project = await this.store.getProject(focusProjectId);
+      if (project && project.workspaceId === workspaceId) {
+        const { reply, action } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
+        return { reply, action, projectId: project.id };
+      }
+      // focus id is stale / not ours → fall through to a workspace answer.
+    }
+    const { reply, action } = await askStewardWorkspace(this.store, { workspaceId, question, history });
+    return { reply, action, projectId: null };
   }
 
   /** Streaming form of {@link projectAssistant} — yields the answer as text

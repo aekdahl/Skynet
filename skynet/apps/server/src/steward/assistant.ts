@@ -15,7 +15,7 @@
 // Either way the answer stays grounded — the model is told never to invent repo
 // content or project state.
 
-import type { Project, Task, TaskRun } from "@skynet/shared";
+import type { HitlItem, Project, Task, TaskRun } from "@skynet/shared";
 import { ProjectStatus, TaskState } from "@skynet/shared";
 import {
   oneShotRepoAssistant,
@@ -412,6 +412,70 @@ export async function askSteward(
     ? await oneShotRepoAssistant({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey })
     : await oneShotText({ prompt: c.prompt, apiKey: c.apiKey });
   return splitProposedAction(answer, c.actionCtx);
+}
+
+// ─── Workspace-wide Steward (the global dock, no single project in focus) ────
+// Answer-only: with no project focused there's no unambiguous target for a task/
+// project action, so this grounds on a cross-project status snapshot and never
+// proposes actions. When a project IS in focus the caller uses askSteward instead.
+
+const WORKSPACE_SYSTEM =
+  "You are Steward, the operator's assistant for a Skynet workspace. Answer conversationally and concisely about the CURRENT STATUS across the whole workspace — projects, their task boards, active runs, and open approvals — grounded ONLY in the WORKSPACE STATUS below. If a fact isn't shown, say so plainly; never invent state. To CHANGE something on a specific project (add/move a task, edit settings), tell the operator to open that project (its own chat proposes and runs the change) — you do not propose actions here. Do NOT emit any JSON.";
+
+function workspaceStatusContext(projects: Project[], tasks: Task[], runs: TaskRun[], gates: HitlItem[]): string {
+  const openGates = gates.filter((g) => !g.resolvedAt).length;
+  const activeRuns = runs.filter((r) => r.status !== "done" && !r.archived);
+  const lines: string[] = [
+    `WORKSPACE: ${projects.length} project(s), ${activeRuns.length} active run(s), ${openGates} open approval(s).`,
+    "PROJECTS:",
+  ];
+  for (const p of projects.slice(0, 30)) {
+    const pt = tasks.filter((t) => t.projectId === p.id && !t.archived);
+    const byStage = STAGES.map((s) => `${s} ${pt.filter((t) => t.state === s).length}`).join(" · ");
+    const pr = activeRuns.filter((r) => r.projectId === p.id).length;
+    lines.push(`  [${p.id}] ${p.name} — status ${p.status}, autonomy ${p.autonomy ? "on" : "off"}, ${pr} active run(s) · ${byStage}`);
+  }
+  if (activeRuns.length) {
+    lines.push("ACTIVE RUNS:");
+    for (const r of activeRuns.slice(0, 12)) {
+      lines.push(`  ${r.name} — ${r.status} · ${Math.round(r.progress * 100)}%`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/** Ask Steward workspace-wide (the global dock with no project focused). Grounds
+ *  on a cross-project status snapshot; answer-only (no proposed actions). */
+export async function askStewardWorkspace(
+  store: Store,
+  opts: { workspaceId: string; question: string; history?: ChatTurn[] },
+): Promise<{ reply: string; action: AssistantAction | null }> {
+  const { workspaceId, question } = opts;
+  const [projects, tasks, runs, gates] = await Promise.all([
+    store.listProjects(workspaceId),
+    store.listTasks(workspaceId),
+    store.listRuns(workspaceId),
+    store.listQueue(workspaceId),
+  ]);
+  const context = workspaceStatusContext(projects, tasks, runs, gates);
+  const convo = (opts.history ?? [])
+    .slice(-MAX_HISTORY)
+    .map((t) => `${t.role === "user" ? "Operator" : "Assistant"}: ${t.content}`)
+    .join("\n");
+  const prompt = [
+    WORKSPACE_SYSTEM,
+    "",
+    "=== WORKSPACE STATUS ===",
+    context,
+    convo ? `\n=== CONVERSATION SO FAR ===\n${convo}` : "",
+    "",
+    `Operator asks: ${question}`,
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+  const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
+  const reply = await oneShotText({ prompt, apiKey });
+  return { reply, action: null };
 }
 
 /** Streaming form of {@link askSteward} — yields the answer as text deltas so the

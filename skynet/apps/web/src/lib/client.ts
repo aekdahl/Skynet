@@ -409,6 +409,20 @@ export function projectChat(
     { question, history },
   );
 }
+// Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
+// (full project assistant + actions); omit it for a workspace-wide answer. The
+// response echoes which project the action (if any) targets.
+export function stewardChat(
+  question: string,
+  history: { role: "user" | "assistant"; content: string }[],
+  projectId?: string,
+) {
+  return req<{ reply: string; action?: AssistantAction | null; projectId?: string | null }>(
+    "POST",
+    "/api/steward/chat",
+    { question, history, projectId },
+  );
+}
 
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
 export interface PreviewState {

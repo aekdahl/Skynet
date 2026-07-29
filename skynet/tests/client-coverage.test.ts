@@ -58,6 +58,9 @@ const ALLOW = new Set<string>([
   // live provider key and a real repo to ground against, so there's no offline
   // journey; the parse contract is covered by project-assistant.test.ts
   "projectChat",
+  // global Steward dock chat (workspace-wide / focused-project) — same live-provider
+  // requirement as projectChat, so no offline journey exercises it.
+  "stewardChat",
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",
