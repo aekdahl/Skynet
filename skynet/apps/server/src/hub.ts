@@ -134,6 +134,44 @@ export class Hub {
   }
 
   /**
+   * Insert a HITL item already resolved by policy (e.g. the approval-policy
+   * auto-approver), atomically. This is the SILENT variant: we publish only
+   * `hitl.resolved` — never `hitl.raised` — so downstream subscribers that treat
+   * a raise as a human-facing notification (Telegram 🔔, phone push) don't spam
+   * the operator about a decision that was already made. The full audit record
+   * is still written, so the trail shows exactly what was auto-approved and by
+   * which policy — nothing runs invisibly.
+   */
+  async raiseAndAutoResolveHitl(item: HitlItem, resolution: Resolution): Promise<HitlItem> {
+    const resolved: HitlItem = { ...item, resolution, resolvedAt: resolution.at };
+    await this.store.putHitl(resolved);
+    await this.store.recordAudit({
+      workspaceId: item.workspaceId,
+      hitlId: item.id,
+      runId: item.runId,
+      action: resolution.action,
+      operatorId: resolution.by,
+      at: resolution.at,
+      payload: {
+        optionIndex: resolution.optionIndex,
+        guidance: resolution.guidance,
+        kind: item.kind,
+        title: item.title,
+        why: item.why,
+        command: item.command,
+        rationale: item.rationale,
+        risk: item.risk,
+        options: item.options,
+        recommended: item.recommended,
+        diff: item.diff,
+      },
+    });
+    // Only publish `resolved` — a `raised` event here would ping Telegram/push.
+    this.bus.publish(item.workspaceId, { type: "hitl.resolved", id: item.id, resolution });
+    return resolved;
+  }
+
+  /**
    * Idempotent, first-writer-wins (Backend Brief §05); records the audit trail.
    *
    * Serialized per-hitl-id so truly concurrent resolves of the same id are
