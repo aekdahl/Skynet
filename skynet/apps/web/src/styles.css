@@ -180,6 +180,9 @@ kbd {
 .projview-head h2 { font-size: 24px; font-weight: 600; letter-spacing: -0.015em; }
 .projview-head p { margin-top: 8px; font-size: 14px; color: var(--muted); max-width: 640px; }
 .projview-queue { display: flex; flex-direction: column; gap: var(--sp); }
+/* Project line (subway) above the kanban — its own labeled block. */
+.projview-line { display: flex; flex-direction: column; gap: 10px; }
+.projview-line .swb { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 4px 12px 12px; }
 .projview .panel-head { margin-bottom: 0; }
 .pa-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: var(--sp); }
 .pa-card {
