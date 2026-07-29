@@ -14,6 +14,7 @@ import {
   openQueue,
   providerOf,
   providerInfo,
+  projectShipped,
   providerReadiness,
   runnerIdleLabel,
   runnerName,
@@ -442,7 +443,9 @@ function SubwayView({
       <div className="sw-list">
         {projects.map((p) => {
           const pa = agentsForProject(runs, p.id);
-          const allDone = pa.length > 0 && pa.every((a) => a.status === "done");
+          // "Shipped" = every task done (see projectShipped) — not merely every
+          // run done, else an unstarted backlog would still badge "shipped".
+          const allDone = projectShipped(tasks, p.id);
           const q = oq.find((it) => pa.some((a) => a.id === it.runId));
           const conflictAgent = pa.find(
             (a) =>
@@ -466,7 +469,9 @@ function SubwayView({
                 o.modules.includes(mod),
             ),
           );
-          const backlog = tasks.filter((t) => t.projectId === p.id && !t.runId).length;
+          // Unstarted work: no run yet AND not already done (a force-done task has
+          // no runId but isn't backlog — counting it would contradict "✓ shipped").
+          const backlog = tasks.filter((t) => t.projectId === p.id && !t.runId && t.state !== "done").length;
           return (
             <div key={p.id} className={"sw-proj" + (allDone ? " sw-proj-done" : "")}>
               <div className="sw-proj-head">

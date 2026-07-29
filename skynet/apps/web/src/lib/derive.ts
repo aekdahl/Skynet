@@ -89,6 +89,14 @@ export const backlogTasks = (tasks: Task[], projectId: string) =>
 export const doneTasks = (tasks: Task[], projectId: string) =>
   tasks.filter((t) => t.projectId === projectId && t.state === "done");
 
+// A project is "shipped" only when it HAS tasks and EVERY one is done — not
+// merely when its runs are done. Unstarted backlog tasks have no run, so a
+// runs-all-done check would badge a project shipped with work still in backlog.
+export const projectShipped = (tasks: Task[], projectId: string): boolean => {
+  const t = tasksForProject(tasks, projectId);
+  return t.length > 0 && t.every((x) => x.state === "done");
+};
+
 // A task is "queued" — a FUTURE station on the subway — when it has no run yet:
 // not started and not done. (ongoing/review/done all carry a runId → already a
 // station on the line.)
