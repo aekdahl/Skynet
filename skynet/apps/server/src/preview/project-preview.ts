@@ -20,8 +20,8 @@
 // SPA iframes that port directly (desktop = same machine, no proxy).
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { get as httpGet } from "node:http";
 import { join, resolve } from "node:path";
@@ -84,7 +84,6 @@ interface StartSpec {
 const LOG_CAP = 200;
 const IDLE_MS = 15 * 60 * 1000; // auto-stop a preview no one is watching
 const HEALTH_TIMEOUT_MS = 45_000;
-const INSTALL_TIMEOUT_MS = 5 * 60 * 1000; // dependency install budget before the dev command
 
 export class ProjectPreviewManager {
   private previews = new Map<string, Live>();
@@ -129,18 +128,24 @@ export class ProjectPreviewManager {
     if (p.logs.length > LOG_CAP) p.logs.splice(0, p.logs.length - LOG_CAP);
   }
 
+  /** Read `.skynet/preview.json` if present (tolerant of a malformed file). */
+  private readDescriptor(dir: string): { dev?: string; start?: string; port?: number; install?: string } | null {
+    const descPath = join(dir, ".skynet", "preview.json");
+    if (!existsSync(descPath)) return null;
+    try {
+      return JSON.parse(readFileSync(descPath, "utf8"));
+    } catch {
+      return null; // malformed → callers fall back to heuristics
+    }
+  }
+
   /** Deterministic recipe: `.skynet/preview.json` descriptor, then a
    *  package.json script heuristic. No I/O beyond reading two files. */
   private resolveRecipeStatic(dir: string, port: number): PreviewRecipe | null {
-    const descPath = join(dir, ".skynet", "preview.json");
-    if (existsSync(descPath)) {
-      try {
-        const d = JSON.parse(readFileSync(descPath, "utf8")) as { dev?: string; start?: string; port?: number };
-        const cmd = d.dev || d.start;
-        if (cmd) return { cmd, port: d.port ?? port, source: "descriptor" };
-      } catch {
-        /* malformed descriptor → fall through to heuristic */
-      }
+    const d = this.readDescriptor(dir);
+    if (d) {
+      const cmd = d.dev || d.start;
+      if (cmd) return { cmd, port: d.port ?? port, source: "descriptor" };
     }
     const pkgPath = join(dir, "package.json");
     if (existsSync(pkgPath)) {
@@ -265,13 +270,91 @@ export class ProjectPreviewManager {
 
   /** Prepare (or refresh) a detached worktree at `ref`. Detached so it never
    *  collides with a worktree that HOLDS the branch (the merge engine on the
-   *  integration branch, or the agent's own worktree on a run branch). */
+   *  integration branch, or the agent's own worktree on a run branch). Reuses an
+   *  existing worktree dir (via checkout + reset) so a restart keeps node_modules
+   *  warm — untracked deps survive the reset; only a broken worktree is recreated. */
   private async prepareWorktree(key: string, gitRepo: string, ref: string): Promise<string> {
     const dir = this.previewDir(key);
+    if (existsSync(join(dir, ".git"))) {
+      try {
+        await this.git(gitRepo, "worktree", "repair", dir).catch(() => undefined);
+        await this.git(dir, "checkout", "--detach", ref);
+        await this.git(dir, "reset", "--hard", ref);
+        return dir; // reused — node_modules (real or symlink) is preserved
+      } catch {
+        /* stale/broken worktree → fall through and recreate it fresh */
+      }
+    }
     await this.git(gitRepo, "worktree", "remove", "--force", dir).catch(() => undefined);
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     await this.git(gitRepo, "worktree", "add", "--force", "--detach", dir, ref);
     return dir;
+  }
+
+  /** Make dependencies available in the preview worktree before we run the dev
+   *  command. A fresh detached checkout has no node_modules, so a script like
+   *  `concurrently`/`vite` isn't found. Fast path: symlink the operator's already
+   *  installed node_modules (desktop folder-bound projects always have it). Fresh
+   *  clones with none anywhere fall back to a real install. No-op once present
+   *  (a warm reused worktree, or a prior symlink). */
+  private async ensureDeps(p: Live, gitRepo: string): Promise<void> {
+    if (!existsSync(join(p.dir, "package.json"))) return; // not a node project
+    if (existsSync(join(p.dir, "node_modules"))) return; // already provisioned (warm/symlinked)
+    const repoNodeModules = join(gitRepo, "node_modules");
+    if (existsSync(repoNodeModules)) {
+      try {
+        await symlink(repoNodeModules, join(p.dir, "node_modules"), "dir");
+        this.log(p, "linked node_modules from the project checkout (no install needed)");
+        return;
+      } catch (err) {
+        this.log(p, `couldn't link node_modules (${(err as Error).message}) — installing instead`);
+      }
+    }
+    const install = this.installCmd(p.dir);
+    this.log(p, `installing dependencies — ${install} (first preview of this project may take a minute)`);
+    await this.runToCompletion(install, p.dir, p, 5 * 60_000);
+  }
+
+  /** Infer the install command: descriptor override, then the lockfile's package
+   *  manager, else npm. */
+  private installCmd(dir: string): string {
+    const desc = this.readDescriptor(dir);
+    if (desc?.install) return desc.install;
+    if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm install";
+    if (existsSync(join(dir, "yarn.lock"))) return "yarn install";
+    if (existsSync(join(dir, "bun.lockb"))) return "bun install";
+    return "npm install";
+  }
+
+  /** Run a setup command (e.g. install) to completion, streaming to the logs.
+   *  Not sandboxed — install needs the registry; the untrusted app runtime (the
+   *  dev server) is the wrapped one. Rejects on non-zero exit or timeout. */
+  private runToCompletion(cmd: string, cwd: string, p: Live, timeoutMs: number): Promise<void> {
+    return new Promise((res, rej) => {
+      const child = spawn("/bin/sh", ["-c", cmd], { cwd, env: { ...process.env } });
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        rej(new Error(`\`${cmd}\` timed out after ${Math.round(timeoutMs / 1000)}s`));
+      }, timeoutMs);
+      child.stdout?.on("data", (b) => this.log(p, b.toString()));
+      child.stderr?.on("data", (b) => this.log(p, b.toString()));
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        rej(err);
+      });
+      child.on("exit", (code) => {
+        clearTimeout(timer);
+        if (code === 0) res();
+        else rej(new Error(`\`${cmd}\` exited with code ${code ?? "?"}`));
+      });
+    });
+  }
+
+  /** Kill a preview's dev-server child + idle timer, WITHOUT removing its
+   *  worktree (so a restart keeps node_modules warm). Full teardown is stop(). */
+  private killChild(p: Live) {
+    if (p.idleTimer) clearTimeout(p.idleTimer);
+    if (p.child && !p.child.killed) p.child.kill("SIGTERM");
   }
 
   /** Start the PROJECT preview — the integration branch (cumulative merged fleet
@@ -325,7 +408,15 @@ export class ProjectPreviewManager {
   }
 
   private async startSpec(spec: StartSpec): Promise<PreviewState> {
-    await this.stop(spec.key); // idempotent — a start replaces any existing preview
+    // Soft-replace any existing preview for this key: kill its child but KEEP
+    // its worktree so node_modules stays warm across restarts. (Full teardown —
+    // worktree removal — only happens on an explicit stop / idle / shutdown.)
+    const existing = this.previews.get(spec.key);
+    if (existing) {
+      existing.status = "stopped";
+      this.killChild(existing);
+      this.previews.delete(spec.key);
+    }
 
     const p: Live = {
       status: "starting", key: spec.key, dir: this.previewDir(spec.key), gitRepo: spec.gitRepo,
@@ -351,14 +442,13 @@ export class ProjectPreviewManager {
       }
       p.recipe = recipe;
       p.port = recipe.port;
-      this.log(p, `▸ ${recipe.cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
 
-      // Install dependencies first when this fresh checkout has none — otherwise
-      // `npm run dev` fails on a missing tool (e.g. "concurrently: not found").
-      // No-op for a non-node project or one whose node_modules already exists.
-      await this.ensureDeps(p);
+      // A fresh checkout has no node_modules → provision them before we run the
+      // dev command (else `concurrently`/`vite`/etc. aren't found).
+      await this.ensureDeps(p, spec.gitRepo);
       if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded during install
-      if (p.status === "failed") return this.state(spec.key); // install failed — error already set
+
+      this.log(p, `▸ ${recipe.cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
 
       // Spawn via a shell so "npm run dev" etc. work; wrap for the opt-in OS
       // sandbox (no-op unless SKYNET_RUNNER_SANDBOX). PORT is injected two ways
@@ -400,45 +490,6 @@ export class ProjectPreviewManager {
     return this.state(spec.key);
   }
 
-  /** Install a fresh checkout's dependencies before the dev command runs, when
-   *  node_modules is absent. No-op for a non-node project or one that already has
-   *  node_modules. Streams install output to the preview log; on failure it flips
-   *  the preview to `failed` with a readable reason (the dev command would only
-   *  fail more cryptically, e.g. "concurrently: not found"). The install child is
-   *  tracked on `p.child` so stop() can kill it mid-flight. */
-  private async ensureDeps(p: Live): Promise<void> {
-    if (!existsSync(join(p.dir, "package.json"))) return; // not a node project
-    if (existsSync(join(p.dir, "node_modules"))) return; // already installed
-    const pm = existsSync(join(p.dir, "pnpm-lock.yaml"))
-      ? "pnpm"
-      : existsSync(join(p.dir, "yarn.lock"))
-        ? "yarn"
-        : "npm";
-    this.log(p, `installing dependencies (${pm} install) — first preview of this checkout, this can take a minute…`);
-    const wrapped = wrapForSandbox("/bin/sh", ["-c", `${pm} install`], { cwd: p.dir });
-    await new Promise<void>((done, fail) => {
-      const child = spawn(wrapped.bin, wrapped.args, { cwd: p.dir, env: { ...process.env, CI: "1", BROWSER: "none" } });
-      p.child = child; // so stop() can kill an in-flight install
-      const timer = setTimeout(() => {
-        child.kill("SIGKILL");
-        fail(new Error(`dependency install timed out after ${INSTALL_TIMEOUT_MS / 1000}s`));
-      }, INSTALL_TIMEOUT_MS);
-      child.stdout?.on("data", (b) => this.log(p, b.toString()));
-      child.stderr?.on("data", (b) => this.log(p, b.toString()));
-      child.on("error", (err) => { clearTimeout(timer); fail(err); });
-      child.on("exit", (code) => {
-        clearTimeout(timer);
-        if (code === 0) done();
-        else fail(new Error(`\`${pm} install\` failed (exit ${code ?? "?"}) — see the log above`));
-      });
-    }).catch((err: Error) => {
-      if (this.previews.get(p.key) !== p) return; // superseded during install — leave state alone
-      p.status = "failed";
-      p.error = err.message;
-    });
-    if (p.child) p.child = undefined; // install finished; the dev spawn sets its own child
-  }
-
   /** Re-point the worktree at a moving branch tip (called on merge for PROJECT
    *  previews). A dev server's file-watcher then HMR-updates; the UI reloads for
    *  the rest. A no-op for pinned run previews (no refreshBranch). */
@@ -471,9 +522,18 @@ export class ProjectPreviewManager {
     const p = this.previews.get(key);
     if (p) {
       p.status = "stopped";
-      if (p.idleTimer) clearTimeout(p.idleTimer);
-      if (p.child && !p.child.killed) p.child.kill("SIGTERM");
+      this.killChild(p);
+      // If node_modules is a SYMLINK we created, unlink it first so neither git
+      // nor the recursive rm below can ever follow it into the operator's real
+      // node_modules. (A real installed dir is removed with the worktree.)
+      const nm = join(p.dir, "node_modules");
+      try {
+        if (lstatSync(nm).isSymbolicLink()) await rm(nm, { force: true });
+      } catch {
+        /* absent or not a symlink → nothing to unlink */
+      }
       await this.git(p.gitRepo, "worktree", "remove", "--force", p.dir).catch(() => undefined);
+      await rm(p.dir, { recursive: true, force: true }).catch(() => undefined);
       this.previews.delete(key);
     }
     return { status: "stopped", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null };
