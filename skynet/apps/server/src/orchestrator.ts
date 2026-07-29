@@ -115,6 +115,15 @@ export class Orchestrator {
   // the little that a `modify` needs to resume the run for a revision in its
   // still-present worktree (see reviseAfterReview / deliver()). Cleared on merge.
   private reviews = new Map<string, { git: GitContext; baseRef: string; taskId: string | null }>();
+  // Runs HALTED on an escalation (agent gave up, too long, or too many failures),
+  // keyed by runId. Holds the worktree/git context a resume/reassign needs even
+  // after the live handle is torn down. Presence = "already escalated" (so a
+  // guard doesn't re-raise). Cleared when the escalation is resolved or the run
+  // completes. See escalate() / deliverEscalation() / relaunchEscalated().
+  private escalations = new Map<string, { git?: GitContext; baseRef?: string; taskId: string | null; source: string }>();
+  // Per-run failure counter (onFailed): past config.runMaxFailures the run is
+  // escalated instead of parked in `review`. Cleared on success/resolution.
+  private failCounts = new Map<string, number>();
 
   // `providerOverride` is a test seam — inject a runner provider directly instead
   // of resolving the runner's own provider. Production always passes (store, hub) only.
@@ -287,8 +296,16 @@ export class Orchestrator {
       recommended: raise.recommended ?? null,
       steps: raise.steps ?? null,
       diff: raise.diff ?? null,
-      flags,
+      flags: raise.kind === "escalation" ? [...flags, "agent"] : flags,
     };
+    // Agent-driven escalation: the run is HALTED on the live gate. Capture the
+    // worktree/git context so a later resume/reassign works, and mark it escalated.
+    if (raise.kind === "escalation") {
+      const live = this.live.get(runId);
+      this.escalations.set(runId, { git: live?.git, baseRef: live?.baseRef, taskId: live?.taskId ?? null, source: "agent" });
+      await this.hub.runStatus(runId, "waiting"); // an escalation gate always blocks the run
+      await this.hub.runLog(runId, `escalated by the agent — ${raise.title}`);
+    }
     await this.hub.raiseHitl(item);
     if (expiresAt != null) {
       this.questionTimers.set(item.id, setTimeout(() => void this.expireQuestion(item), timeout));
@@ -325,6 +342,9 @@ export class Orchestrator {
 
   private async complete(runId: string, branch: string): Promise<void> {
     const live = this.live.get(runId);
+    // The agent finished a turn → it's no longer failing/stuck; reset the guards.
+    this.failCounts.delete(runId);
+    this.escalations.delete(runId);
 
     // Real loop: the agent ran in an isolated worktree → commit its diff onto
     // its branch and raise a review. Approving it enqueues the branch onto the
@@ -407,6 +427,14 @@ export class Orchestrator {
    * task, or integrate a branch. A broken runner must not look like success.
    */
   private async fail(runId: string, reason: string): Promise<void> {
+    // Count failures on this run; past the threshold, hand it to a human
+    // (escalation) instead of quietly parking in `review` for another doomed try.
+    const count = (this.failCounts.get(runId) ?? 0) + 1;
+    this.failCounts.set(runId, count);
+    if (config.runMaxFailures > 0 && count >= config.runMaxFailures) {
+      await this.escalate(runId, `${count} failed attempts — latest: ${reason}`, "failures");
+      return;
+    }
     const live = this.live.get(runId);
     await this.freeRunner(live?.agentId ?? null);
     await this.hub.runLog(runId, `runner failed — ${reason}. Not completed; needs attention.`);
@@ -771,6 +799,12 @@ export class Orchestrator {
       this.questionTimers.delete(item.id);
     }
 
+    // Escalation has its own resolution semantics (help & resume / reassign / stop).
+    if (item.kind === "escalation") {
+      await this.deliverEscalation(item, resolution);
+      return;
+    }
+
     // diff-approve / merge-retry → integrate the agent's branch. This is the
     // post-approval half of the `approveBeforePush` guardrail: the diff review
     // gated here, so reaching this point means an operator approved the push.
@@ -856,6 +890,139 @@ export class Orchestrator {
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId: review.taskId, branch: run.branch, baseRef: review.baseRef, git: review.git });
       this.reviews.delete(runId);
+    } catch (err) {
+      await this.failStartup(runId, acq.id, (err as Error).message);
+    }
+  }
+
+  // ── Escalation: halt a run that can't finish and hand it to a human ─────────
+
+  /** System-driven escalation (too long / too many failures): halt the run and
+   *  hand it to a human. Captures the worktree context so it can be resumed,
+   *  frees the runner (but never retires the worktree), and raises an
+   *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes through
+   *  raise() instead (the live gate stays parked). */
+  private async escalate(runId: string, reason: string, source: "timeout" | "failures"): Promise<void> {
+    if (this.escalations.has(runId)) return; // already escalated — don't re-raise
+    const run = await this.store.getRun(runId);
+    if (!run) return;
+    const live = this.live.get(runId);
+    const git = live?.git ?? (await this.gitContextForAgent(runId).catch(() => undefined));
+    this.escalations.set(runId, { git, baseRef: live?.baseRef, taskId: live?.taskId ?? null, source });
+    // Halt the stuck/failed session so it stops holding its slot + burning
+    // tokens, and free the runner — but DO NOT retire the worktree (resume needs it).
+    if (live) await live.handle.stop().catch(() => undefined);
+    await this.freeRunner(live?.agentId ?? null);
+    this.live.delete(runId);
+    const item: HitlItem = {
+      id: `q-${runId}-${++this.seq}`,
+      workspaceId: run.workspaceId,
+      runId,
+      kind: "escalation",
+      title: source === "timeout" ? "Run stuck — needs a human" : "Run keeps failing — needs a human",
+      why: reason,
+      risk: "medium",
+      rationale: null,
+      raisedAt: now(),
+      expiresAt: null,
+      resolvedAt: null,
+      resolution: null,
+      command: null,
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: null,
+      flags: [source],
+    };
+    await this.hub.runStatus(runId, "waiting");
+    await this.hub.raiseHitl(item);
+    await this.hub.runLog(runId, `escalated (${source}) — ${reason}`);
+  }
+
+  /** Resolve an `escalation`: help & resume (modify), reassign, or stop (reject). */
+  private async deliverEscalation(item: HitlItem, resolution: Resolution): Promise<void> {
+    const runId = item.runId;
+    const live = this.live.get(runId);
+    if (resolution.action === "reject") {
+      // Stop: abandon the run cleanly and reclaim its worktree.
+      if (live) await live.handle.stop().catch(() => undefined);
+      await this.freeRunner(live?.agentId ?? null);
+      this.live.delete(runId);
+      const git = this.escalations.get(runId)?.git ?? live?.git;
+      if (git) await git.worktrees.retire(runId).catch(() => undefined);
+      this.escalations.delete(runId);
+      this.failCounts.delete(runId);
+      await this.hub.runStatus(runId, "done");
+      await this.hub.runLog(runId, "escalation resolved — operator stopped the run");
+      return;
+    }
+    // Agent-driven escalation still holds a live gate → resume it in place with
+    // the operator's guidance (preserves the agent's session context). modify only.
+    if (resolution.action === "modify" && live) {
+      await this.hub.runStatus(runId, "running");
+      await live.handle.resume(resolution);
+      this.escalations.delete(runId);
+      this.failCounts.delete(runId);
+      await this.hub.runLog(runId, "escalation resolved — resuming the agent with your guidance");
+      return;
+    }
+    // Reassign, or help a run whose handle was already torn down → relaunch a
+    // fresh session in the worktree (it picks up the committed work + guidance).
+    await this.relaunchEscalated(runId, resolution.guidance?.trim() || "", resolution.action === "reassign");
+  }
+
+  /** Re-acquire compute for an escalated run and start a fresh session in its
+   *  worktree with the operator's guidance. `reassign` moves it to a DIFFERENT
+   *  runner (acquire the replacement BEFORE freeing the current, so the same idle
+   *  runner isn't re-picked). */
+  private async relaunchEscalated(runId: string, guidance: string, reassign: boolean): Promise<void> {
+    const run = await this.store.getRun(runId);
+    const ctx = this.escalations.get(runId);
+    if (!run) return;
+    const live = this.live.get(runId);
+    const git = ctx?.git ?? live?.git ?? (await this.gitContextForAgent(runId).catch(() => undefined));
+    if (!git) {
+      await this.hub.runLog(runId, "cannot resume — this run has no worktree to continue in");
+      return;
+    }
+    let acq: { id: string; provider: TaskRun["provider"]; model: string };
+    try {
+      if (!reassign && live) {
+        await live.handle.stop().catch(() => undefined);
+        await this.freeRunner(live.agentId);
+        this.live.delete(runId);
+      }
+      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model);
+      if (reassign && live) {
+        await live.handle.stop().catch(() => undefined);
+        await this.freeRunner(live.agentId);
+        this.live.delete(runId);
+      }
+    } catch (err) {
+      await this.hub.runLog(runId, `cannot ${reassign ? "reassign" : "resume"} — ${(err as Error).message}`);
+      await this.hub.runStatus(runId, "waiting"); // stays escalated for another try
+      return;
+    }
+    const provider = await this.getProvider(acq.provider);
+    const cwd = git.worktrees.pathFor(runId);
+    const apiKey = await secretService.resolve(run.workspaceId, run.provider);
+    const prompt = reassign
+      ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+      : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`;
+    await this.hub.runStatus(runId, "running");
+    if (ctx?.taskId) {
+      const task = await this.store.getTask(ctx.taskId);
+      if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
+    }
+    await this.hub.runLog(runId, reassign ? "reassigned to another runner after escalation" : "resuming after escalation with operator guidance");
+    try {
+      const handle = await provider.start(
+        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey },
+        this.events(),
+      );
+      this.live.set(runId, { handle, agentId: acq.id, taskId: ctx?.taskId ?? null, branch: run.branch, baseRef: ctx?.baseRef ?? config.baseBranch, git });
+      this.escalations.delete(runId);
+      this.failCounts.delete(runId);
     } catch (err) {
       await this.failStartup(runId, acq.id, (err as Error).message);
     }
@@ -1300,6 +1467,7 @@ export class Orchestrator {
   }
 
   async reapStaleAgents(): Promise<void> {
+    await this.sweepStuckRuns().catch(() => undefined);
     const ms = config.agentReapMs;
     if (!ms || ms <= 0) return; // disabled
     const cutoff = now() - ms;
@@ -1314,6 +1482,23 @@ export class Orchestrator {
       await this.stopAgent(a.id, `reaped — no heartbeat for ${silentSec}s; runner freed`).catch(() => undefined);
       await this.hub.runStatus(a.id, "done").catch(() => undefined);
       await this.hub.runCompleted(a.id, a.branch).catch(() => undefined);
+    }
+  }
+
+  /** "Too long" guard: a run that has been actively `running` past config
+   *  .runStuckMs (since it started) without finishing is escalated to a human
+   *  rather than left to spin. 0 disables. Skips runs already escalated or parked
+   *  on another gate (only `running` counts as "at it too long"). */
+  private async sweepStuckRuns(): Promise<void> {
+    const ms = config.runStuckMs;
+    if (!ms || ms <= 0) return; // disabled
+    const runs = await this.store.listAllRuns().catch(() => [] as TaskRun[]);
+    for (const a of runs) {
+      if (a.status !== "running") continue;
+      if (this.escalations.has(a.id)) continue;
+      if (now() - a.startedAt < ms) continue;
+      const mins = Math.round((now() - a.startedAt) / 60_000);
+      await this.escalate(a.id, `working for ${mins} min without finishing`, "timeout").catch(() => undefined);
     }
   }
 

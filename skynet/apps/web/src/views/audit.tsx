@@ -24,6 +24,7 @@ const ACTION_META: Record<ResolveAction, { label: string; color: string }> = {
   reject: { label: "REJECTED", color: "var(--danger)" },
   modify: { label: "MODIFIED", color: "var(--info)" },
   option: { label: "PICKED OPTION", color: "var(--violet)" },
+  reassign: { label: "REASSIGNED", color: "var(--violet)" },
 };
 
 const isResolveAction = (a: string): a is ResolveAction =>

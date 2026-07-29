@@ -303,7 +303,29 @@ export function TaskDetail({
             <span className="detail-blocked-title">{q.title}</span>
             <RiskChip risk={q.risk} />
             <span className="qcard-wait">{fmtWait(waitedSecs(q, now))}</span>
-            {q.options ? (
+            {q.kind === "escalation" ? (
+              // The agent (or a guard) halted this run — the operator helps, hands
+              // it to another runner, or stops it. "Help & resume" opens the
+              // guidance box below (its "Send & resume" = the modify action).
+              <>
+                <button
+                  className={"btn btn-primary" + (mode === "modify" ? " btn-lit" : "")}
+                  onClick={() => setMode(mode === "modify" ? null : "modify")}
+                >
+                  Help &amp; resume
+                </button>
+                <button
+                  className="btn"
+                  title="Hand this run to a different runner to retry fresh (with your guidance, if any)"
+                  onClick={() => resolveHitl(q.id, "reassign", { guidance: draft.trim() })}
+                >
+                  Reassign
+                </button>
+                <button className="btn btn-danger" onClick={() => resolveHitl(q.id, "reject")}>
+                  Stop run
+                </button>
+              </>
+            ) : q.options ? (
               q.options.map((opt, i) => (
                 <button
                   key={i}
@@ -329,12 +351,14 @@ export function TaskDetail({
                 </button>
               </>
             )}
-            <button
-              className={"btn btn-ghost" + (mode === "modify" ? " btn-lit" : "")}
-              onClick={() => setMode(mode === "modify" ? null : "modify")}
-            >
-              Modify
-            </button>
+            {q.kind !== "escalation" && (
+              <button
+                className={"btn btn-ghost" + (mode === "modify" ? " btn-lit" : "")}
+                onClick={() => setMode(mode === "modify" ? null : "modify")}
+              >
+                Modify
+              </button>
+            )}
             <button
               className={"btn btn-ghost" + (mode === "chat" ? " btn-lit" : "")}
               onClick={() => setMode(mode === "chat" ? null : "chat")}
