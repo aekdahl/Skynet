@@ -1023,7 +1023,7 @@ export function ProjectView({
             <span className="fold-caret">{folded ? "▸" : "▾"}</span>
             <span className="proj-delivery-title">LIVE PREVIEW</span>
             <span className="proj-delivery-sub">
-              aimed delivery · {lead.status === "done" ? "shipped" : "building"} · {lead.name}
+              merged work · {lead.status === "done" ? "shipped" : "building"} · {lead.name}
             </span>
           </button>
           {!folded && (
@@ -1141,37 +1141,30 @@ export function ProjectView({
         </div>
       )}
 
-      {previewOpen && <LivePreviewModal id={project.id} kind="project" title={"Live preview · " + project.name} onClose={() => setPreviewOpen(false)} />}
+      {previewOpen && <LivePreviewModal id={project.id} title={"Live preview · " + project.name} onClose={() => setPreviewOpen(false)} />}
     </section>
   );
 }
 
 // ─── Live preview modal (Phase-1 v0) ────────────────────────────────────────
-// Runs a web app (server-side, sandboxed) and iframes it here. Two callers:
-//   • PROJECT — the integration branch, refreshing as the fleet merges.
-//   • RUN ("Preview this change") — a single run's branch, PRE-merge, so an
-//     operator can verify a change before approving it. Pinned to the branch.
+// Runs the PROJECT's web app (server-side, sandboxed) and iframes it here — the
+// integration branch, refreshing as the fleet merges. It shows MERGED work only:
+// an in-flight run's changes appear once that run is approved and merged (there's
+// no per-run pre-merge preview — project level is the single, unambiguous view).
 // Polls status while open; the app runs on its own localhost origin so its code
 // can't reach the console. See docs/live-preview.md.
 const DEVICES: Record<string, number | null> = { Desktop: null, Tablet: 768, Mobile: 390 };
 
 export function LivePreviewModal({
   id,
-  kind,
   title,
   onClose,
 }: {
   id: string;
-  kind: "project" | "run";
   title: string;
   onClose: () => void;
 }) {
-  // Bind the four preview actions to the right surface (project vs run). Kept in
-  // a ref so the poll effect can stay keyed on the stable [id, kind].
-  const ctl =
-    kind === "run"
-      ? { status: () => api.runPreviewStatus(id), start: () => api.runPreviewStart(id), stop: () => api.runPreviewStop(id), restart: () => api.runPreviewRestart(id) }
-      : { status: () => api.previewStatus(id), start: () => api.previewStart(id), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
+  const ctl = { status: () => api.previewStatus(id), start: () => api.previewStart(id), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
   const ctlRef = useRef(ctl);
   ctlRef.current = ctl;
 
@@ -1201,7 +1194,7 @@ export function LivePreviewModal({
       alive = false;
       clearInterval(iv);
     };
-  }, [id, kind]);
+  }, [id]);
 
   // Reserve right-hand board space while docked (removed on close / when modal).
   useEffect(() => {
@@ -1246,6 +1239,12 @@ export function LivePreviewModal({
       <div className={"lp-modal lp-mode-" + mode} onClick={(e) => e.stopPropagation()}>
         <div className="lp-bar">
           <span className="lp-title">{title}</span>
+          <span
+            className="lp-scope mono"
+            title="Reflects the integration branch — merged changes only. An in-flight run's work appears here after it's approved and merged; unmerged/uncommitted changes aren't shown."
+          >
+            merged · integration branch
+          </span>
           <span className={"lp-status lp-status-" + (st?.status ?? "idle")}>
             {st?.status === "live" ? "● live" : st?.status === "starting" ? "◐ starting…" : st?.status === "failed" ? "✕ failed" : st?.status ?? "…"}
           </span>

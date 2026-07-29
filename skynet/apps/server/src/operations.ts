@@ -224,31 +224,6 @@ export class Operations {
     return projectPreview.refresh(projectId);
   }
 
-  // ── per-run pre-merge preview ("Preview this change") ─────────────────────
-  // Preview a single run's branch (`agent/<runId>`) BEFORE it merges, so an
-  // operator can verify the change visually. Scoped to the run's workspace; the
-  // run's project must have a local folder.
-  async runPreviewState(ws: string, runId: string): Promise<PreviewState> {
-    await this.getRun(ws, runId);
-    return projectPreview.state(`run:${runId}`);
-  }
-  private async runPreviewOpts(ws: string, runId: string) {
-    const run = await this.getRun(ws, runId);
-    const project = await this.getProject(ws, run.projectId);
-    if (!project.repoPath) throw new Error("This project has no local folder to preview.");
-    return { repoPath: project.repoPath, projectId: run.projectId, branch: run.branch, workspaceId: ws };
-  }
-  async runPreviewStart(ws: string, runId: string): Promise<PreviewState> {
-    return projectPreview.startRun(runId, await this.runPreviewOpts(ws, runId));
-  }
-  async runPreviewRestart(ws: string, runId: string): Promise<PreviewState> {
-    return projectPreview.restartRun(runId, await this.runPreviewOpts(ws, runId));
-  }
-  async runPreviewStop(ws: string, runId: string): Promise<PreviewState> {
-    await this.getRun(ws, runId);
-    return projectPreview.stop(`run:${runId}`);
-  }
-
   // ── HITL ──────────────────────────────────────────────────────────────────
   /** Resolve a HITL item and deliver the decision to the agent (idempotent). */
   async resolveHitl(ws: string, hitlId: string, input: ResolveRequest, operatorId: string): Promise<HitlItem> {
