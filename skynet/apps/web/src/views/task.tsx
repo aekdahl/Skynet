@@ -229,9 +229,7 @@ export function TaskDetail({
           ) : (
             <span className="hb">
               ♥ heartbeat{" "}
-              {q
-                ? fmtWait(waitedSecs(q, now))
-                : Math.floor(heartbeatSecs(agent, now)) + "s"}{" "}
+              {q ? fmtWait(waitedSecs(q, now)) : fmtWait(heartbeatSecs(agent, now))}{" "}
               ago
             </span>
           )}

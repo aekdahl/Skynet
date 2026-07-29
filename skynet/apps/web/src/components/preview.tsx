@@ -1,6 +1,6 @@
 import type { TaskRun, Project } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { agentsForProject, heartbeatSecs } from "../lib/derive";
+import { agentsForProject, fmtWait, heartbeatSecs } from "../lib/derive";
 
 // Live previews: the artifact each agent is building. The prototype keyed these
 // off fixed demo ids; here we render a faithful generic surface (terminal for
@@ -122,8 +122,8 @@ export function ProjectDelivery({ project }: { project: Project }) {
       (a) => a.status !== "done",
     );
     if (!pa.length) return "just now";
-    const hb = Math.floor(Math.min(...pa.map((a) => heartbeatSecs(a, now))));
-    return hb < 60 ? hb + "s ago" : Math.round(hb / 60) + "m ago";
+    const hb = Math.min(...pa.map((a) => heartbeatSecs(a, now)));
+    return fmtWait(hb) + " ago";
   })();
 
   return (
