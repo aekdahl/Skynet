@@ -32,6 +32,7 @@ import { modelValidForProvider } from "@skynet/shared";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
+import { normalizeCommand, rememberableRisk } from "./approval-policy.js";
 import { config, now } from "./config.js";
 import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
@@ -280,8 +281,31 @@ export class Operations {
     // wins in the Hub; a later resolve returns the existing item, unchanged `at`).
     if (resolved && resolved.resolution?.at === resolution.at) {
       await this.orchestrator.deliver(item, resolution);
+      // Approve-and-remember: add a standing "approve always" rule for this exact
+      // command to the project, so identical future commands auto-approve. Honored
+      // only for rememberable (low/medium, non-deny) commands — boundary/high-risk
+      // ops can never become a persistent auto-approval. De-duped by command.
+      if (input.remember && input.action === "approve" && item.kind === "approval" && item.command) {
+        await this.rememberApproval(item.runId, item.command, operatorId);
+      }
     }
     return resolved ?? item;
+  }
+
+  /** Add a standing "approve always" rule for `command` to the run's project, if
+   *  the command is rememberable (low/medium, non-deny) and not already stored.
+   *  Best-effort — a non-rememberable command or a missing project is a silent
+   *  no-op (the approval itself already succeeded). */
+  private async rememberApproval(runId: string, command: string, operatorId: string): Promise<void> {
+    const cap = rememberableRisk(command);
+    if (!cap) return; // high-risk / boundary ops can never become a standing rule
+    const run = await this.store.getRun(runId);
+    const project = run ? await this.store.getProject(run.projectId) : undefined;
+    if (!project) return;
+    const norm = normalizeCommand(command);
+    if (project.approvalRules.some((r) => normalizeCommand(r.command) === norm)) return; // de-dupe
+    const rule = { id: this.uid("ar"), command: norm, riskCap: cap, createdBy: operatorId, createdAt: now() };
+    await this.hub.upsertProject({ ...project, approvalRules: [...project.approvalRules, rule] });
   }
 
   // ── agent actions ───────────────────────────────────────────────────────
@@ -360,6 +384,8 @@ export class Operations {
       runIds: [],
       status: "active",
       autonomy: true,
+      approvalLevel: config.defaultApprovalLevel,
+      approvalRules: [],
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo,
@@ -382,6 +408,14 @@ export class Operations {
     const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     return updated;
+  }
+  /** Remove one standing "approve always" rule from a project (the operator
+   *  revoking a previously-remembered auto-approval). No-op if it's already gone. */
+  async removeApprovalRule(ws: string, id: string, ruleId: string): Promise<Project> {
+    const existing = await this.store.getProject(id);
+    if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
+    const approvalRules = (existing.approvalRules ?? []).filter((r) => r.id !== ruleId);
+    return this.hub.upsertProject({ ...existing, approvalRules });
   }
   /**
    * A repo-bound project with no local checkout is cloned in the BACKGROUND so

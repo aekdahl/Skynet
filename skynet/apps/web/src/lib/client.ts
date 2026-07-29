@@ -95,7 +95,7 @@ export function clearAudit() {
 // HITL
 export function resolveHitl(
   id: string,
-  body: { action: ResolveAction; optionIndex?: number; guidance?: string },
+  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean },
 ) {
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
 }
@@ -301,9 +301,13 @@ export function createProject(body: {
 }
 export function updateProject(
   id: string,
-  body: { name?: string; goal?: string; status?: string; autonomy?: boolean; repoPath?: string | null },
+  body: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string; repoPath?: string | null },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
+}
+/** Revoke one standing "approve always" rule from a project's approval policy. */
+export function removeApprovalRule(projectId: string, ruleId: string) {
+  return req<unknown>("DELETE", `/api/projects/${projectId}/approval-rules/${ruleId}`);
 }
 export function deleteProject(id: string) {
   return req<unknown>("DELETE", `/api/projects/${id}`);

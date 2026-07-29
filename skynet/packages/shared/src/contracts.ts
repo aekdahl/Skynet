@@ -149,6 +149,34 @@ export const TaskRun = z.object({
 });
 export type TaskRun = z.infer<typeof TaskRun>;
 
+// ─── Approval policy (agent-action gating) ──────────────────────────────────
+// How aggressively a project auto-approves an agent's GATED actions, so the
+// operator isn't asked to confirm every reversible in-sandbox command. The
+// medium/high line is the trust boundary: everything genuinely dangerous or
+// outward-facing (git push, merge, infra CLIs, destructive git) classifies as
+// high-risk or is hard-denied by command-safety, so it ALWAYS needs a human
+// regardless of level. Agents run in isolated worktrees, so low/medium commands
+// are reversible and contained until the (always-gated) diff review.
+//   manual   — gate every gated action (nothing auto-approved; today's behavior)
+//   assisted — auto-approve LOW-risk commands; gate medium/high
+//   trusted  — auto-approve LOW+MEDIUM commands; gate high (deny stays deny)
+export const ApprovalLevel = z.enum(["manual", "assisted", "trusted"]);
+export type ApprovalLevel = z.infer<typeof ApprovalLevel>;
+
+// A standing "approve always" allowance: an exact command the operator approved
+// once and chose to remember, so future identical commands auto-approve without
+// asking again. Bounded by the safety floor — a rule NEVER auto-approves a
+// command that classifies above `riskCap` or is hard-denied, and high-risk /
+// boundary commands can never be remembered in the first place.
+export const ApprovalRule = z.object({
+  id: z.string(),
+  command: z.string(), // normalized (whitespace-collapsed) command matched exactly
+  riskCap: Risk, // the command's risk when remembered — the ceiling this rule may auto-approve
+  createdBy: z.string(),
+  createdAt: Timestamp,
+});
+export type ApprovalRule = z.infer<typeof ApprovalRule>;
+
 // ─── Project · Task ───────────────────────────────────────────────────────
 
 export const Project = z.object({
@@ -161,6 +189,12 @@ export const Project = z.object({
   // When true, the autonomy loop may act on this project's tasks (triage,
   // auto-pick, auto-review). Off = the board is fully human-driven.
   autonomy: z.boolean().default(true),
+  // Agent-action approval policy (see ApprovalLevel). Defaults to `trusted` so
+  // reversible in-sandbox commands flow without a confirm each time; high-risk /
+  // boundary ops still gate. `approvalRules` are this project's standing
+  // "approve always" exact-command allowances (see ApprovalRule).
+  approvalLevel: ApprovalLevel.default("trusted"),
+  approvalRules: z.array(ApprovalRule).default([]),
   // A project binds to a repository one of two ways (they can coexist):
   //  • repoPath — an absolute local folder the runs work in. When it contains
   //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
@@ -346,6 +380,10 @@ export const ResolveRequest = z.object({
   action: ResolveAction,
   optionIndex: z.number().int().optional(),
   guidance: z.string().optional(),
+  // Approve-and-remember: on an `approve` of a command gate, add a standing
+  // "approve always" rule for this exact command to the project (only honored for
+  // rememberable — low/medium, non-deny — commands). Ignored otherwise.
+  remember: z.boolean().optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
 
@@ -385,6 +423,7 @@ export const UpdateProjectRequest = z.object({
   goal: z.string().optional(),
   status: ProjectStatus.optional(),
   autonomy: z.boolean().optional(),
+  approvalLevel: ApprovalLevel.optional(),
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
 });

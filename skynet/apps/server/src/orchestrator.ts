@@ -12,6 +12,7 @@ import {
 } from "@skynet/runner-sdk";
 import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
+import { decideAutoApproval } from "./approval-policy.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
@@ -289,6 +290,28 @@ export class Orchestrator {
       diff: raise.diff ?? null,
       flags,
     };
+    // Auto-approve a reversible, in-sandbox command gate per the project's
+    // approval policy (see approval-policy.ts), so the operator isn't asked to
+    // confirm every command. Boundary ops (high-risk / deny) and non-command
+    // gates fall through to a human. The gate is still raised + recorded, then
+    // immediately resolved through the normal path, so the audit trail shows
+    // exactly what was auto-approved and by which policy — nothing runs invisibly.
+    if (raise.kind === "approval") {
+      const project = await this.store.getProject(agent.projectId);
+      const auto = decideAutoApproval({
+        command: raise.command,
+        level: project?.approvalLevel ?? "trusted",
+        rules: project?.approvalRules ?? [],
+      });
+      if (auto) {
+        await this.hub.raiseHitl(item);
+        const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: auto.by, at: now() };
+        await this.hub.runLog(runId, `auto-approved (${auto.by}): ${item.command ?? item.title}`);
+        const resolved = await this.hub.resolveHitl(item.id, resolution);
+        if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(item, resolution);
+        return;
+      }
+    }
     await this.hub.raiseHitl(item);
     if (expiresAt != null) {
       this.questionTimers.set(item.id, setTimeout(() => void this.expireQuestion(item), timeout));

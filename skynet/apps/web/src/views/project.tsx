@@ -644,6 +644,7 @@ export function ProjectView({
     queue,
     tasks,
     updateProject,
+    removeApprovalRule,
     deleteProject,
     cloneProjectRepo,
     createTask,
@@ -736,6 +737,21 @@ export function ProjectView({
             )}
           </div>
           <div className="projview-head-tools">
+            <label
+              className="proj-approval"
+              title="How much an agent may run without asking. Dangerous or outward-facing steps (git push, merge, infra, destructive commands) always ask, regardless of this setting."
+            >
+              <span className="proj-approval-label mono">Approvals</span>
+              <select
+                className="proj-approval-select"
+                value={project.approvalLevel ?? "trusted"}
+                onChange={(e) => updateProject(project.id, { approvalLevel: e.target.value })}
+              >
+                <option value="manual">Manual · ask for everything</option>
+                <option value="assisted">Assisted · auto-approve low-risk</option>
+                <option value="trusted">Trusted · auto-approve low + medium</option>
+              </select>
+            </label>
             <label className="proj-autonomy" title="When on, agents autonomously triage backlog items, pick up auto-pick tasks, and review finished work.">
               <input
                 type="checkbox"
@@ -762,6 +778,24 @@ export function ProjectView({
               <button className="btn btn-ghost btn-retire" onClick={() => setConfirmDel(true)}>Delete</button>
             )}
           </div>
+        </div>
+      )}
+
+      {(project.approvalRules?.length ?? 0) > 0 && (
+        <div className="proj-approval-rules">
+          <span className="proj-approval-rules-label mono">Always allowed</span>
+          {project.approvalRules!.map((r) => (
+            <span key={r.id} className="approval-rule-chip mono" title={`auto-approved (${r.riskCap}-risk) in this project`}>
+              <span className="approval-rule-cmd">$ {r.command}</span>
+              <button
+                className="approval-rule-x"
+                title="Revoke — this command will ask again"
+                onClick={() => removeApprovalRule(project.id, r.id)}
+              >
+                ×
+              </button>
+            </span>
+          ))}
         </div>
       )}
 

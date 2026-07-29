@@ -353,6 +353,18 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Revoke one standing "approve always" rule from a project's approval policy.
+  app.delete<{ Params: { id: string; ruleId: string } }>(
+    "/api/projects/:id/approval-rules/:ruleId",
+    async (req, reply) => {
+      try {
+        return await ops.removeApprovalRule(ws(req), req.params.id, req.params.ruleId);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
   // Clone a GitHub-connected project's repo into a managed local checkout (for a
   // headless server with no folder to point at). Sets repoPath + gitBacked.
   app.post<{ Params: { id: string } }>("/api/projects/:id/clone", async (req, reply) => {

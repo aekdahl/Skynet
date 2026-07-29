@@ -129,6 +129,15 @@ export const config = {
   // runs. 0 disables it entirely (fully human-driven). Per-project autonomy
   // flag still gates each project.
   autonomyMs: Number(process.env.SKYNET_AUTONOMY_MS ?? 15_000),
+  // Default agent-action approval level for NEW projects (existing projects keep
+  // their stored level). See ApprovalLevel: `manual` gates every command,
+  // `assisted` auto-approves low-risk, `trusted` (default) auto-approves
+  // low+medium reversible in-sandbox commands while high-risk / boundary ops
+  // (push, merge, infra, destructive git) always gate. Env override:
+  // SKYNET_APPROVAL_LEVEL. An unrecognized value falls back to `trusted`.
+  defaultApprovalLevel: (["manual", "assisted", "trusted"].includes(process.env.SKYNET_APPROVAL_LEVEL ?? "")
+    ? process.env.SKYNET_APPROVAL_LEVEL
+    : "trusted") as "manual" | "assisted" | "trusted",
   // Auto-resolve window for an unanswered `question` HITL (ms). When an agent
   // asks the operator something (e.g. "I can't reproduce this — what's the
   // stack trace?") and no one answers within this window, the question is
