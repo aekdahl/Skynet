@@ -105,6 +105,7 @@ export interface Store extends StoreState {
   deleteTask: (projectId: string, taskId: string) => Promise<void>;
   archiveTask: (projectId: string, taskId: string, archived: boolean) => Promise<void>;
   moveTask: (projectId: string, taskId: string, direction: "up" | "down") => Promise<void>;
+  reorderTask: (projectId: string, taskId: string, beforeId: string | null) => Promise<void>;
   transitionTask: (projectId: string, taskId: string, to: string) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
@@ -391,6 +392,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       moveTask: async (projectId, taskId, direction) => {
         await api.moveTask(projectId, taskId, direction);
+      },
+      reorderTask: async (projectId, taskId, beforeId) => {
+        await api.reorderTask(projectId, taskId, beforeId);
       },
       transitionTask: async (projectId, taskId, to) => {
         try {

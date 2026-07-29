@@ -898,6 +898,16 @@ button.ct-seg { cursor: pointer; }
 .kb-backlog { border-style: dashed; }
 .kb-task { font-size: 13px; font-weight: 600; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .kb-card[role="button"] { cursor: pointer; }
+/* Board drag & drop — cards move between lanes (and reorder in backlog) instead
+   of clicking move buttons. */
+.kb-card[draggable="true"] { cursor: grab; }
+.kb-card[draggable="true"]:active { cursor: grabbing; }
+.kb-card-dragging { opacity: 0.4; }
+/* a lane that accepts the current drag lights up; ones that can't recede */
+.kb-col-drop-ok { outline: 2px dashed color-mix(in oklch, var(--accent), transparent 45%); outline-offset: -2px; background: color-mix(in oklch, var(--accent), transparent 94%); }
+.kb-dragging .kb-col-drop-no { opacity: 0.4; }
+/* insertion indicator between cards while reordering the backlog */
+.kb-drop-line { height: 2px; margin: -3px 2px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 6px color-mix(in oklch, var(--accent), transparent 35%); }
 .kb-assign {
   align-self: flex-start; background: none; border: none; padding: 0; cursor: pointer;
   font-family: var(--font-ui); font-size: 12px; font-weight: 500; color: var(--accent);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { TaskRun, Project, Task, TaskAssignment, Agent } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
@@ -19,6 +19,37 @@ import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
+
+// ─── Board drag & drop ───────────────────────────────────────────────────────
+// Cards are dragged between lanes instead of clicking move buttons. A drop that's
+// a legal human transition applies it; todo→ongoing starts the run; review→done
+// approves; a drop inside the backlog reorders. Illegal targets don't accept the
+// drop (validated here + enforced server-side).
+const KB_TRANSITIONS: Record<string, string[]> = {
+  backlog: ["triage"],
+  triage: ["todo", "backlog"],
+  todo: ["triage", "backlog"],
+  ongoing: ["todo"],
+  review: ["done", "todo"],
+  done: ["triage", "backlog"],
+};
+type DragInfo = { taskId: string; from: string; mode: TaskAssignment["mode"] };
+/** Whether the current drag may drop into lane `to`. Mirrors the server rules so
+ *  invalid lanes simply don't accept the drop (no bad request round-trip). */
+function laneAccepts(drag: DragInfo | null, to: string, noFleet: boolean): boolean {
+  if (!drag) return false;
+  const from = drag.from;
+  if (to === from) return from === "backlog"; // same lane → reorder (backlog only)
+  if (from === "todo" && to === "ongoing") return !noFleet; // "Start" needs an agent
+  if (from === "backlog" && to === "triage" && drag.mode === "unassigned") return false;
+  return (KB_TRANSITIONS[from] ?? []).includes(to);
+}
+const BoardDnd = createContext<{
+  drag: DragInfo | null;
+  begin: (d: DragInfo) => void;
+  end: () => void;
+  dropBeforeId: string | null;
+} | null>(null);
 
 /** Human-readable duration for the task-card ⏱ chip. Small ms values render
  *  as seconds; up to an hour as minutes; then hours (one decimal). */
@@ -134,10 +165,7 @@ function TaskCard({
     fleet,
     updateTask,
     deleteTask,
-    moveTask,
-    transitionTask,
     forceTaskDone,
-    assignTask,
     archiveTask,
   } = useStore();
   const [editing, setEditing] = useState(false);
@@ -146,13 +174,14 @@ function TaskCard({
   const [descDraft, setDescDraft] = useState(task.description ?? "");
   const pid = task.projectId;
   const s = task.state;
-  const move = (to: string) => transitionTask(pid, task.id, to);
   const q = run ? openQueue(queue).find((it) => it.runId === run.id) : undefined;
   const openRun = run ? () => onOpenTask(run.id) : undefined;
   // A card is always openable: a run card opens its live activity; a card with no
   // run opens a read-only detail modal (the card itself clamps title/description).
   const openCard = openRun ?? (() => setDetail(true));
   const noFleet = fleet.length === 0;
+  const dnd = useContext(BoardDnd);
+  const dragging = dnd?.drag?.taskId === task.id;
 
   if (editing) {
     return (
@@ -197,10 +226,25 @@ function TaskCard({
 
   return (
     <>
+    {dnd?.dropBeforeId === task.id && <div className="kb-drop-line" aria-hidden="true" />}
     <div
-      className={"kb-card kb-card-" + s}
+      className={"kb-card kb-card-" + s + (dragging ? " kb-card-dragging" : "")}
       role="button"
       tabIndex={0}
+      data-card-id={task.id}
+      draggable
+      onDragStart={(e) => {
+        // Don't hijack drags that begin on an inner control (select, buttons,
+        // inputs) — those stay clickable; only the card body starts a drag.
+        if ((e.target as HTMLElement).closest("input,select,textarea,button,label,a")) {
+          e.preventDefault();
+          return;
+        }
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", task.id);
+        dnd?.begin({ taskId: task.id, from: s, mode: task.assignment.mode });
+      }}
+      onDragEnd={() => dnd?.end()}
       onClick={openCard}
       onKeyDown={(e: React.KeyboardEvent) => (e.key === "Enter" || e.key === " ") && openCard()}
     >
@@ -209,12 +253,6 @@ function TaskCard({
         <span className="kb-task" title={task.description ?? undefined}>{task.text}</span>
         {(s === "backlog" || s === "triage" || s === "todo") && (
           <span className="kb-card-tools" onClick={stop}>
-            {s === "backlog" && (
-              <>
-                <button className="kb-tool" title="Move up" onClick={() => moveTask(pid, task.id, "up")}>↑</button>
-                <button className="kb-tool" title="Move down" onClick={() => moveTask(pid, task.id, "down")}>↓</button>
-              </>
-            )}
             <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>✎</button>
             <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
             <button className="kb-tool kb-tool-del" title="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
@@ -272,29 +310,13 @@ function TaskCard({
         </div>
       )}
 
-      <div className="kb-actions" onClick={stop}>
-        {s === "backlog" && (
-          <button
-            className="kb-move"
-            disabled={task.assignment.mode === "unassigned"}
-            title={
-              task.assignment.mode === "unassigned"
-                ? "Pick an agent (Any, or specific agents) before moving out of backlog."
-                : "Move to Triage"
-            }
-            onClick={() => move("triage")}
-          >
-            → Triage
-          </button>
-        )}
-        {s === "triage" && (
-          <>
-            <button className="kb-move kb-move-primary" onClick={() => move("todo")}>Approve → Todo</button>
-            <button className="kb-move" onClick={() => move("backlog")}>↩ Backlog</button>
-          </>
-        )}
-        {s === "todo" && (
-          <>
+      {/* Non-move controls only — stage changes happen by dragging the card to
+          another lane (todo→ongoing starts, review→done approves, backlog drags
+          reorder). The escape hatches (Force done / Sync), Auto-pick, and Archive
+          can't be expressed as a lane move, so they stay as buttons. */}
+      {(s === "todo" || s === "ongoing" || s === "review" || s === "done") && (
+        <div className="kb-actions" onClick={stop}>
+          {s === "todo" && (
             <label className="kb-autopick" title="When on, an idle agent starts this task autonomously.">
               <input
                 type="checkbox"
@@ -303,59 +325,32 @@ function TaskCard({
               />{" "}
               Auto-pick
             </label>
-            <button
-              className="kb-move kb-move-primary"
-              disabled={noFleet}
-              title={noFleet ? "Configure an agent in Fleet first." : "Start now on an idle agent"}
-              onClick={() => assignTask(pid, task.id)}
-            >
-              ▶ Start
-            </button>
-            <button className="kb-move" onClick={() => move("triage")}>↩ Triage</button>
-          </>
-        )}
-        {s === "ongoing" && (
-          <>
-            <button className="kb-move" onClick={() => move("todo")}>↩ Abandon</button>
+          )}
+          {(s === "ongoing" || s === "review") && (
             <button
               className="kb-move kb-move-force"
-              title="Skip the normal approval + merge path — mark this task done and sync the run's status. Use when the run has finished the work outside the fleet or is stuck."
+              title="Skip the normal approval path — mark this task done and sync the run's status. Use when the run finished the work out-of-band or is stuck."
               onClick={() => forceTaskDone(pid, task.id)}
             >
               ⚡ Force done
             </button>
-          </>
-        )}
-        {s === "review" && (
-          <>
-            <button className="kb-move kb-move-primary" onClick={() => move("done")}>✓ Approve → Done</button>
-            <button className="kb-move" onClick={() => move("todo")}>↩ Redo</button>
-            <button
-              className="kb-move kb-move-force"
-              title="Fallback if the normal approve → merge path fails (merge queue stuck, HITL wedged). Marks done and syncs the run's status; does NOT merge the branch."
-              onClick={() => forceTaskDone(pid, task.id)}
-            >
-              ⚡ Force done
-            </button>
-          </>
-        )}
-        {s === "done" && (
-          <>
-            <button className="kb-move" onClick={() => move("triage")}>↩ Triage</button>
-            <button className="kb-move" onClick={() => move("backlog")}>↩ Backlog</button>
-            {run && run.status !== "done" && (
-              <button
-                className="kb-move kb-move-force"
-                title={`Task is Done but the run's status is "${run.status}" — click to resync.`}
-                onClick={() => forceTaskDone(pid, task.id)}
-              >
-                ⚡ Sync run → done
-              </button>
-            )}
-            <button className="kb-archive" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓ Archive</button>
-          </>
-        )}
-      </div>
+          )}
+          {s === "done" && (
+            <>
+              {run && run.status !== "done" && (
+                <button
+                  className="kb-move kb-move-force"
+                  title={`Task is Done but the run's status is "${run.status}" — click to resync.`}
+                  onClick={() => forceTaskDone(pid, task.id)}
+                >
+                  ⚡ Sync run → done
+                </button>
+              )}
+              <button className="kb-archive" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓ Archive</button>
+            </>
+          )}
+        </div>
+      )}
       </div>
       {detail && (
         <div className="kb-detail-overlay" onClick={() => setDetail(false)}>
@@ -850,7 +845,40 @@ export function ProjectView({
     createTask,
     archiveAgent,
     archiveTask,
+    transitionTask,
+    assignTask,
+    reorderTask,
   } = useStore();
+  const noFleet = fleet.length === 0;
+  // Board drag state: the card being dragged + (for backlog reorder) the card it
+  // would drop before. Held here so lanes highlight + cards show the drop line.
+  const [drag, setDrag] = useState<DragInfo | null>(null);
+  const [dropBeforeId, setDropBeforeId] = useState<string | null>(null);
+  // The backlog card the pointer sits above → new task is inserted before it
+  // (null = end). Excludes the dragged card so it doesn't target itself.
+  const beforeIdAt = (laneEl: HTMLElement, clientY: number, draggedId: string): string | null => {
+    const cards = Array.from(laneEl.querySelectorAll<HTMLElement>("[data-card-id]")).filter(
+      (el) => el.getAttribute("data-card-id") !== draggedId,
+    );
+    for (const el of cards) {
+      const r = el.getBoundingClientRect();
+      if (clientY < r.top + r.height / 2) return el.getAttribute("data-card-id");
+    }
+    return null;
+  };
+  const performDrop = (to: string, e: React.DragEvent) => {
+    const d = drag;
+    if (!d || !laneAccepts(d, to, noFleet)) return;
+    if (to === d.from) {
+      if (d.from === "backlog") void reorderTask(project.id, d.taskId, beforeIdAt(e.currentTarget as HTMLElement, e.clientY, d.taskId));
+    } else if (d.from === "todo" && to === "ongoing") {
+      void assignTask(project.id, d.taskId); // "Start" on an idle agent
+    } else {
+      void transitionTask(project.id, d.taskId, to);
+    }
+    setDrag(null);
+    setDropBeforeId(null);
+  };
   // Per-project lens (Kanban is the default; Timeline mirrors Home's timeline
   // scoped to just this project). Persisted per-project in sessionStorage so
   // switching back to the project restores the last chosen lens.
@@ -1078,12 +1106,34 @@ export function ProjectView({
           <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
         </div>
       ) : (
-      <div className="kb-cols kb-cols-6">
+      <BoardDnd.Provider value={{ drag, begin: setDrag, end: () => { setDrag(null); setDropBeforeId(null); }, dropBeforeId }}>
+      <div className={"kb-cols kb-cols-6" + (drag ? " kb-dragging" : "")}>
         {TASK_STATES.map((st) => {
           const colTasks = tasksInState(tasks, project.id, st).filter((t) => !hidden(t));
           const meta = TASK_STATE_META[st];
+          const accepts = laneAccepts(drag, st, noFleet);
           return (
-            <div className={"kb-col kb-col-" + st} key={st}>
+            <div
+              className={
+                "kb-col kb-col-" + st +
+                (drag && accepts ? " kb-col-drop-ok" : "") +
+                (drag && !accepts && drag.from !== st ? " kb-col-drop-no" : "")
+              }
+              key={st}
+              onDragOver={(e) => {
+                if (!accepts) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                if (st === "backlog" && drag!.from === "backlog") {
+                  setDropBeforeId(beforeIdAt(e.currentTarget, e.clientY, drag!.taskId));
+                }
+              }}
+              onDrop={(e) => {
+                if (!accepts) return;
+                e.preventDefault();
+                performDrop(st, e);
+              }}
+            >
               <div className="kb-head" style={{ color: meta.color }}>
                 <span className="kb-pip" style={{ background: meta.color }} aria-hidden="true" />
                 {meta.label}
@@ -1098,13 +1148,15 @@ export function ProjectView({
                     onOpenTask={onOpenTask}
                   />
                 ))}
+                {st === "backlog" && drag?.from === "backlog" && dropBeforeId === null && <div className="kb-drop-line" aria-hidden="true" />}
                 {st === "backlog" && <AddTaskCard onAdd={(text, description) => createTask(project.id, text, description)} />}
-                {colTasks.length === 0 && st !== "backlog" && <div className="kb-empty">No tasks</div>}
+                {colTasks.length === 0 && st !== "backlog" && <div className="kb-empty">{accepts ? "Drop here" : "No tasks"}</div>}
               </div>
             </div>
           );
         })}
       </div>
+      </BoardDnd.Provider>
       )}
 
       <ProjectAssistant key={project.id} projectId={project.id} />

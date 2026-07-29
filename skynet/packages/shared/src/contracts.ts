@@ -470,6 +470,11 @@ export type UpdateTaskRequest = z.infer<typeof UpdateTaskRequest>;
 export const MoveTaskRequest = z.object({ to: TaskState });
 export type MoveTaskRequest = z.infer<typeof MoveTaskRequest>;
 
+// Drag-reorder within a lane (the backlog): place the task before `beforeId`, or
+// at the end when null. Distinct from the up/down MoveTaskRequest step.
+export const ReorderTaskRequest = z.object({ beforeId: z.string().nullable() });
+export type ReorderTaskRequest = z.infer<typeof ReorderTaskRequest>;
+
 export const ConfigureRunnerRequest = z.object({
   provider: ProviderId,
   model: z.string().min(1),
