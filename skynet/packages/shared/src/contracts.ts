@@ -124,6 +124,9 @@ export const TaskRun = z.object({
   status: TaskRunStatus,
   agentId: z.string().nullable(), // which fleet runner executes it
   provider: ProviderId,
+  // Which named credential the run authenticates with (copied from the agent at
+  // spawn). null → the provider's default credential (id === provider).
+  credentialId: z.string().nullable().default(null),
   model: z.string(),
   branch: z.string(),
   modules: z.array(z.string()), // architectural module ids it touches
@@ -262,6 +265,9 @@ export const Agent = z.object({
   workspaceId: z.string(),
   name: z.string(),
   provider: ProviderId,
+  // Which named credential this agent authenticates with. null → the provider's
+  // default credential (id === provider), i.e. the historical single-key path.
+  credentialId: z.string().nullable().default(null),
   model: z.string(),
   status: AgentStatus,
   idleSince: Timestamp.nullable().default(null),
@@ -411,6 +417,9 @@ export const ConfigureRunnerRequest = z.object({
   provider: ProviderId,
   model: z.string().min(1),
   name: z.string().optional(),
+  // Which named credential this agent authenticates with. Omit → the provider's
+  // default credential (id === provider).
+  credentialId: z.string().optional(),
 });
 export type ConfigureRunnerRequest = z.infer<typeof ConfigureRunnerRequest>;
 
@@ -425,20 +434,37 @@ export type UpdateRunnerRequest = z.infer<typeof UpdateRunnerRequest>;
 // ever sees this metadata (which provider has a key, and a last-4 fingerprint
 // so an operator can confirm which key is stored).
 
+// A named provider CREDENTIAL — a key + a display name for a given provider. A
+// provider can have several (e.g. "Claude — personal" and "Claude for Business"),
+// each with its own key; agents are built from one. `id` is the credential id an
+// agent references (Agent.credentialId). The DEFAULT credential per provider has
+// `id === provider` and `isDefault: true` — that's the historical single key, so
+// existing keys and agents keep working with no migration.
 export const SecretMeta = z.object({
+  id: z.string().default(""), // credential id (defaults to the provider for legacy rows)
+  name: z.string().default(""), // display name ("" → provider's catalog name)
   workspaceId: z.string(),
   provider: ProviderId,
+  isDefault: z.boolean().default(false),
   last4: z.string(), // last 4 chars of the key — for recognition, not reuse
   updatedAt: Timestamp,
   updatedBy: z.string(), // operator id — audit trail
 });
 export type SecretMeta = z.infer<typeof SecretMeta>;
 
-/** Body for setting/rotating a workspace's provider key. */
+/** Body for setting/rotating a credential's key. */
 export const SetSecretRequest = z.object({
   apiKey: z.string().min(1),
 });
 export type SetSecretRequest = z.infer<typeof SetSecretRequest>;
+
+/** Body for creating a NAMED credential (a "duplicate" of a provider). */
+export const CreateCredentialRequest = z.object({
+  provider: ProviderId,
+  name: z.string().min(1).max(60),
+  apiKey: z.string().min(1),
+});
+export type CreateCredentialRequest = z.infer<typeof CreateCredentialRequest>;
 
 // ─── GitHub integration ─────────────────────────────────────────────────────
 // A workspace connects via a GitHub *App* installation (least-privilege,

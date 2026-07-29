@@ -601,6 +601,7 @@ export class Operations {
       workspaceId: ws,
       name,
       provider: input.provider,
+      credentialId: input.credentialId ?? null,
       model: input.model,
       status: "idle",
       idleSince: now(),
