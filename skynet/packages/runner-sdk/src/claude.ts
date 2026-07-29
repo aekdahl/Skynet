@@ -83,12 +83,18 @@ export function isAutoAllowed(toolName: string): boolean {
   return AUTO_ALLOW.has(toolName);
 }
 
+// Map a Fleet model slug to what the Claude Code SDK expects. The friendly
+// catalog slugs (opus-*/sonnet-*/haiku-*/fable-*) map to the CLI aliases; ANY
+// other non-empty value passes through verbatim, so a model released after our
+// catalog — picked via the Fleet "custom model" option, e.g. a full id like
+// "claude-opus-4-9-…" — still reaches the SDK instead of being silently dropped.
+// Empty → undefined = the SDK's own default.
 const mapModel = (m: string): string | undefined =>
   m.startsWith("fable") ? "claude-fable-5"
     : m.startsWith("opus") ? "opus"
     : m.startsWith("sonnet") ? "sonnet"
     : m.startsWith("haiku") ? "haiku"
-    : undefined;
+    : m.trim() || undefined;
 
 // Build the env handed to the TaskRun SDK subprocess. `Options.env` REPLACES the
 // subprocess environment, so we spread the ambient env (PATH/HOME/…) and then
