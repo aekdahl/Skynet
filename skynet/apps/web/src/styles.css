@@ -1823,8 +1823,19 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .asst-propose-actions { display: flex; gap: 6px; }
 .asst-propose-done { font-size: 12.5px; color: var(--ok); }
 .asst-propose-done.muted { color: var(--faint); }
-.asst-input { display: flex; gap: 8px; }
+.asst-input { display: flex; gap: 8px; align-items: flex-end; }
 .asst-input .qx-input { flex: 1; }
+/* Auto-grow textarea: starts as a one-row input, expands into a text block as
+   Shift+Enter adds newlines. `resize: none` because it grows itself; hide the
+   overflow until the cap kicks in. `field-sizing` is a nicer future path but
+   Safari doesn't support it yet — style.height on change is the portable one. */
+.asst-textarea {
+  resize: none;
+  overflow-y: auto;
+  min-height: 38px;
+  max-height: 200px;
+  line-height: 1.4;
+}
 
 /* ── Live preview (Phase-1 v0) — split-screen dock or full modal ──────────── */
 .lp-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 2147483646; display: flex; align-items: center; justify-content: center; padding: 24px; }

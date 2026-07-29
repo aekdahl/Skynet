@@ -398,6 +398,7 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Typewriter smoothing: the server streams in coarse chunks (often whole
   // sentences), which reads as a stutter. We collect the received text in a ref
@@ -416,6 +417,13 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
 
   // Stop the typewriter loop if the view unmounts mid-stream.
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+  // Auto-grow was set on the DOM element imperatively (style.height); when the
+  // controlled value clears after send, reset it so the textarea snaps back to
+  // one row instead of staying tall.
+  useEffect(() => {
+    if (input === "" && inputRef.current) inputRef.current.style.height = "";
+  }, [input]);
 
   const paintLast = (content: string) =>
     setMsgs((m) => {
@@ -586,11 +594,28 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
               void ask(input);
             }}
           >
-            <input
-              className="qx-input"
-              placeholder="Ask about status, the roadmap, a file…"
+            <textarea
+              ref={inputRef}
+              // Enter submits (matches every other chat convention); Shift+Enter
+              // inserts a newline. rows=1 makes it start as a single-line input;
+              // auto-resize on change grows it into a text block as more lines
+              // are typed (capped so long paste doesn't eat the pane).
+              className="qx-input asst-textarea"
+              placeholder="Ask about status, the roadmap, a file…  (Shift+Enter for a new line)"
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              rows={1}
+              onChange={(e) => {
+                setInput(e.target.value);
+                const el = e.currentTarget;
+                el.style.height = "auto";
+                el.style.height = Math.min(el.scrollHeight, 200) + "px";
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  if (!busy && input.trim()) void ask(input);
+                }
+              }}
               disabled={busy}
             />
             <button className="btn btn-primary" type="submit" disabled={busy || !input.trim()}>
