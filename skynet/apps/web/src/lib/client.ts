@@ -74,9 +74,26 @@ export async function fetchSnapshot(): Promise<Snapshot> {
 }
 
 // Decision audit trail — resolved HITL decisions, newest first (W8).
+//
+// Parses each row INDEPENDENTLY (safeParse) and drops any that don't match the
+// current schema. A `.array().parse()` throws on the first bad row and blanks
+// the entire audit page — so one legacy record from an older schema (or from a
+// half-applied migration) makes it look like every approval was lost. Per-row
+// parse keeps the good rows visible; drops are logged so we can diagnose.
 export async function fetchAudit(): Promise<AuditRecord[]> {
   const raw = await req<unknown>("GET", "/api/audit");
-  return AuditRecord.array().parse(raw);
+  if (!Array.isArray(raw)) return [];
+  const out: AuditRecord[] = [];
+  for (const row of raw) {
+    const parsed = AuditRecord.safeParse(row);
+    if (parsed.success) out.push(parsed.data);
+    else {
+      const id = row && typeof row === "object" ? (row as { hitlId?: unknown }).hitlId : undefined;
+      const paths = parsed.error.issues.map((i) => i.path.join(".")).join(", ");
+      console.warn(`[audit] dropped invalid record ${String(id ?? "(no id)")}: ${paths}`);
+    }
+  }
+  return out;
 }
 // Audit maintenance — archive/restore + delete, per-record and bulk.
 export function archiveAudit(hitlId: string, archived: boolean) {
