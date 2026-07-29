@@ -1689,6 +1689,18 @@ export class Orchestrator {
     if (!freshHitl || freshHitl.resolvedAt) return; // already handled — defer
     const freshTask = await this.store.getTask(task.id);
     if (!freshTask || freshTask.state !== "review" || freshTask.runId !== task.runId) return;
+    // Record the auto-review on the run's live log so the operator can see WHO
+    // reviewed it (another agent, autonomously) and WHY — a short verdict line
+    // that folds open to the reviewer's full reasoning. Mirrors how a human's
+    // decision is auditable; here the reviewer is a fleet agent, not a person.
+    if (task.runId) {
+      const reviewer = agent.name || agent.id;
+      await this.hub.runLog(
+        task.runId,
+        `⟳ auto-reviewed by ${reviewer} — ${approve ? "approved (integrating)" : "flagged for a human"}`,
+        reason,
+      );
+    }
     if (approve) {
       const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "autonomy", at: now() };
       const resolved = await this.hub.resolveHitl(hitl.id, resolution);
