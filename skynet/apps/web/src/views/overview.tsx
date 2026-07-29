@@ -9,6 +9,7 @@ import {
   fmtWait,
   modName,
   openQueue,
+  projectShipped,
   waitedSecs,
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
@@ -30,7 +31,9 @@ function ProjectCard({
   const waiting = openQueue(queue).filter((q) =>
     pa.some((a) => a.id === q.runId),
   );
-  const allDone = pa.length > 0 && pa.every((a) => a.status === "done");
+  // "Shipped" = every task done (see projectShipped), not merely every run done —
+  // an unstarted backlog would otherwise badge the project shipped.
+  const allDone = projectShipped(tasks, project.id);
   const empty = pa.length === 0;
   const prog = pa.length
     ? pa.reduce((n, a) => n + a.progress, 0) / pa.length
