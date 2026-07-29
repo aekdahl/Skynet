@@ -546,6 +546,27 @@ export class Operations {
     }
     return (await this.store.getTask(tid))!;
   }
+  /** Drag-reorder within a state (the backlog): move `tid` to sit immediately
+   *  before `beforeId` (null = end), then renumber `order` 0..n-1. Same ordering
+   *  model as moveTask, but to an arbitrary position rather than one step. */
+  async reorderTask(ws: string, tid: string, beforeId: string | null): Promise<Task> {
+    const task = await this.store.getTask(tid);
+    if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    const rank = (t: Task) => t.order ?? 0;
+    const list = (await this.store.listTasks(ws))
+      .filter((t) => t.projectId === task.projectId && t.state === task.state)
+      .sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
+    const from = list.findIndex((t) => t.id === tid);
+    if (from < 0) return task;
+    list.splice(from, 1);
+    let to = beforeId ? list.findIndex((t) => t.id === beforeId) : -1;
+    if (to < 0) to = list.length; // unknown/self/none → append
+    list.splice(to, 0, task);
+    for (let i = 0; i < list.length; i++) {
+      if (rank(list[i]!) !== i) await this.hub.upsertTask({ ...list[i]!, order: i });
+    }
+    return (await this.store.getTask(tid))!;
+  }
   async deleteTask(ws: string, tid: string): Promise<void> {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");

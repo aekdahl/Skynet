@@ -17,6 +17,7 @@ import {
   UpdateRunnerRequest,
   UpdateTaskRequest,
   MoveTaskRequest,
+  ReorderTaskRequest,
 } from "@skynet/shared";
 import { readFile } from "node:fs/promises";
 import { authenticate, type Principal } from "./auth.js";
@@ -549,6 +550,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (direction !== "up" && direction !== "down") return reply.code(400).send({ error: "direction must be 'up' or 'down'" });
     try {
       return await ops.moveTask(ws(req), req.params.tid, direction);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Drag-reorder a task to an arbitrary backlog position (before `beforeId`, or end).
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/reorder", async (req, reply) => {
+    const body = ReorderTaskRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.reorderTask(ws(req), req.params.tid, body.data.beforeId);
     } catch (err) {
       return fail(reply, err);
     }

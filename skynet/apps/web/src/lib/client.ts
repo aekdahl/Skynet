@@ -499,6 +499,10 @@ export function forceTaskDone(projectId: string, taskId: string) {
 export function moveTask(projectId: string, taskId: string, direction: "up" | "down") {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/move`, { direction });
 }
+/** Drag-reorder a task to sit before `beforeId` in its lane (null = end). */
+export function reorderTask(projectId: string, taskId: string, beforeId: string | null) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/reorder`, { beforeId });
+}
 
 // Fleet
 export function createAgent(body: { provider: string; model: string; name?: string }) {
