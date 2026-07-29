@@ -33,6 +33,7 @@ import type { Orchestrator } from "../orchestrator.js";
 import { prefetchProjectDocs } from "../project-assistant.js";
 import { TelegramClient } from "./client.js";
 import { decide } from "./commands.js";
+import { gateNotice, reviewNotice, completedNotice, type Names } from "./notices.js";
 import {
   buildContext,
   INTENT_SYSTEM_PROMPT,
@@ -798,34 +799,63 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
   };
 
   // ── Outbound: push workspace events to the owner ──────────────────────────
+  // Notifications lead with human names — a run's task title + its project — not
+  // the raw ids that made these unreadable ("Run pin-the-node-docker-image-to-a-
+  // d-1 needs attention"). Best-effort lookups: on failure we fall back to the id.
+  const nameOf = async (runId: string): Promise<Names> => {
+    const run = await operations.getRun(ws, runId).catch(() => null);
+    if (!run) return { run: runId, project: "" };
+    const project = await operations.getProject(ws, run.projectId).catch(() => null);
+    return { run: run.name || runId, project: project?.name ?? "" };
+  };
+
+  // De-dupe run notices: only push when a run's status actually CHANGES, so a run
+  // that re-emits "review" doesn't send the same line three times (the reported
+  // spam). A gate raise also records "review" so we never double-notify a review.
+  const lastNotice = new Map<string, string>();
+
+  const announceGate = async (it: HitlItem): Promise<void> => {
+    lastNotice.set(it.runId, "review"); // the gate IS the review heads-up
+    const opts = config.telegramControl
+      ? {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "✓ Approve", callback_data: `hitl:approve:${it.id}` },
+              { text: "✕ Reject", callback_data: `hitl:reject:${it.id}` },
+            ]],
+          },
+        }
+      : undefined;
+    await notify(gateNotice(it, await nameOf(it.runId), config.telegramControl), opts);
+  };
+
+  const announceReview = (runId: string): void => {
+    if (lastNotice.get(runId) === "review") return; // already flagged (gate or prior review)
+    lastNotice.set(runId, "review");
+    // A gate for this run (diff/merge/escalation) is raised right AFTER the status
+    // flips to review; wait a beat, then only ping if NO gate covers it — otherwise
+    // the richer, actionable gate notice already went out. This is the case where a
+    // run parks in review with nothing to tap (e.g. a flagged auto-review).
+    setTimeout(() => {
+      void (async () => {
+        const covered = (await operations.listHitl(ws).catch(() => []))
+          .some((g) => g.runId === runId && !g.resolvedAt);
+        if (covered) return;
+        await notify(reviewNotice(await nameOf(runId)));
+      })();
+    }, 700);
+  };
+
   const handler = (event: ServerEvent): void => {
     if (event.type === "hitl.raised") {
-      const it = event.item;
-      const lines = [`🔔 Gate ${it.id} (${it.kind}, risk ${it.risk}): ${it.title}`];
-      if (it.command) lines.push(it.command);
-      // Buttons only when control is enabled — a tap would be denied at the
-      // handleCallback layer anyway, but not showing them keeps the UI honest.
-      // Slash-command hint still shown as a fallback (phones with old cache, etc.).
-      if (config.telegramControl) {
-        lines.push("Tap Approve/Reject below (or reply /approve or /reject).");
-      } else {
-        lines.push(`reply /approve ${it.id} or /reject ${it.id}`);
-      }
-      const opts = config.telegramControl
-        ? {
-            reply_markup: {
-              inline_keyboard: [[
-                { text: "✓ Approve", callback_data: `hitl:approve:${it.id}` },
-                { text: "✕ Reject", callback_data: `hitl:reject:${it.id}` },
-              ]],
-            },
-          }
-        : undefined;
-      void notify(lines.join("\n"), opts);
+      void announceGate(event.item);
     } else if (event.type === "run.status" && event.status === "review") {
-      void notify(`⚠︎ Run ${event.runId} needs attention`);
+      announceReview(event.runId);
     } else if (event.type === "run.completed") {
-      void notify(`✅ Run ${event.runId} merged/done`);
+      lastNotice.set(event.runId, "done");
+      void (async () => {
+        await notify(completedNotice(await nameOf(event.runId)));
+      })();
     }
   };
   // Scope to the SAME workspace the web/admin uses. `config.adminWorkspace` is
