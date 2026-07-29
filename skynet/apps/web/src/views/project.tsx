@@ -14,6 +14,7 @@ import {
 import { Bar, StatusDot } from "../components/common";
 import { ProjectDelivery, visualLeadOf } from "../components/preview";
 import { Markdown } from "../components/markdown";
+import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -855,6 +856,13 @@ export function ProjectView({
               onOpen={() => onOpenTask(it.runId)}
             />
           ))}
+        </div>
+      )}
+
+      {agentsForProject(runs, project.id).length > 0 && (
+        <div className="projview-line">
+          <div className="panel-head">PROJECT LINE</div>
+          <SwDiagram project={project} onOpenTask={onOpenTask} />
         </div>
       )}
 
