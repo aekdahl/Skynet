@@ -65,7 +65,7 @@ export interface Store extends StoreState {
   resolveHitl: (
     id: string,
     action: ResolveAction,
-    extra?: { optionIndex?: number; guidance?: string },
+    extra?: { optionIndex?: number; guidance?: string; remember?: boolean },
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
@@ -77,11 +77,16 @@ export interface Store extends StoreState {
   // Local optimistic flip after a key is set/cleared in Settings (the snapshot
   // recomputes availability from the secret store on next load).
   setProviderAvailable: (id: string, available: boolean) => void;
-  createProject: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => Promise<void>;
+  createProject: (
+    name: string,
+    goal: string,
+    opts?: { repo?: string; repoPath?: string; createRepo?: { name: string; private: boolean; owner?: string } },
+  ) => Promise<void>;
   updateProject: (
     id: string,
-    patch: { name?: string; goal?: string; status?: string; autonomy?: boolean },
+    patch: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string },
   ) => Promise<void>;
+  removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   cloneProjectRepo: (id: string) => Promise<void>;
   createTask: (projectId: string, text: string, description?: string) => Promise<void>;
@@ -93,6 +98,7 @@ export interface Store extends StoreState {
   deleteTask: (projectId: string, taskId: string) => Promise<void>;
   moveTask: (projectId: string, taskId: string, direction: "up" | "down") => Promise<void>;
   transitionTask: (projectId: string, taskId: string, to: string) => Promise<void>;
+  forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   createAgent: (provider: string, model: string, name?: string) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string }) => Promise<void>;
@@ -347,10 +353,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }));
       },
       createProject: async (name, goal, opts) => {
-        await api.createProject({ name, goal, repo: opts?.repo, repoPath: opts?.repoPath });
+        await api.createProject({
+          name,
+          goal,
+          repo: opts?.repo,
+          repoPath: opts?.repoPath,
+          createRepo: opts?.createRepo,
+        });
       },
       updateProject: async (id, patch) => {
         await api.updateProject(id, patch);
+      },
+      removeApprovalRule: async (projectId, ruleId) => {
+        await api.removeApprovalRule(projectId, ruleId);
       },
       deleteProject: async (id) => {
         await api.deleteProject(id);
@@ -374,6 +389,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await api.transitionTask(projectId, taskId, to);
         } catch (e) {
           if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't move the task."));
+        }
+      },
+      forceTaskDone: async (projectId, taskId) => {
+        try {
+          await api.forceTaskDone(projectId, taskId);
+        } catch (e) {
+          if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't force the task done."));
         }
       },
       deleteTask: async (projectId, taskId) => {

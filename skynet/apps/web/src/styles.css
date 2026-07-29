@@ -383,6 +383,22 @@ kbd {
 .log-foldable > summary { cursor: pointer; color: var(--muted); }
 .log-foldable > summary:hover { color: var(--text); }
 .log-detail { margin: 4px 0 6px 14px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line-soft); border-radius: 6px; color: var(--faint); white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow: auto; font-size: 11.5px; }
+/* Conversation turns inside the log — operator + agent bubbles interleaved with
+   telemetry, so the log reads as one timeline you can also talk in. */
+.log-turn { display: flex; flex-direction: column; gap: 3px; max-width: 88%; margin: 5px 0; padding: 8px 11px; border-radius: 10px; font-family: var(--font-ui); font-size: 13px; line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+.log-turn-agent { align-self: flex-start; background: var(--raised); border: 1px solid var(--line-soft); }
+.log-turn-you { align-self: flex-end; background: color-mix(in oklch, var(--accent), transparent 88%); border: 1px solid color-mix(in oklch, var(--accent), transparent 70%); }
+.log-who { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.log-turn-you .log-who { color: var(--accent); }
+.log-turn-text .log-cursor { margin-left: 1px; }
+/* Respond-here footer: decision quick-actions (when waiting) + composer */
+.log-compose { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.log-compose-blocked { margin: 12px -14px -14px; padding: 12px 14px; border-top: 1px solid var(--warn); background: color-mix(in oklch, var(--warn), transparent 93%); border-radius: 0 0 12px 12px; }
+.log-decision { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.log-decision-title { font-size: 13px; color: var(--text); font-weight: 500; min-width: 0; }
+.log-decision-actions { display: inline-flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.log-composer { display: flex; gap: 8px; }
+.log-composer .qx-line { flex: 1; }
 @media (prefers-reduced-motion: no-preference) {
   .log-cursor { animation: blink 1.1s step-end infinite; }
   @keyframes blink { 50% { opacity: 0; } }
@@ -831,7 +847,8 @@ button.ct-seg { cursor: pointer; }
   font-family: var(--font-ui); color: var(--text); text-align: left;
 }
 .kb-backlog { border-style: dashed; }
-.kb-task { font-size: 13px; font-weight: 600; line-height: 1.4; }
+.kb-task { font-size: 13px; font-weight: 600; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.kb-card[role="button"] { cursor: pointer; }
 .kb-assign {
   align-self: flex-start; background: none; border: none; padding: 0; cursor: pointer;
   font-family: var(--font-ui); font-size: 12px; font-weight: 500; color: var(--accent);
@@ -899,6 +916,9 @@ button.kb-done:hover { opacity: 1; }
 .kb-move:hover:not(:disabled) { border-color: var(--border); }
 .kb-move:disabled { color: var(--faint); cursor: not-allowed; }
 .kb-move-primary { color: var(--accent); border-color: color-mix(in oklch, var(--accent), transparent 55%); }
+/* Escape-hatch: forces a task done bypassing the normal review/merge path.
+   Muted amber so it reads as "use sparingly" without competing with the primary. */
+.kb-move-force { color: var(--warn); border-color: color-mix(in oklch, var(--warn), transparent 60%); }
 .kb-autopick { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); cursor: pointer; }
 /* agent-eligibility picker (who may take a task) */
 .kb-elig { display: flex; flex-direction: column; gap: 5px; margin: 2px 0; min-width: 0; }
@@ -920,6 +940,16 @@ button.kb-done:hover { opacity: 1; }
 .proj-autonomy-cb:checked + .proj-autonomy-switch::after { transform: translateX(14px); background: var(--bg); }
 .proj-autonomy-cb:focus-visible + .proj-autonomy-switch { outline: 2px solid var(--accent); outline-offset: 2px; }
 .proj-autonomy-label { font-weight: 500; }
+/* Approval-level selector + standing "always allowed" rules */
+.proj-approval { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-right: 4px; }
+.proj-approval-label { font-size: 11px; color: var(--faint); letter-spacing: 0.03em; }
+.proj-approval-select { font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; }
+.proj-approval-rules { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0; }
+.proj-approval-rules-label { font-size: 11px; color: var(--faint); letter-spacing: 0.03em; margin-right: 2px; }
+.approval-rule-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; font-size: 11.5px; padding: 2px 4px 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--raised); color: var(--muted); }
+.approval-rule-cmd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+.approval-rule-x { border: none; background: none; color: var(--faint); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+.approval-rule-x:hover { color: var(--danger); }
 .kb-archive:hover { color: var(--text); background: var(--raised); }
 
 /* project-level Archived section */
@@ -1163,7 +1193,17 @@ button.kb-done:hover { opacity: 1; }
 .detail-desc { margin: var(--sp) 0 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; }
 .detail-desc-label { font-size: 10px; font-weight: 600; letter-spacing: 0.16em; color: var(--faint); margin-bottom: 5px; }
 .detail-desc-body { margin: 0; font-size: 13px; line-height: 1.55; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
-.kb-desc { margin: 2px 0 0; font-size: 11.5px; line-height: 1.45; color: var(--faint); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.kb-desc { margin: 2px 0 0; font-size: 11.5px; line-height: 1.45; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+/* Full-detail modal — a clamped card opens this to show the whole title + brief. */
+.kb-detail-overlay { position: fixed; inset: 0; z-index: 60; background: color-mix(in oklch, #000, transparent 40%); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.kb-detail { width: min(640px, 100%); max-height: 80vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px 22px; cursor: default; }
+.kb-detail-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.kb-detail-state { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.kb-detail-close { background: none; border: none; color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.kb-detail-close:hover { color: var(--text); }
+.kb-detail-title { margin: 0 0 12px; font-size: 17px; font-weight: 600; line-height: 1.35; color: var(--text); }
+.kb-detail-desc { margin: 0; font-size: 13px; line-height: 1.6; color: var(--muted); white-space: pre-wrap; }
+.kb-detail-empty { font-style: italic; color: var(--faint); }
 .task-name-wrap { position: relative; }
 .task-name-wrap .qx-input { padding-right: 58px; }
 .task-name-count { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 10px; color: var(--faint); pointer-events: none; }
@@ -1174,8 +1214,6 @@ button.kb-done:hover { opacity: 1; }
 
 /* ===== agent chat ===== */
 .detail-blocked-hint { font-size: 11px; color: var(--faint); padding: 8px 2px 0; }
-.panel-chat { margin-top: var(--sp); display: flex; flex-direction: column; gap: 10px; }
-.panel-chat .qx-thread { max-height: 260px; }
 
 .detail-blocked-wrap { display: flex; flex-direction: column; gap: 0; }
 .detail-modify { background: var(--panel); border: 1px solid var(--line); border-top: none; border-radius: 0 0 10px 10px; padding: 14px; margin-top: -4px; }
@@ -1391,6 +1429,8 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .cfg-prov-btn.on { color: var(--text); }
 .cfg-models { display: flex; flex-wrap: wrap; gap: 8px; }
 .cfg-model-btn.on { background: var(--accent); border-color: var(--accent); color: #0B0D11; font-weight: 600; }
+.cfg-model-custom { margin-top: 8px; width: 100%; font-family: var(--mono, monospace); }
+.cfg-model-note { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
 
 /* ===== home: monitor shell ===== */
 .home { position: relative; z-index: 1; }
@@ -1673,6 +1713,25 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .rp-note { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
 .rp-link { color: var(--accent); text-decoration: none; }
 .rp-link:hover { text-decoration: underline; }
+
+/* New-project binding-mode selector (folder / existing repo / new repo) */
+.np-modes { display: inline-flex; gap: 2px; padding: 3px; background: var(--raised); border: 1px solid var(--line); border-radius: 9px; align-self: flex-start; }
+.np-mode { font-family: var(--font-ui); font-size: 12px; color: var(--muted); background: none; border: 0; border-radius: 7px; padding: 5px 11px; cursor: pointer; white-space: nowrap; }
+.np-mode:hover { color: var(--text); }
+.np-mode-on { background: var(--panel); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.25); }
+/* New-repo fields */
+.np-newrepo { display: flex; flex-direction: column; gap: 10px; }
+.np-newrepo-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.np-owner { flex: 0 1 auto; width: auto; max-width: 45%; }
+.np-slash { color: var(--faint); font-family: var(--font-mono); }
+.np-reponame { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono); }
+.np-private { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; align-self: flex-start; }
+.np-private-label { font-size: 12.5px; color: var(--muted); }
+/* Confirm gate before creating a real repo */
+.np-confirm { display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--warn); border-radius: 10px; padding: 12px; background: color-mix(in oklch, var(--warn), transparent 92%); }
+.np-confirm-text { font-size: 13px; line-height: 1.5; color: var(--text); margin: 0; }
+.np-confirm-repo { font-family: var(--font-mono); font-size: 12.5px; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+.np-error { font-size: 12.5px; color: var(--danger); }
 .proj-repo { color: var(--faint); font-size: 11px; margin: 2px 0 8px; }
 .proj-repo-line { color: var(--faint); font-size: 12px; margin-top: 4px; }
 .proj-clone { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
@@ -1768,10 +1827,44 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .asst-user .asst-who { color: var(--accent); }
 .asst-text { font-size: 13.5px; line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
 .asst-user .asst-text { color: var(--muted); }
+/* Assistant replies render as markdown — tighten the doc-scale spacing so it
+   reads as a compact chat bubble, and drop the pre-wrap (blocks handle layout). */
+.asst-md { white-space: normal; }
+.asst-md .md { font-size: 13.5px; line-height: 1.55; color: var(--ink); }
+.asst-md .md > :first-child { margin-top: 0; }
+.asst-md .md > :last-child { margin-bottom: 0; }
+.asst-md .md p { margin: 6px 0; color: var(--ink); }
+.asst-md .md h1 { font-size: 15px; margin: 10px 0 6px; }
+.asst-md .md h2 { font-size: 14px; margin: 12px 0 6px; padding-top: 10px; }
+.asst-md .md h3 { font-size: 13.5px; margin: 10px 0 4px; }
+.asst-md .md ul, .asst-md .md ol { margin: 6px 0; padding-left: 18px; color: var(--ink); }
+.asst-md .md li { margin: 3px 0; }
+.asst-md .md hr { margin: 10px 0; }
 .asst-think { color: var(--faint); font-style: italic; }
 .asst-err { font-size: 12.5px; color: var(--danger); }
-.asst-input { display: flex; gap: 8px; }
+/* Confirm-before-create chip under an assistant message that proposed a task. */
+.asst-propose {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 6px; padding: 8px 10px;
+  background: var(--raised); border: 1px solid var(--line); border-radius: 7px;
+}
+.asst-propose-label { font-size: 12.5px; color: var(--ink); flex: 1; min-width: 0; }
+.asst-propose-actions { display: flex; gap: 6px; }
+.asst-propose-done { font-size: 12.5px; color: var(--ok); }
+.asst-propose-done.muted { color: var(--faint); }
+.asst-input { display: flex; gap: 8px; align-items: flex-end; }
 .asst-input .qx-input { flex: 1; }
+/* Auto-grow textarea: starts as a one-row input, expands into a text block as
+   Shift+Enter adds newlines. `resize: none` because it grows itself; hide the
+   overflow until the cap kicks in. `field-sizing` is a nicer future path but
+   Safari doesn't support it yet — style.height on change is the portable one. */
+.asst-textarea {
+  resize: none;
+  overflow-y: auto;
+  min-height: 38px;
+  max-height: 200px;
+  line-height: 1.4;
+}
 
 /* ── Live preview (Phase-1 v0) — split-screen dock or full modal ──────────── */
 .lp-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 2147483646; display: flex; align-items: center; justify-content: center; padding: 24px; }
@@ -1806,8 +1899,28 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .lp-ph-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--faint); flex: none; }
 .lp-ph-dot.lp-status-starting { background: var(--warn); }
 .lp-ph-dot.lp-status-failed { background: var(--danger, #e66); }
+/* Placeholder message + command wrap so a long path/error never overflows. */
 .lp-ph-msg { font-size: 13px; max-width: 60ch; text-align: center; word-break: break-word; }
 .lp-ph-cmd { font-size: 11px; color: var(--faint); word-break: break-all; }
-/* Logs: a resizable, scrollable region (drag the bottom edge). Long lines wrap
-   so nothing overflows horizontally; vertical scroll handles length. */
-.lp-logs { flex: 0 0 auto; height: 200px; min-height: 72px; max-height: 60%; resize: vertical; overflow: auto; margin: 0; padding: 10px 12px; font-size: 11px; line-height: 1.5; color: var(--muted); background: var(--bg); border-top: 1px solid var(--line-soft); white-space: pre-wrap; word-break: break-word; }
+/* Concrete height (not a % that collapses when the flex parent's height is
+   indefinite, e.g. on a failed preview — which left the pre unbounded + clipped
+   with no scroll region). flex:none holds the height; resize lets the operator
+   drag it taller; overflow:auto gives a real scrollbar; word-break wraps long
+   tokens so nothing overflows horizontally. */
+.lp-logs {
+  flex: none;
+  height: 200px;
+  min-height: 80px;
+  max-height: 80vh;
+  overflow: auto;
+  resize: vertical;
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  background: var(--bg);
+  border-top: 1px solid var(--line-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

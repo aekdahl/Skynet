@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import {
@@ -19,65 +19,13 @@ import { PreviewFor } from "../components/preview";
 import { HitlContext, RiskChip } from "../components/hitl-context";
 import { LivePreviewModal } from "./project";
 
-function AgentChat({ agent }: { agent: TaskRun }) {
-  const { streamAgentMessage } = useStore();
-  const now = agent.plan.find((p) => p.state === "now");
-  const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
-  const [draft, setDraft] = useState("");
-  const send = async () => {
-    if (!draft.trim()) return;
-    const text = draft.trim();
-    // Operator line + an empty agent bubble the stream fills in-place.
-    setMsgs((m) => [...m, { who: "you", text }, { who: "agent", text: "" }]);
-    setDraft("");
-    const appendToLast = (chunk: string) =>
-      setMsgs((m) => {
-        const next = [...m];
-        const last = next[next.length - 1];
-        if (last && last.who === "agent") next[next.length - 1] = { who: "agent", text: last.text + chunk };
-        return next;
-      });
-    try {
-      await streamAgentMessage(agent.id, text, appendToLast);
-    } catch {
-      appendToLast("(couldn't get a reply)");
-    }
-  };
-  return (
-    <div className="panel panel-chat">
-      <div className="panel-head">
-        CHAT <span className="panel-sub">discuss the task — agent keeps working</span>
-      </div>
-      <div className="qx-thread">
-        <div className="qx-msg qx-agent">
-          <span className="qx-who mono">{agent.name}</span>
-          {agent.status === "done"
-            ? "This task is merged. Ask me anything about what shipped."
-            : 'Currently on “' +
-              (now ? now.text : "…") +
-              '”. Ask about my approach or redirect me — I’ll keep working meanwhile.'}
-        </div>
-        {msgs.map((m, i) => (
-          <div key={i} className={"qx-msg " + (m.who === "you" ? "qx-you" : "qx-agent")}>
-            <span className="qx-who mono">{m.who === "you" ? "you" : agent.name}</span>
-            {m.text}
-          </div>
-        ))}
-      </div>
-      <div className="qx-row">
-        <input
-          className="qx-input qx-line"
-          placeholder="Message the agent…"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-        />
-        <button className="btn" onClick={send}>
-          Send
-        </button>
-      </div>
-    </div>
-  );
+// A log line is either a conversation turn (the orchestrator records chat as
+// `you: …` and the agent's reply as `↳ …`) or plain telemetry. Classifying here
+// lets the LIVE LOG render as one chronological conversation+telemetry stream.
+function chatTurn(line: string): { who: "you" | "agent"; text: string } | null {
+  if (line.startsWith("you: ")) return { who: "you", text: line.slice(5) };
+  if (line.startsWith("↳ ")) return { who: "agent", text: line.slice(2) };
+  return null;
 }
 
 // The runner logs its final prose answer as a plain log line (no ▸/↳/marker).
@@ -140,31 +88,53 @@ export function TaskDetail({
   // The backing task's longer description (the run's name is the short task text).
   const taskDesc = tasks.find((t) => t.runId === agent.id)?.description ?? null;
   const doneCount = planDone(agent);
-  const [mode, setMode] = useState<null | "modify" | "chat">(null);
   const [draft, setDraft] = useState("");
-  const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
+  const [showDiff, setShowDiff] = useState(false);
+  // In-flight assistant reply for the chat path — streamed here so it types in
+  // live, then dropped once the persisted `↳` line lands in the log (below).
+  const [streaming, setStreaming] = useState<string | null>(null);
+  const logRef = useRef<HTMLDivElement>(null);
 
   const conflictMods = conflictModulesForAgent(agent, runs);
   const conflictMod = conflictMods[0];
   const answer = finalAnswer(agent);
 
+  // Keep the conversation pinned to the newest entry as it grows / streams.
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [agent.log, streaming]);
+
+  // Once the streamed reply is persisted to the log, drop the transient bubble
+  // so it isn't shown twice.
+  useEffect(() => {
+    if (streaming == null) return;
+    for (let i = agent.log.length - 1; i >= 0; i--) {
+      const t = chatTurn(agent.log[i]?.line ?? "");
+      if (t?.who === "agent") {
+        if (t.text.trim() === streaming.trim()) setStreaming(null);
+        break;
+      }
+    }
+  }, [agent.log, streaming]);
+
+  // The single composer. When the agent is waiting on a decision (q), the reply
+  // is delivered as guidance that RESUMES the same agent (the actionable path).
+  // Otherwise it's a chat message — relayed live to a running agent, or answered
+  // from the log for a finished one.
   const send = async () => {
-    if (!draft.trim()) return;
     const text = draft.trim();
-    // Operator line + an empty agent bubble the stream fills in-place.
-    setMsgs((m) => [...m, { who: "you", text }, { who: "agent", text: "" }]);
+    if (!text) return;
+    if (q) {
+      resolveHitl(q.id, "modify", { guidance: text });
+      setDraft("");
+      return;
+    }
     setDraft("");
-    const appendToLast = (chunk: string) =>
-      setMsgs((m) => {
-        const next = [...m];
-        const last = next[next.length - 1];
-        if (last && last.who === "agent") next[next.length - 1] = { who: "agent", text: last.text + chunk };
-        return next;
-      });
+    setStreaming("");
     try {
-      await streamAgentMessage(agent.id, text, appendToLast);
+      await streamAgentMessage(agent.id, text, (chunk) => setStreaming((s) => (s ?? "") + chunk));
     } catch {
-      appendToLast("(couldn't get a reply)");
+      setStreaming((s) => (s ?? "") + " (couldn't get a reply)");
     }
   };
 
@@ -288,121 +258,6 @@ export function TaskDetail({
         </div>
       )}
 
-      {q && (
-        <div className="detail-blocked-wrap">
-          <div className="detail-blocked">
-            <span
-              className="kind-chip"
-              style={{
-                color: KIND_META[q.kind].color,
-                borderColor: KIND_META[q.kind].color,
-              }}
-            >
-              {KIND_META[q.kind].label}
-            </span>
-            <span className="detail-blocked-title">{q.title}</span>
-            <RiskChip risk={q.risk} />
-            <span className="qcard-wait">{fmtWait(waitedSecs(q, now))}</span>
-            {q.options ? (
-              q.options.map((opt, i) => (
-                <button
-                  key={i}
-                  className={"btn" + (i === q.recommended ? " btn-primary" : "")}
-                  onClick={() => resolveHitl(q.id, "option", { optionIndex: i })}
-                >
-                  “{opt}”
-                </button>
-              ))
-            ) : (
-              <>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => resolveHitl(q.id, "approve")}
-                >
-                  Approve
-                </button>
-                <button
-                  className="btn btn-danger"
-                  onClick={() => resolveHitl(q.id, "reject")}
-                >
-                  Reject
-                </button>
-              </>
-            )}
-            <button
-              className={"btn btn-ghost" + (mode === "modify" ? " btn-lit" : "")}
-              onClick={() => setMode(mode === "modify" ? null : "modify")}
-            >
-              Modify
-            </button>
-            <button
-              className={"btn btn-ghost" + (mode === "chat" ? " btn-lit" : "")}
-              onClick={() => setMode(mode === "chat" ? null : "chat")}
-            >
-              Chat
-            </button>
-          </div>
-          <HitlContext q={q} runName={agent.name} openDiff />
-          {mode === "modify" && (
-            <div className="qx detail-modify">
-              <textarea
-                className="qx-input"
-                rows={3}
-                autoFocus
-                placeholder="Adjust the instruction — the agent resumes with this guidance…"
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-              />
-              <div className="qx-row">
-                <button
-                  className="btn btn-primary"
-                  onClick={() => resolveHitl(q.id, "modify", { guidance: draft.trim() })}
-                >
-                  Send &amp; resume
-                </button>
-                <button className="btn btn-ghost" onClick={() => setMode(null)}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-          {mode === "chat" && (
-            <div className="qx detail-modify">
-              <div className="qx-thread">
-                <div className="qx-msg qx-agent">
-                  <span className="qx-who mono">{agent.name}</span>
-                  {q.why}
-                </div>
-                {msgs.map((m, i) => (
-                  <div
-                    key={i}
-                    className={"qx-msg " + (m.who === "you" ? "qx-you" : "qx-agent")}
-                  >
-                    <span className="qx-who mono">
-                      {m.who === "you" ? "you" : agent.name}
-                    </span>
-                    {m.text}
-                  </div>
-                ))}
-              </div>
-              <div className="qx-row">
-                <input
-                  className="qx-input qx-line"
-                  placeholder="Discuss before deciding…"
-                  value={draft}
-                  autoFocus
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && send()}
-                />
-                <button className="btn" onClick={send}>
-                  Send
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
       {conflictMod && (
         <div className="detail-conflict">
           ⚠ Overlap in <b>{modName(modules, conflictMod)}</b> — also being modified by{" "}
@@ -451,7 +306,6 @@ export function TaskDetail({
               </span>
             ))}
           </div>
-          <AgentChat agent={agent} />
         </div>
         <div className="detail-right">
           {agent.visual && (
@@ -464,9 +318,22 @@ export function TaskDetail({
             </div>
           )}
           <div className="panel panel-log">
-            <div className="panel-head">LIVE LOG</div>
-            <div className="log">
+            <div className="panel-head">
+              LIVE LOG <span className="panel-sub">activity + conversation — reply below</span>
+            </div>
+            <div className="log" ref={logRef}>
               {agent.log.map((l, i) => {
+                // Conversation turns render as chat bubbles; everything else is
+                // telemetry (with foldable tool detail).
+                const turn = chatTurn(l.line);
+                if (turn) {
+                  return (
+                    <div key={i} className={"log-turn log-turn-" + turn.who}>
+                      <span className="log-who mono">{turn.who === "you" ? "you" : agent.name}</span>
+                      <span className="log-turn-text">{turn.text}</span>
+                    </div>
+                  );
+                }
                 const cls =
                   "log-line" +
                   (l.line.includes("⏸")
@@ -486,7 +353,75 @@ export function TaskDetail({
                   </div>
                 );
               })}
-              {agent.status === "running" && <div className="log-line log-cursor">▌</div>}
+              {streaming != null && (
+                <div className="log-turn log-turn-agent">
+                  <span className="log-who mono">{agent.name}</span>
+                  <span className="log-turn-text">{streaming}<span className="log-cursor">▌</span></span>
+                </div>
+              )}
+              {agent.status === "running" && streaming == null && <div className="log-line log-cursor">▌</div>}
+            </div>
+
+            {/* The one place to respond: quick decision buttons when the agent is
+                waiting, plus a composer that resumes it (when waiting) or chats. */}
+            <div className={"log-compose" + (q ? " log-compose-blocked" : "")}>
+              {q && (
+                <div className="log-decision">
+                  <span
+                    className="kind-chip"
+                    style={{ color: KIND_META[q.kind].color, borderColor: KIND_META[q.kind].color }}
+                  >
+                    {KIND_META[q.kind].label}
+                  </span>
+                  <span className="log-decision-title">{q.title}</span>
+                  <RiskChip risk={q.risk} />
+                  <span className="qcard-wait">{fmtWait(waitedSecs(q, now))}</span>
+                  <span className="log-decision-actions">
+                    {q.options ? (
+                      q.options.map((opt, i) => (
+                        <button
+                          key={i}
+                          className={"btn btn-sm" + (i === q.recommended ? " btn-primary" : "")}
+                          onClick={() => resolveHitl(q.id, "option", { optionIndex: i })}
+                        >
+                          “{opt}”
+                        </button>
+                      ))
+                    ) : (
+                      <>
+                        <button className="btn btn-sm btn-primary" onClick={() => resolveHitl(q.id, "approve")}>
+                          Approve
+                        </button>
+                        <button className="btn btn-sm btn-danger" onClick={() => resolveHitl(q.id, "reject")}>
+                          Reject
+                        </button>
+                      </>
+                    )}
+                    <button className="btn btn-sm btn-ghost" onClick={() => setShowDiff((v) => !v)}>
+                      {showDiff ? "Hide details" : "Details"}
+                    </button>
+                  </span>
+                </div>
+              )}
+              {q && showDiff && <HitlContext q={q} runName={agent.name} openDiff />}
+              <div className="qx-row log-composer">
+                <input
+                  className="qx-input qx-line"
+                  placeholder={
+                    q
+                      ? "Reply and resume — e.g. “yes, commit and open a PR”…"
+                      : agent.status === "done"
+                        ? "Ask about what shipped…"
+                        : "Message the agent — it keeps working…"
+                  }
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && send()}
+                />
+                <button className={"btn" + (q ? " btn-primary" : "")} onClick={send} disabled={!draft.trim()}>
+                  {q ? "Send & resume" : "Send"}
+                </button>
+              </div>
             </div>
           </div>
         </div>

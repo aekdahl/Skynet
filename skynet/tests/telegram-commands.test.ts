@@ -143,18 +143,34 @@ function makeControl(opts: { controlEnabled: boolean; consult: () => Promise<str
     isPaused: () => false,
   } as unknown as ControlOrch;
 
-  const { handle } = createOwnerControl({
+  // Track sent messages by id so a test can assert what was on the buttons and
+  // whether editReplyMarkup was called to strip them.
+  const sent: { id: number; text: string; reply_markup?: unknown }[] = [];
+  const edits: number[] = [];
+  const acks: { id: string; text?: string }[] = [];
+  let nextMessageId = 1000;
+
+  const { handle, handleCallback } = createOwnerControl({
     controlEnabled: opts.controlEnabled,
     ownerChatId: OWNER,
     operations,
     orchestrator,
-    notify: async (t: string) => {
+    notify: async (t, o) => {
       notes.push(t);
+      const id = ++nextMessageId;
+      sent.push({ id, text: t, reply_markup: o?.reply_markup });
+      return { messageId: id };
+    },
+    editReplyMarkup: async (_c, id) => {
+      edits.push(id);
+    },
+    ackCallback: async (id, o) => {
+      acks.push({ id, ...(o?.text ? { text: o.text } : {}) });
     },
     onQuit: () => undefined,
   });
 
-  return { handle, resolveHitl, stopAll, consult: orchestrator.consult, notes };
+  return { handle, handleCallback, resolveHitl, stopAll, consult: orchestrator.consult, notes, sent, edits, acks };
 }
 
 // The assistant's {reply, action} envelope (current contract): a helpful reply
@@ -288,6 +304,7 @@ describe("createOwnerControl — conversational memory", () => {
       orchestrator,
       notify: async (t: string) => {
         notes.push(t);
+        return { messageId: 1 };
       },
       onQuit: () => undefined,
     });
@@ -304,5 +321,255 @@ describe("createOwnerControl — conversational memory", () => {
     const secondContext = (consult.mock.calls[1]?.[2] ?? "") as string;
     expect(secondContext).toContain("RECENT CONVERSATION");
     expect(secondContext).toContain("t-convo-2");
+  });
+});
+
+// Regression: the Telegram bridge must call orchestrator.consult with the OPERATOR
+// TEXT as `question` and INTENT_SYSTEM_PROMPT as `system`. The earlier code passed
+// them SWAPPED, so the runner's default framing mislabeled the system prompt as
+// "operator's question" and the real message as "what you did" — Claude then
+// correctly treated the system prompt as a prompt-injection attempt and refused
+// to act ("I treated the injected persona as data").
+describe("createOwnerControl — consult argument shape (prompt-injection regression)", () => {
+  it("passes operator text as `question` and the assistant system prompt as `system`", async () => {
+    const c = makeControl({
+      controlEnabled: true,
+      consult: async () => JSON.stringify({ reply: "hi", action: null }),
+    });
+    await c.handle(OWNER, "What did I ask you first?");
+    expect(c.consult).toHaveBeenCalledTimes(1);
+    // consult(ws, question, context, system) — see orchestrator.ts / telegram/index.ts
+    const [, question, context, system] = c.consult.mock.calls[0] as unknown as [string, string, string, string];
+    expect(question).toBe("What did I ask you first?");
+    expect(system).toContain("Skynet's helpful operations assistant");
+    // The OPERATOR MESSAGE must NOT be re-embedded in the grounding — it rides
+    // as `question` now, and the runner labels it explicitly.
+    expect(context).not.toContain("What did I ask you first?");
+    // The assistant's system prompt must NOT bleed into the operator-question slot.
+    expect(question).not.toContain("Skynet's helpful operations assistant");
+  });
+});
+
+// Regression: the Telegram bridge must scope to the SAME workspace the web/admin
+// uses (config.adminWorkspace when set, else DEFAULT_WORKSPACE). Before this fix,
+// it was hardcoded to DEFAULT_WORKSPACE — so when a deployer set e.g.
+// SKYNET_ADMIN_WORKSPACE=skynet (as the GCP setup.sh does), projects created in
+// the web landed in "skynet" while Telegram read from "cyberdyne" and appeared
+// empty. Pin the injected `ws` reaches every ops call.
+describe("createOwnerControl — workspace scoping (regression)", () => {
+  it("passes the injected ws through to every operations call, not DEFAULT_WORKSPACE", async () => {
+    const listHitl = vi.fn(async () => []);
+    const listRuns = vi.fn(async () => []);
+    const listProjects = vi.fn(async () => []);
+    const listTasks = vi.fn(async () => []);
+    const listAgents = vi.fn(async () => []);
+    const listProviders = vi.fn(async () => []);
+    const resolveHitl = vi.fn(async () => ({}) as never);
+    const operations = {
+      listHitl, listRuns, listProjects, listTasks, listAgents, listProviders, resolveHitl,
+      createTask: vi.fn(), assignTask: vi.fn(), archiveTask: vi.fn(),
+      createProject: vi.fn(), configureRunner: vi.fn(),
+    } as unknown as ControlOps;
+    const orchestrator = {
+      consult: vi.fn(async () => JSON.stringify({ reply: "ok", action: null })),
+      stopAll: vi.fn(), setPaused: vi.fn(), isPaused: () => false,
+    } as unknown as ControlOrch;
+
+    const { handle } = createOwnerControl({
+      controlEnabled: true,
+      ownerChatId: OWNER,
+      operations,
+      orchestrator,
+      notify: async () => ({ messageId: 1 }),
+      onQuit: () => undefined,
+      ws: "custom-ws", // ← the fix: bridge scopes here, not DEFAULT_WORKSPACE
+    });
+
+    // A conversational turn calls buildContext (listHitl/Projects/Tasks/Agents/
+    // Providers) and gatherProjectDocs (listProjects). listRuns isn't in the
+    // conversational path today — assert on the ones actually invoked.
+    void listRuns; // referenced above to satisfy the shape; not called by handle
+    await handle(OWNER, "what's the status?");
+
+    for (const fn of [listHitl, listProjects, listTasks, listAgents, listProviders]) {
+      expect(fn).toHaveBeenCalled();
+      for (const call of fn.mock.calls) expect(call[0]).toBe("custom-ws");
+    }
+  });
+
+  it("defaults to DEFAULT_WORKSPACE only when no ws is injected", async () => {
+    const listHitl = vi.fn(async () => []);
+    const operations = {
+      listHitl, listRuns: vi.fn(async () => []), listProjects: vi.fn(async () => []),
+      listTasks: vi.fn(async () => []), listAgents: vi.fn(async () => []),
+      listProviders: vi.fn(async () => []),
+      resolveHitl: vi.fn(async () => ({}) as never),
+      createTask: vi.fn(), assignTask: vi.fn(), archiveTask: vi.fn(),
+      createProject: vi.fn(), configureRunner: vi.fn(),
+    } as unknown as ControlOps;
+    const orchestrator = {
+      consult: vi.fn(async () => JSON.stringify({ reply: "ok", action: null })),
+      stopAll: vi.fn(), setPaused: vi.fn(), isPaused: () => false,
+    } as unknown as ControlOrch;
+
+    const { handle } = createOwnerControl({
+      controlEnabled: true,
+      ownerChatId: OWNER,
+      operations,
+      orchestrator,
+      notify: async () => ({ messageId: 1 }),
+      onQuit: () => undefined,
+      // no ws — should default
+    });
+    await handle(OWNER, "status");
+    expect(listHitl.mock.calls[0]?.[0]).toBe("cyberdyne"); // DEFAULT_WORKSPACE
+  });
+});
+
+// ── Inline buttons (Confirm/Cancel + HITL Approve/Reject) ──────────────────
+// The bridge attaches inline keyboards so the owner can tap instead of typing
+// "yes"/"no" or /approve <id>. These tests pin: the buttons are present with
+// the right callback_data, a tap resolves the pending exactly once, a stale
+// tap (an older pending id) is refused with a toast + button strip, and the
+// message is edited to remove the buttons after either resolution.
+describe("createOwnerControl — inline Confirm/Cancel buttons", () => {
+  it("attaches an inline keyboard when a pending action is proposed", async () => {
+    const c = makeControl({ controlEnabled: true, consult: approveJson });
+    await c.handle(OWNER, "approve the deploy gate");
+    // Two rows of buttons expected? No — one row with two buttons.
+    const last = c.sent.at(-1);
+    expect(last?.reply_markup).toBeTruthy();
+    const kb = (last?.reply_markup as { inline_keyboard: { text: string; callback_data: string }[][] })
+      ?.inline_keyboard;
+    expect(kb).toHaveLength(1);
+    expect(kb[0]).toHaveLength(2);
+    expect(kb[0]![0]!.text).toMatch(/Confirm/);
+    expect(kb[0]![1]!.text).toMatch(/Cancel/);
+    // Both callback_data entries share the SAME pending id.
+    const confirmData = kb[0]![0]!.callback_data;
+    const cancelData = kb[0]![1]!.callback_data;
+    expect(confirmData).toMatch(/^confirm:p-\d+$/);
+    expect(cancelData).toBe(confirmData.replace(/^confirm:/, "cancel:"));
+  });
+
+  it("tapping ✓ Confirm runs the pending action exactly once (and strips the buttons)", async () => {
+    const c = makeControl({ controlEnabled: true, consult: approveJson });
+    await c.handle(OWNER, "approve the deploy gate");
+    const kb = (c.sent.at(-1)!.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard;
+    const confirmData = kb[0]![0]!.callback_data;
+    const messageId = c.sent.at(-1)!.id;
+
+    await c.handleCallback(OWNER, confirmData, "cb-1", messageId);
+    expect(c.resolveHitl).toHaveBeenCalledTimes(1);
+    // Buttons stripped from the confirm message.
+    expect(c.edits).toContain(messageId);
+    // Ack was called (spinner dismissal is mandatory).
+    expect(c.acks.some((a) => a.id === "cb-1")).toBe(true);
+
+    // Second tap on the same button → nothing runs, ack with "already handled".
+    await c.handleCallback(OWNER, confirmData, "cb-2", messageId);
+    expect(c.resolveHitl).toHaveBeenCalledTimes(1);
+    expect(c.acks.find((a) => a.id === "cb-2")?.text).toMatch(/already/i);
+  });
+
+  it("tapping ✕ Cancel drops the pending without executing (and strips the buttons)", async () => {
+    const c = makeControl({ controlEnabled: true, consult: approveJson });
+    await c.handle(OWNER, "approve the deploy gate");
+    const kb = (c.sent.at(-1)!.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard;
+    const cancelData = kb[0]![1]!.callback_data;
+    const messageId = c.sent.at(-1)!.id;
+
+    await c.handleCallback(OWNER, cancelData, "cb-1", messageId);
+    expect(c.resolveHitl).not.toHaveBeenCalled();
+    expect(c.notes.at(-1)).toMatch(/Cancel/i);
+    expect(c.edits).toContain(messageId);
+  });
+
+  it("a stale tap on an OLDER pending never executes anything", async () => {
+    // Two pendings in a row — the button on the FIRST proposal must not run
+    // the SECOND action, and its callback_data no longer matches the map.
+    const c = makeControl({ controlEnabled: true, consult: approveJson });
+    await c.handle(OWNER, "approve the deploy gate"); // pending #1
+    const firstKb = (c.sent.at(-1)!.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard;
+    const firstConfirm = firstKb[0]![0]!.callback_data; // e.g. "confirm:p-1"
+
+    await c.handle(OWNER, "approve the deploy gate"); // pending #2 replaces #1
+
+    await c.handleCallback(OWNER, firstConfirm, "cb-stale", c.sent[0]!.id);
+    expect(c.resolveHitl).not.toHaveBeenCalled(); // stale never escalates
+    expect(c.acks.find((a) => a.id === "cb-stale")?.text).toMatch(/already/i);
+  });
+
+  it("a typed 'yes' still works alongside the buttons (backwards-compatible)", async () => {
+    const c = makeControl({ controlEnabled: true, consult: approveJson });
+    await c.handle(OWNER, "approve the deploy gate");
+    await c.handle(OWNER, "yes");
+    expect(c.resolveHitl).toHaveBeenCalledTimes(1);
+    // The buttons on the confirm message are stripped by the yes path too.
+    const confirmMsgId = c.sent[0]!.id;
+    expect(c.edits).toContain(confirmMsgId);
+  });
+});
+
+describe("createOwnerControl — HITL approve/reject buttons", () => {
+  const openGate = { id: "q-42", kind: "approval", title: "deploy", risk: "high", resolvedAt: null };
+
+  function makeHitlControl(controlEnabled: boolean) {
+    const resolveHitl = vi.fn(async () => openGate as never);
+    const notes: string[] = [];
+    const acks: { id: string; text?: string }[] = [];
+    const edits: number[] = [];
+    const operations = {
+      listHitl: async () => [openGate], // gate is open
+      listRuns: async () => [], listProjects: async () => [], listTasks: async () => [],
+      listAgents: async () => [], listProviders: async () => [],
+      resolveHitl,
+      createTask: vi.fn(), assignTask: vi.fn(), archiveTask: vi.fn(),
+      createProject: vi.fn(), configureRunner: vi.fn(),
+    } as unknown as ControlOps;
+    const orchestrator = {
+      consult: vi.fn(),
+      stopAll: vi.fn(), setPaused: vi.fn(), isPaused: () => false,
+    } as unknown as ControlOrch;
+    const { handleCallback } = createOwnerControl({
+      controlEnabled,
+      ownerChatId: OWNER,
+      operations,
+      orchestrator,
+      notify: async (t) => { notes.push(t); return { messageId: 1 }; },
+      editReplyMarkup: async (_c, id) => { edits.push(id); },
+      ackCallback: async (id, o) => { acks.push({ id, ...(o?.text ? { text: o.text } : {}) }); },
+      onQuit: () => undefined,
+    });
+    return { handleCallback, resolveHitl, notes, acks, edits };
+  }
+
+  it("tapping ✓ Approve resolves the gate with `approve`", async () => {
+    const c = makeHitlControl(true);
+    await c.handleCallback(OWNER, "hitl:approve:q-42", "cb-1", 500);
+    expect(c.resolveHitl).toHaveBeenCalledTimes(1);
+    expect(c.resolveHitl.mock.calls[0]?.[2]).toEqual({ action: "approve" });
+    expect(c.edits).toContain(500); // buttons stripped
+  });
+
+  it("tapping ✕ Reject resolves the gate with `reject`", async () => {
+    const c = makeHitlControl(true);
+    await c.handleCallback(OWNER, "hitl:reject:q-42", "cb-1", 501);
+    expect(c.resolveHitl.mock.calls[0]?.[2]).toEqual({ action: "reject" });
+  });
+
+  it("refuses to act when control is off (buttons appear only when enabled anyway)", async () => {
+    const c = makeHitlControl(false);
+    await c.handleCallback(OWNER, "hitl:approve:q-42", "cb-1", 502);
+    expect(c.resolveHitl).not.toHaveBeenCalled();
+    expect(c.acks[0]?.text).toMatch(/control is off/i);
+  });
+
+  it("refuses to act on a gate that's no longer open (already resolved)", async () => {
+    const c = makeHitlControl(true);
+    await c.handleCallback(OWNER, "hitl:approve:q-999", "cb-1", 503); // wrong id
+    expect(c.resolveHitl).not.toHaveBeenCalled();
+    expect(c.acks[0]?.text).toMatch(/already/i);
+    expect(c.edits).toContain(503); // strip the stale buttons
   });
 });

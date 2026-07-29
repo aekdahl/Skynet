@@ -29,7 +29,9 @@ const ALLOW = new Set<string>([
   "browseFolder",
   "startGithubDevice", "pollGithubDevice", "fetchGithubInstallations",
   "fetchGithubInstallationRepos", "connectGithub", "disconnectGithub",
+  "fetchGithubOwners", // lists org/user owners for repo creation — needs a live remote
   "cloneProjectRepo", // clones a connected GitHub repo — needs a live remote + token
+  "removeApprovalRule", // revokes a standing approval rule — needs a run that raised + remembered a command gate; no offline journey (covered by approval-policy.test.ts + the server route)
   // destructive bulk variants (the per-record paths ARE covered)
   "archiveAllAudit", "clearAudit",
   // low-value control-plane (runner rename/model tweak)
@@ -52,12 +54,21 @@ const ALLOW = new Set<string>([
   "login",
   // read-only doc render for the Roadmap page — no operator journey to exercise
   "fetchRoadmap",
+  // repo-aware project chat (status + repo content + propose-a-task) — needs a
+  // live provider key and a real repo to ground against, so there's no offline
+  // journey; the parse contract is covered by project-assistant.test.ts
+  "projectChat",
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",
   // desktop Advanced settings (env editor + engine restart) — a desktop-only
   // control-plane surface with no in-app operator journey
   "fetchEnvSettings", "saveEnvSettings", "restartEngine",
+  // escape hatch — bypasses HUMAN_TRANSITIONS to force a task done; parse +
+  // sync-run behavior covered by task-transitions.test.ts (server side).
+  // No happy-path journey exercises it because the normal review → done path
+  // is the intended path; this is only reached when that path is stuck.
+  "forceTaskDone",
 ]);
 
 describe("client API coverage", () => {

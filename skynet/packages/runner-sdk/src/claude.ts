@@ -83,12 +83,18 @@ export function isAutoAllowed(toolName: string): boolean {
   return AUTO_ALLOW.has(toolName);
 }
 
+// Map a Fleet model slug to what the Claude Code SDK expects. The friendly
+// catalog slugs (opus-*/sonnet-*/haiku-*/fable-*) map to the CLI aliases; ANY
+// other non-empty value passes through verbatim, so a model released after our
+// catalog — picked via the Fleet "custom model" option, e.g. a full id like
+// "claude-opus-4-9-…" — still reaches the SDK instead of being silently dropped.
+// Empty → undefined = the SDK's own default.
 const mapModel = (m: string): string | undefined =>
   m.startsWith("fable") ? "claude-fable-5"
     : m.startsWith("opus") ? "opus"
     : m.startsWith("sonnet") ? "sonnet"
     : m.startsWith("haiku") ? "haiku"
-    : undefined;
+    : m.trim() || undefined;
 
 // Build the env handed to the TaskRun SDK subprocess. `Options.env` REPLACES the
 // subprocess environment, so we spread the ambient env (PATH/HOME/…) and then
@@ -565,6 +571,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
       `Task: ${spec.task}. ` +
       `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
       `Only if it requires code changes, make them and run any relevant checks. Then stop when done. ` +
+      `Make code changes ONLY — do NOT run git commit, git push, or gh pr, and do NOT ask the operator whether to commit, push, or open a PR. Skynet owns that: when you finish it auto-commits your worktree, then gates the push and PR behind a separate review/approval step it controls. So never say you "didn't commit" or ask "should I open a PR?" — leave version control entirely to Skynet. Your "done" message should simply summarize what you changed and why, nothing about committing, pushing, or PRs. ` +
       `For anything beyond a one-line answer, use the TodoWrite tool to lay out your plan as concrete steps BEFORE you start, and keep it updated (mark each step in_progress, then completed) as you work — this is how your plan and progress are surfaced to the operator, so maintain it even for research/exploration tasks. ` +
       `Ask before running destructive or irreversible commands. ` +
       `Be honest when you're blocked: if you cannot reproduce a reported problem, or the task lacks information you'd need to fix it correctly (a stack trace, reproduction steps, failing logs, expected vs actual behavior), do NOT guess or make a speculative edit. Use the AskUserQuestion tool to ask the operator for exactly what you need, or if no answer is possible, report plainly what you could and couldn't determine and stop WITHOUT changing code. Asking for the missing detail is the correct, honest outcome here — a fabricated fix is a failure, not progress.`;
@@ -1060,11 +1067,22 @@ function consultQuery(
 ): { prompt: string; cwd: string; model: string; env: Record<string, string> } {
   const base = buildRunnerEnv();
   const env = spec.apiKey ? { ...base, ANTHROPIC_API_KEY: spec.apiKey } : base;
-  const prompt =
-    "You are an AI coding agent that has FINISHED a task. Answer the operator's follow-up " +
-    "question directly and concisely, based on what you did. Do NOT use any tools — just explain.\n\n" +
-    `Task: ${spec.task}\n` +
-    (spec.context ? `What you did (your log / final answer):\n${spec.context}\n` : "") +
-    `\nOperator's question: ${question}`;
+  // Two framings share this function:
+  //   • spec.system set  → caller owns the ROLE (e.g. Telegram intent classifier
+  //     with its own "you are Skynet's assistant, return {reply, action}" prompt).
+  //     `question` is the actual operator message (untrusted data — the caller's
+  //     system prompt already says how to treat it); `context` is the grounding.
+  //   • spec.system unset → the original use case: a FINISHED agent answering an
+  //     operator follow-up about what it did. `context` is the agent's own log,
+  //     `question` the operator's follow-up.
+  const prompt = spec.system
+    ? `${spec.system}\n\n` +
+      (spec.context ? `=== GROUNDING ===\n${spec.context}\n\n` : "") +
+      `=== OPERATOR MESSAGE ===\n${question}`
+    : "You are an AI coding agent that has FINISHED a task. Answer the operator's follow-up " +
+      "question directly and concisely, based on what you did. Do NOT use any tools — just explain.\n\n" +
+      `Task: ${spec.task}\n` +
+      (spec.context ? `What you did (your log / final answer):\n${spec.context}\n` : "") +
+      `\nOperator's question: ${question}`;
   return { prompt, cwd: spec.cwd ?? process.cwd(), model: spec.model, env };
 }

@@ -326,7 +326,12 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post("/api/projects", async (req, reply) => {
     const body = CreateProjectRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
-    return ops.createProject(ws(req), body.data);
+    try {
+      return await ops.createProject(ws(req), body.data);
+    } catch (err) {
+      // createRepo can fail (bad token, name taken, missing scope) — surface it.
+      return fail(reply, err);
+    }
   });
 
   app.patch<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {
@@ -347,6 +352,18 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return fail(reply, err);
     }
   });
+
+  // Revoke one standing "approve always" rule from a project's approval policy.
+  app.delete<{ Params: { id: string; ruleId: string } }>(
+    "/api/projects/:id/approval-rules/:ruleId",
+    async (req, reply) => {
+      try {
+        return await ops.removeApprovalRule(ws(req), req.params.id, req.params.ruleId);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
 
   // Clone a GitHub-connected project's repo into a managed local checkout (for a
   // headless server with no folder to point at). Sets repoPath + gitBacked.
@@ -370,8 +387,8 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
             .slice(-16)
         : undefined;
       try {
-        const answer = await ops.projectAssistant(ws(req), req.params.id, question, history);
-        return { reply: answer };
+        const { reply, action } = await ops.projectAssistant(ws(req), req.params.id, question, history);
+        return { reply, action };
       } catch (err) {
         return fail(reply, err);
       }
@@ -508,6 +525,19 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.transitionTask(ws(req), req.params.tid, body.data.to, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Force a task to `done` — bypasses HUMAN_TRANSITIONS and always syncs the
+  // linked run's status to "done". The escape hatch when the normal
+  // review → done path fails (merge queue stuck, HITL wedged, run finished
+  // without advancing the card). Never merges the branch: it's a
+  // "call it done" operator override, not a work-completion signal.
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/force-done", async (req, reply) => {
+    try {
+      return await ops.forceTaskDone(ws(req), req.params.tid);
     } catch (err) {
       return fail(reply, err);
     }

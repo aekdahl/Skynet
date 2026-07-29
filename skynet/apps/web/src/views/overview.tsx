@@ -1,6 +1,7 @@
-import { useState } from "react";
-import type { Project } from "@skynet/shared";
+import { useEffect, useState } from "react";
+import type { GithubOwner, Project } from "@skynet/shared";
 import { useStore } from "../lib/store";
+import * as api from "../lib/client";
 import {
   agentsForProject,
   backlogTasks,
@@ -98,26 +99,117 @@ function ProjectCard({
   );
 }
 
+// Where a new project's work happens: a local folder, an already-connected repo,
+// or a brand-new repo Skynet creates on GitHub (gated behind a confirm step).
+type BindMode = "folder" | "existing" | "new";
+
+/** Accounts a new repo can be created under. null = loading; [] = GitHub not
+ *  connected (the "New repo" mode is hidden in that case). */
+function useRepoOwners(): GithubOwner[] | null {
+  const [owners, setOwners] = useState<GithubOwner[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .fetchGithubOwners()
+      .then((o) => !cancelled && setOwners(o))
+      .catch(() => !cancelled && setOwners([]));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return owners;
+}
+
+// Project name → a sane default repo slug (GitHub allows letters/digits/. - _).
+const slugRepo = (s: string): string =>
+  s
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "")
+    .slice(0, 100);
+
 export function NewProjectCard({
   onCreate,
 }: {
-  onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
+  onCreate: (
+    name: string,
+    goal: string,
+    opts?: { repo?: string; repoPath?: string; createRepo?: { name: string; private: boolean; owner?: string } },
+  ) => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
+  const [mode, setMode] = useState<BindMode>("folder");
   const [repo, setRepo] = useState("");
   const [repoPath, setRepoPath] = useState("");
+  const [newRepoName, setNewRepoName] = useState("");
+  const [newRepoNameTouched, setNewRepoNameTouched] = useState(false);
+  const [newRepoOwner, setNewRepoOwner] = useState("");
+  const [newRepoPrivate, setNewRepoPrivate] = useState(true);
+  const [confirming, setConfirming] = useState(false); // new-repo confirm gate
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const repos = useConnectedRepos();
-  // A project can bind to a local folder (desktop default) or a GitHub repo.
-  // Requiring a GitHub repo only makes sense when no local folder is chosen.
+  const owners = useRepoOwners();
   const hasRepos = (repos?.length ?? 0) > 0;
+  const canCreate = (owners?.length ?? 0) > 0;
+
+  // Default the owner to the authenticated user (first entry) once loaded.
+  useEffect(() => {
+    if (owners && owners.length && !newRepoOwner) setNewRepoOwner(owners[0]!.login);
+  }, [owners, newRepoOwner]);
+
+  // The repo name follows the project name until the operator edits it directly.
+  const effectiveRepoName = newRepoNameTouched ? newRepoName : slugRepo(name);
+  const repoNameValid = /^[A-Za-z0-9._-]+$/.test(effectiveRepoName);
+
+  const reset = () => {
+    setOpen(false);
+    setConfirming(false);
+    setCreating(false);
+    setError(null);
+    setName("");
+    setGoal("");
+    setMode("folder");
+    setRepo("");
+    setRepoPath("");
+    setNewRepoName("");
+    setNewRepoNameTouched(false);
+  };
+
+  const submit = async (opts: { repo?: string; repoPath?: string; createRepo?: { name: string; private: boolean; owner?: string } }) => {
+    setCreating(true);
+    setError(null);
+    try {
+      await onCreate(name.trim(), goal.trim() || "No goal set yet.", opts);
+      reset();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't create the project.");
+      setCreating(false);
+    }
+  };
+
+  const invalidNew = mode === "new" && (!repoNameValid || !newRepoOwner);
+  const invalidExisting = mode === "existing" && !repo;
+  const disabled = !name.trim() || invalidNew || invalidExisting;
+  const reason = !name.trim()
+    ? "Name your project to continue."
+    : invalidExisting
+      ? "Pick a connected repository."
+      : invalidNew
+        ? "Enter a valid repository name."
+        : "";
+
   if (!open)
     return (
       <button className="proj proj-new" onClick={() => setOpen(true)}>
         <span className="proj-new-plus">+</span> New project
       </button>
     );
+
   return (
     <div className="proj proj-new-form">
       <input
@@ -134,35 +226,130 @@ export function NewProjectCard({
         value={goal}
         onChange={(e) => setGoal(e.target.value)}
       />
-      <div className="rp-label">Local folder <span className="rp-hint">· runs work here</span></div>
-      <FolderPicker value={repoPath} onChange={setRepoPath} />
-      {!repoPath && <RepoPicker repos={repos} value={repo} onChange={setRepo} />}
-      <div className="qx-row">
-        <PrimaryButton
-          disabled={!name.trim() || (!repoPath && hasRepos && !repo)}
-          reason={
-            !name.trim()
-              ? "Name your project to continue."
-              : "Pick a local folder or a connected repo."
-          }
-          onClick={() => {
-            onCreate(name.trim(), goal.trim() || "No goal set yet.", {
-              repo: repoPath ? undefined : repo || undefined,
-              repoPath: repoPath || undefined,
-            });
-            setOpen(false);
-            setName("");
-            setGoal("");
-            setRepo("");
-            setRepoPath("");
-          }}
-        >
-          Create project
-        </PrimaryButton>
-        <button className="btn btn-ghost" onClick={() => setOpen(false)}>
-          Cancel
-        </button>
-      </div>
+
+      {(hasRepos || canCreate) && (
+        <div className="np-modes" role="tablist" aria-label="Where work happens">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "folder"}
+            className={"np-mode" + (mode === "folder" ? " np-mode-on" : "")}
+            onClick={() => { setMode("folder"); setError(null); }}
+          >
+            Local folder
+          </button>
+          {hasRepos && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "existing"}
+              className={"np-mode" + (mode === "existing" ? " np-mode-on" : "")}
+              onClick={() => { setMode("existing"); setError(null); }}
+            >
+              Existing repo
+            </button>
+          )}
+          {canCreate && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "new"}
+              className={"np-mode" + (mode === "new" ? " np-mode-on" : "")}
+              onClick={() => { setMode("new"); setError(null); }}
+            >
+              New repo
+            </button>
+          )}
+        </div>
+      )}
+
+      {mode === "folder" && (
+        <>
+          <div className="rp-label">Local folder <span className="rp-hint">· runs work here</span></div>
+          <FolderPicker value={repoPath} onChange={setRepoPath} />
+        </>
+      )}
+      {mode === "existing" && <RepoPicker repos={repos} value={repo} onChange={setRepo} />}
+      {mode === "new" && (
+        <div className="np-newrepo">
+          <div className="rp-label">New repository <span className="rp-hint">· Skynet creates it on GitHub</span></div>
+          <div className="np-newrepo-row">
+            <select
+              className="rp-select np-owner"
+              value={newRepoOwner}
+              onChange={(e) => setNewRepoOwner(e.target.value)}
+              aria-label="Repository owner"
+            >
+              {owners?.map((o) => (
+                <option key={o.login} value={o.login}>
+                  {o.login}{o.type === "org" ? " (org)" : ""}
+                </option>
+              ))}
+            </select>
+            <span className="np-slash" aria-hidden="true">/</span>
+            <input
+              className="qx-input np-reponame"
+              placeholder="repo-name"
+              value={effectiveRepoName}
+              onChange={(e) => { setNewRepoNameTouched(true); setNewRepoName(e.target.value); }}
+              aria-label="Repository name"
+            />
+          </div>
+          <label className="np-private">
+            <input
+              type="checkbox"
+              className="proj-autonomy-cb"
+              checked={newRepoPrivate}
+              onChange={(e) => setNewRepoPrivate(e.target.checked)}
+            />
+            <span className="proj-autonomy-switch" aria-hidden="true" />
+            <span className="np-private-label">{newRepoPrivate ? "Private" : "Public"} repository</span>
+          </label>
+        </div>
+      )}
+
+      {confirming && mode === "new" ? (
+        <div className="np-confirm">
+          <p className="np-confirm-text">
+            Create a new <strong>{newRepoPrivate ? "private" : "public"}</strong> repository{" "}
+            <code className="np-confirm-repo">{newRepoOwner}/{effectiveRepoName}</code> on GitHub and bind this project to it?
+          </p>
+          {error && <div className="np-error">{error}</div>}
+          <div className="qx-row">
+            <PrimaryButton
+              disabled={creating}
+              onClick={() => void submit({ createRepo: { name: effectiveRepoName, private: newRepoPrivate, owner: newRepoOwner } })}
+            >
+              {creating ? "Creating…" : "Create repo & project"}
+            </PrimaryButton>
+            <button className="btn btn-ghost" disabled={creating} onClick={() => { setConfirming(false); setError(null); }}>
+              Back
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {error && <div className="np-error">{error}</div>}
+          <div className="qx-row">
+            <PrimaryButton
+              disabled={disabled || creating}
+              reason={reason}
+              onClick={() => {
+                if (mode === "new") { setConfirming(true); return; } // gate the outward-facing repo creation
+                void submit({
+                  repo: mode === "existing" ? repo || undefined : undefined,
+                  repoPath: mode === "folder" ? repoPath || undefined : undefined,
+                });
+              }}
+            >
+              {creating ? "Creating…" : mode === "new" ? "Review & create" : "Create project"}
+            </PrimaryButton>
+            <button className="btn btn-ghost" onClick={reset}>
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

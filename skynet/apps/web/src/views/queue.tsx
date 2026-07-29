@@ -129,6 +129,15 @@ export function QueueCard({
           >
             Approve
           </button>
+          {item.kind === "approval" && item.command && item.risk !== "high" && (
+            <button
+              className="btn btn-ghost"
+              title="Approve now and always auto-approve this exact command in this project"
+              onClick={() => resolveHitl(item.id, "approve", { remember: true })}
+            >
+              Always allow
+            </button>
+          )}
           <button
             className="btn btn-danger"
             onClick={() => resolveHitl(item.id, "reject")}

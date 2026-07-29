@@ -24,10 +24,18 @@ class FakeProvider implements GitProvider {
   async listRepos(): Promise<GithubRepo[]> {
     return [{ id: 1, name: "octocat/repo", defaultBranch: "main", private: false, selected: false }];
   }
+  lastMergeToken?: string;
+  lastMergeNumber?: number;
+  lastMergeMethod?: string;
   async pushBranch(token: string) { this.lastPushToken = token; }
   async openPr(token: string) { this.lastPrToken = token; return { number: 7, url: "https://gh/pr/7" }; }
   async prStatus() { return { state: "open" as const, checks: "none" as const }; }
-  async mergePr() { return { merged: true }; }
+  async mergePr(token: string, _repo: string, num: number, method: "merge" | "squash" | "rebase") {
+    this.lastMergeToken = token;
+    this.lastMergeNumber = num;
+    this.lastMergeMethod = method;
+    return { merged: true };
+  }
   async syncBase() {}
 }
 
@@ -64,6 +72,19 @@ describe("GitHub PAT auth", () => {
     // The PAT plaintext (not an installation token) was used for both ops.
     expect(fake.lastPushToken).toBe("github_pat_SECRET1234");
     expect(fake.lastPrToken).toBe("github_pat_SECRET1234");
+  });
+
+  it("merges a PR with the resolved token (approve → merge)", async () => {
+    const fake = new FakeProvider();
+    const svc = new GithubService(new MemoryGithubStore(), fake, false);
+    await svc.connectViaPat("ws3", "github_pat_SECRET1234");
+
+    const res = await svc.mergePr("ws3", "octocat/repo", 7);
+    expect(res.merged).toBe(true);
+    // The PAT (not an installation token) was used, with the default squash method.
+    expect(fake.lastMergeToken).toBe("github_pat_SECRET1234");
+    expect(fake.lastMergeNumber).toBe(7);
+    expect(fake.lastMergeMethod).toBe("squash");
   });
 
   it("rejects an invalid token (nothing stored)", async () => {

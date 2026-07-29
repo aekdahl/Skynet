@@ -13,6 +13,7 @@ import {
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
 import { ProjectDelivery, visualLeadOf } from "../components/preview";
+import { Markdown } from "../components/markdown";
 import { QueueCard } from "./queue";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -109,10 +110,12 @@ function TaskCard({
     deleteTask,
     moveTask,
     transitionTask,
+    forceTaskDone,
     assignTask,
     archiveAgent,
   } = useStore();
   const [editing, setEditing] = useState(false);
+  const [detail, setDetail] = useState(false); // full-detail modal for a card with no run
   const [draft, setDraft] = useState(task.text);
   const [descDraft, setDescDraft] = useState(task.description ?? "");
   const pid = task.projectId;
@@ -120,6 +123,9 @@ function TaskCard({
   const move = (to: string) => transitionTask(pid, task.id, to);
   const q = run ? openQueue(queue).find((it) => it.runId === run.id) : undefined;
   const openRun = run ? () => onOpenTask(run.id) : undefined;
+  // A card is always openable: a run card opens its live activity; a card with no
+  // run opens a read-only detail modal (the card itself clamps title/description).
+  const openCard = openRun ?? (() => setDetail(true));
   const noFleet = fleet.length === 0;
 
   if (editing) {
@@ -164,17 +170,13 @@ function TaskCard({
   }
 
   return (
+    <>
     <div
       className={"kb-card kb-card-" + s}
-      {...(openRun
-        ? {
-            role: "button",
-            tabIndex: 0,
-            onClick: openRun,
-            onKeyDown: (e: React.KeyboardEvent) =>
-              (e.key === "Enter" || e.key === " ") && openRun(),
-          }
-        : {})}
+      role="button"
+      tabIndex={0}
+      onClick={openCard}
+      onKeyDown={(e: React.KeyboardEvent) => (e.key === "Enter" || e.key === " ") && openCard()}
     >
       <div className="kb-card-top">
         {run && <StatusDot status={run.status} />}
@@ -273,25 +275,69 @@ function TaskCard({
           </>
         )}
         {s === "ongoing" && (
-          <button className="kb-move" onClick={() => move("todo")}>↩ Abandon</button>
+          <>
+            <button className="kb-move" onClick={() => move("todo")}>↩ Abandon</button>
+            <button
+              className="kb-move kb-move-force"
+              title="Skip the normal approval + merge path — mark this task done and sync the run's status. Use when the run has finished the work outside the fleet or is stuck."
+              onClick={() => forceTaskDone(pid, task.id)}
+            >
+              ⚡ Force done
+            </button>
+          </>
         )}
         {s === "review" && (
           <>
             <button className="kb-move kb-move-primary" onClick={() => move("done")}>✓ Approve → Done</button>
             <button className="kb-move" onClick={() => move("todo")}>↩ Redo</button>
+            <button
+              className="kb-move kb-move-force"
+              title="Fallback if the normal approve → merge path fails (merge queue stuck, HITL wedged). Marks done and syncs the run's status; does NOT merge the branch."
+              onClick={() => forceTaskDone(pid, task.id)}
+            >
+              ⚡ Force done
+            </button>
           </>
         )}
         {s === "done" && (
           <>
             <button className="kb-move" onClick={() => move("triage")}>↩ Triage</button>
             <button className="kb-move" onClick={() => move("backlog")}>↩ Backlog</button>
+            {run && run.status !== "done" && (
+              <button
+                className="kb-move kb-move-force"
+                title={`Task is Done but the run's status is "${run.status}" — click to resync.`}
+                onClick={() => forceTaskDone(pid, task.id)}
+              >
+                ⚡ Sync run → done
+              </button>
+            )}
             {run && (
               <button className="kb-archive" title="Archive — hide from the board" onClick={() => archiveAgent(run.id, true)}>⤓</button>
             )}
           </>
         )}
       </div>
-    </div>
+      </div>
+      {detail && (
+        <div className="kb-detail-overlay" onClick={() => setDetail(false)}>
+          <div className="kb-detail" role="dialog" aria-modal="true" onClick={stop}>
+            <div className="kb-detail-head">
+              <span className="kb-detail-state mono">{s}</span>
+              <button className="kb-detail-close" onClick={() => setDetail(false)} aria-label="Close">
+                ×
+              </button>
+            </div>
+            <h3 className="kb-detail-title">{task.text}</h3>
+            {task.description ? (
+              <p className="kb-detail-desc">{task.description}</p>
+            ) : (
+              <p className="kb-detail-desc kb-detail-empty">No description.</p>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -355,49 +401,156 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
 // (the assistant reads files like ROADMAP.md). Uses the same general-purpose
 // LLM as the rest of Skynet, via POST /api/projects/:id/chat.
 
-type AsstMsg = { role: "user" | "assistant"; content: string };
+// `action` carries a project/task change the assistant offered; the operator
+// confirms (or dismisses) via a chip under the message — mirrors Telegram's
+// confirm-before-execute. `actionState` tracks the chip once acted on.
+type AsstMsg = {
+  role: "user" | "assistant";
+  content: string;
+  action?: api.AssistantAction;
+  actionState?: "pending" | "done" | "dismissed";
+};
 const ASSISTANT_SUGGESTIONS = [
   "What's the current status of this project?",
   "Summarize the roadmap",
-  "What's blocked or waiting on me?",
+  "Add a task to write onboarding docs",
 ];
 
 function ProjectAssistant({ projectId }: { projectId: string }) {
+  const { createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject } = useStore();
   const [open, setOpen] = useState(false);
   const [msgs, setMsgs] = useState<AsstMsg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Typewriter smoothing: the server streams in coarse chunks (often whole
+  // sentences), which reads as a stutter. We collect the received text in a ref
+  // and reveal it a few characters per frame, so the bubble fills in smoothly
+  // regardless of chunk size. `target` is everything received; `shown` is how
+  // much is currently visible; `done` flips when the stream ends so the loop can
+  // stop once it has caught up.
+  const targetRef = useRef("");
+  const shownRef = useRef(0);
+  const doneRef = useRef(true);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
   }, [msgs, busy]);
 
+  // Stop the typewriter loop if the view unmounts mid-stream.
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+  // Auto-grow was set on the DOM element imperatively (style.height); when the
+  // controlled value clears after send, reset it so the textarea snaps back to
+  // one row instead of staying tall.
+  useEffect(() => {
+    if (input === "" && inputRef.current) inputRef.current.style.height = "";
+  }, [input]);
+
+  const paintLast = (content: string) =>
+    setMsgs((m) => {
+      const next = m.slice();
+      const last = next[next.length - 1];
+      // Preserve any proposed action attached to the bubble while the reveal loop
+      // fills in its text.
+      if (last && last.role === "assistant") next[next.length - 1] = { ...last, content };
+      return next;
+    });
+
+  const tick = () => {
+    const target = targetRef.current;
+    if (shownRef.current < target.length) {
+      // Reveal faster when we're further behind, so we never lag the stream.
+      const backlog = target.length - shownRef.current;
+      const step = Math.max(2, Math.ceil(backlog / 8));
+      shownRef.current = Math.min(target.length, shownRef.current + step);
+      paintLast(target.slice(0, shownRef.current));
+    }
+    if (shownRef.current >= target.length && doneRef.current) {
+      timerRef.current = null;
+      return;
+    }
+    timerRef.current = setTimeout(tick, 16);
+  };
+
   const ask = async (q: string) => {
     const question = q.trim();
     if (!question || busy) return;
     setErr(null);
-    const history = msgs.slice();
-    // Add the operator line + an empty assistant bubble the stream fills in-place.
+    // Strip any attached action fields from history — the API takes plain turns.
+    const history = msgs.slice().map(({ role, content }) => ({ role, content }));
+    // Add the operator line + an empty assistant bubble the reveal loop fills in.
     setMsgs([...msgs, { role: "user", content: question }, { role: "assistant", content: "" }]);
     setInput("");
     setBusy(true);
-    const appendToLast = (chunk: string) =>
-      setMsgs((m) => {
-        const next = m.slice();
-        const last = next[next.length - 1];
-        if (last && last.role === "assistant") next[next.length - 1] = { role: "assistant", content: last.content + chunk };
-        return next;
-      });
+    // Reset + start the reveal loop.
+    targetRef.current = "";
+    shownRef.current = 0;
+    doneRef.current = false;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    tick();
     try {
-      await api.streamProjectChat(projectId, question, history, appendToLast);
+      // Non-streaming so we also get any proposed action (confirm-first). The
+      // reply is fed into the reveal loop to animate in-place, and the action (if
+      // any) is attached to the same assistant bubble.
+      const { reply, action } = await api.projectChat(projectId, question, history);
+      targetRef.current = reply;
+      if (timerRef.current === null) tick(); // loop had parked — restart it
+      if (action) {
+        setMsgs((m) => {
+          const next = m.slice();
+          const last = next[next.length - 1];
+          if (last && last.role === "assistant")
+            next[next.length - 1] = { ...last, action, actionState: "pending" as const };
+          return next;
+        });
+      }
+
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't reach the assistant — try again.");
-      // Drop the empty assistant bubble on failure so the thread isn't left blank.
-      setMsgs((m) => (m[m.length - 1]?.content === "" ? m.slice(0, -1) : m));
+      // Drop the assistant bubble on failure if nothing was received.
+      if (targetRef.current === "") setMsgs((m) => m.slice(0, -1));
     } finally {
+      doneRef.current = true; // let the reveal loop finish and park itself
       setBusy(false);
+    }
+  };
+
+  // Execute a confirmed action via the SAME guarded store methods the board uses
+  // (transitionTask enforces legal moves; updateProject/updateTask are validated
+  // server-side). The assistant only ever proposes — nothing runs without this.
+  const runAction = async (a: api.AssistantAction): Promise<void> => {
+    switch (a.kind) {
+      case "add_task": return createTask(projectId, a.text ?? "", a.description);
+      case "move_task": return transitionTask(projectId, a.taskId!, a.to!);
+      case "rename_task": return updateTask(projectId, a.taskId!, { text: a.text });
+      case "set_task_desc": return updateTask(projectId, a.taskId!, { description: a.description });
+      case "remove_task": return deleteTask(projectId, a.taskId!);
+      case "reorder_task": return moveTask(projectId, a.taskId!, a.direction!);
+      case "rename_project": return updateProject(projectId, { name: a.name });
+      case "set_goal": return updateProject(projectId, { goal: a.goal });
+      case "set_autonomy": return updateProject(projectId, { autonomy: a.autonomy });
+      case "set_status": return updateProject(projectId, { status: a.status });
+    }
+  };
+
+  // Confirm (or dismiss) a proposed action.
+  const resolveAction = async (idx: number, accept: boolean) => {
+    const msg = msgs[idx];
+    if (!msg?.action || msg.actionState !== "pending") return;
+    if (!accept) {
+      setMsgs((m) => m.map((x, i) => (i === idx ? { ...x, actionState: "dismissed" } : x)));
+      return;
+    }
+    try {
+      await runAction(msg.action);
+      setMsgs((m) => m.map((x, i) => (i === idx ? { ...x, actionState: "done" } : x)));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't apply that — try again.");
     }
   };
 
@@ -406,14 +559,14 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
       <button className="proj-assistant-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <span className="fold-caret">{open ? "▾" : "▸"}</span>
         <span className="proj-assistant-title">ASK ABOUT THIS PROJECT</span>
-        <span className="proj-assistant-sub">status &amp; repo content · reads files like ROADMAP.md</span>
+        <span className="proj-assistant-sub">status &amp; repo content · reads files like ROADMAP.md · manages tasks &amp; project settings</span>
       </button>
       {open && (
         <div className="proj-assistant-body">
           <div className="proj-assistant-thread" ref={threadRef}>
             {msgs.length === 0 && (
               <div className="asst-welcome">
-                <p>Ask about this project’s current status, or what’s in the repository.</p>
+                <p>Ask about this project’s status or repository — or tell me to add, move, rename tasks, or change project settings. I’ll confirm before anything changes.</p>
                 <div className="asst-sugg">
                   {ASSISTANT_SUGGESTIONS.map((s) => (
                     <button key={s} className="asst-chip" onClick={() => void ask(s)}>{s}</button>
@@ -424,15 +577,40 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
             {msgs.map((m, i) => (
               <div key={i} className={"asst-msg asst-" + m.role}>
                 <span className="asst-who mono">{m.role === "user" ? "you" : "assistant"}</span>
-                <div className="asst-text">{m.content}</div>
+                {m.role === "assistant" ? (
+                  m.content === "" ? (
+                    <div className="asst-text asst-think">reading the project…</div>
+                  ) : (
+                    <div className="asst-text asst-md">
+                      <Markdown text={m.content} />
+                    </div>
+                  )
+                ) : (
+                  <div className="asst-text">{m.content}</div>
+                )}
+                {m.action && (
+                  <div className="asst-propose">
+                    {m.actionState === "done" ? (
+                      <span className="asst-propose-done">✓ {m.action.summary}</span>
+                    ) : m.actionState === "dismissed" ? (
+                      <span className="asst-propose-done muted">Dismissed: {m.action.summary}</span>
+                    ) : (
+                      <>
+                        <span className="asst-propose-label">{m.action.summary}</span>
+                        <span className="asst-propose-actions">
+                          <button className="btn btn-primary btn-sm" onClick={() => void resolveAction(i, true)}>
+                            Confirm
+                          </button>
+                          <button className="btn btn-ghost btn-sm" onClick={() => void resolveAction(i, false)}>
+                            Dismiss
+                          </button>
+                        </span>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
-            {busy && (
-              <div className="asst-msg asst-assistant">
-                <span className="asst-who mono">assistant</span>
-                <div className="asst-text asst-think">reading the project…</div>
-              </div>
-            )}
           </div>
           {err && <div className="asst-err">{err}</div>}
           <form
@@ -442,11 +620,28 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
               void ask(input);
             }}
           >
-            <input
-              className="qx-input"
-              placeholder="Ask about status, the roadmap, a file…"
+            <textarea
+              ref={inputRef}
+              // Enter submits (matches every other chat convention); Shift+Enter
+              // inserts a newline. rows=1 makes it start as a single-line input;
+              // auto-resize on change grows it into a text block as more lines
+              // are typed (capped so long paste doesn't eat the pane).
+              className="qx-input asst-textarea"
+              placeholder="Ask about status, the roadmap, a file…  (Shift+Enter for a new line)"
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              rows={1}
+              onChange={(e) => {
+                setInput(e.target.value);
+                const el = e.currentTarget;
+                el.style.height = "auto";
+                el.style.height = Math.min(el.scrollHeight, 200) + "px";
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  if (!busy && input.trim()) void ask(input);
+                }
+              }}
               disabled={busy}
             />
             <button className="btn btn-primary" type="submit" disabled={busy || !input.trim()}>
@@ -475,6 +670,7 @@ export function ProjectView({
     queue,
     tasks,
     updateProject,
+    removeApprovalRule,
     deleteProject,
     cloneProjectRepo,
     createTask,
@@ -567,6 +763,21 @@ export function ProjectView({
             )}
           </div>
           <div className="projview-head-tools">
+            <label
+              className="proj-approval"
+              title="How much an agent may run without asking. Dangerous or outward-facing steps (git push, merge, infra, destructive commands) always ask, regardless of this setting."
+            >
+              <span className="proj-approval-label mono">Approvals</span>
+              <select
+                className="proj-approval-select"
+                value={project.approvalLevel ?? "trusted"}
+                onChange={(e) => updateProject(project.id, { approvalLevel: e.target.value })}
+              >
+                <option value="manual">Manual · ask for everything</option>
+                <option value="assisted">Assisted · auto-approve low-risk</option>
+                <option value="trusted">Trusted · auto-approve low + medium</option>
+              </select>
+            </label>
             <label className="proj-autonomy" title="When on, agents autonomously triage backlog items, pick up auto-pick tasks, and review finished work.">
               <input
                 type="checkbox"
@@ -593,6 +804,24 @@ export function ProjectView({
               <button className="btn btn-ghost btn-retire" onClick={() => setConfirmDel(true)}>Delete</button>
             )}
           </div>
+        </div>
+      )}
+
+      {(project.approvalRules?.length ?? 0) > 0 && (
+        <div className="proj-approval-rules">
+          <span className="proj-approval-rules-label mono">Always allowed</span>
+          {project.approvalRules!.map((r) => (
+            <span key={r.id} className="approval-rule-chip mono" title={`auto-approved (${r.riskCap}-risk) in this project`}>
+              <span className="approval-rule-cmd">$ {r.command}</span>
+              <button
+                className="approval-rule-x"
+                title="Revoke — this command will ask again"
+                onClick={() => removeApprovalRule(project.id, r.id)}
+              >
+                ×
+              </button>
+            </span>
+          ))}
         </div>
       )}
 
@@ -771,6 +1000,16 @@ export function LivePreviewModal({
     window.addEventListener("pointerup", up);
   };
 
+  // Keep the log view pinned to the newest line as output streams in — but only
+  // when the operator is already near the bottom, so it never yanks the view
+  // while they've scrolled up to read an earlier error.
+  const logRef = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) el.scrollTop = el.scrollHeight;
+  }, [st?.logs, showLogs]);
+
   const width = DEVICES[device];
   const live = st?.status === "live" && st.url;
 
@@ -822,7 +1061,7 @@ export function LivePreviewModal({
             </div>
           )}
           {showLogs && (
-            <pre className="lp-logs mono">{(st?.logs ?? []).join("\n") || "(no output yet)"}</pre>
+            <pre ref={logRef} className="lp-logs mono">{(st?.logs ?? []).join("\n") || "(no output yet)"}</pre>
           )}
         </div>
       </div>

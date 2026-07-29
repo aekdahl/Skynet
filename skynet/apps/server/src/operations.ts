@@ -32,12 +32,18 @@ import { modelValidForProvider } from "@skynet/shared";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
+import { normalizeCommand, rememberableRisk } from "./approval-policy.js";
 import { config, now } from "./config.js";
 import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { projectPreview, type PreviewState } from "./preview/project-preview.js";
 import { githubService } from "./github/index.js";
-import { answerProjectQuestion, answerProjectQuestionStream, type ChatTurn } from "./project-assistant.js";
+import {
+  answerProjectQuestion,
+  answerProjectQuestionStream,
+  type AssistantAction,
+  type ChatTurn,
+} from "./project-assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -119,7 +125,7 @@ export class Operations {
     projectId: string,
     question: string,
     history?: ChatTurn[],
-  ): Promise<string> {
+  ): Promise<{ reply: string; action: AssistantAction | null }> {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== workspaceId) throw new NotFoundError("Project");
     return answerProjectQuestion(this.store, { workspaceId, project, question, history });
@@ -275,8 +281,31 @@ export class Operations {
     // wins in the Hub; a later resolve returns the existing item, unchanged `at`).
     if (resolved && resolved.resolution?.at === resolution.at) {
       await this.orchestrator.deliver(item, resolution);
+      // Approve-and-remember: add a standing "approve always" rule for this exact
+      // command to the project, so identical future commands auto-approve. Honored
+      // only for rememberable (low/medium, non-deny) commands — boundary/high-risk
+      // ops can never become a persistent auto-approval. De-duped by command.
+      if (input.remember && input.action === "approve" && item.kind === "approval" && item.command) {
+        await this.rememberApproval(item.runId, item.command, operatorId);
+      }
     }
     return resolved ?? item;
+  }
+
+  /** Add a standing "approve always" rule for `command` to the run's project, if
+   *  the command is rememberable (low/medium, non-deny) and not already stored.
+   *  Best-effort — a non-rememberable command or a missing project is a silent
+   *  no-op (the approval itself already succeeded). */
+  private async rememberApproval(runId: string, command: string, operatorId: string): Promise<void> {
+    const cap = rememberableRisk(command);
+    if (!cap) return; // high-risk / boundary ops can never become a standing rule
+    const run = await this.store.getRun(runId);
+    const project = run ? await this.store.getProject(run.projectId) : undefined;
+    if (!project) return;
+    const norm = normalizeCommand(command);
+    if (project.approvalRules.some((r) => normalizeCommand(r.command) === norm)) return; // de-dupe
+    const rule = { id: this.uid("ar"), command: norm, riskCap: cap, createdBy: operatorId, createdAt: now() };
+    await this.hub.upsertProject({ ...project, approvalRules: [...project.approvalRules, rule] });
   }
 
   // ── agent actions ───────────────────────────────────────────────────────
@@ -333,9 +362,20 @@ export class Operations {
 
   // ── projects ──────────────────────────────────────────────────────────────
   async createProject(ws: string, input: CreateProjectRequest): Promise<Project> {
+    // "Create a new repo" binding: make the GitHub repo FIRST (outward-facing, so
+    // it's gated behind an explicit confirm in the UI) and bind the project to it.
+    // If this throws (bad token, name taken, missing scope) the project is never
+    // created — the operator sees the GitHub error, not an orphaned project. A new
+    // repo supersedes any local folder; the fresh repo is auto-cloned below.
+    let repo = input.repo;
+    let repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
+    if (input.createRepo) {
+      const created = await githubService.createRepo(ws, input.createRepo, { description: input.goal });
+      repo = created.name; // "owner/repo"
+      repoPath = null;
+    }
     // A local repoPath that contains a .git is git-backed → Skynet auto-manages a
     // worktree per agent + the merge queue against it (desktop-first default).
-    const repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
     const project: Project = {
       id: this.uid("p"),
       workspaceId: ws,
@@ -344,9 +384,11 @@ export class Operations {
       runIds: [],
       status: "active",
       autonomy: true,
+      approvalLevel: config.defaultApprovalLevel,
+      approvalRules: [],
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
-      repo: input.repo,
+      repo,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
@@ -366,6 +408,14 @@ export class Operations {
     const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     return updated;
+  }
+  /** Remove one standing "approve always" rule from a project (the operator
+   *  revoking a previously-remembered auto-approval). No-op if it's already gone. */
+  async removeApprovalRule(ws: string, id: string, ruleId: string): Promise<Project> {
+    const existing = await this.store.getProject(id);
+    if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
+    const approvalRules = (existing.approvalRules ?? []).filter((r) => r.id !== ruleId);
+    return this.hub.upsertProject({ ...existing, approvalRules });
   }
   /**
    * A repo-bound project with no local checkout is cloned in the BACKGROUND so
@@ -558,19 +608,54 @@ export class Operations {
       await this.hub.setRunArchived(task.runId, true).catch(() => undefined);
     }
 
-    return this.hub.upsertTask({
+    const updated = await this.hub.upsertTask({
       ...task,
       state: to,
       ...(abandonsRun ? { runId: null } : {}),
       reviewFlaggedReason: null,
     });
+
+    // Sync the linked TaskRun's status to match — the "review → done" path with
+    // NO open HITL falls through here without going via resolveHitl → merge
+    // (which sets run.status="done"), so without this the run could stay at
+    // "review"/"running" while the board shows the card in Done. Idempotent —
+    // best-effort so a bus/persistence hiccup doesn't undo the transition.
+    if (to === "done" && !abandonsRun && updated.runId) {
+      await this.hub.runStatus(updated.runId, "done").catch(() => undefined);
+    }
+    return updated;
+  }
+
+  /**
+   * Force a task to `done` — the escape hatch when the normal review→done path
+   * fails (e.g. the merge queue chokes on a conflict, an HITL got stuck, or the
+   * run finished but the task didn't advance and there's no HITL to resolve).
+   * Bypasses HUMAN_TRANSITIONS: usable from ANY state (except archived).
+   * ALWAYS syncs run.status to "done" when a run is linked. Never merges the
+   * branch — this is a "call it done" operator override, not a work-completion
+   * signal for the runner; use the normal Approve → Done for that.
+   */
+  async forceTaskDone(ws: string, tid: string): Promise<Task> {
+    const task = await this.store.getTask(tid);
+    if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    if (task.archived) throw new NotFoundError("Task"); // archived is a soft-hide, not force-doneable
+    const updated = await this.hub.upsertTask({
+      ...task,
+      state: "done",
+      reviewFlaggedReason: null,
+    });
+    if (updated.runId) {
+      await this.hub.runStatus(updated.runId, "done").catch(() => undefined);
+    }
+    return updated;
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────
   async configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent> {
-    // A runner's model must be one the chosen provider actually offers — the
-    // provider catalog is the single source of truth (DEF-004). An invalid model
-    // is a 400 (fail() maps a plain Error → 400), matching the HTTP contract.
+    // Validate the provider+model pairing. ADVISORY on the model: the catalog is
+    // curated suggestions, not an allowlist, so any non-empty model is accepted for
+    // a known provider (a just-released model works without a catalog edit); only
+    // an unknown provider or an empty model is a 400 (fail() maps Error → 400).
     const invalid = modelValidForProvider(await this.store.listProviders(), input.provider, input.model);
     if (invalid) throw new Error(invalid);
     // The id is a stable, opaque handle (runs reference it as agentId); the name
@@ -585,6 +670,7 @@ export class Operations {
       workspaceId: ws,
       name,
       provider: input.provider,
+      credentialId: input.credentialId ?? null,
       model: input.model,
       status: "idle",
       idleSince: now(),
