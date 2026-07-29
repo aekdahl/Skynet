@@ -10,6 +10,9 @@ coverage/
 # desktop dev (hot-reload) scratch state
 .skynet-dev/
 
+# live-preview checkouts (per-project/run worktrees the preview engine spawns)
+.skynet-worktrees/
+
 # Playwright e2e artifacts
 /playwright-report/
 /test-results/

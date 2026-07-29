@@ -956,6 +956,16 @@ export function LivePreviewModal({
     return () => root.classList.remove("lp-docked");
   }, [mode]);
 
+  // Keep the log view pinned to the newest line as output streams in — but only
+  // when the operator is already near the bottom, so it never yanks the view
+  // while they've scrolled up to read an earlier error.
+  const logRef = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) el.scrollTop = el.scrollHeight;
+  }, [st?.logs, showLogs]);
+
   const width = DEVICES[device];
   const live = st?.status === "live" && st.url;
 
@@ -1007,7 +1017,7 @@ export function LivePreviewModal({
             </div>
           )}
           {showLogs && (
-            <pre className="lp-logs mono">{(st?.logs ?? []).join("\n") || "(no output yet)"}</pre>
+            <pre ref={logRef} className="lp-logs mono">{(st?.logs ?? []).join("\n") || "(no output yet)"}</pre>
           )}
         </div>
       </div>

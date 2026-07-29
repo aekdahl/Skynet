@@ -84,6 +84,7 @@ interface StartSpec {
 const LOG_CAP = 200;
 const IDLE_MS = 15 * 60 * 1000; // auto-stop a preview no one is watching
 const HEALTH_TIMEOUT_MS = 45_000;
+const INSTALL_TIMEOUT_MS = 5 * 60 * 1000; // dependency install budget before the dev command
 
 export class ProjectPreviewManager {
   private previews = new Map<string, Live>();
@@ -352,6 +353,13 @@ export class ProjectPreviewManager {
       p.port = recipe.port;
       this.log(p, `▸ ${recipe.cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
 
+      // Install dependencies first when this fresh checkout has none — otherwise
+      // `npm run dev` fails on a missing tool (e.g. "concurrently: not found").
+      // No-op for a non-node project or one whose node_modules already exists.
+      await this.ensureDeps(p);
+      if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded during install
+      if (p.status === "failed") return this.state(spec.key); // install failed — error already set
+
       // Spawn via a shell so "npm run dev" etc. work; wrap for the opt-in OS
       // sandbox (no-op unless SKYNET_RUNNER_SANDBOX). PORT is injected two ways
       // (env + common Vite/CRA/Next var) so most dev servers pick it up.
@@ -390,6 +398,45 @@ export class ProjectPreviewManager {
       p.error = (err as Error).message;
     }
     return this.state(spec.key);
+  }
+
+  /** Install a fresh checkout's dependencies before the dev command runs, when
+   *  node_modules is absent. No-op for a non-node project or one that already has
+   *  node_modules. Streams install output to the preview log; on failure it flips
+   *  the preview to `failed` with a readable reason (the dev command would only
+   *  fail more cryptically, e.g. "concurrently: not found"). The install child is
+   *  tracked on `p.child` so stop() can kill it mid-flight. */
+  private async ensureDeps(p: Live): Promise<void> {
+    if (!existsSync(join(p.dir, "package.json"))) return; // not a node project
+    if (existsSync(join(p.dir, "node_modules"))) return; // already installed
+    const pm = existsSync(join(p.dir, "pnpm-lock.yaml"))
+      ? "pnpm"
+      : existsSync(join(p.dir, "yarn.lock"))
+        ? "yarn"
+        : "npm";
+    this.log(p, `installing dependencies (${pm} install) — first preview of this checkout, this can take a minute…`);
+    const wrapped = wrapForSandbox("/bin/sh", ["-c", `${pm} install`], { cwd: p.dir });
+    await new Promise<void>((done, fail) => {
+      const child = spawn(wrapped.bin, wrapped.args, { cwd: p.dir, env: { ...process.env, CI: "1", BROWSER: "none" } });
+      p.child = child; // so stop() can kill an in-flight install
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        fail(new Error(`dependency install timed out after ${INSTALL_TIMEOUT_MS / 1000}s`));
+      }, INSTALL_TIMEOUT_MS);
+      child.stdout?.on("data", (b) => this.log(p, b.toString()));
+      child.stderr?.on("data", (b) => this.log(p, b.toString()));
+      child.on("error", (err) => { clearTimeout(timer); fail(err); });
+      child.on("exit", (code) => {
+        clearTimeout(timer);
+        if (code === 0) done();
+        else fail(new Error(`\`${pm} install\` failed (exit ${code ?? "?"}) — see the log above`));
+      });
+    }).catch((err: Error) => {
+      if (this.previews.get(p.key) !== p) return; // superseded during install — leave state alone
+      p.status = "failed";
+      p.error = err.message;
+    });
+    if (p.child) p.child = undefined; // install finished; the dev spawn sets its own child
   }
 
   /** Re-point the worktree at a moving branch tip (called on merge for PROJECT
