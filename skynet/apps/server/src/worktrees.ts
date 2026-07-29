@@ -75,15 +75,71 @@ export class WorktreeProvisioner {
     }
   }
 
+  /** Best-effort refresh of the base branch from origin, so `origin/<base>` is
+   *  current before we branch/merge. No-op (swallowed) when the repo has no
+   *  usable remote (a pure-local project) or is offline — callers then fall back
+   *  to the local base branch. */
+  async fetchBase(): Promise<void> {
+    await this.git(this.repo, "fetch", "--quiet", "origin", this.baseBranch).catch(() => undefined);
+  }
+
+  /** The freshest base ref to cut from / sync to: the fetched `origin/<base>`
+   *  when a remote gave us one, else the local base branch. */
+  async freshBase(): Promise<string> {
+    return (await this.refExists(`refs/remotes/origin/${this.baseBranch}`)) ? `origin/${this.baseBranch}` : this.baseBranch;
+  }
+
+  /** True when the latest base has commits the agent's branch doesn't — i.e. the
+   *  branch is behind `main` and should sync. Used to flag stale in-flight runs. */
+  async baseAheadOf(branch: string): Promise<boolean> {
+    const base = await this.freshBase();
+    if (!(await this.refExists(branch))) return false;
+    // Exit 0 = base IS an ancestor of the branch (branch already has base = up to
+    // date); non-zero = base has commits the branch lacks (behind).
+    try {
+      await this.git(this.repo, "merge-base", "--is-ancestor", base, branch);
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
   /**
-   * Create an isolated worktree on a fresh `branch`, cut from `opts.baseRef`
-   * (when it exists) else the base branch. Cleans up any stale worktree/branch
-   * left by a prior agent with the same id so provisioning is idempotent.
+   * Merge the latest base (`origin/<base>`) into an agent's worktree branch, so a
+   * PR opens against current `main` (and conflicts surface HERE, not at merge
+   * time). Fetches first. Returns `{ok:true}` on a clean merge; on conflict the
+   * merge is ABORTED (worktree left clean) and `{ok:false, conflicts}` is returned
+   * so the caller can escalate instead of pushing a broken branch.
+   */
+  async mergeBase(runId: string): Promise<{ ok: boolean; conflicts?: string[] }> {
+    const path = this.pathFor(runId);
+    await this.fetchBase();
+    const base = await this.freshBase();
+    // A merge when already current is a harmless "Already up to date" no-op.
+    try {
+      await this.git(path, "-c", "user.name=Skynet", "-c", "user.email=skynet@local", "merge", "--no-edit", base);
+      return { ok: true };
+    } catch {
+      const conflicts = (await this.git(path, "diff", "--name-only", "--diff-filter=U").catch(() => ""))
+        .split("\n")
+        .filter(Boolean);
+      await this.git(path, "merge", "--abort").catch(() => undefined);
+      return { ok: false, conflicts };
+    }
+  }
+
+  /**
+   * Create an isolated worktree on a fresh `branch`. Fetches origin first, then
+   * cuts from `opts.baseRef` when it exists (a fork's parent branch) else the
+   * freshest base (`origin/<base>`) — so a new run always starts on latest main,
+   * not a stale local branch. Cleans up any stale worktree/branch left by a prior
+   * agent with the same id so provisioning is idempotent.
    */
   async provision(runId: string, branch: string, opts: ProvisionOpts = {}): Promise<ProvisionResult> {
     await mkdir(this.root, { recursive: true }).catch(() => undefined);
     const path = this.pathFor(runId);
-    const baseRef = opts.baseRef && (await this.refExists(opts.baseRef)) ? opts.baseRef : this.baseBranch;
+    await this.fetchBase(); // refresh origin/<base> so a fresh run starts on latest main
+    const baseRef = opts.baseRef && (await this.refExists(opts.baseRef)) ? opts.baseRef : await this.freshBase();
 
     // Clear anything stale at this path / branch name.
     await this.removePath(path);

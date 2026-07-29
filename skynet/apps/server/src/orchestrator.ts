@@ -161,6 +161,9 @@ export class Orchestrator {
   // Per-run failure counter (onFailed): past config.runMaxFailures the run is
   // escalated instead of parked in `review`. Cleared on success/resolution.
   private failCounts = new Map<string, number>();
+  // Runs already told "main moved" — so the periodic freshness sweep nudges once,
+  // not every tick. Cleared if the branch catches back up (e.g. after a resync).
+  private baseMovedFlagged = new Set<string>();
 
   // `providerOverride` is a test seam — inject a runner provider directly instead
   // of resolving the runner's own provider. Production always passes (store, hub) only.
@@ -778,8 +781,10 @@ export class Orchestrator {
     // the isolated worktree + which merge queue this agent integrates into.
     const git = this.gitContextFor(project);
     try {
-      // Isolated worktree cut from the project's integration tip (or base).
-      const { cwd, baseRef } = await this.provisionCwd(git, runId, branch, git?.merge.integrationBranch(projectId));
+      // Isolated worktree cut from LATEST main: provisionCwd fetches origin and
+      // branches from origin/<base> (no baseRef passed), so every run starts on
+      // the newest human-merged state — not a stale local integration branch.
+      const { cwd, baseRef } = await this.provisionCwd(git, runId, branch);
       // Inject this workspace's provider key (env fallback when none is stored).
       const apiKey = await secretService.resolve(project.workspaceId, runner.credentialId ?? runner.provider);
       // The agent gets the full brief: the short name plus the longer
@@ -976,7 +981,7 @@ export class Orchestrator {
    *  frees the runner (but never retires the worktree), and raises an
    *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes through
    *  raise() instead (the live gate stays parked). */
-  private async escalate(runId: string, reason: string, source: "timeout" | "failures"): Promise<void> {
+  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict"): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
     if (!run) return;
@@ -993,7 +998,12 @@ export class Orchestrator {
       workspaceId: run.workspaceId,
       runId,
       kind: "escalation",
-      title: source === "timeout" ? "Run stuck — needs a human" : "Run keeps failing — needs a human",
+      title:
+        source === "timeout"
+          ? "Run stuck — needs a human"
+          : source === "conflict"
+            ? "Merge conflict with main — needs a rebase"
+            : "Run keeps failing — needs a human",
       why: reason,
       risk: "medium",
       rationale: null,
@@ -1166,6 +1176,16 @@ export class Orchestrator {
   }
 
   private async pushToGithub(git: GitContext, agent: TaskRun, repo: string, project?: Project | null): Promise<void> {
+    // Bring the branch up to LATEST main before the PR opens, so it merges
+    // cleanly and the reviewer/GitHub never hits a stale-base conflict at merge
+    // time. On conflict, escalate for a human rebase instead of opening a broken PR.
+    const sync = await git.worktrees.mergeBase(agent.id);
+    if (!sync.ok) {
+      const files = sync.conflicts?.length ? `: ${sync.conflicts.join(", ")}` : "";
+      await this.hub.runLog(agent.id, `${config.baseBranch} moved and merges conflict${files} — not opening a PR until it's rebased.`);
+      await this.escalate(agent.id, `merge conflict with ${config.baseBranch}${files} — rebase the branch, then re-approve to open the PR.`, "conflict");
+      return;
+    }
     const worktreePath = git.worktrees.pathFor(agent.id);
     const stat = await git.worktrees.diffStat(agent.id, config.baseBranch);
     const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
@@ -1562,6 +1582,42 @@ export class Orchestrator {
         .catch(() => undefined);
     }
     return stats;
+  }
+
+  /**
+   * Keep the fleet on latest main: fetch each active project's base from origin
+   * (so a new run branches off fresh main), and flag any in-flight run whose
+   * branch has fallen behind — a one-time nudge; the actual sync happens when its
+   * PR opens (mergeBase in pushToGithub). Cheap + safe to run periodically and at
+   * startup: fetch only updates remote-tracking refs, never a checked-out branch.
+   */
+  async syncBaseAndFlagStale(): Promise<void> {
+    const runs = (await this.store.listAllRuns().catch(() => [] as TaskRun[])).filter(
+      (r) => r.status !== "done" && !r.archived && r.branch,
+    );
+    const gitByProject = new Map<string, GitContext | undefined>();
+    const fetched = new Set<GitContext>();
+    for (const r of runs) {
+      if (!gitByProject.has(r.projectId)) {
+        const project = await this.store.getProject(r.projectId).catch(() => null);
+        gitByProject.set(r.projectId, this.gitContextFor(project));
+      }
+      const git = gitByProject.get(r.projectId);
+      if (!git) continue;
+      if (!fetched.has(git)) {
+        await git.worktrees.fetchBase().catch(() => undefined);
+        fetched.add(git);
+      }
+      const behind = await git.worktrees.baseAheadOf(`refs/heads/${r.branch}`).catch(() => false);
+      if (behind && !this.baseMovedFlagged.has(r.id)) {
+        this.baseMovedFlagged.add(r.id);
+        await this.hub
+          .runLog(r.id, `${config.baseBranch} has moved since this run started — it'll be synced into the branch before its PR opens.`)
+          .catch(() => undefined);
+      } else if (!behind) {
+        this.baseMovedFlagged.delete(r.id); // caught up (e.g. after a resync) → re-arm
+      }
+    }
   }
 
   async reapStaleAgents(): Promise<void> {
