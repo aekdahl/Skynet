@@ -753,11 +753,13 @@ export function ProjectView({
   project,
   now,
   onOpenTask,
+  onOpenAgent,
   onBack,
 }: {
   project: Project;
   now: number;
   onOpenTask: (id: string) => void;
+  onOpenAgent: (id: string) => void;
   onBack: () => void;
 }) {
   const {
@@ -975,7 +977,7 @@ export function ProjectView({
       {agentsForProject(runs, project.id).length > 0 && (
         <div className="projview-line">
           <div className="panel-head">PROJECT LINE</div>
-          <SwDiagram project={project} onOpenTask={onOpenTask} />
+          <SwDiagram project={project} onOpenTask={onOpenTask} onOpenAgent={onOpenAgent} />
         </div>
       )}
 

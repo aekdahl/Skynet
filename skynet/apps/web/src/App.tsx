@@ -201,6 +201,7 @@ export function App() {
                 setLens={setLens}
                 now={now}
                 onOpenTask={openTask}
+                onOpenAgent={openAgent}
                 onOpenProject={openProject}
                 onCreate={createProject}
                 onGoInbox={() => setView("queue")}
@@ -233,6 +234,7 @@ export function App() {
                 project={project}
                 now={now}
                 onOpenTask={openTask}
+                onOpenAgent={openAgent}
                 onBack={() => setView(fromP)}
               />
             )}

@@ -24,9 +24,11 @@ const swShort = (s: string) => (s.length > 18 ? s.slice(0, 17).trimEnd() + "…"
 export function SwDiagram({
   project,
   onOpenTask,
+  onOpenAgent,
 }: {
   project: Project;
   onOpenTask: (id: string) => void;
+  onOpenAgent: (agentId: string) => void;
 }) {
   const { runs, tasks, fleet } = useStore();
   const mine = agentsForProject(runs, project.id);
@@ -141,6 +143,9 @@ export function SwDiagram({
       {order.map((t, r) => {
         const head = t.runs.find((x) => x.status !== "done") ?? t.runs[t.runs.length - 1];
         const p = parentOf(t);
+        // The track's name IS a fleet agent → its name opens that agent's detail.
+        // (A track with no fleet agent falls back to opening its current run.)
+        const agentBacked = fleet.some((a) => a.id === t.agentId);
         const rn = head ? runnerName(head, fleet) : fleet.find((a) => a.id === t.agentId)?.name ?? t.agentId;
         const parentRn = p ? runnerName(p.runs[0]!, fleet) : "";
         const done = t.runs.filter((x) => x.status === "done").length;
@@ -152,7 +157,12 @@ export function SwDiagram({
             : t.queued.length + " queued";
         return (
           <div key={t.agentId} className="swb-row" style={{ top: ROW0 + r * ROW_H + "px", height: ROW_H + "px" }}>
-            <button className="swb-name" onClick={() => head && onOpenTask(head.id)} disabled={!head}>
+            <button
+              className="swb-name"
+              onClick={() => (agentBacked ? onOpenAgent(t.agentId) : head && onOpenTask(head.id))}
+              disabled={!agentBacked && !head}
+              title={agentBacked ? "Open agent detail" : head ? "Open run" : undefined}
+            >
               {head ? <StatusDot status={head.status} /> : <span className="sw-dot-idle" title="idle — nothing running yet" />}
               <span className="sw-task-text">
                 <span className="sw-tname">{rn}</span>

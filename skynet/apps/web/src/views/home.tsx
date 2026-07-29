@@ -183,6 +183,7 @@ export function HomeView({
   setLens,
   now,
   onOpenTask,
+  onOpenAgent,
   onOpenProject,
   onCreate,
   onGoInbox,
@@ -194,6 +195,7 @@ export function HomeView({
   setLens: (l: Lens) => void;
   now: number;
   onOpenTask: (id: string) => void;
+  onOpenAgent: (id: string) => void;
   onOpenProject: (id: string) => void;
   onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
   onGoInbox: () => void;
@@ -303,7 +305,7 @@ export function HomeView({
       </div>
       <div className="home-lens">
         {lens === "subway" && (
-          <SubwayView now={now} onOpenTask={onOpenTask} onOpenProject={onOpenProject} />
+          <SubwayView now={now} onOpenTask={onOpenTask} onOpenAgent={onOpenAgent} onOpenProject={onOpenProject} />
         )}
         {lens === "timeline" && <TimelineView now={now} onOpenTask={onOpenTask} />}
         {lens === "ledger" && (
@@ -426,10 +428,12 @@ function LedgerView({
 function SubwayView({
   now,
   onOpenTask,
+  onOpenAgent,
   onOpenProject,
 }: {
   now: number;
   onOpenTask: (id: string) => void;
+  onOpenAgent: (id: string) => void;
   onOpenProject: (id: string) => void;
 }) {
   const { runs, tasks, queue, projects, modules } = useStore();
@@ -494,7 +498,7 @@ function SubwayView({
                 {allDone && <span className="expill expill-done">✓ shipped</span>}
               </div>
               {pa.length > 0 ? (
-                <SwDiagram project={p} onOpenTask={onOpenTask} />
+                <SwDiagram project={p} onOpenTask={onOpenTask} onOpenAgent={onOpenAgent} />
               ) : tasks.some((t) => t.projectId === p.id) ? (
                 <EmptyState
                   compact
