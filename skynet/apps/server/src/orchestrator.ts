@@ -1154,24 +1154,17 @@ export class Orchestrator {
       }
       await this.hub.runLog(agent.id, `pushed ${agent.branch} → opened PR ${result.pr?.url ?? "(opened)"}`);
 
-      // The operator's approval IS the approval — merge the PR and complete the
-      // task (→ done). If GitHub blocks the merge (branch protection / required
-      // checks or reviews), surface that and leave the run in review rather than
-      // pretending it integrated. Without this the run/task sat in review forever.
-      if (!result.pr) {
-        await this.hub.runLog(agent.id, "PR did not return a number — can't merge automatically; merge it on GitHub to complete.");
-        return;
-      }
-      const merge = await githubService
-        .mergePr(agent.workspaceId, repo, result.pr.number)
-        .catch((err: unknown) => ({ merged: false, reason: (err as Error).message }));
-      if (merge.merged) {
-        await this.hub.runLog(agent.id, `merged PR ${result.pr.url ?? `#${result.pr.number}`}`);
-        await this.completeMerged(agent.id, agent.branch);
-      } else {
-        await this.hub.runStatus(agent.id, "review");
-        await this.hub.runLog(agent.id, `PR opened but not merged — ${merge.reason ?? "blocked by GitHub"}. Merge it on GitHub to complete.`);
-      }
+      // Do NOT auto-merge. The PR is where a HUMAN takes over: an agent (or the
+      // autonomy loop) must never merge to the repo's real base branch on its
+      // own. The run stays in `review`; the operator merges the PR on GitHub
+      // — honouring its branch protection / required checks — then marks the task
+      // done (Force-done). This is deliberate: opening the PR is automated, the
+      // merge decision is a human's.
+      await this.hub.runStatus(agent.id, "review");
+      await this.hub.runLog(
+        agent.id,
+        `PR is open for review — merge it on GitHub to complete. Skynet won't auto-merge${result.pr ? ` (${result.pr.url ?? `#${result.pr.number}`})` : ""}.`,
+      );
     } catch (err) {
       await this.hub.runLog(agent.id, `GitHub push failed: ${(err as Error).message}`);
     }
