@@ -172,3 +172,67 @@ describe("forceTaskDone — escape hatch", () => {
     expect(t.runId).toBeNull();
   });
 });
+
+// Once an operator says "any agent can take this", they usually also want the
+// autonomy loop to pick it up — asking them to also tick the Auto-pick box was
+// a redundant step. Setting eligibility for the FIRST time (unassigned → any /
+// agents) now flips autoPick on automatically. Later re-picks don't re-flip.
+describe("updateTask — autoPick defaults on when eligibility first gets set", () => {
+  let store: MemoryStore;
+  let ops: Operations;
+
+  beforeEach(async () => {
+    store = new MemoryStore();
+    const hub = new Hub(store, new NullBus());
+    const orchestrator = new Orchestrator(store, hub);
+    ops = new Operations({ store, hub, orchestrator });
+    await store.putProject(project);
+  });
+
+  it("unassigned → any flips autoPick from false to true", async () => {
+    await store.putTask({ ...mkTask("backlog", { mode: "unassigned", agentIds: [] }), autoPick: false });
+    const t = await ops.updateTask(DEFAULT_WORKSPACE, "t1", { assignment: { mode: "any", agentIds: [] } });
+    expect(t.autoPick).toBe(true);
+    expect(t.assignment.mode).toBe("any");
+  });
+
+  it("unassigned → agents also flips autoPick on", async () => {
+    // Seed the fleet so the agent id validates.
+    await store.putAgent({
+      id: "a-1", workspaceId: DEFAULT_WORKSPACE, name: "alpha",
+      provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0,
+    } as never);
+    await store.putTask({ ...mkTask("backlog", { mode: "unassigned", agentIds: [] }), autoPick: false });
+    const t = await ops.updateTask(DEFAULT_WORKSPACE, "t1", { assignment: { mode: "agents", agentIds: ["a-1"] } });
+    expect(t.autoPick).toBe(true);
+  });
+
+  it("switching between any ↔ agents does NOT re-flip autoPick (respects the operator's later choice)", async () => {
+    // Operator set eligibility once (autoPick got flipped on), then explicitly
+    // turned autoPick off. A later mode swap must NOT silently re-enable it.
+    await store.putTask({ ...mkTask("backlog", { mode: "any", agentIds: [] }), autoPick: false });
+    await store.putAgent({
+      id: "a-1", workspaceId: DEFAULT_WORKSPACE, name: "alpha",
+      provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0,
+    } as never);
+    const t = await ops.updateTask(DEFAULT_WORKSPACE, "t1", { assignment: { mode: "agents", agentIds: ["a-1"] } });
+    expect(t.autoPick).toBe(false);
+  });
+
+  it("an explicit autoPick in the same patch wins (user override)", async () => {
+    // Operator sets eligibility AND unchecks autoPick in the same edit — respect it.
+    await store.putTask({ ...mkTask("backlog", { mode: "unassigned", agentIds: [] }), autoPick: false });
+    const t = await ops.updateTask(DEFAULT_WORKSPACE, "t1", {
+      assignment: { mode: "any", agentIds: [] },
+      autoPick: false,
+    });
+    expect(t.autoPick).toBe(false);
+  });
+
+  it("patches with no assignment change leave autoPick untouched", async () => {
+    await store.putTask({ ...mkTask("backlog", { mode: "any", agentIds: [] }), autoPick: false });
+    const t = await ops.updateTask(DEFAULT_WORKSPACE, "t1", { text: "renamed" });
+    expect(t.autoPick).toBe(false);
+    expect(t.text).toBe("renamed");
+  });
+});

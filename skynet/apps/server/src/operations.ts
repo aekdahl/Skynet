@@ -505,7 +505,19 @@ export class Operations {
         if (unknown.length > 0) throw new NotFoundError(`Agent(s) ${unknown.join(", ")}`);
       }
     }
-    return this.hub.upsertTask({ ...task, ...patch });
+    // Auto-pick defaults to ON the FIRST time eligibility gets set (unassigned →
+    // any/agents). Once an operator has said "any agent can take this" they
+    // usually want the autonomy loop to pick it up automatically — asking them
+    // to also tick the Auto-pick box is a redundant step. Toggling between
+    // `any` ↔ `agents` doesn't re-flip (operator already made an autoPick
+    // choice), and an explicit `autoPick` in the same patch wins (user override).
+    const settingEligibility =
+      patch.assignment &&
+      patch.assignment.mode !== "unassigned" &&
+      task.assignment.mode === "unassigned";
+    const autoPickPatch: Pick<Task, "autoPick"> | Record<string, never> =
+      settingEligibility && patch.autoPick === undefined ? { autoPick: true } : {};
+    return this.hub.upsertTask({ ...task, ...patch, ...autoPickPatch });
   }
   /**
    * Manually promote (up) or demote (down) a task within its project's backlog.
