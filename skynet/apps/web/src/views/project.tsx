@@ -16,6 +16,7 @@ import { ProjectDelivery, visualLeadOf } from "../components/preview";
 import { Markdown } from "../components/markdown";
 import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
+import { TimelineView } from "./home";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -655,6 +656,88 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
   );
 }
 
+// ─── Project stats ──────────────────────────────────────────────────────────
+// Compact per-project numbers derived from the runs + tasks the store already
+// holds — no extra fetch. Shown above the kanban/timeline lens toggle. Cells
+// that have no data (vendor didn't report tokens/cost) render as "—", not 0,
+// so a missing signal doesn't look like a zeroed real one.
+
+function fmtNum(n: number): string {
+  if (n < 1_000) return String(n);
+  if (n < 1_000_000) return (n / 1_000).toFixed(n < 10_000 ? 1 : 0) + "k";
+  return (n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0) + "M";
+}
+function fmtCost(usd: number): string {
+  if (usd < 0.01) return "<$0.01";
+  if (usd < 1) return "$" + usd.toFixed(2);
+  if (usd < 100) return "$" + usd.toFixed(2);
+  return "$" + Math.round(usd).toLocaleString();
+}
+function fmtDurationMs(ms: number): string {
+  if (ms < 60_000) return Math.round(ms / 1000) + "s";
+  if (ms < 3_600_000) return Math.round(ms / 60_000) + "m";
+  return (ms / 3_600_000).toFixed(1) + "h";
+}
+
+function ProjectStats({
+  project,
+  runs,
+  tasks,
+  fleet,
+}: {
+  project: Project;
+  runs: TaskRun[];
+  tasks: Task[];
+  fleet: Agent[];
+}) {
+  const projTasks = tasks.filter((t) => t.projectId === project.id && !t.archived);
+  const projRuns = runs.filter((r) => r.projectId === project.id && !r.archived);
+  // Vendor-reported usage sums (nulls stay nulls — a missing signal, not 0).
+  let inTok = 0, outTok = 0, dur = 0, usdKnown = false, usdTotal = 0, durKnown = false;
+  for (const r of projRuns) {
+    const u = r.usage;
+    if (!u) continue;
+    inTok += u.inputTokens;
+    outTok += u.outputTokens;
+    if (u.costUsd != null) { usdKnown = true; usdTotal += u.costUsd; }
+    if (u.durationMs != null) { durKnown = true; dur += u.durationMs; }
+  }
+  // Which provider · model pairs actually ran on this project (dedup for the
+  // "Models used" tile). Empty for a fresh project — display renders "—" then.
+  const modelPairs = new Set<string>();
+  for (const r of projRuns) modelPairs.add(`${r.provider} · ${r.model}`);
+  void fleet; // reserved for future name-based grouping; unused today.
+  const activeRuns = projRuns.filter((r) => r.status === "running" || r.status === "waiting").length;
+  const doneRuns = projRuns.filter((r) => r.status === "done").length;
+  const openTasks = projTasks.filter((t) => t.state !== "done").length;
+  const doneTasks = projTasks.filter((t) => t.state === "done").length;
+
+  const cells: { label: string; value: string; title?: string }[] = [
+    { label: "Tasks", value: `${openTasks} open · ${doneTasks} done` },
+    { label: "Runs", value: `${activeRuns} active · ${doneRuns} done` },
+    { label: "Tokens in", value: inTok ? fmtNum(inTok) : "—", title: "Prompt tokens sent to the model, summed across runs" },
+    { label: "Tokens out", value: outTok ? fmtNum(outTok) : "—", title: "Completion tokens the model generated" },
+    { label: "Spend", value: usdKnown ? fmtCost(usdTotal) : "—", title: "Cost in USD (vendor-reported; may be — if the provider didn't include it)" },
+    { label: "Run time", value: durKnown ? fmtDurationMs(dur) : "—", title: "Cumulative wall-clock across runs (vendor-reported)" },
+    {
+      label: "Models used",
+      value: modelPairs.size ? String(modelPairs.size) : "—",
+      title: modelPairs.size ? [...modelPairs].join("\n") : "No runs yet",
+    },
+  ];
+
+  return (
+    <div className="proj-stats">
+      {cells.map((c) => (
+        <div key={c.label} className="proj-stat" title={c.title}>
+          <span className="proj-stat-lbl">{c.label}</span>
+          <span className="proj-stat-val">{c.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function ProjectView({
   project,
   now,
@@ -670,6 +753,7 @@ export function ProjectView({
     runs,
     queue,
     tasks,
+    fleet,
     updateProject,
     removeApprovalRule,
     deleteProject,
@@ -677,6 +761,17 @@ export function ProjectView({
     createTask,
     archiveAgent,
   } = useStore();
+  // Per-project lens (Kanban is the default; Timeline mirrors Home's timeline
+  // scoped to just this project). Persisted per-project in sessionStorage so
+  // switching back to the project restores the last chosen lens.
+  const [lens, setLens] = useState<"kanban" | "timeline">(() => {
+    if (typeof sessionStorage === "undefined") return "kanban";
+    return sessionStorage.getItem(`skynet.proj.lens.${project.id}`) === "timeline" ? "timeline" : "kanban";
+  });
+  useEffect(() => {
+    if (typeof sessionStorage !== "undefined")
+      sessionStorage.setItem(`skynet.proj.lens.${project.id}`, lens);
+  }, [lens, project.id]);
   const [cloning, setCloning] = useState(false);
   const [cloneErr, setCloneErr] = useState<string | null>(null);
   const cloneRepo = async () => {
@@ -866,6 +961,27 @@ export function ProjectView({
         </div>
       )}
 
+      <ProjectStats project={project} runs={runs} tasks={tasks} fleet={fleet} />
+
+      <div className="projview-lens">
+        <div className="lens-switch">
+          {(["kanban", "timeline"] as const).map((id) => (
+            <button
+              key={id}
+              className={"lens-btn" + (lens === id ? " on" : "")}
+              onClick={() => setLens(id)}
+            >
+              {id === "kanban" ? "Kanban" : "Timeline"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {lens === "timeline" ? (
+        <div className="projview-timeline">
+          <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
+        </div>
+      ) : (
       <div className="kb-cols kb-cols-6">
         {TASK_STATES.map((st) => {
           const colTasks = tasksInState(tasks, project.id, st).filter((t) => !hidden(t));
@@ -893,6 +1009,7 @@ export function ProjectView({
           );
         })}
       </div>
+      )}
 
       <ProjectAssistant projectId={project.id} />
 

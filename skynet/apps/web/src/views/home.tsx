@@ -630,14 +630,39 @@ function RosterView({
 
 // ─── Timeline lens ───────────────────────────────────────────────────────────
 
-function TimelineView({
+// Exported so the project page can reuse it in single-lane mode via `projectId`:
+// the same layout, deps, and legend the workspace view uses — just filtered to
+// one project's lane and one project's cross-run deps. Kept in-file to avoid
+// duplicating the axis/tick/bar math (only place that owns it).
+export function TimelineView({
   now,
   onOpenTask,
+  projectId,
+  hideHeader,
 }: {
   now: number;
   onOpenTask: (id: string) => void;
+  /** When set, filter to just this project's lane (used by the project page). */
+  projectId?: string;
+  /** When true, drop the "Today's run" panel head (the project page shows its
+   *  own lens toggle instead). */
+  hideHeader?: boolean;
 }) {
-  const { runs, queue, projects, deps, fleet } = useStore();
+  const store = useStore();
+  const runs = store.runs;
+  const queue = store.queue;
+  const projects = projectId
+    ? store.projects.filter((p) => p.id === projectId)
+    : store.projects;
+  const deps = projectId
+    // Only cross-run deps within THIS project (a workspace-wide dep on a run in
+    // another project's lane would render with no target here).
+    ? store.deps.filter((d) =>
+        runs.some((r) => r.id === d.fromAgentId && r.projectId === projectId) &&
+        runs.some((r) => r.id === d.toAgentId && r.projectId === projectId),
+      )
+    : store.deps;
+  const fleet = store.fleet;
   const oq = openQueue(queue);
   const W = 185;
   const NOW = 144;
@@ -674,10 +699,12 @@ function TimelineView({
 
   return (
     <section className="vw">
-      <ViewHead
-        title="Today's run"
-        sub="What each agent has been doing, where it stalled, and where it's headed"
-      />
+      {!hideHeader && (
+        <ViewHead
+          title="Today's run"
+          sub="What each agent has been doing, where it stalled, and where it's headed"
+        />
+      )}
       <div className="tl-wrap">
         <div className="tl-axis">
           {ticks.map((t) => (
