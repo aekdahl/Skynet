@@ -375,6 +375,28 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Global Steward chat (the sidebar dock, every page). Optional `projectId`
+  // focuses the page you're on — then it's the full project assistant (actions);
+  // otherwise it answers workspace-wide.
+  app.post<{ Body: { question?: string; history?: ChatTurn[]; projectId?: string } }>(
+    "/api/steward/chat",
+    async (req, reply) => {
+      const question = (req.body?.question ?? "").trim();
+      if (!question) return reply.code(400).send({ error: "Ask Steward something." });
+      const history = Array.isArray(req.body?.history)
+        ? req.body!.history
+            .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
+            .slice(-16)
+        : undefined;
+      try {
+        const focus = typeof req.body?.projectId === "string" ? req.body!.projectId : undefined;
+        return await ops.stewardChat(ws(req), question, history, focus);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
   // Repo-aware project assistant — chat about this project's status + content.
   app.post<{ Params: { id: string }; Body: { question?: string; history?: ChatTurn[] } }>(
     "/api/projects/:id/chat",

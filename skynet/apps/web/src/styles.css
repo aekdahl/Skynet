@@ -1930,6 +1930,37 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .lp-dock .lp-modal { flex: 1; height: 100%; border-radius: 10px; box-shadow: -8px 0 24px rgba(0,0,0,.35); }
 :root.lp-docked .main { padding-right: var(--lp-dock-w, 44vw); }
 @media (max-width: 1100px) { .lp-dock { width: var(--lp-dock-w, 60vw); } :root.lp-docked .main { padding-right: var(--lp-dock-w, 60vw); } }
+
+/* ── Steward — global chat dock (available on every page) ─────────────────── */
+.steward-dock { position: fixed; top: 40px; right: 0; bottom: 0; width: 400px; max-width: 92vw; z-index: 2147483644; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); box-shadow: -10px 0 28px rgba(0,0,0,.4); }
+:root.steward-open .main { padding-right: 400px; }
+.steward-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); flex: none; }
+.steward-title { font-size: 11px; letter-spacing: 0.12em; color: var(--accent); }
+.steward-scope { font-size: 10px; color: var(--faint); }
+.steward-spacer { flex: 1; }
+.steward-thread { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 2px; }
+.steward-dock .asst-input { padding: 10px 12px; border-top: 1px solid var(--line-soft); flex: none; }
+.steward-dock .asst-err { margin: 0 12px 8px; }
+
+/* While Steward is open, collapse the left nav to an icon rail to reclaim width. */
+:root.steward-open .op-side { width: 56px; }
+:root.steward-open .op-ws { justify-content: center; padding: 13px 0; }
+:root.steward-open .op-ws-name { display: none; }
+:root.steward-open .op-navitem { justify-content: center; gap: 0; padding: 8px 0; font-size: 0; }
+:root.steward-open .op-navitem .ic { font-size: 15px; width: auto; }
+:root.steward-open .op-navitem .badge { display: none; }
+:root.steward-open .op-navsec,
+:root.steward-open .op-navsec-caret,
+:root.steward-open .op-plist,
+:root.steward-open .op-nav-sub,
+:root.steward-open .op-side-foot { display: none; }
+
+/* Floating opener shown when the dock is closed. */
+.steward-fab { position: fixed; right: 16px; bottom: 40px; z-index: 2147483644; display: inline-flex; align-items: center; gap: 7px; padding: 9px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-family: var(--font-ui); font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,.35); }
+.steward-fab:hover { border-color: var(--accent); }
+.steward-fab-mark { color: var(--accent); }
+
+@media (max-width: 900px) { .steward-dock { width: 100vw; max-width: 100vw; } :root.steward-open .main { padding-right: 0; } }
 /* Drag handle on the dock's left edge to resize the pane. */
 .lp-resize { position: absolute; left: 0; top: 0; bottom: 0; width: 9px; cursor: ew-resize; z-index: 2; touch-action: none; }
 .lp-resize::after { content: ""; position: absolute; left: 3px; top: 50%; transform: translateY(-50%); width: 3px; height: 44px; border-radius: 3px; background: var(--line); opacity: 0; transition: opacity .12s; }
