@@ -527,7 +527,10 @@ button.lg-arow:hover { background: var(--raised); }
 .sw-count { font-size: 11px; color: var(--faint); text-align: right; }
 
 /* branching subway */
-.swb { position: relative; }
+/* Horizontal scroll when the line has more stations than fit — the diagram sets
+   a min-width from its column count so labels keep a readable pitch. */
+.swb-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; }
+.swb { position: relative; min-width: 100%; }
 .swb-row { position: absolute; left: 0; right: 0; display: flex; align-items: center; }
 .swb-name {
   display: flex; align-items: center; gap: 9px; width: 250px; flex: none;
