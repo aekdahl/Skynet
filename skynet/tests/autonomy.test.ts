@@ -119,6 +119,11 @@ describe("autonomy loop", () => {
     await orch.tickAutonomy();
     expect((await store.getTask("t1"))?.reviewFlaggedReason).toContain("missing tests");
     expect((await store.getHitl("q1"))?.resolvedAt).toBeNull();
+    // The review is recorded on the run's live log: WHO reviewed + the verdict,
+    // with the reviewer's full reasoning foldable in `detail`.
+    const flog = (await store.getRun("r1"))?.log.find((l) => /auto-reviewed by a1/i.test(l.line));
+    expect(flog?.line).toMatch(/flagged for a human/i);
+    expect(flog?.detail).toContain("missing tests");
   });
 
   it("auto-review that APPROVEs resolves the review HITL", async () => {
@@ -139,6 +144,9 @@ describe("autonomy loop", () => {
     await store.putTask(mkTask({ state: "review", runId: "r1" }));
     await orch.tickAutonomy();
     expect((await store.getHitl("q1"))?.resolution?.action).toBe("approve");
+    const alog = (await store.getRun("r1"))?.log.find((l) => /auto-reviewed by a1/i.test(l.line));
+    expect(alog?.line).toMatch(/approved/i);
+    expect(alog?.detail).toContain("looks good");
   });
 
   it("does NOT clobber a task that reached done while its review consult was running", async () => {
