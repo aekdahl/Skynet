@@ -1893,4 +1893,25 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .lp-ph-dot.lp-status-failed { background: var(--danger, #e66); }
 .lp-ph-msg { font-size: 13px; max-width: 60ch; text-align: center; }
 .lp-ph-cmd { font-size: 11px; color: var(--faint); }
-.lp-logs { max-height: 30%; overflow: auto; margin: 0; padding: 10px 12px; font-size: 11px; color: var(--muted); background: var(--bg); border-top: 1px solid var(--line-soft); white-space: pre-wrap; }
+/* Concrete height (not a % that collapses when the flex parent's height is
+   indefinite, e.g. on a failed preview — which left the pre unbounded + clipped
+   with no scroll region). flex:none holds the height; resize lets the operator
+   drag it taller; overflow:auto gives a real scrollbar; word-break wraps long
+   tokens so nothing overflows horizontally. */
+.lp-logs {
+  flex: none;
+  height: 200px;
+  min-height: 80px;
+  max-height: 80vh;
+  overflow: auto;
+  resize: vertical;
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  background: var(--bg);
+  border-top: 1px solid var(--line-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
