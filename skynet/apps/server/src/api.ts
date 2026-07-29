@@ -23,6 +23,8 @@ import { authenticate, type Principal } from "./auth.js";
 import { requiresAuth } from "./auth-guard.js";
 import { config, RESTART_EXIT_CODE } from "./config.js";
 import { listDir } from "./fs-browse.js";
+import { projectPreview } from "./preview/project-preview.js";
+import { registerPreviewProxy } from "./preview/proxy.js";
 import {
   currentEnvSettings,
   envSettingsWritable,
@@ -432,6 +434,11 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       }
     },
   );
+
+  // Reverse proxy so a running preview is reachable through Skynet's own URL
+  // (phone/remote) at `/p/<token>/…`. UNAUTHENTICATED by design — the path token
+  // is the secret; see preview/proxy.ts. Registered before the SPA catch-all.
+  registerPreviewProxy(app, projectPreview);
 
   // ── live preview (Phase-1 v0) — run the project's web app + iframe it ─────
   app.get<{ Params: { id: string } }>("/api/projects/:id/preview", async (req, reply) => {

@@ -20,6 +20,7 @@
 // SPA iframes that port directly (desktop = same machine, no proxy).
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -67,6 +68,13 @@ export interface PreviewState {
   error: string | null;
   logs: string[];
   startedAt: number | null;
+  // Unguessable path token for the reverse proxy (`/p/<token>/`). The secret in
+  // the shared URL — null unless the preview is live.
+  token: string | null;
+  // Phone-reachable URL served through the Skynet server's public base
+  // (SKYNET_PUBLIC_URL) — `${base}/p/<token>/`. null when no public base is set
+  // (then only the localhost `url` works, on the machine running Skynet).
+  publicUrl: string | null;
 }
 
 interface Live {
@@ -79,6 +87,8 @@ interface Live {
   gitRepo: string; // repo the worktree was added in (for cleanup)
   recipeKey: string; // agentRecipe cache key (the project id)
   refreshBranch?: string; // moving branch to re-point to on merge (project previews only)
+  token?: string; // reverse-proxy path token (`/p/<token>/`)
+  basePath?: string; // when set, the dev server serves under this base (vite) → proxy passes the full path
   logs: string[];
   error: string | null;
   startedAt: number | null;
@@ -108,7 +118,7 @@ export class ProjectPreviewManager {
   // .skynet/preview.json makes it the deterministic descriptor instead.
   private agentRecipe = new Map<string, { cmd: string }>();
 
-  constructor(private worktreesDir?: string) {}
+  constructor(private worktreesDir?: string, private publicUrlBase?: string) {}
 
   private git(cwd: string, ...args: string[]): Promise<{ stdout: string }> {
     return exec(gitBin(), ["-C", cwd, ...args]);
@@ -126,17 +136,56 @@ export class ProjectPreviewManager {
   /** A serializable snapshot for the API/UI. */
   state(key: string): PreviewState {
     const p = this.previews.get(key);
-    if (!p) return { status: "idle", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null };
+    if (!p) return { status: "idle", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null, token: null, publicUrl: null };
     p.lastTouched = Date.now(); // polling status counts as "watching" → defers idle stop
+    const live = p.status === "live" && p.port;
     return {
       status: p.status,
-      url: p.status === "live" && p.port ? `http://127.0.0.1:${p.port}` : null,
+      url: live ? `http://127.0.0.1:${p.port}` : null,
       port: p.port ?? null,
       recipe: p.recipe ? { cmd: p.recipe.cmd, source: p.recipe.source } : null,
       error: p.error,
       logs: p.logs.slice(-80),
       startedAt: p.startedAt,
+      token: p.token ?? null,
+      publicUrl: live && p.token && this.publicUrlBase ? `${this.publicUrlBase}/p/${p.token}/` : null,
     };
+  }
+
+  /** Resolve a reverse-proxy path token to its live preview's loopback target.
+   *  `basePath` is set when the dev server serves under `/p/<token>/` (vite) — the
+   *  proxy then forwards the full path; otherwise it strips the prefix. Touching
+   *  it counts as activity so an actively-viewed preview isn't idle-stopped. */
+  proxyTarget(token: string): { port: number; basePath?: string } | null {
+    for (const p of this.previews.values()) {
+      if (p.token === token && p.status === "live" && p.port) {
+        p.lastTouched = Date.now();
+        return { port: p.port, basePath: p.basePath };
+      }
+    }
+    return null;
+  }
+
+  /** Is this recipe a Vite dev server? (so we can hand it a `--base` for remote
+   *  serving.) Matches the command, or a run-script when vite is a dependency. */
+  private isViteRecipe(dir: string, cmd: string): boolean {
+    if (/\bvite\b/.test(cmd)) return true;
+    if (!/\b(dev|start|serve|preview)\b/.test(cmd)) return false;
+    try {
+      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      return !!(pkg.dependencies?.vite || pkg.devDependencies?.vite);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Append a Vite `--base` to the recipe so its absolute asset URLs resolve
+   *  under the proxy subpath. npm needs `--` to forward args to the script. */
+  private withViteBase(cmd: string, base: string): string {
+    return /^\s*npm\b/.test(cmd) ? `${cmd} -- --base=${base}` : `${cmd} --base=${base}`;
   }
 
   private log(p: Live, line: string) {
@@ -458,18 +507,30 @@ export class ProjectPreviewManager {
       }
       p.recipe = recipe;
       p.port = recipe.port;
+      // Unguessable token for the reverse proxy (`/p/<token>/`) — the secret in
+      // the shared phone URL.
+      p.token = randomBytes(9).toString("base64url");
 
       // A fresh checkout has no node_modules → provision them before we run the
       // dev command (else `concurrently`/`vite`/etc. aren't found).
       await this.ensureDeps(p, spec.gitRepo);
       if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded during install
 
-      this.log(p, `▸ ${recipe.cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
+      // When there's a public base (remote/phone access) AND it's Vite, serve the
+      // app under the proxy subpath so its absolute asset URLs resolve remotely;
+      // the proxy then forwards the full `/p/<token>/…` path unchanged.
+      let cmd = recipe.cmd;
+      if (this.publicUrlBase && this.isViteRecipe(p.dir, recipe.cmd)) {
+        p.basePath = `/p/${p.token}/`;
+        cmd = this.withViteBase(recipe.cmd, p.basePath);
+        this.log(p, `serving under ${p.basePath} for remote preview (vite base)`);
+      }
+      this.log(p, `▸ ${cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
 
       // Spawn via a shell so "npm run dev" etc. work; wrap for the opt-in OS
       // sandbox (no-op unless SKYNET_RUNNER_SANDBOX). PORT is injected two ways
       // (env + common Vite/CRA/Next var) so most dev servers pick it up.
-      const wrapped = wrapForSandbox("/bin/sh", ["-c", recipe.cmd], { cwd: p.dir });
+      const wrapped = wrapForSandbox("/bin/sh", ["-c", cmd], { cwd: p.dir });
       if (wrapped.note) this.log(p, wrapped.note);
       const child = spawn(wrapped.bin, wrapped.args, {
         cwd: p.dir,
@@ -552,7 +613,7 @@ export class ProjectPreviewManager {
       await rm(p.dir, { recursive: true, force: true }).catch(() => undefined);
       this.previews.delete(key);
     }
-    return { status: "stopped", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null };
+    return { status: "stopped", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null, token: null, publicUrl: null };
   }
 
   /** Auto-stop a preview nothing has polled in IDLE_MS (bounds resource use). */
@@ -570,4 +631,7 @@ export class ProjectPreviewManager {
   }
 }
 
-export const projectPreview = new ProjectPreviewManager(process.env.SKYNET_WORKTREES_DIR || undefined);
+export const projectPreview = new ProjectPreviewManager(
+  process.env.SKYNET_WORKTREES_DIR || undefined,
+  (process.env.SKYNET_PUBLIC_URL || "").replace(/\/+$/, "") || undefined,
+);

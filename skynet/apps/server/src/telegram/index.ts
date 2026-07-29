@@ -350,12 +350,18 @@ export function createOwnerControl(deps: OwnerControlDeps): {
             // previewStart resolves only once the dev server is live (or failed),
             // so fire-and-forget it and notify on settle — never block this reply.
             void operations.previewStart(ws, action.projectId!).then(
-              (st) =>
-                notify(
-                  st.status === "live" && st.url
-                    ? `🔗 Preview ready for ${name}: ${st.url}`
-                    : `⚠ Couldn't start the preview for ${name}: ${st.error ?? st.status}`,
-                ),
+              (st) => {
+                if (st.status !== "live" || !(st.publicUrl ?? st.url)) {
+                  return notify(`⚠ Couldn't start the preview for ${name}: ${st.error ?? st.status}`);
+                }
+                // Prefer the public URL (opens on a phone). Fall back to the
+                // localhost link with a note when no public base is configured.
+                return notify(
+                  st.publicUrl
+                    ? `🔗 Preview ready for ${name}: ${st.publicUrl}`
+                    : `🔗 Preview ready for ${name}: ${st.url}\n(local link — reachable only on the machine running Skynet; set SKYNET_PUBLIC_URL to open it from your phone)`,
+                );
+              },
               (err) => notify(`⚠ Couldn't start the preview for ${name}: ${(err as Error).message}`),
             );
             return `🚀 Spinning up a live preview of ${name} — I'll send the link here when it's ready.`;

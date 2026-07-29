@@ -419,6 +419,10 @@ export interface PreviewState {
   error: string | null;
   logs: string[];
   startedAt: number | null;
+  // Reverse-proxy path token + phone-reachable URL (via SKYNET_PUBLIC_URL); null
+  // when not live / no public base. The in-app iframe uses `url` (same machine).
+  token?: string | null;
+  publicUrl?: string | null;
 }
 export function previewStatus(projectId: string) {
   return req<PreviewState>("GET", `/api/projects/${projectId}/preview`);
