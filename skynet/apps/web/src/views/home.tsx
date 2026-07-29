@@ -12,6 +12,7 @@ import {
   KIND_META,
   modName,
   openQueue,
+  projectQueue,
   providerOf,
   providerInfo,
   providerReadiness,
@@ -467,6 +468,11 @@ function SubwayView({
             ),
           );
           const backlog = tasks.filter((t) => t.projectId === p.id && !t.runId).length;
+          // Show the line once there's a run OR any up-next task (todo/triage/
+          // backlog, no run yet) — a task landing in TODO becomes a not-started
+          // station immediately, not an empty-state placeholder.
+          const upNext = projectQueue(tasks, p.id);
+          const hasLine = pa.length > 0 || upNext.shared.length > 0 || upNext.pinned.size > 0;
           return (
             <div key={p.id} className={"sw-proj" + (allDone ? " sw-proj-done" : "")}>
               <div className="sw-proj-head">
@@ -488,7 +494,7 @@ function SubwayView({
                 )}
                 {allDone && <span className="expill expill-done">✓ shipped</span>}
               </div>
-              {pa.length > 0 ? (
+              {hasLine ? (
                 <SwDiagram project={p} onOpenTask={onOpenTask} />
               ) : tasks.some((t) => t.projectId === p.id) ? (
                 <EmptyState

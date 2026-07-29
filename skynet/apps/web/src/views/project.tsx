@@ -6,6 +6,7 @@ import {
   agentsForProject,
   curStep,
   openQueue,
+  projectQueue,
   STATUS_META,
   TASK_STATES,
   TASK_STATE_META,
@@ -499,6 +500,11 @@ export function ProjectView({
   const items = openQueue(queue).filter((q) => pa.some((a) => a.id === q.runId));
   const archived = pa.filter((a) => a.archived);
   const lead = visualLeadOf(project, runs);
+  // The project line shows once there's a run OR any up-next task (a task in
+  // todo/triage/backlog with no run yet) — so a task landing in TODO appears as a
+  // not-started station immediately, before the first run.
+  const upNext = projectQueue(tasks, project.id);
+  const showLine = pa.length > 0 || upNext.shared.length > 0 || upNext.pinned.size > 0;
   // A card is hidden from its column when its run has been archived (it shows in
   // the Archived section instead).
   const hidden = (t: Task) => !!(t.runId && runById.get(t.runId)?.archived);
@@ -630,7 +636,7 @@ export function ProjectView({
         </div>
       )}
 
-      {agentsForProject(runs, project.id).length > 0 && (
+      {showLine && (
         <div className="projview-line">
           <div className="panel-head">PROJECT LINE</div>
           <SwDiagram project={project} onOpenTask={onOpenTask} />
