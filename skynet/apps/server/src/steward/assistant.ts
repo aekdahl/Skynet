@@ -262,11 +262,22 @@ function statusContext(project: Project, tasks: Task[], runs: TaskRun[]): string
     "BOARD (tasks by stage):",
   ];
   for (const s of STAGES) {
-    const items = tasks.filter((t) => t.state === s);
+    // Archived tasks are OFF the board — excluded from the stage grouping, listed
+    // separately below so they stay readable without cluttering the live board.
+    const items = tasks.filter((t) => t.state === s && !t.archived);
     lines.push(
       items.length
         ? `  ${s} (${items.length}): ${items.slice(0, 20).map((t) => `[${t.id}] ${t.text}`).join(" · ")}`
         : `  ${s}: 0`,
+    );
+  }
+  const archived = tasks.filter((t) => t.archived);
+  if (archived.length) {
+    lines.push(
+      `ARCHIVED (off the board, still available): ${archived
+        .slice(0, 20)
+        .map((t) => `[${t.id}] ${t.text} (${t.state})`)
+        .join(" · ")}`,
     );
   }
   const active = runs.filter((r) => r.status !== "done" && !r.archived);

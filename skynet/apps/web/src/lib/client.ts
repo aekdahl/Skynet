@@ -357,6 +357,11 @@ export function updateTask(
 export function deleteTask(projectId: string, taskId: string) {
   return req<unknown>("DELETE", `/api/projects/${projectId}/tasks/${taskId}`);
 }
+// Reversible soft-hide: an archived task leaves the kanban but stays in the store
+// (recoverable, still read by Steward). Un-archive with archived=false.
+export function archiveTask(projectId: string, taskId: string, archived = true) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/archive`, { archived });
+}
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
 }

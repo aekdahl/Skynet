@@ -1207,6 +1207,9 @@ button.kb-done:hover { opacity: 1; }
 .kb-detail-title { margin: 0 0 12px; font-size: 17px; font-weight: 600; line-height: 1.35; color: var(--text); }
 .kb-detail-desc { margin: 0; font-size: 13px; line-height: 1.6; color: var(--muted); white-space: pre-wrap; }
 .kb-detail-empty { font-style: italic; color: var(--faint); }
+.kb-detail-section { margin-top: 14px; }
+.kb-detail-label { font-size: 10px; letter-spacing: 0.08em; color: var(--faint); margin-bottom: 4px; }
+.kb-detail-assess { margin: 0; font-size: 13px; line-height: 1.55; color: var(--muted); white-space: pre-wrap; border-left: 2px solid var(--line); padding-left: 8px; }
 .task-name-wrap { position: relative; }
 .task-name-wrap .qx-input { padding-right: 58px; }
 .task-name-count { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 10px; color: var(--faint); pointer-events: none; }

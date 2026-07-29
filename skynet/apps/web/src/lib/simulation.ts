@@ -886,6 +886,17 @@ export const JOURNEYS: Journey[] = [
         steps.push(step("task advanced backlog → triage after assigning", false, (e as Error).message));
       }
       try {
+        await api.archiveTask(p.id, editTask.id, true);
+        s = await settle((sn) => sn.tasks.find((t) => t.id === editTask.id)?.archived === true);
+        const gone = s.tasks.find((t) => t.id === editTask.id)?.archived === true;
+        await api.archiveTask(p.id, editTask.id, false);
+        s = await settle((sn) => sn.tasks.find((t) => t.id === editTask.id)?.archived === false);
+        const back = s.tasks.find((t) => t.id === editTask.id)?.archived === false;
+        steps.push(step("task archived then restored (kept in store, off/on the board)", gone && back));
+      } catch (e) {
+        steps.push(step("task archived then restored (kept in store, off/on the board)", false, (e as Error).message));
+      }
+      try {
         await api.moveTask(p.id, delTask.id, "up");
         steps.push(step("task reordered (move accepted)", true));
       } catch (e) {

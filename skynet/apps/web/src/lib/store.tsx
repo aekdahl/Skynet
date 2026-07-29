@@ -96,6 +96,7 @@ export interface Store extends StoreState {
     patch: { text?: string; description?: string | null; autoPick?: boolean; assignment?: TaskAssignment },
   ) => Promise<void>;
   deleteTask: (projectId: string, taskId: string) => Promise<void>;
+  archiveTask: (projectId: string, taskId: string, archived: boolean) => Promise<void>;
   moveTask: (projectId: string, taskId: string, direction: "up" | "down") => Promise<void>;
   transitionTask: (projectId: string, taskId: string, to: string) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
@@ -400,6 +401,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       deleteTask: async (projectId, taskId) => {
         await api.deleteTask(projectId, taskId);
+      },
+      archiveTask: async (projectId, taskId, archived) => {
+        await api.archiveTask(projectId, taskId, archived);
       },
       assignTask: async (projectId, taskId) => {
         try {

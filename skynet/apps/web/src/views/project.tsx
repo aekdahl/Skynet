@@ -113,7 +113,7 @@ function TaskCard({
     transitionTask,
     forceTaskDone,
     assignTask,
-    archiveAgent,
+    archiveTask,
   } = useStore();
   const [editing, setEditing] = useState(false);
   const [detail, setDetail] = useState(false); // full-detail modal for a card with no run
@@ -191,6 +191,7 @@ function TaskCard({
               </>
             )}
             <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>✎</button>
+            <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
             <button className="kb-tool kb-tool-del" title="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
           </span>
         )}
@@ -313,9 +314,7 @@ function TaskCard({
                 ⚡ Sync run → done
               </button>
             )}
-            {run && (
-              <button className="kb-archive" title="Archive — hide from the board" onClick={() => archiveAgent(run.id, true)}>⤓</button>
-            )}
+            <button className="kb-archive" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓ Archive</button>
           </>
         )}
       </div>
@@ -334,6 +333,18 @@ function TaskCard({
               <p className="kb-detail-desc">{task.description}</p>
             ) : (
               <p className="kb-detail-desc kb-detail-empty">No description.</p>
+            )}
+            {task.assessment && (
+              <div className="kb-detail-section">
+                <div className="kb-detail-label mono">TRIAGE</div>
+                <p className="kb-detail-assess">{task.assessment}</p>
+              </div>
+            )}
+            {task.reviewFlaggedReason && (
+              <div className="kb-detail-section">
+                <div className="kb-detail-label mono">FLAGGED FOR REVIEW</div>
+                <p className="kb-detail-assess">⚠ {task.reviewFlaggedReason}</p>
+              </div>
             )}
           </div>
         </div>
@@ -676,6 +687,7 @@ export function ProjectView({
     cloneProjectRepo,
     createTask,
     archiveAgent,
+    archiveTask,
   } = useStore();
   const [cloning, setCloning] = useState(false);
   const [cloneErr, setCloneErr] = useState<string | null>(null);
@@ -693,11 +705,17 @@ export function ProjectView({
   const runById = new Map(runs.map((r) => [r.id, r]));
   const pa = agentsForProject(runs, project.id);
   const items = openQueue(queue).filter((q) => pa.some((a) => a.id === q.runId));
-  const archived = pa.filter((a) => a.archived);
   const lead = visualLeadOf(project, runs);
-  // A card is hidden from its column when its run has been archived (it shows in
-  // the Archived section instead).
-  const hidden = (t: Task) => !!(t.runId && runById.get(t.runId)?.archived);
+  // A card leaves the board when the TASK is archived, or (legacy) its run is —
+  // it moves to the Archived section, stays in the store, and Steward still reads it.
+  const hidden = (t: Task) => t.archived || !!(t.runId && runById.get(t.runId)?.archived);
+  const archivedTasks = tasks.filter((t) => t.projectId === project.id && hidden(t));
+  // Restore un-archives the task and, if its run was archived too, the run.
+  const restoreTask = (t: Task) => {
+    if (t.archived) void archiveTask(project.id, t.id, false);
+    const r = t.runId ? runById.get(t.runId) : undefined;
+    if (r?.archived) void archiveAgent(r.id, false);
+  };
 
   const [folded, setFolded] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -896,25 +914,33 @@ export function ProjectView({
 
       <ProjectAssistant projectId={project.id} />
 
-      {archived.length > 0 && (
+      {archivedTasks.length > 0 && (
         <div className="kb-archive-sec">
           <button className="kb-archive-head" onClick={() => setShowArchived((s) => !s)}>
-            {showArchived ? "▾" : "▸"} ARCHIVED · {archived.length}
+            {showArchived ? "▾" : "▸"} ARCHIVED · {archivedTasks.length}
           </button>
           {showArchived && (
             <div className="kb-archive-list">
-              {archived.map((a) => (
-                <div key={a.id} className="kb-archive-row">
-                  <button className="kb-archive-name" onClick={() => onOpenTask(a.id)}>
-                    {a.status === "done" ? "✓ " : ""}
-                    {a.name}
-                  </button>
-                  <span className="kb-archive-branch mono">{a.branch}</span>
-                  <button className="btn btn-ghost btn-sm" onClick={() => archiveAgent(a.id, false)}>
-                    Restore
-                  </button>
-                </div>
-              ))}
+              {archivedTasks.map((t) => {
+                const r = t.runId ? runById.get(t.runId) : undefined;
+                return (
+                  <div key={t.id} className="kb-archive-row">
+                    <button
+                      className="kb-archive-name"
+                      title={r ? "Open the run" : "Archived task"}
+                      disabled={!r}
+                      onClick={() => r && onOpenTask(r.id)}
+                    >
+                      {t.state === "done" ? "✓ " : ""}
+                      {t.text}
+                    </button>
+                    <span className="kb-archive-branch mono">{t.state}{r ? " · " + r.branch : ""}</span>
+                    <button className="btn btn-ghost btn-sm" onClick={() => restoreTask(t)}>
+                      Restore
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
