@@ -122,10 +122,13 @@ function makeControl(opts: { controlEnabled: boolean; consult: () => Promise<str
   const stopAll = vi.fn(async () => 3);
   const notes: string[] = [];
 
+  const previewStart = vi.fn(async () => ({
+    status: "live", url: "http://127.0.0.1:5555", port: 5555, recipe: null, error: null, logs: [], startedAt: 0,
+  }));
   const operations = {
     listHitl: async () => [GATE],
     listRuns: async () => [],
-    listProjects: async () => [],
+    listProjects: async () => [{ id: "p1", name: "Proj" }],
     listTasks: async () => [],
     listAgents: async () => [],
     listProviders: async () => [],
@@ -134,6 +137,7 @@ function makeControl(opts: { controlEnabled: boolean; consult: () => Promise<str
     assignTask: vi.fn(),
     archiveTask: vi.fn(),
     configureRunner: vi.fn(),
+    previewStart,
   } as unknown as ControlOps;
 
   const orchestrator = {
@@ -170,7 +174,7 @@ function makeControl(opts: { controlEnabled: boolean; consult: () => Promise<str
     onQuit: () => undefined,
   });
 
-  return { handle, handleCallback, resolveHitl, stopAll, consult: orchestrator.consult, notes, sent, edits, acks };
+  return { handle, handleCallback, resolveHitl, stopAll, previewStart, consult: orchestrator.consult, notes, sent, edits, acks };
 }
 
 // The assistant's {reply, action} envelope (current contract): a helpful reply
@@ -195,6 +199,21 @@ describe("createOwnerControl — confirm state machine", () => {
     // A second "yes" has nothing pending → still exactly one execution.
     await c.handle(OWNER, "yes");
     expect(c.resolveHitl).toHaveBeenCalledTimes(1);
+  });
+
+  it("preview: confirm → immediate 'spinning up' reply, then pushes the URL when ready", async () => {
+    const previewJson = async () =>
+      JSON.stringify({ reply: "On it.", action: { action: "preview", projectId: "p1" } });
+    const c = makeControl({ controlEnabled: true, consult: previewJson });
+    await c.handle(OWNER, "give me a preview of the Proj app"); // sets pending
+    await c.handle(OWNER, "yes"); // confirm → run
+    // Immediate reply — never blocks on the (slow) preview spin-up.
+    expect(c.notes.some((n) => /spinning up/i.test(n))).toBe(true);
+    // The URL is pushed asynchronously once previewStart resolves (live).
+    await vi.waitFor(() =>
+      expect(c.notes.some((n) => /preview ready/i.test(n) && /127\.0\.0\.1:5555/.test(n))).toBe(true),
+    );
+    expect(c.previewStart).toHaveBeenCalledWith(expect.anything(), "p1");
   });
 
   it("a non-affirmative reply CANCELS the pending action (never executes)", async () => {
