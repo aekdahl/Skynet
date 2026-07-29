@@ -33,6 +33,22 @@ import { secretService } from "../secrets/index.js";
 
 const exec = promisify(execFile);
 
+/**
+ * Environment for preview subprocesses (dependency install + the dev server).
+ * A live preview is a DEV run, so force `NODE_ENV=development`: otherwise a
+ * production server (NODE_ENV=production, as on staging) makes `npm`/`pnpm`/`yarn`
+ * **skip devDependencies** at install time, so tooling the dev script needs
+ * (concurrently, vite, …) is never installed and `npm run dev` fails with
+ * "<tool>: not found". Also clear npm's production-omit signals in case they were
+ * inherited. Overrides here apply only to the child — the server keeps its own env.
+ */
+export function previewEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "development", ...extra };
+  delete env.npm_config_production; // legacy "--production" signal
+  delete env.npm_config_omit; // "--omit=dev"
+  return env;
+}
+
 export type PreviewStatus = "idle" | "starting" | "live" | "failed" | "stopped";
 
 export interface PreviewRecipe {
@@ -331,7 +347,7 @@ export class ProjectPreviewManager {
    *  dev server) is the wrapped one. Rejects on non-zero exit or timeout. */
   private runToCompletion(cmd: string, cwd: string, p: Live, timeoutMs: number): Promise<void> {
     return new Promise((res, rej) => {
-      const child = spawn("/bin/sh", ["-c", cmd], { cwd, env: { ...process.env } });
+      const child = spawn("/bin/sh", ["-c", cmd], { cwd, env: previewEnv() });
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
         rej(new Error(`\`${cmd}\` timed out after ${Math.round(timeoutMs / 1000)}s`));
@@ -457,7 +473,7 @@ export class ProjectPreviewManager {
       if (wrapped.note) this.log(p, wrapped.note);
       const child = spawn(wrapped.bin, wrapped.args, {
         cwd: p.dir,
-        env: { ...process.env, PORT: String(recipe.port), VITE_PORT: String(recipe.port), BROWSER: "none" },
+        env: previewEnv({ PORT: String(recipe.port), VITE_PORT: String(recipe.port), BROWSER: "none" }),
       });
       p.child = child;
       child.stdout?.on("data", (b) => this.log(p, b.toString()));
