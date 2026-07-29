@@ -30,6 +30,7 @@ import { promisify } from "node:util";
 import { wrapForSandbox } from "@skynet/runner-sdk/sandbox";
 import { oneShotRepoAssistant } from "@skynet/runner-sdk/claude";
 import { gitBin } from "../git-bin.js";
+import { publicOrigin } from "../public-origin.js";
 import { secretService } from "../secrets/index.js";
 
 const exec = promisify(execFile);
@@ -118,7 +119,9 @@ export class ProjectPreviewManager {
   // .skynet/preview.json makes it the deterministic descriptor instead.
   private agentRecipe = new Map<string, { cmd: string }>();
 
-  constructor(private worktreesDir?: string, private publicUrlBase?: string) {}
+  // `publicBase` is a getter (not a static string) so it can reflect the origin
+  // learned at runtime from inbound requests behind a proxy/LB — see public-origin.ts.
+  constructor(private worktreesDir?: string, private publicBase?: () => string | undefined) {}
 
   private git(cwd: string, ...args: string[]): Promise<{ stdout: string }> {
     return exec(gitBin(), ["-C", cwd, ...args]);
@@ -148,7 +151,7 @@ export class ProjectPreviewManager {
       logs: p.logs.slice(-80),
       startedAt: p.startedAt,
       token: p.token ?? null,
-      publicUrl: live && p.token && this.publicUrlBase ? `${this.publicUrlBase}/p/${p.token}/` : null,
+      publicUrl: live && p.token && this.publicBase?.() ? `${this.publicBase()}/p/${p.token}/` : null,
     };
   }
 
@@ -520,7 +523,7 @@ export class ProjectPreviewManager {
       // app under the proxy subpath so its absolute asset URLs resolve remotely;
       // the proxy then forwards the full `/p/<token>/…` path unchanged.
       let cmd = recipe.cmd;
-      if (this.publicUrlBase && this.isViteRecipe(p.dir, recipe.cmd)) {
+      if (this.publicBase?.() && this.isViteRecipe(p.dir, recipe.cmd)) {
         p.basePath = `/p/${p.token}/`;
         cmd = this.withViteBase(recipe.cmd, p.basePath);
         this.log(p, `serving under ${p.basePath} for remote preview (vite base)`);
@@ -633,5 +636,5 @@ export class ProjectPreviewManager {
 
 export const projectPreview = new ProjectPreviewManager(
   process.env.SKYNET_WORKTREES_DIR || undefined,
-  (process.env.SKYNET_PUBLIC_URL || "").replace(/\/+$/, "") || undefined,
+  publicOrigin, // SKYNET_PUBLIC_URL, else the origin learned from inbound requests
 );

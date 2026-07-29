@@ -209,8 +209,17 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     `.skynet/preview.json`), refresh-on-merge, node_modules provisioning (symlink the checkout's
     deps, else install) so a dev script's local bin resolves in the fresh worktree, and the
     **resizable** split-screen dock ⇄ modal (scrollable/resizable logs) with a "▶ Preview app"
-    (project) and "▶ Preview this change" (run) affordance. **Still to do:** Phase 2 (services —
-    reverse proxy + auto-rebuild) & Phase 3 (command/artifacts, "any software").
+    (project) and "▶ Preview this change" (run) affordance. Previews are also reachable **remotely
+    (phone)** through Skynet's own public URL (auto-detected behind the LB, or SKYNET_PUBLIC_URL) via a
+    token-secured reverse proxy at `/p/<token>/` — HMR websocket included; shared back over Telegram.
+    **Still to do:** Phase 2 (services — reverse proxy + auto-rebuild) & Phase 3 (command/artifacts,
+    "any software").
+  - **Per-framework preview base for remote serving.** The remote proxy serves under a `/p/<token>/`
+    subpath. Vite is handled (started with `--base`), and relative/static apps work via an injected
+    `<base href>`, but a dev server that emits ROOT-ABSOLUTE asset paths and can't take a base (some
+    Next/CRA/other setups) will 404 its assets through the proxy. Add per-framework base configuration
+    (CRA `PUBLIC_URL`/`homepage`, Next `basePath`, a descriptor `basePath`, …) — or subdomain-per-preview
+    with wildcard DNS — so any framework serves correctly under the remote path.
 - [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign

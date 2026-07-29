@@ -25,6 +25,7 @@ import { config, RESTART_EXIT_CODE } from "./config.js";
 import { listDir } from "./fs-browse.js";
 import { projectPreview } from "./preview/project-preview.js";
 import { registerPreviewProxy } from "./preview/proxy.js";
+import { recordPublicOrigin } from "./public-origin.js";
 import {
   currentEnvSettings,
   envSettingsWritable,
@@ -74,6 +75,14 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
 
   // ── auth: every /api and /mcp route resolves a workspace-scoped principal ──
   app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
+    // Learn the public origin the request came in on (behind the GCP LB this is
+    // the real external host via X-Forwarded-*), so preview links — including the
+    // Telegram one, which has no request of its own — can point at a URL the
+    // operator's phone can reach, with no SKYNET_PUBLIC_URL needed. Env override
+    // (in publicOrigin()) still wins. Forwarded headers are only trusted behind a
+    // proxy we control (config.trustProxy), matching the client-IP policy.
+    const fwd = (h: string): string | undefined => (config.trustProxy ? String(req.headers[h] ?? "").split(",")[0]?.trim() || undefined : undefined);
+    recordPublicOrigin(fwd("x-forwarded-proto") ?? req.protocol, fwd("x-forwarded-host") ?? req.headers.host);
     // /mcp carries the same bearer-token principal as /api, so runs and humans
     // authenticate identically. Everything else (health, static SPA, /ws — which
     // authenticates itself) is untouched. requiresAuth() owns the decision (it

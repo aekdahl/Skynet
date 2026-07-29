@@ -7,6 +7,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { createServer, type Server } from "node:http";
 import { registerPreviewProxy } from "../apps/server/src/preview/proxy.js";
+// NOTE: the WS/HMR proxy path needs @fastify/websocket (an apps/server dep, not
+// resolvable from tests/) so it's covered by the live check, not here.
 
 let upstream: Server;
 let upstreamPort: number;
