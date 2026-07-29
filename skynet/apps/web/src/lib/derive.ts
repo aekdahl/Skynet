@@ -13,19 +13,28 @@ import type {
 
 // ─── time formatting ───────────────────────────────────────────────────────
 
-// A compact elapsed duration that rolls up as it grows, so a long wait never
-// reads as "504m 02s". Keeps second precision under a minute (live gate waits),
-// minute+second under an hour, then h+m under a day, then d+h beyond.
+// The one duration formatter for user-facing "how long X has been running / X
+// ago" text — SINGLE UNIT ONLY. Rolls up at each boundary:
+//   < 1m  → seconds  ("42s")
+//   < 1h  → minutes  ("15m")   — never "15m 30s"
+//   < 1d  → hours    ("2h")    — never "2h 45m"
+//   ≥ 1d  → days     ("3d")    — never "3d 04h"
+// This is deliberate: readers glance at time indicators, and stitching two
+// units together ("504m 02s") crossed into cognitive-load territory. Use
+// fmtDurMs below when the input is milliseconds. If you need higher precision
+// for a debug view, add a purpose-built formatter — don't relax this rule.
 export function fmtWait(sec: number): string {
   const s = Math.max(0, Math.floor(sec));
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
-  const d = Math.floor(h / 24);
-  return `${d}d ${String(h % 24).padStart(2, "0")}h`;
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
 }
+
+/** Same single-unit rule for callers that already have milliseconds. */
+export const fmtDurMs = (ms: number): string => fmtWait(ms / 1000);
 
 export function fmtClock(sec: number): string {
   const s = Math.max(0, Math.floor(sec));
@@ -46,17 +55,14 @@ export const waitedSecs = (hitl: HitlItem, now: number) =>
   Math.max(0, (now - hitl.raisedAt) / 1000);
 
 export function fmtElapsed(agent: TaskRun, now: number): string {
-  const mins = Math.floor(startedMins(agent, now));
-  const h = Math.floor(mins / 60);
-  return `${h > 0 ? `${h}h ` : ""}${mins % 60}m elapsed`;
+  return `${fmtWait((now - agent.startedAt) / 1000)} elapsed`;
 }
 
 export function runnerIdleLabel(runner: Agent, now: number): string {
   if (runner.idleSince == null) return "now";
-  const mins = Math.floor((now - runner.idleSince) / 60000);
-  if (mins <= 0) return "now";
-  const h = Math.floor(mins / 60);
-  return h > 0 ? `${h}h ${mins % 60}m` : `${mins}m`;
+  const sec = (now - runner.idleSince) / 1000;
+  if (sec < 1) return "now";
+  return fmtWait(sec);
 }
 
 // ─── plan helpers ───────────────────────────────────────────────────────────
