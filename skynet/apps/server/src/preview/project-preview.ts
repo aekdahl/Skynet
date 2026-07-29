@@ -97,6 +97,10 @@ interface StartSpec {
   refreshBranch?: string; // branch to re-point to on refresh (project previews only)
 }
 
+// Files whose change (when a merge is folded into the preview) means the
+// worktree's dependencies may be stale.
+const DEP_MANIFESTS = new Set(["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"]);
+
 const LOG_CAP = 200;
 const IDLE_MS = 15 * 60 * 1000; // auto-stop a preview no one is watching
 const HEALTH_TIMEOUT_MS = 45_000;
@@ -514,11 +518,38 @@ export class ProjectPreviewManager {
     if (!p || p.status !== "live" || !p.refreshBranch) return this.state(key);
     const hasBranch = (await this.git(p.gitRepo, "branch", "--list", p.refreshBranch).catch(() => ({ stdout: "" }))).stdout.trim();
     if (hasBranch) {
+      const before = (await this.git(p.dir, "rev-parse", "HEAD").catch(() => ({ stdout: "" }))).stdout.trim();
       await this.git(p.dir, "checkout", "--detach", p.refreshBranch).catch((e) => this.log(p, `refresh: ${(e as Error).message}`));
       this.log(p, "↻ refreshed to integration branch tip");
+      const after = (await this.git(p.dir, "rev-parse", "HEAD").catch(() => ({ stdout: "" }))).stdout.trim();
+      if (before && after && before !== after) await this.reconcileDepsOnRefresh(p, before, after);
     }
     p.lastTouched = Date.now();
     return this.state(key);
+  }
+
+  /** After a refresh folds new merged work into the preview, reconcile deps if a
+   *  dependency manifest changed — so a live preview reflects merged dep changes.
+   *  Re-installs ONLY when node_modules is a real dir; when it's a symlink to the
+   *  operator's checkout we leave it alone (their deps, not ours to modify) and
+   *  just note it. Best-effort + time-boxed; never breaks the refresh. */
+  private async reconcileDepsOnRefresh(p: Live, before: string, after: string): Promise<void> {
+    const changed = (await this.git(p.dir, "diff", "--name-only", before, after).catch(() => ({ stdout: "" }))).stdout.split("\n");
+    if (!changed.some((f) => DEP_MANIFESTS.has(f.trim().split("/").pop() ?? ""))) return;
+    const nm = join(p.dir, "node_modules");
+    let symlink = false;
+    try {
+      symlink = lstatSync(nm).isSymbolicLink();
+    } catch {
+      return; // no node_modules at all → nothing to reconcile (started fresh next time)
+    }
+    if (symlink) {
+      this.log(p, "merged changes touched dependencies — this preview uses the project checkout's node_modules; run an install there if the app needs the new deps.");
+      return;
+    }
+    const cmd = this.installCmd(p.dir);
+    this.log(p, `merged changes touched dependencies — re-installing (${cmd})…`);
+    await this.runToCompletion(cmd, p.dir, p, 3 * 60_000).catch((e) => this.log(p, `re-install failed: ${(e as Error).message}`));
   }
 
   async restart(projectId: string, repoPath: string, workspaceId?: string): Promise<PreviewState> {
