@@ -44,6 +44,7 @@ import {
   type AssistantAction,
   type ChatTurn,
 } from "./project-assistant.js";
+import { askStewardWorkspace } from "./steward/assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -129,6 +130,28 @@ export class Operations {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== workspaceId) throw new NotFoundError("Project");
     return answerProjectQuestion(this.store, { workspaceId, project, question, history });
+  }
+
+  /** Global Steward chat (the sidebar dock, available on every page). When a
+   *  project is in focus (the page you're on, passed as `focusProjectId`) it's the
+   *  full project assistant — repo-aware, proposes confirm-first actions. With no
+   *  focus it answers workspace-wide (cross-project status), answer-only. */
+  async stewardChat(
+    workspaceId: string,
+    question: string,
+    history?: ChatTurn[],
+    focusProjectId?: string,
+  ): Promise<{ reply: string; action: AssistantAction | null; projectId: string | null }> {
+    if (focusProjectId) {
+      const project = await this.store.getProject(focusProjectId);
+      if (project && project.workspaceId === workspaceId) {
+        const { reply, action } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
+        return { reply, action, projectId: project.id };
+      }
+      // focus id is stale / not ours → fall through to a workspace answer.
+    }
+    const { reply, action } = await askStewardWorkspace(this.store, { workspaceId, question, history });
+    return { reply, action, projectId: null };
   }
 
   /** Streaming form of {@link projectAssistant} — yields the answer as text
@@ -222,31 +245,6 @@ export class Operations {
   async previewRefresh(ws: string, projectId: string): Promise<PreviewState> {
     await this.getProject(ws, projectId);
     return projectPreview.refresh(projectId);
-  }
-
-  // ── per-run pre-merge preview ("Preview this change") ─────────────────────
-  // Preview a single run's branch (`agent/<runId>`) BEFORE it merges, so an
-  // operator can verify the change visually. Scoped to the run's workspace; the
-  // run's project must have a local folder.
-  async runPreviewState(ws: string, runId: string): Promise<PreviewState> {
-    await this.getRun(ws, runId);
-    return projectPreview.state(`run:${runId}`);
-  }
-  private async runPreviewOpts(ws: string, runId: string) {
-    const run = await this.getRun(ws, runId);
-    const project = await this.getProject(ws, run.projectId);
-    if (!project.repoPath) throw new Error("This project has no local folder to preview.");
-    return { repoPath: project.repoPath, projectId: run.projectId, branch: run.branch, workspaceId: ws };
-  }
-  async runPreviewStart(ws: string, runId: string): Promise<PreviewState> {
-    return projectPreview.startRun(runId, await this.runPreviewOpts(ws, runId));
-  }
-  async runPreviewRestart(ws: string, runId: string): Promise<PreviewState> {
-    return projectPreview.restartRun(runId, await this.runPreviewOpts(ws, runId));
-  }
-  async runPreviewStop(ws: string, runId: string): Promise<PreviewState> {
-    await this.getRun(ws, runId);
-    return projectPreview.stop(`run:${runId}`);
   }
 
   // ── HITL ──────────────────────────────────────────────────────────────────
@@ -543,6 +541,27 @@ export class Operations {
     backlog.splice(target, 0, task);
     for (let i = 0; i < backlog.length; i++) {
       if (rank(backlog[i]!) !== i) await this.hub.upsertTask({ ...backlog[i]!, order: i });
+    }
+    return (await this.store.getTask(tid))!;
+  }
+  /** Drag-reorder within a state (the backlog): move `tid` to sit immediately
+   *  before `beforeId` (null = end), then renumber `order` 0..n-1. Same ordering
+   *  model as moveTask, but to an arbitrary position rather than one step. */
+  async reorderTask(ws: string, tid: string, beforeId: string | null): Promise<Task> {
+    const task = await this.store.getTask(tid);
+    if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    const rank = (t: Task) => t.order ?? 0;
+    const list = (await this.store.listTasks(ws))
+      .filter((t) => t.projectId === task.projectId && t.state === task.state)
+      .sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
+    const from = list.findIndex((t) => t.id === tid);
+    if (from < 0) return task;
+    list.splice(from, 1);
+    let to = beforeId ? list.findIndex((t) => t.id === beforeId) : -1;
+    if (to < 0) to = list.length; // unknown/self/none → append
+    list.splice(to, 0, task);
+    for (let i = 0; i < list.length; i++) {
+      if (rank(list[i]!) !== i) await this.hub.upsertTask({ ...list[i]!, order: i });
     }
     return (await this.store.getTask(tid))!;
   }

@@ -200,12 +200,21 @@ async function main() {
   // empty). Runs once at boot, before we listen, so nothing is mid-assign.
   await orchestrator.reconcileRunners().catch((err) => app.log.warn(`runner reconcile: ${(err as Error).message}`));
 
+  // Keep the fleet on latest main: fetch each active project's base from origin
+  // and flag any in-flight run that's fallen behind. Once at boot (so the first
+  // run branches off fresh main), then on the reaper's interval.
+  const syncBase = () =>
+    orchestrator.syncBaseAndFlagStale().catch((err) => app.log.warn(`base sync: ${(err as Error).message}`));
+  await syncBase();
+
   // Reap presumed-dead runs (frees runners orphaned by a crash/restart). Run
   // once at boot to clear restart orphans, then on an interval. Bounded to a
   // sane minimum so it can't spin hot; disabled when agentReapMs <= 0.
   if (config.agentReapMs > 0) {
-    const sweep = () =>
-      orchestrator.reapStaleAgents().catch((err) => app.log.warn(`reaper: ${(err as Error).message}`));
+    const sweep = () => {
+      void orchestrator.reapStaleAgents().catch((err) => app.log.warn(`reaper: ${(err as Error).message}`));
+      void syncBase();
+    };
     await sweep();
     const every = Math.max(30_000, Math.min(config.agentReapMs, 60_000));
     setInterval(sweep, every).unref();

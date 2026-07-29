@@ -4,6 +4,7 @@ import { initialView, onNavigate } from "./pwa/launch"; // [pwa] Inbox-first lau
 import { parseHash, toHash } from "./lib/routing"; // [w7] deep links
 import { gateView } from "./lib/dev"; // dev-only pages hidden from release builds
 import { TitleBar, OpSidebar, OpStatusBar, ConnectingShell } from "./components/shell";
+import { StewardDock } from "./components/steward-dock";
 import { useTweaks } from "./components/tweaks";
 import { HomeView } from "./views/home";
 import { OverviewView } from "./views/overview";
@@ -75,6 +76,13 @@ export function App() {
   const [onboarded, setOnboarded] = useState(isOnboarded);
   // Re-run setup on demand (from Settings), even after it's been completed/skipped.
   const [rerunSetup, setRerunSetup] = useState(false);
+  // Steward dock — a chat available on every page. When open it collapses the left
+  // nav to an icon rail (root class), reclaiming width for the conversation.
+  const [stewardOpen, setStewardOpen] = useState(false);
+  useEffect(() => {
+    document.documentElement.classList.toggle("steward-open", stewardOpen);
+    return () => document.documentElement.classList.remove("steward-open");
+  }, [stewardOpen]);
 
   // [pwa] A push / notification click (relayed by the service worker) or a
   // manifest shortcut navigates the app in-place — usually to the Inbox.
@@ -172,6 +180,13 @@ export function App() {
       />
     );
   }
+
+  // Steward auto-focuses whatever project you're viewing (project page, or the
+  // project behind an open run) so it can manage it; elsewhere it's workspace-wide.
+  const stewardFocus =
+    project ??
+    (view === "task" && agent ? store.projects.find((p) => p.id === agent.projectId) : undefined) ??
+    null;
 
   return (
     <div className="app" style={{ "--accent": t.accent } as React.CSSProperties} data-density={t.density}>
@@ -281,6 +296,18 @@ export function App() {
           </div>
         </main>
       </div>
+      {store.loaded && stewardOpen && (
+        <StewardDock
+          focusProjectId={stewardFocus?.id ?? null}
+          focusProjectName={stewardFocus?.name ?? null}
+          onClose={() => setStewardOpen(false)}
+        />
+      )}
+      {store.loaded && !stewardOpen && (
+        <button className="steward-fab" onClick={() => setStewardOpen(true)} title="Ask Steward (available on every page)">
+          <span className="steward-fab-mark" aria-hidden="true">✦</span> Steward
+        </button>
+      )}
       <OpStatusBar onOpenTask={openTask} />
     </div>
   );

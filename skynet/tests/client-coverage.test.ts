@@ -39,15 +39,16 @@ const ALLOW = new Set<string>([
   // streaming variant of sendAgentMessage (which IS journey-covered) — same
   // chat surface, just delta-rendered; no separate journey needed.
   "streamAgentMessage",
+  // one-click provider CLI installer — spawns a real `npm i -g …` server-side
+  // and streams the output; not runnable in an offline journey. The runner
+  // + fixed-command guarantees are covered by provider-install.test.ts.
+  "streamInstallProvider",
   // "ask about this project" assistant (+ its streaming variant) — a UI-only
   // conversational surface with no fleet journey; needs a real provider key.
   "projectChat", "streamProjectChat",
   // live preview (Phase-1 v0) — spawns a real dev server + iframes it; a
   // stateful UI control surface with no offline journey (needs a repo + toolchain).
   "previewStatus", "previewStart", "previewStop", "previewRestart", "previewRefresh",
-  // per-run pre-merge preview ("Preview this change") — same stateful dev-server
-  // surface, scoped to a run's branch; no offline journey (needs a repo + toolchain).
-  "runPreviewStatus", "runPreviewStart", "runPreviewStop", "runPreviewRestart",
   // auth primitive (POST /api/auth/login) — the local/desktop build runs
   // open-auth (dev tokens), so no fleet journey signs in; auth is guarded by
   // auth-hardening.test.ts, not an operator journey.
@@ -58,6 +59,9 @@ const ALLOW = new Set<string>([
   // live provider key and a real repo to ground against, so there's no offline
   // journey; the parse contract is covered by project-assistant.test.ts
   "projectChat",
+  // global Steward dock chat (workspace-wide / focused-project) — same live-provider
+  // requirement as projectChat, so no offline journey exercises it.
+  "stewardChat",
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",

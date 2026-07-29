@@ -11,13 +11,17 @@ import {
   ConfigureRunnerRequest,
   CreateProjectRequest,
   CreateTaskRequest,
+  ProviderId,
   ResolveRequest,
   ChatRequest,
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
   MoveTaskRequest,
+  ReorderTaskRequest,
 } from "@skynet/shared";
+import { installProviderCli } from "./provider-install.js";
+import { installCommandFor } from "./provider-requirements.js";
 import { readFile } from "node:fs/promises";
 import { authenticate, type Principal } from "./auth.js";
 import { requiresAuth } from "./auth-guard.js";
@@ -86,6 +90,38 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   // ── reads (workspace-scoped) ──────────────────────────────────────────────
   app.get("/api/snapshot", (req) => ops.snapshot(ws(req)));
   app.get("/api/providers", (req) => ops.listProviders(ws(req)));
+
+  // Install a provider's CLI in-place, streaming stdout+stderr as text/plain
+  // so the Settings UI can render live output. The command is FIXED per
+  // provider on the server (see provider-requirements.ts INSTALL_COMMAND) —
+  // the client only sends the provider id; there's no way for a caller to
+  // inject shell text. Providers without a scriptable install (brew/manual)
+  // return 400. Post-install the client refreshes the snapshot to pick up
+  // the re-probed `binOnPath`.
+  app.post<{ Params: { id: string } }>("/api/providers/:id/install", async (req, reply) => {
+    const parsed = ProviderId.safeParse(req.params.id);
+    if (!parsed.success) return reply.code(400).send({ error: "unknown provider id" });
+    const id = parsed.data;
+    if (!installCommandFor(id)) {
+      return reply.code(400).send({ error: `no auto-install available for "${id}"; use the docs link on the provider card` });
+    }
+    reply.header("content-type", "text/plain; charset=utf-8");
+    reply.hijack();
+    const raw = reply.raw;
+    raw.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-cache" });
+    try {
+      for await (const ev of installProviderCli(id)) {
+        if (ev.kind === "line" || ev.kind === "error") raw.write((ev.text ?? "") + "\n");
+        else if (ev.kind === "done") {
+          raw.write(`\n[done] exit=${ev.exitCode ?? "spawn-failed"} binOnPath=${ev.binOnPath ? "yes" : "no"}\n`);
+        }
+      }
+    } catch (err) {
+      raw.write(`\n[error] ${(err as Error).message}\n`);
+    } finally {
+      raw.end();
+    }
+  });
   app.get("/api/projects", (req) => ops.listProjects(ws(req)));
   app.get("/api/fleet/runners", (req) => ops.listAgents(ws(req)));
   // Decision audit trail — resolved HITL items, newest first (W8, Backend Brief §11).
@@ -375,6 +411,28 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Global Steward chat (the sidebar dock, every page). Optional `projectId`
+  // focuses the page you're on — then it's the full project assistant (actions);
+  // otherwise it answers workspace-wide.
+  app.post<{ Body: { question?: string; history?: ChatTurn[]; projectId?: string } }>(
+    "/api/steward/chat",
+    async (req, reply) => {
+      const question = (req.body?.question ?? "").trim();
+      if (!question) return reply.code(400).send({ error: "Ask Steward something." });
+      const history = Array.isArray(req.body?.history)
+        ? req.body!.history
+            .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
+            .slice(-16)
+        : undefined;
+      try {
+        const focus = typeof req.body?.projectId === "string" ? req.body!.projectId : undefined;
+        return await ops.stewardChat(ws(req), question, history, focus);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
   // Repo-aware project assistant — chat about this project's status + content.
   app.post<{ Params: { id: string }; Body: { question?: string; history?: ChatTurn[] } }>(
     "/api/projects/:id/chat",
@@ -454,18 +512,6 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string } }>("/api/projects/:id/preview/stop", previewAction((w, i) => ops.previewStop(w, i)));
   app.post<{ Params: { id: string } }>("/api/projects/:id/preview/restart", previewAction((w, i) => ops.previewRestart(w, i)));
   app.post<{ Params: { id: string } }>("/api/projects/:id/preview/refresh", previewAction((w, i) => ops.previewRefresh(w, i)));
-
-  // Per-run pre-merge preview ("Preview this change") — the run's own branch.
-  app.get<{ Params: { id: string } }>("/api/runs/:id/preview", async (req, reply) => {
-    try {
-      return await ops.runPreviewState(ws(req), req.params.id);
-    } catch (err) {
-      return fail(reply, err);
-    }
-  });
-  app.post<{ Params: { id: string } }>("/api/runs/:id/preview/start", previewAction((w, i) => ops.runPreviewStart(w, i)));
-  app.post<{ Params: { id: string } }>("/api/runs/:id/preview/stop", previewAction((w, i) => ops.runPreviewStop(w, i)));
-  app.post<{ Params: { id: string } }>("/api/runs/:id/preview/restart", previewAction((w, i) => ops.runPreviewRestart(w, i)));
 
   // ── tasks ──────────────────────────────────────────────────────────────
   app.post<{ Params: { id: string } }>("/api/projects/:id/tasks", async (req, reply) => {
@@ -549,6 +595,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (direction !== "up" && direction !== "down") return reply.code(400).send({ error: "direction must be 'up' or 'down'" });
     try {
       return await ops.moveTask(ws(req), req.params.tid, direction);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Drag-reorder a task to an arbitrary backlog position (before `beforeId`, or end).
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/reorder", async (req, reply) => {
+    const body = ReorderTaskRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.reorderTask(ws(req), req.params.tid, body.data.beforeId);
     } catch (err) {
       return fail(reply, err);
     }

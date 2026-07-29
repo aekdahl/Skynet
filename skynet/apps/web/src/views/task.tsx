@@ -16,9 +16,7 @@ import {
 } from "../lib/derive";
 import { StatusDot } from "../components/common";
 import { Markdown } from "../components/markdown";
-import { PreviewFor } from "../components/preview";
 import { HitlContext, RiskChip } from "../components/hitl-context";
-import { LivePreviewModal } from "./project";
 
 // Cheap guard: does this text actually contain markdown worth rendering (bold,
 // inline code, a bullet/number/heading line, or a link)? Agent prose does; plain
@@ -55,6 +53,13 @@ function finalAnswer(agent: TaskRun): string | null {
 }
 
 // Compact token/cost summary for the detail header, when the runner reported it.
+/** Compact duration for the TRIAGE panel-head chip: 15s / 30m / 2.5h. */
+function fmtEstDur(ms: number): string {
+  if (ms < 60_000) return Math.max(1, Math.round(ms / 1000)) + "s";
+  if (ms < 3_600_000) return Math.round(ms / 60_000) + "m";
+  const h = ms / 3_600_000;
+  return (h < 10 ? h.toFixed(1) : Math.round(h)) + "h";
+}
 function fmtUsage(u: TaskRun["usage"]): string | null {
   if (!u) return null;
   const tok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
@@ -81,7 +86,6 @@ export function TaskDetail({
     tasks,
     fleet,
     modules,
-    projects,
     resolveHitl,
     forkAgent,
     streamAgentMessage,
@@ -90,11 +94,13 @@ export function TaskDetail({
     stopAgent,
     archiveAgent,
   } = useStore();
-  const project = projects.find((p) => p.id === agent.projectId);
-  const [previewOpen, setPreviewOpen] = useState(false);
   const q = openQueue(queue).find((it) => it.runId === agent.id);
-  // The backing task's longer description (the run's name is the short task text).
-  const taskDesc = tasks.find((t) => t.runId === agent.id)?.description ?? null;
+  // The backing task carries the operator's brief AND the autonomous triage
+  // metadata (assessment note + duration estimate) — surface both here so
+  // opening a run detail shows what the fleet decided during triage, not just
+  // its plan.
+  const backingTask = tasks.find((t) => t.runId === agent.id) ?? null;
+  const taskDesc = backingTask?.description ?? null;
   const doneCount = planDone(agent);
   const [draft, setDraft] = useState("");
   const [showDiff, setShowDiff] = useState(false);
@@ -175,18 +181,6 @@ export function TaskDetail({
             >
               <span className="btn-gly" aria-hidden="true">⑂</span> Fork
             </button>
-
-            {/* Pre-merge preview: run this change's branch and see it before it
-                merges. Needs a local project folder to spin a worktree from. */}
-            {project?.repoPath && !agent.archived && (
-              <button
-                className="btn btn-ghost btn-icon"
-                title="Run this change on its own branch and preview it live — before it merges"
-                onClick={() => setPreviewOpen(true)}
-              >
-                <span className="btn-gly" aria-hidden="true">▶</span> Preview
-              </button>
-            )}
 
             {/* Lifecycle controls */}
             {agent.status === "paused" ? (
@@ -289,6 +283,17 @@ export function TaskDetail({
 
       <div className="detail-cols">
         <div className="panel">
+          {(backingTask?.assessment || backingTask?.estimatedDurationMs != null) && (
+            <>
+              <div className="panel-head">
+                TRIAGE
+                {backingTask?.estimatedDurationMs != null && (
+                  <span className="panel-sub">est. {fmtEstDur(backingTask.estimatedDurationMs)}</span>
+                )}
+              </div>
+              {backingTask?.assessment && <p className="task-triage-note">{backingTask.assessment}</p>}
+            </>
+          )}
           <div className="panel-head">
             PLAN{" "}
             <span className="panel-sub">
@@ -321,15 +326,6 @@ export function TaskDetail({
           </div>
         </div>
         <div className="detail-right">
-          {agent.visual && (
-            <div className="panel panel-preview">
-              <div className="panel-head">
-                LIVE PREVIEW{" "}
-                <span className="panel-sub">what's actually built right now</span>
-              </div>
-              <PreviewFor agent={agent} />
-            </div>
-          )}
           <div className="panel panel-log">
             <div className="panel-head">
               LIVE LOG <span className="panel-sub">activity + conversation — reply below</span>
@@ -466,15 +462,6 @@ export function TaskDetail({
           </div>
         </div>
       </div>
-
-      {previewOpen && (
-        <LivePreviewModal
-          id={agent.id}
-          kind="run"
-          title={"Preview change · " + agent.name}
-          onClose={() => setPreviewOpen(false)}
-        />
-      )}
     </section>
   );
 }

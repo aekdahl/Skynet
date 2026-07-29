@@ -56,6 +56,7 @@ export interface Action {
     | "add_agent"
     | "create_project"
     | "remove_task"
+    | "preview"
     | "status"
     | "none";
   gateId?: string;
@@ -88,7 +89,7 @@ export const INTENT_SYSTEM_PROMPT = [
   "code works — quote the relevant doc/section, and never invent repo content.",
   "",
   "You may ALSO perform ONE action, but ONLY when the owner is clearly asking to do it.",
-  "Allowed actions: approve | reject | add_task | assign | add_agent | create_project | remove_task | status.",
+  "Allowed actions: approve | reject | add_task | assign | add_agent | create_project | remove_task | preview | status.",
   "Action object shapes (used as the `action` field below):",
   '  approve/reject: {"action":"approve","gateId":"<gate id from context>"}',
   '  add_task:       {"action":"add_task","projectId":"<project id>","taskText":"<the task>"}',
@@ -96,9 +97,12 @@ export const INTENT_SYSTEM_PROMPT = [
   '  add_agent:      {"action":"add_agent","provider":"<provider id>","model":"<model>","agentName":"<optional>"}',
   '  create_project: {"action":"create_project","projectName":"<name>","projectGoal":"<optional>"}',
   '  remove_task:    {"action":"remove_task","taskId":"<task id from context>"}',
+  '  preview:        {"action":"preview","projectId":"<project id from context>"}',
   '  status:         {"action":"status"}',
   "remove_task archives a task (a reversible soft-hide, recoverable in the app) — it is",
   "never a hard delete; use it when the owner asks to remove/delete/undo a task.",
+  "preview spins up a live preview of the project's web app and sends the URL back here",
+  "when it's ready; use it when the owner asks to preview / see / open the running app.",
   "Use RECENT CONVERSATION (below the workspace context, when present) to resolve",
   'back-references ("that task", "it", "the one I just made") to a concrete id that IS',
   "present in the WORKSPACE CONTEXT; if it is still unresolvable, set action to null and ask.",
@@ -316,6 +320,16 @@ export function validateAction(obj: unknown, ctx: IntentContext): Action | null 
       const task = ctx.tasks.find((t) => t.id === taskId);
       if (!task) return none(`unknown task "${taskId}"`);
       return { kind: "remove_task", taskId, projectId: task.projectId };
+    }
+
+    case "preview": {
+      // Preview a project's running app. The project id MUST exist in the
+      // grounding context (like add_task), so a misparse/injection can't target
+      // an arbitrary project. repoPath is validated server-side at start time.
+      const projectId = isStr(o.projectId) ? o.projectId : "";
+      const project = ctx.projects.find((p) => p.id === projectId);
+      if (!project) return none(`unknown project "${projectId}"`);
+      return { kind: "preview", projectId };
     }
 
     case "status":

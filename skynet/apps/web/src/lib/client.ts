@@ -377,6 +377,7 @@ export interface AssistantAction {
     | "rename_task"
     | "set_task_desc"
     | "remove_task"
+    | "archive_task"
     | "reorder_task"
     | "rename_project"
     | "set_goal"
@@ -409,6 +410,20 @@ export function projectChat(
     { question, history },
   );
 }
+// Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
+// (full project assistant + actions); omit it for a workspace-wide answer. The
+// response echoes which project the action (if any) targets.
+export function stewardChat(
+  question: string,
+  history: { role: "user" | "assistant"; content: string }[],
+  projectId?: string,
+) {
+  return req<{ reply: string; action?: AssistantAction | null; projectId?: string | null }>(
+    "POST",
+    "/api/steward/chat",
+    { question, history, projectId },
+  );
+}
 
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
 export interface PreviewState {
@@ -434,20 +449,6 @@ export function previewRestart(projectId: string) {
 }
 export function previewRefresh(projectId: string) {
   return req<PreviewState>("POST", `/api/projects/${projectId}/preview/refresh`);
-}
-
-// Per-run pre-merge preview ("Preview this change") — runs the run's own branch.
-export function runPreviewStatus(runId: string) {
-  return req<PreviewState>("GET", `/api/runs/${runId}/preview`);
-}
-export function runPreviewStart(runId: string) {
-  return req<PreviewState>("POST", `/api/runs/${runId}/preview/start`);
-}
-export function runPreviewStop(runId: string) {
-  return req<PreviewState>("POST", `/api/runs/${runId}/preview/stop`);
-}
-export function runPreviewRestart(runId: string) {
-  return req<PreviewState>("POST", `/api/runs/${runId}/preview/restart`);
 }
 
 /** Streaming "ask about this project" — reads the text/plain reply as it streams,
@@ -487,6 +488,38 @@ export async function streamProjectChat(
   }
   return full;
 }
+
+// Provider CLI installer — POSTs to /api/providers/:id/install and streams the
+// npm output as text/plain deltas so the Settings modal can render live. On
+// completion the caller re-fetches the snapshot to pick up the re-probed
+// `binOnPath`. Falls back to a synchronous body read when the response isn't
+// streamable (older runtime); the whole body is delivered as one onDelta call.
+export async function streamInstallProvider(
+  providerId: string,
+  onDelta: (chunk: string) => void,
+): Promise<void> {
+  const res = await fetch(`/api/providers/${encodeURIComponent(providerId)}/install`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token()}` },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(res.status, body || res.statusText);
+  }
+  if (!res.body) {
+    onDelta(await res.text().catch(() => ""));
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    if (chunk) onDelta(chunk);
+  }
+}
+
 // Guarded kanban move (backlog→triage, triage→todo, review→done, demote, …).
 export function transitionTask(projectId: string, taskId: string, to: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/state`, { to });
@@ -498,6 +531,10 @@ export function forceTaskDone(projectId: string, taskId: string) {
 }
 export function moveTask(projectId: string, taskId: string, direction: "up" | "down") {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/move`, { direction });
+}
+/** Drag-reorder a task to sit before `beforeId` in its lane (null = end). */
+export function reorderTask(projectId: string, taskId: string, beforeId: string | null) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/reorder`, { beforeId });
 }
 
 // Fleet

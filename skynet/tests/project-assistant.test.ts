@@ -61,6 +61,15 @@ describe("validateProjectAction — whitelist + project-scoped id resolution", (
     expect(validateProjectAction({ kind: "remove_task", taskId: "ghost" }, ctx)).toBeNull();
   });
 
+  it("archive_task resolves the id (soft-hide, recoverable)", () => {
+    const a = validateProjectAction({ kind: "archive_task", taskId: "t-1" }, ctx);
+    expect(a).toMatchObject({ kind: "archive_task", taskId: "t-1" });
+    // Chip label distinguishes it from a hard delete so the operator can tell what will happen.
+    expect(a?.summary).toMatch(/archive/i);
+    expect(a?.summary).toContain("fix login redirect");
+    expect(validateProjectAction({ kind: "archive_task", taskId: "ghost" }, ctx)).toBeNull();
+  });
+
   it("project edits validate their fields", () => {
     expect(validateProjectAction({ kind: "rename_project", name: "Liftoff" }, ctx)).toMatchObject({ kind: "rename_project", name: "Liftoff" });
     expect(validateProjectAction({ kind: "set_goal", goal: "ship v1" }, ctx)).toMatchObject({ kind: "set_goal", goal: "ship v1" });
