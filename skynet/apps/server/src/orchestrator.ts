@@ -302,9 +302,11 @@ export class Orchestrator {
     // Auto-approve a reversible, in-sandbox command gate per the project's
     // approval policy (see approval-policy.ts), so the operator isn't asked to
     // confirm every command. Boundary ops (high-risk / deny) and non-command
-    // gates fall through to a human. The gate is still raised + recorded, then
-    // immediately resolved through the normal path, so the audit trail shows
-    // exactly what was auto-approved and by which policy — nothing runs invisibly.
+    // gates fall through to a human. The gate is still recorded (audit trail
+    // shows what was auto-approved and by which policy — nothing runs invisibly),
+    // but we go through the SILENT hub path (`raiseAndAutoResolveHitl`) so no
+    // `hitl.raised` event is published — Telegram/push subscribers only ping the
+    // operator when a HUMAN is actually needed. `hitl.resolved` still fires.
     if (raise.kind === "approval") {
       const project = await this.store.getProject(agent.projectId);
       const auto = decideAutoApproval({
@@ -313,11 +315,10 @@ export class Orchestrator {
         rules: project?.approvalRules ?? [],
       });
       if (auto) {
-        await this.hub.raiseHitl(item);
         const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: auto.by, at: now() };
         await this.hub.runLog(runId, `auto-approved (${auto.by}): ${item.command ?? item.title}`);
-        const resolved = await this.hub.resolveHitl(item.id, resolution);
-        if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(item, resolution);
+        await this.hub.raiseAndAutoResolveHitl(item, resolution);
+        await this.deliver(item, resolution);
         return;
       }
     }
