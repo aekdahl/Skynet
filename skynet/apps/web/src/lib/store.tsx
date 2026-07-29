@@ -98,6 +98,7 @@ export interface Store extends StoreState {
   deleteTask: (projectId: string, taskId: string) => Promise<void>;
   moveTask: (projectId: string, taskId: string, direction: "up" | "down") => Promise<void>;
   transitionTask: (projectId: string, taskId: string, to: string) => Promise<void>;
+  forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   createAgent: (provider: string, model: string, name?: string) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string }) => Promise<void>;
@@ -388,6 +389,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await api.transitionTask(projectId, taskId, to);
         } catch (e) {
           if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't move the task."));
+        }
+      },
+      forceTaskDone: async (projectId, taskId) => {
+        try {
+          await api.forceTaskDone(projectId, taskId);
+        } catch (e) {
+          if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't force the task done."));
         }
       },
       deleteTask: async (projectId, taskId) => {

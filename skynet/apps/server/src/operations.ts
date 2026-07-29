@@ -608,12 +608,46 @@ export class Operations {
       await this.hub.setRunArchived(task.runId, true).catch(() => undefined);
     }
 
-    return this.hub.upsertTask({
+    const updated = await this.hub.upsertTask({
       ...task,
       state: to,
       ...(abandonsRun ? { runId: null } : {}),
       reviewFlaggedReason: null,
     });
+
+    // Sync the linked TaskRun's status to match — the "review → done" path with
+    // NO open HITL falls through here without going via resolveHitl → merge
+    // (which sets run.status="done"), so without this the run could stay at
+    // "review"/"running" while the board shows the card in Done. Idempotent —
+    // best-effort so a bus/persistence hiccup doesn't undo the transition.
+    if (to === "done" && !abandonsRun && updated.runId) {
+      await this.hub.runStatus(updated.runId, "done").catch(() => undefined);
+    }
+    return updated;
+  }
+
+  /**
+   * Force a task to `done` — the escape hatch when the normal review→done path
+   * fails (e.g. the merge queue chokes on a conflict, an HITL got stuck, or the
+   * run finished but the task didn't advance and there's no HITL to resolve).
+   * Bypasses HUMAN_TRANSITIONS: usable from ANY state (except archived).
+   * ALWAYS syncs run.status to "done" when a run is linked. Never merges the
+   * branch — this is a "call it done" operator override, not a work-completion
+   * signal for the runner; use the normal Approve → Done for that.
+   */
+  async forceTaskDone(ws: string, tid: string): Promise<Task> {
+    const task = await this.store.getTask(tid);
+    if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    if (task.archived) throw new NotFoundError("Task"); // archived is a soft-hide, not force-doneable
+    const updated = await this.hub.upsertTask({
+      ...task,
+      state: "done",
+      reviewFlaggedReason: null,
+    });
+    if (updated.runId) {
+      await this.hub.runStatus(updated.runId, "done").catch(() => undefined);
+    }
+    return updated;
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────
