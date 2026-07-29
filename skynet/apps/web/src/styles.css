@@ -182,7 +182,15 @@ kbd {
 .projview-queue { display: flex; flex-direction: column; gap: var(--sp); }
 /* Project line (subway) above the kanban — its own labeled block. */
 .projview-line { display: flex; flex-direction: column; gap: 10px; }
-.projview-line .swb { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 4px 12px 12px; }
+.projview-line .swb { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 4px 0 12px; }
+/* The subway's children are position:absolute, so they anchor to the padding
+   box — a `padding: … 12px …` on the parent doesn't push them in. Inset them
+   explicitly for the project-page context so runner rows don't hug the border.
+   The canvas track shifts by the same amount at both edges, so station-
+   percentage math still aligns with the name column. */
+.projview-line .swb-row { left: 14px; right: 14px; }
+.projview-line .swb-count { right: 14px; }
+.projview-line .swb-canvas { left: 288px; right: 70px; } /* 274+14, 56+14 */
 /* Compact per-project numbers strip above the kanban/timeline lens toggle.
    Wraps on narrow widths; each cell is a mini-tile (label above value). */
 .proj-stats {
