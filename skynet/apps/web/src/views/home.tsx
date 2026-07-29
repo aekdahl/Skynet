@@ -554,9 +554,7 @@ function RosterView({
                   <span className="rs-task">{a.name}</span>
                   <span className="rs-hb mono">
                     ♥{" "}
-                    {q
-                      ? fmtWait(waitedSecs(q, now))
-                      : Math.floor(heartbeatSecs(a, now)) + "s"}{" "}
+                    {q ? fmtWait(waitedSecs(q, now)) : fmtWait(heartbeatSecs(a, now))}{" "}
                     · {a.branch}
                   </span>
                 </button>
