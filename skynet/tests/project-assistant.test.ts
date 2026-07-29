@@ -28,6 +28,14 @@ describe("validateProjectAction — whitelist + project-scoped id resolution", (
     expect(validateProjectAction({ kind: "add_task", text: "  " }, ctx)).toBeNull();
   });
 
+  it("add_task carries an optional description", () => {
+    expect(
+      validateProjectAction({ kind: "add_task", text: "write docs", description: "cover the API" }, ctx),
+    ).toMatchObject({ kind: "add_task", text: "write docs", description: "cover the API" });
+    // description is optional — omitted stays undefined
+    expect(validateProjectAction({ kind: "add_task", text: "write docs" }, ctx).description).toBeUndefined();
+  });
+
   it("move_task resolves the task id and validates the target state", () => {
     expect(validateProjectAction({ kind: "move_task", taskId: "t-1", to: "done" }, ctx)).toMatchObject({
       kind: "move_task",

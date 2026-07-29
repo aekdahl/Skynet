@@ -472,7 +472,7 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
   // server-side). The assistant only ever proposes — nothing runs without this.
   const runAction = async (a: api.AssistantAction): Promise<void> => {
     switch (a.kind) {
-      case "add_task": return createTask(projectId, a.text ?? "");
+      case "add_task": return createTask(projectId, a.text ?? "", a.description);
       case "move_task": return transitionTask(projectId, a.taskId!, a.to!);
       case "rename_task": return updateTask(projectId, a.taskId!, { text: a.text });
       case "set_task_desc": return updateTask(projectId, a.taskId!, { description: a.description });
