@@ -104,6 +104,13 @@ describe("parseIntent — the five whitelisted actions map when ids resolve", ()
     expect(isNone(parseIntent('{"action":"remove_task"}', ctx))).toBe(true);
   });
 
+  it("preview (resolves the project id from context)", () => {
+    expect(parseIntent('{"action":"preview","projectId":"p-web"}', ctx)).toEqual({ kind: "preview", projectId: "p-web" });
+  });
+  it("preview with an unknown project id → none (never previews an arbitrary project)", () => {
+    expect(isNone(parseIntent('{"action":"preview","projectId":"p-999"}', ctx))).toBe(true);
+    expect(isNone(parseIntent('{"action":"preview"}', ctx))).toBe(true);
+  });
   it("status", () => {
     expect(parseIntent('{"action":"status"}', ctx)).toEqual({ kind: "status" });
   });

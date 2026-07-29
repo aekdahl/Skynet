@@ -28,6 +28,7 @@ import type { ConfigureRunnerRequest, CreateProjectRequest, CreateTaskRequest, R
 import type { config as Config } from "../config.js";
 import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
+import type { PreviewState } from "../preview/project-preview.js";
 import type { Orchestrator } from "../orchestrator.js";
 import { prefetchProjectDocs } from "../project-assistant.js";
 import { TelegramClient } from "./client.js";
@@ -120,6 +121,9 @@ export interface ControlOps {
   assignTask(ws: string, projectId: string, taskId: string): Promise<TaskRun>;
   archiveTask(ws: string, projectId: string, taskId: string, archived: boolean): Promise<Task>;
   configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent>;
+  /** Spin up (or restart) the project's live preview; resolves when it's live or
+   *  failed, with the URL in the returned state. */
+  previewStart(ws: string, projectId: string): Promise<PreviewState>;
 }
 
 /** The Orchestrator methods the control handler needs. */
@@ -331,6 +335,30 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           run: async () => {
             await operations.archiveTask(ws, action.projectId!, action.taskId!, true);
             return `🗃 Archived task ${action.taskId}${task?.text ? ` — "${task.text}"` : ""}. Recoverable in the app (un-archive to restore).`;
+          },
+        };
+      }
+      case "preview": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const name = project?.name ?? action.projectId;
+        const summary = `Preview ${name} — spin up a live preview and send the link here?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            // Reply immediately, then push the URL when the preview is ready.
+            // previewStart resolves only once the dev server is live (or failed),
+            // so fire-and-forget it and notify on settle — never block this reply.
+            void operations.previewStart(ws, action.projectId!).then(
+              (st) =>
+                notify(
+                  st.status === "live" && st.url
+                    ? `🔗 Preview ready for ${name}: ${st.url}`
+                    : `⚠ Couldn't start the preview for ${name}: ${st.error ?? st.status}`,
+                ),
+              (err) => notify(`⚠ Couldn't start the preview for ${name}: ${(err as Error).message}`),
+            );
+            return `🚀 Spinning up a live preview of ${name} — I'll send the link here when it's ready.`;
           },
         };
       }
