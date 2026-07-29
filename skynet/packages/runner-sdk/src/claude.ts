@@ -452,6 +452,32 @@ function buildQuestionRaise(q: ParsedQuestion): HitlRaise {
   };
 }
 
+// The agent hands off via AskUserQuestion with an escalation header ("ESCALATE",
+// "BLOCKED", …). We key on the HEADER only — not the body — so an ordinary
+// question that merely mentions "blocked" isn't misread as a give-up.
+function isEscalation(q: ParsedQuestion): boolean {
+  return /^\s*(escalate|blocked|stuck|hand.?off|give.?up|take.?over|need.*human)/i.test(q.header);
+}
+
+// Turn an escalation AskUserQuestion into an `escalation` HITL: the agent has
+// stopped and needs a human (help & resume, reassign, or stop). Unlike a
+// question, there's no answer that mechanically continues it — the operator's
+// guidance rides the trusted operator channel on resume (see resume()).
+function buildEscalationRaise(q: ParsedQuestion): HitlRaise {
+  return {
+    kind: "escalation",
+    title: /^\s*escalate\s*$/i.test(q.header) ? "Agent is blocked — needs a human" : q.header,
+    why: q.prompt,
+    risk: "medium",
+    rationale: q.prompt,
+    command: null,
+    options: null,
+    recommended: null,
+    steps: null,
+    diff: null,
+  };
+}
+
 // Short human label of the chosen answer, for the activity log.
 function describeAnswer(q: ParsedQuestion, decision?: Resolution): string {
   if (decision?.action === "option" && decision.optionIndex != null) {
@@ -574,7 +600,8 @@ class ClaudeRunnerHandle implements RunnerHandle {
       `Make code changes ONLY — do NOT run git commit, git push, or gh pr, and do NOT ask the operator whether to commit, push, or open a PR. Skynet owns that: when you finish it auto-commits your worktree, then gates the push and PR behind a separate review/approval step it controls. So never say you "didn't commit" or ask "should I open a PR?" — leave version control entirely to Skynet. Your "done" message should simply summarize what you changed and why, nothing about committing, pushing, or PRs. ` +
       `For anything beyond a one-line answer, use the TodoWrite tool to lay out your plan as concrete steps BEFORE you start, and keep it updated (mark each step in_progress, then completed) as you work — this is how your plan and progress are surfaced to the operator, so maintain it even for research/exploration tasks. ` +
       `Ask before running destructive or irreversible commands. ` +
-      `Be honest when you're blocked: if you cannot reproduce a reported problem, or the task lacks information you'd need to fix it correctly (a stack trace, reproduction steps, failing logs, expected vs actual behavior), do NOT guess or make a speculative edit. Use the AskUserQuestion tool to ask the operator for exactly what you need, or if no answer is possible, report plainly what you could and couldn't determine and stop WITHOUT changing code. Asking for the missing detail is the correct, honest outcome here — a fabricated fix is a failure, not progress.`;
+      `Be honest when you're blocked: if you cannot reproduce a reported problem, or the task lacks information you'd need to fix it correctly (a stack trace, reproduction steps, failing logs, expected vs actual behavior), do NOT guess or make a speculative edit. Use the AskUserQuestion tool to ask the operator for exactly what you need, or if no answer is possible, report plainly what you could and couldn't determine and stop WITHOUT changing code. Asking for the missing detail is the correct, honest outcome here — a fabricated fix is a failure, not progress. ` +
+      `If you have genuinely TRIED and cannot make further progress — the task is beyond what you can do here, a prerequisite is missing that you can't obtain, or you keep hitting the same failure — HAND OFF to a human instead of thrashing or churning. Call the AskUserQuestion tool with the header set to "ESCALATE" and, in the question, say what you tried, what's blocking you, and what a human could do to help or decide. This halts the run so a human can help and resume you, reassign it, or stop it. Escalating when truly stuck is the right call — far better than burning time on an approach that isn't working.`;
     this.input.push(this.initialPrompt);
 
     const canUseTool: CanUseTool = (toolName, input) => {
@@ -582,6 +609,9 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // AskUserQuestion is the agent asking the operator a decision — surface it
       // as a `question` HITL with real option buttons, not a generic "approve".
       const question = toolName === "AskUserQuestion" ? parseAskUserQuestion(input) : null;
+      // A question whose header signals a hand-off is an ESCALATION, not a
+      // routine decision — the agent has given up and wants a human.
+      const escalation = question && isEscalation(question) ? buildEscalationRaise(question) : null;
       return new Promise<PermissionResult>((resolve) => {
         // One gate at a time — the SDK serializes tool calls in a turn.
         // Register the gate BEFORE emitting the event: a synchronous resume
@@ -590,11 +620,14 @@ class ClaudeRunnerHandle implements RunnerHandle {
         this.gate = resolve;
         this.gateInput = input;
         this.gateTool = toolName;
-        this.gateQuestion = question;
+        // An escalation is NOT an answerable question: resume() delivers the
+        // operator's guidance on the trusted operator channel (help & resume),
+        // or the orchestrator stops/reassigns the run.
+        this.gateQuestion = escalation ? null : question;
         this.events.onStatus(this.runId, "waiting");
         this.events.onHitl(
           this.runId,
-          question ? buildQuestionRaise(question) : this.buildRaise(toolName, input),
+          escalation ?? (question ? buildQuestionRaise(question) : this.buildRaise(toolName, input)),
         );
       });
     };
@@ -1023,6 +1056,17 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     if (this.cap) clearTimeout(this.cap);
+    // Release a parked permission/escalation gate so its canUseTool promise
+    // never dangles when we tear the session down (e.g. operator stops an
+    // escalated run while it's blocked in the gate).
+    if (this.gate) {
+      const gate = this.gate;
+      this.gate = null;
+      this.gateInput = null;
+      this.gateTool = null;
+      this.gateQuestion = null;
+      gate({ behavior: "deny", message: "Run stopped by operator." });
+    }
     await this.q?.interrupt().catch(() => undefined);
     this.input.close();
   }

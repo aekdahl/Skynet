@@ -25,7 +25,11 @@ export type TaskRunStatus = z.infer<typeof TaskRunStatus>;
 export const PlanStepState = z.enum(["done", "now", "todo"]);
 export type PlanStepState = z.infer<typeof PlanStepState>;
 
-export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge"]);
+// "escalation" = a run has HALTED and needs a human — the agent gave up (tried
+// enough / fundamentally blocked), or the system tripped a guard (too long, too
+// many failures). Distinct from "question" (which resumes on an answer): the
+// human decides whether to help & resume, reassign, or stop.
+export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation"]);
 export type HitlKind = z.infer<typeof HitlKind>;
 
 /** Default single-tenant workspace until real provisioning lands. */
@@ -249,7 +253,8 @@ export const DiffSummary = z.object({
 });
 export type DiffSummary = z.infer<typeof DiffSummary>;
 
-export const ResolveAction = z.enum(["approve", "reject", "modify", "option"]);
+// "reassign" resolves an escalation by handing the run to a different runner.
+export const ResolveAction = z.enum(["approve", "reject", "modify", "option", "reassign"]);
 export type ResolveAction = z.infer<typeof ResolveAction>;
 
 export const Resolution = z.object({

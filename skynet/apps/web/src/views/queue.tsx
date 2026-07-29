@@ -93,7 +93,35 @@ export function QueueCard({
         <DiffView runId={item.runId} add={item.diff.add} del={item.diff.del} />
       )}
 
-      {item.options ? (
+      {item.kind === "escalation" ? (
+        <div className="qcard-actions">
+          <button
+            className={"btn btn-primary" + (mode === "modify" ? " btn-lit" : "")}
+            onClick={() => setMode(mode === "modify" ? null : "modify")}
+          >
+            Help &amp; resume
+          </button>
+          <button
+            className="btn"
+            title="Hand this run to a different runner to retry fresh"
+            onClick={() => resolveHitl(item.id, "reassign", { guidance: draft.trim() })}
+          >
+            Reassign
+          </button>
+          <button className="btn btn-danger" onClick={() => resolveHitl(item.id, "reject")}>
+            Stop run
+          </button>
+          <button
+            className={"btn btn-ghost" + (mode === "chat" ? " btn-lit" : "")}
+            onClick={() => setMode(mode === "chat" ? null : "chat")}
+          >
+            Chat
+          </button>
+          <button className="btn btn-ghost" onClick={onOpen}>
+            Open agent
+          </button>
+        </div>
+      ) : item.options ? (
         <div className="qcard-actions">
           {item.options.map((opt, i) => (
             <button

@@ -224,6 +224,15 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   command-deny, worktree write-confinement, and runtime cap already ship locally.
 - [ ] **Guided provider connect** — one-click "Connect Claude / Codex / …": in-app key entry + a live verify,
   so onboarding never requires hand-authing each vendor CLI (the #1 friction rivals impose).
+- [x] **Run escalation / hand-off — a stuck run halts for a human.** A run enters a first-class
+  `escalation` HITL ("NEEDS HELP") three ways: the **agent hands off** itself when genuinely blocked
+  (AskUserQuestion with header "ESCALATE" → detected by the runner), **too many failures**
+  (`SKYNET_RUN_MAX_FAILURES`, default 3), or **too long** (`SKYNET_RUN_STUCK_MS`, opt-in — below the
+  runner's hard cap). The operator resolves it from the Inbox: **help & resume** (guidance → the agent
+  continues, or a fresh session relaunches in the worktree), **reassign** to a different runner, or
+  **stop**. The halted run frees its runner but keeps its worktree so a resume/reassign can continue the
+  work. *(Verified live: a real agent correctly escalated rather than fabricate a secret; help & resume
+  round-tripped. Foundation for the "escalation SLAs / delegated approval" governance items below.)*
 - [ ] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).** A 6-way
   competitor deep-dive found *none* ship a real safety/policy layer, decision audit, or (bar one) a HITL
   inbox — so this is where we win now:

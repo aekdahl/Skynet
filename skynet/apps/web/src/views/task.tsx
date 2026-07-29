@@ -377,7 +377,24 @@ export function TaskDetail({
                   <RiskChip risk={q.risk} />
                   <span className="qcard-wait">{fmtWait(waitedSecs(q, now))}</span>
                   <span className="log-decision-actions">
-                    {q.options ? (
+                    {q.kind === "escalation" ? (
+                      // The agent (or a guard) halted this run and asked for help.
+                      // There's nothing to "approve": the operator either hands it
+                      // to a fresh runner, stops it, or types guidance below and
+                      // resumes (the composer's "Send & resume" = the modify action).
+                      <>
+                        <button
+                          className="btn btn-sm"
+                          title="Hand this run to a different runner to retry fresh (with your guidance below, if any)"
+                          onClick={() => resolveHitl(q.id, "reassign", { guidance: draft.trim() })}
+                        >
+                          Reassign
+                        </button>
+                        <button className="btn btn-sm btn-danger" onClick={() => resolveHitl(q.id, "reject")}>
+                          Stop run
+                        </button>
+                      </>
+                    ) : q.options ? (
                       q.options.map((opt, i) => (
                         <button
                           key={i}
