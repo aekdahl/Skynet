@@ -485,6 +485,10 @@ export class Operations {
       assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,
       archived: false,
+      // Scheduling starts blank — the autonomous triage step estimates
+      // `estimatedDurationMs`; `plannedStartAt` is operator-set via Steward/UI.
+      estimatedDurationMs: null,
+      plannedStartAt: null,
     };
     return this.hub.upsertTask(task);
   }

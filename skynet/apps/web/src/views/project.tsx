@@ -20,6 +20,30 @@ import { TimelineView } from "./home";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
+/** Human-readable duration for the task-card ⏱ chip. Small ms values render
+ *  as seconds; up to an hour as minutes; then hours (one decimal). */
+function fmtDurationChip(ms: number): string {
+  if (ms < 60_000) return Math.max(1, Math.round(ms / 1000)) + "s";
+  if (ms < 3_600_000) return Math.round(ms / 60_000) + "m";
+  const h = ms / 3_600_000;
+  return (h < 10 ? h.toFixed(1) : Math.round(h)) + "h";
+}
+/** Relative-when-close, absolute-when-not planned-start chip. */
+function fmtStartChip(at: number): string {
+  const now = Date.now();
+  const dSec = Math.round((at - now) / 1000);
+  if (Math.abs(dSec) < 60) return dSec >= 0 ? "in <1m" : "started";
+  if (Math.abs(dSec) < 3600) {
+    const m = Math.round(dSec / 60);
+    return m >= 0 ? `in ${m}m` : `${-m}m ago`;
+  }
+  if (Math.abs(dSec) < 86400) {
+    const h = Math.round(dSec / 3600);
+    return h >= 0 ? `in ${h}h` : `${-h}h ago`;
+  }
+  return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 // Agent-eligibility picker: who may take this task. `unassigned` blocks leaving
 // backlog; `any` = whole fleet; `agents` = a chosen pool (≥1). Editable in the
 // pre-run stages; a compact read-only chip once a run exists.
@@ -220,6 +244,19 @@ function TaskCard({
       {s === "triage" && task.assessment && <div className="kb-assessment">{task.assessment}</div>}
       {s === "review" && task.reviewFlaggedReason && (
         <div className="kb-flag">⚠ flagged for you — {task.reviewFlaggedReason}</div>
+      )}
+
+      {(task.estimatedDurationMs != null || task.plannedStartAt != null) && (
+        <div className="kb-sched" onClick={stop}>
+          {task.estimatedDurationMs != null && (
+            <span className="kb-sched-chip" title="Estimated duration">⏱ {fmtDurationChip(task.estimatedDurationMs)}</span>
+          )}
+          {task.plannedStartAt != null && (
+            <span className="kb-sched-chip" title={new Date(task.plannedStartAt).toLocaleString()}>
+              📅 {fmtStartChip(task.plannedStartAt)}
+            </span>
+          )}
+        </div>
       )}
 
       {(s === "backlog" || s === "triage" || s === "todo") ? (
@@ -579,6 +616,14 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
       case "set_goal": return updateProject(projectId, { goal: a.goal });
       case "set_autonomy": return updateProject(projectId, { autonomy: a.autonomy });
       case "set_status": return updateProject(projectId, { status: a.status });
+      case "set_schedule": {
+        // Only include fields the assistant actually set — updateTask treats
+        // omission as "leave as-is" and `null` as "clear".
+        const patch: { estimatedDurationMs?: number | null; plannedStartAt?: number | null } = {};
+        if (a.estimatedDurationMs !== undefined) patch.estimatedDurationMs = a.estimatedDurationMs;
+        if (a.plannedStartAt !== undefined) patch.plannedStartAt = a.plannedStartAt;
+        return updateTask(projectId, a.taskId!, patch);
+      }
     }
   };
 

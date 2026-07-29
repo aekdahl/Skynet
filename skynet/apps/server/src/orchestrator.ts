@@ -79,6 +79,42 @@ export class TaskAlreadyAssignedError extends Error {
   }
 }
 
+/**
+ * PURE: extract a trailing `{"estMinutes": N}` JSON tag off the triage LLM's
+ * reply. Returns the body (with the tag stripped) and the parsed minutes when
+ * present. Tolerates a code fence around the tag; ignores non-numeric or
+ * malformed values (a bad tag stays a missing estimate — never fabricates a
+ * duration). Exported for the unit tests.
+ */
+export function splitEstMinutesTag(raw: string): { body: string; estMinutes: number | null } {
+  const trimmed = (raw ?? "").trim();
+  const noFence = trimmed.replace(/\n?```\s*$/, "").trimEnd();
+  // Match the LAST balanced top-level {...} on the tail.
+  const end = noFence.lastIndexOf("}");
+  if (end === -1) return { body: trimmed, estMinutes: null };
+  let depth = 0;
+  let start = -1;
+  for (let i = end; i >= 0; i--) {
+    const c = noFence[i];
+    if (c === "}") depth++;
+    else if (c === "{") {
+      depth--;
+      if (depth === 0) { start = i; break; }
+    }
+  }
+  if (start < 0) return { body: trimmed, estMinutes: null };
+  try {
+    const obj = JSON.parse(noFence.slice(start, end + 1)) as { estMinutes?: unknown };
+    if (typeof obj.estMinutes === "number" && Number.isFinite(obj.estMinutes) && obj.estMinutes > 0) {
+      const body = noFence.slice(0, start).replace(/```[a-zA-Z]*\s*$/, "").trim();
+      return { body, estMinutes: Math.round(obj.estMinutes) };
+    }
+  } catch {
+    /* not a JSON tail — whole reply is the body */
+  }
+  return { body: trimmed, estMinutes: null };
+}
+
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   // Global kill switch. When paused, the autonomy loop is a no-op (no new work is
@@ -1598,8 +1634,14 @@ export class Orchestrator {
               (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") !== "unassigned",
             );
             if (backlog) {
-              const assessment = await this.assessTask(ws, idle[0]!, backlog);
-              await this.hub.upsertTask({ ...backlog, state: "triage", assessment });
+              const { assessment, estimatedDurationMs } = await this.assessTask(ws, idle[0]!, backlog);
+              // Only OVERWRITE an existing estimate when triage produced a new
+              // one — leaves an operator-set estimate intact if triage failed
+              // to guess (or on retriage of a task that already had one).
+              const nextEst = estimatedDurationMs != null
+                ? estimatedDurationMs
+                : backlog.estimatedDurationMs;
+              await this.hub.upsertTask({ ...backlog, state: "triage", assessment, estimatedDurationMs: nextEst });
             }
             // 2) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
             //    Each honors its own eligibility set via assignTask → acquireAgent, so
@@ -1632,20 +1674,57 @@ export class Orchestrator {
     }
   }
 
-  /** A short agent-written assessment for autonomous triage. Falls back to a
-   *  deterministic note when the provider has no stateless consult (e.g. mock). */
-  private async assessTask(ws: string, agent: Agent, task: Task): Promise<string> {
+  /**
+   * A short agent-written assessment for autonomous triage — plus a rough
+   * duration estimate parsed from a trailing JSON tag on the model's reply.
+   * The model is asked to end with `{"estMinutes": N}` where N is its best
+   * guess of how long a competent coding agent would take. We convert to ms,
+   * cap at 24h (so a runaway estimate doesn't blow out the timeline), and
+   * fall back to null when the tag is missing or malformed — a missing
+   * estimate stays a missing estimate (never a fabricated 0).
+   *
+   * Falls back to a deterministic note when the provider has no stateless
+   * consult (e.g. mock) — no estimate in that case either.
+   */
+  private async assessTask(
+    ws: string,
+    agent: Agent,
+    task: Task,
+  ): Promise<{ assessment: string; estimatedDurationMs: number | null }> {
     try {
       const provider = await this.getProvider(agent.provider);
-      if (!provider.consult) return `Auto-triaged — "${task.text}" looks actionable; no blockers noted.`;
+      if (!provider.consult) {
+        return {
+          assessment: `Auto-triaged — "${task.text}" looks actionable; no blockers noted.`,
+          estimatedDurationMs: null,
+        };
+      }
       const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
       const reply = await provider.consult(
         { task: task.description ? `${task.text}\n\n${task.description}` : task.text, model: agent.model, cwd: config.runnerCwd, apiKey },
-        "You are triaging a backlog item for a coding project. In 2-3 short lines: is the ask clear, rough effort (S/M/L), and any risks? Be terse.",
+        [
+          "You are triaging a backlog item for a coding project.",
+          "In 2-3 short lines: is the ask clear, rough effort (S/M/L), and any risks? Be terse.",
+          'END your reply with a JSON tag on its OWN line estimating a competent coding agent\'s duration in minutes:',
+          '  {"estMinutes": 30}',
+          "Use a positive integer, roughly bounded by S≈15, M≈60, L≈240; omit the tag ONLY if the ask is too ambiguous to guess.",
+        ].join("\n"),
       );
-      return reply.trim().slice(0, 500) || `Auto-triaged — "${task.text}".`;
+      const raw = reply.trim();
+      // Peel the trailing {"estMinutes": N} JSON tag off the shown assessment,
+      // same shape as splitProposedAction — last balanced object on the tail.
+      const parsed = splitEstMinutesTag(raw);
+      const estimatedDurationMs =
+        parsed.estMinutes != null && parsed.estMinutes > 0
+          ? Math.min(parsed.estMinutes * 60_000, 24 * 60 * 60_000) // cap at 24h
+          : null;
+      const assessment = (parsed.body || raw).slice(0, 500) || `Auto-triaged — "${task.text}".`;
+      return { assessment, estimatedDurationMs };
     } catch (err) {
-      return `Auto-triaged — "${task.text}" (assessment unavailable: ${(err as Error).message}).`;
+      return {
+        assessment: `Auto-triaged — "${task.text}" (assessment unavailable: ${(err as Error).message}).`,
+        estimatedDurationMs: null,
+      };
     }
   }
 
