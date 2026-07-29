@@ -377,6 +377,7 @@ export interface AssistantAction {
     | "rename_task"
     | "set_task_desc"
     | "remove_task"
+    | "archive_task"
     | "reorder_task"
     | "rename_project"
     | "set_goal"

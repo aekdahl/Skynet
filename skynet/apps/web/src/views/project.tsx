@@ -473,7 +473,7 @@ const ASSISTANT_SUGGESTIONS = [
 ];
 
 function ProjectAssistant({ projectId }: { projectId: string }) {
-  const { createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject } = useStore();
+  const { createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject, archiveTask } = useStore();
   // Restore this project's chat if we've talked here already this session (the
   // component is keyed by projectId, so this read is correct on every mount).
   const cached = chatCache.get(projectId);
@@ -611,6 +611,7 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
       case "rename_task": return updateTask(projectId, a.taskId!, { text: a.text });
       case "set_task_desc": return updateTask(projectId, a.taskId!, { description: a.description });
       case "remove_task": return deleteTask(projectId, a.taskId!);
+      case "archive_task": return archiveTask(projectId, a.taskId!, true);
       case "reorder_task": return moveTask(projectId, a.taskId!, a.direction!);
       case "rename_project": return updateProject(projectId, { name: a.name });
       case "set_goal": return updateProject(projectId, { goal: a.goal });
