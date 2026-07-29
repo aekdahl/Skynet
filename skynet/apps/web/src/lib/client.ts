@@ -301,7 +301,7 @@ export function createProject(body: {
 }
 export function updateProject(
   id: string,
-  body: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string; repoPath?: string | null },
+  body: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string; autoMergeSmallDiffs?: boolean; repoPath?: string | null },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
 }

@@ -192,6 +192,11 @@ export const Project = z.object({
   // "approve always" exact-command allowances (see ApprovalRule).
   approvalLevel: ApprovalLevel.default("trusted"),
   approvalRules: z.array(ApprovalRule).default([]),
+  // Opt-in: auto-approve a finished agent's diff review when the change is SMALL
+  // and integrates via the reversible local merge (never an outward GitHub push,
+  // which always stays gated). Default off — merging code unreviewed is weightier
+  // than auto-running a reversible command, so it's explicit per project.
+  autoMergeSmallDiffs: z.boolean().default(false),
   // A project binds to a repository one of two ways (they can coexist):
   //  • repoPath — an absolute local folder the runs work in. When it contains
   //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
@@ -420,6 +425,7 @@ export const UpdateProjectRequest = z.object({
   status: ProjectStatus.optional(),
   autonomy: z.boolean().optional(),
   approvalLevel: ApprovalLevel.optional(),
+  autoMergeSmallDiffs: z.boolean().optional(),
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
 });

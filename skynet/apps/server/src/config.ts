@@ -138,6 +138,12 @@ export const config = {
   defaultApprovalLevel: (["manual", "assisted", "trusted"].includes(process.env.SKYNET_APPROVAL_LEVEL ?? "")
     ? process.env.SKYNET_APPROVAL_LEVEL
     : "trusted") as "manual" | "assisted" | "trusted",
+  // "Small diff" thresholds for a project's opt-in auto-merge (Project
+  // .autoMergeSmallDiffs): a finished diff auto-approves only if its total churn
+  // (added + deleted lines) AND changed-file count are BOTH at or under these,
+  // and only on the reversible local merge path. Conservative by default.
+  autoMergeMaxLines: Number(process.env.SKYNET_AUTO_MERGE_MAX_LINES ?? 40),
+  autoMergeMaxFiles: Number(process.env.SKYNET_AUTO_MERGE_MAX_FILES ?? 5),
   // Auto-resolve window for an unanswered `question` HITL (ms). When an agent
   // asks the operator something (e.g. "I can't reproduce this — what's the
   // stack trace?") and no one answers within this window, the question is

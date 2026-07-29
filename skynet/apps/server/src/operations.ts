@@ -398,6 +398,7 @@ export class Operations {
       autonomy: true,
       approvalLevel: config.defaultApprovalLevel,
       approvalRules: [],
+      autoMergeSmallDiffs: false,
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo,

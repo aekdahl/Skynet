@@ -67,6 +67,23 @@ export function decideAutoApproval(input: {
 }
 
 /**
+ * Is a finished diff "small" enough to auto-merge — total churn (added + deleted
+ * lines) AND changed-file count both at or under the thresholds? Pure; the caller
+ * still enforces that this only applies to the reversible local merge path and to
+ * a project that opted in. Deliberately conservative: bounds BOTH churn and fan-out
+ * so a tiny-line-count-but-many-files (or few-files-but-huge) change still gates.
+ */
+export function isSmallDiff(input: {
+  add: number;
+  del: number;
+  files: number;
+  maxLines: number;
+  maxFiles: number;
+}): boolean {
+  return input.add + input.del <= input.maxLines && input.files <= input.maxFiles;
+}
+
+/**
  * May the operator REMEMBER this command as a standing auto-approval? Only for
  * low/medium, non-deny commands — high-risk / boundary ops (push, merge, infra,
  * destructive git) must always be a fresh human decision, so they can never be

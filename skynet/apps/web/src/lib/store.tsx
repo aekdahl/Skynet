@@ -84,7 +84,7 @@ export interface Store extends StoreState {
   ) => Promise<void>;
   updateProject: (
     id: string,
-    patch: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string },
+    patch: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string; autoMergeSmallDiffs?: boolean },
   ) => Promise<void>;
   addApprovalRule: (projectId: string, command: string) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;

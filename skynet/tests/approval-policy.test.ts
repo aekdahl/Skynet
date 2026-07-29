@@ -5,7 +5,7 @@
 // command ALWAYS gates, and a stale standing rule can never widen what runs.
 import { describe, it, expect } from "vitest";
 import type { ApprovalRule } from "@skynet/shared";
-import { decideAutoApproval, normalizeCommand, rememberableRisk } from "../apps/server/src/approval-policy.js";
+import { decideAutoApproval, isSmallDiff, normalizeCommand, rememberableRisk } from "../apps/server/src/approval-policy.js";
 
 const rule = (command: string, riskCap: ApprovalRule["riskCap"]): ApprovalRule => ({
   id: `ar-${command}`,
@@ -87,6 +87,20 @@ describe("decideAutoApproval — standing rules", () => {
   it("a rule can NEVER override the deny floor", () => {
     const d = decideAutoApproval({ command: "rm -rf /", level: "trusted", rules: [rule("rm -rf /", "high")] });
     expect(d).toBeNull();
+  });
+});
+
+describe("isSmallDiff — auto-merge size floor", () => {
+  const T = { maxLines: 40, maxFiles: 5 };
+  it("small when total churn AND file count are both within thresholds", () => {
+    expect(isSmallDiff({ add: 10, del: 5, files: 2, ...T })).toBe(true);
+    expect(isSmallDiff({ add: 20, del: 20, files: 5, ...T })).toBe(true); // inclusive boundary
+  });
+  it("not small when churn exceeds (even in one file)", () => {
+    expect(isSmallDiff({ add: 30, del: 20, files: 1, ...T })).toBe(false); // 50 > 40 lines
+  });
+  it("not small when too many files (even if tiny per file)", () => {
+    expect(isSmallDiff({ add: 6, del: 0, files: 6, ...T })).toBe(false);
   });
 });
 

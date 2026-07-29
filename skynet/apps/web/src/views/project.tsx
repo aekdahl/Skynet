@@ -589,7 +589,7 @@ function ProjectAssistant({ projectId }: { projectId: string }) {
 // plus a manual add. The server refuses high-risk / boundary commands, so a
 // rejected add surfaces its reason inline. Complements the header level selector.
 function ApprovalRulesPanel({ project }: { project: Project }) {
-  const { addApprovalRule, removeApprovalRule } = useStore();
+  const { addApprovalRule, removeApprovalRule, updateProject } = useStore();
   const [draft, setDraft] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -637,6 +637,17 @@ function ApprovalRulesPanel({ project }: { project: Project }) {
         <button className="btn btn-ghost btn-sm" type="submit" disabled={busy || !draft.trim()}>Add</button>
       </form>
       {err && <span className="approval-rule-err">{err}</span>}
+      <label
+        className="approval-automerge"
+        title="Auto-approve a finished agent's diff when it's small (a few files / lines) and integrates locally. Never applies to GitHub pushes or large changes — those always ask."
+      >
+        <input
+          type="checkbox"
+          checked={project.autoMergeSmallDiffs ?? false}
+          onChange={(e) => updateProject(project.id, { autoMergeSmallDiffs: e.target.checked })}
+        />
+        <span>Auto-merge small changes</span>
+      </label>
     </div>
   );
 }

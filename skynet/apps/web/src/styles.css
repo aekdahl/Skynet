@@ -934,6 +934,8 @@ button.kb-done:hover { opacity: 1; }
 .approval-rule-add { display: inline-flex; align-items: center; gap: 4px; }
 .approval-rule-input { font-size: 11.5px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); width: 200px; }
 .approval-rule-err { font-size: 11px; color: var(--danger); flex-basis: 100%; }
+.approval-automerge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; margin-left: 4px; }
+.approval-automerge input { cursor: pointer; }
 .kb-archive:hover { color: var(--text); background: var(--raised); }
 
 /* project-level Archived section */

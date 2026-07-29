@@ -12,7 +12,7 @@ import {
 } from "@skynet/runner-sdk";
 import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
-import { decideAutoApproval } from "./approval-policy.js";
+import { decideAutoApproval, isSmallDiff } from "./approval-policy.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
@@ -491,7 +491,7 @@ export class Orchestrator {
     // Record what actually changed on the run so every view reflects it (the run
     // itself, not just the review card). `modifiedFiles` was never populated.
     await this.hub.runModifiedFiles(runId, stat.files);
-    await this.hub.raiseHitl({
+    const item: HitlItem = {
       id: `q-diff-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId,
@@ -513,7 +513,50 @@ export class Orchestrator {
       steps: null,
       diff: { add: stat.add, del: stat.del, modules },
       flags: [],
-    });
+    };
+    await this.hub.raiseHitl(item);
+
+    // Phase 3: auto-merge a SMALL diff that integrates via the reversible LOCAL
+    // path (never an outward GitHub push, which always stays gated), when the
+    // project opted in. Raised then immediately resolved through the normal path
+    // — with the patch captured for the audit — so the merge (+ its check/rollback
+    // safety net) runs exactly as a human approve would, and the trail shows it.
+    if (await this.autoMergeEligible(agent, project, stat)) {
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "policy:diff", at: now() };
+      await this.hub.runLog(runId, `auto-merged small diff (policy:diff): ${stat.add}+/${stat.del}- in ${stat.files.length} file(s)`);
+      const cap = await this.runDiff(runId).catch(() => null);
+      const capturedDiff = cap && (cap.patch || cap.files.length > 0) ? { patch: cap.patch, files: cap.files } : undefined;
+      const resolved = await this.hub.resolveHitl(item.id, resolution, capturedDiff);
+      if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(item, resolution);
+    }
+  }
+
+  /** Phase 3 gate: may this finished diff auto-merge without a human? Only if the
+   *  project opted in, the diff is small (churn + files under the thresholds), AND
+   *  it integrates via the reversible LOCAL merge — a GitHub push (outward egress)
+   *  or a no-git project always falls through to a human. */
+  private async autoMergeEligible(
+    agent: TaskRun,
+    project: Project | undefined,
+    stat: { add: number; del: number; files: string[] },
+  ): Promise<boolean> {
+    if (!project?.autoMergeSmallDiffs) return false;
+    if (
+      !isSmallDiff({
+        add: stat.add,
+        del: stat.del,
+        files: stat.files.length,
+        maxLines: config.autoMergeMaxLines,
+        maxFiles: config.autoMergeMaxFiles,
+      })
+    ) {
+      return false;
+    }
+    const git = this.gitContextFor(project);
+    if (!git) return false; // no local git backing → nothing reversible to merge into
+    const conn = await githubService.get(agent.workspaceId);
+    if (conn?.connected && project.repo) return false; // GitHub push path — boundary, always gate
+    return true;
   }
 
   /**
