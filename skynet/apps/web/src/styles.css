@@ -1426,6 +1426,8 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .cfg-prov-btn.on { color: var(--text); }
 .cfg-models { display: flex; flex-wrap: wrap; gap: 8px; }
 .cfg-model-btn.on { background: var(--accent); border-color: var(--accent); color: #0B0D11; font-weight: 600; }
+.cfg-model-custom { margin-top: 8px; width: 100%; font-family: var(--mono, monospace); }
+.cfg-model-note { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
 
 /* ===== home: monitor shell ===== */
 .home { position: relative; z-index: 1; }

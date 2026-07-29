@@ -618,9 +618,10 @@ export class Operations {
 
   // ── fleet ──────────────────────────────────────────────────────────────
   async configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent> {
-    // A runner's model must be one the chosen provider actually offers — the
-    // provider catalog is the single source of truth (DEF-004). An invalid model
-    // is a 400 (fail() maps a plain Error → 400), matching the HTTP contract.
+    // Validate the provider+model pairing. ADVISORY on the model: the catalog is
+    // curated suggestions, not an allowlist, so any non-empty model is accepted for
+    // a known provider (a just-released model works without a catalog edit); only
+    // an unknown provider or an empty model is a 400 (fail() maps Error → 400).
     const invalid = modelValidForProvider(await this.store.listProviders(), input.provider, input.model);
     if (invalid) throw new Error(invalid);
     // The id is a stable, opaque handle (runs reference it as agentId); the name
