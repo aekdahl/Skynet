@@ -67,6 +67,9 @@ const ALLOW = new Set<string>([
   // No happy-path journey exercises it because the normal review → done path
   // is the intended path; this is only reached when that path is stuck.
   "forceTaskDone",
+  // Steward action executor for reorder_task — covered by the validator +
+  // executor tests in project-assistant.test.ts; no journey shape uses it.
+  "reorderTask",
 ]);
 
 describe("client API coverage", () => {

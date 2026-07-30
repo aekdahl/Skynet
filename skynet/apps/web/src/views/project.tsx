@@ -572,11 +572,13 @@ export function ProjectView({
     setDropBeforeId(null);
   };
   // Per-project lens (Kanban is the default; Timeline mirrors Home's timeline
-  // scoped to just this project). Persisted per-project in sessionStorage so
-  // switching back to the project restores the last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "timeline">(() => {
+  // scoped to just this project; Archived shows soft-hidden tasks + restore).
+  // Persisted per-project in sessionStorage so switching back restores the
+  // last chosen lens.
+  const [lens, setLens] = useState<"kanban" | "timeline" | "archived">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
-    return sessionStorage.getItem(`skynet.proj.lens.${project.id}`) === "timeline" ? "timeline" : "kanban";
+    const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
+    return v === "timeline" || v === "archived" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -611,7 +613,6 @@ export function ProjectView({
   };
 
   const [folded, setFolded] = useState(false);
-  const [showArchived, setShowArchived] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -781,13 +782,16 @@ export function ProjectView({
 
       <div className="projview-lens">
         <div className="lens-switch">
-          {(["kanban", "timeline"] as const).map((id) => (
+          {(["kanban", "timeline", "archived"] as const).map((id) => (
             <button
               key={id}
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : "Timeline"}
+              {id === "kanban" ? "Kanban" : id === "timeline" ? "Timeline" : "Archived"}
+              {id === "archived" && archivedTasks.length > 0 && (
+                <span className="lens-btn-count">{archivedTasks.length}</span>
+              )}
             </button>
           ))}
         </div>
@@ -796,6 +800,35 @@ export function ProjectView({
       {lens === "timeline" ? (
         <div className="projview-timeline">
           <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
+        </div>
+      ) : lens === "archived" ? (
+        <div className="projview-archived">
+          {archivedTasks.length === 0 ? (
+            <div className="kb-empty">No archived tasks. Archive a task from its ⤓ button to soft-hide it — it stays in the store and can be restored from here.</div>
+          ) : (
+            <div className="kb-archive-list">
+              {archivedTasks.map((t) => {
+                const r = t.runId ? runById.get(t.runId) : undefined;
+                return (
+                  <div key={t.id} className="kb-archive-row">
+                    <button
+                      className="kb-archive-name"
+                      title={r ? "Open the run" : "Archived task"}
+                      disabled={!r}
+                      onClick={() => r && onOpenTask(r.id)}
+                    >
+                      {t.state === "done" ? "✓ " : ""}
+                      {t.text}
+                    </button>
+                    <span className="kb-archive-branch mono">{t.state}{r ? " · " + r.branch : ""}</span>
+                    <button className="btn btn-ghost btn-sm" onClick={() => restoreTask(t)}>
+                      Restore
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       ) : (
       <BoardDnd.Provider value={{ drag, begin: setDrag, end: () => { setDrag(null); setDropBeforeId(null); }, dropBeforeId }}>
@@ -851,37 +884,6 @@ export function ProjectView({
       </BoardDnd.Provider>
       )}
 
-      {archivedTasks.length > 0 && (
-        <div className="kb-archive-sec">
-          <button className="kb-archive-head" onClick={() => setShowArchived((s) => !s)}>
-            {showArchived ? "▾" : "▸"} ARCHIVED · {archivedTasks.length}
-          </button>
-          {showArchived && (
-            <div className="kb-archive-list">
-              {archivedTasks.map((t) => {
-                const r = t.runId ? runById.get(t.runId) : undefined;
-                return (
-                  <div key={t.id} className="kb-archive-row">
-                    <button
-                      className="kb-archive-name"
-                      title={r ? "Open the run" : "Archived task"}
-                      disabled={!r}
-                      onClick={() => r && onOpenTask(r.id)}
-                    >
-                      {t.state === "done" ? "✓ " : ""}
-                      {t.text}
-                    </button>
-                    <span className="kb-archive-branch mono">{t.state}{r ? " · " + r.branch : ""}</span>
-                    <button className="btn btn-ghost btn-sm" onClick={() => restoreTask(t)}>
-                      Restore
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
 
       {previewOpen && <LivePreviewModal id={project.id} title={"Live preview · " + project.name} onClose={() => setPreviewOpen(false)} />}
     </section>

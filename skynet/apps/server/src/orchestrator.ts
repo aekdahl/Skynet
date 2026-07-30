@@ -80,18 +80,25 @@ export class TaskAlreadyAssignedError extends Error {
 }
 
 /**
- * PURE: extract a trailing `{"estMinutes": N}` JSON tag off the triage LLM's
- * reply. Returns the body (with the tag stripped) and the parsed minutes when
- * present. Tolerates a code fence around the tag; ignores non-numeric or
- * malformed values (a bad tag stays a missing estimate — never fabricates a
- * duration). Exported for the unit tests.
+ * PURE: extract a trailing `{"estMinutes": N, "clarity": "clear"|"unclear"}`
+ * JSON tag off the triage LLM's reply. Returns the body (with the tag stripped)
+ * plus each parsed field. Tolerates a code fence around the tag; ignores
+ * non-numeric / malformed / missing values individually — a bad `estMinutes`
+ * doesn't strip a valid `clarity` and vice versa. A missing signal stays
+ * missing (never fabricated). Exported for the unit tests.
+ *
+ * `clarity` drives auto-promote triage→todo: only "clear" tasks auto-advance
+ * (and only when they also have an eligibility set). "unclear" and null both
+ * park the task in triage for a human to promote.
  */
-export function splitEstMinutesTag(raw: string): { body: string; estMinutes: number | null } {
+export function splitEstMinutesTag(
+  raw: string,
+): { body: string; estMinutes: number | null; clarity: "clear" | "unclear" | null } {
   const trimmed = (raw ?? "").trim();
   const noFence = trimmed.replace(/\n?```\s*$/, "").trimEnd();
   // Match the LAST balanced top-level {...} on the tail.
   const end = noFence.lastIndexOf("}");
-  if (end === -1) return { body: trimmed, estMinutes: null };
+  if (end === -1) return { body: trimmed, estMinutes: null, clarity: null };
   let depth = 0;
   let start = -1;
   for (let i = end; i >= 0; i--) {
@@ -102,17 +109,26 @@ export function splitEstMinutesTag(raw: string): { body: string; estMinutes: num
       if (depth === 0) { start = i; break; }
     }
   }
-  if (start < 0) return { body: trimmed, estMinutes: null };
+  if (start < 0) return { body: trimmed, estMinutes: null, clarity: null };
   try {
-    const obj = JSON.parse(noFence.slice(start, end + 1)) as { estMinutes?: unknown };
-    if (typeof obj.estMinutes === "number" && Number.isFinite(obj.estMinutes) && obj.estMinutes > 0) {
+    const obj = JSON.parse(noFence.slice(start, end + 1)) as { estMinutes?: unknown; clarity?: unknown };
+    // Parse each field independently — a malformed one shouldn't drop the tag.
+    const estMinutes =
+      typeof obj.estMinutes === "number" && Number.isFinite(obj.estMinutes) && obj.estMinutes > 0
+        ? Math.round(obj.estMinutes)
+        : null;
+    const clarity: "clear" | "unclear" | null =
+      obj.clarity === "clear" || obj.clarity === "unclear" ? obj.clarity : null;
+    // Only strip the tag from the body if AT LEAST ONE field parsed — if
+    // neither did the "JSON object" was probably a false positive in prose.
+    if (estMinutes != null || clarity != null) {
       const body = noFence.slice(0, start).replace(/```[a-zA-Z]*\s*$/, "").trim();
-      return { body, estMinutes: Math.round(obj.estMinutes) };
+      return { body, estMinutes, clarity };
     }
   } catch {
     /* not a JSON tail — whole reply is the body */
   }
-  return { body: trimmed, estMinutes: null };
+  return { body: trimmed, estMinutes: null, clarity: null };
 }
 
 export class Orchestrator {
@@ -1685,7 +1701,11 @@ export class Orchestrator {
       const allAgents = await this.store.listAllAgents().catch(() => [] as Agent[]);
       const workspaces = [...new Set(allAgents.map((a) => a.workspaceId))];
       for (const ws of workspaces) {
-        const projects = (await this.store.listProjects(ws)).filter((p) => p.autonomy);
+        // Iterate ALL projects — the TRIAGE step runs regardless of the project's
+        // `autonomy` toggle (it's just a fleet read, no work executed). The
+        // action steps (auto-pick, auto-review) still respect `autonomy` because
+        // those spend real time/tokens.
+        const projects = await this.store.listProjects(ws);
         if (projects.length === 0) continue;
         const tasks = await this.store.listTasks(ws);
         for (const p of projects) {
@@ -1694,42 +1714,58 @@ export class Orchestrator {
           if (idle.length === 0) break; // no capacity left in this workspace
           const mine = tasks.filter((t) => t.projectId === p.id);
           try {
-            // 1) Triage one backlog item → assessment, move to triage. Skip
-            //    `unassigned` tasks: leaving backlog requires an eligibility choice,
-            //    and autonomy never guesses one — those stay parked for a human.
+            // 1) Triage one backlog item → assessment + duration + clarity.
+            //    ALWAYS runs (no p.autonomy gate) — it's informative, not
+            //    action. Skip `unassigned` tasks: an eligibility choice is still
+            //    the operator's, and autonomy never guesses one.
+            //    If the LLM self-reports clarity=clear, auto-promote triage→todo
+            //    in the SAME write — that's the "reduce human dependence" step.
+            //    Unclear (or missing signal) parks in triage for a human read.
             const backlog = mine.find(
               (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") !== "unassigned",
             );
             if (backlog) {
-              const { assessment, estimatedDurationMs } = await this.assessTask(ws, idle[0]!, backlog);
+              const { assessment, estimatedDurationMs, clarity } = await this.assessTask(ws, idle[0]!, backlog);
               // Only OVERWRITE an existing estimate when triage produced a new
               // one — leaves an operator-set estimate intact if triage failed
               // to guess (or on retriage of a task that already had one).
               const nextEst = estimatedDurationMs != null
                 ? estimatedDurationMs
                 : backlog.estimatedDurationMs;
-              await this.hub.upsertTask({ ...backlog, state: "triage", assessment, estimatedDurationMs: nextEst });
+              // Auto-promote to todo when the LLM said "clear" — the eligibility
+              // check above already guarantees the task can leave backlog.
+              const nextState: Task["state"] = clarity === "clear" ? "todo" : "triage";
+              await this.hub.upsertTask({
+                ...backlog,
+                state: nextState,
+                assessment,
+                estimatedDurationMs: nextEst,
+              });
             }
             // 2) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
-            //    Each honors its own eligibility set via assignTask → acquireAgent, so
-            //    a task whose pinned agents are busy is skipped (continue) rather than
-            //    stalling pickups for tasks whose agents ARE free.
-            for (const t of mine.filter(
-              (t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned",
-            )) {
-              try {
-                await this.assignTask(p.id, t.id);
-              } catch {
-                continue; // this task's agents busy / no credential — try the next
+            //    Gated by `p.autonomy` — this is where money/time actually gets
+            //    spent, so it stays under the project autonomy toggle. Also
+            //    honors each task's eligibility set via assignTask → acquireAgent.
+            if (p.autonomy) {
+              for (const t of mine.filter(
+                (t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned",
+              )) {
+                try {
+                  await this.assignTask(p.id, t.id);
+                } catch {
+                  continue; // this task's agents busy / no credential — try the next
+                }
               }
-            }
-            // 3) Review a finished run: approve → merge/done, else flag for a human.
-            const review = mine.find((t) => t.state === "review" && t.runId && !t.reviewFlaggedReason);
-            if (review?.runId) {
-              const open = (await this.store.listQueue(ws)).find(
-                (h) => h.runId === review.runId && !h.resolvedAt,
-              );
-              if (open) await this.autoReview(ws, idle[0]!, review, open);
+              // 3) Review a finished run: approve → merge/done, else flag for a
+              //    human. Same gate: approving a merge spends risk, so
+              //    `p.autonomy` off means the human owns the review too.
+              const review = mine.find((t) => t.state === "review" && t.runId && !t.reviewFlaggedReason);
+              if (review?.runId) {
+                const open = (await this.store.listQueue(ws)).find(
+                  (h) => h.runId === review.runId && !h.resolvedAt,
+                );
+                if (open) await this.autoReview(ws, idle[0]!, review, open);
+              }
             }
           } catch (err) {
             await this.hub.runLog(p.id, `autonomy skipped ${p.id}: ${(err as Error).message}`).catch(() => undefined);
@@ -1742,55 +1778,63 @@ export class Orchestrator {
   }
 
   /**
-   * A short agent-written assessment for autonomous triage — plus a rough
-   * duration estimate parsed from a trailing JSON tag on the model's reply.
-   * The model is asked to end with `{"estMinutes": N}` where N is its best
-   * guess of how long a competent coding agent would take. We convert to ms,
-   * cap at 24h (so a runaway estimate doesn't blow out the timeline), and
-   * fall back to null when the tag is missing or malformed — a missing
-   * estimate stays a missing estimate (never a fabricated 0).
-   *
-   * Falls back to a deterministic note when the provider has no stateless
-   * consult (e.g. mock) — no estimate in that case either.
+   * A short agent-written assessment for autonomous triage — plus a duration
+   * estimate AND a clarity self-report parsed from a trailing JSON tag on the
+   * model's reply. The model is asked to end with
+   * `{"estMinutes": N, "clarity": "clear"|"unclear"}`; we convert minutes to
+   * ms (cap 24h) and use clarity to gate auto-promote (triage→todo). A missing
+   * signal stays missing — never fabricated. Falls back to a deterministic
+   * note when the provider has no stateless consult (e.g. mock).
    */
   private async assessTask(
     ws: string,
     agent: Agent,
     task: Task,
-  ): Promise<{ assessment: string; estimatedDurationMs: number | null }> {
+  ): Promise<{ assessment: string; estimatedDurationMs: number | null; clarity: "clear" | "unclear" | null }> {
     try {
       const provider = await this.getProvider(agent.provider);
       if (!provider.consult) {
         return {
           assessment: `Auto-triaged — "${task.text}" looks actionable; no blockers noted.`,
           estimatedDurationMs: null,
+          clarity: null,
         };
       }
       const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
+      // The estimate is for AGENT wall-clock time, not human developer time —
+      // these differ by an order of magnitude on typical coding tasks (an
+      // autonomous agent's 20-minute feature is a person's afternoon). Without
+      // this anchor the LLM defaults to its stronger "human developer time"
+      // prior and returns estimates 10–30× too high, so we spell it out AND
+      // give concrete agent-wall-clock anchors for S/M/L.
       const reply = await provider.consult(
         { task: task.description ? `${task.text}\n\n${task.description}` : task.text, model: agent.model, cwd: config.runnerCwd, apiKey },
         [
           "You are triaging a backlog item for a coding project.",
           "In 2-3 short lines: is the ask clear, rough effort (S/M/L), and any risks? Be terse.",
-          'END your reply with a JSON tag on its OWN line estimating a competent coding agent\'s duration in minutes:',
-          '  {"estMinutes": 30}',
-          "Use a positive integer, roughly bounded by S≈15, M≈60, L≈240; omit the tag ONLY if the ask is too ambiguous to guess.",
+          "END your reply with a JSON tag on its OWN line:",
+          '  {"estMinutes": <int>, "clarity": "clear"|"unclear"}',
+          "estMinutes = the AGENT'S wall-clock time to complete this task — NOT a human developer's time.",
+          "An autonomous coding agent works fast: a task that would take a person hours typically takes an agent minutes.",
+          "Anchors (agent wall-clock): S ≈ 5m (rename, config tweak, single small edit), M ≈ 20m (a real feature — new endpoint, migration, small refactor), L ≈ 60m (multi-file change, cross-module work). Cap at 240m even for very large asks.",
+          "clarity = \"clear\" ONLY if the ask is well-scoped and actionable AS WRITTEN (an agent could start without more info).",
+          '"unclear" if it needs clarification, is missing acceptance criteria, or the scope is ambiguous. When in doubt, choose "unclear".',
+          "Omit any field you can't confidently supply; a missing signal is honest, a fabricated one is not.",
         ].join("\n"),
       );
       const raw = reply.trim();
-      // Peel the trailing {"estMinutes": N} JSON tag off the shown assessment,
-      // same shape as splitProposedAction — last balanced object on the tail.
       const parsed = splitEstMinutesTag(raw);
       const estimatedDurationMs =
         parsed.estMinutes != null && parsed.estMinutes > 0
           ? Math.min(parsed.estMinutes * 60_000, 24 * 60 * 60_000) // cap at 24h
           : null;
       const assessment = (parsed.body || raw).slice(0, 500) || `Auto-triaged — "${task.text}".`;
-      return { assessment, estimatedDurationMs };
+      return { assessment, estimatedDurationMs, clarity: parsed.clarity };
     } catch (err) {
       return {
         assessment: `Auto-triaged — "${task.text}" (assessment unavailable: ${(err as Error).message}).`,
         estimatedDurationMs: null,
+        clarity: null,
       };
     }
   }

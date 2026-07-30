@@ -1562,6 +1562,12 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .lens-btn { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 13px; font-weight: 500; color: var(--muted); padding: 7px 16px; border-radius: 6px; }
 .lens-btn:hover { color: var(--text); }
 .lens-btn.on { background: var(--raised); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
+/* Count chip inside a lens button (e.g. "Archived 3") — same shape as an
+   inbox/queue badge, muted so it doesn't compete with the active-tab pill. */
+.lens-btn-count { display: inline-block; margin-left: 6px; font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--faint); background: var(--line-soft); border-radius: 8px; padding: 1px 6px; }
+.lens-btn.on .lens-btn-count { color: var(--muted); background: var(--line); }
+/* Archived lens body — same width band as the kanban / timeline slots. */
+.projview-archived { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 10px 12px; }
 
 /* gear (fleet) */
 .gear { display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; margin-left: 8px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--muted); cursor: pointer; }
@@ -1815,6 +1821,8 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .np-reponame { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono); }
 .np-private { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; align-self: flex-start; }
 .np-private-label { font-size: 12.5px; color: var(--muted); }
+/* Governance row in the create-project form — Approvals + Autonomy up front. */
+.np-governance { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
 /* Confirm gate before creating a real repo */
 .np-confirm { display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--warn); border-radius: 10px; padding: 12px; background: color-mix(in oklch, var(--warn), transparent 92%); }
 .np-confirm-text { font-size: 13px; line-height: 1.5; color: var(--text); margin: 0; }

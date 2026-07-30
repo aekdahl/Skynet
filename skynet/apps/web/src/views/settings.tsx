@@ -102,7 +102,13 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
           const envBacked = envSet.has(p.id);
           const draft = drafts[p.id] ?? "";
           const req = p.requirements;
-          const rd = providerReadiness(p);
+          // Drive the readiness badge from the freshly-fetched secret store (this
+          // view re-fetches on mount) rather than the snapshot's `available`, so
+          // the badge can never contradict the "via Settings ····" pill above it
+          // for a key that's actually set. Until secrets load (`metas === null`),
+          // fall back to the snapshot.
+          const credentialSet = metas ? Boolean(meta) || envBacked : undefined;
+          const rd = providerReadiness(p, credentialSet);
           return (
             <div className="settings-row" key={p.id}>
               <div className="settings-prov">
@@ -156,10 +162,14 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                     {req.runtime === "cli" ? (
                       <>
                         Runtime: <code>{req.bin}</code> CLI
-                        {p.binOnPath === true ? " — found on PATH" : " — not found on PATH"}
+                        {p.binOnPath === true ? " — ✓ found on PATH" : " — not found on PATH"}
                       </>
                     ) : (
-                      <>Runtime: in-process (no CLI to install)</>
+                      // SDK providers run the agent as a Node import (no
+                      // subprocess) — that's the desired state, not a
+                      // limitation. Read as "all good", complete with a
+                      // checkmark so it doesn't look like something's missing.
+                      <>Runtime: SDK — ✓ runs in-process (no CLI needed)</>
                     )}
                     {" · "}
                     {req.cliLogin ? (

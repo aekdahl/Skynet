@@ -7,6 +7,7 @@ import { z } from "zod";
 import {
   TaskRun,
   TaskRunStatus,
+  ApprovalLevel,
   Dependency,
   HitlItem,
   Module,
@@ -32,6 +33,10 @@ export const Snapshot = z.object({
   deps: z.array(Dependency),
   providers: z.array(ProviderInfo),
   serverTime: Timestamp, // lets clients correct for clock skew when ticking
+  // The server's default approval level (SKYNET_APPROVAL_LEVEL), so the
+  // create-project form can pre-select what a new project would otherwise get.
+  // Optional for forward-compat with older servers that don't send it.
+  defaultApprovalLevel: ApprovalLevel.optional(),
 });
 export type Snapshot = z.infer<typeof Snapshot>;
 

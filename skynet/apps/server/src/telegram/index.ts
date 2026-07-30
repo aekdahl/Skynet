@@ -33,7 +33,7 @@ import type { Orchestrator } from "../orchestrator.js";
 import { prefetchProjectDocs } from "../project-assistant.js";
 import { TelegramClient } from "./client.js";
 import { decide } from "./commands.js";
-import { gateNotice, reviewNotice, completedNotice, type Names } from "./notices.js";
+import { decisionCardHtml, gateKeyboard, reviewNotice, completedNotice, esc, type Names } from "./notices.js";
 import {
   buildContext,
   INTENT_SYSTEM_PROMPT,
@@ -117,6 +117,9 @@ export interface ControlOps {
   listAgents(ws: string): Promise<Agent[]>;
   listProviders(ws: string): Promise<ProviderInfo[]>;
   resolveHitl(ws: string, id: string, input: ResolveRequest, operatorId: string): Promise<HitlItem>;
+  /** The real unified diff of a run's branch, for the "View diff" button.
+   *  Optional so existing fakes/callers don't have to implement it. */
+  runDiff?(ws: string, runId: string): Promise<{ patch: string; add: number; del: number; files: string[] }>;
   createProject(ws: string, input: CreateProjectRequest): Promise<Project>;
   createTask(ws: string, projectId: string, input: CreateTaskRequest): Promise<Task>;
   assignTask(ws: string, projectId: string, taskId: string): Promise<TaskRun>;
@@ -146,6 +149,9 @@ export interface NotifyResult {
  *  only care about text stay unchanged, and so `notify` remains fake-friendly. */
 export interface NotifyOpts {
   reply_markup?: import("./client.js").InlineKeyboardMarkup;
+  /** Render the body as Telegram HTML (bold / code / italic). Text must be
+   *  escaped by the caller (see notices.esc). */
+  parse_mode?: "HTML";
 }
 
 export interface OwnerControlDeps {
@@ -191,13 +197,16 @@ interface Pending {
  * owner message; deterministic commands are decided first (see `decide`).
  */
 export function createOwnerControl(deps: OwnerControlDeps): {
-  handle: (chatId: string, text: string) => Promise<void>;
+  handle: (chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
   handleCallback: (
     chatId: string,
     data: string,
     callbackQueryId: string,
     messageId: number,
   ) => Promise<void>;
+  /** Register a decision card the bridge just sent, so a reply to it (or a
+   *  "Request changes" tap) routes guidance to the right gate. */
+  noteCard: (messageId: number, gateId: string, runId: string) => void;
 } {
   const { operations, orchestrator, notify } = deps;
   const editReplyMarkup = deps.editReplyMarkup ?? (async () => undefined);
@@ -242,6 +251,32 @@ export function createOwnerControl(deps: OwnerControlDeps): {
 
   const openGates = async (): Promise<HitlItem[]> =>
     (await operations.listHitl(ws)).filter((h) => !h.resolvedAt);
+
+  // ── "Request changes" / reply-to-resume ───────────────────────────────────
+  // A decision card's message id → its gate, so replying to that message sends
+  // the reply as `modify` guidance (the SAME path the app's "Request changes →
+  // resume" uses). Tapping ✏️ instead arms `awaitingGuidance`, so the operator's
+  // NEXT message becomes the guidance even without an explicit reply.
+  const cardGate = new Map<number, { gateId: string; runId: string }>();
+  let awaitingGuidance: { gateId: string; runId: string; messageId: number } | null = null;
+  const noteCard = (messageId: number, gateId: string, runId: string): void => {
+    if (messageId) cardGate.set(messageId, { gateId, runId });
+  };
+  /** Deliver operator text as `modify` guidance to a gate — resumes the agent. */
+  const sendGuidance = async (chatId: string, gate: { gateId: string; messageId?: number }, text: string): Promise<void> => {
+    const stillOpen = (await openGates()).some((g) => g.id === gate.gateId);
+    if (!stillOpen) {
+      await notify("That decision was already handled — nothing to change.");
+      return;
+    }
+    try {
+      await operations.resolveHitl(ws, gate.gateId, { action: "modify", guidance: text }, operatorId);
+      await notify("↩ Sent your changes — resuming the agent. I'll re-check when it's back.");
+      if (gate.messageId) await editReplyMarkup(chatId, gate.messageId).catch(() => undefined);
+    } catch (err) {
+      await notify(`Couldn't send those changes: ${(err as Error).message}`);
+    }
+  };
 
   const statusText = async (): Promise<string> => {
     const runs = await operations.listRuns(ws);
@@ -465,7 +500,30 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     await notify(out);
   };
 
-  const handle = async (chatId: string, text: string): Promise<void> => {
+  const handle = async (chatId: string, text: string, replyToMessageId?: number): Promise<void> => {
+    // Owner-bound guardrail (mirrors `decide`'s ignore): never act on another chat.
+    if (String(chatId) !== deps.ownerChatId) {
+      log("ignored message from non-owner chat");
+      return;
+    }
+
+    // "Request changes" flow — a reply to a decision card, or the next message
+    // after tapping ✏️, becomes `modify` guidance that resumes the agent. An
+    // explicit reply always wins; the armed state defers to a real slash command.
+    if (deps.controlEnabled && text.trim()) {
+      const replied = replyToMessageId != null ? cardGate.get(replyToMessageId) : undefined;
+      if (replied) {
+        await sendGuidance(chatId, { gateId: replied.gateId, messageId: replyToMessageId }, text.trim());
+        return;
+      }
+      if (awaitingGuidance && !text.trim().startsWith("/")) {
+        const g = awaitingGuidance;
+        awaitingGuidance = null;
+        await sendGuidance(chatId, { gateId: g.gateId, messageId: g.messageId }, text.trim());
+        return;
+      }
+    }
+
     const action = decide({ chatId, ownerChatId: deps.ownerChatId, controlEnabled: deps.controlEnabled, text });
 
     // Owner-bound guardrail: never echo a non-owner's content.
@@ -677,12 +735,12 @@ export function createOwnerControl(deps: OwnerControlDeps): {
       return;
     }
 
-    // ── HITL approve/reject — gated by the SAME rule as /approve <id>.
+    // ── HITL actions — approve/reject/modify/diff. Same gate rule as /approve.
     if (kind === "hitl") {
       const sepInRest = rest.indexOf(":");
       const decision = sepInRest > 0 ? rest.slice(0, sepInRest) : rest;
       const gateId = sepInRest > 0 ? rest.slice(sepInRest + 1) : "";
-      if ((decision !== "approve" && decision !== "reject") || !gateId) {
+      if (!["approve", "reject", "modify", "diff"].includes(decision) || !gateId) {
         await ackCallback(callbackQueryId);
         return;
       }
@@ -698,9 +756,37 @@ export function createOwnerControl(deps: OwnerControlDeps): {
         if (messageId) await editReplyMarkup(chatId, messageId).catch(() => undefined);
         return;
       }
+
+      // 🔍 View diff — send the run's real patch (truncated), no resolution.
+      if (decision === "diff") {
+        await ackCallback(callbackQueryId).catch(() => undefined);
+        try {
+          const d = operations.runDiff ? await operations.runDiff(ws, gate.runId) : null;
+          if (!d) {
+            await notify("Diff isn't available for this run.");
+          } else {
+            const MAX = 3200; // keep well under Telegram's 4096-char message cap
+            const clipped = d.patch.length > MAX ? d.patch.slice(0, MAX) + "\n… (truncated — open the app for the full diff)" : d.patch;
+            const head = `🔍 <b>${d.files.length} file(s)</b> · <code>+${d.add} −${d.del}</code>`;
+            await notify(`${head}\n<pre>${esc(clipped)}</pre>`, { parse_mode: "HTML" });
+          }
+        } catch (err) {
+          await notify(`Couldn't load the diff: ${(err as Error).message}`);
+        }
+        return; // leave the decision buttons in place
+      }
+
+      // ✏️ Request changes — arm guidance capture; the next message resumes the agent.
+      if (decision === "modify") {
+        await ackCallback(callbackQueryId, { text: "Send your changes as a message." }).catch(() => undefined);
+        awaitingGuidance = { gateId, runId: gate.runId, messageId };
+        await notify("✏️ Reply with the changes you want — I'll send them to the agent and it'll resume.");
+        return; // keep the buttons; guidance arrives as the next message
+      }
+
       await ackCallback(callbackQueryId).catch(() => undefined);
       try {
-        await operations.resolveHitl(ws, gateId, { action: decision }, operatorId);
+        await operations.resolveHitl(ws, gateId, { action: decision as "approve" | "reject" }, operatorId);
         await notify(`${decision === "approve" ? "✅" : "🚫"} Gate ${gateId} ${decision}d.`);
       } catch (err) {
         await notify(`Couldn't ${decision} gate ${gateId}: ${(err as Error).message}`);
@@ -713,7 +799,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     await ackCallback(callbackQueryId).catch(() => undefined);
   };
 
-  return { handle, handleCallback };
+  return { handle, handleCallback, noteCard };
 }
 
 /** The narrow slice {@link simulateConversational} needs from the orchestrator. */
@@ -816,17 +902,11 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
 
   const announceGate = async (it: HitlItem): Promise<void> => {
     lastNotice.set(it.runId, "review"); // the gate IS the review heads-up
-    const opts = config.telegramControl
-      ? {
-          reply_markup: {
-            inline_keyboard: [[
-              { text: "✓ Approve", callback_data: `hitl:approve:${it.id}` },
-              { text: "✕ Reject", callback_data: `hitl:reject:${it.id}` },
-            ]],
-          },
-        }
-      : undefined;
-    await notify(gateNotice(it, await nameOf(it.runId), config.telegramControl), opts);
+    const opts: NotifyOpts = { parse_mode: "HTML" };
+    if (config.telegramControl) opts.reply_markup = gateKeyboard(it);
+    const sent = await notify(decisionCardHtml(it, await nameOf(it.runId), config.telegramControl), opts);
+    // Remember which gate this card is for, so a reply to it → "request changes".
+    if (config.telegramControl && sent.messageId) control.noteCard(sent.messageId, it.id, it.runId);
   };
 
   const announceReview = (runId: string): void => {
@@ -863,9 +943,10 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
   // in index.ts — hardcoding DEFAULT_WORKSPACE here made Telegram query a
   // different empty universe than the web (the "workspace looks empty" bug).
   const ws = config.adminWorkspace || DEFAULT_WORKSPACE;
-  bus.subscribe(ws, handler);
 
   // ── Inbound: owner-only control (deterministic commands + confirmed intents) ─
+  // Created BEFORE subscribing, so a gate raised during boot can register its
+  // decision card via `control.noteCard` without a temporal-dead-zone hazard.
   const control = createOwnerControl({
     controlEnabled: config.telegramControl,
     ownerChatId,
@@ -876,6 +957,8 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     ackCallback,
     ws,
   });
+
+  bus.subscribe(ws, handler);
 
   // Long-poll loop — fire-and-forget (never awaited at boot). Each iteration is
   // isolated: an error is caught + backed off so the loop survives, and it never
@@ -905,7 +988,7 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
           }
           const msg = u.message;
           if (!msg || typeof msg.text !== "string") continue;
-          await control.handle(String(msg.chat.id), msg.text).catch((err) =>
+          await control.handle(String(msg.chat.id), msg.text, msg.reply_to_message?.message_id).catch((err) =>
             log(`handler error: ${(err as Error).message}`),
           );
         }

@@ -27,6 +27,9 @@ export interface TelegramUpdate {
     message_id: number;
     text?: string;
     chat: { id: number | string };
+    /** Set when this message is a reply to another — we use it to route a reply
+     *  to a decision card into that gate's "request changes" (modify) guidance. */
+    reply_to_message?: { message_id: number };
   };
   /** A button on an inline keyboard was tapped. Telegram delivers this instead
    *  of a `message` when the source is a button — we handle it explicitly. */
@@ -96,7 +99,7 @@ export class TelegramClient {
   async sendMessage(
     chatId: string | number,
     text: string,
-    opts?: { reply_markup?: InlineKeyboardMarkup },
+    opts?: { reply_markup?: InlineKeyboardMarkup; parse_mode?: "HTML" },
   ): Promise<SentMessage> {
     const url = `${this.base}/sendMessage`;
     let res: Response;
@@ -108,6 +111,7 @@ export class TelegramClient {
           chat_id: chatId,
           text,
           disable_web_page_preview: true,
+          ...(opts?.parse_mode ? { parse_mode: opts.parse_mode } : {}),
           ...(opts?.reply_markup ? { reply_markup: opts.reply_markup } : {}),
         }),
       });
@@ -126,6 +130,44 @@ export class TelegramClient {
       return { chatId, messageId: typeof messageId === "number" ? messageId : 0 };
     } catch {
       return { chatId, messageId: 0 };
+    }
+  }
+
+  /**
+   * Replace the TEXT (and optionally the keyboard) of a previously-sent message.
+   * Used to turn a live status card into its next state in place, or to render a
+   * resolved decision card as "done". Best-effort: a 400 "message is not
+   * modified" is swallowed (identical edit). Token is scrubbed from errors.
+   */
+  async editMessageText(
+    chatId: string | number,
+    messageId: number,
+    text: string,
+    opts?: { reply_markup?: InlineKeyboardMarkup | null; parse_mode?: "HTML" },
+  ): Promise<void> {
+    const url = `${this.base}/editMessageText`;
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId,
+          text,
+          disable_web_page_preview: true,
+          ...(opts?.parse_mode ? { parse_mode: opts.parse_mode } : {}),
+          // Passing an empty keyboard removes the buttons; omitting leaves them.
+          ...(opts?.reply_markup !== undefined
+            ? { reply_markup: opts.reply_markup ?? { inline_keyboard: [] } }
+            : {}),
+        }),
+      });
+    } catch (err) {
+      throw new Error(`telegram editMessageText failed: ${this.scrub((err as Error).message)}`);
+    }
+    if (!res.ok && res.status !== 400) {
+      throw new Error(`telegram editMessageText HTTP ${res.status}`);
     }
   }
 

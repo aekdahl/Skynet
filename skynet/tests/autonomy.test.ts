@@ -84,6 +84,55 @@ describe("autonomy loop", () => {
     expect((await store.getTask("t1"))?.state).toBe("triage");
   });
 
+  it("auto-promotes triage→todo when the LLM self-reports clarity=clear", async () => {
+    // The LLM tail signal `{"clarity":"clear"}` is the "safe to advance"
+    // handshake — the task's eligibility must also be set (already `any` in
+    // mkTask), so leaving backlog is legal.
+    const { store, orch } = await setup('Clear scope.\n{"estMinutes":15,"clarity":"clear"}');
+    await store.putTask(mkTask({ state: "backlog" }));
+    await orch.tickAutonomy();
+    const t = await store.getTask("t1");
+    expect(t?.state).toBe("todo");
+    expect(t?.assessment).toContain("Clear scope");
+    expect(t?.estimatedDurationMs).toBe(15 * 60_000);
+  });
+
+  it("parks in triage when clarity=unclear (human still owns the promote)", async () => {
+    const { store, orch } = await setup('Ambiguous ask.\n{"clarity":"unclear"}');
+    await store.putTask(mkTask({ state: "backlog" }));
+    await orch.tickAutonomy();
+    const t = await store.getTask("t1");
+    expect(t?.state).toBe("triage");
+    expect(t?.assessment).toContain("Ambiguous");
+  });
+
+  it("parks in triage when the LLM omits clarity entirely (missing = unclear-equivalent)", async () => {
+    const { store, orch } = await setup("Clear ask, S, low risk"); // no JSON tag
+    await store.putTask(mkTask({ state: "backlog" }));
+    await orch.tickAutonomy();
+    expect((await store.getTask("t1"))?.state).toBe("triage");
+  });
+
+  it("triages even when project.autonomy is off (informative, no work runs)", async () => {
+    const { store, orch } = await setup("clear ask, S, low risk");
+    // Flip autonomy off — pickup/review should be gated but triage still runs.
+    await store.putProject({ ...project, autonomy: false });
+    await store.putTask(mkTask({ state: "backlog" }));
+    await orch.tickAutonomy();
+    expect((await store.getTask("t1"))?.state).toBe("triage");
+    expect((await store.getTask("t1"))?.assessment).toContain("clear ask");
+  });
+
+  it("does NOT auto-pick when project.autonomy is off — even if the task is auto-pick + eligible", async () => {
+    // The gate is on the ACTION step (spends time/tokens), not on triage.
+    const { store, orch, provider } = await setup();
+    await store.putProject({ ...project, autonomy: false });
+    await store.putTask(mkTask({ state: "todo", autoPick: true }));
+    await orch.tickAutonomy();
+    expect((await store.getTask("t1"))?.state).toBe("todo"); // stays put
+    expect(provider.started).toBe(0);                        // no run started
+  });
+
   it("starts an auto-pick todo task → ongoing", async () => {
     const { store, orch, provider } = await setup();
     await store.putTask(mkTask({ state: "todo", autoPick: true }));
