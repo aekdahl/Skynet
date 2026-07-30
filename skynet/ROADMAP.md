@@ -437,6 +437,14 @@ memory (v4) + thin runner adapters.
 ---
 
 ## Considerations / open questions (decide later)
+- **Vendor agent SDK adoption** — Claude uses `@anthropic-ai/claude-agent-sdk` (in-process, no
+  subprocess boundary, no PATH probe). Every other provider we ship (codex / gemini / cursor /
+  copilot / hermes) is a **CLI runner** because that's the surface the vendor exposes today.
+  **Watch for**: an official OpenAI Codex agent SDK, a Google Gemini agent SDK, a Cursor agent
+  SDK, or equivalents. If/when one lands, swap that provider's runner from CLI-subprocess to
+  in-process SDK — a purely additive change (the `runtime: "sdk" | "cli"` field on
+  `ProviderRequirements` already represents both). Faster, no PATH dependency, no shell env
+  weirdness. Waiting on the vendor, not building.
 - 🔬 **LLMs for memory distillation (v4) and the fluency coach (v5)** — both likely require an LLM;
   decide model / cost / UX. (Flagged by design, not avoidance.)
 - **Repo-optional / chat-only mode** — a repo should *not* be hard-required. A "just chat with an
@@ -452,3 +460,11 @@ memory (v4) + thin runner adapters.
 
 ## Parked / explicitly out
 - **Building our own coding agent** — never. Wrap, don't rebuild ([docs/positioning.md](docs/positioning.md)).
+- **In-process agent loops built on model-only SDKs** (e.g. an OpenAI / Google
+  Gemini raw-model wrapper that Skynet drives as if it were the agent) — never.
+  Model SDKs give a message endpoint; the vendor's coding agent — planning,
+  tools, editing, permission gates — is what actually does the work. Rolling
+  our own on top of a raw-model SDK to get "in-process everywhere" would be
+  the same "build our own coding agent" trap, just spelled differently.
+  In-process runs come from **vendor agent SDKs** (Claude today; watch-list
+  above) or not at all.
