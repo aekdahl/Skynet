@@ -24,7 +24,7 @@
 
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import type { Agent, HitlItem, Project, ProviderInfo, ServerEvent, Task, TaskRun } from "@skynet/shared";
-import type { ConfigureRunnerRequest, CreateProjectRequest, CreateTaskRequest, ResolveRequest } from "@skynet/shared";
+import type { ConfigureRunnerRequest, CreateProjectRequest, CreateTaskRequest, ResolveRequest, UpdateProjectRequest, UpdateTaskRequest } from "@skynet/shared";
 import type { config as Config } from "../config.js";
 import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
@@ -138,6 +138,11 @@ export interface ControlOps {
   assignTask(ws: string, projectId: string, taskId: string): Promise<TaskRun>;
   archiveTask(ws: string, projectId: string, taskId: string, archived: boolean): Promise<Task>;
   configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent>;
+  // Project-management parity with the in-app Steward assistant (all guarded +
+  // confirmed before they run). Optional so minimal test fakes needn't stub them.
+  transitionTask?(ws: string, taskId: string, to: Task["state"], operatorId: string): Promise<Task>;
+  updateTask?(ws: string, taskId: string, patch: UpdateTaskRequest): Promise<Task>;
+  updateProject?(ws: string, id: string, patch: UpdateProjectRequest): Promise<Project>;
   /** Spin up (or restart) the project's live preview; resolves when it's live or
    *  failed, with the URL in the returned state. */
   previewStart(ws: string, projectId: string): Promise<PreviewState>;
@@ -398,6 +403,98 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           run: async () => {
             await operations.archiveTask(ws, action.projectId!, action.taskId!, true);
             return `🗃 Archived task ${action.taskId}${task?.text ? ` — "${task.text}"` : ""}. Recoverable in the app (un-archive to restore).`;
+          },
+        };
+      }
+      case "move_task": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        const summary = `Move task ${action.taskId} — "${task?.text ?? "?"}" to ${action.state}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.transitionTask) throw new Error("moving tasks isn't available here");
+            await operations.transitionTask(ws, action.taskId!, action.state as Task["state"], operatorId);
+            return `↦ Moved task ${action.taskId} to ${action.state}.`;
+          },
+        };
+      }
+      case "rename_task": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        const summary = `Rename task ${action.taskId} — "${task?.text ?? "?"}" → "${action.newText}"?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateTask) throw new Error("editing tasks isn't available here");
+            await operations.updateTask(ws, action.taskId!, { text: action.newText! });
+            return `✏️ Renamed task ${action.taskId} to "${action.newText}".`;
+          },
+        };
+      }
+      case "set_task_desc": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        const cleared = !action.description;
+        const summary = `${cleared ? "Clear the description of" : "Set the description of"} task ${action.taskId} — "${task?.text ?? "?"}"?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateTask) throw new Error("editing tasks isn't available here");
+            await operations.updateTask(ws, action.taskId!, { description: action.description! || null });
+            return `📝 ${cleared ? "Cleared" : "Updated"} the description of task ${action.taskId}.`;
+          },
+        };
+      }
+      case "rename_project": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const summary = `Rename project ${project?.name ?? action.projectId} → "${action.projectName}"?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateProject) throw new Error("editing projects isn't available here");
+            await operations.updateProject(ws, action.projectId!, { name: action.projectName! });
+            return `✏️ Renamed project to "${action.projectName}".`;
+          },
+        };
+      }
+      case "set_goal": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const summary = `Set ${project?.name ?? action.projectId}'s goal to "${action.projectGoal}"?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateProject) throw new Error("editing projects isn't available here");
+            await operations.updateProject(ws, action.projectId!, { goal: action.projectGoal ?? "" });
+            return `🎯 Updated ${project?.name ?? action.projectId}'s goal.`;
+          },
+        };
+      }
+      case "set_autonomy": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const summary = `Turn autonomy ${action.autonomy ? "ON" : "OFF"} for ${project?.name ?? action.projectId}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateProject) throw new Error("editing projects isn't available here");
+            await operations.updateProject(ws, action.projectId!, { autonomy: action.autonomy! });
+            return `⚙️ Autonomy ${action.autonomy ? "on" : "off"} for ${project?.name ?? action.projectId}.`;
+          },
+        };
+      }
+      case "set_status": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const summary = `Set ${project?.name ?? action.projectId} status to ${action.projectStatus}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateProject) throw new Error("editing projects isn't available here");
+            await operations.updateProject(ws, action.projectId!, { status: action.projectStatus as UpdateProjectRequest["status"] });
+            return `🏷 ${project?.name ?? action.projectId} is now ${action.projectStatus}.`;
           },
         };
       }
