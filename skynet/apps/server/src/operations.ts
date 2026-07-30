@@ -43,7 +43,7 @@ import {
   type AssistantAction,
   type ChatTurn,
 } from "./project-assistant.js";
-import { askStewardWorkspace } from "./steward/assistant.js";
+import { askStewardWorkspace, resolveFocusProject } from "./steward/assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -118,23 +118,31 @@ export class Operations {
     return t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
   }
 
-  /** Global Steward chat (the sidebar dock, available on every page). When a
-   *  project is in focus (the page you're on, passed as `focusProjectId`) it's the
-   *  full project assistant — repo-aware, proposes confirm-first actions. With no
-   *  focus it answers workspace-wide (cross-project status), answer-only. */
+  /** Global Steward chat (the sidebar dock, available on every page). Runs the
+   *  full project assistant — repo-aware, proposes confirm-first actions — whenever
+   *  a single project is in scope: the page you're on (`focusProjectId`), OR, from
+   *  the workspace view, the project the conversation is clearly about (resolved
+   *  from the message + history). Only when no single project can be pinned down
+   *  does it answer workspace-wide (cross-project status, answer-only). The
+   *  returned `projectId` tells the dock which project any action targets. */
   async stewardChat(
     workspaceId: string,
     question: string,
     history?: ChatTurn[],
     focusProjectId?: string,
   ): Promise<{ reply: string; action: AssistantAction | null; projectId: string | null }> {
-    if (focusProjectId) {
-      const project = await this.store.getProject(focusProjectId);
-      if (project && project.workspaceId === workspaceId) {
-        const { reply, action } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
-        return { reply, action, projectId: project.id };
-      }
-      // focus id is stale / not ours → fall through to a workspace answer.
+    // An explicit page focus wins; otherwise resolve the project from the
+    // conversation so the workspace dock can act on it, not just report on it.
+    let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
+    if (project && project.workspaceId !== workspaceId) project = null; // stale / not ours
+    if (!project) {
+      const projects = await this.store.listProjects(workspaceId);
+      const id = resolveFocusProject(projects.map((p) => ({ id: p.id, name: p.name })), question, history);
+      project = id ? projects.find((p) => p.id === id) ?? null : null;
+    }
+    if (project) {
+      const { reply, action } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
+      return { reply, action, projectId: project.id };
     }
     const { reply, action } = await askStewardWorkspace(this.store, { workspaceId, question, history });
     return { reply, action, projectId: null };

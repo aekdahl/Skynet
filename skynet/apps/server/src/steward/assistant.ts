@@ -427,12 +427,53 @@ export async function askSteward(
 }
 
 // ─── Workspace-wide Steward (the global dock, no single project in focus) ────
-// Answer-only: with no project focused there's no unambiguous target for a task/
-// project action, so this grounds on a cross-project status snapshot and never
-// proposes actions. When a project IS in focus the caller uses askSteward instead.
+// From the workspace dock Steward can still ACT on a project — it just has to
+// know WHICH one. resolveFocusProject reads the conversation to pick that project
+// (so "…in Takeoff?" then "can you do anything with it?" focuses Takeoff and acts);
+// only when no single project can be resolved do we fall back to the answer-only
+// cross-project snapshot below.
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * PURE: resolve which project the operator is referring to, so the workspace dock
+ * can FOCUS + act on it even with no project page open. Scans the current
+ * `question` first, then `history` newest→oldest; the first message that names a
+ * project decides — a single unambiguous match wins, and a message naming 2+
+ * distinct projects yields `null` (we never guess). A project matches on its exact
+ * id token or its name as a whole-word, case-insensitive phrase (so "API" doesn't
+ * match inside "capability"). Returns the project id, or `null` when none is
+ * clearly referenced (the caller then answers workspace-wide).
+ */
+export function resolveFocusProject(
+  projects: { id: string; name: string }[],
+  question: string,
+  history: ChatTurn[] = [],
+): string | null {
+  if (projects.length === 0) return null;
+  const mentions = (text: string): Set<string> => {
+    const hits = new Set<string>();
+    const lower = (text ?? "").toLowerCase();
+    if (!lower.trim()) return hits;
+    for (const p of projects) {
+      const id = p.id.toLowerCase();
+      const name = p.name.trim().toLowerCase();
+      if (id && new RegExp(`(^|\\W)${escapeRe(id)}(\\W|$)`).test(lower)) hits.add(p.id);
+      else if (name && new RegExp(`(^|\\W)${escapeRe(name)}(\\W|$)`).test(lower)) hits.add(p.id);
+    }
+    return hits;
+  };
+  const texts = [question, ...[...history].reverse().map((t) => t.content)];
+  for (const text of texts) {
+    const hits = mentions(text);
+    if (hits.size === 1) return [...hits][0]!;
+    if (hits.size > 1) return null; // named several — ambiguous, don't guess
+  }
+  return null;
+}
 
 const WORKSPACE_SYSTEM =
-  "You are Steward, the operator's assistant for a Skynet workspace. Answer conversationally and concisely about the CURRENT STATUS across the whole workspace — projects, their task boards, active runs, and open approvals — grounded ONLY in the WORKSPACE STATUS below. If a fact isn't shown, say so plainly; never invent state. To CHANGE something on a specific project (add/move a task, edit settings), tell the operator to open that project (its own chat proposes and runs the change) — you do not propose actions here. Do NOT emit any JSON.";
+  "You are Steward, the operator's assistant for a Skynet workspace. Answer conversationally and concisely about the CURRENT STATUS across the whole workspace — projects, their task boards, active runs, and open approvals — grounded ONLY in the WORKSPACE STATUS below. If a fact isn't shown, say so plainly; never invent state. You CAN change things on a specific project (add/move a task, edit settings) — just tell the operator to name the project they mean and you'll take care of it right here (you always confirm before anything runs). Do NOT emit any JSON.";
 
 function workspaceStatusContext(projects: Project[], tasks: Task[], runs: TaskRun[], gates: HitlItem[]): string {
   const openGates = gates.filter((g) => !g.resolvedAt).length;
