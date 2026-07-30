@@ -5,6 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { LoggingMessageNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { HitlItem, ProviderId, ServerEvent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import type { Principal } from "../apps/server/src/auth.js";
@@ -130,5 +131,96 @@ describe("waitForEvent", () => {
   it("resolves to null on timeout", async () => {
     const bus = new InProcessBus();
     expect(await waitForEvent(bus, DEFAULT_WORKSPACE, () => true, 20)).toBeNull();
+  });
+});
+
+// Push notifications: an idle MCP client (one not currently inside a
+// wait_for_hitl call) should still receive a `notifications/message` the
+// moment a HITL gate is raised. Uses the MCP SDK's `LoggingMessageNotification`
+// handler on the client side + bus.publish on the server side, so the whole
+// subscribe → sendLoggingMessage → client-receives path is exercised.
+describe("MCP push notifications", () => {
+  it("pushes notifications/message on hitl.raised (approver hint included when scoped)", async () => {
+    const { client, bus } = await connect(approver);
+    // Ask the client to route MCP loggingMessage notifications through logs[].
+    const logs: Array<{ level: string; logger?: string; data: unknown }> = [];
+    // The MCP SDK exposes a typed setLoggingLevel + `notification` route; we
+    // hook the underlying transport by listening for the SDK's client-side
+    // logging event. Fall back to the low-level notification handler if it's
+    // available on this SDK version.
+    client.setNotificationHandler(LoggingMessageNotificationSchema, (n) => {
+      logs.push({ level: n.params.level, logger: n.params.logger, data: n.params.data });
+    });
+
+    // Publish a hitl.raised as if the orchestrator raised it — the server's
+    // bus subscription (buildMcpServer) turns it into a push notification.
+    const item: HitlItem = {
+      id: "q-42",
+      workspaceId: DEFAULT_WORKSPACE,
+      runId: "run-1",
+      kind: "approval",
+      title: "Run: rm -rf node_modules",
+      why: "the agent wants to run a shell command",
+      raisedAt: 100,
+      risk: "high",
+      expiresAt: null,
+      resolvedAt: null,
+      resolution: null,
+      rationale: null,
+      command: "rm -rf node_modules",
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: null,
+      flags: [],
+    };
+    bus.publish(DEFAULT_WORKSPACE, { type: "hitl.raised", item });
+    // Give the async pipeline a tick to deliver.
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(logs.length).toBeGreaterThan(0);
+    const push = logs.find((l) => l.logger === "skynet.hitl")!;
+    expect(push).toBeDefined();
+    expect(push.level).toBe("warning"); // high risk → warning
+    const data = push.data as Record<string, unknown>;
+    expect(data.hitlId).toBe("q-42");
+    expect(data.runId).toBe("run-1");
+    expect(data.kind).toBe("approval");
+    expect(data.risk).toBe("high");
+    expect(data.title).toContain("rm -rf");
+    // Approver-scoped principal gets the one-click hint; a non-scoped one wouldn't.
+    expect(data.approverHint).toEqual({ tool: "resolve_hitl", args: { hitlId: "q-42" } });
+  });
+
+  it("does NOT push on resolved gates (already-answered noise stays out)", async () => {
+    const { client, bus } = await connect(approver);
+    const logs: Array<{ logger?: string }> = [];
+    client.setNotificationHandler(LoggingMessageNotificationSchema, (n) => {
+      logs.push({ logger: n.params.logger });
+    });
+    const resolvedItem: HitlItem = {
+      id: "q-already",
+      workspaceId: DEFAULT_WORKSPACE,
+      runId: "run-1",
+      kind: "approval",
+      title: "irrelevant",
+      why: "",
+      raisedAt: 0,
+      risk: "low",
+      expiresAt: null,
+      resolvedAt: 100,
+      resolution: { action: "approve", optionIndex: null, guidance: null, by: "op-1", at: 100 },
+      rationale: null,
+      command: null,
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: null,
+      flags: [],
+    };
+    bus.publish(DEFAULT_WORKSPACE, { type: "hitl.raised", item: resolvedItem });
+    await new Promise((r) => setTimeout(r, 50));
+    // No skynet.hitl push should have arrived — the item was already resolved.
+    expect(logs.filter((l) => l.logger === "skynet.hitl")).toEqual([]);
   });
 });
