@@ -52,6 +52,25 @@ describe("Operations — workspace-scoped domain layer", () => {
     await expect(ops.getRun("resistance", agent.id)).rejects.toBeInstanceOf(NotFoundError);
   });
 
+  it("createProject honours governance chosen at creation, else falls back to defaults", async () => {
+    const { ops } = setup();
+    // Explicit choices at creation are persisted verbatim.
+    const chosen = await ops.createProject(DEFAULT_WORKSPACE, {
+      name: "Locked down",
+      goal: "",
+      repo: undefined,
+      autonomy: false,
+      approvalLevel: "manual",
+    });
+    expect(chosen.autonomy).toBe(false);
+    expect(chosen.approvalLevel).toBe("manual");
+
+    // Omitting them keeps the historical defaults (autonomy on; trusted default).
+    const defaulted = await ops.createProject(DEFAULT_WORKSPACE, { name: "Default", goal: "", repo: undefined });
+    expect(defaulted.autonomy).toBe(true);
+    expect(defaulted.approvalLevel).toBe("trusted");
+  });
+
   it("rejects cross-workspace access with NotFoundError", async () => {
     const { ops } = setup();
     const mine = await ops.createProject(DEFAULT_WORKSPACE, { name: "Mine", goal: "", repo: undefined });

@@ -139,7 +139,13 @@ export function App() {
   const createProject = async (
     name: string,
     goal: string,
-    opts?: { repo?: string; repoPath?: string; createRepo?: { name: string; private: boolean; owner?: string } },
+    opts?: {
+      repo?: string;
+      repoPath?: string;
+      createRepo?: { name: string; private: boolean; owner?: string };
+      autonomy?: boolean;
+      approvalLevel?: string;
+    },
   ) => {
     await store.createProject(name, goal, opts);
     setFromP("projects");

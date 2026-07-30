@@ -9,6 +9,7 @@ import {
 } from "react";
 import type {
   TaskRun,
+  ApprovalLevel,
   Dependency,
   HitlItem,
   Module,
@@ -58,6 +59,10 @@ export interface StoreState {
   // over HTTP by the Audit view), so this is the signal the view watches to
   // re-pull after an archive/delete/clear lands — from any operator or tab.
   auditRev: number;
+  // The server's default approval level, so the create-project form can
+  // pre-select what a new project would otherwise get. Undefined until the first
+  // snapshot lands (or an older server that doesn't send it).
+  defaultApprovalLevel?: ApprovalLevel;
 }
 
 export interface Store extends StoreState {
@@ -80,7 +85,13 @@ export interface Store extends StoreState {
   createProject: (
     name: string,
     goal: string,
-    opts?: { repo?: string; repoPath?: string; createRepo?: { name: string; private: boolean; owner?: string } },
+    opts?: {
+      repo?: string;
+      repoPath?: string;
+      createRepo?: { name: string; private: boolean; owner?: string };
+      autonomy?: boolean;
+      approvalLevel?: string;
+    },
   ) => Promise<void>;
   updateProject: (
     id: string,
@@ -253,6 +264,7 @@ function fromSnapshot(snap: Snapshot): StoreState {
     modules: snap.modules,
     deps: snap.deps,
     providers: snap.providers,
+    defaultApprovalLevel: snap.defaultApprovalLevel,
     connected: true,
     loaded: true,
     // A snapshot in hand means we're effectively online; a later socket close
@@ -368,6 +380,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           repo: opts?.repo,
           repoPath: opts?.repoPath,
           createRepo: opts?.createRepo,
+          autonomy: opts?.autonomy,
+          approvalLevel: opts?.approvalLevel,
         });
       },
       updateProject: async (id, patch) => {

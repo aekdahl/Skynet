@@ -171,6 +171,7 @@ export class Operations {
   async snapshot(ws: string): Promise<Snapshot> {
     const snap = await this.store.snapshot(ws);
     snap.providers = await withSecretAvailability(snap.providers, ws);
+    snap.defaultApprovalLevel = config.defaultApprovalLevel;
     return snap;
   }
   listProviders(ws: string): Promise<ProviderInfo[]> {
@@ -381,8 +382,10 @@ export class Operations {
       goal: input.goal,
       runIds: [],
       status: "active",
-      autonomy: true,
-      approvalLevel: config.defaultApprovalLevel,
+      // Governance is chosen at creation when the form sends it, else the
+      // server defaults (autonomy on; approvalLevel from SKYNET_APPROVAL_LEVEL).
+      autonomy: input.autonomy ?? true,
+      approvalLevel: input.approvalLevel ?? config.defaultApprovalLevel,
       approvalRules: [],
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,

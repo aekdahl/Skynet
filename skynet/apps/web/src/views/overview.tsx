@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { GithubOwner, Project } from "@skynet/shared";
+import type { ApprovalLevel, GithubOwner, Project } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import {
@@ -157,13 +157,27 @@ export function NewProjectCard({
   onCreate: (
     name: string,
     goal: string,
-    opts?: { repo?: string; repoPath?: string; createRepo?: { name: string; private: boolean; owner?: string } },
+    opts?: {
+      repo?: string;
+      repoPath?: string;
+      createRepo?: { name: string; private: boolean; owner?: string };
+      autonomy?: boolean;
+      approvalLevel?: ApprovalLevel;
+    },
   ) => void | Promise<void>;
 }) {
+  // The server's default approval level seeds the picker, so a new project's
+  // shown default matches what it would otherwise be created with.
+  const { defaultApprovalLevel } = useStore();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
   const [mode, setMode] = useState<BindMode>("folder");
+  const [autonomy, setAutonomy] = useState(true);
+  const [approvalLevel, setApprovalLevel] = useState<ApprovalLevel>(defaultApprovalLevel ?? "trusted");
+  // While the operator hasn't touched the picker, keep it in sync with the
+  // server default as it arrives (the snapshot may land after first render).
+  const [approvalTouched, setApprovalTouched] = useState(false);
   const [repo, setRepo] = useState("");
   const [repoPath, setRepoPath] = useState("");
   const [newRepoName, setNewRepoName] = useState("");
@@ -184,6 +198,12 @@ export function NewProjectCard({
     if (owners && owners.length && !newRepoOwner) setNewRepoOwner(owners[0]!.login);
   }, [owners, newRepoOwner]);
 
+  // Adopt the server default approval level once it lands, unless the operator
+  // has already chosen one this session.
+  useEffect(() => {
+    if (!approvalTouched && defaultApprovalLevel) setApprovalLevel(defaultApprovalLevel);
+  }, [defaultApprovalLevel, approvalTouched]);
+
   // The repo name follows the project name until the operator edits it directly.
   const effectiveRepoName = newRepoNameTouched ? newRepoName : slugRepo(name);
   const repoNameValid = /^[A-Za-z0-9._-]+$/.test(effectiveRepoName);
@@ -200,13 +220,16 @@ export function NewProjectCard({
     setRepoPath("");
     setNewRepoName("");
     setNewRepoNameTouched(false);
+    setAutonomy(true);
+    setApprovalLevel(defaultApprovalLevel ?? "trusted");
+    setApprovalTouched(false);
   };
 
   const submit = async (opts: { repo?: string; repoPath?: string; createRepo?: { name: string; private: boolean; owner?: string } }) => {
     setCreating(true);
     setError(null);
     try {
-      await onCreate(name.trim(), goal.trim() || "No goal set yet.", opts);
+      await onCreate(name.trim(), goal.trim() || "No goal set yet.", { ...opts, autonomy, approvalLevel });
       reset();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't create the project.");
@@ -329,6 +352,37 @@ export function NewProjectCard({
           </label>
         </div>
       )}
+
+      {/* Governance chosen up front — same controls as the project header, so a
+          new project starts with the policy the operator wants (both editable
+          later on the project page). */}
+      <div className="np-governance">
+        <label
+          className="proj-approval"
+          title="How much an agent may run without asking. Dangerous or outward-facing steps (git push, merge, infra, destructive commands) always ask, regardless of this setting."
+        >
+          <span className="proj-approval-label mono">Approvals</span>
+          <select
+            className="proj-approval-select"
+            value={approvalLevel}
+            onChange={(e) => { setApprovalTouched(true); setApprovalLevel(e.target.value as ApprovalLevel); }}
+          >
+            <option value="manual">Manual · ask for everything</option>
+            <option value="assisted">Assisted · auto-approve low-risk</option>
+            <option value="trusted">Trusted · auto-approve low + medium</option>
+          </select>
+        </label>
+        <label className="proj-autonomy" title="When on, agents autonomously triage backlog items, pick up auto-pick tasks, and review finished work.">
+          <input
+            type="checkbox"
+            className="proj-autonomy-cb"
+            checked={autonomy}
+            onChange={(e) => setAutonomy(e.target.checked)}
+          />
+          <span className="proj-autonomy-switch" aria-hidden="true" />
+          <span className="proj-autonomy-label">Autonomy</span>
+        </label>
+      </div>
 
       {confirming && mode === "new" ? (
         <div className="np-confirm">
