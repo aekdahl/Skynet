@@ -33,7 +33,19 @@ import type { Orchestrator } from "../orchestrator.js";
 import { prefetchProjectDocs } from "../project-assistant.js";
 import { TelegramClient } from "./client.js";
 import { decide } from "./commands.js";
-import { decisionCardHtml, gateKeyboard, reviewNotice, completedNotice, esc, type Names } from "./notices.js";
+import {
+  decisionCardHtml,
+  gateKeyboard,
+  gateHead,
+  digestText,
+  shippedCardHtml,
+  reviewNotice,
+  completedNotice,
+  inQuietHours,
+  parseQuietHours,
+  esc,
+  type Names,
+} from "./notices.js";
 import {
   buildContext,
   INTENT_SYSTEM_PROMPT,
@@ -81,6 +93,7 @@ const ERROR_BACKOFF_MS = 5_000;
 const HELP =
   [
     "Skynet remote control:",
+    "/inbox — what needs you: open decisions + run counts",
     "/status — running/waiting runs, open gates, pause state",
     "/gates — list open gates",
     "/approve <id> — approve a gate (needs SKYNET_TELEGRAM_CONTROL=true)",
@@ -285,6 +298,20 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     return `Status: ${active} run(s) running/waiting, ${gates} open gate(s), autonomy ${
       orchestrator.isPaused() ? "PAUSED" : "active"
     }.`;
+  };
+
+  /** The glanceable /inbox digest — decisions first, then run counts. Resolves
+   *  each gate's run name from the run list (no id soup), same as the pushes. */
+  const digest = async (): Promise<{ text: string }> => {
+    const [gates, runs] = await Promise.all([openGates(), operations.listRuns(ws)]);
+    const runName = new Map(runs.map((r) => [r.id, r.name || r.id]));
+    return {
+      text: digestText({
+        gates: gates.map((g) => ({ head: gateHead(g.kind), run: runName.get(g.runId) ?? g.title })),
+        running: runs.filter((r) => r.status === "running" || r.status === "waiting").length,
+        done: runs.filter((r) => r.status === "done").length,
+      }),
+    };
   };
 
   /** Turn a validated Action into a human-readable summary + a deferred executor
@@ -540,6 +567,12 @@ export function createOwnerControl(deps: OwnerControlDeps): {
       case "status":
         await notify(await statusText());
         return;
+
+      case "inbox": {
+        const { text: body } = await digest();
+        await notify(body, { parse_mode: "HTML" });
+        return;
+      }
 
       case "gates": {
         const gates = await openGates();
@@ -883,6 +916,21 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
       log(`answerCallbackQuery failed: ${(err as Error).message}`);
     }
   };
+  /** Best-effort edit a message's text in place (live cards). Swallows errors. */
+  const editText = async (messageId: number, text: string): Promise<void> => {
+    try {
+      await client.editMessageText(ownerChatId, messageId, text, { parse_mode: "HTML", reply_markup: null });
+    } catch (err) {
+      log(`editMessageText failed: ${(err as Error).message}`);
+    }
+  };
+
+  // Quiet hours hold LOW-VALUE "shipped" pings overnight (decisions always go
+  // through). Parsed once; malformed/unset → never quiet.
+  const quiet = parseQuietHours(config.telegramQuietHours);
+  // A run's live decision card (message id), so completion edits it in place into
+  // "✅ Shipped" instead of stacking a separate line under it.
+  const runCard = new Map<string, number>();
 
   // ── Outbound: push workspace events to the owner ──────────────────────────
   // Notifications lead with human names — a run's task title + its project — not
@@ -905,8 +953,11 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     const opts: NotifyOpts = { parse_mode: "HTML" };
     if (config.telegramControl) opts.reply_markup = gateKeyboard(it);
     const sent = await notify(decisionCardHtml(it, await nameOf(it.runId), config.telegramControl), opts);
-    // Remember which gate this card is for, so a reply to it → "request changes".
-    if (config.telegramControl && sent.messageId) control.noteCard(sent.messageId, it.id, it.runId);
+    if (sent.messageId) {
+      // A reply to this card → "request changes"; completion edits it in place.
+      if (config.telegramControl) control.noteCard(sent.messageId, it.id, it.runId);
+      runCard.set(it.runId, sent.messageId);
+    }
   };
 
   const announceReview = (runId: string): void => {
@@ -934,7 +985,19 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     } else if (event.type === "run.completed") {
       lastNotice.set(event.runId, "done");
       void (async () => {
-        await notify(completedNotice(await nameOf(event.runId)));
+        const names = await nameOf(event.runId);
+        const cardId = runCard.get(event.runId);
+        if (cardId) {
+          // Live card: turn the decision card you acted on INTO its result, in
+          // place — no separate ping, so it's fine even during quiet hours.
+          runCard.delete(event.runId);
+          await editText(cardId, shippedCardHtml(names));
+          return;
+        }
+        // No card to edit → a fresh "shipped" line. Low value, so hold it during
+        // quiet hours (the /inbox digest still reflects it whenever you look).
+        if (inQuietHours(new Date(), quiet)) return;
+        await notify(completedNotice(names));
       })();
     }
   };
