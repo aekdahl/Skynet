@@ -397,19 +397,6 @@ export interface AssistantAction {
   estimatedDurationMs?: number | null;
   plannedStartAt?: number | null;
 }
-// Repo-aware project assistant — chat about the project's status + repo content,
-// and optionally propose a confirm-first project/task action.
-export function projectChat(
-  projectId: string,
-  question: string,
-  history: { role: "user" | "assistant"; content: string }[],
-) {
-  return req<{ reply: string; action?: AssistantAction | null }>(
-    "POST",
-    `/api/projects/${projectId}/chat`,
-    { question, history },
-  );
-}
 // Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
 // (full project assistant + actions); omit it for a workspace-wide answer. The
 // response echoes which project the action (if any) targets.
@@ -449,44 +436,6 @@ export function previewRestart(projectId: string) {
 }
 export function previewRefresh(projectId: string) {
   return req<PreviewState>("POST", `/api/projects/${projectId}/preview/refresh`);
-}
-
-/** Streaming "ask about this project" — reads the text/plain reply as it streams,
- *  calling `onDelta` per chunk. Resolves with the full reply. Falls back to the
- *  non-streaming endpoint when the response body can't be read. */
-export async function streamProjectChat(
-  projectId: string,
-  question: string,
-  history: { role: "user" | "assistant"; content: string }[],
-  onDelta: (chunk: string) => void,
-): Promise<string> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/chat/stream`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" },
-    body: JSON.stringify({ question, history }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new ApiError(res.status, body || res.statusText);
-  }
-  if (!res.body) {
-    const { reply } = await projectChat(projectId, question, history);
-    onDelta(reply);
-    return reply;
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let full = "";
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    if (chunk) {
-      full += chunk;
-      onDelta(chunk);
-    }
-  }
-  return full;
 }
 
 // Provider CLI installer — POSTs to /api/providers/:id/install and streams the

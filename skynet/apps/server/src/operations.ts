@@ -40,7 +40,6 @@ import { projectPreview, type PreviewState } from "./preview/project-preview.js"
 import { githubService } from "./github/index.js";
 import {
   answerProjectQuestion,
-  answerProjectQuestionStream,
   type AssistantAction,
   type ChatTurn,
 } from "./project-assistant.js";
@@ -119,19 +118,6 @@ export class Operations {
     return t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
   }
 
-  /** Repo-aware project chat assistant — answers about the project's live status
-   *  and its repository content (see project-assistant.ts). */
-  async projectAssistant(
-    workspaceId: string,
-    projectId: string,
-    question: string,
-    history?: ChatTurn[],
-  ): Promise<{ reply: string; action: AssistantAction | null }> {
-    const project = await this.store.getProject(projectId);
-    if (!project || project.workspaceId !== workspaceId) throw new NotFoundError("Project");
-    return answerProjectQuestion(this.store, { workspaceId, project, question, history });
-  }
-
   /** Global Steward chat (the sidebar dock, available on every page). When a
    *  project is in focus (the page you're on, passed as `focusProjectId`) it's the
    *  full project assistant — repo-aware, proposes confirm-first actions. With no
@@ -152,19 +138,6 @@ export class Operations {
     }
     const { reply, action } = await askStewardWorkspace(this.store, { workspaceId, question, history });
     return { reply, action, projectId: null };
-  }
-
-  /** Streaming form of {@link projectAssistant} — yields the answer as text
-   *  deltas. Ownership is validated before the first yield (404 stays JSON). */
-  async *projectAssistantStream(
-    workspaceId: string,
-    projectId: string,
-    question: string,
-    history?: ChatTurn[],
-  ): AsyncGenerator<string> {
-    const project = await this.store.getProject(projectId);
-    if (!project || project.workspaceId !== workspaceId) throw new NotFoundError("Project");
-    yield* answerProjectQuestionStream(this.store, { workspaceId, project, question, history });
   }
 
   // ── reads (workspace-scoped) ──────────────────────────────────────────────
