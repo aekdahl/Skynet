@@ -44,13 +44,97 @@ type Args<S extends Shape> = z.infer<z.ZodObject<S>>;
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /**
+ * Push a compact notification about a raised HITL gate to the connected MCP
+ * client — so an idle MCP agent (or a Claude Code / Cursor client) is pinged
+ * the moment a decision is needed, without having to be inside a
+ * `wait_for_hitl` call. Delivered as MCP `notifications/message` (level=info,
+ * logger="skynet.hitl", data=<structured payload>) — the SDK routes it
+ * through the active transport (stdio is push-native; HTTP requires the
+ * server-side transport to be in session mode, see http.ts). Clients that
+ * didn't declare `logging` capability just don't see it — safe to send.
+ */
+export interface HitlNotification {
+  workspaceId: string;
+  hitlId: string;
+  runId: string;
+  kind: string;
+  risk: string;
+  title: string;
+  // A one-shot hint so a UI-less client can approve/reject immediately:
+  // the exact tool + args it would call. Advisory — never trust it.
+  approverHint?: { tool: "resolve_hitl"; args: { hitlId: string } };
+}
+
+/**
  * Build a fresh MCP server bound to one principal. Cheap to construct per
  * request — it just registers tool closures over `deps` and the principal.
+ *
+ * A workspace bus subscription is set up here and torn down in `server.close()`
+ * so push notifications for HITL gates / status changes fire on the caller's
+ * MCP transport. See sendHitlNotification / sendReviewNotification below.
  */
 export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   const { operations, bus } = deps;
   const ws = principal.workspaceId;
-  const server = new McpServer({ name: "skynet", version: "0.1.0" }, { instructions: INSTRUCTIONS });
+  // `capabilities.logging` is required for `sendLoggingMessage` to fire — the
+  // SDK silently drops the notification otherwise. We only *send* logs (HITL
+  // push, review push); we do not implement `logging/setLevel`, so the
+  // capability object stays empty.
+  const server = new McpServer(
+    { name: "skynet", version: "0.1.0" },
+    { instructions: INSTRUCTIONS, capabilities: { logging: {} } },
+  );
+
+  // Push HITL raises to the client. Subscribe once per constructed server; the
+  // `close()` override below tears the subscription down so a disconnecting
+  // client doesn't leave a dangling handler on the bus. Only fires for gates
+  // in the caller's workspace (bus.subscribe already scopes to `ws`).
+  const unsubscribeBus = bus.subscribe(ws, (event) => {
+    if (event.type === "hitl.raised" && !event.item.resolvedAt) {
+      const data: HitlNotification = {
+        workspaceId: ws,
+        hitlId: event.item.id,
+        runId: event.item.runId,
+        kind: event.item.kind,
+        risk: event.item.risk,
+        title: event.item.title,
+        // Include the approve tool + args only for clients that hold the scope
+        // — a hint that leaks the action name to an unauth'd client is fine
+        // (the scope check still runs on invoke), but keeping it tight is
+        // better UX (no dead-end suggestion).
+        ...(hasScope(principal, "approver")
+          ? { approverHint: { tool: "resolve_hitl" as const, args: { hitlId: event.item.id } } }
+          : {}),
+      };
+      // Best-effort: swallow send errors (transport may be closing / not
+      // supporting logging). The wait_for_* long-poll remains the reliable
+      // fallback for clients that missed the push.
+      void server.server
+        .sendLoggingMessage({
+          level: event.item.risk === "high" ? "warning" : "info",
+          logger: "skynet.hitl",
+          data,
+        })
+        .catch(() => undefined);
+    } else if (event.type === "run.status" && event.status === "review") {
+      // A run just entered "needs attention" — same push shape. Distinct
+      // logger so clients can route (a review push isn't necessarily an
+      // approval decision — see the run's HITL for the actual gate).
+      void server.server
+        .sendLoggingMessage({
+          level: "info",
+          logger: "skynet.run",
+          data: { workspaceId: ws, runId: event.runId, status: "review" as const },
+        })
+        .catch(() => undefined);
+    }
+  });
+  // Preserve the SDK's own `close()` and add our unsubscribe on top of it.
+  const priorClose = server.close.bind(server);
+  server.close = async () => {
+    unsubscribeBus();
+    await priorClose();
+  };
 
   const ok = (data: unknown): CallToolResult => ({
     content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }],
