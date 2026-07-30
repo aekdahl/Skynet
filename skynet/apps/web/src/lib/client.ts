@@ -313,6 +313,8 @@ export function createProject(body: {
   repoPath?: string;
   repo?: string;
   createRepo?: { name: string; private: boolean; owner?: string };
+  autonomy?: boolean;
+  approvalLevel?: string;
 }) {
   return req<unknown>("POST", "/api/projects", body);
 }
