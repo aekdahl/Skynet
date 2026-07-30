@@ -1801,6 +1801,12 @@ export class Orchestrator {
         };
       }
       const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
+      // The estimate is for AGENT wall-clock time, not human developer time —
+      // these differ by an order of magnitude on typical coding tasks (an
+      // autonomous agent's 20-minute feature is a person's afternoon). Without
+      // this anchor the LLM defaults to its stronger "human developer time"
+      // prior and returns estimates 10–30× too high, so we spell it out AND
+      // give concrete agent-wall-clock anchors for S/M/L.
       const reply = await provider.consult(
         { task: task.description ? `${task.text}\n\n${task.description}` : task.text, model: agent.model, cwd: config.runnerCwd, apiKey },
         [
@@ -1808,7 +1814,9 @@ export class Orchestrator {
           "In 2-3 short lines: is the ask clear, rough effort (S/M/L), and any risks? Be terse.",
           "END your reply with a JSON tag on its OWN line:",
           '  {"estMinutes": <int>, "clarity": "clear"|"unclear"}',
-          "estMinutes = a positive integer rough estimate of a competent coding agent's duration (S≈15, M≈60, L≈240).",
+          "estMinutes = the AGENT'S wall-clock time to complete this task — NOT a human developer's time.",
+          "An autonomous coding agent works fast: a task that would take a person hours typically takes an agent minutes.",
+          "Anchors (agent wall-clock): S ≈ 5m (rename, config tweak, single small edit), M ≈ 20m (a real feature — new endpoint, migration, small refactor), L ≈ 60m (multi-file change, cross-module work). Cap at 240m even for very large asks.",
           "clarity = \"clear\" ONLY if the ask is well-scoped and actionable AS WRITTEN (an agent could start without more info).",
           '"unclear" if it needs clarification, is missing acceptance criteria, or the scope is ambiguous. When in doubt, choose "unclear".',
           "Omit any field you can't confidently supply; a missing signal is honest, a fabricated one is not.",
