@@ -156,10 +156,14 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                     {req.runtime === "cli" ? (
                       <>
                         Runtime: <code>{req.bin}</code> CLI
-                        {p.binOnPath === true ? " — found on PATH" : " — not found on PATH"}
+                        {p.binOnPath === true ? " — ✓ found on PATH" : " — not found on PATH"}
                       </>
                     ) : (
-                      <>Runtime: in-process (no CLI to install)</>
+                      // SDK providers run the agent as a Node import (no
+                      // subprocess) — that's the desired state, not a
+                      // limitation. Read as "all good", complete with a
+                      // checkmark so it doesn't look like something's missing.
+                      <>Runtime: SDK — ✓ runs in-process (no CLI needed)</>
                     )}
                     {" · "}
                     {req.cliLogin ? (
