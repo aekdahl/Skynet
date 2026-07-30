@@ -29,19 +29,23 @@ const INSTALL_HINT: Record<ProviderId, string> = {
   codex: "Install with `npm i -g @openai/codex` and authenticate (`codex login`).",
   gemini: "Install with `npm i -g @google/gemini-cli` and authenticate (`gemini`, then sign in).",
   cursor: "Install the Cursor CLI (`cursor-agent`) and sign in, or set CURSOR_API_KEY.",
-  copilot: "Install the GitHub Copilot CLI (`copilot`) and authenticate with GitHub, or set GITHUB_TOKEN.",
+  copilot: "Install with `npm i -g @github/copilot` and authenticate with GitHub (`copilot`, then sign in), or set GITHUB_TOKEN.",
   hermes: "Install the Hermes Agent CLI (`hermes`, on PATH) and set a provider key (e.g. OPENROUTER_API_KEY).",
 };
 
 // Providers whose CLI is auto-installable via a package manager the server can
 // run for the operator. Only npm is supported today — brew installs need
-// interactive password prompts, cursor is a manual download, and copilot is a
-// gh extension. These stay null and rely on the docs link. FIXED constants,
-// never user-derived: shells out through execFile with a static argv (no shell
-// interpolation), and the UI displays the exact command verbatim before running.
+// interactive password prompts, and cursor is a `curl | bash` script (a shell
+// install the npm-only, no-shell installer deliberately doesn't run). Those stay
+// null and rely on the docs link. FIXED constants, never user-derived: shells out
+// through execFile with a static argv (no shell interpolation), and the UI
+// displays the exact command verbatim before running.
 const INSTALL_COMMAND: Partial<Record<ProviderId, { packageManager: "npm"; command: string }>> = {
   codex: { packageManager: "npm", command: "npm install -g @openai/codex" },
   gemini: { packageManager: "npm", command: "npm install -g @google/gemini-cli" },
+  // The GitHub Copilot CLI is now a standalone npm package (`@github/copilot`),
+  // no longer a `gh` extension — so it installs through the same path as codex.
+  copilot: { packageManager: "npm", command: "npm install -g @github/copilot" },
 };
 
 const DOCS_URL: Partial<Record<ProviderId, string>> = {
