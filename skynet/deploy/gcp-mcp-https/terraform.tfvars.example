@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars and fill in. No secret VALUES go here — those live in
+# Secret Manager (setup.sh prints the commands). This file is git-ignored.
+
+project_id   = "your-gcp-project-id"
+region       = "europe-west1"
+zone         = "europe-west1-b" # NB: europe-west1 has no -a zone (b/c/d only)
+machine_type = "e2-small"       # bump to e2-medium / e2-standard-2 for heavier builds
+data_disk_gb = 20
+
+# ── The public HTTPS endpoint ────────────────────────────────────────────────
+mcp_domain = "mcp.example.com" # A DNS name you control; create an A record → the VM's static IP
+acme_email = "you@example.com" # Let's Encrypt account email (cert expiry notices)
+mcp_scopes = "observe,author"  # add "approver" ONLY if the token may resolve its own HITL gates
+
+# ── Ingress lockdown (replaces Google IAP) ──────────────────────────────────
+# The MCP data plane (TCP 443) is opened ONLY to these CIDRs — set them to the
+# known egress IPs of your MCP clients. Must be non-empty and never 0.0.0.0/0.
+allowed_source_ranges = ["203.0.113.7/32"]
+
+# Optional: open SSH (TCP 22) to your admin IP(s). Empty (default) = no SSH at all.
+# ssh_source_ranges = ["203.0.113.7/32"]
+
+# open_acme_http = true   # open :80 for Let's Encrypt HTTP-01 (ACME + redirect only). false = you use DNS-01.
+# name_prefix    = "skynet-mcp"
