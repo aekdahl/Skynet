@@ -27,6 +27,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { githubService } from "../github/index.js";
 import { secretService } from "../secrets/index.js";
+import { settingsContext } from "../settings/env-settings.js";
 import type { Store } from "../store/store.js";
 
 export interface ChatTurn {
@@ -43,7 +44,8 @@ const MAX_HISTORY = 8;
 const SYSTEM =
   "You are Steward, the repo-aware project assistant for a Skynet workspace — you help the operator understand the CURRENT STATUS and CONTENT of one project, and you can perform project & task actions on request. " +
   "Answer conversationally and concisely. Ground every answer in the PROJECT STATUS below, and when the question is about the code or docs, in the repository content (open files such as ROADMAP.md / README.md as needed). " +
-  "If a file or fact isn't available to you, say so plainly — never invent repo content or project state.\n" +
+  "For questions about how this workspace is configured — approvals, autonomy, the runner sandbox, integration, Telegram, MCP, backends, vendor CLIs — ground the answer in the WORKSPACE SETTINGS section (the LIVE runtime config), NOT the committed repo docs, which may be out of date. Secret values there are shown only as set/not-set — never claim to know a secret's value. " +
+  "If a file or fact isn't available to you, say so plainly — never invent repo content, project state, or settings.\n" +
   'ACTIONS: ONLY when the operator is clearly asking you to CHANGE something, append as the FINAL line a JSON object exactly {"proposeAction": <one action object>} and nothing after it — the operator confirms before it runs. Never include it for questions, summaries, or chat, and never more than one. ' +
   "Use the task ids from PROJECT STATUS (each task is listed as `[id] text`); if a request references a task that isn't listed, ask instead of guessing. Valid action objects:\n" +
   '  {"kind":"add_task","text":"<title>","description":"<optional — the full brief the agent gets>"}\n' +
@@ -348,7 +350,7 @@ function statusContext(project: Project, tasks: Task[], runs: TaskRun[]): string
   return lines.join("\n");
 }
 
-function buildPrompt(context: string, docs: string, history: ChatTurn[], question: string): string {
+function buildPrompt(context: string, docs: string, settings: string, history: ChatTurn[], question: string): string {
   const convo = history
     .slice(-MAX_HISTORY)
     .map((t) => `${t.role === "user" ? "Operator" : "Assistant"}: ${t.content}`)
@@ -359,6 +361,7 @@ function buildPrompt(context: string, docs: string, history: ChatTurn[], questio
     "=== PROJECT STATUS ===",
     context,
     docs ? `\n=== REPO CONTENT ===${docs}` : "",
+    settings ? `\n=== WORKSPACE SETTINGS (live) ===\n${settings}` : "",
     convo ? `\n=== CONVERSATION SO FAR ===\n${convo}` : "",
     "",
     `Operator asks: ${question}`,
@@ -397,17 +400,20 @@ export async function prepareStewardCall(
     tasks: projectTasks.map((t) => ({ id: t.id, text: t.text, state: t.state })),
   };
   const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
+  // Live, secret-safe settings snapshot so settings questions ground in real
+  // runtime config, not just the committed repo docs.
+  const settings = await settingsContext();
 
   // Local checkout → read the working tree directly (Read/Grep/Glob).
   if (project.repoPath) {
-    return { repo: true, prompt: buildPrompt(context, "", history, question), cwd: project.repoPath, apiKey, actionCtx };
+    return { repo: true, prompt: buildPrompt(context, "", settings, history, question), cwd: project.repoPath, apiKey, actionCtx };
   }
   // GitHub-connected but not cloned → prefetch key docs + the top-level tree.
   let docs = project.repo ? await prefetchProjectDocs(workspaceId, project) : "";
   if (project.repo && !docs) {
     docs = "\n\n(Repo is connected but no README/ROADMAP was found and files aren't cloned locally — answer from project status.)";
   }
-  return { repo: false, prompt: buildPrompt(context, docs, history, question), apiKey, actionCtx };
+  return { repo: false, prompt: buildPrompt(context, docs, settings, history, question), apiKey, actionCtx };
 }
 
 /**
@@ -473,7 +479,9 @@ export function resolveFocusProject(
 }
 
 const WORKSPACE_SYSTEM =
-  "You are Steward, the operator's assistant for a Skynet workspace. Answer conversationally and concisely about the CURRENT STATUS across the whole workspace — projects, their task boards, active runs, and open approvals — grounded ONLY in the WORKSPACE STATUS below. If a fact isn't shown, say so plainly; never invent state. You CAN change things on a specific project (add/move a task, edit settings) — just tell the operator to name the project they mean and you'll take care of it right here (you always confirm before anything runs). Do NOT emit any JSON.";
+  "You are Steward, the operator's assistant for a Skynet workspace. Answer conversationally and concisely about the CURRENT STATUS across the whole workspace — projects, their task boards, active runs, and open approvals — grounded ONLY in the WORKSPACE STATUS below. " +
+  "For questions about how the workspace is configured — approvals, autonomy, the runner sandbox, integration, Telegram, MCP, backends, vendor CLIs — ground the answer in the WORKSPACE SETTINGS section (the LIVE runtime config), not from memory. Secret values there are shown only as set/not-set — never claim to know a secret's value. " +
+  "If a fact isn't shown, say so plainly; never invent state or settings. You CAN change things on a specific project (add/move a task, edit settings) — just tell the operator to name the project they mean and you'll take care of it right here (you always confirm before anything runs). Do NOT emit any JSON.";
 
 function workspaceStatusContext(projects: Project[], tasks: Task[], runs: TaskRun[], gates: HitlItem[]): string {
   const openGates = gates.filter((g) => !g.resolvedAt).length;
@@ -511,6 +519,7 @@ export async function askStewardWorkspace(
     store.listQueue(workspaceId),
   ]);
   const context = workspaceStatusContext(projects, tasks, runs, gates);
+  const settings = await settingsContext();
   const convo = (opts.history ?? [])
     .slice(-MAX_HISTORY)
     .map((t) => `${t.role === "user" ? "Operator" : "Assistant"}: ${t.content}`)
@@ -520,6 +529,7 @@ export async function askStewardWorkspace(
     "",
     "=== WORKSPACE STATUS ===",
     context,
+    settings ? `\n=== WORKSPACE SETTINGS (live) ===\n${settings}` : "",
     convo ? `\n=== CONVERSATION SO FAR ===\n${convo}` : "",
     "",
     `Operator asks: ${question}`,
