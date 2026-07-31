@@ -433,64 +433,6 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     },
   );
 
-  // Repo-aware project assistant — chat about this project's status + content.
-  app.post<{ Params: { id: string }; Body: { question?: string; history?: ChatTurn[] } }>(
-    "/api/projects/:id/chat",
-    async (req, reply) => {
-      const question = (req.body?.question ?? "").trim();
-      if (!question) return reply.code(400).send({ error: "Ask a question about the project." });
-      const history = Array.isArray(req.body?.history)
-        ? req.body!.history
-            .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
-            .slice(-16)
-        : undefined;
-      try {
-        const { reply, action } = await ops.projectAssistant(ws(req), req.params.id, question, history);
-        return { reply, action };
-      } catch (err) {
-        return fail(reply, err);
-      }
-    },
-  );
-
-  // Streaming form of the project assistant — same answer, written as text/plain
-  // chunks so "Ask about this project" renders it as it's generated. Ownership /
-  // bad-request errors stay JSON (validated before we hijack the socket).
-  app.post<{ Params: { id: string }; Body: { question?: string; history?: ChatTurn[] } }>(
-    "/api/projects/:id/chat/stream",
-    async (req, reply) => {
-      const question = (req.body?.question ?? "").trim();
-      if (!question) return reply.code(400).send({ error: "Ask a question about the project." });
-      const history = Array.isArray(req.body?.history)
-        ? req.body!.history
-            .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
-            .slice(-16)
-        : undefined;
-      // Validate the project exists / is ours before taking over the socket.
-      try {
-        await ops.getProject(ws(req), req.params.id);
-      } catch (err) {
-        return fail(reply, err);
-      }
-      reply.hijack();
-      const raw = reply.raw;
-      raw.writeHead(200, {
-        "content-type": "text/plain; charset=utf-8",
-        "cache-control": "no-cache, no-transform",
-        "x-accel-buffering": "no",
-      });
-      try {
-        for await (const delta of ops.projectAssistantStream(ws(req), req.params.id, question, history)) {
-          raw.write(delta);
-        }
-      } catch (err) {
-        raw.write(`\n[stream error] ${(err as Error).message}`);
-      } finally {
-        raw.end();
-      }
-    },
-  );
-
   // ── live preview (Phase-1 v0) — run the project's web app + iframe it ─────
   app.get<{ Params: { id: string } }>("/api/projects/:id/preview", async (req, reply) => {
     try {

@@ -37,12 +37,18 @@ export function StewardDock({
   focusProjectName: string | null;
   onClose: () => void;
 }) {
-  const { createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject } = useStore();
+  const { projects, createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject } = useStore();
   const [msgs, setMsgs] = useState<Msg[]>(thread);
   const [input, setInput] = useState(draftCache);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // From the workspace view Steward can resolve + focus a project from the chat
+  // itself; remember it so the header, placeholder, and action-targeting reflect
+  // the project it's now working on (a page focus, when present, always wins).
+  const [resolvedId, setResolvedId] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+  const effFocusId = focusProjectId ?? resolvedId;
+  const effFocusName = focusProjectName ?? projects.find((p) => p.id === resolvedId)?.name ?? null;
 
   useEffect(() => { thread = msgs; }, [msgs]);
   useEffect(() => { draftCache = input; }, [input]);
@@ -78,8 +84,8 @@ export function StewardDock({
       setMsgs((x) => x.map((mm, i) => (i === idx ? { ...mm, actionState: "dismissed" } : mm)));
       return;
     }
-    const projectId = m.actionProjectId ?? focusProjectId;
-    if (!projectId) { setErr("Open the project to apply this."); return; }
+    const projectId = m.actionProjectId ?? effFocusId;
+    if (!projectId) { setErr("Tell me which project, then I can apply this."); return; }
     try {
       await runAction(m.action, projectId);
       setMsgs((x) => x.map((mm, i) => (i === idx ? { ...mm, actionState: "done" } : mm)));
@@ -98,12 +104,15 @@ export function StewardDock({
     setBusy(true);
     try {
       const { reply, action, projectId } = await api.stewardChat(question, history, focusProjectId ?? undefined);
+      // Steward resolved a project from the conversation → carry that focus so the
+      // header + later turns reflect the project it's now working on.
+      if (!focusProjectId && projectId) setResolvedId(projectId);
       setMsgs((m) => {
         const next = m.slice();
         next[next.length - 1] = {
           role: "assistant",
           content: reply,
-          ...(action ? { action, actionProjectId: projectId ?? focusProjectId, actionState: "pending" as const } : {}),
+          ...(action ? { action, actionProjectId: projectId ?? effFocusId, actionState: "pending" as const } : {}),
         };
         return next;
       });
@@ -119,7 +128,7 @@ export function StewardDock({
     <aside className="steward-dock" aria-label="Steward">
       <div className="steward-head">
         <span className="steward-title mono">✦ STEWARD</span>
-        <span className="steward-scope mono">{focusProjectName ? `focused · ${focusProjectName}` : "workspace"}</span>
+        <span className="steward-scope mono">{effFocusName ? `focused · ${effFocusName}` : "workspace"}</span>
         <span className="steward-spacer" />
         <button className="btn btn-ghost btn-sm" onClick={onClose} title="Close Steward">✕</button>
       </div>
@@ -128,7 +137,7 @@ export function StewardDock({
           <div className="asst-welcome">
             <p>
               Ask about anything across your workspace — runs, gates, project status.
-              {focusProjectName ? ` You're on “${focusProjectName}”, so I can also add/move tasks or change its settings (I'll confirm first).` : " Open a project to have me manage its tasks."}
+              {effFocusName ? ` You're on “${effFocusName}”, so I can also add/move tasks or change its settings (I'll confirm first).` : " Name a project and I can manage its tasks right here too (I'll confirm first)."}
             </p>
             <div className="asst-sugg">
               {SUGGESTIONS.map((s) => (
@@ -173,7 +182,7 @@ export function StewardDock({
       <form className="asst-input" onSubmit={(e) => { e.preventDefault(); void ask(input); }}>
         <input
           className="qx-input"
-          placeholder={focusProjectName ? `Ask about ${focusProjectName} or the workspace…` : "Ask Steward about your workspace…"}
+          placeholder={effFocusName ? `Ask about ${effFocusName} or the workspace…` : "Ask Steward about your workspace…"}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           disabled={busy}

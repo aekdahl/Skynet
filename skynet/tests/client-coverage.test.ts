@@ -43,9 +43,6 @@ const ALLOW = new Set<string>([
   // and streams the output; not runnable in an offline journey. The runner
   // + fixed-command guarantees are covered by provider-install.test.ts.
   "streamInstallProvider",
-  // "ask about this project" assistant (+ its streaming variant) — a UI-only
-  // conversational surface with no fleet journey; needs a real provider key.
-  "projectChat", "streamProjectChat",
   // live preview (Phase-1 v0) — spawns a real dev server + iframes it; a
   // stateful UI control surface with no offline journey (needs a repo + toolchain).
   "previewStatus", "previewStart", "previewStop", "previewRestart", "previewRefresh",
@@ -55,12 +52,9 @@ const ALLOW = new Set<string>([
   "login",
   // read-only doc render for the Roadmap page — no operator journey to exercise
   "fetchRoadmap",
-  // repo-aware project chat (status + repo content + propose-a-task) — needs a
-  // live provider key and a real repo to ground against, so there's no offline
-  // journey; the parse contract is covered by project-assistant.test.ts
-  "projectChat",
-  // global Steward dock chat (workspace-wide / focused-project) — same live-provider
-  // requirement as projectChat, so no offline journey exercises it.
+  // global Steward dock chat (workspace-wide / focused-project) — needs a live
+  // provider key + a real repo to ground against, so no offline journey exercises
+  // it; the project-chat parse contract is covered by project-assistant.test.ts.
   "stewardChat",
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
