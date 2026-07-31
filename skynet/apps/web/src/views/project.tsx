@@ -177,6 +177,13 @@ function TaskCard({
   const noFleet = fleet.length === 0;
   const dnd = useContext(BoardDnd);
   const dragging = dnd?.drag?.taskId === task.id;
+  // An agent has actively taken this task once it's `ongoing` (the invariant:
+  // an ongoing task always carries a live run). Lock the card so no one can
+  // move, edit, or reassign it out from under the running agent — only the
+  // run's emergency controls remain (open the card → pause/stop/resume) plus
+  // the Force-done escape hatch. `review`/`done` are human-decision states and
+  // stay interactive.
+  const locked = s === "ongoing";
 
   if (editing) {
     return (
@@ -223,12 +230,18 @@ function TaskCard({
     <>
     {dnd?.dropBeforeId === task.id && <div className="kb-drop-line" aria-hidden="true" />}
     <div
-      className={"kb-card kb-card-" + s + (dragging ? " kb-card-dragging" : "")}
+      className={"kb-card kb-card-" + s + (dragging ? " kb-card-dragging" : "") + (locked ? " kb-card-locked" : "")}
       role="button"
       tabIndex={0}
       data-card-id={task.id}
-      draggable
+      draggable={!locked}
       onDragStart={(e) => {
+        // A locked (agent-owned) card never drags — no one moves it off the
+        // running agent. draggable=false already blocks it; guard here too.
+        if (locked) {
+          e.preventDefault();
+          return;
+        }
         // Don't hijack drags that begin on an inner control (select, buttons,
         // inputs) — those stay clickable; only the card body starts a drag.
         if ((e.target as HTMLElement).closest("input,select,textarea,button,label,a")) {
@@ -246,6 +259,15 @@ function TaskCard({
       <div className="kb-card-top">
         {run && <StatusDot status={run.status} />}
         <span className="kb-task" title={task.description ?? undefined}>{task.text}</span>
+        {locked && (
+          <span
+            className="kb-lock"
+            title="An agent is working on this — the card is locked, so it can't be moved or edited. Open it for emergency controls (pause · stop)."
+            aria-label="Locked — an agent is working on this task"
+          >
+            🔒
+          </span>
+        )}
         {(s === "backlog" || s === "triage" || s === "todo") && (
           <span className="kb-card-tools" onClick={stop}>
             <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>✎</button>
