@@ -47,6 +47,7 @@ const SYSTEM =
   'ACTIONS: ONLY when the operator is clearly asking you to CHANGE something, append as the FINAL line a JSON object exactly {"proposeAction": <one action object>} and nothing after it — the operator confirms before it runs. Never include it for questions, summaries, or chat, and never more than one. ' +
   "Use the task ids from PROJECT STATUS (each task is listed as `[id] text`); if a request references a task that isn't listed, ask instead of guessing. Valid action objects:\n" +
   '  {"kind":"add_task","text":"<title>","description":"<optional — the full brief the agent gets>"}\n' +
+  '  {"kind":"add_tasks","tasks":[{"text":"<title>","description":"<optional>"}, …]}  — add SEVERAL tasks in ONE action (up to 50). When the operator asks to add multiple tasks — a list they paste, or turning ROADMAP.md items into tasks — ALWAYS use this single add_tasks, never a string of separate add_task proposals.\n' +
   '  {"kind":"move_task","taskId":"<id>","to":"backlog|triage|todo|ongoing|review|done"}\n' +
   '  {"kind":"rename_task","taskId":"<id>","text":"<new title>"}\n' +
   '  {"kind":"set_task_desc","taskId":"<id>","description":"<text>"}\n' +
@@ -104,6 +105,7 @@ export async function prefetchProjectDocs(
  *  per-kind label logic. Mirror kept in sync with the web client's copy. */
 export type ProjectActionKind =
   | "add_task"
+  | "add_tasks"
   | "move_task"
   | "rename_task"
   | "set_task_desc"
@@ -122,6 +124,8 @@ export interface AssistantAction {
   taskId?: string;
   text?: string;
   description?: string;
+  /** add_tasks — a batch of new tasks, created in list order on one confirm. */
+  tasks?: { text: string; description?: string }[];
   to?: Task["state"];
   direction?: "up" | "down";
   name?: string;
@@ -167,6 +171,30 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
         text,
         ...(description ? { description } : {}),
         summary: `Create task: “${clip(text)}”${description ? " (with description)" : ""}`,
+      };
+    }
+    case "add_tasks": {
+      // Batch create — turns a list/roadmap into many tasks on ONE confirm. Each
+      // entry needs non-empty text; blank entries are dropped, and the batch is
+      // capped so one proposal can't create an unbounded pile. All-blank → null.
+      if (!Array.isArray(o.tasks)) return null;
+      const MAX = 50;
+      const tasks: { text: string; description?: string }[] = [];
+      for (const item of o.tasks) {
+        if (tasks.length >= MAX) break;
+        const it = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+        const text = str(it.text);
+        if (!text) continue;
+        const description = str(it.description);
+        tasks.push({ text, ...(description ? { description } : {}) });
+      }
+      if (tasks.length === 0) return null;
+      const preview = tasks.slice(0, 3).map((t) => `“${clip(t.text)}”`).join(", ");
+      const more = tasks.length > 3 ? `, +${tasks.length - 3} more` : "";
+      return {
+        kind,
+        tasks,
+        summary: `Create ${tasks.length} task${tasks.length === 1 ? "" : "s"}: ${preview}${more}`,
       };
     }
     case "move_task": {

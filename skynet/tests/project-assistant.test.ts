@@ -36,6 +36,35 @@ describe("validateProjectAction — whitelist + project-scoped id resolution", (
     expect(validateProjectAction({ kind: "add_task", text: "write docs" }, ctx).description).toBeUndefined();
   });
 
+  it("add_tasks batches many new tasks under one action", () => {
+    const a = validateProjectAction(
+      { kind: "add_tasks", tasks: [{ text: "wire telemetry" }, { text: "add metrics", description: "prom" }, { text: "docs" }] },
+      ctx,
+    );
+    expect(a).toMatchObject({ kind: "add_tasks" });
+    expect(a?.tasks).toEqual([
+      { text: "wire telemetry" },
+      { text: "add metrics", description: "prom" },
+      { text: "docs" },
+    ]);
+    expect(a?.summary).toMatch(/Create 3 tasks/);
+  });
+
+  it("add_tasks drops blank-text entries and rejects an all-blank / non-array batch", () => {
+    const a = validateProjectAction({ kind: "add_tasks", tasks: [{ text: " keep " }, { text: "  " }, { foo: 1 }] }, ctx);
+    expect(a?.tasks).toEqual([{ text: "keep" }]); // trimmed, blanks dropped
+    expect(a?.summary).toMatch(/Create 1 task:/); // singular
+    expect(validateProjectAction({ kind: "add_tasks", tasks: [{ text: "" }, {}] }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "add_tasks", tasks: [] }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "add_tasks", tasks: "nope" }, ctx)).toBeNull();
+  });
+
+  it("add_tasks caps the batch so one proposal can't create an unbounded pile", () => {
+    const many = Array.from({ length: 80 }, (_, i) => ({ text: `task ${i}` }));
+    const a = validateProjectAction({ kind: "add_tasks", tasks: many }, ctx);
+    expect(a?.tasks?.length).toBe(50);
+  });
+
   it("move_task resolves the task id and validates the target state", () => {
     expect(validateProjectAction({ kind: "move_task", taskId: "t-1", to: "done" }, ctx)).toMatchObject({
       kind: "move_task",
@@ -124,6 +153,15 @@ describe("splitProposedAction — reply/action split", () => {
     const r = splitProposedAction('{"proposeAction":{"kind":"add_task","text":"x"}}', ctx);
     expect(r.action).toMatchObject({ kind: "add_task" });
     expect(r.reply.length).toBeGreaterThan(0); // never an empty bubble
+  });
+
+  it("splits a nested-array add_tasks proposal (the batch case)", () => {
+    const raw =
+      'Adding those 2 roadmap items.\n{"proposeAction":{"kind":"add_tasks","tasks":[{"text":"dark mode"},{"text":"SSO"}]}}';
+    const r = splitProposedAction(raw, ctx);
+    expect(r.reply).toBe("Adding those 2 roadmap items.");
+    expect(r.action).toMatchObject({ kind: "add_tasks" });
+    expect(r.action?.tasks).toEqual([{ text: "dark mode" }, { text: "SSO" }]);
   });
 
   it("does not mistake a JSON object in prose for a proposal", () => {

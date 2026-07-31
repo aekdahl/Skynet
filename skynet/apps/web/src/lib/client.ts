@@ -373,6 +373,7 @@ export function assignTask(projectId: string, taskId: string) {
 export interface AssistantAction {
   kind:
     | "add_task"
+    | "add_tasks"
     | "move_task"
     | "rename_task"
     | "set_task_desc"
@@ -388,6 +389,8 @@ export interface AssistantAction {
   taskId?: string;
   text?: string;
   description?: string;
+  // add_tasks — a batch of new tasks, created in list order on one confirm.
+  tasks?: { text: string; description?: string }[];
   to?: string;
   direction?: "up" | "down";
   name?: string;

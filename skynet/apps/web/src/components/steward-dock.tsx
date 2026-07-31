@@ -59,6 +59,12 @@ export function StewardDock({
   const runAction = async (a: api.AssistantAction, projectId: string): Promise<void> => {
     switch (a.kind) {
       case "add_task": return createTask(projectId, a.text ?? "", a.description);
+      case "add_tasks": {
+        // Batch add — create each in list order so the board keeps the order the
+        // operator (or the roadmap) listed them.
+        for (const t of a.tasks ?? []) await createTask(projectId, t.text, t.description);
+        return;
+      }
       case "move_task": return transitionTask(projectId, a.taskId!, a.to!);
       case "rename_task": return updateTask(projectId, a.taskId!, { text: a.text });
       case "set_task_desc": return updateTask(projectId, a.taskId!, { description: a.description });
