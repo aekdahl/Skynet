@@ -489,7 +489,7 @@ export function reorderTask(projectId: string, taskId: string, beforeId: string 
 }
 
 // Fleet
-export function createAgent(body: { provider: string; model: string; name?: string }) {
+export function createAgent(body: { provider: string; model: string; name?: string; credentialId?: string }) {
   return req<unknown>("POST", "/api/fleet/runners", body);
 }
 export function updateAgent(id: string, body: { model?: string; name?: string }) {
