@@ -1,0 +1,46 @@
+# Caddy — terminate TLS and publish ONLY the MCP endpoint.
+# Rendered by startup.sh.tftpl; ${...} are Terraform template vars.
+#
+# Automatic HTTPS: Caddy obtains + renews a Let's Encrypt cert for ${mcp_domain}
+# via the HTTP-01 challenge on :80 (the only thing served on :80, besides the
+# 301 to https). The TLS-ALPN challenge is disabled because :443 is locked to the
+# source-IP allowlist and Let's Encrypt could not reach it.
+
+${mcp_domain} {
+	tls {
+		issuer acme {
+			email ${acme_email}
+			disable_tlsalpn_challenge
+		}
+	}
+
+	# Site-scoped matchers.
+	@mcp path /mcp /mcp/*
+	@noauth not header Authorization "Bearer *"
+
+	# Only /mcp is published. The web UI, /api and /ws are NOT exposed here —
+	# this endpoint is MCP-only.
+	handle @mcp {
+		# Edge gate: reject anything without a Bearer token before it reaches the
+		# app. The app still validates the token VALUE + scopes — this is just
+		# cheap defense-in-depth so unauthenticated noise never touches Skynet.
+		handle @noauth {
+			header Content-Type application/json
+			respond `{"jsonrpc":"2.0","error":{"code":-32001,"message":"Unauthorized: Authorization: Bearer <MCP_TOKEN> required"},"id":null}` 401
+		}
+		# Forward to Skynet over the private docker network. Caddy adds
+		# X-Forwarded-For so the app (SKYNET_TRUST_PROXY=true) rate-limits on the
+		# real caller.
+		reverse_proxy skynet:${app_port}
+	}
+
+	# Everything else 404s.
+	handle {
+		respond "Not found" 404
+	}
+
+	log {
+		# Container path: host /data/caddy is mounted at /data (Caddy's data dir).
+		output file /data/access.log
+	}
+}

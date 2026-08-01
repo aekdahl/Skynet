@@ -132,6 +132,12 @@ export function splitEstMinutesTag(
   return { body: trimmed, estMinutes: null, clarity: null };
 }
 
+// Appended to every run brief. Scope creep — an agent finishing the ask and then
+// wandering into unrequested adjacent work — is the #1 way a run burns its turn
+// budget and stalls. Keep the agent inside the requested scope so it finishes.
+const SCOPE_NOTE =
+  "\n\n---\nScope discipline: do exactly what's asked above, then stop. Don't expand into adjacent or unrequested work — extra features, UI, refactors, or speculative follow-ups. When the requested change is complete, report and finish rather than inventing more scope. If you're genuinely blocked, or the task is too big for one focused session, escalate (AskUserQuestion with header \"ESCALATE\") instead of grinding through your turn budget.";
+
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   // Global kill switch. When paused, the autonomy loop is a no-op (no new work is
@@ -507,6 +513,18 @@ export class Orchestrator {
    * task, or integrate a branch. A broken runner must not look like success.
    */
   private async fail(runId: string, reason: string): Promise<void> {
+    // "Ran out of turns" is a resumable checkpoint, not a crash — the worktree +
+    // committed work are intact and the runner already tried to continue on its
+    // own. Escalate straight to a human (Resume / Reassign / Stop) rather than
+    // counting it as a failure and parking in `review` for another doomed try.
+    if (/error_max_turns|out of turns/i.test(reason)) {
+      await this.escalate(
+        runId,
+        "The agent hit its turn budget before finishing. Its work so far is saved on the branch — resume to continue where it left off, reassign it, or stop.",
+        "turns",
+      );
+      return;
+    }
     // Count failures on this run; past the threshold, hand it to a human
     // (escalation) instead of quietly parking in `review` for another doomed try.
     const count = (this.failCounts.get(runId) ?? 0) + 1;
@@ -575,7 +593,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: stat.add, del: stat.del, modules },
+      diff: { add: stat.add, del: stat.del, modules, files: stat.files },
       flags: [],
     });
   }
@@ -806,7 +824,7 @@ export class Orchestrator {
       const apiKey = await secretService.resolve(project.workspaceId, runner.credentialId ?? runner.provider);
       // The agent gets the full brief: the short name plus the longer
       // description when one exists (the run's display name stays the short text).
-      const brief = task.description ? `${task.text}\n\n${task.description}` : task.text;
+      const brief = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
       const handle = await provider.start(
         { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey },
         this.events(),
@@ -998,7 +1016,7 @@ export class Orchestrator {
    *  frees the runner (but never retires the worktree), and raises an
    *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes through
    *  raise() instead (the live gate stays parked). */
-  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict"): Promise<void> {
+  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict" | "turns"): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
     if (!run) return;
@@ -1020,7 +1038,9 @@ export class Orchestrator {
           ? "Run stuck — needs a human"
           : source === "conflict"
             ? "Merge conflict with main — needs a rebase"
-            : "Run keeps failing — needs a human",
+            : source === "turns"
+              ? "Ran out of turns — resume to continue"
+              : "Run keeps failing — needs a human",
       why: reason,
       risk: "medium",
       rationale: null,
@@ -1286,7 +1306,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: 0, del: 0, modules: agent.modules },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [] },
       flags: [reason],
     });
   }
@@ -1314,7 +1334,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: 0, del: 0, modules: agent.modules },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [] },
       flags: files, // the conflicting files — shown as chips
     });
   }
@@ -1485,7 +1505,15 @@ export class Orchestrator {
       return;
     }
     const apiKey = await secretService.resolve(agent.workspaceId, agent.credentialId ?? agent.provider);
-    const context = agent.log.slice(-40).map((l) => l.line).join("\n").slice(-4000);
+    const logText = agent.log.slice(-40).map((l) => l.line).join("\n").slice(-4000);
+    // A run that didn't finish cleanly (failed / escalated / needs-attention) is
+    // RESUMABLE from its own controls — so the consult must not dead-end the
+    // operator by telling them to relaunch or spin up a fresh agent themselves.
+    const note =
+      agent.status === "done"
+        ? ""
+        : "SITUATION: This run did not finish — it is paused / needs attention and can be RESUMED to keep working, from the run's own controls (its escalation card: Help & resume · Reassign · Stop). You are read-only in this chat: explain what happened or advise on the work, but never tell the operator to relaunch, retry, or start a fresh agent themselves, and don't imply you can edit files or resume from here.\n\n";
+    const context = note + logText;
     const spec = { task: agent.name, model: agent.model, cwd: config.runnerCwd, apiKey, context };
     try {
       if (provider.consultStream) {
@@ -1757,16 +1785,22 @@ export class Orchestrator {
                   continue; // this task's agents busy / no credential — try the next
                 }
               }
-              // 3) Review a finished run: approve → merge/done, else flag for a
-              //    human. Same gate: approving a merge spends risk, so
-              //    `p.autonomy` off means the human owns the review too.
-              const review = mine.find((t) => t.state === "review" && t.runId && !t.reviewFlaggedReason);
-              if (review?.runId) {
-                const open = (await this.store.listQueue(ws)).find(
-                  (h) => h.runId === review.runId && !h.resolvedAt,
-                );
-                if (open) await this.autoReview(ws, idle[0]!, review, open);
-              }
+            }
+            // 3) Review a finished run — runs REGARDLESS of `p.autonomy`.
+            //    Recording a verdict is diagnostic (an LLM consult), not a
+            //    spending action, so every review-state task deserves a
+            //    reviewer's opinion for the human's audit trail. The
+            //    APPROVE-and-merge step inside autoReview stays gated on
+            //    `p.autonomy` — verdict recorded either way; auto-resolve
+            //    only when the project has opted in to autonomous spending.
+            //    Skip tasks that already carry a verdict (idempotent) so we
+            //    don't rewrite the same LLM call every tick.
+            const review = mine.find((t) => t.state === "review" && t.runId && !t.reviewVerdict);
+            if (review?.runId && idle[0]) {
+              const open = (await this.store.listQueue(ws)).find(
+                (h) => h.runId === review.runId && !h.resolvedAt,
+              );
+              if (open) await this.autoReview(ws, idle[0], review, open, p.autonomy);
             }
           } catch (err) {
             await this.hub.runLog(p.id, `autonomy skipped ${p.id}: ${(err as Error).message}`).catch(() => undefined);
@@ -1840,11 +1874,22 @@ export class Orchestrator {
     }
   }
 
-  /** Autonomous review of a finished run's open HITL: approve → resolve (merges →
-   *  done via the normal path), else flag the task for a human. */
-  private async autoReview(ws: string, agent: Agent, task: Task, hitl: HitlItem): Promise<void> {
+  /**
+   * Autonomous review of a finished run's open HITL. Always records a verdict
+   * on the task (approve OR flag) so the human has an audit trail of what the
+   * reviewer thought. Only when `canResolve` is true does an approve verdict
+   * also drive the HITL → merge/done path; with autonomy off, the verdict is
+   * recorded and the human retains the merge decision.
+   */
+  private async autoReview(
+    ws: string,
+    agent: Agent,
+    task: Task,
+    hitl: HitlItem,
+    canResolve: boolean,
+  ): Promise<void> {
     const run = task.runId ? await this.store.getRun(task.runId) : undefined;
-    let approve = true;
+    let decision: "approve" | "flag" = "approve";
     let reason = "auto-approved";
     try {
       const provider = await this.getProvider(agent.provider);
@@ -1859,11 +1904,11 @@ export class Orchestrator {
         // reason that mentions "flagged" would flag an APPROVE (DEF). The reason
         // has the verdict word stripped so a flag reads as prose, not "APPROVE —".
         const verdict = parseReviewVerdict(reply);
-        approve = verdict.approve;
+        decision = verdict.approve ? "approve" : "flag";
         reason = verdict.reason;
       }
     } catch (err) {
-      approve = false;
+      decision = "flag";
       reason = `review consult failed: ${(err as Error).message}`;
     }
     // The consult above is slow (an LLM round-trip); meanwhile an operator — or
@@ -1876,20 +1921,26 @@ export class Orchestrator {
     if (!freshHitl || freshHitl.resolvedAt) return; // already handled — defer
     const freshTask = await this.store.getTask(task.id);
     if (!freshTask || freshTask.state !== "review" || freshTask.runId !== task.runId) return;
-    // Record the auto-review on the run's live log so the operator can see WHO
-    // reviewed it (another agent, autonomously) and WHY — a short verdict line
-    // that folds open to the reviewer's full reasoning. Mirrors how a human's
+    // If a verdict raced in ahead of us (parallel tick, unlikely but safe),
+    // don't clobber it with another consult's answer.
+    if (freshTask.reviewVerdict) return;
+    const reviewer = agent.name || agent.id;
+    const at = now();
+    // Record the auto-review on the run's live log — a short verdict line that
+    // folds open to the reviewer's full reasoning. Mirrors how a human's
     // decision is auditable; here the reviewer is a fleet agent, not a person.
     if (task.runId) {
-      const reviewer = agent.name || agent.id;
-      await this.hub.runLog(
-        task.runId,
-        `⟳ auto-reviewed by ${reviewer} — ${approve ? "approved (integrating)" : "flagged for a human"}`,
-        reason,
-      );
+      const suffix = decision === "approve"
+        ? canResolve ? "approved (integrating)" : "approved (awaiting human)"
+        : "flagged for a human";
+      await this.hub.runLog(task.runId, `⟳ auto-reviewed by ${reviewer} — ${suffix}`, reason);
     }
-    if (approve) {
-      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "autonomy", at: now() };
+    // ALWAYS persist the verdict on the task so the detail view can show it —
+    // approve OR flag, autonomy on OR off. This is the audit trail.
+    const verdict = { decision, reason, by: reviewer, at };
+    const withVerdict = await this.hub.upsertTask({ ...freshTask, reviewVerdict: verdict });
+    if (decision === "approve" && canResolve) {
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "autonomy", at };
       const resolved = await this.hub.resolveHitl(hitl.id, resolution);
       if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(hitl, resolution);
       // Once an agent has approved a review-state task, move it to `done` and
@@ -1906,9 +1957,10 @@ export class Orchestrator {
         await this.hub.upsertTask({ ...afterDeliver, state: "done" });
         if (afterDeliver.runId) await this.hub.runStatus(afterDeliver.runId, "done").catch(() => undefined);
       }
-    } else {
-      await this.hub.upsertTask({ ...freshTask, reviewFlaggedReason: reason });
     }
+    // decision === "flag" OR (approve without autonomy) → verdict is recorded
+    // (`withVerdict`), HITL stays open for the human. Nothing else to do here.
+    void withVerdict;
   }
 
   /**
@@ -1974,7 +2026,7 @@ export class Orchestrator {
     const task = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === runId);
     if (task && (task.state === "ongoing" || task.state === "review")) {
       await this.hub.setRunArchived(runId, true).catch(() => undefined);
-      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewFlaggedReason: null });
+      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
     }
     return this.store.getRun(runId);
   }

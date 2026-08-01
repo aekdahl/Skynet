@@ -37,6 +37,9 @@ export function parseHash(): RoutePatch | null {
       return arg ? { view: "agentDetail", agentId: arg } : { view: "fleet" };
     case "project":
       return arg ? { view: "project", projectId: arg } : { view: "projects" };
+    // `agent` is the canonical run route (matches toHash + this file's header
+    // doc); `task` stays an accepted alias so any older links still resolve.
+    case "agent":
     case "task":
       return arg ? { view: "task", runId: arg } : { view: "home" };
     default:
