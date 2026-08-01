@@ -21,7 +21,7 @@
 //     "one action or none" contract, still unit-covered).
 // These are the main unit-test targets.
 
-import type { Agent, HitlItem, Project, ProviderInfo, ProviderId, Task } from "@skynet/shared";
+import type { Agent, Feature, HitlItem, Milestone, Project, ProviderInfo, ProviderId, Task } from "@skynet/shared";
 
 /** The read-only slice of Operations buildContext needs (kept narrow so the
  *  bridge's tests can pass minimal fakes without stubbing all of Operations). */
@@ -31,6 +31,8 @@ export interface IntentOps {
   listTasks(ws: string): Promise<Task[]>;
   listAgents(ws: string): Promise<Agent[]>;
   listProviders(ws: string): Promise<ProviderInfo[]>;
+  listFeatures(ws: string): Promise<Feature[]>;
+  listMilestones(ws: string): Promise<Milestone[]>;
 }
 
 /** The grounding snapshot handed to the LLM (and validated against by parseIntent). */
@@ -44,6 +46,10 @@ export interface IntentContext {
   /** Provider catalog + readiness, for add_agent. `available` gates whether a
    *  provider is ready (a resolvable credential); models is the valid set. */
   providers: { id: ProviderId; models: string[]; available: boolean }[];
+  /** Features (task grouping) and milestones (roadmap), per-project. Non-archived
+   *  only, so back-references never target soft-hidden rows. */
+  features: { id: string; name: string; projectId: string; milestoneId: string | null }[];
+  milestones: { id: string; name: string; projectId: string; targetAt: number | null }[];
 }
 
 /** A normalized, validated action. `none` = could not confidently map. */
@@ -58,6 +64,14 @@ export interface Action {
     | "remove_task"
     | "preview"
     | "status"
+    // Grouping / roadmap — mirrors the Steward action set.
+    | "create_feature"
+    | "set_task_feature"
+    | "archive_feature"
+    | "create_milestone"
+    | "set_feature_milestone"
+    | "set_task_milestone"
+    | "mark_milestone_shipped"
     | "none";
   gateId?: string;
   taskText?: string;
@@ -70,6 +84,14 @@ export interface Action {
   projectName?: string;
   projectGoal?: string;
   reason?: string;
+  // Grouping fields. `null` explicitly clears a link on set_* actions.
+  featureId?: string | null;
+  featureName?: string;
+  featureDescription?: string;
+  milestoneId?: string | null;
+  milestoneName?: string;
+  milestoneDescription?: string;
+  targetAt?: number | null;
 }
 
 /** The assistant instruction. The operator message is passed SEPARATELY as data
@@ -89,7 +111,9 @@ export const INTENT_SYSTEM_PROMPT = [
   "code works — quote the relevant doc/section, and never invent repo content.",
   "",
   "You may ALSO perform ONE action, but ONLY when the owner is clearly asking to do it.",
-  "Allowed actions: approve | reject | add_task | assign | add_agent | create_project | remove_task | preview | status.",
+  "Allowed actions: approve | reject | add_task | assign | add_agent | create_project |",
+  "remove_task | preview | status | create_feature | set_task_feature | archive_feature |",
+  "create_milestone | set_feature_milestone | set_task_milestone | mark_milestone_shipped.",
   "Action object shapes (used as the `action` field below):",
   '  approve/reject: {"action":"approve","gateId":"<gate id from context>"}',
   '  add_task:       {"action":"add_task","projectId":"<project id>","taskText":"<the task>"}',
@@ -99,10 +123,24 @@ export const INTENT_SYSTEM_PROMPT = [
   '  remove_task:    {"action":"remove_task","taskId":"<task id from context>"}',
   '  preview:        {"action":"preview","projectId":"<project id from context>"}',
   '  status:         {"action":"status"}',
+  '  create_feature: {"action":"create_feature","projectId":"<project id>","featureName":"<name>","featureDescription":"<optional>","milestoneId":"<optional milestone id>"}',
+  '  set_task_feature:{"action":"set_task_feature","taskId":"<id>","featureId":"<feature id or null to unlink>"}',
+  '  archive_feature:{"action":"archive_feature","featureId":"<id>"}',
+  '  create_milestone:{"action":"create_milestone","projectId":"<project id>","milestoneName":"<name>","milestoneDescription":"<optional>","targetAt":<epoch ms or null>}',
+  '  set_feature_milestone:{"action":"set_feature_milestone","featureId":"<id>","milestoneId":"<id or null>"}',
+  '  set_task_milestone:{"action":"set_task_milestone","taskId":"<id>","milestoneId":"<id or null>"}',
+  '  mark_milestone_shipped:{"action":"mark_milestone_shipped","milestoneId":"<id>"}',
   "remove_task archives a task (a reversible soft-hide, recoverable in the app) — it is",
   "never a hard delete; use it when the owner asks to remove/delete/undo a task.",
   "preview spins up a live preview of the project's web app and sends the URL back here",
   "when it's ready; use it when the owner asks to preview / see / open the running app.",
+  "Grouping: FEATURES groups related tasks per project; MILESTONES are planned releases",
+  "per project with an optional target date. Both appear in the WORKSPACE CONTEXT below",
+  "with `[id]` prefixes — resolve names to those ids from context only; a referenced id",
+  "that isn't listed → set action to null and ask. targetAt is epoch ms (or null for no",
+  "committed date). For set_* actions, `null` clears the linkage; a string must match a",
+  "listed id. mark_milestone_shipped is a shortcut for setting a milestone's status to",
+  "shipped — use when the owner says something like 'we shipped v1'.",
   "Use RECENT CONVERSATION (below the workspace context, when present) to resolve",
   'back-references ("that task", "it", "the one I just made") to a concrete id that IS',
   "present in the WORKSPACE CONTEXT; if it is still unresolvable, set action to null and ask.",
@@ -126,12 +164,14 @@ export const INTENT_SYSTEM_PROMPT = [
 
 /** Build the grounding snapshot from live operations state (I/O). */
 export async function buildContext(operations: IntentOps, ws: string): Promise<IntentContext> {
-  const [gatesRaw, projectsRaw, tasksRaw, fleetRaw, providersRaw] = await Promise.all([
+  const [gatesRaw, projectsRaw, tasksRaw, fleetRaw, providersRaw, featuresRaw, milestonesRaw] = await Promise.all([
     operations.listHitl(ws),
     operations.listProjects(ws),
     operations.listTasks(ws),
     operations.listAgents(ws),
     operations.listProviders(ws),
+    operations.listFeatures(ws),
+    operations.listMilestones(ws),
   ]);
   return {
     gates: gatesRaw
@@ -163,6 +203,14 @@ export async function buildContext(operations: IntentOps, ws: string): Promise<I
       // treated as available (back-compat with the ProviderInfo contract).
       available: p.available !== false,
     })),
+    // Grouping. Same archive-hides-from-grounding rule as tasks — Steward /
+    // Telegram should never target a soft-hidden feature/milestone.
+    features: featuresRaw
+      .filter((f) => !f.archived)
+      .map((f) => ({ id: f.id, name: f.name, projectId: f.projectId, milestoneId: f.milestoneId })),
+    milestones: milestonesRaw
+      .filter((m) => !m.archived)
+      .map((m) => ({ id: m.id, name: m.name, projectId: m.projectId, targetAt: m.targetAt })),
   };
 }
 
@@ -334,6 +382,107 @@ export function validateAction(obj: unknown, ctx: IntentContext): Action | null 
 
     case "status":
       return { kind: "status" };
+
+    case "create_feature": {
+      const projectId = isStr(o.projectId) ? o.projectId : "";
+      const project = ctx.projects.find((p) => p.id === projectId);
+      if (!project) return none(`unknown project "${projectId}"`);
+      const featureName = isStr(o.featureName) ? o.featureName.trim() : "";
+      if (!featureName) return none("empty feature name");
+      const featureDescription = isStr(o.featureDescription) ? o.featureDescription.trim() : "";
+      // Optional milestoneId — if present, must resolve to a milestone in the
+      // SAME project (rejecting cross-project linkage the way Operations does).
+      let milestoneId: string | undefined;
+      if ("milestoneId" in o && o.milestoneId != null) {
+        const m = ctx.milestones.find((x) => x.id === o.milestoneId && x.projectId === projectId);
+        if (!m) return none(`unknown milestone "${String(o.milestoneId)}" in project "${projectId}"`);
+        milestoneId = m.id;
+      }
+      return {
+        kind: "create_feature",
+        projectId,
+        featureName,
+        ...(featureDescription ? { featureDescription } : {}),
+        ...(milestoneId ? { milestoneId } : {}),
+      };
+    }
+
+    case "set_task_feature": {
+      const taskId = isStr(o.taskId) ? o.taskId : "";
+      const task = ctx.tasks.find((t) => t.id === taskId);
+      if (!task) return none(`unknown task "${taskId}"`);
+      // Explicit null clears the link; a string must resolve to a feature in
+      // THE SAME PROJECT as the task.
+      if (o.featureId === null) {
+        return { kind: "set_task_feature", taskId, projectId: task.projectId, featureId: null };
+      }
+      const featureId = isStr(o.featureId) ? o.featureId : "";
+      const feature = ctx.features.find((f) => f.id === featureId && f.projectId === task.projectId);
+      if (!feature) return none(`unknown feature "${featureId}" in task's project`);
+      return { kind: "set_task_feature", taskId, projectId: task.projectId, featureId };
+    }
+
+    case "archive_feature": {
+      const featureId = isStr(o.featureId) ? o.featureId : "";
+      const feature = ctx.features.find((f) => f.id === featureId);
+      if (!feature) return none(`unknown feature "${featureId}"`);
+      return { kind: "archive_feature", featureId, projectId: feature.projectId };
+    }
+
+    case "create_milestone": {
+      const projectId = isStr(o.projectId) ? o.projectId : "";
+      const project = ctx.projects.find((p) => p.id === projectId);
+      if (!project) return none(`unknown project "${projectId}"`);
+      const milestoneName = isStr(o.milestoneName) ? o.milestoneName.trim() : "";
+      if (!milestoneName) return none("empty milestone name");
+      const milestoneDescription = isStr(o.milestoneDescription) ? o.milestoneDescription.trim() : "";
+      let targetAt: number | null | undefined;
+      if ("targetAt" in o) {
+        if (o.targetAt === null) targetAt = null;
+        else if (typeof o.targetAt === "number" && Number.isFinite(o.targetAt)) targetAt = Math.round(o.targetAt);
+        else return none(`invalid targetAt "${String(o.targetAt)}" (expected epoch ms or null)`);
+      }
+      return {
+        kind: "create_milestone",
+        projectId,
+        milestoneName,
+        ...(milestoneDescription ? { milestoneDescription } : {}),
+        ...(targetAt !== undefined ? { targetAt } : {}),
+      };
+    }
+
+    case "set_feature_milestone": {
+      const featureId = isStr(o.featureId) ? o.featureId : "";
+      const feature = ctx.features.find((f) => f.id === featureId);
+      if (!feature) return none(`unknown feature "${featureId}"`);
+      if (o.milestoneId === null) {
+        return { kind: "set_feature_milestone", featureId, projectId: feature.projectId, milestoneId: null };
+      }
+      const milestoneId = isStr(o.milestoneId) ? o.milestoneId : "";
+      const milestone = ctx.milestones.find((m) => m.id === milestoneId && m.projectId === feature.projectId);
+      if (!milestone) return none(`unknown milestone "${milestoneId}" in feature's project`);
+      return { kind: "set_feature_milestone", featureId, projectId: feature.projectId, milestoneId };
+    }
+
+    case "set_task_milestone": {
+      const taskId = isStr(o.taskId) ? o.taskId : "";
+      const task = ctx.tasks.find((t) => t.id === taskId);
+      if (!task) return none(`unknown task "${taskId}"`);
+      if (o.milestoneId === null) {
+        return { kind: "set_task_milestone", taskId, projectId: task.projectId, milestoneId: null };
+      }
+      const milestoneId = isStr(o.milestoneId) ? o.milestoneId : "";
+      const milestone = ctx.milestones.find((m) => m.id === milestoneId && m.projectId === task.projectId);
+      if (!milestone) return none(`unknown milestone "${milestoneId}" in task's project`);
+      return { kind: "set_task_milestone", taskId, projectId: task.projectId, milestoneId };
+    }
+
+    case "mark_milestone_shipped": {
+      const milestoneId = isStr(o.milestoneId) ? o.milestoneId : "";
+      const milestone = ctx.milestones.find((m) => m.id === milestoneId);
+      if (!milestone) return none(`unknown milestone "${milestoneId}"`);
+      return { kind: "mark_milestone_shipped", milestoneId, projectId: milestone.projectId };
+    }
 
     case "none":
       return none(isStr(o.reason) ? o.reason : undefined);

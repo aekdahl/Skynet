@@ -30,6 +30,14 @@ const ctx: IntentContext = {
     { id: "claude", models: ["opus", "sonnet"], available: true },
     { id: "gemini", models: ["gemini-pro"], available: false }, // not ready (no key)
   ],
+  features: [
+    { id: "f-onb", name: "Onboarding", projectId: "p-web", milestoneId: null },
+    { id: "f-api-auth", name: "API auth", projectId: "p-api", milestoneId: null },
+  ],
+  milestones: [
+    { id: "m-v1-web", name: "v1.0", projectId: "p-web", targetAt: null },
+    { id: "m-v1-api", name: "v1.0", projectId: "p-api", targetAt: null },
+  ],
 };
 
 /** null and {kind:"none"} both mean "couldn't map". */
@@ -242,5 +250,148 @@ describe("renderContext — PROJECT DOCS grounding", () => {
   it("omits the section entirely when there are no docs", () => {
     expect(renderContext(ctx)).not.toContain("PROJECT DOCS");
     expect(renderContext(ctx, undefined, "   ")).not.toContain("PROJECT DOCS");
+  });
+});
+
+// ── Grouping actions (features + milestones) ────────────────────────────
+// Same-project scoping is the load-bearing invariant: a cross-project
+// featureId/milestoneId must be REJECTED, so a misparse or injected instruction
+// can't wire a task to something outside its project.
+describe("parseIntent — grouping (features + milestones)", () => {
+  it("create_feature accepts a project + name; unknown project rejects", () => {
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "create_feature", projectId: "p-web", featureName: "Payments" }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "create_feature", projectId: "p-web", featureName: "Payments" });
+    // Missing name is rejected (empty title).
+    expect(
+      parseIntent(JSON.stringify({ action: "create_feature", projectId: "p-web", featureName: "" }), ctx),
+    ).toMatchObject({ kind: "none" });
+    // Unknown project id → none.
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "create_feature", projectId: "p-other", featureName: "Payments" }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "none" });
+  });
+
+  it("create_feature rejects a milestoneId in a DIFFERENT project (no cross-project wiring)", () => {
+    // p-api's milestone can't be attached to a p-web feature at creation time.
+    expect(
+      parseIntent(
+        JSON.stringify({
+          action: "create_feature",
+          projectId: "p-web",
+          featureName: "Payments",
+          milestoneId: "m-v1-api",
+        }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "none" });
+  });
+
+  it("set_task_feature — null clears; known id in the SAME project links; wrong project rejects", () => {
+    expect(
+      parseIntent(JSON.stringify({ action: "set_task_feature", taskId: "t-1", featureId: null }), ctx),
+    ).toMatchObject({ kind: "set_task_feature", taskId: "t-1", projectId: "p-web", featureId: null });
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "set_task_feature", taskId: "t-1", featureId: "f-onb" }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "set_task_feature", taskId: "t-1", featureId: "f-onb", projectId: "p-web" });
+    // t-1 is in p-web; f-api-auth is in p-api → reject.
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "set_task_feature", taskId: "t-1", featureId: "f-api-auth" }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "none" });
+  });
+
+  it("archive_feature carries the feature's projectId (executor needs it)", () => {
+    const a = parseIntent(JSON.stringify({ action: "archive_feature", featureId: "f-onb" }), ctx) as Action;
+    expect(a).toMatchObject({ kind: "archive_feature", featureId: "f-onb", projectId: "p-web" });
+    expect(
+      parseIntent(JSON.stringify({ action: "archive_feature", featureId: "f-other" }), ctx),
+    ).toMatchObject({ kind: "none" });
+  });
+
+  it("create_milestone accepts numeric targetAt, null, and omitted; anything else rejects", () => {
+    const t = Date.UTC(2026, 5, 1);
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "create_milestone", projectId: "p-web", milestoneName: "v2", targetAt: t }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "create_milestone", projectId: "p-web", milestoneName: "v2", targetAt: t });
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "create_milestone", projectId: "p-web", milestoneName: "v2", targetAt: null }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "create_milestone", targetAt: null });
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "create_milestone", projectId: "p-web", milestoneName: "v2" }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "create_milestone", milestoneName: "v2" });
+    // Non-number targetAt → none. Never silently coerce.
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "create_milestone", projectId: "p-web", milestoneName: "v2", targetAt: "2026-06-01" }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "none" });
+  });
+
+  it("set_feature_milestone — null clears; known id links; wrong project rejects", () => {
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "set_feature_milestone", featureId: "f-onb", milestoneId: null }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "set_feature_milestone", featureId: "f-onb", milestoneId: null, projectId: "p-web" });
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "set_feature_milestone", featureId: "f-onb", milestoneId: "m-v1-web" }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "set_feature_milestone", featureId: "f-onb", milestoneId: "m-v1-web" });
+    // f-onb is p-web; m-v1-api is p-api → reject.
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "set_feature_milestone", featureId: "f-onb", milestoneId: "m-v1-api" }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "none" });
+  });
+
+  it("set_task_milestone — null clears; known id in same project links; wrong project rejects", () => {
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "set_task_milestone", taskId: "t-1", milestoneId: "m-v1-web" }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "set_task_milestone", taskId: "t-1", milestoneId: "m-v1-web", projectId: "p-web" });
+    expect(
+      parseIntent(
+        JSON.stringify({ action: "set_task_milestone", taskId: "t-1", milestoneId: "m-v1-api" }),
+        ctx,
+      ),
+    ).toMatchObject({ kind: "none" });
+  });
+
+  it("mark_milestone_shipped carries the milestone's projectId; unknown id rejects", () => {
+    expect(
+      parseIntent(JSON.stringify({ action: "mark_milestone_shipped", milestoneId: "m-v1-web" }), ctx),
+    ).toMatchObject({ kind: "mark_milestone_shipped", milestoneId: "m-v1-web", projectId: "p-web" });
+    expect(
+      parseIntent(JSON.stringify({ action: "mark_milestone_shipped", milestoneId: "m-other" }), ctx),
+    ).toMatchObject({ kind: "none" });
   });
 });
