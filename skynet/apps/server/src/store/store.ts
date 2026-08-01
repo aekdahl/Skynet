@@ -7,8 +7,10 @@ import type {
   TaskRun,
   AuditRecord,
   Dependency,
+  Feature,
   GithubConnection,
   HitlItem,
+  Milestone,
   Module,
   Project,
   ProviderInfo,
@@ -48,6 +50,18 @@ export interface Store {
   getTask(id: string): Promise<Task | undefined>;
   putTask(task: Task): Promise<Task>;
   deleteTask(id: string): Promise<void>;
+
+  // features (task grouping)
+  listFeatures(workspaceId: string): Promise<Feature[]>;
+  getFeature(id: string): Promise<Feature | undefined>;
+  putFeature(feature: Feature): Promise<Feature>;
+  deleteFeature(id: string): Promise<void>;
+
+  // milestones (roadmap grouping)
+  listMilestones(workspaceId: string): Promise<Milestone[]>;
+  getMilestone(id: string): Promise<Milestone | undefined>;
+  putMilestone(milestone: Milestone): Promise<Milestone>;
+  deleteMilestone(id: string): Promise<void>;
 
   // fleet
   listAgents(workspaceId: string): Promise<Agent[]>;

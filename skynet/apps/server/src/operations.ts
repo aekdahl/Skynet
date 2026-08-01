@@ -14,9 +14,13 @@ import type {
   TaskRun,
   AuditRecord,
   ConfigureRunnerRequest,
+  CreateFeatureRequest,
+  CreateMilestoneRequest,
   CreateProjectRequest,
   CreateTaskRequest,
+  Feature,
   HitlItem,
+  Milestone,
   Project,
   ProviderInfo,
   ResolveRequest,
@@ -24,6 +28,8 @@ import type {
   Agent,
   Snapshot,
   Task,
+  UpdateFeatureRequest,
+  UpdateMilestoneRequest,
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
@@ -163,6 +169,12 @@ export class Operations {
   }
   listTasks(ws: string): Promise<Task[]> {
     return this.store.listTasks(ws);
+  }
+  listFeatures(ws: string): Promise<Feature[]> {
+    return this.store.listFeatures(ws);
+  }
+  listMilestones(ws: string): Promise<Milestone[]> {
+    return this.store.listMilestones(ws);
   }
   listRuns(ws: string): Promise<TaskRun[]> {
     return this.store.listRuns(ws);
@@ -471,12 +483,27 @@ export class Operations {
       // `estimatedDurationMs`; `plannedStartAt` is operator-set via Steward/UI.
       estimatedDurationMs: null,
       plannedStartAt: null,
+      // Grouping / roadmap linkage starts unassigned — set later via
+      // updateTask (Steward or the task detail modal).
+      featureId: null,
+      milestoneId: null,
     };
     return this.hub.upsertTask(task);
   }
   async updateTask(ws: string, tid: string, patch: UpdateTaskRequest): Promise<Task> {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    // Enforce that a referenced feature/milestone exists and belongs to the
+    // task's project — cross-project linkage would produce nonsensical roadmap
+    // rollups. `null` explicitly clears the assignment.
+    if (patch.featureId !== undefined && patch.featureId !== null) {
+      const f = await this.store.getFeature(patch.featureId);
+      if (!f || f.workspaceId !== ws || f.projectId !== task.projectId) throw new NotFoundError("Feature");
+    }
+    if (patch.milestoneId !== undefined && patch.milestoneId !== null) {
+      const m = await this.store.getMilestone(patch.milestoneId);
+      if (!m || m.workspaceId !== ws || m.projectId !== task.projectId) throw new NotFoundError("Milestone");
+    }
     if (patch.assignment) {
       // Clearing eligibility back to `unassigned` is only allowed while parked in
       // backlog — otherwise a running/queued task could lose the set it left
@@ -667,6 +694,83 @@ export class Operations {
       await this.hub.runStatus(updated.runId, "done").catch(() => undefined);
     }
     return updated;
+  }
+
+  // ── features (task grouping) ───────────────────────────────────────────
+  async createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (input.milestoneId != null) {
+      const m = await this.store.getMilestone(input.milestoneId);
+      if (!m || m.workspaceId !== ws || m.projectId !== projectId) throw new NotFoundError("Milestone");
+    }
+    const inProject = (await this.store.listFeatures(ws)).filter((f) => f.projectId === projectId);
+    const feature: Feature = {
+      id: this.uid(`f-${this.slug(project.name)}`),
+      workspaceId: ws,
+      projectId,
+      name: input.name,
+      description: input.description?.trim() || null,
+      status: "active",
+      milestoneId: input.milestoneId ?? null,
+      order: inProject.length,
+      archived: false,
+      createdAt: now(),
+    };
+    return this.hub.upsertFeature(feature);
+  }
+  async updateFeature(ws: string, fid: string, patch: UpdateFeatureRequest): Promise<Feature> {
+    const feature = await this.store.getFeature(fid);
+    if (!feature || feature.workspaceId !== ws) throw new NotFoundError("Feature");
+    if (patch.milestoneId !== undefined && patch.milestoneId !== null) {
+      const m = await this.store.getMilestone(patch.milestoneId);
+      if (!m || m.workspaceId !== ws || m.projectId !== feature.projectId) throw new NotFoundError("Milestone");
+    }
+    return this.hub.upsertFeature({ ...feature, ...patch });
+  }
+  async deleteFeature(ws: string, fid: string): Promise<void> {
+    const feature = await this.store.getFeature(fid);
+    if (!feature || feature.workspaceId !== ws) throw new NotFoundError("Feature");
+    // Clear the featureId on any tasks that referenced it — leaving dangling
+    // pointers would render a "phantom feature" chip on the board.
+    const tasks = (await this.store.listTasks(ws)).filter((t) => t.featureId === fid);
+    for (const t of tasks) await this.hub.upsertTask({ ...t, featureId: null });
+    await this.hub.deleteFeature(fid);
+  }
+
+  // ── milestones (roadmap grouping) ──────────────────────────────────────
+  async createMilestone(ws: string, projectId: string, input: CreateMilestoneRequest): Promise<Milestone> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const inProject = (await this.store.listMilestones(ws)).filter((m) => m.projectId === projectId);
+    const milestone: Milestone = {
+      id: this.uid(`m-${this.slug(project.name)}`),
+      workspaceId: ws,
+      projectId,
+      name: input.name,
+      description: input.description?.trim() || null,
+      targetAt: input.targetAt ?? null,
+      status: "planned",
+      order: inProject.length,
+      archived: false,
+      createdAt: now(),
+    };
+    return this.hub.upsertMilestone(milestone);
+  }
+  async updateMilestone(ws: string, mid: string, patch: UpdateMilestoneRequest): Promise<Milestone> {
+    const milestone = await this.store.getMilestone(mid);
+    if (!milestone || milestone.workspaceId !== ws) throw new NotFoundError("Milestone");
+    return this.hub.upsertMilestone({ ...milestone, ...patch });
+  }
+  async deleteMilestone(ws: string, mid: string): Promise<void> {
+    const milestone = await this.store.getMilestone(mid);
+    if (!milestone || milestone.workspaceId !== ws) throw new NotFoundError("Milestone");
+    // Clear the milestoneId on features + tasks that referenced it.
+    const features = (await this.store.listFeatures(ws)).filter((f) => f.milestoneId === mid);
+    for (const f of features) await this.hub.upsertFeature({ ...f, milestoneId: null });
+    const tasks = (await this.store.listTasks(ws)).filter((t) => t.milestoneId === mid);
+    for (const t of tasks) await this.hub.upsertTask({ ...t, milestoneId: null });
+    await this.hub.deleteMilestone(mid);
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────

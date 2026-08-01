@@ -355,6 +355,9 @@ export function updateTask(
     // Scheduling — null clears the field on the task.
     estimatedDurationMs?: number | null;
     plannedStartAt?: number | null;
+    // Grouping — null clears the linkage.
+    featureId?: string | null;
+    milestoneId?: string | null;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${projectId}/tasks/${taskId}`, body);
@@ -369,6 +372,46 @@ export function archiveTask(projectId: string, taskId: string, archived = true) 
 }
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
+}
+
+// Features (task grouping)
+export function createFeature(projectId: string, body: { name: string; description?: string; milestoneId?: string | null }) {
+  return req<unknown>("POST", `/api/projects/${projectId}/features`, body);
+}
+export function updateFeature(
+  featureId: string,
+  body: {
+    name?: string;
+    description?: string | null;
+    status?: "active" | "paused" | "shipped";
+    milestoneId?: string | null;
+    archived?: boolean;
+  },
+) {
+  return req<unknown>("PATCH", `/api/features/${featureId}`, body);
+}
+export function deleteFeature(featureId: string) {
+  return req<unknown>("DELETE", `/api/features/${featureId}`);
+}
+
+// Milestones (roadmap)
+export function createMilestone(projectId: string, body: { name: string; description?: string; targetAt?: number | null }) {
+  return req<unknown>("POST", `/api/projects/${projectId}/milestones`, body);
+}
+export function updateMilestone(
+  milestoneId: string,
+  body: {
+    name?: string;
+    description?: string | null;
+    targetAt?: number | null;
+    status?: "planned" | "in-progress" | "shipped";
+    archived?: boolean;
+  },
+) {
+  return req<unknown>("PATCH", `/api/milestones/${milestoneId}`, body);
+}
+export function deleteMilestone(milestoneId: string) {
+  return req<unknown>("DELETE", `/api/milestones/${milestoneId}`);
 }
 // A project/task action the assistant proposes (confirm-first). Kept in sync with
 // AssistantAction in apps/server/src/project-assistant.ts; `summary` is the label.

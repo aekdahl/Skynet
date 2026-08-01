@@ -124,7 +124,7 @@ describe("contracts round-trip", () => {
 
   it("Snapshot validates a full default-provider catalog and WsMessage wraps it", () => {
     const snapshot: Snapshot = {
-      runs: [agent], queue: [], projects: [], tasks: [], fleet: [],
+      runs: [agent], queue: [], projects: [], tasks: [], features: [], milestones: [], fleet: [],
       modules: [], deps: [], providers: DEFAULT_PROVIDERS, serverTime: 42,
     };
     expect(Snapshot.parse(wire(snapshot))).toEqual(snapshot);

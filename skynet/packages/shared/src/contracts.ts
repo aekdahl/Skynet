@@ -251,8 +251,64 @@ export const Task = z.object({
   // `plannedStartAt` and `estimatedDurationMs` are set, the timeline can
   // render a scheduled bar (start + duration → end).
   plannedStartAt: Timestamp.nullable().default(null),
+  // ── Grouping & roadmap ──────────────────────────────────────────────────
+  // Optional Feature the task rolls up into. Features let a project view
+  // "what capabilities are being worked on" one level above the task board.
+  // See Feature below. Null = the task doesn't belong to any feature.
+  featureId: z.string().nullable().default(null),
+  // Optional direct milestone assignment. Usually the milestone flows through
+  // the Feature (Feature.milestoneId); this field is for orphan tasks that
+  // don't sit under a feature but still need to appear on the roadmap.
+  milestoneId: z.string().nullable().default(null),
 });
 export type Task = z.infer<typeof Task>;
+
+// ─── Feature: task grouping ──────────────────────────────────────────────
+// A named capability that groups related tasks. One-per-project entity so
+// operators can see "what's being worked on" above the task grain, and so
+// tasks can inherit a roadmap milestone via the feature.
+export const FeatureStatus = z.enum(["active", "paused", "shipped"]);
+export type FeatureStatus = z.infer<typeof FeatureStatus>;
+
+export const Feature = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  projectId: z.string(),
+  name: z.string(),
+  description: z.string().nullable().default(null),
+  status: FeatureStatus.default("active"),
+  // Milestone this feature rolls up into (see Milestone below). Tasks under
+  // the feature inherit this — that's the roadmap linkage.
+  milestoneId: z.string().nullable().default(null),
+  // Manual order within the project (lower = higher). Unset sorts as 0.
+  order: z.number().int().optional(),
+  archived: z.boolean().default(false),
+  createdAt: Timestamp,
+});
+export type Feature = z.infer<typeof Feature>;
+
+// ─── Milestone: roadmap grouping ─────────────────────────────────────────
+// A planned release / checkpoint / target-date bucket. Per-project (matches
+// Feature scoping). Features and tasks reference a milestone; the project's
+// roadmap view is derived by grouping features + orphan tasks under their
+// milestone and sorting by `targetAt`.
+export const MilestoneStatus = z.enum(["planned", "in-progress", "shipped"]);
+export type MilestoneStatus = z.infer<typeof MilestoneStatus>;
+
+export const Milestone = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  projectId: z.string(),
+  name: z.string(),
+  description: z.string().nullable().default(null),
+  // Planned delivery moment (epoch ms). Null = no committed date yet.
+  targetAt: Timestamp.nullable().default(null),
+  status: MilestoneStatus.default("planned"),
+  order: z.number().int().optional(),
+  archived: z.boolean().default(false),
+  createdAt: Timestamp,
+});
+export type Milestone = z.infer<typeof Milestone>;
 
 // ─── HITL item & resolution ───────────────────────────────────────────────
 
@@ -484,8 +540,46 @@ export const UpdateTaskRequest = z.object({
   // Scheduling: set or clear (null) the LLM/operator estimate + planned start.
   estimatedDurationMs: z.number().int().positive().nullable().optional(),
   plannedStartAt: Timestamp.nullable().optional(),
+  // Grouping / roadmap linkage. Null clears the assignment. Server enforces
+  // that the referenced feature/milestone belongs to the same project.
+  featureId: z.string().nullable().optional(),
+  milestoneId: z.string().nullable().optional(),
 });
 export type UpdateTaskRequest = z.infer<typeof UpdateTaskRequest>;
+
+// ─── Feature CRUD requests ──────────────────────────────────────────────
+export const CreateFeatureRequest = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  milestoneId: z.string().nullable().optional(),
+});
+export type CreateFeatureRequest = z.infer<typeof CreateFeatureRequest>;
+
+export const UpdateFeatureRequest = z.object({
+  name: z.string().min(1).optional(),
+  description: z.string().nullable().optional(),
+  status: FeatureStatus.optional(),
+  milestoneId: z.string().nullable().optional(),
+  archived: z.boolean().optional(),
+});
+export type UpdateFeatureRequest = z.infer<typeof UpdateFeatureRequest>;
+
+// ─── Milestone CRUD requests ───────────────────────────────────────────
+export const CreateMilestoneRequest = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  targetAt: Timestamp.nullable().optional(),
+});
+export type CreateMilestoneRequest = z.infer<typeof CreateMilestoneRequest>;
+
+export const UpdateMilestoneRequest = z.object({
+  name: z.string().min(1).optional(),
+  description: z.string().nullable().optional(),
+  targetAt: Timestamp.nullable().optional(),
+  status: MilestoneStatus.optional(),
+  archived: z.boolean().optional(),
+});
+export type UpdateMilestoneRequest = z.infer<typeof UpdateMilestoneRequest>;
 
 // A human-initiated kanban move; the server validates it against the allowed
 // (human) transition map before applying.

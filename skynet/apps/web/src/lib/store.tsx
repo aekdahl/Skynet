@@ -11,7 +11,9 @@ import type {
   TaskRun,
   ApprovalLevel,
   Dependency,
+  Feature,
   HitlItem,
+  Milestone,
   Module,
   Project,
   ProviderInfo,
@@ -46,6 +48,8 @@ export interface StoreState {
   queue: HitlItem[];
   projects: Project[];
   tasks: Task[];
+  features: Feature[];
+  milestones: Milestone[];
   fleet: Agent[];
   modules: Module[];
   deps: Dependency[];
@@ -111,8 +115,34 @@ export interface Store extends StoreState {
       assignment?: TaskAssignment;
       estimatedDurationMs?: number | null;
       plannedStartAt?: number | null;
+      featureId?: string | null;
+      milestoneId?: string | null;
     },
   ) => Promise<void>;
+  createFeature: (projectId: string, name: string, description?: string, milestoneId?: string | null) => Promise<void>;
+  updateFeature: (
+    featureId: string,
+    patch: {
+      name?: string;
+      description?: string | null;
+      status?: "active" | "paused" | "shipped";
+      milestoneId?: string | null;
+      archived?: boolean;
+    },
+  ) => Promise<void>;
+  deleteFeature: (featureId: string) => Promise<void>;
+  createMilestone: (projectId: string, name: string, description?: string, targetAt?: number | null) => Promise<void>;
+  updateMilestone: (
+    milestoneId: string,
+    patch: {
+      name?: string;
+      description?: string | null;
+      targetAt?: number | null;
+      status?: "planned" | "in-progress" | "shipped";
+      archived?: boolean;
+    },
+  ) => Promise<void>;
+  deleteMilestone: (milestoneId: string) => Promise<void>;
   deleteTask: (projectId: string, taskId: string) => Promise<void>;
   archiveTask: (projectId: string, taskId: string, archived: boolean) => Promise<void>;
   moveTask: (projectId: string, taskId: string, direction: "up" | "down") => Promise<void>;
@@ -224,6 +254,14 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
       return { ...state, tasks: upsert(state.tasks, ev.task) };
     case "task.deleted":
       return { ...state, tasks: state.tasks.filter((t) => t.id !== ev.id) };
+    case "feature.upserted":
+      return { ...state, features: upsert(state.features, ev.feature) };
+    case "feature.deleted":
+      return { ...state, features: state.features.filter((f) => f.id !== ev.id) };
+    case "milestone.upserted":
+      return { ...state, milestones: upsert(state.milestones, ev.milestone) };
+    case "milestone.deleted":
+      return { ...state, milestones: state.milestones.filter((m) => m.id !== ev.id) };
     case "agent.upserted":
       return { ...state, fleet: upsert(state.fleet, ev.agent) };
     case "agent.deleted":
@@ -244,6 +282,8 @@ const EMPTY: StoreState = {
   queue: [],
   projects: [],
   tasks: [],
+  features: [],
+  milestones: [],
   fleet: [],
   modules: [],
   deps: [],
@@ -260,6 +300,8 @@ function fromSnapshot(snap: Snapshot): StoreState {
     queue: snap.queue,
     projects: snap.projects,
     tasks: snap.tasks,
+    features: snap.features,
+    milestones: snap.milestones,
     fleet: snap.fleet,
     modules: snap.modules,
     deps: snap.deps,
@@ -429,6 +471,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       archiveTask: async (projectId, taskId, archived) => {
         await api.archiveTask(projectId, taskId, archived);
+      },
+      createFeature: async (projectId, name, description, milestoneId) => {
+        await api.createFeature(projectId, { name, ...(description ? { description } : {}), ...(milestoneId !== undefined ? { milestoneId } : {}) });
+      },
+      updateFeature: async (featureId, patch) => {
+        try {
+          await api.updateFeature(featureId, patch);
+        } catch (e) {
+          if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't update the feature."));
+        }
+      },
+      deleteFeature: async (featureId) => {
+        await api.deleteFeature(featureId);
+      },
+      createMilestone: async (projectId, name, description, targetAt) => {
+        await api.createMilestone(projectId, { name, ...(description ? { description } : {}), ...(targetAt !== undefined ? { targetAt } : {}) });
+      },
+      updateMilestone: async (milestoneId, patch) => {
+        try {
+          await api.updateMilestone(milestoneId, patch);
+        } catch (e) {
+          if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't update the milestone."));
+        }
+      },
+      deleteMilestone: async (milestoneId) => {
+        await api.deleteMilestone(milestoneId);
       },
       assignTask: async (projectId, taskId) => {
         try {

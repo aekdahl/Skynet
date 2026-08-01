@@ -6,8 +6,10 @@
 import type {
   TaskRun,
   Dependency,
+  Feature,
   GithubConnection,
   HitlItem,
+  Milestone,
   Module,
   Project,
   ProviderInfo,
@@ -27,6 +29,8 @@ export class MemoryStore implements Store {
   protected queue = new Map<string, HitlItem>();
   protected projects = new Map<string, Project>();
   protected tasks = new Map<string, Task>();
+  protected features = new Map<string, Feature>();
+  protected milestones = new Map<string, Milestone>();
   protected fleet = new Map<string, Agent>();
   protected modules: Module[] = [];
   protected deps: Dependency[] = [];
@@ -50,6 +54,8 @@ export class MemoryStore implements Store {
       queue: await this.listQueue(workspaceId),
       projects: await this.listProjects(workspaceId),
       tasks: await this.listTasks(workspaceId),
+      features: await this.listFeatures(workspaceId),
+      milestones: await this.listMilestones(workspaceId),
       fleet: await this.listAgents(workspaceId),
       modules: this.modules,
       deps: this.deps,
@@ -80,6 +86,16 @@ export class MemoryStore implements Store {
   async getTask(id: string) { return this.tasks.get(id); }
   async putTask(task: Task) { this.tasks.set(task.id, task); this.persist(); return task; }
   async deleteTask(id: string) { this.tasks.delete(id); this.persist(); }
+
+  async listFeatures(ws: string) { return [...this.features.values()].filter((f) => f.workspaceId === ws); }
+  async getFeature(id: string) { return this.features.get(id); }
+  async putFeature(f: Feature) { this.features.set(f.id, f); this.persist(); return f; }
+  async deleteFeature(id: string) { this.features.delete(id); this.persist(); }
+
+  async listMilestones(ws: string) { return [...this.milestones.values()].filter((m) => m.workspaceId === ws); }
+  async getMilestone(id: string) { return this.milestones.get(id); }
+  async putMilestone(m: Milestone) { this.milestones.set(m.id, m); this.persist(); return m; }
+  async deleteMilestone(id: string) { this.milestones.delete(id); this.persist(); }
 
   async listAgents(ws: string) { return [...this.fleet.values()].filter((r) => r.workspaceId === ws); }
   async listAllAgents() { return [...this.fleet.values()]; }
