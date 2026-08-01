@@ -36,6 +36,10 @@ const ALLOW = new Set<string>([
   "archiveAllAudit", "clearAudit",
   // low-value control-plane (runner rename/model tweak)
   "updateAgent",
+  // add a second named credential for a provider — needs a real key + the secret
+  // store (master key), so no offline journey; the route is guarded server-side
+  // and the set/delete-by-id paths it shares ARE journey-covered.
+  "createCredential",
   // streaming variant of sendAgentMessage (which IS journey-covered) — same
   // chat surface, just delta-rendered; no separate journey needed.
   "streamAgentMessage",

@@ -251,11 +251,18 @@ export function restartEngine() {
 export function fetchSecrets() {
   return req<{ secrets: SecretMeta[]; env: string[] }>("GET", "/api/secrets");
 }
-export function setSecret(provider: string, apiKey: string) {
-  return req<{ secret: SecretMeta }>("PUT", `/api/secrets/${provider}`, { apiKey });
+// Set or rotate a credential's key by id — a provider id targets that provider's
+// DEFAULT credential; a `cred-…` id rotates an existing named one.
+export function setSecret(id: string, apiKey: string) {
+  return req<{ secret: SecretMeta }>("PUT", `/api/secrets/${id}`, { apiKey });
 }
-export function deleteSecret(provider: string) {
-  return req<unknown>("DELETE", `/api/secrets/${provider}`);
+export function deleteSecret(id: string) {
+  return req<unknown>("DELETE", `/api/secrets/${id}`);
+}
+// Create a NAMED credential — a second key for a provider that already has one
+// ("Claude on another account"). Agents can then be pinned to it via credentialId.
+export function createCredential(provider: string, name: string, apiKey: string) {
+  return req<{ secret: SecretMeta }>("POST", "/api/credentials", { provider, name, apiKey });
 }
 
 // ─── Service tokens (MCP / programmatic access) ────────────────────────────

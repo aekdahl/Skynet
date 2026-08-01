@@ -1153,6 +1153,14 @@ button.kb-done:hover { opacity: 1; }
 .settings-install-actions { display: flex; gap: 6px; }
 .cfg-prov-req { margin: 8px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
 .settings-key { display: flex; align-items: center; gap: 8px; }
+/* Extra named credentials (a second key for a provider) */
+.settings-cred { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px dashed var(--line-soft); }
+.settings-cred-name { font-size: 13px; color: var(--ink); }
+.settings-cred-last4 { color: var(--faint); font-size: 11px; }
+.settings-cred-add { align-self: flex-start; color: var(--muted); }
+.settings-cred-new { gap: 8px; }
+.settings-cred-nameinput { max-width: 260px; }
+.cfg-cred-select { appearance: auto; }
 .settings-input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; color: var(--text); font-family: var(--font-mono); font-size: 12px; }
 .settings-input:focus { outline: none; border-color: var(--accent); }
 .settings-setup { display: flex; align-items: center; gap: 16px; max-width: 720px; margin-top: var(--sp); padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
