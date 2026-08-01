@@ -131,6 +131,12 @@ export function splitEstMinutesTag(
   return { body: trimmed, estMinutes: null, clarity: null };
 }
 
+// Appended to every run brief. Scope creep — an agent finishing the ask and then
+// wandering into unrequested adjacent work — is the #1 way a run burns its turn
+// budget and stalls. Keep the agent inside the requested scope so it finishes.
+const SCOPE_NOTE =
+  "\n\n---\nScope discipline: do exactly what's asked above, then stop. Don't expand into adjacent or unrequested work — extra features, UI, refactors, or speculative follow-ups. When the requested change is complete, report and finish rather than inventing more scope. If you're genuinely blocked, or the task is too big for one focused session, escalate (AskUserQuestion with header \"ESCALATE\") instead of grinding through your turn budget.";
+
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   // Global kill switch. When paused, the autonomy loop is a no-op (no new work is
@@ -506,6 +512,18 @@ export class Orchestrator {
    * task, or integrate a branch. A broken runner must not look like success.
    */
   private async fail(runId: string, reason: string): Promise<void> {
+    // "Ran out of turns" is a resumable checkpoint, not a crash — the worktree +
+    // committed work are intact and the runner already tried to continue on its
+    // own. Escalate straight to a human (Resume / Reassign / Stop) rather than
+    // counting it as a failure and parking in `review` for another doomed try.
+    if (/error_max_turns|out of turns/i.test(reason)) {
+      await this.escalate(
+        runId,
+        "The agent hit its turn budget before finishing. Its work so far is saved on the branch — resume to continue where it left off, reassign it, or stop.",
+        "turns",
+      );
+      return;
+    }
     // Count failures on this run; past the threshold, hand it to a human
     // (escalation) instead of quietly parking in `review` for another doomed try.
     const count = (this.failCounts.get(runId) ?? 0) + 1;
@@ -805,7 +823,7 @@ export class Orchestrator {
       const apiKey = await secretService.resolve(project.workspaceId, runner.credentialId ?? runner.provider);
       // The agent gets the full brief: the short name plus the longer
       // description when one exists (the run's display name stays the short text).
-      const brief = task.description ? `${task.text}\n\n${task.description}` : task.text;
+      const brief = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
       const handle = await provider.start(
         { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey },
         this.events(),
@@ -997,7 +1015,7 @@ export class Orchestrator {
    *  frees the runner (but never retires the worktree), and raises an
    *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes through
    *  raise() instead (the live gate stays parked). */
-  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict"): Promise<void> {
+  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict" | "turns"): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
     if (!run) return;
@@ -1019,7 +1037,9 @@ export class Orchestrator {
           ? "Run stuck — needs a human"
           : source === "conflict"
             ? "Merge conflict with main — needs a rebase"
-            : "Run keeps failing — needs a human",
+            : source === "turns"
+              ? "Ran out of turns — resume to continue"
+              : "Run keeps failing — needs a human",
       why: reason,
       risk: "medium",
       rationale: null,
@@ -1484,7 +1504,15 @@ export class Orchestrator {
       return;
     }
     const apiKey = await secretService.resolve(agent.workspaceId, agent.credentialId ?? agent.provider);
-    const context = agent.log.slice(-40).map((l) => l.line).join("\n").slice(-4000);
+    const logText = agent.log.slice(-40).map((l) => l.line).join("\n").slice(-4000);
+    // A run that didn't finish cleanly (failed / escalated / needs-attention) is
+    // RESUMABLE from its own controls — so the consult must not dead-end the
+    // operator by telling them to relaunch or spin up a fresh agent themselves.
+    const note =
+      agent.status === "done"
+        ? ""
+        : "SITUATION: This run did not finish — it is paused / needs attention and can be RESUMED to keep working, from the run's own controls (its escalation card: Help & resume · Reassign · Stop). You are read-only in this chat: explain what happened or advise on the work, but never tell the operator to relaunch, retry, or start a fresh agent themselves, and don't imply you can edit files or resume from here.\n\n";
+    const context = note + logText;
     const spec = { task: agent.name, model: agent.model, cwd: config.runnerCwd, apiKey, context };
     try {
       if (provider.consultStream) {
