@@ -574,7 +574,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: stat.add, del: stat.del, modules },
+      diff: { add: stat.add, del: stat.del, modules, files: stat.files },
       flags: [],
     });
   }
@@ -1285,7 +1285,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: 0, del: 0, modules: agent.modules },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [] },
       flags: [reason],
     });
   }
@@ -1313,7 +1313,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: 0, del: 0, modules: agent.modules },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [] },
       flags: files, // the conflicting files — shown as chips
     });
   }

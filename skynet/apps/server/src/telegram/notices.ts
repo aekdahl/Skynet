@@ -15,6 +15,25 @@ export function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// How many changed files to list before collapsing the rest into "+N more" —
+// enough to judge the blast radius on a phone without a wall of paths.
+const MAX_FILES_SHOWN = 8;
+
+/** The changed-file list + touched areas for a diff/merge gate. `escFn` escapes
+ *  dynamic text (identity for the plain fallback, HTML-escape for the card) and
+ *  `codeFn` wraps each path (identity vs `<code>…</code>`). Empty file list in →
+ *  no lines, so older / empty-diff gates render exactly as before. */
+function fileLines(it: HitlItem, escFn: (s: string) => string, codeFn: (s: string) => string): string[] {
+  if (it.kind !== "diff" && it.kind !== "merge") return [];
+  const files = it.diff?.files ?? [];
+  const out: string[] = [];
+  for (const f of files.slice(0, MAX_FILES_SHOWN)) out.push(`• ${codeFn(f)}`);
+  if (files.length > MAX_FILES_SHOWN) out.push(`• …and ${files.length - MAX_FILES_SHOWN} more`);
+  const areas = it.diff?.modules ?? [];
+  if (areas.length) out.push(`Areas: ${escFn(areas.join(" · "))}`);
+  return out;
+}
+
 const GATE_HEAD: Partial<Record<HitlItem["kind"], string>> = {
   diff: "Review the changes",
   merge: "A merge needs a look",
@@ -29,8 +48,11 @@ const GATE_HEAD: Partial<Record<HitlItem["kind"], string>> = {
 export function gateNotice(it: HitlItem, names: Names, control: boolean): string {
   const head = GATE_HEAD[it.kind] ?? "Needs your review";
   const lines = [`🔔 ${head}${names.project ? ` · ${names.project}` : ""}`, names.run];
-  if (it.kind === "diff" && it.diff) lines.push(`+${it.diff.add} −${it.diff.del} · ${it.risk} risk`);
-  else if (it.command) lines.push(it.command);
+  if (it.kind === "diff" && it.diff) {
+    const n = it.diff.files?.length ?? 0;
+    lines.push(`+${it.diff.add} −${it.diff.del} · ${it.risk} risk${n ? ` · ${n} file${n === 1 ? "" : "s"}` : ""}`);
+    lines.push(...fileLines(it, (s) => s, (s) => s));
+  } else if (it.command) lines.push(it.command);
   else if (it.kind === "question" && it.options?.length) lines.push(it.options.map((o, i) => `${i + 1}. ${o}`).join("\n"));
   else if (it.title) lines.push(it.title);
   lines.push(control ? "Approve or reject below 👇" : `Reply /approve ${it.id} or /reject ${it.id}`);
@@ -50,7 +72,9 @@ export function decisionCardHtml(it: HitlItem, names: Names, control: boolean): 
   lines.push(`🔔 <b>${esc(head)}</b>${names.project ? ` · ${esc(names.project)}` : ""}`);
   lines.push(esc(names.run));
   if (it.kind === "diff" && it.diff) {
-    lines.push(`<code>+${it.diff.add} −${it.diff.del}</code> · ${esc(it.risk)} risk`);
+    const n = it.diff.files?.length ?? 0;
+    lines.push(`<code>+${it.diff.add} −${it.diff.del}</code> · ${esc(it.risk)} risk${n ? ` · ${n} file${n === 1 ? "" : "s"}` : ""}`);
+    lines.push(...fileLines(it, esc, (s) => `<code>${esc(s)}</code>`));
   } else if (it.command) {
     lines.push(`<code>${esc(it.command)}</code>`);
   } else if (it.kind === "question" && it.options?.length) {

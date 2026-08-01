@@ -260,6 +260,10 @@ export const DiffSummary = z.object({
   add: z.number().int().nonnegative(),
   del: z.number().int().nonnegative(),
   modules: z.array(z.string()), // module ids — never a raw patch
+  // The changed file paths, so a reviewer (esp. on Telegram) sees WHAT changed
+  // without opening the full diff. Optional/defaulted so the empty-diff merge
+  // gates that carry no file list stay valid.
+  files: z.array(z.string()).default([]),
 });
 export type DiffSummary = z.infer<typeof DiffSummary>;
 
