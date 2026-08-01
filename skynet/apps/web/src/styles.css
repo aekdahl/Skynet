@@ -1002,6 +1002,10 @@ button.kb-done:hover { opacity: 1; }
 .kb-elig-ro { margin: 2px 0; }
 .kb-elig-chip { font-size: 11px; color: var(--muted); }
 .kb-elig-chip.kb-elig-unset { color: var(--warn); }
+/* Once a run exists we show the agent doing the work (not the eligibility) —
+   give it the full text colour so it reads as a real assignment, not a filter. */
+.kb-elig-chip.kb-elig-agent { color: var(--text); }
+.kb-elig-glyph { font-family: var(--font-ui); }
 .kb-assessment { font-size: 11px; color: var(--muted); line-height: 1.4; border-left: 2px solid var(--line); padding-left: 8px; }
 .kb-flag { font-size: 11px; color: var(--warn); line-height: 1.4; }
 .kb-review-ok { font-size: 11px; color: var(--ok, var(--muted)); line-height: 1.4; }

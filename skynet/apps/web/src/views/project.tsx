@@ -159,6 +159,7 @@ function TaskCard({
   const {
     queue,
     fleet,
+    providers,
     features,
     milestones,
     updateTask,
@@ -189,6 +190,13 @@ function TaskCard({
   const noFleet = fleet.length === 0;
   const dnd = useContext(BoardDnd);
   const dragging = dnd?.drag?.taskId === task.id;
+  // Once a run exists, the eligibility ("any agent") is moot — surface WHO is
+  // actually doing the work: the fleet runner the run executes on. Falls back to
+  // the run's provider·model if that runner was since retired, and only reverts
+  // to the eligibility chip when nothing has picked the task up yet.
+  const runner = run?.agentId ? fleet.find((f) => f.id === run.agentId) : undefined;
+  const workedBy = runner?.name ?? (run?.agentId ? `${run.provider} · ${run.model}` : undefined);
+  const workedByPinfo = workedBy ? providers.find((p) => p.id === (runner?.provider ?? run?.provider)) : undefined;
   // An agent has actively taken this task once it's `ongoing` (the invariant:
   // an ongoing task always carries a live run). Lock the card so no one can
   // move, edit, or reassign it out from under the running agent — only the
@@ -357,7 +365,19 @@ function TaskCard({
         />
       ) : (
         <div className="kb-elig-ro">
-          <AgentEligibility task={task} fleet={fleet} editable={false} onChange={() => {}} />
+          {workedBy ? (
+            <span
+              className="kb-elig-chip kb-elig-agent mono"
+              title={s === "done" ? "Completed by this agent" : "Agent working on this task"}
+            >
+              <span className="kb-elig-glyph" style={workedByPinfo ? { color: workedByPinfo.color } : undefined}>
+                {workedByPinfo?.glyph ?? "◆"}
+              </span>{" "}
+              {workedBy}
+            </span>
+          ) : (
+            <AgentEligibility task={task} fleet={fleet} editable={false} onChange={() => {}} />
+          )}
         </div>
       )}
 
