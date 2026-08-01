@@ -4,7 +4,7 @@ import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import type { McpScope, ServiceTokenMeta } from "../lib/client";
 import { InstallControls } from "../components/install-controls";
-import { providerReadiness } from "../lib/derive";
+import { fmtWait, providerReadiness } from "../lib/derive";
 
 // Provider keys live in the encrypted secret store, scoped to this workspace.
 // A vendor's runners are only selectable in create-agent once its key is set
@@ -635,11 +635,21 @@ function AdvancedSettingsSection() {
   );
 }
 
+// Relative "3m ago" / "in 2h" from an epoch-ms timestamp, using the single-unit
+// duration rule the rest of the app follows.
+const rel = (ms: number): string => {
+  const deltaSec = (ms - Date.now()) / 1000;
+  return deltaSec >= 0 ? `in ${fmtWait(deltaSec)}` : `${fmtWait(-deltaSec)} ago`;
+};
+
 function McpAccessSection() {
   const [tokens, setTokens] = useState<ServiceTokenMeta[] | null>(null);
   const [label, setLabel] = useState("");
   const [scopes, setScopes] = useState<Record<McpScope, boolean>>({ observe: true, author: true, approver: false, admin: false });
   const [minted, setMinted] = useState<{ token: string; label: string } | null>(null);
+  // The id of the token minted this session — highlighted in the index so it's
+  // obvious the token still exists after the one-time secret reveal is dismissed.
+  const [justId, setJustId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -671,6 +681,7 @@ function McpAccessSection() {
     try {
       const created = await api.createServiceToken({ label: label.trim(), scopes: selected });
       setMinted({ token: created.token, label: created.label });
+      setJustId(created.id);
       setLabel("");
       await load();
     } catch (e) {
@@ -753,27 +764,55 @@ function McpAccessSection() {
           </div>
           <SnippetBlock title="Claude Code (remote HTTP)" text={httpSnippet(minted.token)} copied={copied === "http"} onCopy={() => copy("http", httpSnippet(minted.token))} />
           <SnippetBlock title="Local stdio (mcp.json) — needs the skynet-mcp binary" text={stdioSnippet(minted.token)} copied={copied === "stdio"} onCopy={() => copy("stdio", stdioSnippet(minted.token))} />
+          <div className="mcp-reveal-note">
+            Copy it now — the secret is shown only once. The token stays active and listed below (as <span className="mono">····{minted.token.slice(-4)}</span>); dismissing this doesn’t revoke it.
+          </div>
         </div>
       )}
 
-      <div className="settings-list mcp-tok-list">
-        {tokens?.length === 0 && <div className="settings-setup-sub">No tokens yet.</div>}
-        {tokens?.map((t) => (
-          <div className="mcp-tok-row" key={t.id}>
-            <span className="settings-name">{t.label}</span>
-            <span className="mcp-tok-scopes">
-              {t.scopes.map((s) => (
-                <span className="mcp-badge mono" key={s}>
-                  {s}
-                </span>
-              ))}
-            </span>
-            <span className="mcp-tok-meta mono">····{t.last4}</span>
-            <button className="btn btn-ghost" disabled={busy} onClick={() => void revoke(t.id)}>
-              Revoke
-            </button>
+      <div className="mcp-tok-index">
+        <div className="mcp-tok-index-head">
+          <span className="settings-setup-title">Active tokens</span>
+          {tokens && tokens.length > 0 && <span className="mcp-tok-count mono">{tokens.length}</span>}
+        </div>
+        {tokens === null ? (
+          <div className="settings-setup-sub">Loading…</div>
+        ) : tokens.length === 0 ? (
+          <div className="settings-setup-sub">No tokens yet — mint one above to connect a run over MCP.</div>
+        ) : (
+          <div className="settings-list mcp-tok-list">
+            {tokens.map((t) => (
+              <div className={`mcp-tok-row${t.id === justId ? " mcp-tok-new" : ""}`} key={t.id}>
+                <div className="mcp-tok-main">
+                  <div className="mcp-tok-top">
+                    <span className="settings-name">{t.label}</span>
+                    {t.id === justId && <span className="mcp-tok-tag mono">just created</span>}
+                    <span className="mcp-tok-scopes">
+                      {t.scopes.map((s) => (
+                        <span className="mcp-badge mono" key={s}>
+                          {s}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                  <div className="mcp-tok-meta mono">
+                    <span className="mcp-tok-fp">····{t.last4}</span>
+                    <span>created {rel(t.createdAt)}</span>
+                    <span>{t.lastUsedAt ? `used ${rel(t.lastUsedAt)}` : "never used"}</span>
+                    {t.expiresAt != null && (
+                      <span className={t.expiresAt <= Date.now() ? "mcp-tok-expired" : undefined}>
+                        {t.expiresAt <= Date.now() ? "expired" : `expires ${rel(t.expiresAt)}`}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <button className="btn btn-ghost" disabled={busy} onClick={() => void revoke(t.id)}>
+                  Revoke
+                </button>
+              </div>
+            ))}
           </div>
-        ))}
+        )}
       </div>
     </div>
   );

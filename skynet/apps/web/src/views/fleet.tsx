@@ -8,10 +8,14 @@ export function ConfigForm({
   initial,
   onSave,
   onCancel,
+  submitLabel,
 }: {
   initial?: Agent;
   onSave: (r: { name: string; provider: ProviderId; model: string; credentialId?: string }) => void;
   onCancel: () => void;
+  // Overrides the submit label. Defaults by mode: editing → "Save changes",
+  // new → "Add to fleet". Cloning passes its own (it creates, not edits).
+  submitLabel?: string;
 }) {
   const { providers } = useStore();
   const isConfigured = (p: ProviderInfo) => providerReadiness(p).ready;
@@ -182,7 +186,7 @@ export function ConfigForm({
           disabled={!model.trim()}
           onClick={() => onSave({ name: name.trim(), provider, model: model.trim(), credentialId })}
         >
-          {initial ? "Save changes" : "Add to fleet"}
+          {submitLabel ?? (initial ? "Save changes" : "Add to fleet")}
         </button>
         <button className="btn btn-ghost" onClick={onCancel}>
           Cancel
@@ -190,6 +194,24 @@ export function ConfigForm({
       </div>
     </div>
   );
+}
+
+// Suggest a fresh name for a cloned agent: bump a trailing number
+// ("claude-agent-01" → "claude-agent-02"), else append "-copy", skipping names
+// already taken so the duplicate reads as its own agent at a glance.
+export function suggestCloneName(base: string, taken: Set<string>): string {
+  const m = base.match(/^(.*?)(\d+)$/);
+  if (m) {
+    const prefix = m[1]!;
+    const width = m[2]!.length;
+    for (let n = parseInt(m[2]!, 10) + 1; n < 100000; n++) {
+      const cand = prefix + String(n).padStart(width, "0");
+      if (!taken.has(cand)) return cand;
+    }
+  }
+  let cand = `${base}-copy`;
+  for (let i = 2; taken.has(cand); i++) cand = `${base}-copy-${i}`;
+  return cand;
 }
 
 export function FleetView({
@@ -203,7 +225,11 @@ export function FleetView({
     useStore();
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
+  // The agent being duplicated: opens the same form pre-filled with its provider
+  // + model + credential (no history), so the operator only names the copy.
+  const [cloneFrom, setCloneFrom] = useState<Agent | null>(null);
   const now = Date.now();
+  const takenNames = new Set(fleet.map((a) => a.name));
 
   const taskCountOf = (r: Agent) => runs.filter((a) => a.agentId === r.id).length;
 
@@ -225,20 +251,29 @@ export function FleetView({
           onClick={() => {
             setAdding(true);
             setEditing(null);
+            setCloneFrom(null);
           }}
         >
           + Configure agent
         </button>
       </div>
-      {adding && (
+      {(adding || cloneFrom) && (
         <div className="panel cfg-panel">
-          <div className="panel-head">NEW AGENT</div>
+          <div className="panel-head">{cloneFrom ? `DUPLICATE · ${cloneFrom.name}` : "NEW AGENT"}</div>
           <ConfigForm
+            // Remount when the source changes so the form re-seeds from `initial`.
+            key={cloneFrom ? "clone-" + cloneFrom.id : "new"}
+            initial={cloneFrom ? { ...cloneFrom, name: suggestCloneName(cloneFrom.name, takenNames) } : undefined}
+            submitLabel={cloneFrom ? "Add to fleet" : undefined}
             onSave={(r) => {
-              createAgent(r.provider, r.model, r.name || undefined, r.credentialId);
+              createAgent(r.provider, r.model, r.name || undefined, cloneFrom?.credentialId ?? undefined);
               setAdding(false);
+              setCloneFrom(null);
             }}
-            onCancel={() => setAdding(false)}
+            onCancel={() => {
+              setAdding(false);
+              setCloneFrom(null);
+            }}
           />
         </div>
       )}
@@ -316,9 +351,21 @@ export function FleetView({
                       onClick={() => {
                         setEditing(r.id);
                         setAdding(false);
+                        setCloneFrom(null);
                       }}
                     >
                       Configure
+                    </button>
+                    <button
+                      className="btn btn-ghost"
+                      title="Duplicate — create a new agent with the same provider & model (no history); you name it"
+                      onClick={() => {
+                        setCloneFrom(r);
+                        setAdding(false);
+                        setEditing(null);
+                      }}
+                    >
+                      Duplicate
                     </button>
                     <button
                       className="btn btn-ghost btn-retire"

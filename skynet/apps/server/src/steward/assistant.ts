@@ -15,7 +15,7 @@
 // Either way the answer stays grounded — the model is told never to invent repo
 // content or project state.
 
-import type { HitlItem, Project, Task, TaskRun } from "@skynet/shared";
+import type { Agent, HitlItem, Project, Task, TaskAssignment, TaskRun } from "@skynet/shared";
 import { ProjectStatus, TaskState } from "@skynet/shared";
 import {
   oneShotRepoAssistant,
@@ -27,6 +27,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { githubService } from "../github/index.js";
 import { secretService } from "../secrets/index.js";
+import { settingsContext } from "../settings/env-settings.js";
 import type { Store } from "../store/store.js";
 
 export interface ChatTurn {
@@ -43,7 +44,8 @@ const MAX_HISTORY = 8;
 const SYSTEM =
   "You are Steward, the repo-aware project assistant for a Skynet workspace — you help the operator understand the CURRENT STATUS and CONTENT of one project, and you can perform project & task actions on request. " +
   "Answer conversationally and concisely. Ground every answer in the PROJECT STATUS below, and when the question is about the code or docs, in the repository content (open files such as ROADMAP.md / README.md as needed). " +
-  "If a file or fact isn't available to you, say so plainly — never invent repo content or project state.\n" +
+  "For questions about how this workspace is configured — approvals, autonomy, the runner sandbox, integration, Telegram, MCP, backends, vendor CLIs — ground the answer in the WORKSPACE SETTINGS section (the LIVE runtime config), NOT the committed repo docs, which may be out of date. Secret values there are shown only as set/not-set — never claim to know a secret's value. " +
+  "If a file or fact isn't available to you, say so plainly — never invent repo content, project state, or settings.\n" +
   'ACTIONS: ONLY when the operator is clearly asking you to CHANGE something, append as the FINAL line a JSON object exactly {"proposeAction": <one action object>} and nothing after it — the operator confirms before it runs. Never include it for questions, summaries, or chat, and never more than one. ' +
   "Use the task ids from PROJECT STATUS (each task is listed as `[id] text`); if a request references a task that isn't listed, ask instead of guessing. Valid action objects:\n" +
   '  {"kind":"add_task","text":"<title>","description":"<optional — the full brief the agent gets>"}\n' +
@@ -58,9 +60,14 @@ const SYSTEM =
   '  {"kind":"set_autonomy","autonomy":true|false}\n' +
   '  {"kind":"set_status","status":"active|paused|done"}\n' +
   '  {"kind":"set_schedule","taskId":"<id>","estimatedDurationMs":<ms or null>,"plannedStartAt":<epoch ms or null>}\n' +
+  '  {"kind":"set_assignment","taskId":"<id>","mode":"any|agents|unassigned","agentIds":["<agent id>", …]}\n' +
   "Notes on set_schedule: either or both fields may be present. `estimatedDurationMs` = how long you think the task takes; " +
   "`plannedStartAt` = when it should start (epoch ms). Pass `null` for a field to clear it (e.g. unschedule). " +
   "For durations, prefer minutes-to-milliseconds math (30m = 1_800_000).\n" +
+  "Notes on set_assignment: this sets a task's agent ELIGIBILITY — WHO may pick it up, not who ran it. " +
+  "`any` = any idle fleet agent may take it (omit agentIds); `agents` = only the listed agentIds (≥1) may take it, whichever is idle first; " +
+  "`unassigned` clears the choice (only valid while the task is still in backlog). Every id in `agentIds` MUST be an agent from the AGENTS list " +
+  "in PROJECT STATUS — map the operator's wording (name or id) to those ids, and if they name an agent that isn't listed, ask instead of guessing.\n" +
   "Notes on archive_task vs remove_task: PREFER archive_task when the operator says 'archive', 'hide', 'shelve', 'set aside', " +
   "or wants the task out of the way but recoverable (soft-hide — stays in the store, hidden from the board). " +
   "Only use remove_task for an unambiguous 'delete' / 'remove for good' — that's a hard delete.";
@@ -114,7 +121,8 @@ export type ProjectActionKind =
   | "set_goal"
   | "set_autonomy"
   | "set_status"
-  | "set_schedule";
+  | "set_schedule"
+  | "set_assignment";
 
 export interface AssistantAction {
   kind: ProjectActionKind;
@@ -132,12 +140,19 @@ export interface AssistantAction {
   // (so an operator can undo a scheduled start or drop an estimate).
   estimatedDurationMs?: number | null;
   plannedStartAt?: number | null;
+  // Agent eligibility (set_assignment). `mode` picks WHO may take the task;
+  // `agentIds` is the pool for `agents` mode (empty otherwise).
+  mode?: TaskAssignment["mode"];
+  agentIds?: string[];
 }
 
-/** The grounding the action validator resolves ids against (this project only). */
+/** The grounding the action validator resolves ids against (this project only).
+ *  `agents` is the workspace fleet — set_assignment pins only to ids in it, so a
+ *  misparse can't invent an agent (mirrors the server's fleet check). */
 export interface ProjectActionContext {
   project: { id: string; name: string };
   tasks: { id: string; text: string; state: Task["state"] }[];
+  agents?: { id: string; name: string }[];
 }
 
 const clip = (s: string): string => (s.length > 60 ? s.slice(0, 57) + "…" : s);
@@ -258,6 +273,39 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
         summary: `Schedule “${clip(t.text)}” — ${parts.join(", ") || "no change"}`,
       };
     }
+    case "set_assignment": {
+      // Agent eligibility (WHO may take the task). `any`/`unassigned` carry no
+      // agentIds; `agents` needs ≥1, and each MUST be a real fleet agent from the
+      // grounding — so a misparse or injected instruction can't invent an agent.
+      // (The server re-checks the fleet; validating here keeps the confirm chip
+      // honest.) The leaving-backlog gate for `unassigned` is enforced server-side.
+      const t = task(o.taskId);
+      const mode = str(o.mode) as TaskAssignment["mode"];
+      if (!t || (mode !== "any" && mode !== "agents" && mode !== "unassigned")) return null;
+      if (mode === "agents") {
+        const fleet = ctx.agents ?? [];
+        const raw = Array.isArray(o.agentIds) ? o.agentIds.filter((x): x is string => typeof x === "string") : [];
+        const ids = [...new Set(raw)].filter((id) => fleet.some((a) => a.id === id));
+        if (ids.length === 0) return null; // no known agents named → refuse rather than guess
+        const names = ids.map((id) => fleet.find((a) => a.id === id)!.name);
+        return {
+          kind,
+          taskId: t.id,
+          mode,
+          agentIds: ids,
+          summary: `Assign “${clip(t.text)}” → ${names.join(", ")}`,
+        };
+      }
+      return {
+        kind,
+        taskId: t.id,
+        mode,
+        agentIds: [],
+        summary: mode === "any"
+          ? `Make “${clip(t.text)}” open to any agent`
+          : `Clear agent eligibility on “${clip(t.text)}”`,
+      };
+    }
     default:
       return null;
   }
@@ -311,13 +359,21 @@ export function splitProposedAction(
   return { reply: trimmed, action: null };
 }
 
-function statusContext(project: Project, tasks: Task[], runs: TaskRun[]): string {
+function statusContext(project: Project, tasks: Task[], runs: TaskRun[], agents: Agent[] = []): string {
+  const agentName = (id: string): string => agents.find((a) => a.id === id)?.name ?? id;
+  // Compact "who may take this" tag so Steward can report + change eligibility.
+  const eligibility = (t: Task): string => {
+    const m = t.assignment?.mode ?? "unassigned";
+    if (m === "any") return " → any agent";
+    if (m === "agents") return ` → ${t.assignment.agentIds.map(agentName).join(", ")}`;
+    return "";
+  };
   const lines: string[] = [
     `PROJECT: ${project.name}`,
     `GOAL: ${project.goal?.trim() || "(none set yet)"}`,
     `REPO: ${project.repo ?? project.repoPath ?? "(not connected)"}`,
     `AUTONOMY: ${project.autonomy ? "on (agents may self-advance tasks)" : "off (human-driven)"}`,
-    "BOARD (tasks by stage):",
+    "BOARD (tasks by stage — `→` shows current agent eligibility):",
   ];
   for (const s of STAGES) {
     // Archived tasks are OFF the board — excluded from the stage grouping, listed
@@ -325,8 +381,16 @@ function statusContext(project: Project, tasks: Task[], runs: TaskRun[]): string
     const items = tasks.filter((t) => t.state === s && !t.archived);
     lines.push(
       items.length
-        ? `  ${s} (${items.length}): ${items.slice(0, 20).map((t) => `[${t.id}] ${t.text}`).join(" · ")}`
+        ? `  ${s} (${items.length}): ${items.slice(0, 20).map((t) => `[${t.id}] ${t.text}${eligibility(t)}`).join(" · ")}`
         : `  ${s}: 0`,
+    );
+  }
+  if (agents.length) {
+    lines.push(
+      `AGENTS (workspace fleet — set_assignment may only pin to these ids): ${agents
+        .slice(0, 30)
+        .map((a) => `[${a.id}] ${a.name} (${a.status})`)
+        .join(" · ")}`,
     );
   }
   const archived = tasks.filter((t) => t.archived);
@@ -348,7 +412,7 @@ function statusContext(project: Project, tasks: Task[], runs: TaskRun[]): string
   return lines.join("\n");
 }
 
-function buildPrompt(context: string, docs: string, history: ChatTurn[], question: string): string {
+function buildPrompt(context: string, docs: string, settings: string, history: ChatTurn[], question: string): string {
   const convo = history
     .slice(-MAX_HISTORY)
     .map((t) => `${t.role === "user" ? "Operator" : "Assistant"}: ${t.content}`)
@@ -359,6 +423,7 @@ function buildPrompt(context: string, docs: string, history: ChatTurn[], questio
     "=== PROJECT STATUS ===",
     context,
     docs ? `\n=== REPO CONTENT ===${docs}` : "",
+    settings ? `\n=== WORKSPACE SETTINGS (live) ===\n${settings}` : "",
     convo ? `\n=== CONVERSATION SO FAR ===\n${convo}` : "",
     "",
     `Operator asks: ${question}`,
@@ -382,32 +447,40 @@ export async function prepareStewardCall(
   const { workspaceId, project, question } = opts;
   const history = opts.history ?? [];
 
-  const [allTasks, allRuns] = await Promise.all([
+  const [allTasks, allRuns, agents] = await Promise.all([
     store.listTasks(workspaceId),
     store.listRuns(workspaceId),
+    store.listAgents(workspaceId),
   ]);
   const projectTasks = allTasks.filter((t) => t.projectId === project.id);
   const context = statusContext(
     project,
     projectTasks,
     allRuns.filter((r) => r.projectId === project.id),
+    agents,
   );
   const actionCtx: ProjectActionContext = {
     project: { id: project.id, name: project.name },
     tasks: projectTasks.map((t) => ({ id: t.id, text: t.text, state: t.state })),
+    // Fleet is workspace-wide (agents aren't project-scoped) — it's the pool
+    // set_assignment validates agentIds against.
+    agents: agents.map((a) => ({ id: a.id, name: a.name })),
   };
   const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
+  // Live, secret-safe settings snapshot so settings questions ground in real
+  // runtime config, not just the committed repo docs.
+  const settings = await settingsContext();
 
   // Local checkout → read the working tree directly (Read/Grep/Glob).
   if (project.repoPath) {
-    return { repo: true, prompt: buildPrompt(context, "", history, question), cwd: project.repoPath, apiKey, actionCtx };
+    return { repo: true, prompt: buildPrompt(context, "", settings, history, question), cwd: project.repoPath, apiKey, actionCtx };
   }
   // GitHub-connected but not cloned → prefetch key docs + the top-level tree.
   let docs = project.repo ? await prefetchProjectDocs(workspaceId, project) : "";
   if (project.repo && !docs) {
     docs = "\n\n(Repo is connected but no README/ROADMAP was found and files aren't cloned locally — answer from project status.)";
   }
-  return { repo: false, prompt: buildPrompt(context, docs, history, question), apiKey, actionCtx };
+  return { repo: false, prompt: buildPrompt(context, docs, settings, history, question), apiKey, actionCtx };
 }
 
 /**
@@ -473,7 +546,9 @@ export function resolveFocusProject(
 }
 
 const WORKSPACE_SYSTEM =
-  "You are Steward, the operator's assistant for a Skynet workspace. Answer conversationally and concisely about the CURRENT STATUS across the whole workspace — projects, their task boards, active runs, and open approvals — grounded ONLY in the WORKSPACE STATUS below. If a fact isn't shown, say so plainly; never invent state. You CAN change things on a specific project (add/move a task, edit settings) — just tell the operator to name the project they mean and you'll take care of it right here (you always confirm before anything runs). Do NOT emit any JSON.";
+  "You are Steward, the operator's assistant for a Skynet workspace. Answer conversationally and concisely about the CURRENT STATUS across the whole workspace — projects, their task boards, active runs, and open approvals — grounded ONLY in the WORKSPACE STATUS below. " +
+  "For questions about how the workspace is configured — approvals, autonomy, the runner sandbox, integration, Telegram, MCP, backends, vendor CLIs — ground the answer in the WORKSPACE SETTINGS section (the LIVE runtime config), not from memory. Secret values there are shown only as set/not-set — never claim to know a secret's value. " +
+  "If a fact isn't shown, say so plainly; never invent state or settings. You CAN change things on a specific project (add/move a task, edit settings) — just tell the operator to name the project they mean and you'll take care of it right here (you always confirm before anything runs). Do NOT emit any JSON.";
 
 function workspaceStatusContext(projects: Project[], tasks: Task[], runs: TaskRun[], gates: HitlItem[]): string {
   const openGates = gates.filter((g) => !g.resolvedAt).length;
@@ -511,6 +586,7 @@ export async function askStewardWorkspace(
     store.listQueue(workspaceId),
   ]);
   const context = workspaceStatusContext(projects, tasks, runs, gates);
+  const settings = await settingsContext();
   const convo = (opts.history ?? [])
     .slice(-MAX_HISTORY)
     .map((t) => `${t.role === "user" ? "Operator" : "Assistant"}: ${t.content}`)
@@ -520,6 +596,7 @@ export async function askStewardWorkspace(
     "",
     "=== WORKSPACE STATUS ===",
     context,
+    settings ? `\n=== WORKSPACE SETTINGS (live) ===\n${settings}` : "",
     convo ? `\n=== CONVERSATION SO FAR ===\n${convo}` : "",
     "",
     `Operator asks: ${question}`,

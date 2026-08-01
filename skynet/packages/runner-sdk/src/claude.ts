@@ -525,6 +525,11 @@ export function isTransientApiError(text: string): boolean {
 }
 
 const MAX_API_RETRIES = 3;
+// `error_max_turns` is NOT a failure — the SDK session is intact and the work is
+// resumable; the agent just hit its per-session turn budget. Continue it (resume,
+// fresh budget) up to this many times before handing off to a human. Its own
+// budget, separate from API retries.
+const MAX_TURN_CONTINUES = 3;
 /** Exponential backoff, capped at 30s: attempt 1→2s, 2→4s, 3→8s. */
 export function retryBackoffMs(attempt: number): number {
   return Math.min(30_000, 1_000 * 2 ** attempt);
@@ -581,6 +586,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
   private baseOptions?: Options; // query options minus resume, reused per relaunch
   private initialPrompt = ""; // the kickoff message, re-sent if we retry pre-session
   private apiRetries = 0; // transient retries spent (budget MAX_API_RETRIES)
+  private turnContinues = 0; // turn-budget continues spent (budget MAX_TURN_CONTINUES)
   private lastApiError = ""; // most recent overload/error text seen, for classification
 
   constructor(
@@ -796,6 +802,22 @@ class ClaudeRunnerHandle implements RunnerHandle {
       if (outcome.done) {
         this.finish();
         return;
+      }
+
+      // Ran out of turns — NOT a failure. Resume the same session (fresh turn
+      // budget) and keep going, a bounded number of times. The agent picks up
+      // exactly where it left off; only when it can't finish within the continue
+      // budget does it hand off (→ onFailed → the orchestrator escalates it).
+      if (outcome.reason === "error_max_turns" && this.turnContinues < MAX_TURN_CONTINUES) {
+        this.turnContinues++;
+        this.events.onLog(
+          this.runId,
+          `ran out of turns — continuing where it left off [${this.turnContinues}/${MAX_TURN_CONTINUES}]`,
+        );
+        await this.q?.interrupt().catch(() => undefined); // release the exhausted session
+        if (this.finished) return;
+        this.relaunch();
+        continue;
       }
 
       // Errored. A transient overload/rate-limit is retryable: back off and

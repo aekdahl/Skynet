@@ -154,6 +154,20 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     expect((await store.getRun(run.id))?.status).toBe("waiting");
   });
 
+  it("running out of turns escalates immediately (resumable), not counted as a failure", async () => {
+    const { run, events } = await assignRun();
+    // A single error_max_turns must escalate straight away — it's a resumable
+    // checkpoint, not one of the N failures that trip the failure-count guard.
+    events.onFailed(run.id, "error_max_turns");
+    await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+
+    const esc = bus.raised().find((i) => i.kind === "escalation")!;
+    expect(esc.flags).toContain("turns");
+    expect(esc.title).toMatch(/ran out of turns/i);
+    expect(esc.why).toMatch(/turn budget/i);
+    expect((await store.getRun(run.id))?.status).toBe("waiting"); // escalated, not "review"
+  });
+
   it("Reassign with no worktree fails gracefully — the run stays escalated, no crash", async () => {
     const { run, events } = await assignRun(); // non-git project → no worktree to relaunch in
     events.onHitl(run.id, {

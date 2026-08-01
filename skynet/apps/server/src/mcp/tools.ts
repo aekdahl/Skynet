@@ -180,7 +180,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   tool("list_audit", "observe", "List resolved HITL decisions, newest first (the audit trail).", {}, () => operations.listAudit(ws), true);
 
   // ── author ──────────────────────────────────────────────────────────────
-  tool("create_project", "author", "Create a project. Bind it to a repo (\"owner/repo\") to enable the PR flow.", CreateProjectRequest.shape, (a) => operations.createProject(ws, a));
+  tool("create_project", "author", "Create a project. Bind it to a repo (\"owner/repo\" via `repo`, or an existing repo's git URL via `repoUrl` to clone it) to enable the PR flow.", CreateProjectRequest.shape, (a) => operations.createProject(ws, a));
   tool("update_project", "author", "Update a project's name, goal, status, or bound repo.", { projectId: z.string(), ...UpdateProjectRequest.shape }, (a) => {
     const { projectId, ...patch } = a;
     return operations.updateProject(ws, projectId, patch);
