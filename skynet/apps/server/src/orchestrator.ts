@@ -13,6 +13,7 @@ import {
 import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
+import { parseReviewVerdict } from "./review-verdict.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
@@ -1854,9 +1855,12 @@ export class Orchestrator {
           { task: task.text, model: agent.model, cwd: config.runnerCwd, apiKey, context },
           `Review whether this run satisfies the task "${task.text}". Reply on the FIRST line with exactly APPROVE or FLAG, then a one-line reason.`,
         );
-        const head = reply.trim().split("\n")[0]?.toUpperCase() ?? "";
-        approve = !head.includes("FLAG");
-        reason = reply.trim().slice(0, 300) || reason;
+        // Read the verdict from the LEADING word — never a substring match, or a
+        // reason that mentions "flagged" would flag an APPROVE (DEF). The reason
+        // has the verdict word stripped so a flag reads as prose, not "APPROVE —".
+        const verdict = parseReviewVerdict(reply);
+        approve = verdict.approve;
+        reason = verdict.reason;
       }
     } catch (err) {
       approve = false;
