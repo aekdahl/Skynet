@@ -37,7 +37,7 @@ import { config, now } from "./config.js";
 import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { projectPreview, type PreviewState } from "./preview/project-preview.js";
-import { githubService } from "./github/index.js";
+import { githubService, parseRepoRef } from "./github/index.js";
 import {
   answerProjectQuestion,
   type AssistantAction,
@@ -349,6 +349,16 @@ export class Operations {
     // repo supersedes any local folder; the fresh repo is auto-cloned below.
     let repo = input.repo;
     let repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
+    // Cloning an EXISTING repo: the operator pastes its git URL (HTTPS/SSH) — we
+    // normalize it to the "owner/repo" slug and bind to it, so the existing
+    // repo-bound path takes over (auto-clone below via the workspace's GitHub
+    // token). A repo URL supersedes any local folder; the fresh checkout wins.
+    if (input.repoUrl) {
+      const slug = parseRepoRef(input.repoUrl);
+      if (!slug) throw new Error(`Not a recognizable GitHub repo URL: ${input.repoUrl}`);
+      repo = slug;
+      repoPath = null;
+    }
     if (input.createRepo) {
       const created = await githubService.createRepo(ws, input.createRepo, { description: input.goal });
       repo = created.name; // "owner/repo"

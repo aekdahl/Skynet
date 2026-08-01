@@ -438,7 +438,8 @@ export const CreateProjectRequest = z.object({
   name: z.string().min(1),
   goal: z.string().default(""),
   repoPath: z.string().optional(), // absolute path to a local folder to work in
-  repo: z.string().optional(), // or bind to one connected GitHub repo at creation
+  repo: z.string().optional(), // or bind to one connected GitHub repo at creation ("owner/repo")
+  repoUrl: z.string().optional(), // or paste an existing repo's git URL to clone (normalized to "owner/repo")
   createRepo: CreateRepoSpec.optional(), // or have Skynet create a new repo and bind it
   // Governance chosen at creation. Omitted → the server defaults apply (autonomy
   // on; approvalLevel from SKYNET_APPROVAL_LEVEL). Both remain editable later.
