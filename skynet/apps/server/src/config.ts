@@ -57,6 +57,10 @@ export const config = {
   runnerCwd: process.env.SKYNET_RUNNER_CWD || undefined,
   databaseUrl: process.env.DATABASE_URL ?? "",
   redisUrl: process.env.REDIS_URL ?? "",
+  // Public base URL the app is reachable at (e.g. https://skynet.example.com) —
+  // used to build deep links in outbound notifications (Telegram) that open the
+  // specific run. No trailing slash; empty → notices omit the link.
+  publicUrl: (process.env.PUBLIC_URL ?? "").trim().replace(/\/+$/, ""),
   // When true, requests without a valid token are rejected (401). Secure by
   // default: if AUTH_REQUIRED is unset, it's ON in production and OFF in dev —
   // so a prod deploy never silently accepts unauthenticated requests. Explicit
