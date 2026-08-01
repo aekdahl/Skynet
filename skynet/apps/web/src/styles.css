@@ -1277,11 +1277,22 @@ button.kb-done:hover { opacity: 1; }
 .mcp-snippet-head { display: flex; align-items: center; justify-content: space-between; }
 .mcp-snippet-title { font-size: 11px; color: var(--faint); }
 .mcp-snippet-body { margin: 0; background: var(--bg); border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px 12px; font-size: 11.5px; line-height: 1.5; color: var(--text); overflow-x: auto; white-space: pre; }
-.mcp-tok-list { margin-top: var(--sp); }
-.mcp-tok-row { display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 11px 14px; }
+.mcp-tok-index { margin-top: var(--sp); }
+.mcp-tok-index-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.mcp-tok-count { font-size: 11px; color: var(--faint); background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 0 8px; }
+.mcp-tok-list { display: flex; flex-direction: column; gap: 8px; }
+.mcp-tok-row { display: flex; align-items: center; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 11px 14px; }
+.mcp-tok-new { border-color: color-mix(in oklch, var(--accent), transparent 45%); box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent), transparent 60%) inset; }
+.mcp-tok-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.mcp-tok-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mcp-tok-tag { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
 .mcp-tok-scopes { display: flex; gap: 5px; flex-wrap: wrap; }
 .mcp-badge { font-size: 10px; color: var(--accent); background: color-mix(in oklch, var(--accent), transparent 86%); border: 1px solid color-mix(in oklch, var(--accent), transparent 70%); border-radius: 5px; padding: 1px 6px; }
-.mcp-tok-meta { font-size: 11px; color: var(--faint); margin-left: auto; }
+.mcp-tok-meta { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--faint); }
+.mcp-tok-meta > span { white-space: nowrap; }
+.mcp-tok-fp { color: var(--text); }
+.mcp-tok-expired { color: var(--danger); }
+.mcp-reveal-note { font-size: 11.5px; line-height: 1.5; color: var(--faint); }
 
 /* ===== agent result / answer ===== */
 /* Task description — the longer brief behind a short task name */
