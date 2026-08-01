@@ -969,6 +969,16 @@ button.kb-done:hover { opacity: 1; }
 .kb-card-ongoing { border-top: 2px solid var(--ok); }
 .kb-card-review { border-top: 2px solid var(--warn); }
 .kb-card-done { border-top: 2px solid var(--line); }
+/* An agent has actively taken this task (ongoing) — lock it on the board: not
+   draggable (draggable=false drops the grab cursor), not editable, not
+   reassignable. Only the run's emergency controls remain (open the card →
+   pause/stop/resume). The green ring reinforces the "an agent owns this"
+   vocabulary already used by .kb-assigned. */
+.kb-card-locked {
+  border-color: color-mix(in oklch, var(--ok), transparent 50%);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--ok), transparent 65%);
+}
+.kb-lock { flex: none; font-size: 11px; line-height: 1.5; cursor: help; }
 .kb-card-top { display: flex; align-items: flex-start; gap: 8px; }
 .kb-card-top .kb-task { flex: 1; min-width: 0; }
 .kb-card[role="button"] { cursor: pointer; }
