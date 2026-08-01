@@ -71,6 +71,8 @@ describe("splitEstMinutesTag — triage duration tag", () => {
 const ctx: ProjectActionContext = {
   project: { id: "p-1", name: "Takeoff" },
   tasks: [{ id: "t-1", text: "fix login redirect", state: "backlog" }],
+  features: [],
+  milestones: [],
 };
 
 describe("validateProjectAction — set_schedule", () => {

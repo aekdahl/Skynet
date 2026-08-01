@@ -428,7 +428,14 @@ export interface AssistantAction {
     | "set_goal"
     | "set_autonomy"
     | "set_status"
-    | "set_schedule";
+    | "set_schedule"
+    | "create_feature"
+    | "set_task_feature"
+    | "archive_feature"
+    | "create_milestone"
+    | "set_feature_milestone"
+    | "set_task_milestone"
+    | "mark_milestone_shipped";
   summary: string;
   taskId?: string;
   text?: string;
@@ -441,6 +448,9 @@ export interface AssistantAction {
   status?: string;
   estimatedDurationMs?: number | null;
   plannedStartAt?: number | null;
+  featureId?: string | null;
+  milestoneId?: string | null;
+  targetAt?: number | null;
 }
 // Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
 // (full project assistant + actions); omit it for a workspace-wide answer. The
