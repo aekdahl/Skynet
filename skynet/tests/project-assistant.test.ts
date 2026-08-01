@@ -17,6 +17,8 @@ const ctx: ProjectActionContext = {
     { id: "t-1", text: "fix login redirect", state: "review" },
     { id: "t-2", text: "add metrics", state: "backlog" },
   ],
+  features: [],
+  milestones: [],
 };
 
 describe("validateProjectAction — whitelist + project-scoped id resolution", () => {
@@ -131,5 +133,133 @@ describe("splitProposedAction — reply/action split", () => {
     const r = splitProposedAction(raw, ctx);
     expect(r.action).toBeNull();
     expect(r.reply).toBe(raw);
+  });
+});
+
+// ── Grouping actions (features + milestones) ────────────────────────────
+// The same "the id must resolve inside THIS project's context" guarantee that
+// keeps task actions from escaping the project applies to features and
+// milestones — Steward can only touch what appears in the FEATURES/MILESTONES
+// lists supplied by the caller.
+describe("validateProjectAction — grouping (features + milestones)", () => {
+  const gctx: ProjectActionContext = {
+    project: { id: "p-1", name: "Takeoff" },
+    tasks: [
+      { id: "t-1", text: "signup form", state: "todo" },
+      { id: "t-2", text: "unrelated", state: "backlog" },
+    ],
+    features: [
+      { id: "f-onb", name: "Onboarding" },
+      { id: "f-auth", name: "Auth" },
+    ],
+    milestones: [
+      { id: "m-v1", name: "v1.0" },
+      { id: "m-beta", name: "Beta" },
+    ],
+  };
+
+  it("create_feature accepts a name-only proposal", () => {
+    expect(validateProjectAction({ kind: "create_feature", name: "Payments" }, gctx)).toMatchObject({
+      kind: "create_feature",
+      name: "Payments",
+    });
+  });
+
+  it("create_feature can link to a known milestone; unknown milestone rejects", () => {
+    expect(
+      validateProjectAction({ kind: "create_feature", name: "Payments", milestoneId: "m-v1" }, gctx),
+    ).toMatchObject({ kind: "create_feature", name: "Payments", milestoneId: "m-v1" });
+    // Unknown id → reject the whole action, don't silently drop the link.
+    expect(
+      validateProjectAction({ kind: "create_feature", name: "Payments", milestoneId: "m-other" }, gctx),
+    ).toBeNull();
+  });
+
+  it("set_task_feature resolves both ids or refuses", () => {
+    expect(
+      validateProjectAction({ kind: "set_task_feature", taskId: "t-1", featureId: "f-onb" }, gctx),
+    ).toMatchObject({ kind: "set_task_feature", taskId: "t-1", featureId: "f-onb" });
+    // null explicitly clears the linkage.
+    expect(
+      validateProjectAction({ kind: "set_task_feature", taskId: "t-1", featureId: null }, gctx),
+    ).toMatchObject({ kind: "set_task_feature", taskId: "t-1", featureId: null });
+    // Unknown ids refuse (no cross-project escape).
+    expect(
+      validateProjectAction({ kind: "set_task_feature", taskId: "t-999", featureId: "f-onb" }, gctx),
+    ).toBeNull();
+    expect(
+      validateProjectAction({ kind: "set_task_feature", taskId: "t-1", featureId: "f-other" }, gctx),
+    ).toBeNull();
+  });
+
+  it("archive_feature needs a known featureId", () => {
+    expect(validateProjectAction({ kind: "archive_feature", featureId: "f-onb" }, gctx)).toMatchObject({
+      kind: "archive_feature",
+      featureId: "f-onb",
+    });
+    expect(validateProjectAction({ kind: "archive_feature", featureId: "f-other" }, gctx)).toBeNull();
+  });
+
+  it("create_milestone accepts targetAt as epoch ms (or omitted / null)", () => {
+    const targetAt = Date.UTC(2026, 5, 1);
+    expect(
+      validateProjectAction({ kind: "create_milestone", name: "v2.0", targetAt }, gctx),
+    ).toMatchObject({ kind: "create_milestone", name: "v2.0", targetAt });
+    // null → keep in shape (explicit "no committed date")
+    expect(
+      validateProjectAction({ kind: "create_milestone", name: "v2.0", targetAt: null }, gctx),
+    ).toMatchObject({ kind: "create_milestone", targetAt: null });
+    // Omitted is fine (no `targetAt` field)
+    expect(validateProjectAction({ kind: "create_milestone", name: "v2.0" }, gctx)).toMatchObject({
+      kind: "create_milestone",
+      name: "v2.0",
+    });
+    // A non-number targetAt is a hard reject (misparse, not a silent coerce).
+    expect(
+      validateProjectAction({ kind: "create_milestone", name: "v2.0", targetAt: "2026-06-01" }, gctx),
+    ).toBeNull();
+  });
+
+  it("set_feature_milestone links/unlinks; unknown ids refuse", () => {
+    expect(
+      validateProjectAction({ kind: "set_feature_milestone", featureId: "f-onb", milestoneId: "m-v1" }, gctx),
+    ).toMatchObject({ kind: "set_feature_milestone", featureId: "f-onb", milestoneId: "m-v1" });
+    expect(
+      validateProjectAction({ kind: "set_feature_milestone", featureId: "f-onb", milestoneId: null }, gctx),
+    ).toMatchObject({ kind: "set_feature_milestone", featureId: "f-onb", milestoneId: null });
+    expect(
+      validateProjectAction({ kind: "set_feature_milestone", featureId: "f-other", milestoneId: "m-v1" }, gctx),
+    ).toBeNull();
+  });
+
+  it("set_task_milestone links/unlinks; unknown ids refuse", () => {
+    expect(
+      validateProjectAction({ kind: "set_task_milestone", taskId: "t-1", milestoneId: "m-v1" }, gctx),
+    ).toMatchObject({ kind: "set_task_milestone", taskId: "t-1", milestoneId: "m-v1" });
+    expect(
+      validateProjectAction({ kind: "set_task_milestone", taskId: "t-1", milestoneId: null }, gctx),
+    ).toMatchObject({ kind: "set_task_milestone", taskId: "t-1", milestoneId: null });
+    expect(
+      validateProjectAction({ kind: "set_task_milestone", taskId: "t-1", milestoneId: "m-other" }, gctx),
+    ).toBeNull();
+  });
+
+  it("mark_milestone_shipped needs a known milestoneId", () => {
+    expect(validateProjectAction({ kind: "mark_milestone_shipped", milestoneId: "m-v1" }, gctx)).toMatchObject({
+      kind: "mark_milestone_shipped",
+      milestoneId: "m-v1",
+    });
+    expect(
+      validateProjectAction({ kind: "mark_milestone_shipped", milestoneId: "m-other" }, gctx),
+    ).toBeNull();
+  });
+
+  it("summary line describes the action for the confirm chip", () => {
+    const a = validateProjectAction({ kind: "set_task_feature", taskId: "t-1", featureId: "f-onb" }, gctx);
+    expect(a?.summary).toMatch(/Onboarding/);
+    expect(a?.summary).toMatch(/signup form/);
+    const b = validateProjectAction({ kind: "mark_milestone_shipped", milestoneId: "m-v1" }, gctx);
+    expect(b?.summary).toMatch(/v1\.0/);
+    expect(b?.summary).toMatch(/shipped/i);
   });
 });

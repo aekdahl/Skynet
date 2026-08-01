@@ -37,7 +37,11 @@ export function StewardDock({
   focusProjectName: string | null;
   onClose: () => void;
 }) {
-  const { projects, createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject } = useStore();
+  const {
+    projects,
+    createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject,
+    createFeature, updateFeature, createMilestone, updateMilestone,
+  } = useStore();
   const [msgs, setMsgs] = useState<Msg[]>(thread);
   const [input, setInput] = useState(draftCache);
   const [busy, setBusy] = useState(false);
@@ -74,6 +78,20 @@ export function StewardDock({
         if (a.plannedStartAt !== undefined) patch.plannedStartAt = a.plannedStartAt;
         return updateTask(projectId, a.taskId!, patch);
       }
+      case "create_feature":
+        return createFeature(projectId, a.name!, a.description, a.milestoneId ?? undefined);
+      case "set_task_feature":
+        return updateTask(projectId, a.taskId!, { featureId: a.featureId ?? null });
+      case "archive_feature":
+        return updateFeature(a.featureId!, { archived: true });
+      case "create_milestone":
+        return createMilestone(projectId, a.name!, a.description, a.targetAt ?? undefined);
+      case "set_feature_milestone":
+        return updateFeature(a.featureId!, { milestoneId: a.milestoneId ?? null });
+      case "set_task_milestone":
+        return updateTask(projectId, a.taskId!, { milestoneId: a.milestoneId ?? null });
+      case "mark_milestone_shipped":
+        return updateMilestone(a.milestoneId!, { status: "shipped" });
     }
   };
 

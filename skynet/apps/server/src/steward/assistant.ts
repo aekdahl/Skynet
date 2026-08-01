@@ -15,7 +15,7 @@
 // Either way the answer stays grounded — the model is told never to invent repo
 // content or project state.
 
-import type { HitlItem, Project, Task, TaskRun } from "@skynet/shared";
+import type { Feature, HitlItem, Milestone, Project, Task, TaskRun } from "@skynet/shared";
 import { ProjectStatus, TaskState } from "@skynet/shared";
 import {
   oneShotRepoAssistant,
@@ -58,12 +58,24 @@ const SYSTEM =
   '  {"kind":"set_autonomy","autonomy":true|false}\n' +
   '  {"kind":"set_status","status":"active|paused|done"}\n' +
   '  {"kind":"set_schedule","taskId":"<id>","estimatedDurationMs":<ms or null>,"plannedStartAt":<epoch ms or null>}\n' +
+  '  {"kind":"create_feature","name":"<title>","description":"<optional>","milestoneId":"<optional id>"}\n' +
+  '  {"kind":"set_task_feature","taskId":"<id>","featureId":"<id or null to unlink>"}\n' +
+  '  {"kind":"archive_feature","featureId":"<id>"}\n' +
+  '  {"kind":"create_milestone","name":"<title>","description":"<optional>","targetAt":<epoch ms or null>}\n' +
+  '  {"kind":"set_feature_milestone","featureId":"<id>","milestoneId":"<id or null>"}\n' +
+  '  {"kind":"set_task_milestone","taskId":"<id>","milestoneId":"<id or null>"}\n' +
+  '  {"kind":"mark_milestone_shipped","milestoneId":"<id>"}\n' +
   "Notes on set_schedule: either or both fields may be present. `estimatedDurationMs` = how long you think the task takes; " +
   "`plannedStartAt` = when it should start (epoch ms). Pass `null` for a field to clear it (e.g. unschedule). " +
   "For durations, prefer minutes-to-milliseconds math (30m = 1_800_000).\n" +
   "Notes on archive_task vs remove_task: PREFER archive_task when the operator says 'archive', 'hide', 'shelve', 'set aside', " +
   "or wants the task out of the way but recoverable (soft-hide — stays in the store, hidden from the board). " +
-  "Only use remove_task for an unambiguous 'delete' / 'remove for good' — that's a hard delete.";
+  "Only use remove_task for an unambiguous 'delete' / 'remove for good' — that's a hard delete.\n" +
+  "Grouping: features are named capabilities (see FEATURES list below, `[fid]`); milestones are planned releases (see MILESTONES, `[mid]`, with target dates). " +
+  "Use the ids from PROJECT STATUS — reject the action rather than guess if the referenced feature/milestone isn't listed. " +
+  "set_task_feature / set_feature_milestone / set_task_milestone accept `null` for milestoneId/featureId to clear the linkage. " +
+  "create_milestone's `targetAt` is epoch ms (Date.parse('2026-06-01') style) or null for no committed date. " +
+  "mark_milestone_shipped is a shortcut for setting status='shipped' — use it when the operator says 'we shipped v1' or similar.";
 
 /**
  * Prefetch a bounded snapshot of a project's repo — the top-level file list plus
@@ -114,7 +126,15 @@ export type ProjectActionKind =
   | "set_goal"
   | "set_autonomy"
   | "set_status"
-  | "set_schedule";
+  | "set_schedule"
+  // Grouping — see contracts.Feature / contracts.Milestone
+  | "create_feature"
+  | "set_task_feature"
+  | "archive_feature"
+  | "create_milestone"
+  | "set_feature_milestone"
+  | "set_task_milestone"
+  | "mark_milestone_shipped";
 
 export interface AssistantAction {
   kind: ProjectActionKind;
@@ -132,12 +152,18 @@ export interface AssistantAction {
   // (so an operator can undo a scheduled start or drop an estimate).
   estimatedDurationMs?: number | null;
   plannedStartAt?: number | null;
+  // Grouping. `null` clears the linkage on set_* actions.
+  featureId?: string | null;
+  milestoneId?: string | null;
+  targetAt?: number | null;
 }
 
 /** The grounding the action validator resolves ids against (this project only). */
 export interface ProjectActionContext {
   project: { id: string; name: string };
   tasks: { id: string; text: string; state: Task["state"] }[];
+  features: { id: string; name: string }[];
+  milestones: { id: string; name: string }[];
 }
 
 const clip = (s: string): string => (s.length > 60 ? s.slice(0, 57) + "…" : s);
@@ -156,6 +182,8 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
   const kind = typeof o.kind === "string" ? o.kind : "";
   const str = (v: unknown): string => (typeof v === "string" && v.trim() ? v.trim() : "");
   const task = (id: unknown) => ctx.tasks.find((t) => t.id === id);
+  const feature = (id: unknown) => ctx.features.find((f) => f.id === id);
+  const milestone = (id: unknown) => ctx.milestones.find((m) => m.id === id);
 
   switch (kind) {
     case "add_task": {
@@ -258,6 +286,105 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
         summary: `Schedule “${clip(t.text)}” — ${parts.join(", ") || "no change"}`,
       };
     }
+    case "create_feature": {
+      const name = str(o.name);
+      if (!name) return null;
+      const description = str(o.description);
+      // Optional milestoneId — if supplied, must resolve to a milestone in the
+      // same project (which the ctx already scopes for us). An unresolvable id
+      // rejects the whole action rather than silently dropping the link.
+      let milestoneId: string | undefined;
+      if ("milestoneId" in o && o.milestoneId != null) {
+        const m = milestone(o.milestoneId);
+        if (!m) return null;
+        milestoneId = m.id;
+      }
+      return {
+        kind,
+        name,
+        ...(description ? { description } : {}),
+        ...(milestoneId ? { milestoneId } : {}),
+        summary: `Create feature: “${clip(name)}”${milestoneId ? ` (under milestone “${clip(milestone(milestoneId)!.name)}”)` : ""}`,
+      };
+    }
+    case "set_task_feature": {
+      const t = task(o.taskId);
+      if (!t) return null;
+      // Explicit null clears the link; a string must resolve to a listed feature.
+      if (o.featureId === null) {
+        return { kind, taskId: t.id, featureId: null, summary: `Unlink “${clip(t.text)}” from its feature` };
+      }
+      const f = feature(o.featureId);
+      if (!f) return null;
+      return {
+        kind,
+        taskId: t.id,
+        featureId: f.id,
+        summary: `Move “${clip(t.text)}” into feature “${clip(f.name)}”`,
+      };
+    }
+    case "archive_feature": {
+      const f = feature(o.featureId);
+      if (!f) return null;
+      return { kind, featureId: f.id, summary: `Archive feature “${clip(f.name)}” (hide, recoverable)` };
+    }
+    case "create_milestone": {
+      const name = str(o.name);
+      if (!name) return null;
+      const description = str(o.description);
+      let targetAt: number | null | undefined;
+      if ("targetAt" in o) {
+        if (o.targetAt === null) targetAt = null;
+        else if (typeof o.targetAt === "number" && Number.isFinite(o.targetAt)) targetAt = Math.round(o.targetAt);
+        else return null;
+      }
+      const when =
+        targetAt == null
+          ? ""
+          : ` (target ${new Date(targetAt).toISOString().slice(0, 10)})`;
+      return {
+        kind,
+        name,
+        ...(description ? { description } : {}),
+        ...(targetAt !== undefined ? { targetAt } : {}),
+        summary: `Create milestone: “${clip(name)}”${when}`,
+      };
+    }
+    case "set_feature_milestone": {
+      const f = feature(o.featureId);
+      if (!f) return null;
+      if (o.milestoneId === null) {
+        return { kind, featureId: f.id, milestoneId: null, summary: `Unlink feature “${clip(f.name)}” from its milestone` };
+      }
+      const m = milestone(o.milestoneId);
+      if (!m) return null;
+      return {
+        kind,
+        featureId: f.id,
+        milestoneId: m.id,
+        summary: `Attach feature “${clip(f.name)}” to milestone “${clip(m.name)}”`,
+      };
+    }
+    case "set_task_milestone": {
+      const t = task(o.taskId);
+      if (!t) return null;
+      if (o.milestoneId === null) {
+        return { kind, taskId: t.id, milestoneId: null, summary: `Unlink “${clip(t.text)}” from its milestone` };
+      }
+      const m = milestone(o.milestoneId);
+      if (!m) return null;
+      return {
+        kind,
+        taskId: t.id,
+        milestoneId: m.id,
+        summary: `Attach “${clip(t.text)}” to milestone “${clip(m.name)}”`,
+      };
+    }
+    case "mark_milestone_shipped": {
+      const m = milestone(o.milestoneId);
+      if (!m) return null;
+      return { kind, milestoneId: m.id, summary: `Mark milestone “${clip(m.name)}” as shipped` };
+    }
     default:
       return null;
   }
@@ -311,7 +438,13 @@ export function splitProposedAction(
   return { reply: trimmed, action: null };
 }
 
-function statusContext(project: Project, tasks: Task[], runs: TaskRun[]): string {
+function statusContext(
+  project: Project,
+  tasks: Task[],
+  runs: TaskRun[],
+  features: Feature[] = [],
+  milestones: Milestone[] = [],
+): string {
   const lines: string[] = [
     `PROJECT: ${project.name}`,
     `GOAL: ${project.goal?.trim() || "(none set yet)"}`,
@@ -337,6 +470,29 @@ function statusContext(project: Project, tasks: Task[], runs: TaskRun[]): string
         .map((t) => `[${t.id}] ${t.text} (${t.state})`)
         .join(" · ")}`,
     );
+  }
+  // Grouping: features (task grouping) + milestones (roadmap). Only non-archived
+  // rows so Steward doesn't reference deleted-in-spirit entries. Task-count per
+  // feature comes from the tasks passed in; milestone dates render as ISO YYYY-MM-DD.
+  const liveFeatures = features.filter((f) => !f.archived);
+  if (liveFeatures.length) {
+    const tasksByFeat = new Map<string, number>();
+    for (const t of tasks) if (t.featureId) tasksByFeat.set(t.featureId, (tasksByFeat.get(t.featureId) ?? 0) + 1);
+    lines.push("FEATURES:");
+    for (const f of liveFeatures.slice(0, 30)) {
+      const count = tasksByFeat.get(f.id) ?? 0;
+      const ms = f.milestoneId ? milestones.find((m) => m.id === f.milestoneId) : undefined;
+      lines.push(`  [${f.id}] ${f.name}${f.status !== "active" ? ` (${f.status})` : ""} · ${count} task${count === 1 ? "" : "s"}${ms ? ` · milestone [${ms.id}] ${ms.name}` : ""}`);
+    }
+  }
+  const liveMilestones = milestones.filter((m) => !m.archived);
+  if (liveMilestones.length) {
+    lines.push("MILESTONES:");
+    for (const m of liveMilestones.slice(0, 30)) {
+      const when = m.targetAt != null ? ` · target ${new Date(m.targetAt).toISOString().slice(0, 10)}` : "";
+      const status = m.status !== "planned" ? ` (${m.status})` : "";
+      lines.push(`  [${m.id}] ${m.name}${status}${when}`);
+    }
   }
   const active = runs.filter((r) => r.status !== "done" && !r.archived);
   if (active.length) {
@@ -382,19 +538,27 @@ export async function prepareStewardCall(
   const { workspaceId, project, question } = opts;
   const history = opts.history ?? [];
 
-  const [allTasks, allRuns] = await Promise.all([
+  const [allTasks, allRuns, allFeatures, allMilestones] = await Promise.all([
     store.listTasks(workspaceId),
     store.listRuns(workspaceId),
+    store.listFeatures(workspaceId),
+    store.listMilestones(workspaceId),
   ]);
   const projectTasks = allTasks.filter((t) => t.projectId === project.id);
+  const projectFeatures = allFeatures.filter((f) => f.projectId === project.id);
+  const projectMilestones = allMilestones.filter((m) => m.projectId === project.id);
   const context = statusContext(
     project,
     projectTasks,
     allRuns.filter((r) => r.projectId === project.id),
+    projectFeatures,
+    projectMilestones,
   );
   const actionCtx: ProjectActionContext = {
     project: { id: project.id, name: project.name },
     tasks: projectTasks.map((t) => ({ id: t.id, text: t.text, state: t.state })),
+    features: projectFeatures.filter((f) => !f.archived).map((f) => ({ id: f.id, name: f.name })),
+    milestones: projectMilestones.filter((m) => !m.archived).map((m) => ({ id: m.id, name: m.name })),
   };
   const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
 
