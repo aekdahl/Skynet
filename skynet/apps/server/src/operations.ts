@@ -463,7 +463,7 @@ export class Operations {
       runId: null,
       autoPick: false,
       assessment: null,
-      reviewFlaggedReason: null,
+      reviewVerdict: null,
       assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,
       archived: false,
@@ -631,7 +631,7 @@ export class Operations {
       ...task,
       state: to,
       ...(abandonsRun ? { runId: null } : {}),
-      reviewFlaggedReason: null,
+      reviewVerdict: null,
     });
 
     // Sync the linked TaskRun's status to match — the "review → done" path with
@@ -661,7 +661,7 @@ export class Operations {
     const updated = await this.hub.upsertTask({
       ...task,
       state: "done",
-      reviewFlaggedReason: null,
+      reviewVerdict: null,
     });
     if (updated.runId) {
       await this.hub.runStatus(updated.runId, "done").catch(() => undefined);

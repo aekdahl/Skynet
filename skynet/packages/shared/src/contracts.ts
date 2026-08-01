@@ -228,9 +228,20 @@ export const Task = z.object({
   // Short agent-written assessment produced during autonomous triage
   // (backlog → triage): clarity / rough effort / risks.
   assessment: z.string().nullable().default(null),
-  // Set when an autonomous review couldn't confidently approve and flagged the
-  // task for a human (the task stays in `review`).
-  reviewFlaggedReason: z.string().nullable().default(null),
+  // Auto-review verdict left by an agent on a review-state task. ALWAYS
+  // recorded once an agent has looked at the run — approve OR flag — so a
+  // human can audit what the reviewer thought regardless of whether the
+  // merge went through. When `decision === "flag"`, the task stays in
+  // `review` and the reason is the "flagged for you" note.
+  reviewVerdict: z
+    .object({
+      decision: z.enum(["approve", "flag"]),
+      reason: z.string(),
+      by: z.string(), // reviewer agent name (or id, as a fallback)
+      at: Timestamp,
+    })
+    .nullable()
+    .default(null),
   // Agent eligibility — who may take this task (see TaskAssignment). Defaults to
   // `unassigned`; a task must carry `any`/`agents` before it can leave `backlog`.
   assignment: TaskAssignment.default({ mode: "unassigned", agentIds: [] }),
