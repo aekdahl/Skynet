@@ -36,7 +36,40 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
     void load();
   }, [load]);
 
-  const configured = new Map((metas ?? []).map((m) => [m.provider, m]));
+  // The DEFAULT credential per provider (id === provider) drives the main card;
+  // any extra named credentials (a second key/account) are listed below it.
+  const configured = new Map((metas ?? []).filter((m) => m.isDefault).map((m) => [m.provider, m]));
+  const extrasFor = (providerId: string) => (metas ?? []).filter((m) => m.provider === providerId && !m.isDefault);
+
+  // Rotate / remove a NAMED credential by its id. Unlike the provider default,
+  // these never touch provider availability (the default key still stands).
+  const rotateCredential = async (id: string) => {
+    const key = (drafts[id] ?? "").trim();
+    if (!key) return;
+    setBusy(id);
+    setErr(null);
+    try {
+      await api.setSecret(id, key);
+      setDrafts((d) => ({ ...d, [id]: "" }));
+      await load();
+    } catch (e) {
+      setErr(`Couldn't rotate the key: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const removeCredential = async (id: string) => {
+    setBusy(id);
+    setErr(null);
+    try {
+      await api.deleteSecret(id);
+      await load();
+    } catch (e) {
+      setErr(`Couldn't remove the key: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const save = async (id: string) => {
     const key = (drafts[id] ?? "").trim();
@@ -241,6 +274,35 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                   )}
                 </div>
               )}
+
+              {/* Extra named credentials — a second key for this provider (e.g.
+                  another account). Each rotates / removes independently; agents
+                  pick one in the Configure-agent form. */}
+              {extrasFor(p.id).map((c) => (
+                <div className="settings-cred" key={c.id}>
+                  <span className="settings-cred-name">
+                    {c.name || "key"} <span className="mono settings-cred-last4">····{c.last4}</span>
+                  </span>
+                  <div className="settings-key">
+                    <input
+                      type="password"
+                      className="settings-input"
+                      autoComplete="off"
+                      placeholder="Rotate this key…"
+                      value={drafts[c.id] ?? ""}
+                      onChange={(e) => setDrafts((d) => ({ ...d, [c.id]: e.target.value }))}
+                      onKeyDown={(e) => e.key === "Enter" && rotateCredential(c.id)}
+                    />
+                    <button className="btn btn-primary" disabled={busy === c.id || !(drafts[c.id] ?? "").trim()} onClick={() => rotateCredential(c.id)}>
+                      Rotate
+                    </button>
+                    <button className="btn btn-ghost" disabled={busy === c.id} onClick={() => removeCredential(c.id)}>
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ))}
+              <AddCredentialForm provider={p.id} providerName={p.name} onAdded={load} />
             </div>
           );
         })}
@@ -273,6 +335,71 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
         </div>
       )}
     </section>
+  );
+}
+
+// "Add another key" for a provider — a named credential (a second account/key).
+// Collapsed to a link until used, so the provider card stays tidy when there's
+// just the one key. On success it re-fetches the secret list (onAdded).
+function AddCredentialForm({ provider, providerName, onAdded }: { provider: string; providerName: string; onAdded: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const add = async () => {
+    if (!name.trim() || !key.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.createCredential(provider, name.trim(), key.trim());
+      setName("");
+      setKey("");
+      setOpen(false);
+      await onAdded();
+    } catch (e) {
+      setErr(e instanceof api.ApiError && e.status === 501 ? "The secret store is disabled — no master key configured." : `Couldn't add the key: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button className="btn btn-ghost btn-sm settings-cred-add" onClick={() => setOpen(true)}>
+        + Add another {providerName} key
+      </button>
+    );
+  }
+  return (
+    <div className="settings-cred settings-cred-new">
+      <input
+        className="settings-input settings-cred-nameinput"
+        placeholder="Name — e.g. personal, work-org"
+        maxLength={60}
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+      />
+      <div className="settings-key">
+        <input
+          type="password"
+          className="settings-input"
+          autoComplete="off"
+          placeholder="API key…"
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+        />
+        <button className="btn btn-primary" disabled={busy || !name.trim() || !key.trim()} onClick={add}>
+          Add key
+        </button>
+        <button className="btn btn-ghost" disabled={busy} onClick={() => { setOpen(false); setName(""); setKey(""); setErr(null); }}>
+          Cancel
+        </button>
+      </div>
+      {err && <div className="settings-warn">{err}</div>}
+    </div>
   );
 }
 

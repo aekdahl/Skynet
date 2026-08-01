@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { ProviderId, ProviderInfo, Agent } from "@skynet/shared";
+import type { ProviderId, ProviderInfo, Agent, SecretMeta } from "@skynet/shared";
 import { useStore } from "../lib/store";
+import * as api from "../lib/client";
 import { providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy } from "../lib/derive";
 
 export function ConfigForm({
@@ -9,7 +10,7 @@ export function ConfigForm({
   onCancel,
 }: {
   initial?: Agent;
-  onSave: (r: { name: string; provider: ProviderId; model: string }) => void;
+  onSave: (r: { name: string; provider: ProviderId; model: string; credentialId?: string }) => void;
   onCancel: () => void;
 }) {
   const { providers } = useStore();
@@ -31,6 +32,17 @@ export function ConfigForm({
     initial ? !models.includes(initial.model) : models.length === 0,
   );
 
+  // Which credential a NEW agent authenticates with. Only offered at create time
+  // (an existing agent's credential is fixed); undefined → the provider's default
+  // key. We fetch the credential list so a provider with a second ("another
+  // account") key can be picked here.
+  const [secrets, setSecrets] = useState<SecretMeta[]>([]);
+  const [credentialId, setCredentialId] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    api.fetchSecrets().then((r) => setSecrets(r.secrets)).catch(() => setSecrets([]));
+  }, []);
+  const extraCreds = secrets.filter((s) => s.provider === provider && !s.isDefault);
+
   // Reset the model to the new provider's default when the provider CHANGES (but
   // never on first mount — that would clobber an existing agent's model).
   const mounted = useRef(false);
@@ -41,6 +53,7 @@ export function ConfigForm({
     }
     setModel(models[0] ?? "");
     setCustom(models.length === 0);
+    setCredentialId(undefined); // a new provider → back to its default key
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
 
@@ -144,11 +157,30 @@ export function ConfigForm({
           </p>
         )}
       </div>
+      {/* Credential picker — only when creating and the provider has more than
+          its default key (a second account/key added in Settings). */}
+      {!initial && extraCreds.length > 0 && (
+        <div className="cfg-row">
+          <label className="cfg-label">Key</label>
+          <select
+            className="qx-input cfg-cred-select"
+            value={credentialId ?? ""}
+            onChange={(e) => setCredentialId(e.target.value || undefined)}
+          >
+            <option value="">Default {selected.name} key</option>
+            {extraCreds.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name || "key"} · ····{c.last4}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <div className="qx-row">
         <button
           className="btn btn-primary"
           disabled={!model.trim()}
-          onClick={() => onSave({ name: name.trim(), provider, model: model.trim() })}
+          onClick={() => onSave({ name: name.trim(), provider, model: model.trim(), credentialId })}
         >
           {initial ? "Save changes" : "Add to fleet"}
         </button>
@@ -203,7 +235,7 @@ export function FleetView({
           <div className="panel-head">NEW AGENT</div>
           <ConfigForm
             onSave={(r) => {
-              createAgent(r.provider, r.model, r.name || undefined);
+              createAgent(r.provider, r.model, r.name || undefined, r.credentialId);
               setAdding(false);
             }}
             onCancel={() => setAdding(false)}
