@@ -74,6 +74,11 @@ export function StewardDock({
         if (a.plannedStartAt !== undefined) patch.plannedStartAt = a.plannedStartAt;
         return updateTask(projectId, a.taskId!, patch);
       }
+      case "set_assignment":
+        // Agent eligibility. `agents` mode carries the pool; any/unassigned clear it.
+        return updateTask(projectId, a.taskId!, {
+          assignment: { mode: a.mode ?? "unassigned", agentIds: a.mode === "agents" ? (a.agentIds ?? []) : [] },
+        });
     }
   };
 

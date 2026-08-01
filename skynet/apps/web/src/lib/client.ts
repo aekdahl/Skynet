@@ -385,7 +385,8 @@ export interface AssistantAction {
     | "set_goal"
     | "set_autonomy"
     | "set_status"
-    | "set_schedule";
+    | "set_schedule"
+    | "set_assignment";
   summary: string;
   taskId?: string;
   text?: string;
@@ -398,6 +399,10 @@ export interface AssistantAction {
   status?: string;
   estimatedDurationMs?: number | null;
   plannedStartAt?: number | null;
+  // Agent eligibility (set_assignment): `mode` = who may take the task, `agentIds`
+  // = the pool for `agents` mode (empty otherwise).
+  mode?: "any" | "agents" | "unassigned";
+  agentIds?: string[];
 }
 // Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
 // (full project assistant + actions); omit it for a workspace-wide answer. The
