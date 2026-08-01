@@ -70,6 +70,13 @@ const ALLOW = new Set<string>([
   // Steward action executor for reorder_task — covered by the validator +
   // executor tests in project-assistant.test.ts; no journey shape uses it.
   "reorderTask",
+  // Feature + milestone CRUD (task grouping + roadmap) — exercised by the
+  // features-and-roadmap tests (features-roadmap.test.ts) which drive the
+  // full Operations path with real store + hub. No fleet journey shape uses
+  // them yet (there's no run started by "create a feature"), so they're
+  // allowlisted here rather than dropped into a Simulation journey.
+  "createFeature", "updateFeature", "deleteFeature",
+  "createMilestone", "updateMilestone", "deleteMilestone",
 ]);
 
 describe("client API coverage", () => {

@@ -19,6 +19,7 @@ import { Markdown } from "../components/markdown";
 import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
+import { FeaturesLens, RoadmapLens } from "./project-grouping";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -159,11 +160,22 @@ function TaskCard({
     queue,
     fleet,
     providers,
+    features,
+    milestones,
     updateTask,
     deleteTask,
     forceTaskDone,
     archiveTask,
   } = useStore();
+  // Features + milestones available to this task (same project, not archived).
+  const projFeatures = features.filter((f) => f.projectId === task.projectId && !f.archived);
+  const projMilestones = milestones.filter((m) => m.projectId === task.projectId && !m.archived);
+  const feature = task.featureId ? projFeatures.find((f) => f.id === task.featureId) : undefined;
+  // Effective milestone: the task's own, or (fallback) the feature's roll-up.
+  const effectiveMilestoneId = task.milestoneId ?? feature?.milestoneId ?? null;
+  const milestone = effectiveMilestoneId
+    ? projMilestones.find((m) => m.id === effectiveMilestoneId)
+    : undefined;
   const [editing, setEditing] = useState(false);
   const [detail, setDetail] = useState(false); // full-detail modal for a card with no run
   const [draft, setDraft] = useState(task.text);
@@ -185,6 +197,13 @@ function TaskCard({
   const runner = run?.agentId ? fleet.find((f) => f.id === run.agentId) : undefined;
   const workedBy = runner?.name ?? (run?.agentId ? `${run.provider} · ${run.model}` : undefined);
   const workedByPinfo = workedBy ? providers.find((p) => p.id === (runner?.provider ?? run?.provider)) : undefined;
+  // An agent has actively taken this task once it's `ongoing` (the invariant:
+  // an ongoing task always carries a live run). Lock the card so no one can
+  // move, edit, or reassign it out from under the running agent — only the
+  // run's emergency controls remain (open the card → pause/stop/resume) plus
+  // the Force-done escape hatch. `review`/`done` are human-decision states and
+  // stay interactive.
+  const locked = s === "ongoing";
 
   if (editing) {
     return (
@@ -231,12 +250,18 @@ function TaskCard({
     <>
     {dnd?.dropBeforeId === task.id && <div className="kb-drop-line" aria-hidden="true" />}
     <div
-      className={"kb-card kb-card-" + s + (dragging ? " kb-card-dragging" : "")}
+      className={"kb-card kb-card-" + s + (dragging ? " kb-card-dragging" : "") + (locked ? " kb-card-locked" : "")}
       role="button"
       tabIndex={0}
       data-card-id={task.id}
-      draggable
+      draggable={!locked}
       onDragStart={(e) => {
+        // A locked (agent-owned) card never drags — no one moves it off the
+        // running agent. draggable=false already blocks it; guard here too.
+        if (locked) {
+          e.preventDefault();
+          return;
+        }
         // Don't hijack drags that begin on an inner control (select, buttons,
         // inputs) — those stay clickable; only the card body starts a drag.
         if ((e.target as HTMLElement).closest("input,select,textarea,button,label,a")) {
@@ -254,6 +279,15 @@ function TaskCard({
       <div className="kb-card-top">
         {run && <StatusDot status={run.status} />}
         <span className="kb-task" title={task.description ?? undefined}>{task.text}</span>
+        {locked && (
+          <span
+            className="kb-lock"
+            title="An agent is working on this — the card is locked, so it can't be moved or edited. Open it for emergency controls (pause · stop)."
+            aria-label="Locked — an agent is working on this task"
+          >
+            🔒
+          </span>
+        )}
         {(s === "backlog" || s === "triage" || s === "todo") && (
           <span className="kb-card-tools" onClick={stop}>
             <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>✎</button>
@@ -283,8 +317,12 @@ function TaskCard({
       )}
 
       {s === "triage" && task.assessment && <div className="kb-assessment">{task.assessment}</div>}
-      {s === "review" && task.reviewFlaggedReason && (
-        <div className="kb-flag">⚠ flagged for you — {task.reviewFlaggedReason}</div>
+      {s === "review" && task.reviewVerdict && (
+        task.reviewVerdict.decision === "flag" ? (
+          <div className="kb-flag">⚠ flagged for you — {task.reviewVerdict.reason}</div>
+        ) : (
+          <div className="kb-review-ok">✓ reviewer approved — awaiting you</div>
+        )
       )}
 
       {(task.estimatedDurationMs != null || task.plannedStartAt != null) && (
@@ -295,6 +333,24 @@ function TaskCard({
           {task.plannedStartAt != null && (
             <span className="kb-sched-chip" title={new Date(task.plannedStartAt).toLocaleString()}>
               📅 {fmtStartChip(task.plannedStartAt)}
+            </span>
+          )}
+        </div>
+      )}
+
+      {(feature || milestone) && (
+        <div className="kb-tags" onClick={stop}>
+          {feature && (
+            <span className="kb-feat-chip" title={`Feature — ${feature.description ?? feature.name}`}>
+              ⊞ {feature.name}
+            </span>
+          )}
+          {milestone && (
+            <span
+              className="kb-ms-chip"
+              title={milestone.targetAt ? `Milestone — target ${new Date(milestone.targetAt).toLocaleDateString()}` : "Milestone"}
+            >
+              ◉ {milestone.name}
             </span>
           )}
         </div>
@@ -388,12 +444,59 @@ function TaskCard({
                 <p className="kb-detail-assess">{task.assessment}</p>
               </div>
             )}
-            {task.reviewFlaggedReason && (
+            {task.reviewVerdict && (
               <div className="kb-detail-section">
-                <div className="kb-detail-label mono">FLAGGED FOR REVIEW</div>
-                <p className="kb-detail-assess">⚠ {task.reviewFlaggedReason}</p>
+                <div className="kb-detail-label mono">
+                  REVIEW ·{" "}
+                  <span className={task.reviewVerdict.decision === "flag" ? "kb-verdict-flag" : "kb-verdict-approve"}>
+                    {task.reviewVerdict.decision === "flag" ? "⚠ FLAGGED" : "✓ APPROVED"}
+                  </span>
+                </div>
+                <p className="kb-detail-assess">{task.reviewVerdict.reason}</p>
+                <div className="kb-detail-meta mono">
+                  by {task.reviewVerdict.by} · {new Date(task.reviewVerdict.at).toLocaleString()}
+                </div>
               </div>
             )}
+            <div className="kb-detail-section kb-detail-grouping">
+              <div className="kb-detail-label mono">GROUPING</div>
+              <label className="kb-detail-row">
+                <span className="kb-detail-row-lbl">Feature</span>
+                <select
+                  className="kb-detail-select"
+                  value={task.featureId ?? ""}
+                  onChange={(e) => updateTask(pid, task.id, { featureId: e.target.value || null })}
+                >
+                  <option value="">— none —</option>
+                  {projFeatures.map((f) => (
+                    <option key={f.id} value={f.id}>{f.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="kb-detail-row">
+                <span className="kb-detail-row-lbl">Milestone</span>
+                <select
+                  className="kb-detail-select"
+                  value={task.milestoneId ?? ""}
+                  onChange={(e) => updateTask(pid, task.id, { milestoneId: e.target.value || null })}
+                  title={
+                    feature?.milestoneId && !task.milestoneId
+                      ? `Inherits from feature — ${projMilestones.find((m) => m.id === feature.milestoneId)?.name ?? ""}`
+                      : undefined
+                  }
+                >
+                  <option value="">
+                    {feature?.milestoneId ? "— inherit from feature —" : "— none —"}
+                  </option>
+                  {projMilestones.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                      {m.targetAt ? ` · ${new Date(m.targetAt).toLocaleDateString()}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </div>
         </div>
       )}
@@ -549,18 +652,28 @@ export function ProjectView({
     runs,
     queue,
     tasks,
+    features,
+    milestones,
     fleet,
     updateProject,
     removeApprovalRule,
     deleteProject,
     cloneProjectRepo,
     createTask,
+    createFeature,
+    updateFeature,
+    deleteFeature,
+    createMilestone,
+    updateMilestone,
+    deleteMilestone,
     archiveAgent,
     archiveTask,
     transitionTask,
     assignTask,
     reorderTask,
   } = useStore();
+  const projFeatures = features.filter((f) => f.projectId === project.id && !f.archived);
+  const projMilestones = milestones.filter((m) => m.projectId === project.id && !m.archived);
   const noFleet = fleet.length === 0;
   // Board drag state: the card being dragged + (for backlog reorder) the card it
   // would drop before. Held here so lanes highlight + cards show the drop line.
@@ -595,10 +708,10 @@ export function ProjectView({
   // scoped to just this project; Archived shows soft-hidden tasks + restore).
   // Persisted per-project in sessionStorage so switching back restores the
   // last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "timeline" | "archived">(() => {
+  const [lens, setLens] = useState<"kanban" | "features" | "roadmap" | "timeline" | "archived">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "timeline" || v === "archived" ? v : "kanban";
+    return v === "timeline" || v === "archived" || v === "features" || v === "roadmap" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -802,13 +915,27 @@ export function ProjectView({
 
       <div className="projview-lens">
         <div className="lens-switch">
-          {(["kanban", "timeline", "archived"] as const).map((id) => (
+          {(["kanban", "features", "roadmap", "timeline", "archived"] as const).map((id) => (
             <button
               key={id}
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : id === "timeline" ? "Timeline" : "Archived"}
+              {id === "kanban"
+                ? "Kanban"
+                : id === "features"
+                ? "Features"
+                : id === "roadmap"
+                ? "Roadmap"
+                : id === "timeline"
+                ? "Timeline"
+                : "Archived"}
+              {id === "features" && projFeatures.length > 0 && (
+                <span className="lens-btn-count">{projFeatures.length}</span>
+              )}
+              {id === "roadmap" && projMilestones.length > 0 && (
+                <span className="lens-btn-count">{projMilestones.length}</span>
+              )}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
@@ -817,7 +944,33 @@ export function ProjectView({
         </div>
       </div>
 
-      {lens === "timeline" ? (
+      {lens === "features" ? (
+        <FeaturesLens
+          project={project}
+          features={projFeatures}
+          milestones={projMilestones}
+          tasks={tasks.filter((t) => t.projectId === project.id && !hidden(t))}
+          runs={runById}
+          onOpenTask={onOpenTask}
+          onCreate={(name, description) => void createFeature(project.id, name, description || undefined)}
+          onUpdate={(fid, patch) => void updateFeature(fid, patch)}
+          onDelete={(fid) => void deleteFeature(fid)}
+        />
+      ) : lens === "roadmap" ? (
+        <RoadmapLens
+          project={project}
+          features={projFeatures}
+          milestones={projMilestones}
+          tasks={tasks.filter((t) => t.projectId === project.id && !hidden(t))}
+          runs={runById}
+          onOpenTask={onOpenTask}
+          onCreate={(name, description, targetAt) =>
+            void createMilestone(project.id, name, description || undefined, targetAt)
+          }
+          onUpdate={(mid, patch) => void updateMilestone(mid, patch)}
+          onDelete={(mid) => void deleteMilestone(mid)}
+        />
+      ) : lens === "timeline" ? (
         <div className="projview-timeline">
           <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
         </div>

@@ -17,6 +17,10 @@ const ctx: ProjectActionContext = {
     { id: "t-1", text: "fix login redirect", state: "review" },
     { id: "t-2", text: "add metrics", state: "backlog" },
   ],
+  agents: [
+    { id: "a-1", name: "Ada" },
+    { id: "a-2", name: "Babbage" },
+  ],
 };
 
 describe("validateProjectAction — whitelist + project-scoped id resolution", () => {
@@ -77,6 +81,30 @@ describe("validateProjectAction — whitelist + project-scoped id resolution", (
     expect(validateProjectAction({ kind: "set_autonomy", autonomy: "off" }, ctx)).toBeNull(); // not a boolean
     expect(validateProjectAction({ kind: "set_status", status: "paused" }, ctx)).toMatchObject({ kind: "set_status", status: "paused" });
     expect(validateProjectAction({ kind: "set_status", status: "frozen" }, ctx)).toBeNull();
+  });
+
+  it("set_assignment — `any` opens the task to any agent (no agentIds)", () => {
+    const a = validateProjectAction({ kind: "set_assignment", taskId: "t-2", mode: "any" }, ctx);
+    expect(a).toMatchObject({ kind: "set_assignment", taskId: "t-2", mode: "any", agentIds: [] });
+    expect(a?.summary).toMatch(/any agent/i);
+  });
+
+  it("set_assignment — `agents` pins only to KNOWN fleet ids", () => {
+    const a = validateProjectAction({ kind: "set_assignment", taskId: "t-1", mode: "agents", agentIds: ["a-1", "a-2"] }, ctx);
+    expect(a).toMatchObject({ kind: "set_assignment", taskId: "t-1", mode: "agents", agentIds: ["a-1", "a-2"] });
+    // Summary shows names, not ids, so the confirm chip is legible.
+    expect(a?.summary).toContain("Ada");
+    expect(a?.summary).toContain("Babbage");
+    // Unknown agents are dropped; if none remain the action is refused (no guessing).
+    expect(validateProjectAction({ kind: "set_assignment", taskId: "t-1", mode: "agents", agentIds: ["a-1", "ghost"] }, ctx)).toMatchObject({ agentIds: ["a-1"] });
+    expect(validateProjectAction({ kind: "set_assignment", taskId: "t-1", mode: "agents", agentIds: ["ghost"] }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "set_assignment", taskId: "t-1", mode: "agents", agentIds: [] }, ctx)).toBeNull();
+  });
+
+  it("set_assignment — `unassigned` clears eligibility, bogus mode / task rejected", () => {
+    expect(validateProjectAction({ kind: "set_assignment", taskId: "t-2", mode: "unassigned" }, ctx)).toMatchObject({ kind: "set_assignment", mode: "unassigned", agentIds: [] });
+    expect(validateProjectAction({ kind: "set_assignment", taskId: "t-2", mode: "everyone" }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "set_assignment", taskId: "ghost", mode: "any" }, ctx)).toBeNull();
   });
 
   it("every validated action carries a human summary for the confirm chip", () => {

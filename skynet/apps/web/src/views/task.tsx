@@ -257,11 +257,7 @@ export function TaskDetail({
       {answer && (
         <div className="detail-result">
           <div className="detail-result-label mono">ANSWER</div>
-          {looksMarkdown(answer) ? (
-            <div className="detail-result-body log-md"><Markdown text={answer} /></div>
-          ) : (
-            <div className="detail-result-body">{answer}</div>
-          )}
+          <div className="detail-result-body log-md"><Markdown text={answer} /></div>
         </div>
       )}
 
@@ -339,11 +335,10 @@ export function TaskDetail({
                   return (
                     <div key={i} className={"log-turn log-turn-" + turn.who}>
                       <span className="log-who mono">{turn.who === "you" ? "you" : agent.name}</span>
-                      {looksMarkdown(turn.text) ? (
-                        <div className="log-turn-text log-md"><Markdown text={turn.text} /></div>
-                      ) : (
-                        <span className="log-turn-text">{turn.text}</span>
-                      )}
+                      {/* A conversation turn is always prose — render its markdown
+                          unconditionally. The old looksMarkdown gate left plainer
+                          replies showing raw markdown syntax instead of formatting. */}
+                      <div className="log-turn-text log-md"><Markdown text={turn.text} /></div>
                     </div>
                   );
                 }
@@ -375,7 +370,12 @@ export function TaskDetail({
               {streaming != null && (
                 <div className="log-turn log-turn-agent">
                   <span className="log-who mono">{agent.name}</span>
-                  <span className="log-turn-text">{streaming}<span className="log-cursor">▌</span></span>
+                  {/* Render the reply as markdown while it streams, so it doesn't
+                      reflow from raw text to formatted when it lands in the log. */}
+                  <div className="log-turn-text log-md">
+                    <Markdown text={streaming} />
+                    <span className="log-cursor">▌</span>
+                  </div>
                 </div>
               )}
               {agent.status === "running" && streaming == null && <div className="log-line log-cursor">▌</div>}

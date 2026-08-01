@@ -9,11 +9,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   ConfigureRunnerRequest,
+  CreateFeatureRequest,
+  CreateMilestoneRequest,
   CreateProjectRequest,
   CreateTaskRequest,
   ProviderId,
   ResolveRequest,
   ChatRequest,
+  UpdateFeatureRequest,
+  UpdateMilestoneRequest,
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
@@ -548,6 +552,62 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.reorderTask(ws(req), req.params.tid, body.data.beforeId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── features (task grouping) ──────────────────────────────────────────
+  app.post<{ Params: { id: string } }>("/api/projects/:id/features", async (req, reply) => {
+    const body = CreateFeatureRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.createFeature(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.patch<{ Params: { fid: string } }>("/api/features/:fid", async (req, reply) => {
+    const body = UpdateFeatureRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateFeature(ws(req), req.params.fid, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.delete<{ Params: { fid: string } }>("/api/features/:fid", async (req, reply) => {
+    try {
+      await ops.deleteFeature(ws(req), req.params.fid);
+      return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── milestones (roadmap) ──────────────────────────────────────────────
+  app.post<{ Params: { id: string } }>("/api/projects/:id/milestones", async (req, reply) => {
+    const body = CreateMilestoneRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.createMilestone(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.patch<{ Params: { mid: string } }>("/api/milestones/:mid", async (req, reply) => {
+    const body = UpdateMilestoneRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateMilestone(ws(req), req.params.mid, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.delete<{ Params: { mid: string } }>("/api/milestones/:mid", async (req, reply) => {
+    try {
+      await ops.deleteMilestone(ws(req), req.params.mid);
+      return { ok: true };
     } catch (err) {
       return fail(reply, err);
     }
