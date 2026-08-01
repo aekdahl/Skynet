@@ -587,6 +587,12 @@ export async function fetchGithubInstallationRepos(installationId: number): Prom
   const raw = await req<{ repos: GithubRepo[] }>("GET", `/api/github/installations/${installationId}/repos`);
   return raw.repos;
 }
+/** The repos the connection can currently bind — fetched live (a PAT connection
+ *  re-lists all of its repos), so the picker isn't limited to a stale snapshot. */
+export async function fetchGithubRepos(): Promise<GithubRepo[]> {
+  const raw = await req<{ repos: GithubRepo[] }>("GET", "/api/github/repos");
+  return raw.repos;
+}
 export async function connectGithub(body: {
   installation: GithubInstallation;
   repos: GithubRepo[];

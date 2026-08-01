@@ -80,6 +80,27 @@ export class GithubService {
     return connection;
   }
 
+  /**
+   * The repos a project can currently bind to — fetched LIVE, not from the
+   * connect-time snapshot. A PAT connection can reach every repo its token sees,
+   * so we re-list them (paginated) and refresh the stored snapshot: a connection
+   * made before the repo list was paginated (or before newer repos existed)
+   * otherwise shows a stale subset. For an App installation the SELECTED set is
+   * authoritative (changing it is a GitHub-side action), so return what's stored.
+   * Falls back to the stored snapshot if the token is unavailable.
+   */
+  async availableRepos(workspaceId: string): Promise<GithubRepo[]> {
+    const conn = await this.store.get(workspaceId);
+    if (!conn?.connected) return [];
+    if (conn.auth !== "pat") return conn.repos;
+    const key = masterKey();
+    const ct = await this.store.getToken(workspaceId);
+    if (!key || !ct) return conn.repos;
+    const repos = (await this.provider.listRepos(open(ct, key))).map((r) => ({ ...r, selected: true }));
+    await this.store.put({ ...conn, repos });
+    return repos;
+  }
+
   /** The git token for a connection: the stored PAT, or a freshly-minted App
    *  installation token. */
   private async resolveToken(conn: GithubConnection): Promise<string> {
