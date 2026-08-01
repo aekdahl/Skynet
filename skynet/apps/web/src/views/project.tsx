@@ -297,8 +297,12 @@ function TaskCard({
       )}
 
       {s === "triage" && task.assessment && <div className="kb-assessment">{task.assessment}</div>}
-      {s === "review" && task.reviewFlaggedReason && (
-        <div className="kb-flag">⚠ flagged for you — {task.reviewFlaggedReason}</div>
+      {s === "review" && task.reviewVerdict && (
+        task.reviewVerdict.decision === "flag" ? (
+          <div className="kb-flag">⚠ flagged for you — {task.reviewVerdict.reason}</div>
+        ) : (
+          <div className="kb-review-ok">✓ reviewer approved — awaiting you</div>
+        )
       )}
 
       {(task.estimatedDurationMs != null || task.plannedStartAt != null) && (
@@ -390,10 +394,18 @@ function TaskCard({
                 <p className="kb-detail-assess">{task.assessment}</p>
               </div>
             )}
-            {task.reviewFlaggedReason && (
+            {task.reviewVerdict && (
               <div className="kb-detail-section">
-                <div className="kb-detail-label mono">FLAGGED FOR REVIEW</div>
-                <p className="kb-detail-assess">⚠ {task.reviewFlaggedReason}</p>
+                <div className="kb-detail-label mono">
+                  REVIEW ·{" "}
+                  <span className={task.reviewVerdict.decision === "flag" ? "kb-verdict-flag" : "kb-verdict-approve"}>
+                    {task.reviewVerdict.decision === "flag" ? "⚠ FLAGGED" : "✓ APPROVED"}
+                  </span>
+                </div>
+                <p className="kb-detail-assess">{task.reviewVerdict.reason}</p>
+                <div className="kb-detail-meta mono">
+                  by {task.reviewVerdict.by} · {new Date(task.reviewVerdict.at).toLocaleString()}
+                </div>
               </div>
             )}
           </div>

@@ -1756,16 +1756,22 @@ export class Orchestrator {
                   continue; // this task's agents busy / no credential — try the next
                 }
               }
-              // 3) Review a finished run: approve → merge/done, else flag for a
-              //    human. Same gate: approving a merge spends risk, so
-              //    `p.autonomy` off means the human owns the review too.
-              const review = mine.find((t) => t.state === "review" && t.runId && !t.reviewFlaggedReason);
-              if (review?.runId) {
-                const open = (await this.store.listQueue(ws)).find(
-                  (h) => h.runId === review.runId && !h.resolvedAt,
-                );
-                if (open) await this.autoReview(ws, idle[0]!, review, open);
-              }
+            }
+            // 3) Review a finished run — runs REGARDLESS of `p.autonomy`.
+            //    Recording a verdict is diagnostic (an LLM consult), not a
+            //    spending action, so every review-state task deserves a
+            //    reviewer's opinion for the human's audit trail. The
+            //    APPROVE-and-merge step inside autoReview stays gated on
+            //    `p.autonomy` — verdict recorded either way; auto-resolve
+            //    only when the project has opted in to autonomous spending.
+            //    Skip tasks that already carry a verdict (idempotent) so we
+            //    don't rewrite the same LLM call every tick.
+            const review = mine.find((t) => t.state === "review" && t.runId && !t.reviewVerdict);
+            if (review?.runId && idle[0]) {
+              const open = (await this.store.listQueue(ws)).find(
+                (h) => h.runId === review.runId && !h.resolvedAt,
+              );
+              if (open) await this.autoReview(ws, idle[0], review, open, p.autonomy);
             }
           } catch (err) {
             await this.hub.runLog(p.id, `autonomy skipped ${p.id}: ${(err as Error).message}`).catch(() => undefined);
@@ -1839,11 +1845,22 @@ export class Orchestrator {
     }
   }
 
-  /** Autonomous review of a finished run's open HITL: approve → resolve (merges →
-   *  done via the normal path), else flag the task for a human. */
-  private async autoReview(ws: string, agent: Agent, task: Task, hitl: HitlItem): Promise<void> {
+  /**
+   * Autonomous review of a finished run's open HITL. Always records a verdict
+   * on the task (approve OR flag) so the human has an audit trail of what the
+   * reviewer thought. Only when `canResolve` is true does an approve verdict
+   * also drive the HITL → merge/done path; with autonomy off, the verdict is
+   * recorded and the human retains the merge decision.
+   */
+  private async autoReview(
+    ws: string,
+    agent: Agent,
+    task: Task,
+    hitl: HitlItem,
+    canResolve: boolean,
+  ): Promise<void> {
     const run = task.runId ? await this.store.getRun(task.runId) : undefined;
-    let approve = true;
+    let decision: "approve" | "flag" = "approve";
     let reason = "auto-approved";
     try {
       const provider = await this.getProvider(agent.provider);
@@ -1855,11 +1872,11 @@ export class Orchestrator {
           `Review whether this run satisfies the task "${task.text}". Reply on the FIRST line with exactly APPROVE or FLAG, then a one-line reason.`,
         );
         const head = reply.trim().split("\n")[0]?.toUpperCase() ?? "";
-        approve = !head.includes("FLAG");
+        decision = head.includes("FLAG") ? "flag" : "approve";
         reason = reply.trim().slice(0, 300) || reason;
       }
     } catch (err) {
-      approve = false;
+      decision = "flag";
       reason = `review consult failed: ${(err as Error).message}`;
     }
     // The consult above is slow (an LLM round-trip); meanwhile an operator — or
@@ -1872,20 +1889,26 @@ export class Orchestrator {
     if (!freshHitl || freshHitl.resolvedAt) return; // already handled — defer
     const freshTask = await this.store.getTask(task.id);
     if (!freshTask || freshTask.state !== "review" || freshTask.runId !== task.runId) return;
-    // Record the auto-review on the run's live log so the operator can see WHO
-    // reviewed it (another agent, autonomously) and WHY — a short verdict line
-    // that folds open to the reviewer's full reasoning. Mirrors how a human's
+    // If a verdict raced in ahead of us (parallel tick, unlikely but safe),
+    // don't clobber it with another consult's answer.
+    if (freshTask.reviewVerdict) return;
+    const reviewer = agent.name || agent.id;
+    const at = now();
+    // Record the auto-review on the run's live log — a short verdict line that
+    // folds open to the reviewer's full reasoning. Mirrors how a human's
     // decision is auditable; here the reviewer is a fleet agent, not a person.
     if (task.runId) {
-      const reviewer = agent.name || agent.id;
-      await this.hub.runLog(
-        task.runId,
-        `⟳ auto-reviewed by ${reviewer} — ${approve ? "approved (integrating)" : "flagged for a human"}`,
-        reason,
-      );
+      const suffix = decision === "approve"
+        ? canResolve ? "approved (integrating)" : "approved (awaiting human)"
+        : "flagged for a human";
+      await this.hub.runLog(task.runId, `⟳ auto-reviewed by ${reviewer} — ${suffix}`, reason);
     }
-    if (approve) {
-      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "autonomy", at: now() };
+    // ALWAYS persist the verdict on the task so the detail view can show it —
+    // approve OR flag, autonomy on OR off. This is the audit trail.
+    const verdict = { decision, reason, by: reviewer, at };
+    const withVerdict = await this.hub.upsertTask({ ...freshTask, reviewVerdict: verdict });
+    if (decision === "approve" && canResolve) {
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "autonomy", at };
       const resolved = await this.hub.resolveHitl(hitl.id, resolution);
       if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(hitl, resolution);
       // Once an agent has approved a review-state task, move it to `done` and
@@ -1902,9 +1925,10 @@ export class Orchestrator {
         await this.hub.upsertTask({ ...afterDeliver, state: "done" });
         if (afterDeliver.runId) await this.hub.runStatus(afterDeliver.runId, "done").catch(() => undefined);
       }
-    } else {
-      await this.hub.upsertTask({ ...freshTask, reviewFlaggedReason: reason });
     }
+    // decision === "flag" OR (approve without autonomy) → verdict is recorded
+    // (`withVerdict`), HITL stays open for the human. Nothing else to do here.
+    void withVerdict;
   }
 
   /**
@@ -1970,7 +1994,7 @@ export class Orchestrator {
     const task = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === runId);
     if (task && (task.state === "ongoing" || task.state === "review")) {
       await this.hub.setRunArchived(runId, true).catch(() => undefined);
-      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewFlaggedReason: null });
+      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
     }
     return this.store.getRun(runId);
   }
