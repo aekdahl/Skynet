@@ -158,6 +158,46 @@ describe("splitProposedAction — reply/action split", () => {
     const raw = 'The config looks like {"port": 8080} in the file.';
     const r = splitProposedAction(raw, ctx);
     expect(r.action).toBeNull();
+    expect(r.actions).toEqual([]);
     expect(r.reply).toBe(raw);
+  });
+});
+
+// A single proposal still yields a one-item batch (back-compat: `action` = first).
+describe("splitProposedAction — batches (add many, approve once)", () => {
+  it("a single proposeAction is a one-item batch", () => {
+    const r = splitProposedAction('Adding it.\n{"proposeAction":{"kind":"add_task","text":"write docs"}}', ctx);
+    expect(r.actions).toHaveLength(1);
+    expect(r.action).toMatchObject({ kind: "add_task", text: "write docs" });
+    expect(r.reply).toBe("Adding it.");
+  });
+
+  it("proposeActions returns ALL valid actions in order", () => {
+    const raw =
+      'Adding those.\n{"proposeActions":[' +
+      '{"kind":"add_task","text":"cache the dashboard"},' +
+      '{"kind":"add_task","text":"rate-limit the API"},' +
+      '{"kind":"move_task","taskId":"t-2","to":"triage"}]}';
+    const r = splitProposedAction(raw, ctx);
+    expect(r.actions.map((a) => a.kind)).toEqual(["add_task", "add_task", "move_task"]);
+    expect(r.action).toMatchObject({ kind: "add_task", text: "cache the dashboard" });
+    expect(r.reply).toBe("Adding those.");
+  });
+
+  it("drops invalid items from a batch (never guesses), keeps the valid ones", () => {
+    const raw =
+      '{"proposeActions":[' +
+      '{"kind":"add_task","text":"good one"},' +
+      '{"kind":"move_task","taskId":"t-nope","to":"done"},' + // unknown task → dropped
+      '{"kind":"add_task","text":"  "}]}'; // empty text → dropped
+    const r = splitProposedAction(raw, ctx);
+    expect(r.actions).toHaveLength(1);
+    expect(r.actions[0]).toMatchObject({ kind: "add_task", text: "good one" });
+  });
+
+  it("synthesizes a batch reply when the model sent only the actions", () => {
+    const raw = '{"proposeActions":[{"kind":"add_task","text":"a"},{"kind":"add_task","text":"b"}]}';
+    const r = splitProposedAction(raw, ctx);
+    expect(r.reply).toMatch(/these 2 changes/i);
   });
 });

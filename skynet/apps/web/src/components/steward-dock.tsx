@@ -9,14 +9,19 @@ import { Markdown } from "./markdown";
 // module scope so it survives navigating between pages within a session (a reload
 // starts fresh — matching the project chat).
 
+// One proposed action + its own run state, so a batch shows ✓/✗ per item as it
+// applies. Steward can propose SEVERAL at once ("add these five tasks") and the
+// operator approves the whole batch with one tap — no per-item confirmation.
+type ActItem = { action: api.AssistantAction; state: "pending" | "done" | "failed" };
 type Msg = {
   role: "user" | "assistant";
   content: string;
-  action?: api.AssistantAction;
-  // Which project a proposed action targets (captured at propose time, so
-  // confirming later runs against the right project even after you navigate).
+  acts?: ActItem[];
+  // Which project the actions target (captured at propose time, so confirming
+  // later runs against the right project even after you navigate).
   actionProjectId?: string | null;
-  actionState?: "pending" | "done" | "dismissed";
+  // The whole batch was dismissed without running.
+  dismissed?: boolean;
 };
 
 let thread: Msg[] = [];
@@ -82,22 +87,31 @@ export function StewardDock({
     }
   };
 
-  const resolveAction = async (idx: number, accept: boolean) => {
+  // Approve the whole batch at once: apply every still-pending action in order,
+  // marking each ✓/✗ as it lands. A failure doesn't halt the rest — the operator
+  // sees which succeeded and which didn't, and can retry the failures.
+  const confirmBatch = async (idx: number) => {
     const m = msgs[idx];
-    if (!m?.action || m.actionState !== "pending") return;
-    if (!accept) {
-      setMsgs((x) => x.map((mm, i) => (i === idx ? { ...mm, actionState: "dismissed" } : mm)));
-      return;
-    }
+    if (!m?.acts?.length) return;
     const projectId = m.actionProjectId ?? effFocusId;
-    if (!projectId) { setErr("Tell me which project, then I can apply this."); return; }
-    try {
-      await runAction(m.action, projectId);
-      setMsgs((x) => x.map((mm, i) => (i === idx ? { ...mm, actionState: "done" } : mm)));
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Couldn't apply that — try again.");
+    if (!projectId) { setErr("Tell me which project, then I can apply these."); return; }
+    setErr(null);
+    let anyFailed = false;
+    for (let j = 0; j < m.acts.length; j++) {
+      if (m.acts[j]!.state !== "pending") continue;
+      try {
+        await runAction(m.acts[j]!.action, projectId);
+        setMsgs((x) => x.map((mm, i) => (i === idx ? { ...mm, acts: mm.acts?.map((it, k) => (k === j ? { ...it, state: "done" } : it)) } : mm)));
+      } catch {
+        anyFailed = true;
+        setMsgs((x) => x.map((mm, i) => (i === idx ? { ...mm, acts: mm.acts?.map((it, k) => (k === j ? { ...it, state: "failed" } : it)) } : mm)));
+      }
     }
+    if (anyFailed) setErr("Some changes couldn't be applied — see the ✗ items above.");
   };
+
+  const dismissBatch = (idx: number) =>
+    setMsgs((x) => x.map((mm, i) => (i === idx ? { ...mm, dismissed: true } : mm)));
 
   const ask = async (q: string) => {
     const question = q.trim();
@@ -108,16 +122,23 @@ export function StewardDock({
     setInput("");
     setBusy(true);
     try {
-      const { reply, action, projectId } = await api.stewardChat(question, history, focusProjectId ?? undefined);
+      const { reply, action, actions, projectId } = await api.stewardChat(question, history, focusProjectId ?? undefined);
       // Steward resolved a project from the conversation → carry that focus so the
       // header + later turns reflect the project it's now working on.
       if (!focusProjectId && projectId) setResolvedId(projectId);
+      // Prefer the full batch; fall back to a lone `action` for back-compat.
+      const proposed = actions?.length ? actions : action ? [action] : [];
       setMsgs((m) => {
         const next = m.slice();
         next[next.length - 1] = {
           role: "assistant",
           content: reply,
-          ...(action ? { action, actionProjectId: projectId ?? effFocusId, actionState: "pending" as const } : {}),
+          ...(proposed.length
+            ? {
+                acts: proposed.map((a) => ({ action: a, state: "pending" as const })),
+                actionProjectId: projectId ?? effFocusId,
+              }
+            : {}),
         };
         return next;
       });
@@ -163,23 +184,35 @@ export function StewardDock({
             ) : (
               <div className="asst-text">{m.content}</div>
             )}
-            {m.action && (
+            {m.acts?.length ? (
               <div className="asst-propose">
-                {m.actionState === "done" ? (
-                  <span className="asst-propose-done">✓ {m.action.summary}</span>
-                ) : m.actionState === "dismissed" ? (
-                  <span className="asst-propose-done muted">Dismissed: {m.action.summary}</span>
-                ) : (
-                  <>
-                    <span className="asst-propose-label">{m.action.summary}</span>
+                {/* One row per proposed change, each showing its own state. */}
+                <ul className="asst-propose-list">
+                  {m.acts.map((it, k) => (
+                    <li key={k} className={"asst-propose-item asst-act-" + it.state}>
+                      <span className="asst-act-mark" aria-hidden="true">
+                        {it.state === "done" ? "✓" : it.state === "failed" ? "✗" : "○"}
+                      </span>
+                      <span className="asst-act-label">{it.action.summary}</span>
+                    </li>
+                  ))}
+                </ul>
+                {(() => {
+                  const pending = m.acts.filter((it) => it.state === "pending").length;
+                  if (m.dismissed) return <span className="asst-propose-done muted">Dismissed.</span>;
+                  if (pending === 0) return <span className="asst-propose-done">✓ Applied.</span>;
+                  const n = m.acts.length;
+                  return (
                     <span className="asst-propose-actions">
-                      <button className="btn btn-primary btn-sm" onClick={() => void resolveAction(i, true)}>Confirm</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => void resolveAction(i, false)}>Dismiss</button>
+                      <button className="btn btn-primary btn-sm" onClick={() => void confirmBatch(i)}>
+                        {n > 1 ? `Confirm all ${n}` : "Confirm"}
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => dismissBatch(i)}>Dismiss</button>
                     </span>
-                  </>
-                )}
+                  );
+                })()}
               </div>
-            )}
+            ) : null}
           </div>
         ))}
       </div>

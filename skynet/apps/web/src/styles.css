@@ -1969,7 +1969,7 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .asst-err { font-size: 12.5px; color: var(--danger); }
 /* Confirm-before-create chip under an assistant message that proposed a task. */
 .asst-propose {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  display: flex; flex-direction: column; align-items: stretch; gap: 8px;
   margin-top: 6px; padding: 8px 10px;
   background: var(--raised); border: 1px solid var(--line); border-radius: 7px;
 }
@@ -1977,6 +1977,15 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .asst-propose-actions { display: flex; gap: 6px; }
 .asst-propose-done { font-size: 12.5px; color: var(--ok); }
 .asst-propose-done.muted { color: var(--faint); }
+/* Batch of proposed changes — one row each, ✓/✗/○ per item as they apply. */
+.asst-propose-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.asst-propose-item { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--ink); }
+.asst-act-mark { flex: none; width: 12px; text-align: center; color: var(--faint); font-variant-numeric: tabular-nums; }
+.asst-act-label { min-width: 0; overflow-wrap: anywhere; }
+.asst-act-done .asst-act-mark { color: var(--ok); }
+.asst-act-done .asst-act-label { color: var(--muted); }
+.asst-act-failed .asst-act-mark { color: var(--danger); }
+.asst-act-failed .asst-act-label { color: var(--danger); }
 .asst-input { display: flex; gap: 8px; align-items: flex-end; }
 .asst-input .qx-input { flex: 1; }
 /* Auto-grow textarea: starts as a one-row input, expands into a text block as

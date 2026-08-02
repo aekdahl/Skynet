@@ -46,7 +46,7 @@ const SYSTEM =
   "Answer conversationally and concisely. Ground every answer in the PROJECT STATUS below, and when the question is about the code or docs, in the repository content (open files such as ROADMAP.md / README.md as needed). " +
   "For questions about how this workspace is configured — approvals, autonomy, the runner sandbox, integration, Telegram, MCP, backends, vendor CLIs — ground the answer in the WORKSPACE SETTINGS section (the LIVE runtime config), NOT the committed repo docs, which may be out of date. Secret values there are shown only as set/not-set — never claim to know a secret's value. " +
   "If a file or fact isn't available to you, say so plainly — never invent repo content, project state, or settings.\n" +
-  'ACTIONS: ONLY when the operator is clearly asking you to CHANGE something, append as the FINAL line a JSON object exactly {"proposeAction": <one action object>} and nothing after it — the operator confirms before it runs. Never include it for questions, summaries, or chat, and never more than one. ' +
+  'ACTIONS: ONLY when the operator is clearly asking you to CHANGE something, append as the FINAL line a JSON object and nothing after it — the operator confirms before anything runs. For a SINGLE change use {"proposeAction": <one action object>}. When the operator asks for SEVERAL changes at once (e.g. "add these five tasks", "add a task for each endpoint"), propose them ALL in one turn as {"proposeActions": [<action>, <action>, …]} — do NOT ask them to repeat themselves per item; the operator approves the whole batch once. Never include an action line for questions, summaries, or chat. ' +
   "Use the task ids from PROJECT STATUS (each task is listed as `[id] text`); if a request references a task that isn't listed, ask instead of guessing. Valid action objects:\n" +
   '  {"kind":"add_task","text":"<title>","description":"<optional — the full brief the agent gets>"}\n' +
   '  {"kind":"move_task","taskId":"<id>","to":"backlog|triage|todo|ongoing|review|done"}\n' +
@@ -336,27 +336,37 @@ function lastTopLevelObject(s: string): { json: string; start: number } | null {
 export function splitProposedAction(
   text: string,
   ctx: ProjectActionContext,
-): { reply: string; action: AssistantAction | null } {
+): { reply: string; action: AssistantAction | null; actions: AssistantAction[] } {
   const trimmed = (text ?? "").trim();
   const body = trimmed.replace(/\n?```\s*$/, "").trimEnd();
   const found = lastTopLevelObject(body);
-  if (!found) return { reply: trimmed, action: null };
+  if (!found) return { reply: trimmed, action: null, actions: [] };
   try {
     const obj = JSON.parse(found.json) as Record<string, unknown>;
-    if (obj && typeof obj === "object" && "proposeAction" in obj) {
-      const action = validateProjectAction(obj.proposeAction, ctx);
+    // A batch ({"proposeActions":[…]}) or a single ({"proposeAction":…}). Both
+    // validate each candidate against the project context — an invalid one is
+    // dropped, never guessed — so the operator approves only real, valid actions.
+    const isBatch = obj && typeof obj === "object" && Array.isArray((obj as { proposeActions?: unknown }).proposeActions);
+    const isSingle = obj && typeof obj === "object" && "proposeAction" in obj;
+    if (isBatch || isSingle) {
+      const candidates = isBatch ? ((obj as { proposeActions: unknown[] }).proposeActions) : [(obj as { proposeAction: unknown }).proposeAction];
+      const actions = candidates
+        .map((c) => validateProjectAction(c, ctx))
+        .filter((a): a is AssistantAction => a !== null);
       const stripped = body.slice(0, found.start).replace(/```[a-zA-Z]*\s*$/, "").trim();
       const reply = stripped
         ? stripped
-        : action
-          ? `Want me to ${action.summary[0]!.toLowerCase()}${action.summary.slice(1)}?`
-          : "Hmm — I couldn't map that to something on this board.";
-      return { reply, action };
+        : actions.length === 1
+          ? `Want me to ${actions[0]!.summary[0]!.toLowerCase()}${actions[0]!.summary.slice(1)}?`
+          : actions.length > 1
+            ? `Want me to make these ${actions.length} changes?`
+            : "Hmm — I couldn't map that to something on this board.";
+      return { reply, action: actions[0] ?? null, actions };
     }
   } catch {
     /* not a JSON tail — the whole answer is the reply */
   }
-  return { reply: trimmed, action: null };
+  return { reply: trimmed, action: null, actions: [] };
 }
 
 function statusContext(project: Project, tasks: Task[], runs: TaskRun[], agents: Agent[] = []): string {
@@ -491,7 +501,7 @@ export async function prepareStewardCall(
 export async function askSteward(
   store: Store,
   opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
-): Promise<{ reply: string; action: AssistantAction | null }> {
+): Promise<{ reply: string; action: AssistantAction | null; actions: AssistantAction[] }> {
   const c = await prepareStewardCall(store, opts);
   const answer = c.repo
     ? await oneShotRepoAssistant({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey })
@@ -577,7 +587,7 @@ function workspaceStatusContext(projects: Project[], tasks: Task[], runs: TaskRu
 export async function askStewardWorkspace(
   store: Store,
   opts: { workspaceId: string; question: string; history?: ChatTurn[] },
-): Promise<{ reply: string; action: AssistantAction | null }> {
+): Promise<{ reply: string; action: AssistantAction | null; actions: AssistantAction[] }> {
   const { workspaceId, question } = opts;
   const [projects, tasks, runs, gates] = await Promise.all([
     store.listProjects(workspaceId),
@@ -605,7 +615,7 @@ export async function askStewardWorkspace(
     .join("\n");
   const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
   const reply = await oneShotText({ prompt, apiKey });
-  return { reply, action: null };
+  return { reply, action: null, actions: [] };
 }
 
 /** Streaming form of {@link askSteward} — yields the answer as text deltas so the
