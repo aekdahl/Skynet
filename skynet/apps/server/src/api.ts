@@ -437,6 +437,48 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     },
   );
 
+  // Streaming Steward chat: the reply is written as text/plain deltas so the dock
+  // renders it live, then a final control frame — a RS (\x1e) sentinel followed by
+  // {reply, action, projectId} — carries the CLEAN reply (trailing action JSON
+  // stripped) and any confirm-first action. The sentinel never occurs in prose.
+  app.post<{ Body: { question?: string; history?: ChatTurn[]; projectId?: string } }>(
+    "/api/steward/chat/stream",
+    async (req, reply) => {
+      const question = (req.body?.question ?? "").trim();
+      if (!question) return reply.code(400).send({ error: "Ask Steward something." });
+      const history = Array.isArray(req.body?.history)
+        ? req.body!.history
+            .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
+            .slice(-16)
+        : undefined;
+      const focus = typeof req.body?.projectId === "string" ? req.body!.projectId : undefined;
+      reply.hijack();
+      const raw = reply.raw;
+      raw.writeHead(200, {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        "x-accel-buffering": "no",
+      });
+      try {
+        const gen = ops.stewardChatStream(ws(req), question, history, focus);
+        let result: { reply: string; actions: unknown; projectId: string | null } | undefined;
+        for (;;) {
+          const { value, done } = await gen.next();
+          if (done) {
+            result = value;
+            break;
+          }
+          raw.write(value);
+        }
+        raw.write("\x1e" + JSON.stringify(result));
+      } catch (err) {
+        raw.write(`\n[stream error] ${(err as Error).message}`);
+      } finally {
+        raw.end();
+      }
+    },
+  );
+
   // ── live preview (Phase-1 v0) — run the project's web app + iframe it ─────
   app.get<{ Params: { id: string } }>("/api/projects/:id/preview", async (req, reply) => {
     try {
