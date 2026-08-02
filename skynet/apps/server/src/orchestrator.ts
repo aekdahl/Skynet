@@ -13,7 +13,7 @@ import {
 import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
-import { parseReviewVerdict } from "./review-verdict.js";
+import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
@@ -1898,11 +1898,11 @@ export class Orchestrator {
         const context = run.log.slice(-30).map((l) => l.line).join("\n").slice(-3000);
         const reply = await provider.consult(
           { task: task.text, model: agent.model, cwd: config.runnerCwd, apiKey, context },
-          `Review whether this run satisfies the task "${task.text}". Reply on the FIRST line with exactly APPROVE or FLAG, then a one-line reason.`,
+          `Review whether this run satisfies the task "${task.text}". ${REVIEW_OUTPUT_INSTRUCTION}`,
         );
-        // Read the verdict from the LEADING word — never a substring match, or a
-        // reason that mentions "flagged" would flag an APPROVE (DEF). The reason
-        // has the verdict word stripped so a flag reads as prose, not "APPROVE —".
+        // The verdict is the MODEL's, read from a structured field — we never
+        // classify its prose (a reason mentioning "flagged" once false-flagged an
+        // APPROVE). An unreadable verdict flags for a human, never auto-approves.
         const verdict = parseReviewVerdict(reply);
         decision = verdict.approve ? "approve" : "flag";
         reason = verdict.reason;
