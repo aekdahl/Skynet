@@ -49,7 +49,7 @@ import {
   type AssistantAction,
   type ChatTurn,
 } from "./project-assistant.js";
-import { askStewardWorkspace, resolveFocusProject } from "./steward/assistant.js";
+import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -136,7 +136,7 @@ export class Operations {
     question: string,
     history?: ChatTurn[],
     focusProjectId?: string,
-  ): Promise<{ reply: string; action: AssistantAction | null; actions: AssistantAction[]; projectId: string | null }> {
+  ): Promise<{ reply: string; actions: AssistantAction[]; projectId: string | null }> {
     // An explicit page focus wins; otherwise resolve the project from the
     // conversation so the workspace dock can act on it, not just report on it.
     let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
@@ -147,11 +147,35 @@ export class Operations {
       project = id ? projects.find((p) => p.id === id) ?? null : null;
     }
     if (project) {
-      const { reply, action, actions } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
-      return { reply, action, actions, projectId: project.id };
+      const { reply, actions } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id };
     }
-    const { reply, action, actions } = await askStewardWorkspace(this.store, { workspaceId, question, history });
-    return { reply, action, actions, projectId: null };
+    const { reply, actions } = await askStewardWorkspace(this.store, { workspaceId, question, history });
+    return { reply, actions, projectId: null };
+  }
+
+  /** Streaming form of {@link stewardChat} — yields the reply as text deltas, then
+   *  RETURNS the clean reply + any proposed action + the resolved project. Same
+   *  focus resolution as stewardChat, so streaming and non-streaming agree. */
+  async *stewardChatStream(
+    workspaceId: string,
+    question: string,
+    history?: ChatTurn[],
+    focusProjectId?: string,
+  ): AsyncGenerator<string, { reply: string; actions: AssistantAction[]; projectId: string | null }> {
+    let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
+    if (project && project.workspaceId !== workspaceId) project = null;
+    if (!project) {
+      const projects = await this.store.listProjects(workspaceId);
+      const id = resolveFocusProject(projects.map((p) => ({ id: p.id, name: p.name })), question, history);
+      project = id ? projects.find((p) => p.id === id) ?? null : null;
+    }
+    if (project) {
+      const { reply, actions } = yield* askStewardStream(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id };
+    }
+    const { reply, actions } = yield* askStewardWorkspaceStream(this.store, { workspaceId, question, history });
+    return { reply, actions, projectId: null };
   }
 
   // ── reads (workspace-scoped) ──────────────────────────────────────────────

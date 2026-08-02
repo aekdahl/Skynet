@@ -12,6 +12,7 @@ import {
   type SafetyPolicy,
   type SecretMeta,
 } from "@skynet/shared";
+import { parseStewardStream, type StewardReply } from "./steward-stream";
 
 // ─── auth ───────────────────────────────────────────────────────────────────
 // The session token drives both REST (Bearer) and the WS (?token=). It's set by
@@ -462,11 +463,51 @@ export function stewardChat(
   history: { role: "user" | "assistant"; content: string }[],
   projectId?: string,
 ) {
-  return req<{ reply: string; action?: AssistantAction | null; actions?: AssistantAction[]; projectId?: string | null }>(
+  return req<{ reply: string; actions?: AssistantAction[]; projectId?: string | null }>(
     "POST",
     "/api/steward/chat",
     { question, history, projectId },
   );
+}
+
+/**
+ * Streaming Steward chat: reads the reply as text/plain deltas (calling `onDelta`
+ * with each), then a final RS-sentinel (\x1e) control frame carrying the CLEAN
+ * reply + any action + resolved project. Resolves with that authoritative reply
+ * (the caller reconciles its streamed text to it, so a trailing action JSON that
+ * streamed through is cleaned up). Falls back to non-streaming stewardChat.
+ */
+export async function streamStewardChat(
+  question: string,
+  history: { role: "user" | "assistant"; content: string }[],
+  projectId: string | undefined,
+  onDelta: (chunk: string) => void,
+): Promise<StewardReply> {
+  const res = await fetch("/api/steward/chat/stream", {
+    method: "POST",
+    headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" },
+    body: JSON.stringify({ question, history, projectId }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(res.status, body || res.statusText);
+  }
+  if (!res.body) {
+    const r = await stewardChat(question, history, projectId);
+    onDelta(r.reply);
+    return r;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks = (async function* () {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      const chunk = decoder.decode(value, { stream: true });
+      if (chunk) yield chunk;
+    }
+  })();
+  return parseStewardStream(chunks, onDelta);
 }
 
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
@@ -585,6 +626,12 @@ export async function fetchGithubInstallations(): Promise<GithubInstallation[]> 
 }
 export async function fetchGithubInstallationRepos(installationId: number): Promise<GithubRepo[]> {
   const raw = await req<{ repos: GithubRepo[] }>("GET", `/api/github/installations/${installationId}/repos`);
+  return raw.repos;
+}
+/** The repos the connection can currently bind — fetched live (a PAT connection
+ *  re-lists all of its repos), so the picker isn't limited to a stale snapshot. */
+export async function fetchGithubRepos(): Promise<GithubRepo[]> {
+  const raw = await req<{ repos: GithubRepo[] }>("GET", "/api/github/repos");
   return raw.repos;
 }
 export async function connectGithub(body: {

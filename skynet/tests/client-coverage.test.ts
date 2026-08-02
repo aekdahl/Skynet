@@ -30,6 +30,7 @@ const ALLOW = new Set<string>([
   "startGithubDevice", "pollGithubDevice", "fetchGithubInstallations",
   "fetchGithubInstallationRepos", "connectGithub", "disconnectGithub",
   "fetchGithubOwners", // lists org/user owners for repo creation — needs a live remote
+  "fetchGithubRepos", // live repo list for the project-creation picker — needs a live remote
   "cloneProjectRepo", // clones a connected GitHub repo — needs a live remote + token
   "removeApprovalRule", // revokes a standing approval rule — needs a run that raised + remembered a command gate; no offline journey (covered by approval-policy.test.ts + the server route)
   // destructive bulk variants (the per-record paths ARE covered)
@@ -60,6 +61,7 @@ const ALLOW = new Set<string>([
   // provider key + a real repo to ground against, so no offline journey exercises
   // it; the project-chat parse contract is covered by project-assistant.test.ts.
   "stewardChat",
+  "streamStewardChat", // streaming variant of stewardChat — same live-key requirement
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",
