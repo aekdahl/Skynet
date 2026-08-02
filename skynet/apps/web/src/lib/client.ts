@@ -463,7 +463,7 @@ export function stewardChat(
   history: { role: "user" | "assistant"; content: string }[],
   projectId?: string,
 ) {
-  return req<{ reply: string; action?: AssistantAction | null; projectId?: string | null }>(
+  return req<{ reply: string; actions?: AssistantAction[]; projectId?: string | null }>(
     "POST",
     "/api/steward/chat",
     { question, history, projectId },
@@ -626,6 +626,12 @@ export async function fetchGithubInstallations(): Promise<GithubInstallation[]> 
 }
 export async function fetchGithubInstallationRepos(installationId: number): Promise<GithubRepo[]> {
   const raw = await req<{ repos: GithubRepo[] }>("GET", `/api/github/installations/${installationId}/repos`);
+  return raw.repos;
+}
+/** The repos the connection can currently bind — fetched live (a PAT connection
+ *  re-lists all of its repos), so the picker isn't limited to a stale snapshot. */
+export async function fetchGithubRepos(): Promise<GithubRepo[]> {
+  const raw = await req<{ repos: GithubRepo[] }>("GET", "/api/github/repos");
   return raw.repos;
 }
 export async function connectGithub(body: {

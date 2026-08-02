@@ -1,8 +1,8 @@
 // Parsing for the streaming Steward reply. The server writes the prose reply as
 // text deltas, then a record-separator (\x1e) sentinel followed by a JSON control
-// frame — {reply, action, projectId} — carrying the CLEAN reply (trailing action
-// JSON stripped) and any confirm-first action. Pure + transport-agnostic (takes
-// an async iterable of decoded string chunks) so it's unit-testable without fetch.
+// frame — {reply, actions, projectId} — carrying the CLEAN reply (trailing action
+// JSON stripped) and any confirm-first actions (a batch). Pure + transport-agnostic
+// (takes an async iterable of decoded string chunks) so it's unit-testable.
 
 import type { AssistantAction } from "./client";
 
@@ -10,7 +10,7 @@ export const STEWARD_SENTINEL = "\x1e";
 
 export interface StewardReply {
   reply: string;
-  action?: AssistantAction | null;
+  actions?: AssistantAction[];
   projectId?: string | null;
 }
 
@@ -40,7 +40,7 @@ export async function parseStewardStream(
   if (sentinel < 0) return { reply: streamed };
   try {
     const ctrl = JSON.parse(acc.slice(sentinel + 1)) as StewardReply;
-    return { reply: ctrl.reply ?? streamed, action: ctrl.action ?? null, projectId: ctrl.projectId ?? null };
+    return { reply: ctrl.reply ?? streamed, actions: ctrl.actions ?? [], projectId: ctrl.projectId ?? null };
   } catch {
     // Malformed trailer — keep the streamed prose as the reply.
     return { reply: streamed };

@@ -1,7 +1,8 @@
 // The streaming Steward reply: prose deltas, then a \x1e sentinel + a JSON control
-// frame {reply, action, projectId}. parseStewardStream must forward ONLY the prose
-// to onDelta (never the sentinel/JSON), and return the authoritative clean reply —
-// so a trailing action JSON that streamed through the live view is reconciled away.
+// frame {reply, actions, projectId}. parseStewardStream must forward ONLY the prose
+// to onDelta (never the sentinel/JSON), and return the authoritative clean reply +
+// any proposed actions (a batch) — so an action JSON that streamed through the live
+// view is reconciled away.
 import { describe, it, expect } from "vitest";
 import { parseStewardStream, STEWARD_SENTINEL as SEP } from "../apps/web/src/lib/steward-stream.js";
 
@@ -22,36 +23,40 @@ describe("parseStewardStream", () => {
     expect(r).toEqual({ reply: "Hello world" });
   });
 
-  it("emits only the prose and returns the clean control frame", async () => {
+  it("emits only the prose and returns the clean control frame with a batch of actions", async () => {
     const s = sink();
-    const ctrl = JSON.stringify({ reply: "Added the task.", action: { kind: "add_task", summary: "Add X" }, projectId: "p1" });
-    const r = await parseStewardStream(chunksOf("Added the task." + SEP + ctrl), s.onDelta);
-    expect(s.text()).toBe("Added the task."); // the sentinel + JSON are never shown
-    expect(r.reply).toBe("Added the task.");
-    expect(r.action).toEqual({ kind: "add_task", summary: "Add X" });
+    const ctrl = JSON.stringify({
+      reply: "Added the tasks.",
+      actions: [{ kind: "add_task", summary: "Add X" }, { kind: "add_task", summary: "Add Y" }],
+      projectId: "p1",
+    });
+    const r = await parseStewardStream(chunksOf("Added the tasks." + SEP + ctrl), s.onDelta);
+    expect(s.text()).toBe("Added the tasks."); // the sentinel + JSON are never shown
+    expect(r.reply).toBe("Added the tasks.");
+    expect(r.actions).toEqual([{ kind: "add_task", summary: "Add X" }, { kind: "add_task", summary: "Add Y" }]);
     expect(r.projectId).toBe("p1");
   });
 
   it("handles the control frame split across chunk boundaries", async () => {
     const s = sink();
     const r = await parseStewardStream(
-      chunksOf("ok", SEP + '{"reply":"ok",', '"action":null,"projectId":null}'),
+      chunksOf("ok", SEP + '{"reply":"ok",', '"actions":[],"projectId":null}'),
       s.onDelta,
     );
     expect(s.text()).toBe("ok");
     expect(r.reply).toBe("ok");
-    expect(r.action).toBeNull();
+    expect(r.actions).toEqual([]);
     expect(r.projectId).toBeNull();
   });
 
   it("reconciles to the clean reply when an action-JSON tail streamed through", async () => {
     const s = sink();
-    const streamedRaw = 'Sure, adding it.\n```json\n{"proposeAction":{"kind":"add_task"}}\n```';
-    const ctrl = JSON.stringify({ reply: "Sure, adding it.", action: { kind: "add_task", summary: "Add it" }, projectId: "p2" });
+    const streamedRaw = 'Sure, adding it.\n```json\n{"proposeActions":[{"kind":"add_task"}]}\n```';
+    const ctrl = JSON.stringify({ reply: "Sure, adding it.", actions: [{ kind: "add_task", summary: "Add it" }], projectId: "p2" });
     const r = await parseStewardStream(chunksOf(streamedRaw + SEP + ctrl), s.onDelta);
     expect(s.text()).toBe(streamedRaw); // the live view briefly showed the raw text…
     expect(r.reply).toBe("Sure, adding it."); // …but the authoritative reply is clean
-    expect(r.action).toMatchObject({ kind: "add_task" });
+    expect(r.actions?.[0]).toMatchObject({ kind: "add_task" });
   });
 
   it("falls back to the streamed prose on a malformed trailer", async () => {
@@ -59,6 +64,6 @@ describe("parseStewardStream", () => {
     const r = await parseStewardStream(chunksOf("partial" + SEP + "{not json"), s.onDelta);
     expect(s.text()).toBe("partial");
     expect(r.reply).toBe("partial");
-    expect(r.action).toBeUndefined();
+    expect(r.actions).toBeUndefined();
   });
 });

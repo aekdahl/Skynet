@@ -461,7 +461,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       });
       try {
         const gen = ops.stewardChatStream(ws(req), question, history, focus);
-        let result: { reply: string; action: unknown; projectId: string | null } | undefined;
+        let result: { reply: string; actions: unknown; projectId: string | null } | undefined;
         for (;;) {
           const { value, done } = await gen.next();
           if (done) {

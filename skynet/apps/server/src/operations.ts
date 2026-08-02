@@ -136,7 +136,7 @@ export class Operations {
     question: string,
     history?: ChatTurn[],
     focusProjectId?: string,
-  ): Promise<{ reply: string; action: AssistantAction | null; projectId: string | null }> {
+  ): Promise<{ reply: string; actions: AssistantAction[]; projectId: string | null }> {
     // An explicit page focus wins; otherwise resolve the project from the
     // conversation so the workspace dock can act on it, not just report on it.
     let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
@@ -147,11 +147,11 @@ export class Operations {
       project = id ? projects.find((p) => p.id === id) ?? null : null;
     }
     if (project) {
-      const { reply, action } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
-      return { reply, action, projectId: project.id };
+      const { reply, actions } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id };
     }
-    const { reply, action } = await askStewardWorkspace(this.store, { workspaceId, question, history });
-    return { reply, action, projectId: null };
+    const { reply, actions } = await askStewardWorkspace(this.store, { workspaceId, question, history });
+    return { reply, actions, projectId: null };
   }
 
   /** Streaming form of {@link stewardChat} — yields the reply as text deltas, then
@@ -162,7 +162,7 @@ export class Operations {
     question: string,
     history?: ChatTurn[],
     focusProjectId?: string,
-  ): AsyncGenerator<string, { reply: string; action: AssistantAction | null; projectId: string | null }> {
+  ): AsyncGenerator<string, { reply: string; actions: AssistantAction[]; projectId: string | null }> {
     let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
     if (project && project.workspaceId !== workspaceId) project = null;
     if (!project) {
@@ -171,11 +171,11 @@ export class Operations {
       project = id ? projects.find((p) => p.id === id) ?? null : null;
     }
     if (project) {
-      const { reply, action } = yield* askStewardStream(this.store, { workspaceId, project, question, history });
-      return { reply, action, projectId: project.id };
+      const { reply, actions } = yield* askStewardStream(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id };
     }
-    const { reply, action } = yield* askStewardWorkspaceStream(this.store, { workspaceId, question, history });
-    return { reply, action, projectId: null };
+    const { reply, actions } = yield* askStewardWorkspaceStream(this.store, { workspaceId, question, history });
+    return { reply, actions, projectId: null };
   }
 
   // ── reads (workspace-scoped) ──────────────────────────────────────────────

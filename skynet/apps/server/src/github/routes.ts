@@ -49,6 +49,17 @@ export async function registerGithubRoutes(app: FastifyInstance): Promise<void> 
     }
   });
 
+  // The repos this connection can bind a project to — fetched LIVE so a stale
+  // connect-time snapshot (from before the repo list was paginated, or before
+  // newer repos existed) no longer hides repos in the project-creation picker.
+  app.get("/api/github/repos", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      return { repos: await githubService.availableRepos(req.principal!.workspaceId) };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
   // Accounts a new repo can be created under (the user + their orgs), for the
   // "create new repo" flow in project creation.
   app.get("/api/github/owners", async (req: FastifyRequest, reply: FastifyReply) => {

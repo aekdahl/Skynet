@@ -1,47 +1,44 @@
 import { describe, it, expect } from "vitest";
 import { parseReviewVerdict } from "../apps/server/src/review-verdict.js";
 
-describe("parseReviewVerdict", () => {
-  it("does NOT flag an APPROVE whose reason merely contains the word 'flagged' (the reported bug)", () => {
-    const reply =
-      "APPROVE — Delivers the core outcome (paste a git URL → cloned checkout at project creation) " +
-      "with tests and passing checks; the `gh` CLI wording is a reasonable, clearly-flagged deviation " +
-      "that fits the codebase's deliberate zero-external-dep clone design.";
-    const v = parseReviewVerdict(reply);
+// The verdict is a MODEL-EMITTED structured field we validate — we never classify
+// its prose. So an APPROVE whose reason mentions "flagged" is still an approve,
+// and an unreadable reply is held for a human (never auto-approved).
+describe("parseReviewVerdict — structured", () => {
+  it("reads the verdict field; reason prose is irrelevant to the decision", () => {
+    const v = parseReviewVerdict(
+      '{"verdict":"approve","reason":"Delivers the outcome; the gh CLI is a clearly-flagged, reasonable deviation."}',
+    );
     expect(v.approve).toBe(true);
-    // The reason is the rationale WITHOUT the leading verdict word.
-    expect(v.reason.startsWith("APPROVE")).toBe(false);
-    expect(v.reason).toMatch(/^Delivers the core outcome/);
+    expect(v.reason).toMatch(/clearly-flagged/); // the word no longer flips the verdict
   });
 
-  it("flags when the verdict word IS flag, and declares the reason", () => {
-    const v = parseReviewVerdict("FLAG — the new endpoint has no tests and can 500 on empty input.");
+  it("flags on verdict:flag and keeps the stated reason", () => {
+    const v = parseReviewVerdict('{"verdict":"flag","reason":"no tests, can 500 on empty input"}');
     expect(v.approve).toBe(false);
-    expect(v.reason).toBe("the new endpoint has no tests and can 500 on empty input.");
+    expect(v.reason).toBe("no tests, can 500 on empty input");
   });
 
-  it("approves on a bare APPROVE, flags on a bare FLAG (with a stated fallback reason)", () => {
-    expect(parseReviewVerdict("APPROVE").approve).toBe(true);
-    const flag = parseReviewVerdict("FLAG");
-    expect(flag.approve).toBe(false);
-    expect(flag.reason).toMatch(/no reason given/i); // a flag ALWAYS carries a reason
-  });
-
-  it("is case-insensitive and tolerates a leading colon/period separator", () => {
-    expect(parseReviewVerdict("approve: looks good").approve).toBe(true);
-    expect(parseReviewVerdict("approve: looks good").reason).toBe("looks good");
-    expect(parseReviewVerdict("Flag. missing migration").approve).toBe(false);
-    expect(parseReviewVerdict("Flag. missing migration").reason).toBe("missing migration");
-  });
-
-  it("defaults to approve when the verdict word is neither (never a spurious flag)", () => {
-    // e.g. the model hedges — we only ever FLAG on an explicit leading FLAG.
-    const v = parseReviewVerdict("Looks fine to me, ship it.");
+  it("tolerates a ```json fence and surrounding prose", () => {
+    const v = parseReviewVerdict('Here is my review:\n```json\n{"verdict":"approve","reason":"looks good"}\n```');
     expect(v.approve).toBe(true);
+    expect(v.reason).toBe("looks good");
   });
 
-  it("handles empty/garbage input without throwing", () => {
-    expect(parseReviewVerdict("").approve).toBe(true);
-    expect(parseReviewVerdict("   ").reason).toMatch(/auto-approved/i);
+  it("is case-insensitive on the verdict value", () => {
+    expect(parseReviewVerdict('{"verdict":"APPROVE","reason":"ok"}').approve).toBe(true);
+    expect(parseReviewVerdict('{"verdict":"Flag","reason":"nope"}').approve).toBe(false);
+  });
+
+  it("FLAGS (never auto-approves) when the reply isn't a readable verdict", () => {
+    for (const bad of ["", "   ", "looks fine to me, ship it", "{not json", '{"verdict":"maybe"}', '{"reason":"x"}']) {
+      const v = parseReviewVerdict(bad);
+      expect(v.approve).toBe(false); // the safe default — hold for a human
+      expect(v.reason.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("a flag with no stated reason still carries a reason", () => {
+    expect(parseReviewVerdict('{"verdict":"flag"}').reason).toMatch(/no reason given/i);
   });
 });

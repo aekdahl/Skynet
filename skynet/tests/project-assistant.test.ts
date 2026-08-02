@@ -8,6 +8,7 @@ import { describe, it, expect } from "vitest";
 import {
   splitProposedAction,
   validateProjectAction,
+  MAX_STEWARD_ACTIONS,
   type ProjectActionContext,
 } from "../apps/server/src/project-assistant.js";
 
@@ -120,44 +121,64 @@ describe("validateProjectAction — whitelist + project-scoped id resolution", (
   });
 });
 
-describe("splitProposedAction — reply/action split", () => {
+describe("splitProposedAction — reply / multi-action split", () => {
   it("returns the whole text as reply when there is no proposal", () => {
     const r = splitProposedAction("The roadmap has 3 open items: A, B, C.", ctx);
-    expect(r.action).toBeNull();
+    expect(r.actions).toEqual([]);
     expect(r.reply).toBe("The roadmap has 3 open items: A, B, C.");
   });
 
-  it("splits a trailing proposeAction off the reply and validates it", () => {
+  it("accepts a legacy single proposeAction as a one-item list", () => {
     const raw = 'Sure — moving that to done.\n{"proposeAction":{"kind":"move_task","taskId":"t-1","to":"done"}}';
     const r = splitProposedAction(raw, ctx);
     expect(r.reply).toBe("Sure — moving that to done.");
-    expect(r.action).toMatchObject({ kind: "move_task", taskId: "t-1", to: "done" });
+    expect(r.actions).toHaveLength(1);
+    expect(r.actions[0]).toMatchObject({ kind: "move_task", taskId: "t-1", to: "done" });
+  });
+
+  it("splits a proposeActions LIST and validates each in order", () => {
+    const raw =
+      'Cleaning that up.\n{"proposeActions":[{"kind":"move_task","taskId":"t-1","to":"done"},{"kind":"archive_task","taskId":"t-2"},{"kind":"add_task","text":"follow-up"}]}';
+    const r = splitProposedAction(raw, ctx);
+    expect(r.reply).toBe("Cleaning that up.");
+    expect(r.actions.map((a) => a.kind)).toEqual(["move_task", "archive_task", "add_task"]);
+  });
+
+  it("drops invalid actions from the list but keeps the valid ones + the reply", () => {
+    const raw =
+      'On it.\n{"proposeActions":[{"kind":"move_task","taskId":"t-999","to":"done"},{"kind":"add_task","text":"real one"}]}';
+    const r = splitProposedAction(raw, ctx);
+    expect(r.reply).toBe("On it.");
+    expect(r.actions).toHaveLength(1); // the unknown-task move is dropped
+    expect(r.actions[0]).toMatchObject({ kind: "add_task", text: "real one" });
+  });
+
+  it("caps the batch at the action budget and reports running out", () => {
+    const many = Array.from({ length: 15 }, (_, i) => ({ kind: "add_task", text: `task ${i}` }));
+    const raw = `Adding a lot.\n${JSON.stringify({ proposeActions: many })}`;
+    const r = splitProposedAction(raw, ctx);
+    expect(r.actions).toHaveLength(MAX_STEWARD_ACTIONS);
+    expect(r.reply).toMatch(/ran out of action slots/i); // "report if it runs out of loops"
+    expect(r.reply).toMatch(/continue/i);
   });
 
   it("tolerates a code-fenced JSON tail", () => {
-    const raw = 'Will do.\n```json\n{"proposeAction":{"kind":"add_task","text":"write onboarding docs"}}\n```';
+    const raw = 'Will do.\n```json\n{"proposeActions":[{"kind":"add_task","text":"write onboarding docs"}]}\n```';
     const r = splitProposedAction(raw, ctx);
     expect(r.reply).toBe("Will do.");
-    expect(r.action).toMatchObject({ kind: "add_task", text: "write onboarding docs" });
+    expect(r.actions[0]).toMatchObject({ kind: "add_task", text: "write onboarding docs" });
   });
 
-  it("drops an invalid proposed action but keeps the reply", () => {
-    const raw = 'On it.\n{"proposeAction":{"kind":"move_task","taskId":"t-999","to":"done"}}';
-    const r = splitProposedAction(raw, ctx);
-    expect(r.reply).toBe("On it.");
-    expect(r.action).toBeNull(); // unknown task id never escalates
-  });
-
-  it("supplies a fallback reply when the model sent only the action", () => {
-    const r = splitProposedAction('{"proposeAction":{"kind":"add_task","text":"x"}}', ctx);
-    expect(r.action).toMatchObject({ kind: "add_task" });
+  it("supplies a fallback reply when the model sent only the action(s)", () => {
+    const r = splitProposedAction('{"proposeActions":[{"kind":"add_task","text":"x"}]}', ctx);
+    expect(r.actions[0]).toMatchObject({ kind: "add_task" });
     expect(r.reply.length).toBeGreaterThan(0); // never an empty bubble
   });
 
   it("does not mistake a JSON object in prose for a proposal", () => {
     const raw = 'The config looks like {"port": 8080} in the file.';
     const r = splitProposedAction(raw, ctx);
-    expect(r.action).toBeNull();
+    expect(r.actions).toEqual([]);
     expect(r.reply).toBe(raw);
   });
 });
