@@ -59,6 +59,48 @@ Access is IAM-gated (your `operator_email`), fully private — no public IP, no 
 > one stable stream, so the WebSocket holds. (It still rides IAP under the hood —
 > same IAM gate, no public IP.)
 
+## A public /mcp door for agents (optional — keeps IAP for the UI)
+
+By default this box is IAP-only, which is great for humans but unreachable by a
+non-browser client (e.g. a Cloud Run agent that can't run the IAP tunnel). Turn
+on `enable_mcp_https` to add **one narrow public door** — Caddy on `:443` serving
+**only** `/mcp`, Bearer-gated and source-IP allowlisted — to the **same VM**. The
+human UI/api/ws are **unchanged**: still IAP-only on `app_port`. Same box, same
+`/data` disk → `terraform apply` upgrades it **in place** (no new box, no
+migration).
+
+```hcl
+# terraform.tfvars
+enable_mcp_https          = true
+mcp_domain                = "mcp.example.com"    # A-record → the mcp_vm_ip output
+acme_email                = "you@example.com"
+mcp_allowed_source_ranges = ["<client-egress-IP>/32"]   # e.g. your Cloud Run static egress IP
+```
+
+```bash
+# The Bearer credential clients present (also the SKYNET_BOOTSTRAP_TOKEN registered at boot):
+printf '%s' 'skynet_pat_a-strong-random-value' | gcloud secrets versions add skynet-mcp-token \
+  --data-file=- --project=YOUR_PROJECT
+```
+
+Point `mcp_domain` at the **`mcp_vm_ip`** output (a static IP reserved when the
+door is on) **before** apply so Caddy can complete the ACME challenge, then
+`terraform apply`. `terraform output` gives `mcp_url`, `mcp_auth_header`, and
+`claude_mcp_add_command`. Verify from an allowlisted client:
+
+```bash
+curl -i https://mcp.example.com/mcp                       # → 401 (tokenless, rejected at the edge)
+curl -s https://mcp.example.com/mcp -H "Authorization: Bearer <MCP_TOKEN>" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+```
+
+> Posture: the human surface keeps IAP's identity gate; the only public exposure
+> is `/mcp`, and it's doubly gated — the source-IP allowlist **and** the Bearer
+> token (Caddy at the edge + the app validates the value + scopes). For a fully
+> private cross-project client instead of a public allowlist, see
+> `../gcp-mcp-https` (its "Fully private alternative").
+
 ## Control from your phone
 Set the Telegram secrets and message your bot (`/status`, `/task …`, approve gates, `/stop`, `/quit`). Outbound-only, so it works with the VM fully locked down. See `../../docs/…` / the in-app Settings → "Remote control · Telegram" for bot setup.
 
