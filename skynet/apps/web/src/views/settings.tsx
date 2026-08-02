@@ -704,6 +704,26 @@ function McpAccessSection() {
     }
   };
 
+  // The raw token can't be re-shown (only a hash is stored), so "copy it again"
+  // means minting a FRESH key with the same label + scopes and revoking the old
+  // one — the reveal above shows & copies it once. Preserves a still-valid expiry.
+  const regenerate = async (t: ServiceTokenMeta) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const ttlMs = t.expiresAt != null && t.expiresAt > Date.now() ? t.expiresAt - Date.now() : undefined;
+      const created = await api.createServiceToken({ label: t.label, scopes: t.scopes, ttlMs });
+      await api.revokeServiceToken(t.id);
+      setMinted({ token: created.token, label: created.label });
+      setJustId(created.id);
+      await load();
+    } catch (e) {
+      setErr(`Couldn't regenerate the token: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const httpSnippet = (token: string) =>
     `claude mcp add --transport http skynet ${origin}/mcp --header "Authorization: Bearer ${token}"`;
   const stdioSnippet = (token: string) =>
@@ -806,9 +826,19 @@ function McpAccessSection() {
                     )}
                   </div>
                 </div>
-                <button className="btn btn-ghost" disabled={busy} onClick={() => void revoke(t.id)}>
-                  Revoke
-                </button>
+                <div className="mcp-tok-actions">
+                  <button
+                    className="btn btn-ghost"
+                    disabled={busy}
+                    title="Get a copyable key: mints a fresh token with the same label & scopes, then revokes this one (the old key stops working)."
+                    onClick={() => void regenerate(t)}
+                  >
+                    Regenerate
+                  </button>
+                  <button className="btn btn-ghost" disabled={busy} onClick={() => void revoke(t.id)}>
+                    Revoke
+                  </button>
+                </div>
               </div>
             ))}
           </div>
