@@ -115,6 +115,24 @@ fi
 say "▸ Building + pushing the image via Cloud Build (a few minutes)"
 gcloud builds submit ../.. --tag "${IMAGE}" --project "${PROJECT}"
 
+# ── 4b. Snapshot the data disk BEFORE the VM apply (all your state lives on it) ─
+# The apply/startup below can reconfigure or roll the VM in place, so back /data
+# up first — a bad deploy stays fully recoverable. Skipped on a first deploy (no
+# disk yet). A failed snapshot prompts before continuing rather than silently
+# applying with no backup.
+ZONE=$(echo 'var.zone' | terraform console | tr -d '"')
+DATA_DISK="${NAME}-data"
+if gcloud compute disks describe "${DATA_DISK}" --zone="${ZONE}" --project="${PROJECT}" >/dev/null 2>&1; then
+  SNAP="${DATA_DISK}-$(date +%Y%m%d-%H%M%S)"
+  say "▸ Snapshotting ${DATA_DISK} → ${SNAP} (backup before the apply)"
+  if ! gcloud compute disks snapshot "${DATA_DISK}" --zone="${ZONE}" --project="${PROJECT}" --snapshot-names="${SNAP}"; then
+    read -r -p "  snapshot FAILED — continue with the apply anyway? [y/N]: " GO
+    [ "${GO}" = "y" ] || [ "${GO}" = "Y" ] || { echo "  aborting — no backup was taken"; exit 1; }
+  fi
+else
+  echo "  (no ${DATA_DISK} disk yet — first deploy, nothing to snapshot)"
+fi
+
 # ── 5. Provision the VM (INTERACTIVE — review the plan, then type yes) ────────
 say "▸ Provisioning the VM (review the plan, then type yes)"
 terraform apply -input=false -var "image=${IMAGE}"

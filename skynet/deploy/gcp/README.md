@@ -106,7 +106,7 @@ Set the Telegram secrets and message your bot (`/status`, `/task …`, approve g
 
 ## Update / backup / teardown
 - **Update:** re-run `./setup.sh` (rebuilds + pushes the image; the VM re-pulls on `terraform apply`, or `docker pull && docker restart skynet` on the box).
-- **Backup:** snapshot the `skynet-data` persistent disk (`gcloud compute disks snapshot skynet-data --zone=…`).
+- **Backup:** `setup.sh` **auto-snapshots** the `skynet-data` disk before every VM apply (skipped on a first deploy), so each re-run is recoverable. Snapshot manually anytime: `gcloud compute disks snapshot skynet-data --zone=…`.
 - **Teardown:** `terraform destroy` (the persistent disk + secrets are removed too — snapshot first if you want to keep state).
 
 ## Cost (rough)
