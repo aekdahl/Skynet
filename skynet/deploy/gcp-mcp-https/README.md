@@ -121,6 +121,43 @@ curl -s https://<mcp_domain>/mcp \
 
 A request from a non-allowlisted IP times out (the firewall never lets it reach `:443`).
 
+## Also serve the web UI on this same instance (optional)
+
+By default this deploy is **headless** (MCP-only). If you also want the human web
+UI, don't stand up a second box — that would split the datastore (each VM has its
+own `/data` file store, so the UI and the agent would see **different** fleets).
+Instead, serve both from **one instance** and differentiate at the Caddy edge:
+
+```hcl
+# terraform.tfvars
+ui_domain        = "app.example.com"   # A-record → the SAME static IP as mcp_domain
+ui_source_ranges = ["198.51.100.0/24"] # human operator IPs (empty → reuse allowed_source_ranges)
+admin_email      = "admin@example.com" # seeded UI login (REQUIRED when ui_domain is set)
+```
+
+Then add the admin password to Secret Manager (the login for `admin_email`):
+
+```bash
+printf '%s' '<a-strong-password>' | gcloud secrets versions add skynet-mcp-admin-password \
+  --data-file=- --project=<project>
+```
+
+What you get — **one Skynet, one `/data` store, shared fleet**, two hostnames:
+
+| Hostname | Serves | Gated by |
+|----------|--------|----------|
+| `mcp_domain` | `/mcp` only | `remote_ip` (MCP client ranges) **+** `Authorization: Bearer` |
+| `ui_domain` | SPA + `/api` + `/ws` | `remote_ip` (operator ranges) **+** the app's own login |
+
+The one instance runs with `SKYNET_HEADLESS=false` so it serves the SPA; Caddy
+routes each hostname independently, and the `:443` firewall opens to the **union**
+of the two allowlists (Caddy then restricts each hostname to its own set). Log in
+at `https://<ui_domain>/` as `admin_email`; the agent keeps hitting
+`https://<mcp_domain>/mcp` — both drive the same projects/agents/runners.
+
+> Still no IAP anywhere. The UI is protected by the operator IP allowlist + the
+> app's rate-limited login; `/mcp` by the client IP allowlist + the Bearer token.
+
 ## Rotate the MCP token
 
 ```bash

@@ -22,3 +22,13 @@ allowed_source_ranges = ["203.0.113.7/32"]
 
 # open_acme_http = true   # open :80 for Let's Encrypt HTTP-01 (ACME + redirect only). false = you use DNS-01.
 # name_prefix    = "skynet-mcp"
+
+# ── Optional: also serve the human web UI on THIS SAME instance ──────────────
+# One Skynet, one /data store: the UI and /mcp operate on the same fleet (no
+# split state). Leave ui_domain empty for headless/MCP-only (the default).
+# When set: point ui_domain's A record at the SAME static IP as mcp_domain, and
+# add the skynet-mcp-admin-password secret (setup.sh's set_secrets_hint lists it).
+# ui_domain        = "app.example.com"      # second hostname for the SPA + /api + /ws
+# ui_source_ranges = ["198.51.100.0/24"]    # human operator IPs (empty → reuse allowed_source_ranges)
+# admin_email      = "admin@example.com"    # seeded UI login (REQUIRED when ui_domain is set)
+# admin_workspace  = ""                     # empty → the default workspace

@@ -1,10 +1,17 @@
-# Caddy — terminate TLS and publish ONLY the MCP endpoint.
-# Rendered by startup.sh.tftpl; ${...} are Terraform template vars.
+# Caddy — terminate TLS and route by hostname to ONE Skynet instance.
+# Rendered by startup.sh.tftpl (Terraform substitutes the placeholders below).
 #
-# Automatic HTTPS: Caddy obtains + renews a Let's Encrypt cert for ${mcp_domain}
-# via the HTTP-01 challenge on :80 (the only thing served on :80, besides the
-# 301 to https). The TLS-ALPN challenge is disabled because :443 is locked to the
-# source-IP allowlist and Let's Encrypt could not reach it.
+# Routes:
+#   mcp_domain → publishes ONLY /mcp, Bearer-gated (the agent surface).
+#   ui_domain  → (when set) the full app (SPA + /api + /ws), app-login-gated.
+# Both hostnames point at the SAME VM + the SAME /data file store, so the UI and
+# MCP operate on the same fleet. Each hostname is additionally restricted, at the
+# edge, to its own source-IP allowlist (remote_ip) on top of the VM firewall.
+#
+# Automatic HTTPS: Caddy obtains + renews Let's Encrypt certs via the HTTP-01
+# challenge on :80 (the only thing served on :80, besides the 301 to https). The
+# TLS-ALPN challenge is disabled because :443 is locked to the allowlist and
+# Let's Encrypt could not reach it.
 
 ${mcp_domain} {
 	tls {
@@ -14,16 +21,20 @@ ${mcp_domain} {
 		}
 	}
 
+	# Edge IP allowlist: only the MCP client ranges may reach this hostname at all.
+	@blocked not remote_ip ${mcp_ranges}
+	respond @blocked 403
+
 	# Site-scoped matchers.
 	@mcp path /mcp /mcp/*
 	@noauth not header Authorization "Bearer *"
 
-	# Only /mcp is published. The web UI, /api and /ws are NOT exposed here —
-	# this endpoint is MCP-only.
+	# Only /mcp is published. The web UI, /api and /ws are NOT exposed on this
+	# hostname — this endpoint is MCP-only.
 	handle @mcp {
 		# Edge gate: reject anything without a Bearer token before it reaches the
-		# app. The app still validates the token VALUE + scopes — this is just
-		# cheap defense-in-depth so unauthenticated noise never touches Skynet.
+		# app. The app still validates the token VALUE + scopes — cheap
+		# defense-in-depth so unauthenticated noise never touches Skynet.
 		handle @noauth {
 			header Content-Type application/json
 			respond `{"jsonrpc":"2.0","error":{"code":-32001,"message":"Unauthorized: Authorization: Bearer <MCP_TOKEN> required"},"id":null}` 401
@@ -44,3 +55,27 @@ ${mcp_domain} {
 		output file /data/access.log
 	}
 }
+%{ if ui_enabled ~}
+
+# The human web UI + /api + /ws — SAME VM, SAME Skynet, SAME /data store as /mcp
+# above. No Bearer edge gate here: the app's own login (a seeded admin operator)
+# guards it. reverse_proxy upgrades WebSockets (/ws) automatically.
+${ui_domain} {
+	tls {
+		issuer acme {
+			email ${acme_email}
+			disable_tlsalpn_challenge
+		}
+	}
+
+	# Edge IP allowlist: only the human operator ranges may reach the UI hostname.
+	@blocked not remote_ip ${ui_ranges}
+	respond @blocked 403
+
+	reverse_proxy skynet:${app_port}
+
+	log {
+		output file /data/access-ui.log
+	}
+}
+%{ endif ~}
