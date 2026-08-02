@@ -48,6 +48,15 @@ TG_TOKEN=$(get_secret telegram-bot-token)
 TG_CHAT=$(get_secret telegram-owner-chat-id)
 ADMIN_PASSWORD=$(get_secret admin-password)
 GITHUB_TOKEN=$(get_secret github-token)
+%{ if enable_mcp_https ~}
+# Public /mcp door: the Bearer credential clients present. Fail loudly if unset
+# rather than serving an endpoint that rejects every request.
+MCP_TOKEN=$(get_secret mcp-token)
+if [ -z "$${MCP_TOKEN}" ]; then
+  echo "[skynet] FATAL: enable_mcp_https but secret ${name_prefix}-mcp-token has no value — add one with 'gcloud secrets versions add ${name_prefix}-mcp-token', then reboot." >&2
+  exit 1
+fi
+%{ endif ~}
 
 # Master key: prefer the secret; else persist a generated one on /data (stable
 # across reboots) so file-store encryption keeps working.
@@ -80,6 +89,13 @@ SKYNET_TELEGRAM_BOT_TOKEN=$${TG_TOKEN}
 SKYNET_TELEGRAM_OWNER_CHAT_ID=$${TG_CHAT}
 SKYNET_TELEGRAM_CONTROL=${telegram_control}
 GITHUB_TOKEN=$${GITHUB_TOKEN}
+%{ if enable_mcp_https ~}
+# Public /mcp door: register the injected token as a scoped service token, and
+# trust Caddy's X-Forwarded-For so per-IP rate limiting keys on the real caller.
+SKYNET_TRUST_PROXY=true
+SKYNET_BOOTSTRAP_TOKEN=$${MCP_TOKEN}
+SKYNET_BOOTSTRAP_SCOPES=${mcp_scopes}
+%{ endif ~}
 EOF
 
 # ── 5. Pull + run the app ────────────────────────────────────────────────────
@@ -92,3 +108,20 @@ docker run -d --restart=always --name skynet \
   -v /data:/data \
   "${image}"
 echo "[skynet] up on :${app_port}"
+%{ if enable_mcp_https ~}
+
+# ── 6. Public /mcp door: Caddy on the host network terminates TLS on :443 and
+#      proxies ONLY /mcp to the app at 127.0.0.1:${app_port} (host-published
+#      above). The UI/api/ws are NOT exposed here — still IAP-only. ────────────
+mkdir -p /data/caddy
+cat >/data/Caddyfile <<'CADDYEOF'
+${caddyfile}
+CADDYEOF
+docker rm -f caddy >/dev/null 2>&1 || true
+docker run -d --restart=always --name caddy \
+  --network host \
+  -v /data/Caddyfile:/etc/caddy/Caddyfile:ro \
+  -v /data/caddy:/data \
+  caddy:2
+echo "[skynet] MCP door up — https://${mcp_domain}/mcp (Caddy :443, Bearer + allowlist)"
+%{ endif ~}

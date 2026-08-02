@@ -13,3 +13,15 @@ admin_email    = "you@example.com"    # seed login for the Skynet web UI
 admin_workspace = "skynet"
 telegram_control = false              # true = allow approve/create/etc. over Telegram (kill switch always works)
 # name_prefix  = "skynet"             # prefix for created resource names
+
+# ── Optional: a public HTTPS /mcp door for agents (keeps IAP for the human UI) ─
+# Off by default → IAP-only (unchanged). Turn on to let a non-browser client
+# (e.g. a Cloud Run agent that can't use the tunnel) reach /mcp. Same box, same
+# data disk, in-place apply. Point mcp_domain's A-record at the `mcp_vm_ip`
+# output BEFORE apply, and add the skynet-mcp-token secret (the Bearer value).
+# enable_mcp_https          = true
+# mcp_domain                = "mcp.example.com"    # DNS → the reserved static IP (mcp_vm_ip output)
+# acme_email                = "you@example.com"    # Let's Encrypt account email
+# mcp_allowed_source_ranges = ["203.0.113.7/32"]   # your MCP client egress IP(s); never 0.0.0.0/0
+# mcp_scopes                = "observe,author"      # add "approver" only to self-resolve HITL gates
+# open_acme_http            = true                  # :80 for ACME HTTP-01 (false = use DNS-01)
