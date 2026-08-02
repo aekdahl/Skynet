@@ -462,7 +462,7 @@ export function stewardChat(
   history: { role: "user" | "assistant"; content: string }[],
   projectId?: string,
 ) {
-  return req<{ reply: string; action?: AssistantAction | null; projectId?: string | null }>(
+  return req<{ reply: string; actions?: AssistantAction[]; projectId?: string | null }>(
     "POST",
     "/api/steward/chat",
     { question, history, projectId },
