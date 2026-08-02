@@ -574,10 +574,12 @@ function workspaceStatusContext(projects: Project[], tasks: Task[], runs: TaskRu
 
 /** Ask Steward workspace-wide (the global dock with no project focused). Grounds
  *  on a cross-project status snapshot; answer-only (no proposed actions). */
-export async function askStewardWorkspace(
+/** Build the workspace-wide prompt (+ resolve the key). Shared by the
+ *  accumulating and streaming answer paths so they ground identically. */
+async function buildWorkspaceCall(
   store: Store,
   opts: { workspaceId: string; question: string; history?: ChatTurn[] },
-): Promise<{ reply: string; action: AssistantAction | null }> {
+): Promise<{ prompt: string; apiKey?: string }> {
   const { workspaceId, question } = opts;
   const [projects, tasks, runs, gates] = await Promise.all([
     store.listProjects(workspaceId),
@@ -604,18 +606,49 @@ export async function askStewardWorkspace(
     .filter((s) => s !== "")
     .join("\n");
   const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
+  return { prompt, apiKey };
+}
+
+export async function askStewardWorkspace(
+  store: Store,
+  opts: { workspaceId: string; question: string; history?: ChatTurn[] },
+): Promise<{ reply: string; action: AssistantAction | null }> {
+  const { prompt, apiKey } = await buildWorkspaceCall(store, opts);
   const reply = await oneShotText({ prompt, apiKey });
   return { reply, action: null };
 }
 
+/** Streaming form of {@link askStewardWorkspace} — yields text deltas, then
+ *  RETURNS the full reply. Workspace mode never proposes an action. */
+export async function* askStewardWorkspaceStream(
+  store: Store,
+  opts: { workspaceId: string; question: string; history?: ChatTurn[] },
+): AsyncGenerator<string, { reply: string; action: AssistantAction | null }> {
+  const { prompt, apiKey } = await buildWorkspaceCall(store, opts);
+  let full = "";
+  for await (const delta of oneShotTextStream({ prompt, apiKey })) {
+    full += delta;
+    yield delta;
+  }
+  return { reply: full, action: null };
+}
+
 /** Streaming form of {@link askSteward} — yields the answer as text deltas so the
- *  web "Ask about this project" panel renders it live. Display-only: proposed
- *  actions come from the accumulating {@link askSteward}. */
+ *  dock renders it live, then RETURNS the clean reply + any confirm-first proposed
+ *  action. The action is parsed from the FULL accumulated text, so the trailing
+ *  action JSON is never the shown reply (the caller reconciles to `reply`). */
 export async function* askStewardStream(
   store: Store,
   opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
-): AsyncGenerator<string> {
+): AsyncGenerator<string, { reply: string; action: AssistantAction | null }> {
   const c = await prepareStewardCall(store, opts);
-  if (c.repo) yield* oneShotRepoAssistantStream({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey });
-  else yield* oneShotTextStream({ prompt: c.prompt, apiKey: c.apiKey });
+  let full = "";
+  const gen = c.repo
+    ? oneShotRepoAssistantStream({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey })
+    : oneShotTextStream({ prompt: c.prompt, apiKey: c.apiKey });
+  for await (const delta of gen) {
+    full += delta;
+    yield delta;
+  }
+  return splitProposedAction(full, c.actionCtx);
 }

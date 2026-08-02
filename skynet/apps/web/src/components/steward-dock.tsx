@@ -108,10 +108,25 @@ export function StewardDock({
     setInput("");
     setBusy(true);
     try {
-      const { reply, action, projectId } = await api.stewardChat(question, history, focusProjectId ?? undefined);
+      // Stream deltas into the last (assistant) bubble as they arrive.
+      const onDelta = (chunk: string) =>
+        setMsgs((m) => {
+          const next = m.slice();
+          const last = next[next.length - 1]!;
+          next[next.length - 1] = { ...last, content: last.content + chunk };
+          return next;
+        });
+      const { reply, action, projectId } = await api.streamStewardChat(
+        question,
+        history,
+        focusProjectId ?? undefined,
+        onDelta,
+      );
       // Steward resolved a project from the conversation → carry that focus so the
       // header + later turns reflect the project it's now working on.
       if (!focusProjectId && projectId) setResolvedId(projectId);
+      // Reconcile to the authoritative CLEAN reply (strips a trailing action JSON
+      // that may have streamed through) and attach any proposed action.
       setMsgs((m) => {
         const next = m.slice();
         next[next.length - 1] = {

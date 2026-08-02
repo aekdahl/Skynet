@@ -60,6 +60,7 @@ const ALLOW = new Set<string>([
   // provider key + a real repo to ground against, so no offline journey exercises
   // it; the project-chat parse contract is covered by project-assistant.test.ts.
   "stewardChat",
+  "streamStewardChat", // streaming variant of stewardChat — same live-key requirement
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",
