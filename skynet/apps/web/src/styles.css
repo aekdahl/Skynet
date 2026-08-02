@@ -1300,6 +1300,7 @@ button.kb-done:hover { opacity: 1; }
 .mcp-tok-row { display: flex; align-items: center; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 11px 14px; }
 .mcp-tok-new { border-color: color-mix(in oklch, var(--accent), transparent 45%); box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent), transparent 60%) inset; }
 .mcp-tok-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.mcp-tok-actions { flex: none; display: flex; gap: 6px; }
 .mcp-tok-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .mcp-tok-tag { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
 .mcp-tok-scopes { display: flex; gap: 5px; flex-wrap: wrap; }
