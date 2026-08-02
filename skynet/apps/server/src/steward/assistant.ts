@@ -555,6 +555,82 @@ export function resolveFocusProject(
   return null;
 }
 
+/** A validated focus decision. `projectId` = the project Steward judged the
+ *  operator is working on; `clarify` = a question to ask when it's genuinely
+ *  ambiguous WHICH project (so Steward asks instead of guessing). At most one is
+ *  set; both null = a general/workspace turn. */
+export interface FocusDecision {
+  projectId: string | null;
+  clarify: string | null;
+}
+
+const FOCUS_INSTRUCTION =
+  "Decide which ONE project (if any) the operator's latest message is about, so the assistant can focus + act on it. " +
+  "You are given the project list (each as `[id] name`) and the recent conversation. " +
+  "Rules: if the message clearly concerns exactly one project (named, or an unambiguous reference like 'it'/'that project' resolvable from the conversation), pick it. " +
+  "If the operator clearly wants to DO something to a project but it's ambiguous WHICH one, do NOT guess — ask a short question naming the likely candidates. " +
+  "If it's a general or cross-project question (status, 'what's running'), pick nothing. " +
+  'Respond with ONLY this JSON and nothing else: {"projectId":"<id from the list>"|null,"clarify":"<one short question>"|null}. Set at most one of the two.';
+
+/** PURE: validate a focus-decision reply. `projectId` must be a real id from the
+ *  list; anything else is dropped. `clarify` is taken only when no valid project
+ *  was chosen (a concrete project wins over a question). */
+export function parseFocusDecision(raw: string, validIds: Set<string>): FocusDecision {
+  const found = lastTopLevelObject((raw ?? "").trim());
+  if (!found) return { projectId: null, clarify: null };
+  try {
+    const o = JSON.parse(found.json) as Record<string, unknown>;
+    const projectId = typeof o.projectId === "string" && validIds.has(o.projectId) ? o.projectId : null;
+    if (projectId) return { projectId, clarify: null };
+    const clarify = typeof o.clarify === "string" && o.clarify.trim() ? o.clarify.trim() : null;
+    return { projectId: null, clarify };
+  } catch {
+    return { projectId: null, clarify: null };
+  }
+}
+
+/**
+ * Decide which project the operator is working on — Steward's judgment, NOT a
+ * name-matching regex. Returns the chosen project, or a clarifying question when
+ * it's ambiguous which one (so the caller asks instead of guessing). Falls back
+ * to the deterministic {@link resolveFocusProject} when there's no consult-capable
+ * key (so a no-LLM deployment still focuses on an unambiguous mention). Trivial
+ * cases short-circuit without a model call (0 projects → none; 1 → that one).
+ */
+export async function decideFocusProject(
+  store: Store,
+  workspaceId: string,
+  question: string,
+  history: ChatTurn[] = [],
+): Promise<FocusDecision> {
+  const projects = await store.listProjects(workspaceId);
+  if (projects.length === 0) return { projectId: null, clarify: null };
+  if (projects.length === 1) return { projectId: projects[0]!.id, clarify: null };
+  const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
+  if (!apiKey) {
+    // No model available — degrade to the deterministic unambiguous-mention pick.
+    return { projectId: resolveFocusProject(projects.map((p) => ({ id: p.id, name: p.name })), question, history), clarify: null };
+  }
+  const list = projects.map((p) => `  [${p.id}] ${p.name}`).join("\n");
+  const convo = history
+    .slice(-MAX_HISTORY)
+    .map((t) => `${t.role === "user" ? "Operator" : "Assistant"}: ${t.content}`)
+    .join("\n");
+  const prompt = [
+    FOCUS_INSTRUCTION,
+    "",
+    "PROJECTS:",
+    list,
+    convo ? `\nRECENT CONVERSATION:\n${convo}` : "",
+    "",
+    `Operator's latest message: ${question}`,
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+  const raw = await oneShotText({ prompt, apiKey }).catch(() => "");
+  return parseFocusDecision(raw, new Set(projects.map((p) => p.id)));
+}
+
 const WORKSPACE_SYSTEM =
   "You are Steward, the operator's assistant for a Skynet workspace. Answer conversationally and concisely about the CURRENT STATUS across the whole workspace — projects, their task boards, active runs, and open approvals — grounded ONLY in the WORKSPACE STATUS below. " +
   "For questions about how the workspace is configured — approvals, autonomy, the runner sandbox, integration, Telegram, MCP, backends, vendor CLIs — ground the answer in the WORKSPACE SETTINGS section (the LIVE runtime config), not from memory. Secret values there are shown only as set/not-set — never claim to know a secret's value. " +

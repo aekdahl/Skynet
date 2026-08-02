@@ -144,12 +144,15 @@ export function StewardDock({
     setInput("");
     setBusy(true);
     try {
-      // Target the EFFECTIVE focus (pin > page > last), so a pinned project keeps
-      // getting the work even while you're viewing another page.
-      const { reply, action, actions, projectId } = await api.stewardChat(question, history, effFocusId ?? undefined);
-      // Steward resolved a project from the conversation → carry that focus so the
-      // header + later turns reflect the project it's now working on.
-      if (!effFocusId && projectId) setResolvedId(projectId);
+      // Pass only a HARD focus — a manual 📌 pin or the project page you're on.
+      // With neither, Steward DECIDES which project you mean (or asks), so leaving
+      // it off lets it interpret + re-decide each turn instead of being locked.
+      const hardFocus = pinned ?? focusProjectId;
+      const { reply, action, actions, projectId } = await api.stewardChat(question, history, hardFocus ?? undefined);
+      // Steward's chosen project becomes the SOFT focus — it drives the header +
+      // action targeting + navigate-away continuity, but stays re-decidable next
+      // turn (unlike the pin). null when Steward asked or answered workspace-wide.
+      if (projectId) setResolvedId(projectId);
       // Prefer the full batch; fall back to a lone `action` for back-compat.
       const proposed = actions?.length ? actions : action ? [action] : [];
       setMsgs((m) => {

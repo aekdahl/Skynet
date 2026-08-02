@@ -49,7 +49,7 @@ import {
   type AssistantAction,
   type ChatTurn,
 } from "./project-assistant.js";
-import { askStewardWorkspace, resolveFocusProject } from "./steward/assistant.js";
+import { askStewardWorkspace, decideFocusProject } from "./steward/assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -137,14 +137,21 @@ export class Operations {
     history?: ChatTurn[],
     focusProjectId?: string,
   ): Promise<{ reply: string; action: AssistantAction | null; actions: AssistantAction[]; projectId: string | null }> {
-    // An explicit page focus wins; otherwise resolve the project from the
-    // conversation so the workspace dock can act on it, not just report on it.
+    // An explicit page focus wins; otherwise Steward DECIDES which project the
+    // operator means — interpreting the message, not name-matching. When it's
+    // ambiguous which project, it asks instead of guessing (clarify), and we
+    // return that question with no focus set. (No page focus present.)
     let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
     if (project && project.workspaceId !== workspaceId) project = null; // stale / not ours
     if (!project) {
-      const projects = await this.store.listProjects(workspaceId);
-      const id = resolveFocusProject(projects.map((p) => ({ id: p.id, name: p.name })), question, history);
-      project = id ? projects.find((p) => p.id === id) ?? null : null;
+      const decision = await decideFocusProject(this.store, workspaceId, question, history);
+      if (decision.clarify) {
+        return { reply: decision.clarify, action: null, actions: [], projectId: null };
+      }
+      if (decision.projectId) {
+        const p = await this.store.getProject(decision.projectId);
+        if (p && p.workspaceId === workspaceId) project = p;
+      }
     }
     if (project) {
       const { reply, action, actions } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
