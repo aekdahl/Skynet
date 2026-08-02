@@ -151,7 +151,7 @@ describe("autonomy loop", () => {
   });
 
   it("auto-review that FLAGs records the verdict on the task and leaves the HITL open", async () => {
-    const { store, orch } = await setup("FLAG: missing tests");
+    const { store, orch } = await setup('{"verdict":"flag","reason":"missing tests"}');
     const run: TaskRun = {
       id: "r1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "do X", status: "review",
       runnerId: null, agentId: "a1", model: "opus-4.8", branch: "agent/r1", modules: [], progress: 1,
@@ -185,7 +185,7 @@ describe("autonomy loop", () => {
     // For local merges completeMerged() ALSO writes done (idempotent); for the
     // GitHub PR path pushToGithub stops at review waiting for a human — this
     // guarantees the KANBAN task doesn't strand there.
-    const { store, orch } = await setup("APPROVE: looks good");
+    const { store, orch } = await setup('{"verdict":"approve","reason":"looks good"}');
     const run: TaskRun = {
       id: "r1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "do X", status: "review",
       runnerId: null, agentId: "a1", model: "opus-4.8", branch: "agent/r1", modules: [], progress: 1,
@@ -258,7 +258,7 @@ describe("autonomy loop", () => {
     // step, in contrast, DOES stay gated on autonomy.
     const store = new MemoryStore();
     const hub = new Hub(store, new NullBus());
-    const provider = new AutoProvider("APPROVE: looks good");
+    const provider = new AutoProvider('{"verdict":"approve","reason":"looks good"}');
     const orch = new Orchestrator(store, hub, provider);
     await store.putProject({ ...project, autonomy: false });
     await store.putAgent(idleAgent);
@@ -289,7 +289,7 @@ describe("autonomy loop", () => {
 
   it("does not re-review a task that already has a verdict (idempotent)", async () => {
     // Once the verdict exists, subsequent ticks must NOT spend another LLM call.
-    const { store, orch, provider } = await setup("APPROVE: looks good");
+    const { store, orch, provider } = await setup('{"verdict":"approve","reason":"looks good"}');
     const run: TaskRun = {
       id: "r1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "do X", status: "review",
       runnerId: null, agentId: "a1", model: "opus-4.8", branch: "agent/r1", modules: [], progress: 1,
