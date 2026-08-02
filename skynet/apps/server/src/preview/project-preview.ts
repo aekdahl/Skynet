@@ -105,6 +105,21 @@ const LOG_CAP = 200;
 const IDLE_MS = 15 * 60 * 1000; // auto-stop a preview no one is watching
 const HEALTH_TIMEOUT_MS = 45_000;
 
+/** The tail of the dev server's own output, as a " — …" suffix for a failure
+ *  message. So a failed preview says WHY (e.g. "sh: vite: command not found")
+ *  instead of an opaque code. PURE — unit-tested. */
+export function previewLogTail(logs: string[]): string {
+  const lines = logs.filter((l) => l.trim());
+  if (!lines.length) return "";
+  const tail = lines.slice(-3).join(" / ");
+  return ` — ${tail.length > 400 ? "…" + tail.slice(-400) : tail}`;
+}
+
+/** A non-zero exit turned into an operator-readable reason (code + output tail). */
+export function previewExitReason(code: number | null, logs: string[]): string {
+  return `preview process exited (code ${code ?? "?"})${previewLogTail(logs)}`;
+}
+
 export class ProjectPreviewManager {
   private previews = new Map<string, Live>();
   // Cache an agent-proposed recipe per project so a restart (or a run preview of
@@ -274,14 +289,15 @@ export class ProjectPreviewManager {
   }
 
   /** Poll the port until the app answers (any HTTP response) or we give up. */
-  private waitForPort(port: number, until: number): Promise<boolean> {
+  private waitForPort(port: number, until: number, alive: () => boolean = () => true): Promise<boolean> {
     return new Promise((res) => {
       const tick = () => {
+        if (!alive()) return res(false); // the process died — stop polling a dead port
         const req = httpGet({ host: "127.0.0.1", port, path: "/", timeout: 1500 }, (r) => {
           r.resume();
           res(true);
         });
-        req.on("error", () => (Date.now() > until ? res(false) : setTimeout(tick, 400)));
+        req.on("error", () => (Date.now() > until || !alive() ? res(false) : setTimeout(tick, 400)));
         req.on("timeout", () => req.destroy());
       };
       tick();
@@ -482,11 +498,18 @@ export class ProjectPreviewManager {
       p.child = child;
       child.stdout?.on("data", (b) => this.log(p, b.toString()));
       child.stderr?.on("data", (b) => this.log(p, b.toString()));
-      child.on("exit", (code) => {
+      // Finalize a failure on "close" (not "exit"): it fires AFTER stdout/stderr
+      // have drained, so the captured logs — and thus the surfaced reason — are
+      // complete. `closed` also lets the health wait bail the instant it dies.
+      let closed = false;
+      child.on("close", (code) => {
+        closed = true;
         if (this.previews.get(spec.key) !== p) return; // superseded
         if (p.status !== "stopped") {
           p.status = "failed";
-          p.error = p.error ?? `preview process exited (code ${code ?? "?"})`;
+          // Include the output tail so the operator sees WHY it exited, not just
+          // an opaque code (this is the message the Telegram/UI failure shows).
+          p.error = p.error ?? previewExitReason(code, p.logs);
         }
       });
       child.on("error", (err) => {
@@ -494,14 +517,20 @@ export class ProjectPreviewManager {
         p.error = err.message;
       });
 
-      const ok = await this.waitForPort(recipe.port, Date.now() + HEALTH_TIMEOUT_MS);
+      // Bail the health wait the moment the child dies (else a dev server that
+      // exits code 1 in a second still made us wait the full timeout).
+      const ok = await this.waitForPort(
+        recipe.port,
+        Date.now() + HEALTH_TIMEOUT_MS,
+        () => this.previews.get(spec.key) === p && !closed && p.status === "starting",
+      );
       if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded mid-wait
       if (ok && p.status === "starting") {
         p.status = "live";
         this.armIdle(spec.key, p);
       } else if (p.status === "starting") {
         p.status = "failed";
-        p.error = p.error ?? `the app didn't start listening on port ${recipe.port} within ${HEALTH_TIMEOUT_MS / 1000}s`;
+        p.error = p.error ?? `the app didn't start listening on port ${recipe.port} within ${HEALTH_TIMEOUT_MS / 1000}s${previewLogTail(p.logs)}`;
       }
     } catch (err) {
       p.status = "failed";
