@@ -26,6 +26,13 @@ type Msg = {
 
 let thread: Msg[] = [];
 let draftCache = "";
+// Session-scoped focus so Steward can KEEP working a project while you roam the
+// app (multitasking). `pinnedId` is an explicit lock that overrides the page —
+// Steward stays on it even when you open another project. `lastFocusId` is a
+// softer memory: when you land on a page with NO project (Home, Fleet, Settings),
+// the dock keeps the last project it was on so the conversation doesn't reset.
+let pinnedId: string | null = null;
+let lastFocusId: string | null = null;
 
 const SUGGESTIONS = [
   "What's running right now?",
@@ -51,9 +58,24 @@ export function StewardDock({
   // itself; remember it so the header, placeholder, and action-targeting reflect
   // the project it's now working on (a page focus, when present, always wins).
   const [resolvedId, setResolvedId] = useState<string | null>(null);
+  const [pinned, setPinned] = useState<string | null>(pinnedId);
   const threadRef = useRef<HTMLDivElement>(null);
-  const effFocusId = focusProjectId ?? resolvedId;
-  const effFocusName = focusProjectName ?? projects.find((p) => p.id === resolvedId)?.name ?? null;
+
+  // The project the current PAGE (or a chat-resolved reference) is about.
+  const pageFocusId = focusProjectId ?? resolvedId;
+  // Remember the last real project focus, so leaving to a project-less page
+  // (Home/Fleet/Settings) keeps Steward on it rather than dropping to workspace.
+  useEffect(() => { if (pageFocusId) lastFocusId = pageFocusId; }, [pageFocusId]);
+  useEffect(() => { pinnedId = pinned; }, [pinned]);
+
+  // Effective focus: an explicit pin wins over everything; otherwise the page (or
+  // resolved) project; otherwise the last one we were on.
+  const effFocusId = pinned ?? pageFocusId ?? lastFocusId;
+  const nameOf = (id: string | null): string | null =>
+    id ? (id === focusProjectId ? focusProjectName : null) ?? projects.find((p) => p.id === id)?.name ?? null : null;
+  const effFocusName = nameOf(effFocusId);
+  // The page has a DIFFERENT project than what Steward is pinned to → offer to move.
+  const pageDiffers = !!pinned && !!focusProjectId && focusProjectId !== pinned;
 
   useEffect(() => { thread = msgs; }, [msgs]);
   useEffect(() => { draftCache = input; }, [input]);
@@ -122,10 +144,12 @@ export function StewardDock({
     setInput("");
     setBusy(true);
     try {
-      const { reply, action, actions, projectId } = await api.stewardChat(question, history, focusProjectId ?? undefined);
+      // Target the EFFECTIVE focus (pin > page > last), so a pinned project keeps
+      // getting the work even while you're viewing another page.
+      const { reply, action, actions, projectId } = await api.stewardChat(question, history, effFocusId ?? undefined);
       // Steward resolved a project from the conversation → carry that focus so the
       // header + later turns reflect the project it's now working on.
-      if (!focusProjectId && projectId) setResolvedId(projectId);
+      if (!effFocusId && projectId) setResolvedId(projectId);
       // Prefer the full batch; fall back to a lone `action` for back-compat.
       const proposed = actions?.length ? actions : action ? [action] : [];
       setMsgs((m) => {
@@ -154,7 +178,30 @@ export function StewardDock({
     <aside className="steward-dock" aria-label="Steward">
       <div className="steward-head">
         <span className="steward-title mono">✦ STEWARD</span>
-        <span className="steward-scope mono">{effFocusName ? `focused · ${effFocusName}` : "workspace"}</span>
+        {effFocusId ? (
+          <button
+            className={"steward-pin mono" + (pinned ? " on" : "")}
+            onClick={() => setPinned(pinned ? null : effFocusId)}
+            title={
+              pinned
+                ? `Pinned to ${effFocusName ?? "this project"} — Steward stays here as you navigate. Click to unpin (follow the page).`
+                : `Pin Steward to ${effFocusName ?? "this project"} so it keeps working here while you go elsewhere.`
+            }
+          >
+            {pinned ? "📌" : "○"} {effFocusName ?? "project"}
+          </button>
+        ) : (
+          <span className="steward-scope mono">workspace</span>
+        )}
+        {pageDiffers && (
+          <button
+            className="steward-pin-switch mono"
+            onClick={() => setPinned(focusProjectId)}
+            title={`Move Steward to ${focusProjectName ?? "this page's project"}`}
+          >
+            ↪ {focusProjectName ?? "this page"}
+          </button>
+        )}
         <span className="steward-spacer" />
         <button className="btn btn-ghost btn-sm" onClick={onClose} title="Close Steward">✕</button>
       </div>
