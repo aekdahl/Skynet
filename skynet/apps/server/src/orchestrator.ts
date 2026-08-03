@@ -138,6 +138,18 @@ export function splitEstMinutesTag(
 const SCOPE_NOTE =
   "\n\n---\nScope discipline: do exactly what's asked above, then stop. Don't expand into adjacent or unrequested work — extra features, UI, refactors, or speculative follow-ups. When the requested change is complete, report and finish rather than inventing more scope. If you're genuinely blocked, or the task is too big for one focused session, escalate (AskUserQuestion with header \"ESCALATE\") instead of grinding through your turn budget.";
 
+/** Prepend the project's `instructions` (the "house rules" for this codebase)
+ *  to any prompt an agent will see. When there are no instructions this is a
+ *  no-op — the prompt is returned unchanged, so runs on projects that never
+ *  set the field behave exactly as they did before. The banner is fenced with
+ *  a clear label so an agent that reads a stack of prompts knows what's
+ *  project-scoped guidance vs. task-scoped ask. Exported for tests + reuse. */
+export function withInstructions(instructions: string | null | undefined, body: string): string {
+  const trimmed = instructions?.trim();
+  if (!trimmed) return body;
+  return `=== PROJECT INSTRUCTIONS (apply to every task in this project) ===\n${trimmed}\n\n=== TASK ===\n${body}`;
+}
+
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   // Global kill switch. When paused, the autonomy loop is a no-op (no new work is
@@ -824,7 +836,8 @@ export class Orchestrator {
       const apiKey = await secretService.resolve(project.workspaceId, runner.credentialId ?? runner.provider);
       // The agent gets the full brief: the short name plus the longer
       // description when one exists (the run's display name stays the short text).
-      const brief = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
+      const taskBody = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
+      const brief = withInstructions(project.instructions, taskBody);
       const handle = await provider.start(
         { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey },
         this.events(),
@@ -891,7 +904,17 @@ export class Orchestrator {
       const { cwd, baseRef } = await this.provisionCwd(git, runId, agent.branch, parent.branch);
       const apiKey = await secretService.resolve(parent.workspaceId, runner.credentialId ?? runner.provider);
       const handle = await provider.start(
-        { runId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex, apiKey },
+        {
+          runId,
+          projectId: parent.projectId,
+          task: withInstructions(project?.instructions, parent.name),
+          model: runner.model,
+          branch: agent.branch,
+          cwd,
+          parentId,
+          branchFromStep: stepIndex,
+          apiKey,
+        },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId: null, branch: agent.branch, baseRef, git });
@@ -987,10 +1010,13 @@ export class Orchestrator {
     const provider = await this.getProvider(acq.provider);
     const cwd = review.git.worktrees.pathFor(runId);
     const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
-    const revisePrompt =
+    const project = await this.store.getProject(run.projectId);
+    const revisePrompt = withInstructions(
+      project?.instructions,
       `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
       `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
-      `only the changes needed to address the request, then stop.`;
+      `only the changes needed to address the request, then stop.`,
+    );
     await this.hub.runStatus(runId, "running");
     if (review.taskId) {
       const task = await this.store.getTask(review.taskId);
@@ -1127,9 +1153,13 @@ export class Orchestrator {
     const provider = await this.getProvider(acq.provider);
     const cwd = git.worktrees.pathFor(runId);
     const apiKey = await secretService.resolve(run.workspaceId, run.provider);
-    const prompt = reassign
-      ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
-      : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`;
+    const project = await this.store.getProject(run.projectId);
+    const prompt = withInstructions(
+      project?.instructions,
+      reassign
+        ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+        : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
+    );
     await this.hub.runStatus(runId, "running");
     if (ctx?.taskId) {
       const task = await this.store.getTask(ctx.taskId);
@@ -1837,14 +1867,16 @@ export class Orchestrator {
         };
       }
       const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
+      const project = await this.store.getProject(task.projectId);
       // The estimate is for AGENT wall-clock time, not human developer time —
       // these differ by an order of magnitude on typical coding tasks (an
       // autonomous agent's 20-minute feature is a person's afternoon). Without
       // this anchor the LLM defaults to its stronger "human developer time"
       // prior and returns estimates 10–30× too high, so we spell it out AND
       // give concrete agent-wall-clock anchors for S/M/L.
+      const taskBody = task.description ? `${task.text}\n\n${task.description}` : task.text;
       const reply = await provider.consult(
-        { task: task.description ? `${task.text}\n\n${task.description}` : task.text, model: agent.model, cwd: config.runnerCwd, apiKey },
+        { task: withInstructions(project?.instructions, taskBody), model: agent.model, cwd: config.runnerCwd, apiKey },
         [
           "You are triaging a backlog item for a coding project.",
           "In 2-3 short lines: is the ask clear, rough effort (S/M/L), and any risks? Be terse.",
@@ -1897,8 +1929,9 @@ export class Orchestrator {
       if (provider.consult && run) {
         const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
         const context = run.log.slice(-30).map((l) => l.line).join("\n").slice(-3000);
+        const project = await this.store.getProject(task.projectId);
         const reply = await provider.consult(
-          { task: task.text, model: agent.model, cwd: config.runnerCwd, apiKey, context },
+          { task: withInstructions(project?.instructions, task.text), model: agent.model, cwd: config.runnerCwd, apiKey, context },
           `Review whether this run satisfies the task "${task.text}". ${REVIEW_OUTPUT_INSTRUCTION}`,
         );
         // The verdict is the MODEL's, read from a structured field — we never

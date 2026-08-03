@@ -2352,3 +2352,43 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
   flex-direction: column;
   gap: 8px;
 }
+
+/* ─── Project-level instructions ─────────────────────────────────────── */
+.projview-instructions-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.projview-instructions-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: normal;
+  color: var(--muted);
+  opacity: 0.75;
+}
+.projview-instructions {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.proj-instructions-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--accent, #6b5bff);
+  background: var(--bg-soft, rgba(107,91,255,0.08));
+  padding: 2px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-line, rgba(107,91,255,0.28));
+  cursor: pointer;
+  margin-top: 2px;
+  text-align: left;
+  max-width: 100%;
+}
+.proj-instructions-chip:hover {
+  background: var(--bg-soft, rgba(107,91,255,0.14));
+}

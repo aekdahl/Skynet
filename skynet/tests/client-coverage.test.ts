@@ -65,6 +65,10 @@ const ALLOW = new Set<string>([
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",
+  // MFA challenge exchange (POST /api/auth/mfa) — an auth primitive like `login`;
+  // needs a live challenge id + code, so no offline journey exercises it (the
+  // login screen drives it live).
+  "verifyMfa",
   // desktop Advanced settings (env editor + engine restart) — a desktop-only
   // control-plane surface with no in-app operator journey
   "fetchEnvSettings", "saveEnvSettings", "restartEngine",

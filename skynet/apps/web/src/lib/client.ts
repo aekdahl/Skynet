@@ -345,12 +345,23 @@ export function createProject(body: {
   createRepo?: { name: string; private: boolean; owner?: string };
   autonomy?: boolean;
   approvalLevel?: string;
+  instructions?: string;
 }) {
   return req<unknown>("POST", "/api/projects", body);
 }
 export function updateProject(
   id: string,
-  body: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string; repoPath?: string | null; githubCredentialId?: string | null },
+  body: {
+    name?: string;
+    goal?: string;
+    status?: string;
+    autonomy?: boolean;
+    approvalLevel?: string;
+    repoPath?: string | null;
+    // null clears the field back to "no project rules".
+    instructions?: string | null;
+    githubCredentialId?: string | null;
+  },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
 }

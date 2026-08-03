@@ -461,7 +461,7 @@ export function splitProposedAction(
   return { reply: trimmed, actions: [] };
 }
 
-function statusContext(
+export function statusContext(
   project: Project,
   tasks: Task[],
   runs: TaskRun[],
@@ -488,8 +488,19 @@ function statusContext(
     `GOAL: ${project.goal?.trim() || "(none set yet)"}`,
     `REPO: ${project.repo ?? project.repoPath ?? "(not connected)"}`,
     `AUTONOMY: ${project.autonomy ? "on (agents may self-advance tasks)" : "off (human-driven)"}`,
-    "BOARD (tasks by stage — `→` shows current agent eligibility):",
   ];
+  // Project-scoped agent guidance (rides every task prompt). Steward sees it
+  // too so it can answer "what are the project rules?" and honor them itself.
+  // A run of dashes bounds the block so Steward doesn't confuse it with task text.
+  if (project.instructions?.trim()) {
+    lines.push(
+      "INSTRUCTIONS (rules for every agent on this project):",
+      "---",
+      project.instructions.trim(),
+      "---",
+    );
+  }
+  lines.push("BOARD (tasks by stage — `→` shows current agent eligibility):");
   for (const s of STAGES) {
     // Archived tasks are OFF the board — excluded from the stage grouping, listed
     // separately below so they stay readable without cluttering the live board.
