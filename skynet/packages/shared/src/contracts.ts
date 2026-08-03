@@ -763,6 +763,29 @@ export const GithubConnection = z.object({
 });
 export type GithubConnection = z.infer<typeof GithubConnection>;
 
+// ─── Workspace settings (live, per-workspace fleet policy) ──────────────────
+// Non-secret operator settings that govern the workspace at runtime (no engine
+// restart). Persisted as a workspace-keyed singleton, mirroring GithubConnection.
+export const WorkspaceSettings = z.object({
+  workspaceId: z.string(),
+  // When on, assigning a task with no free runner AUTO-PROVISIONS a fresh runner
+  // (cloned from a busy one already on an allowed key) instead of waiting — up to
+  // `maxRunners`. Off = today's behavior (the task waits for a runner to free).
+  autoProvisionRunners: z.boolean().default(false),
+  // Hard ceiling on total fleet size, enforced on every creation path (auto-scale,
+  // fork/retry provisioning, and explicit configure). 0 = no cap. The safety valve
+  // that keeps auto-creation from running away.
+  maxRunners: z.number().int().min(0).default(0),
+});
+export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
+
+/** Patch for the live workspace settings (all fields optional). */
+export const UpdateWorkspaceSettingsRequest = z.object({
+  autoProvisionRunners: z.boolean().optional(),
+  maxRunners: z.number().int().min(0).optional(),
+});
+export type UpdateWorkspaceSettingsRequest = z.infer<typeof UpdateWorkspaceSettingsRequest>;
+
 /** Body to record/refresh an installation after the App is installed on GitHub. */
 export const ConnectGithubRequest = z.object({
   installation: GithubInstallation,

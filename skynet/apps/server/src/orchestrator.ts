@@ -684,6 +684,20 @@ export class Orchestrator {
       }
       const idle = eligibleRunners.filter((r) => r.status === "idle");
       if (idle.length === 0) {
+        // Auto-scale: every eligible runner is busy. If the workspace policy
+        // allows it AND we're under the fleet cap, clone an eligible runner
+        // (already on an allowed key) and provision a fresh one instead of
+        // making the task wait. At the cap we fall through to NoCapacityError —
+        // the task queues until a runner frees up. Atomic under acquireExclusive.
+        const settings = await this.store.getWorkspaceSettings(workspaceId);
+        const underCap = !settings?.maxRunners || runners.length < settings.maxRunners;
+        const template = eligibleRunners[0]; // a busy runner on an allowed key
+        if (settings?.autoProvisionRunners && underCap && template && (await this.providerUsable(workspaceId, template.provider, template.credentialId))) {
+          const id = `runner-auto-${++this.seq}`;
+          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null };
+          await this.hub.upsertAgent(runner);
+          return { id, provider: template.provider, model: template.model, credentialId: template.credentialId ?? null };
+        }
         throw new NoCapacityError(
           eligible?.mode === "agents"
             ? "This task's assigned agents are all busy — it waits until one frees up."
@@ -735,6 +749,12 @@ export class Orchestrator {
           await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
           return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
         }
+      }
+      // Respect the workspace fleet cap — fork/retry provisioning is auto-creation
+      // too, so the ceiling applies here as well (0 = no cap).
+      const settings = await this.store.getWorkspaceSettings(workspaceId);
+      if (settings?.maxRunners && runners.length >= settings.maxRunners) {
+        throw new NoCapacityError(`Fleet is at its maximum of ${settings.maxRunners} runners — free a runner or raise the limit in settings.`);
       }
       // None idle+usable → provision one for the requested provider + credential,
       // but only if that credential is usable (else nothing can run).

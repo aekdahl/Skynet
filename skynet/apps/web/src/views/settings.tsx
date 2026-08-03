@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { SecretMeta } from "@skynet/shared";
+import type { SecretMeta, WorkspaceSettings, UpdateWorkspaceSettingsRequest } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import type { McpScope, ServiceTokenMeta } from "../lib/client";
@@ -308,6 +308,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
         })}
       </div>
 
+      <FleetAutomationSection />
       <McpAccessSection />
       <TelegramSetup />
       <AdvancedSettingsSection />
@@ -476,6 +477,75 @@ SKYNET_TELEGRAM_CONTROL=true   # optional — approve / commands`}</pre>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Fleet auto-scale ───────────────────────────────────────────────────────
+// The live workspace fleet policy: auto-provision a runner when a task has none
+// free (cloned from a busy one on an allowed key), bounded by a hard cap so it
+// can't run away. Live (no restart); the cap applies to EVERY creation path.
+function FleetAutomationSection() {
+  const [settings, setSettings] = useState<WorkspaceSettings | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.fetchWorkspaceSettings().then(setSettings).catch(() => setErr("Couldn't load fleet settings."));
+  }, []);
+
+  const save = async (patch: UpdateWorkspaceSettingsRequest) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setSettings(await api.updateWorkspaceSettings(patch));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const clampMax = (v: string) => Math.max(0, Math.floor(Number(v) || 0));
+
+  return (
+    <div className="settings-setup">
+      <div className="settings-setup-text">
+        <div className="settings-setup-title">Fleet auto-scale</div>
+        <div className="settings-setup-sub">
+          Add a runner automatically when a task needs one and none is free — cloned from a busy runner on a key the
+          project is allowed to use. The max is the safety valve so auto-creation can’t run away (0 = no cap); it caps
+          every way runners get created, including MCP tokens.
+        </div>
+        {err && <div className="settings-warn">{err}</div>}
+        {settings && (
+          <div className="fleet-auto">
+            <label className="proj-autonomy" title="When a task needs a runner and none is idle, auto-provision one (up to the max).">
+              <input
+                type="checkbox"
+                className="proj-autonomy-cb"
+                checked={settings.autoProvisionRunners}
+                disabled={busy}
+                onChange={(e) => void save({ autoProvisionRunners: e.target.checked })}
+              />
+              <span className="proj-autonomy-switch" aria-hidden="true" />
+              <span className="proj-autonomy-label">Auto-create runners when needed</span>
+            </label>
+            <label className="fleet-auto-max" title="Hard ceiling on total fleet size. 0 = no cap.">
+              <span className="fleet-auto-max-label">Max runners</span>
+              <input
+                type="number"
+                min={0}
+                className="qx-input fleet-auto-max-input"
+                value={settings.maxRunners}
+                disabled={busy}
+                onChange={(e) => setSettings({ ...settings, maxRunners: clampMax(e.target.value) })}
+                onBlur={(e) => void save({ maxRunners: clampMax(e.target.value) })}
+              />
+              <span className="fleet-auto-max-hint mono">0 = no cap</span>
+            </label>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

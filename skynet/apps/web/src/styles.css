@@ -1296,6 +1296,12 @@ button.kb-done:hover { opacity: 1; }
 .mcp-access > .settings-setup-sub { margin-bottom: var(--sp); max-width: none; }
 .mcp-mint { gap: 13px; }
 .mcp-mint-line { display: flex; align-items: center; gap: 8px; }
+/* Fleet auto-scale controls (Settings). */
+.fleet-auto { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; margin-top: 12px; }
+.fleet-auto-max { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.fleet-auto-max-label { font-size: 11px; color: var(--faint); letter-spacing: 0.03em; }
+.fleet-auto-max-input { width: 78px; }
+.fleet-auto-max-hint { font-size: 10.5px; color: var(--faint); }
 .mcp-scopes { display: flex; flex-direction: column; gap: 7px; }
 .mcp-scope { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); cursor: pointer; }
 .mcp-scope input { flex: none; }
