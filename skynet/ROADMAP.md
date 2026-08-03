@@ -187,6 +187,13 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     container** (v1) / opt-in OS sandbox (desktop), health-check the `port`, and expose it through a
     Skynet **reverse proxy** at a stable `preview.<project>.<host>` URL (desktop: a localhost port in
     an embedded webview). Streams build+runtime logs; auto-rebuilds on merge to the integration branch.
+    The proxy rewrites the upstream `Host` to the loopback origin (`127.0.0.1:<port>`) — Vite 6+ dev
+    servers reject a foreign `Host` with "Blocked request. This host is not allowed" (`server.allowedHosts`),
+    so a public-origin proxy that forwards the real Host would break the preview; Host-rewrite fixes it
+    for every framework without per-recipe flags. **Shipped:** a `/p/<token>/` reverse proxy fronts the
+    loopback dev server on Skynet's learned public origin (Host-rewritten, HMR WebSocket bridged), Vite
+    recipes get `--base=/p/<token>/`, and `PreviewState.url` becomes the proxied URL when hosted (loopback
+    on desktop). Remaining Phase-2: the service-container runtime + auto-rebuild on merge.
     · **command** (CLI/lib/other) → run a command and surface **output/exit/artifacts** (no URL) —
     "preview" = run it and show the result. Covers "any software".
   - **Per project + per branch:** the project preview tracks the **integration branch** (what the fleet
@@ -210,8 +217,14 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     `.skynet/preview.json`), refresh-on-merge, node_modules provisioning (symlink the checkout's
     deps, else install) so a dev script's local bin resolves in the fresh worktree, and the
     **resizable** split-screen dock ⇄ modal (scrollable/resizable logs) with a "▶ Preview app"
-    (project) and "▶ Preview this change" (run) affordance. **Still to do:** Phase 2 (services —
-    reverse proxy + auto-rebuild) & Phase 3 (command/artifacts, "any software").
+    (project) and "▶ Preview this change" (run) affordance, **plus the `/p/<token>/` reverse proxy so a
+    live preview is reachable from a phone** (Host-rewrite → Vite allowedHosts, HMR WS bridged, Vite
+    `--base` injected). **Still to do:** Phase 2 remainder (service-container runtime + auto-rebuild on
+    merge) & Phase 3 (command/artifacts, "any software").
+  - **Perf — warm-worktree dep caching:** a fresh preview installs deps each start (~20s for a
+    nested monorepo whose recipe embeds `install`, since the built-in root-level provisioning doesn't
+    cover a sub-package). Cache/skip the reinstall when the reused worktree already has `node_modules`
+    (and the lockfile is unchanged) so restarts are near-instant.
 - [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign
