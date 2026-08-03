@@ -20,6 +20,7 @@
 // SPA iframes that port directly (desktop = same machine, no proxy).
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -30,6 +31,7 @@ import { wrapForSandbox } from "@skynet/runner-sdk/sandbox";
 import { oneShotRepoAssistant } from "@skynet/runner-sdk/claude";
 import { gitBin } from "../git-bin.js";
 import { secretService } from "../secrets/index.js";
+import { publicOrigin } from "./public-origin.js";
 
 const exec = promisify(execFile);
 
@@ -75,6 +77,7 @@ interface Live {
   port?: number;
   recipe?: PreviewRecipe;
   key: string; // map key: projectId, or `run:<runId>`
+  token: string; // unguessable id for the public /p/<token>/ proxy path
   dir: string; // detached worktree dir
   gitRepo: string; // repo the worktree was added in (for cleanup)
   recipeKey: string; // agentRecipe cache key (the project id)
@@ -147,15 +150,37 @@ export class ProjectPreviewManager {
     const p = this.previews.get(key);
     if (!p) return { status: "idle", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null };
     p.lastTouched = Date.now(); // polling status counts as "watching" → defers idle stop
+    // Public origin known (hosted) → hand back the proxied `/p/<token>/` URL so
+    // the preview is reachable from a phone; else the loopback URL (desktop, same
+    // machine, iframed directly).
+    const origin = publicOrigin();
     return {
       status: p.status,
-      url: p.status === "live" && p.port ? `http://127.0.0.1:${p.port}` : null,
+      url:
+        p.status === "live" && p.port
+          ? origin
+            ? `${origin}/p/${p.token}/`
+            : `http://127.0.0.1:${p.port}`
+          : null,
       port: p.port ?? null,
       recipe: p.recipe ? { cmd: p.recipe.cmd, source: p.recipe.source } : null,
       error: p.error,
       logs: p.logs.slice(-80),
       startedAt: p.startedAt,
     };
+  }
+
+  /** The live loopback port for a preview proxy token — used by the /p/<token>/
+   *  reverse proxy. undefined unless that preview is currently live. A poll here
+   *  also counts as "watching" (defers the idle stop). */
+  portForToken(token: string): number | undefined {
+    for (const p of this.previews.values()) {
+      if (p.token === token && p.status === "live" && p.port) {
+        p.lastTouched = Date.now();
+        return p.port;
+      }
+    }
+    return undefined;
   }
 
   private log(p: Live, line: string) {
@@ -425,7 +450,7 @@ export class ProjectPreviewManager {
     if (!hasBranch) {
       await this.stop(key);
       const p: Live = {
-        status: "failed", key, dir: this.previewDir(key), gitRepo: opts.repoPath, recipeKey: opts.projectId,
+        status: "failed", key, token: randomBytes(9).toString("base64url"), dir: this.previewDir(key), gitRepo: opts.repoPath, recipeKey: opts.projectId,
         logs: [], error: `This run has no commits to preview yet (branch ${opts.branch} doesn't exist).`,
         startedAt: Date.now(), lastTouched: Date.now(),
       };
@@ -455,7 +480,8 @@ export class ProjectPreviewManager {
     }
 
     const p: Live = {
-      status: "starting", key: spec.key, dir: this.previewDir(spec.key), gitRepo: spec.gitRepo,
+      status: "starting", key: spec.key, token: randomBytes(9).toString("base64url"),
+      dir: this.previewDir(spec.key), gitRepo: spec.gitRepo,
       recipeKey: spec.recipeKey, refreshBranch: spec.refreshBranch,
       logs: [], error: null, startedAt: Date.now(), lastTouched: Date.now(),
     };
@@ -484,12 +510,21 @@ export class ProjectPreviewManager {
       await this.ensureDeps(p, spec.gitRepo);
       if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded during install
 
-      this.log(p, `▸ ${recipe.cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
+      // When we'll serve this preview through the public `/p/<token>/` proxy
+      // (hosted — a public origin is known), a Vite dev server must emit its
+      // asset + HMR URLs under that base, else they 404 off the prefix. Inject
+      // `--base=/p/<token>/` for a Vite recipe that doesn't already set one.
+      let cmd = recipe.cmd;
+      if (publicOrigin() && /(^|\s|\/)vite(\s|$)/.test(cmd) && !/--base[=\s]/.test(cmd)) {
+        cmd = `${cmd} --base=/p/${p.token}/`;
+        this.log(p, `serving behind Skynet's proxy — added --base=/p/${p.token}/ for Vite`);
+      }
+      this.log(p, `▸ ${cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
 
       // Spawn via a shell so "npm run dev" etc. work; wrap for the opt-in OS
       // sandbox (no-op unless SKYNET_RUNNER_SANDBOX). PORT is injected two ways
       // (env + common Vite/CRA/Next var) so most dev servers pick it up.
-      const wrapped = wrapForSandbox("/bin/sh", ["-c", recipe.cmd], { cwd: p.dir });
+      const wrapped = wrapForSandbox("/bin/sh", ["-c", cmd], { cwd: p.dir });
       if (wrapped.note) this.log(p, wrapped.note);
       const child = spawn(wrapped.bin, wrapped.args, {
         cwd: p.dir,

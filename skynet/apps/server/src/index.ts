@@ -17,6 +17,9 @@ import { registerMcp } from "./mcp/http.js";
 import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
 import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
+import { projectPreview } from "./preview/project-preview.js";
+import { registerLivePreviewProxy } from "./preview/preview-proxy.js";
+import { recordPublicOrigin } from "./preview/public-origin.js";
 import { registerSecretsRoutes } from "./secrets/index.js";
 import { registerGithubRoutes, configureGithub, githubService } from "./github/index.js";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
@@ -192,6 +195,17 @@ async function main() {
     // W5 live preview: mount the sandboxed /preview route, stamp visual/previewUrl
     // onto already-stored runs, then warm their builds. No-op unless PREVIEW != off.
     await registerPreview(app, { store });
+    // Learn Skynet's public origin from forwarded headers so live previews get a
+    // phone-reachable URL, and front their loopback dev servers at /p/<token>/.
+    app.addHook("onRequest", (req, _reply, done) => {
+      recordPublicOrigin(
+        req.headers["x-forwarded-proto"] as string | undefined,
+        req.headers["x-forwarded-host"] as string | undefined,
+        req.headers.host,
+      );
+      done();
+    });
+    registerLivePreviewProxy(app, (t) => projectPreview.portForToken(t));
     const stamped = await backfillPreviews(store);
     if (stamped) app.log.info(`preview: stamped ${stamped} agent(s) with a live preview URL`);
     const queued = await kickoffPreviewBuilds(store);
