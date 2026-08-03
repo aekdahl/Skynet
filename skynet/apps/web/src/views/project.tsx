@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import type { TaskRun, Project, Task, TaskAssignment, Agent } from "@skynet/shared";
+import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import {
@@ -635,6 +635,32 @@ function ProjectStats({
   );
 }
 
+// Which GitHub account this project's clone/push/PR use. Only meaningful once
+// extra accounts exist (added in Integrations); until then it's hidden to keep
+// the header clean. "Default" → the workspace's default GitHub connection.
+function ProjectGithubAccount({ project, onChange }: { project: Project; onChange: (id: string | null) => void }) {
+  const [accounts, setAccounts] = useState<SecretMeta[]>([]);
+  useEffect(() => {
+    api.fetchSecrets().then(({ secrets }) => setAccounts(secrets.filter((s) => s.provider === "github"))).catch(() => setAccounts([]));
+  }, []);
+  if (accounts.length === 0) return null; // nothing to choose between yet
+  return (
+    <label className="proj-approval" title="Which GitHub account this project's repos push to and are stored under (e.g. business vs personal). Manage accounts in Integrations.">
+      <span className="proj-approval-label mono">GitHub</span>
+      <select
+        className="proj-approval-select"
+        value={project.githubCredentialId ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+      >
+        <option value="">Default connection</option>
+        {accounts.map((a) => (
+          <option key={a.id} value={a.id}>{a.name || "account"} · ····{a.last4}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export function ProjectView({
   project,
   now,
@@ -834,6 +860,7 @@ export function ProjectView({
               <span className="proj-autonomy-switch" aria-hidden="true" />
               <span className="proj-autonomy-label">Autonomy</span>
             </label>
+            <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             {project.repoPath && (
               <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
                 ▶ Preview app

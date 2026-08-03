@@ -26,6 +26,9 @@ export interface PushRequest {
   force: boolean; // whether this would be a force-push
   title: string;
   body: string;
+  /** The project's pinned GitHub account (a `github` credential id), or null/absent
+   *  for the workspace's default connection. */
+  githubCredentialId?: string | null;
 }
 
 export interface PrRef {

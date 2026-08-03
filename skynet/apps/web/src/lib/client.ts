@@ -350,7 +350,7 @@ export function createProject(body: {
 }
 export function updateProject(
   id: string,
-  body: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string; repoPath?: string | null },
+  body: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string; repoPath?: string | null; githubCredentialId?: string | null },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
 }
@@ -652,8 +652,11 @@ export async function fetchGithubInstallationRepos(installationId: number): Prom
 }
 /** The repos the connection can currently bind — fetched live (a PAT connection
  *  re-lists all of its repos), so the picker isn't limited to a stale snapshot. */
-export async function fetchGithubRepos(): Promise<GithubRepo[]> {
-  const raw = await req<{ repos: GithubRepo[] }>("GET", "/api/github/repos");
+export async function fetchGithubRepos(credentialId?: string): Promise<GithubRepo[]> {
+  // A credentialId lists that GitHub account's repos (business/personal); omit for
+  // the workspace's default connection.
+  const q = credentialId ? `?credentialId=${encodeURIComponent(credentialId)}` : "";
+  const raw = await req<{ repos: GithubRepo[] }>("GET", `/api/github/repos${q}`);
   return raw.repos;
 }
 export async function connectGithub(body: {
