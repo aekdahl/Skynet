@@ -7,7 +7,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { config, now } from "../config.js";
-import { cookieToken, tokenFrom, SESSION_COOKIE } from "../auth.js";
+import { cookieToken, tokenFrom, SESSION_COOKIE, type Principal } from "../auth.js";
+import { TelegramClient } from "../telegram/client.js";
+import { mfaEnabled, createChallenge, verifyChallenge } from "./mfa.js";
 import type { SessionStore } from "./sessions.js";
 import type { ServiceTokenStore } from "./service-tokens.js";
 import type { OperatorDirectory } from "./operators.js";
@@ -15,6 +17,12 @@ import type { OperatorDirectory } from "./operators.js";
 const LoginRequest = z.object({
   email: z.string().min(1),
   password: z.string().min(1),
+});
+
+// Second-factor exchange: a login challenge id + the Telegram OTP (or a recovery code).
+const MfaRequest = z.object({
+  challengeId: z.string().min(1),
+  code: z.string().min(1),
 });
 
 // Mirrors the Scope tuple in auth.ts. A minted token is narrowed to this subset.
@@ -46,14 +54,48 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
   const { sessions, operators } = deps;
 
   // Public — the one /api route reachable without an existing token.
+  // Issue a session (httpOnly cookie + body token). Shared by the direct-login
+  // and the MFA second-factor paths.
+  async function issueSession(reply: FastifyReply, principal: Principal) {
+    const session = await sessions.create(principal, config.sessionTtlMs);
+    setSessionCookie(reply, session.token, session.expiresAt);
+    return { token: session.token, principal, expiresAt: session.expiresAt };
+  }
+
   app.post("/api/auth/login", async (req: FastifyRequest, reply: FastifyReply) => {
     const body = LoginRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     const principal = operators.verify(body.data.email, body.data.password);
     if (!principal) return reply.code(401).send({ error: "Invalid credentials" });
-    const session = await sessions.create(principal, config.sessionTtlMs);
-    setSessionCookie(reply, session.token, session.expiresAt);
-    return { token: session.token, principal, expiresAt: session.expiresAt };
+    // No MFA (or broken-glass via SKYNET_MFA_DISABLE): issue the session directly.
+    if (!mfaEnabled()) return issueSession(reply, principal);
+    // MFA on: don't issue a session yet. Send a one-time code to the owner's
+    // Telegram and require it (or a recovery code) at /api/auth/mfa. The code
+    // never leaves the server except via Telegram, so a stolen password alone
+    // can't complete the login.
+    const { challengeId, code } = createChallenge(principal);
+    if (config.telegramBotToken && config.telegramOwnerChatId) {
+      try {
+        await new TelegramClient(config.telegramBotToken).sendMessage(
+          config.telegramOwnerChatId,
+          `Skynet login code: ${code}\nExpires in 5 minutes. If this wasn't you, ignore it.`,
+        );
+      } catch (err) {
+        req.log.warn(`[mfa] Telegram OTP send failed (use a recovery code): ${(err as Error).message}`);
+      }
+    } else {
+      req.log.warn("[mfa] enabled but no Telegram configured — log in with a recovery code.");
+    }
+    return { mfaRequired: true, challengeId };
+  });
+
+  // Second factor: exchange a challenge + OTP (or a recovery code) for a session.
+  app.post("/api/auth/mfa", async (req: FastifyRequest, reply: FastifyReply) => {
+    const body = MfaRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    const principal = verifyChallenge(body.data.challengeId, body.data.code);
+    if (!principal) return reply.code(401).send({ error: "Invalid or expired code" });
+    return issueSession(reply, principal);
   });
 
   // Authenticated — destroy the presented session and clear the cookie.

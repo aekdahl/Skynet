@@ -30,6 +30,7 @@ import { StoreServiceTokenStore } from "./auth/service-tokens.js";
 import { seedBootstrapToken } from "./auth/bootstrap.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
 import { registerAuthRoutes, registerServiceTokenRoutes } from "./auth/routes.js";
+import { mfaEnabled, ensureRecoveryCodes } from "./auth/mfa.js";
 import { startTelegramBridge } from "./telegram/index.js";
 import { MemoryStore } from "./store/memory.js";
 import type { Store } from "./store/store.js";
@@ -113,6 +114,9 @@ async function main() {
   // written to disk.
   const serviceTokens = new StoreServiceTokenStore(store);
   configureAuth({ sessions, serviceTokens });
+  // MFA on (SKYNET_MFA): generate recovery codes once (plaintext written to a
+  // 0600 file on /data for one-time SSH retrieval; hashes persisted).
+  if (mfaEnabled()) ensureRecoveryCodes((m) => console.log(m));
   // Headless/sandbox deploys: register the agent-provided bootstrap token so it
   // can call /mcp without a human login (no-op unless SKYNET_BOOTSTRAP_TOKEN set).
   const bootstrap = await seedBootstrapToken(serviceTokens);

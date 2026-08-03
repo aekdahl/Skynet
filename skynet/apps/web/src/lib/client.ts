@@ -27,7 +27,9 @@ const token = () =>
  * /api/auth/login) and persist it. On success the stored token authorizes both
  * REST and the WebSocket; callers reload so the app re-connects with it.
  */
-export async function login(email: string, password: string): Promise<void> {
+export type LoginResult = { mfaRequired: false } | { mfaRequired: true; challengeId: string };
+
+export async function login(email: string, password: string): Promise<LoginResult> {
   const res = await fetch("/api/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -37,6 +39,26 @@ export async function login(email: string, password: string): Promise<void> {
     if (res.status === 401) throw new Error("Invalid email or password.");
     const text = await res.text().catch(() => "");
     throw new Error(text || `Login failed (${res.status}).`);
+  }
+  const data = (await res.json()) as { token?: string; mfaRequired?: boolean; challengeId?: string };
+  // MFA on: the password was correct but no session yet — a code went to Telegram.
+  if (data.mfaRequired && data.challengeId) return { mfaRequired: true, challengeId: data.challengeId };
+  if (typeof localStorage !== "undefined" && data.token) localStorage.setItem(TOKEN_KEY, data.token);
+  return { mfaRequired: false };
+}
+
+/** Second factor: exchange the challenge + the Telegram code (or a recovery
+ *  code) for a session token. */
+export async function verifyMfa(challengeId: string, code: string): Promise<void> {
+  const res = await fetch("/api/auth/mfa", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ challengeId, code }),
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("That code is invalid or expired.");
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Verification failed (${res.status}).`);
   }
   const data = (await res.json()) as { token: string };
   if (typeof localStorage !== "undefined") localStorage.setItem(TOKEN_KEY, data.token);
@@ -338,6 +360,7 @@ export function updateProject(
     repoPath?: string | null;
     // null clears the field back to "no project rules".
     instructions?: string | null;
+    githubCredentialId?: string | null;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
@@ -447,7 +470,11 @@ export interface AssistantAction {
     | "set_autonomy"
     | "set_status"
     | "set_schedule"
-    | "set_assignment";
+    | "set_assignment"
+    | "add_feature"
+    | "add_milestone"
+    | "set_task_feature"
+    | "set_feature_milestone";
   summary: string;
   taskId?: string;
   text?: string;
@@ -464,6 +491,11 @@ export interface AssistantAction {
   // = the pool for `agents` mode (empty otherwise).
   mode?: "any" | "agents" | "unassigned";
   agentIds?: string[];
+  // Roadmap linkage (add_feature / add_milestone / set_task_feature /
+  // set_feature_milestone). `null` clears the respective link.
+  featureId?: string | null;
+  milestoneId?: string | null;
+  targetAt?: number | null;
 }
 // Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
 // (full project assistant + actions); omit it for a workspace-wide answer. The
@@ -640,8 +672,11 @@ export async function fetchGithubInstallationRepos(installationId: number): Prom
 }
 /** The repos the connection can currently bind — fetched live (a PAT connection
  *  re-lists all of its repos), so the picker isn't limited to a stale snapshot. */
-export async function fetchGithubRepos(): Promise<GithubRepo[]> {
-  const raw = await req<{ repos: GithubRepo[] }>("GET", "/api/github/repos");
+export async function fetchGithubRepos(credentialId?: string): Promise<GithubRepo[]> {
+  // A credentialId lists that GitHub account's repos (business/personal); omit for
+  // the workspace's default connection.
+  const q = credentialId ? `?credentialId=${encodeURIComponent(credentialId)}` : "";
+  const raw = await req<{ repos: GithubRepo[] }>("GET", `/api/github/repos${q}`);
   return raw.repos;
 }
 export async function connectGithub(body: {

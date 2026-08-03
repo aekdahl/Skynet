@@ -19,6 +19,14 @@ export const ProviderId = z.enum([
 ]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
+// A credential in the secret store belongs to a fleet provider OR to "github" — a
+// GitHub PAT, so a project can be pinned to a specific GitHub account (business vs
+// personal billing/storage). `github` is deliberately NOT a fleet provider: it
+// never appears in the runner catalog or provider-availability, only as a stored
+// credential a project's git operations can authenticate with.
+export const CredentialProvider = z.union([ProviderId, z.literal("github")]);
+export type CredentialProvider = z.infer<typeof CredentialProvider>;
+
 export const TaskRunStatus = z.enum(["running", "waiting", "paused", "review", "done"]);
 export type TaskRunStatus = z.infer<typeof TaskRunStatus>;
 
@@ -219,6 +227,12 @@ export const Project = z.object({
   // vendor-neutral rule set travels with the codebase; for now it's stored
   // on the project record for instant editability without a commit.
   instructions: z.string().nullable().default(null),
+  // Which stored GitHub credential this project's git operations (clone / push /
+  // PR / repo listing) authenticate with — a secret-store credential id of a
+  // `github` PAT. null → the workspace's default GitHub connection. Lets one
+  // workspace keep work repos on the business account and personal repos on a
+  // personal account (separate billing + storage).
+  githubCredentialId: z.string().nullable().default(null),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -523,6 +537,7 @@ export const CreateProjectRequest = z.object({
   repo: z.string().optional(), // or bind to one connected GitHub repo at creation ("owner/repo")
   repoUrl: z.string().optional(), // or paste an existing repo's git URL to clone (normalized to "owner/repo")
   createRepo: CreateRepoSpec.optional(), // or have Skynet create a new repo and bind it
+  githubCredentialId: z.string().nullable().optional(), // which GitHub account to use (null/omit → default)
   // Governance chosen at creation. Omitted → the server defaults apply (autonomy
   // on; approvalLevel from SKYNET_APPROVAL_LEVEL). Both remain editable later.
   autonomy: z.boolean().optional(),
@@ -550,6 +565,7 @@ export const UpdateProjectRequest = z.object({
   repo: z.string().optional(),
   // Project-scoped agent guidance. `null` clears the field back to "no rules".
   instructions: z.string().nullable().optional(),
+  githubCredentialId: z.string().nullable().optional(), // pick the GitHub account (null clears → default)
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 
@@ -653,7 +669,7 @@ export const SecretMeta = z.object({
   id: z.string().default(""), // credential id (defaults to the provider for legacy rows)
   name: z.string().default(""), // display name ("" → provider's catalog name)
   workspaceId: z.string(),
-  provider: ProviderId,
+  provider: CredentialProvider,
   isDefault: z.boolean().default(false),
   last4: z.string(), // last 4 chars of the key — for recognition, not reuse
   updatedAt: Timestamp,
@@ -667,9 +683,10 @@ export const SetSecretRequest = z.object({
 });
 export type SetSecretRequest = z.infer<typeof SetSecretRequest>;
 
-/** Body for creating a NAMED credential (a "duplicate" of a provider). */
+/** Body for creating a NAMED credential (a "duplicate" of a provider, or a
+ *  secondary GitHub account PAT). */
 export const CreateCredentialRequest = z.object({
-  provider: ProviderId,
+  provider: CredentialProvider,
   name: z.string().min(1).max(60),
   apiKey: z.string().min(1),
 });

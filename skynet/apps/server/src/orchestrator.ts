@@ -1280,6 +1280,7 @@ export class Orchestrator {
         modules,
         allowedModules: agent.modules, // [] = unconstrained (no scope declared)
         force: false,
+        githubCredentialId: project?.githubCredentialId ?? null, // push to the project's pinned account
         title: agent.name,
         body: `Automated by Skynet agent \`${agent.id}\`.\n\n${stat.add}+/${stat.del}- across ${stat.files.length} file(s).`,
       });

@@ -52,9 +52,11 @@ export async function registerGithubRoutes(app: FastifyInstance): Promise<void> 
   // The repos this connection can bind a project to — fetched LIVE so a stale
   // connect-time snapshot (from before the repo list was paginated, or before
   // newer repos existed) no longer hides repos in the project-creation picker.
-  app.get("/api/github/repos", async (req: FastifyRequest, reply: FastifyReply) => {
+  app.get<{ Querystring: { credentialId?: string } }>("/api/github/repos", async (req, reply) => {
     try {
-      return { repos: await githubService.availableRepos(req.principal!.workspaceId) };
+      // ?credentialId=<github cred> lists THAT account's repos (the picker for a
+      // business/personal account); omitted → the workspace default connection.
+      return { repos: await githubService.reposForCredential(req.principal!.workspaceId, req.query.credentialId) };
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }

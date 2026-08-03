@@ -164,8 +164,9 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   tool for the code loop; verification/repro is where it pays off, and it composes with the live-preview
   pipeline below.)*
 - [ ] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** (+ **OpenCode**, which
-  is ubiquitous across the competitor field) — then breadth reactively from the candidate list in
-  [docs/runner-catalog.md](docs/runner-catalog.md).
+  is ubiquitous across the competitor field, and **Kimi Code** — Moonshot AI's terminal coding agent, same
+  CLI shape as Claude/Codex/Gemini, [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — then
+  breadth reactively from the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
 - [ ] **Agent labels / custom grouping** — rename agents and group them beyond project (small UX add).
 - [ ] **Mass inform** — select multiple agents (or a whole project / area / manager-family) and attach a
   note that rides the *next* prompt each already receives — **no extra turn, ~free** (Claude SDK
