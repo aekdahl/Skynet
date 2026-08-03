@@ -661,6 +661,33 @@ function ProjectGithubAccount({ project, onChange }: { project: Project; onChang
   );
 }
 
+// Which stored LLM provider credential this project's agent runs bill to. Only
+// meaningful once NAMED provider keys exist (a second account, added in Settings);
+// applied only when the credential matches the run's provider. "Default (per
+// agent)" → the agent's own credential / the provider default.
+function ProjectLlmAccount({ project, onChange }: { project: Project; onChange: (id: string | null) => void }) {
+  const [creds, setCreds] = useState<SecretMeta[]>([]);
+  useEffect(() => {
+    api.fetchSecrets().then(({ secrets }) => setCreds(secrets.filter((s) => s.provider !== "github" && !s.isDefault))).catch(() => setCreds([]));
+  }, []);
+  if (creds.length === 0) return null; // only the default keys exist — nothing to pin
+  return (
+    <label className="proj-approval" title="Which provider credential this project's agent runs bill to — applied when it matches the run's provider. Manage keys in Settings.">
+      <span className="proj-approval-label mono">LLM key</span>
+      <select
+        className="proj-approval-select"
+        value={project.llmCredentialId ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+      >
+        <option value="">Default (per agent)</option>
+        {creds.map((c) => (
+          <option key={c.id} value={c.id}>{c.provider} · {c.name || "key"} · ····{c.last4}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export function ProjectView({
   project,
   now,
@@ -861,6 +888,7 @@ export function ProjectView({
               <span className="proj-autonomy-label">Autonomy</span>
             </label>
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
+            <ProjectLlmAccount project={project} onChange={(id) => updateProject(project.id, { llmCredentialId: id })} />
             {project.repoPath && (
               <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
                 ▶ Preview app

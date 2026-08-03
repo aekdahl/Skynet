@@ -420,6 +420,7 @@ export class Operations {
       // Optional: pin to a specific GitHub account at creation, else the default
       // connection (chosen later in project settings).
       githubCredentialId: input.githubCredentialId ?? null,
+      llmCredentialId: input.llmCredentialId ?? null,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);

@@ -138,6 +138,27 @@ export function splitEstMinutesTag(
 const SCOPE_NOTE =
   "\n\n---\nScope discipline: do exactly what's asked above, then stop. Don't expand into adjacent or unrequested work — extra features, UI, refactors, or speculative follow-ups. When the requested change is complete, report and finish rather than inventing more scope. If you're genuinely blocked, or the task is too big for one focused session, escalate (AskUserQuestion with header \"ESCALATE\") instead of grinding through your turn budget.";
 
+/**
+ * PURE: which stored credential id authenticates a run's LLM calls. Prefers the
+ * PROJECT's pinned LLM credential — but ONLY when it belongs to the run's provider
+ * (a Claude credential can't authenticate a Codex run, so a mismatched pin safely
+ * falls back) — else the agent's own credential, else the provider default (whose
+ * id === the provider). This is what makes a work project's token spend bill to
+ * the chosen account.
+ */
+export function pickLlmCredential(
+  provider: string,
+  projectLlmCredentialId: string | null | undefined,
+  runnerCredentialId: string | null | undefined,
+  creds: { id: string; provider: string }[],
+): string {
+  if (projectLlmCredentialId) {
+    const m = creds.find((c) => c.id === projectLlmCredentialId);
+    if (m && m.provider === provider) return projectLlmCredentialId;
+  }
+  return runnerCredentialId ?? provider;
+}
+
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   // Global kill switch. When paused, the autonomy loop is a no-op (no new work is
@@ -733,6 +754,18 @@ export class Orchestrator {
   }
 
   // ── assignTask ────────────────────────────────────────────────────────────
+  /** Resolve a run's LLM API key, honoring the project's pinned LLM credential
+   *  (provider-matched) → agent credential → provider default. See {@link pickLlmCredential}. */
+  private async llmKey(
+    workspaceId: string,
+    provider: string,
+    projectLlmCredentialId: string | null | undefined,
+    runnerCredentialId: string | null | undefined,
+  ): Promise<string | undefined> {
+    const creds = await secretService.list(workspaceId);
+    return secretService.resolve(workspaceId, pickLlmCredential(provider, projectLlmCredentialId, runnerCredentialId, creds));
+  }
+
   async assignTask(projectId: string, taskId: string): Promise<TaskRun> {
     const task = await this.store.getTask(taskId);
     if (!task || task.projectId !== projectId) throw new Error("Task not found");
@@ -820,8 +853,9 @@ export class Orchestrator {
       // branches from origin/<base> (no baseRef passed), so every run starts on
       // the newest human-merged state — not a stale local integration branch.
       const { cwd, baseRef } = await this.provisionCwd(git, runId, branch);
-      // Inject this workspace's provider key (env fallback when none is stored).
-      const apiKey = await secretService.resolve(project.workspaceId, runner.credentialId ?? runner.provider);
+      // Inject the LLM key — the project's pinned credential (billed to its
+      // account) when it matches the provider, else the agent/provider default.
+      const apiKey = await this.llmKey(project.workspaceId, runner.provider, project.llmCredentialId, runner.credentialId);
       // The agent gets the full brief: the short name plus the longer
       // description when one exists (the run's display name stays the short text).
       const brief = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
@@ -889,7 +923,7 @@ export class Orchestrator {
     try {
       // A fork branches from its parent (family-internal integration, §7).
       const { cwd, baseRef } = await this.provisionCwd(git, runId, agent.branch, parent.branch);
-      const apiKey = await secretService.resolve(parent.workspaceId, runner.credentialId ?? runner.provider);
+      const apiKey = await this.llmKey(parent.workspaceId, runner.provider, project?.llmCredentialId, runner.credentialId);
       const handle = await provider.start(
         { runId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex, apiKey },
         this.events(),
@@ -986,7 +1020,8 @@ export class Orchestrator {
     }
     const provider = await this.getProvider(acq.provider);
     const cwd = review.git.worktrees.pathFor(runId);
-    const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+    const reviseProject = await this.store.getProject(run.projectId);
+    const apiKey = await this.llmKey(run.workspaceId, acq.provider, reviseProject?.llmCredentialId, run.credentialId);
     const revisePrompt =
       `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
       `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
@@ -1126,7 +1161,8 @@ export class Orchestrator {
     }
     const provider = await this.getProvider(acq.provider);
     const cwd = git.worktrees.pathFor(runId);
-    const apiKey = await secretService.resolve(run.workspaceId, run.provider);
+    const escProject = await this.store.getProject(run.projectId);
+    const apiKey = await this.llmKey(run.workspaceId, acq.provider, escProject?.llmCredentialId, run.credentialId);
     const prompt = reassign
       ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
       : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`;
