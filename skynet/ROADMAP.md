@@ -187,6 +187,11 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     container** (v1) / opt-in OS sandbox (desktop), health-check the `port`, and expose it through a
     Skynet **reverse proxy** at a stable `preview.<project>.<host>` URL (desktop: a localhost port in
     an embedded webview). Streams build+runtime logs; auto-rebuilds on merge to the integration branch.
+    **The proxy MUST rewrite the upstream `Host` to the loopback origin (`127.0.0.1:<port>`)** — Vite 6+
+    dev servers reject a foreign `Host` with "Blocked request. This host is not allowed" (`server.allowedHosts`),
+    so a public-origin proxy that forwards the real Host breaks the preview. Host-rewrite fixes it for
+    every framework without per-recipe flags. (Until Phase 2, live previews are loopback-only /
+    desktop-only — `PreviewState.url = http://127.0.0.1:<port>` — not reachable from a phone.)
     · **command** (CLI/lib/other) → run a command and surface **output/exit/artifacts** (no URL) —
     "preview" = run it and show the result. Covers "any software".
   - **Per project + per branch:** the project preview tracks the **integration branch** (what the fleet
@@ -212,6 +217,10 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     **resizable** split-screen dock ⇄ modal (scrollable/resizable logs) with a "▶ Preview app"
     (project) and "▶ Preview this change" (run) affordance. **Still to do:** Phase 2 (services —
     reverse proxy + auto-rebuild) & Phase 3 (command/artifacts, "any software").
+  - **Perf — warm-worktree dep caching:** a fresh preview installs deps each start (~20s for a
+    nested monorepo whose recipe embeds `install`, since the built-in root-level provisioning doesn't
+    cover a sub-package). Cache/skip the reinstall when the reused worktree already has `node_modules`
+    (and the lockfile is unchanged) so restarts are near-instant.
 - [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign
