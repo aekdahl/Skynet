@@ -40,7 +40,7 @@ export function StewardDock({
   focusProjectName: string | null;
   onClose: () => void;
 }) {
-  const { projects, createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject } = useStore();
+  const { projects, createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject, createFeature, createMilestone, updateFeature } = useStore();
   const [msgs, setMsgs] = useState<Msg[]>(thread);
   const [input, setInput] = useState(draftCache);
   const [busy, setBusy] = useState(false);
@@ -82,6 +82,11 @@ export function StewardDock({
         return updateTask(projectId, a.taskId!, {
           assignment: { mode: a.mode ?? "unassigned", agentIds: a.mode === "agents" ? (a.agentIds ?? []) : [] },
         });
+      // Roadmap: create/link features + milestones via the same guarded store paths.
+      case "add_feature": return createFeature(projectId, a.name ?? "", a.description, a.milestoneId ?? undefined);
+      case "add_milestone": return createMilestone(projectId, a.name ?? "", a.description, a.targetAt ?? undefined);
+      case "set_task_feature": return updateTask(projectId, a.taskId!, { featureId: a.featureId ?? null });
+      case "set_feature_milestone": return updateFeature(a.featureId!, { milestoneId: a.milestoneId ?? null });
     }
   };
 

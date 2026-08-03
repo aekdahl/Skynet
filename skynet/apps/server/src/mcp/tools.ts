@@ -12,9 +12,12 @@ import {
   TaskRunStatus,
   ChatRequest,
   ConfigureRunnerRequest,
+  CreateFeatureRequest,
+  CreateMilestoneRequest,
   CreateProjectRequest,
   CreateTaskRequest,
   ResolveRequest,
+  UpdateFeatureRequest,
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
@@ -189,9 +192,21 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     const { projectId, ...body } = a;
     return operations.createTask(ws, projectId, body);
   });
-  tool("update_task", "author", "Update a task's text or state (backlog | assigned | done).", { taskId: z.string(), ...UpdateTaskRequest.shape }, (a) => {
+  tool("update_task", "author", "Update a task's text, state (backlog | assigned | done), or roadmap link (featureId / milestoneId).", { taskId: z.string(), ...UpdateTaskRequest.shape }, (a) => {
     const { taskId, ...patch } = a;
     return operations.updateTask(ws, taskId, patch);
+  });
+  tool("create_feature", "author", "Create a feature (a task grouping) in a project. Optionally roll it up into a milestone via `milestoneId`.", { projectId: z.string(), ...CreateFeatureRequest.shape }, (a) => {
+    const { projectId, ...body } = a;
+    return operations.createFeature(ws, projectId, body);
+  });
+  tool("update_feature", "author", "Update a feature's name, description, status, milestone (milestoneId), or archived flag.", { featureId: z.string(), ...UpdateFeatureRequest.shape }, (a) => {
+    const { featureId, ...patch } = a;
+    return operations.updateFeature(ws, featureId, patch);
+  });
+  tool("create_milestone", "author", "Create a milestone (a dated roadmap checkpoint) in a project.", { projectId: z.string(), ...CreateMilestoneRequest.shape }, (a) => {
+    const { projectId, ...body } = a;
+    return operations.createMilestone(ws, projectId, body);
   });
   tool("assign_task", "author", "Assign a task to a fresh agent on an idle runner. Idempotent: re-assigning an already-assigned task returns the existing agent.", { projectId: z.string(), taskId: z.string() }, (a) => operations.assignTask(ws, a.projectId, a.taskId));
   tool("message_agent", "author", "Send a chat message to an agent and get its reply.", { runId: z.string(), ...ChatRequest.shape }, async (a) => ({ reply: await operations.chatAgent(ws, a.runId, a.text) }));

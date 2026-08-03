@@ -459,7 +459,11 @@ export interface AssistantAction {
     | "set_autonomy"
     | "set_status"
     | "set_schedule"
-    | "set_assignment";
+    | "set_assignment"
+    | "add_feature"
+    | "add_milestone"
+    | "set_task_feature"
+    | "set_feature_milestone";
   summary: string;
   taskId?: string;
   text?: string;
@@ -476,6 +480,11 @@ export interface AssistantAction {
   // = the pool for `agents` mode (empty otherwise).
   mode?: "any" | "agents" | "unassigned";
   agentIds?: string[];
+  // Roadmap linkage (add_feature / add_milestone / set_task_feature /
+  // set_feature_milestone). `null` clears the respective link.
+  featureId?: string | null;
+  milestoneId?: string | null;
+  targetAt?: number | null;
 }
 // Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
 // (full project assistant + actions); omit it for a workspace-wide answer. The
