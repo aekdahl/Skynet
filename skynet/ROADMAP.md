@@ -111,6 +111,18 @@ The **governance wedge itself is local** (safety classifier, HITL Inbox, decisio
 desktop build) — only its enterprise *export/sync* surfaces are 🏢. When hosting re-enters scope, this
 is the bucket to pull from.
 
+*Hosted scaffolding landed opportunistically (still 🏢 as a release path — pieces in place, not the release itself):*
+- *A **`public_ui` GCP mode** that serves the whole app over HTTPS on a domain (drops IAP for the UI), with the
+  optional `/mcp` door on the same instance so a single VM can host the app + MCP endpoint. The GCP wizard
+  prompts for `public_ui` + domain + ACME email.*
+- ***Telegram-OTP MFA + recovery codes** for the public login path — the auth handshake exists for when a
+  hosted release turns on public sign-in; today's local desktop path is unchanged.*
+- ***Data-disk snapshot before each VM apply** in `setup.sh` — the deploy machinery snapshots persistent
+  state pre-mutation so hosted rollouts are recoverable.*
+- ***Project-scoped MCP service tokens** — tokens can now be pinned to specific projects (not just
+  workspaces), so an MCP token issued to an external agent is naturally sandboxed to the project it should
+  see. Necessary groundwork for shared/hosted MCP access.*
+
 ---
 
 ## v0.5 — UX release polish (pre-release · from [docs/ux-review.md](docs/ux-review.md))
@@ -251,6 +263,10 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     rivals); policy-driven auto-triage (auto-approve policy-safe, batch similar gates); **approve-with-memory /
     approve-with-rule** (an approval can write a policy or memory fact in-flow — the Inbox becomes *how* policy
     and memory get authored); async / mobile / delegated approval + escalation SLAs + a 2-person rule for high risk.
+    *Landed groundwork: **MCP push notifications** — an MCP client sees new HITL gates + review-needed events
+    live over `notifications/message` (workspace-scoped, approver-hint on scoped tokens); wait-for-hitl
+    long-poll remains as the reliable fallback for stateless HTTP clients. Steward-side approve-in-flow +
+    `approve-with-rule` still to do.*
   - Secrets at rest (local); 🏢 **observability** (hosted metrics/logging/tracing) + SIEM export of the audit.
 - [ ] **Runner session-map cleanup** — `ClaudeRunnerProvider.sessions` (agentId→sessionId, kept for fork resume) grows one entry per agent for the server-process lifetime. Evict on agent completion (retain only entries an active fork could resume). Small RAM/tech-debt fix; no behavior change.
 - [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs).* Still to do:
@@ -259,12 +275,19 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   - **Structured diffs in gates/review** — populate `HitlRaise.diff` from Codex/Cursor patch events and `git diff` in the worktree, so approvals show a real diff, not reconstructed text.
   - **Token-by-token streaming** — Claude `includePartialMessages` / CLI NDJSON deltas → live "typing" in the log instead of whole-message chunks.
   - **CLI usage fidelity** — Codex/Gemini/Cursor usage is parsed best-effort today; Copilot emits none (text-only). Firm these up as each vendor's structured output stabilizes.
-- [ ] **Review upgrades (adopted from the competitor sweep):**
+- [~] **Review upgrades (adopted from the competitor sweep):**
   - **Agent-authored diff walkthrough** — the run drafts a plain-English summary + inline comments grounded on
     the real `git diff` *before* you approve (nothing merges until accepted). Upgrades the diff HITL. *(Octomux-style.)*
   - **Verifier gate** — run the project's tests/checks in the worktree and **block the merge on failure** as a
     first-class gate (not just the pre-merge `checkCmd`); auto-commit on green. *(bernstein / MartinLoop-style.)*
   - **Checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks. *(AGX-style.)*
+  - *Landed: **every review is auto-reviewed** — a fleet agent judges each `review`-state task's diff/output
+    and writes a structured verdict (approve/flag) to the task; the log line names the reviewer + reason, and
+    the audit trail records who reviewed what. Auto-approve merges only when the project's autonomy toggle is
+    on; flagged runs stay in `review` for a human. Verdict parsing is field-based (JSON tail), not prose,
+    so a reason mentioning "flagged" never false-flags an APPROVE.*
+  - *Landed: **`error_max_turns` is resumable** — a run that hits the Claude turn cap parks with the current
+    plan + guidance instead of dead-ending; the operator resolves it forward.*
 - [ ] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** content max-width /
   purposeful two-column layouts (views left-hug at 1440 today) · stop amber doing triple duty
   (brand + primary + "waiting" status — move caution to its own hue; never encode status by hue
@@ -307,7 +330,10 @@ features below are white space.)
   Charter is what the auto dev team (v2 north star) later sizes itself from, and what **auto task/milestone
   proposal** plans against. See [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §1.
 - [ ] **Parallelism nudge** — "idle runners + deep backlog → spin up more?" turns the fleet's own state into guidance.
-- [ ] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain.
+- [x] **Task grouping & per-project roadmap** — a level *above* the task board. **Features** group related tasks (⊞ chip on cards; a lens listing each feature's mini 6-column count + progress bar); **milestones** are planned releases per project (◉ chip; a Roadmap lens with target-date badges and rolled-up features/tasks — "in Nd" / "today" / "Nd late"). Same-project scoping is enforced by the server (cross-project links refuse) and by the Steward/Telegram validators. Drove by: "roadmap formed from items in all stages of kanban marked with planned releases + milestones." Steward + Telegram both speak the seven grouping actions (`create_feature`, `set_task_feature`, `archive_feature`, `create_milestone`, `set_feature_milestone`, `set_task_milestone`, `mark_milestone_shipped`) — same confirm-first envelope task actions use.
+- [x] **Per-project agent instructions (house rules)** — a `Project.instructions` markdown field that rides *every* prompt an agent sees on that project (assignTask, forkAgent, review-revise, escalation resume, triage consult, auto-review consult) and Steward's grounding. Motivated by: "build agents in Skynet using a specific subset of packages, pre-written code, and structure" — that's a per-project policy, not a workspace boundary, and it lives on the project record for instant editability. Trims + normalizes empty → null; the read-only header shows a compact "ⓘ Instructions active" chip.
+- [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
+- [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.*
 - [ ] **Operator ergonomics (P3 of [docs/ux-review.md](docs/ux-review.md)):** **⌘K command palette**
   (navigation + verbs: assign, approve latest gate, open project) · **keyboard-first Inbox**
   (j/k navigate, a/r/m approve/reject/modify, ↵ opens the run — `QueueView.selectedIdx` already
