@@ -15,7 +15,7 @@
 // Either way the answer stays grounded — the model is told never to invent repo
 // content or project state.
 
-import type { Agent, HitlItem, Project, Task, TaskAssignment, TaskRun } from "@skynet/shared";
+import type { Agent, Feature, HitlItem, Milestone, Project, Task, TaskAssignment, TaskRun } from "@skynet/shared";
 import { ProjectStatus, TaskState } from "@skynet/shared";
 import {
   oneShotRepoAssistant,
@@ -65,6 +65,13 @@ const SYSTEM =
   '  {"kind":"set_status","status":"active|paused|done"}\n' +
   '  {"kind":"set_schedule","taskId":"<id>","estimatedDurationMs":<ms or null>,"plannedStartAt":<epoch ms or null>}\n' +
   '  {"kind":"set_assignment","taskId":"<id>","mode":"any|agents|unassigned","agentIds":["<agent id>", …]}\n' +
+  '  {"kind":"add_feature","name":"<feature name>","description":"<optional>","milestoneId":"<optional milestone id>"}\n' +
+  '  {"kind":"add_milestone","name":"<milestone name>","description":"<optional>","targetAt":<optional epoch ms>}\n' +
+  '  {"kind":"set_task_feature","taskId":"<id>","featureId":"<feature id, or null to unlink>"}\n' +
+  '  {"kind":"set_feature_milestone","featureId":"<feature id>","milestoneId":"<milestone id, or null to detach>"}\n' +
+  "Notes on the roadmap actions (features + milestones): a FEATURE groups tasks; a MILESTONE is a dated release/checkpoint that features roll up into — that's the roadmap. " +
+  "Use the feature ids from the FEATURES list and milestone ids from the MILESTONES list in PROJECT STATUS; if the operator names one that isn't listed, propose add_feature/add_milestone to create it (you can create it and link in the same batch), and never invent an id. " +
+  "For `targetAt` prefer an epoch-ms timestamp for the date the operator gives.\n" +
   "Notes on set_schedule: either or both fields may be present. `estimatedDurationMs` = how long you think the task takes; " +
   "`plannedStartAt` = when it should start (epoch ms). Pass `null` for a field to clear it (e.g. unschedule). " +
   "For durations, prefer minutes-to-milliseconds math (30m = 1_800_000).\n" +
@@ -126,7 +133,11 @@ export type ProjectActionKind =
   | "set_autonomy"
   | "set_status"
   | "set_schedule"
-  | "set_assignment";
+  | "set_assignment"
+  | "add_feature"
+  | "add_milestone"
+  | "set_task_feature"
+  | "set_feature_milestone";
 
 export interface AssistantAction {
   kind: ProjectActionKind;
@@ -148,6 +159,13 @@ export interface AssistantAction {
   // `agentIds` is the pool for `agents` mode (empty otherwise).
   mode?: TaskAssignment["mode"];
   agentIds?: string[];
+  // Roadmap linkage. `featureId` links a task to a feature (set_task_feature)
+  // or is the target of set_feature_milestone; `milestoneId` links a feature (or
+  // feature-at-creation) to a milestone; `targetAt` is a milestone's date. `null`
+  // clears the respective link.
+  featureId?: string | null;
+  milestoneId?: string | null;
+  targetAt?: number | null;
 }
 
 /** The grounding the action validator resolves ids against (this project only).
@@ -157,6 +175,10 @@ export interface ProjectActionContext {
   project: { id: string; name: string };
   tasks: { id: string; text: string; state: Task["state"] }[];
   agents?: { id: string; name: string }[];
+  // The project's features + milestones, so the roadmap actions resolve their
+  // ids against real records (a misparse can't invent one, mirroring `tasks`).
+  features?: { id: string; name: string }[];
+  milestones?: { id: string; name: string }[];
 }
 
 const clip = (s: string): string => (s.length > 60 ? s.slice(0, 57) + "…" : s);
@@ -310,6 +332,62 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
           : `Clear agent eligibility on “${clip(t.text)}”`,
       };
     }
+    case "add_feature": {
+      // Create a feature (a task grouping). Optionally slot it under a milestone
+      // — if `milestoneId` is given it must resolve to a real one.
+      const name = str(o.name);
+      if (!name) return null;
+      const description = str(o.description);
+      let milestoneId: string | undefined;
+      if (o.milestoneId != null) {
+        const m = (ctx.milestones ?? []).find((x) => x.id === o.milestoneId);
+        if (!m) return null; // named a milestone we don't have → refuse, don't guess
+        milestoneId = m.id;
+      }
+      const mName = milestoneId ? (ctx.milestones ?? []).find((x) => x.id === milestoneId)!.name : null;
+      return {
+        kind,
+        name,
+        ...(description ? { description } : {}),
+        ...(milestoneId ? { milestoneId } : {}),
+        summary: `Create feature: “${clip(name)}”${mName ? ` under milestone “${clip(mName)}”` : ""}`,
+      };
+    }
+    case "add_milestone": {
+      const name = str(o.name);
+      if (!name) return null;
+      const description = str(o.description);
+      let targetAt: number | undefined;
+      if (o.targetAt != null) {
+        if (typeof o.targetAt !== "number" || !Number.isFinite(o.targetAt)) return null;
+        targetAt = Math.round(o.targetAt);
+      }
+      return {
+        kind,
+        name,
+        ...(description ? { description } : {}),
+        ...(targetAt != null ? { targetAt } : {}),
+        summary: `Create milestone: “${clip(name)}”${targetAt != null ? ` (target ${new Date(targetAt).toISOString().slice(0, 10)})` : ""}`,
+      };
+    }
+    case "set_task_feature": {
+      // Link a task to a feature (or `null` to unlink). Both ids validated.
+      const t = task(o.taskId);
+      if (!t) return null;
+      if (o.featureId === null) return { kind, taskId: t.id, featureId: null, summary: `Unlink “${clip(t.text)}” from its feature` };
+      const f = (ctx.features ?? []).find((x) => x.id === o.featureId);
+      if (!f) return null;
+      return { kind, taskId: t.id, featureId: f.id, summary: `Put “${clip(t.text)}” under feature “${clip(f.name)}”` };
+    }
+    case "set_feature_milestone": {
+      // Roll a feature up into a milestone (or `null` to detach).
+      const f = (ctx.features ?? []).find((x) => x.id === o.featureId);
+      if (!f) return null;
+      if (o.milestoneId === null) return { kind, featureId: f.id, milestoneId: null, summary: `Detach feature “${clip(f.name)}” from its milestone` };
+      const m = (ctx.milestones ?? []).find((x) => x.id === o.milestoneId);
+      if (!m) return null;
+      return { kind, featureId: f.id, milestoneId: m.id, summary: `Roll feature “${clip(f.name)}” into milestone “${clip(m.name)}”` };
+    }
     default:
       return null;
   }
@@ -383,7 +461,14 @@ export function splitProposedAction(
   return { reply: trimmed, actions: [] };
 }
 
-function statusContext(project: Project, tasks: Task[], runs: TaskRun[], agents: Agent[] = []): string {
+function statusContext(
+  project: Project,
+  tasks: Task[],
+  runs: TaskRun[],
+  agents: Agent[] = [],
+  features: Feature[] = [],
+  milestones: Milestone[] = [],
+): string {
   const agentName = (id: string): string => agents.find((a) => a.id === id)?.name ?? id;
   // Compact "who may take this" tag so Steward can report + change eligibility.
   const eligibility = (t: Task): string => {
@@ -391,6 +476,12 @@ function statusContext(project: Project, tasks: Task[], runs: TaskRun[], agents:
     if (m === "any") return " → any agent";
     if (m === "agents") return ` → ${t.assignment.agentIds.map(agentName).join(", ")}`;
     return "";
+  };
+  // Which feature (if any) a task is already under — so Steward knows what to
+  // link/relink and doesn't re-propose an existing grouping.
+  const featureTag = (t: Task): string => {
+    const f = t.featureId ? features.find((x) => x.id === t.featureId) : undefined;
+    return f ? ` ⟨feat ${f.id}⟩` : "";
   };
   const lines: string[] = [
     `PROJECT: ${project.name}`,
@@ -405,8 +496,30 @@ function statusContext(project: Project, tasks: Task[], runs: TaskRun[], agents:
     const items = tasks.filter((t) => t.state === s && !t.archived);
     lines.push(
       items.length
-        ? `  ${s} (${items.length}): ${items.slice(0, 20).map((t) => `[${t.id}] ${t.text}${eligibility(t)}`).join(" · ")}`
+        ? `  ${s} (${items.length}): ${items.slice(0, 20).map((t) => `[${t.id}] ${t.text}${eligibility(t)}${featureTag(t)}`).join(" · ")}`
         : `  ${s}: 0`,
+    );
+  }
+  // ROADMAP: features group tasks; milestones are dated buckets features roll up
+  // into. Listed with ids so Steward can link (set_task_feature) + roll up
+  // (set_feature_milestone) against real records.
+  const liveFeatures = features.filter((f) => !f.archived);
+  if (liveFeatures.length) {
+    const mName = (id: string | null) => (id ? milestones.find((m) => m.id === id)?.name ?? id : null);
+    lines.push(
+      `FEATURES (task groupings): ${liveFeatures
+        .slice(0, 30)
+        .map((f) => `[${f.id}] ${f.name} (${f.status})${f.milestoneId ? ` → milestone “${mName(f.milestoneId)}”` : ""}`)
+        .join(" · ")}`,
+    );
+  }
+  const liveMilestones = milestones.filter((m) => !m.archived);
+  if (liveMilestones.length) {
+    lines.push(
+      `MILESTONES (roadmap): ${liveMilestones
+        .slice(0, 30)
+        .map((m) => `[${m.id}] ${m.name} (${m.status}${m.targetAt != null ? `, target ${new Date(m.targetAt).toISOString().slice(0, 10)}` : ""})`)
+        .join(" · ")}`,
     );
   }
   if (agents.length) {
@@ -471,17 +584,23 @@ export async function prepareStewardCall(
   const { workspaceId, project, question } = opts;
   const history = opts.history ?? [];
 
-  const [allTasks, allRuns, agents] = await Promise.all([
+  const [allTasks, allRuns, agents, allFeatures, allMilestones] = await Promise.all([
     store.listTasks(workspaceId),
     store.listRuns(workspaceId),
     store.listAgents(workspaceId),
+    store.listFeatures(workspaceId),
+    store.listMilestones(workspaceId),
   ]);
   const projectTasks = allTasks.filter((t) => t.projectId === project.id);
+  const features = allFeatures.filter((f) => f.projectId === project.id && !f.archived);
+  const milestones = allMilestones.filter((m) => m.projectId === project.id && !m.archived);
   const context = statusContext(
     project,
     projectTasks,
     allRuns.filter((r) => r.projectId === project.id),
     agents,
+    features,
+    milestones,
   );
   const actionCtx: ProjectActionContext = {
     project: { id: project.id, name: project.name },
@@ -489,6 +608,8 @@ export async function prepareStewardCall(
     // Fleet is workspace-wide (agents aren't project-scoped) — it's the pool
     // set_assignment validates agentIds against.
     agents: agents.map((a) => ({ id: a.id, name: a.name })),
+    features: features.map((f) => ({ id: f.id, name: f.name })),
+    milestones: milestones.map((m) => ({ id: m.id, name: m.name })),
   };
   const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
   // Live, secret-safe settings snapshot so settings questions ground in real

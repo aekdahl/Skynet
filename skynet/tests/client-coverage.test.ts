@@ -73,9 +73,6 @@ const ALLOW = new Set<string>([
   // No happy-path journey exercises it because the normal review → done path
   // is the intended path; this is only reached when that path is stuck.
   "forceTaskDone",
-  // Steward action executor for reorder_task — covered by the validator +
-  // executor tests in project-assistant.test.ts; no journey shape uses it.
-  "reorderTask",
   // Feature + milestone CRUD (task grouping + roadmap) — exercised by the
   // features-and-roadmap tests (features-roadmap.test.ts) which drive the
   // full Operations path with real store + hub. No fleet journey shape uses
