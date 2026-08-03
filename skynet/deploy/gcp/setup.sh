@@ -47,6 +47,15 @@ if [ ! -f terraform.tfvars ]; then
   read -r -p "  Machine type [e2-small] (e2-medium for heavier builds): " MT_IN; MT_IN=${MT_IN:-e2-small}
   read -r -p "  Allow control (approve/create/etc.) over Telegram? [Y/n]: " TC_IN
   TC=true; [[ "${TC_IN:-y}" =~ ^[Nn] ]] && TC=false
+  # Public UI over HTTPS (drop the IAP tunnel for humans). Needs a real domain
+  # (Let's Encrypt won't issue for a bare IP) whose A-record points at the VM's
+  # static IP, and adds a Telegram-OTP second factor to the login.
+  read -r -p "  Serve the UI publicly over HTTPS at a domain (public_ui)? [Y/n]: " PUI_IN
+  PUI=true; [[ "${PUI_IN:-y}" =~ ^[Nn] ]] && PUI=false
+  if $PUI; then
+    read -r -p "  Public domain (A-record → the VM's static IP) [skynet.zubi.ai]: " DOMAIN_IN; DOMAIN_IN=${DOMAIN_IN:-skynet.zubi.ai}
+    read -r -p "  Let's Encrypt (ACME) email [${EMAIL_IN}]: " ACME_IN; ACME_IN=${ACME_IN:-$EMAIL_IN}
+  fi
   cat > terraform.tfvars <<TFV
 project_id       = "${PROJECT_IN}"
 region           = "${REGION_IN}"
@@ -57,6 +66,13 @@ admin_email      = "${EMAIL_IN}"
 admin_workspace  = "skynet"
 telegram_control = ${TC}
 TFV
+  if $PUI; then
+    cat >> terraform.tfvars <<TFV
+public_ui        = true
+mcp_domain       = "${DOMAIN_IN}"
+acme_email       = "${ACME_IN}"
+TFV
+  fi
   echo "  ✓ wrote terraform.tfvars (edit it anytime; re-run to reuse)"
 fi
 
