@@ -351,6 +351,23 @@ export class ProjectPreviewManager {
     await this.runToCompletion(install, p.dir, p, 5 * 60_000);
   }
 
+  /** A fresh detached worktree has no `.env`, yet many dev scripts assume one —
+   *  e.g. `node --watch --env-file-if-exists=.env` CRASHES because `--watch` tries
+   *  to watch a path that doesn't exist, and dotenv-based scripts abort. Drop an
+   *  empty `.env` (only when absent) so those start cleanly. Harmless for apps that
+   *  ignore it; the worktree is ephemeral, never the operator's real checkout. */
+  private async ensureEnvFile(p: Live): Promise<void> {
+    if (!existsSync(join(p.dir, "package.json"))) return; // not a node project
+    const envPath = join(p.dir, ".env");
+    if (existsSync(envPath)) return; // respect a real one (e.g. a symlinked checkout's)
+    try {
+      await writeFile(envPath, "");
+      this.log(p, "created an empty .env (fresh worktree) so dev scripts that expect one start cleanly");
+    } catch {
+      /* best-effort — not fatal */
+    }
+  }
+
   /** Infer the install command: descriptor override, then the lockfile's package
    *  manager, else npm. */
   private installCmd(dir: string): string {
@@ -483,6 +500,7 @@ export class ProjectPreviewManager {
       // dev command (else `concurrently`/`vite`/etc. aren't found).
       await this.ensureDeps(p, spec.gitRepo);
       if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded during install
+      await this.ensureEnvFile(p); // a fresh worktree has no .env — many dev scripts crash without one
 
       this.log(p, `▸ ${recipe.cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
 
