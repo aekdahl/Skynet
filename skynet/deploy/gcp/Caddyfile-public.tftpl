@@ -1,0 +1,27 @@
+# Caddy — PUBLIC mode (public_ui): serve the WHOLE Skynet app over HTTPS at
+# ${mcp_domain} with a Let's Encrypt cert, replacing the IAP tunnel for humans.
+# The app gates everything itself — the UI by login (+ MFA), /mcp by a Bearer
+# service token (minted in Settings). IAP stays only for SSH (break-glass).
+# Caddy runs on the host network and reaches the app at 127.0.0.1:${app_port};
+# WebSocket upgrades pass through natively (fixing the tunnel's WS flakiness).
+#
+# Rendered by startup.sh.tftpl (Terraform substitutes the placeholders).
+
+${mcp_domain} {
+	tls {
+		issuer acme {
+			email ${acme_email}
+			disable_tlsalpn_challenge
+		}
+	}
+
+	encode gzip
+
+	# Everything (UI + /api + /ws + /mcp) proxies to the app, which enforces its
+	# own auth: login (+ MFA) for the human surface, Bearer for /mcp. No IAP here.
+	reverse_proxy 127.0.0.1:${app_port}
+
+	log {
+		output file /data/access.log
+	}
+}

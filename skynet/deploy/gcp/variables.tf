@@ -86,10 +86,16 @@ variable "enable_mcp_https" {
   description = "Add a public HTTPS /mcp endpoint (Caddy on :443, Bearer + source-IP allowlist) to this IAP box, for agents that can't use the tunnel. Off = IAP-only (unchanged). When true, mcp_domain + acme_email + mcp_allowed_source_ranges are required, and you add the <name_prefix>-mcp-token secret (the Bearer credential)."
 }
 
+variable "public_ui" {
+  type        = bool
+  default     = false
+  description = "Serve the WHOLE app (UI + /mcp) publicly over HTTPS at mcp_domain with a Let's Encrypt cert, instead of IAP-only. The UI is gated by the app login (+ MFA); /mcp by a Bearer service token minted in Settings. Opens :443/:80 to the internet and keeps IAP for SSH (break-glass). Requires mcp_domain + acme_email and a pre-reserved static IP named <name_prefix>-public-ip (DNS A-record → its address). Mutually exclusive with the narrow enable_mcp_https door."
+}
+
 variable "mcp_domain" {
   type        = string
   default     = ""
-  description = "DNS hostname for the public /mcp endpoint (A-record → the VM's static IP). Required when enable_mcp_https. Not a bare IP — ACME can't issue for an IP. The endpoint is https://<mcp_domain>/mcp."
+  description = "DNS hostname for the public endpoint (A-record → the static IP). Required when enable_mcp_https or public_ui. Not a bare IP — ACME can't issue for an IP. The endpoint is https://<mcp_domain> (UI) / https://<mcp_domain>/mcp."
   validation {
     condition     = var.mcp_domain == "" || !can(regex("^[0-9.]+$", var.mcp_domain))
     error_message = "mcp_domain must be empty or a DNS hostname (not a bare IP)."
