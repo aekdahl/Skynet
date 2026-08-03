@@ -751,12 +751,17 @@ export function ProjectView({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [name, setName] = useState(project.name);
   const [goal, setGoal] = useState(project.goal);
+  // The "house rules" — rides every agent prompt on this project (and Steward's
+  // grounding). Kept as its own local state so Cancel restores the pristine
+  // value if the operator opened the editor and changed their mind.
+  const [instructions, setInstructions] = useState(project.instructions ?? "");
 
   useEffect(() => {
     setName(project.name);
     setGoal(project.goal);
+    setInstructions(project.instructions ?? "");
     setFolded(false);
-  }, [project.id, project.name, project.goal]);
+  }, [project.id, project.name, project.goal, project.instructions]);
 
   return (
     <section className="projview">
@@ -766,18 +771,48 @@ export function ProjectView({
       {editing ? (
         <div className="projview-edit">
           <input className="qx-input" value={name} onChange={(e) => setName(e.target.value)} />
-          <textarea className="qx-input" rows={2} value={goal} onChange={(e) => setGoal(e.target.value)} />
+          <textarea
+            className="qx-input"
+            rows={2}
+            placeholder="Goal — what does done look like?"
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+          />
+          <label className="projview-instructions-label mono">
+            Instructions <span className="projview-instructions-hint">— house rules every agent on this project sees. Packages to use, code structure, conventions. Markdown OK.</span>
+          </label>
+          <textarea
+            className="qx-input projview-instructions"
+            rows={8}
+            placeholder={"e.g.\n- Use the @acme/agents SDK for all agent scaffolding.\n- Follow src/agents/<name>/{index.ts,tools.ts,prompt.md}.\n- Reuse buildTool() from lib/tools; don't hand-roll tool schemas."}
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+          />
           <div className="qx-row">
             <button
               className="btn btn-primary"
               onClick={() => {
-                updateProject(project.id, { name: name.trim() || project.name, goal: goal.trim() });
+                // Trim to detect real content; blank clears the field on the server.
+                const nextInstructions = instructions.trim() ? instructions.trim() : null;
+                updateProject(project.id, {
+                  name: name.trim() || project.name,
+                  goal: goal.trim(),
+                  instructions: nextInstructions,
+                });
                 setEditing(false);
               }}
             >
               Save
             </button>
-            <button className="btn btn-ghost" onClick={() => { setName(project.name); setGoal(project.goal); setEditing(false); }}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setName(project.name);
+                setGoal(project.goal);
+                setInstructions(project.instructions ?? "");
+                setEditing(false);
+              }}
+            >
               Cancel
             </button>
           </div>
@@ -787,6 +822,15 @@ export function ProjectView({
           <div className="projview-head-main">
             <h2>{project.name}</h2>
             <p>{project.goal}</p>
+            {project.instructions && (
+              <button
+                className="proj-instructions-chip mono"
+                title={project.instructions}
+                onClick={() => setEditing(true)}
+              >
+                ⓘ Instructions active — click to view/edit
+              </button>
+            )}
             {project.repoPath && (
               <div className="mono proj-repo-line" title={project.repoPath}>
                 {project.gitBacked ? "◈ git" : "📁"} {project.repoPath}

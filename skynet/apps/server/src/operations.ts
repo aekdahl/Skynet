@@ -417,6 +417,9 @@ export class Operations {
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo,
+      // Project-scoped agent guidance is optional at creation. Trimmed to null
+      // when blank so the "no rules" grounding path is unambiguous downstream.
+      instructions: input.instructions?.trim() || null,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
@@ -433,7 +436,14 @@ export class Operations {
             return { repoPath: rp, gitBacked: rp ? isGitRepo(rp) : false };
           })()
         : {};
-    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind });
+    // Normalize instructions: empty / whitespace-only clears back to null so
+    // downstream "no rules" branches don't have to distinguish "" from null.
+    // `patch.instructions === undefined` means the field is untouched.
+    const instructions =
+      patch.instructions === undefined
+        ? {}
+        : { instructions: patch.instructions?.trim() ? patch.instructions.trim() : null };
+    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     return updated;
   }

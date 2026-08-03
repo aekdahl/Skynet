@@ -208,6 +208,17 @@ export const Project = z.object({
   repoPath: z.string().nullable().default(null),
   gitBacked: z.boolean().default(false),
   repo: z.string().optional(),
+  // Free-form markdown that rides EVERY agent prompt on this project — the
+  // "house rules" for this codebase (which packages to use, code structure,
+  // conventions the agent should follow). Steward also sees it in its
+  // grounding. Nullable = no rules set; equivalent to today's behavior.
+  //
+  // Repo-file convention: when set, this is Skynet's copy of what would
+  // otherwise live in `.skynet/instructions.md` at the repo root. A future
+  // "sync to repo" toggle can push this back to a committed file so a
+  // vendor-neutral rule set travels with the codebase; for now it's stored
+  // on the project record for instant editability without a commit.
+  instructions: z.string().nullable().default(null),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -516,6 +527,8 @@ export const CreateProjectRequest = z.object({
   // on; approvalLevel from SKYNET_APPROVAL_LEVEL). Both remain editable later.
   autonomy: z.boolean().optional(),
   approvalLevel: ApprovalLevel.optional(),
+  // Project-scoped agent guidance that rides every prompt (see Project.instructions).
+  instructions: z.string().optional(),
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 
@@ -535,6 +548,8 @@ export const UpdateProjectRequest = z.object({
   approvalLevel: ApprovalLevel.optional(),
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
+  // Project-scoped agent guidance. `null` clears the field back to "no rules".
+  instructions: z.string().nullable().optional(),
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 

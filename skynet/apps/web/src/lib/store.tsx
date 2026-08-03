@@ -95,11 +95,20 @@ export interface Store extends StoreState {
       createRepo?: { name: string; private: boolean; owner?: string };
       autonomy?: boolean;
       approvalLevel?: string;
+      instructions?: string;
     },
   ) => Promise<void>;
   updateProject: (
     id: string,
-    patch: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string },
+    patch: {
+      name?: string;
+      goal?: string;
+      status?: string;
+      autonomy?: boolean;
+      approvalLevel?: string;
+      // null clears the project's instructions back to "no rules".
+      instructions?: string | null;
+    },
   ) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
@@ -424,6 +433,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           createRepo: opts?.createRepo,
           autonomy: opts?.autonomy,
           approvalLevel: opts?.approvalLevel,
+          instructions: opts?.instructions,
         });
       },
       updateProject: async (id, patch) => {
