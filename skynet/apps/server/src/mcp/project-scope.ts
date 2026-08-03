@@ -30,6 +30,10 @@ export interface ProjectScope {
   /** Gate a mutation by its arguments. Resolves the target project and returns
    *  an error message if it's out of scope (or can't be attributed); null = ok. */
   gate(args: Record<string, unknown>): Promise<string | null>;
+  /** Gate a runner-config call: a project-scoped token MAY add fleet capacity,
+   *  but only on a provider key enabled for one of its projects. Returns an error
+   *  message if the requested key isn't allowed anywhere in scope; null = ok. */
+  gateRunnerConfig(provider: string, credentialId: string | null): Promise<string | null>;
   /** Filter a full snapshot down to the allowed projects (in place is avoided —
    *  returns a new object). No-op when unrestricted. */
   filterSnapshot(snap: Snapshot): Promise<Snapshot>;
@@ -97,8 +101,23 @@ export function projectScope(principal: Principal, operations: Operations, ws: s
           : `Forbidden: this token is not scoped to project "${projectId}".`;
       }
       // No project-bearing argument at all → a workspace-level mutation
-      // (create_project, runner config) a project-scoped token may not perform.
+      // (create_project) a project-scoped token may not perform. (Runner config
+      // is handled separately via gateRunnerConfig — it IS allowed, key-gated.)
       return "Forbidden: this token is scoped to specific projects and cannot perform workspace-level actions.";
+    },
+
+    async gateRunnerConfig(provider, credentialId) {
+      if (!restricted) return null;
+      const key = credentialId ?? provider; // a runner's effective key (default = provider id)
+      const scopedProjects = (await operations.listProjects(ws)).filter((p) => allows(p.id));
+      // Allowed if ANY of the token's projects permits this key — a project with
+      // an empty allowlist permits every key (the workspace-wide default).
+      const ok = scopedProjects.some(
+        (p) => p.enabledRunnerCredentialIds.length === 0 || p.enabledRunnerCredentialIds.includes(key),
+      );
+      return ok
+        ? null
+        : `Forbidden: none of this token's projects permit runner key "${key}" — enable it in a project's settings first.`;
     },
 
     filterByProjectId(rows) {

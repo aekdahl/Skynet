@@ -260,7 +260,23 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     return { stopped: a.runId };
   });
   tool("archive_agent", "author", "Archive (or restore) an agent — hides it from the board without deleting it.", { runId: z.string(), archived: z.boolean().optional() }, (a) => operations.archiveAgent(ws, a.runId, a.archived ?? true));
-  tool("configure_runner", "author", "Add a fleet runner (a provider + model slot that can execute one agent).", ConfigureRunnerRequest.shape, (a) => operations.configureRunner(ws, a));
+  tool(
+    "configure_runner",
+    "author",
+    "Add a fleet runner (a provider + model slot that can execute one agent). A project-scoped token may add capacity, but only on a provider key enabled for one of its projects.",
+    ConfigureRunnerRequest.shape,
+    async (a) => {
+      // A project-scoped token CAN add fleet capacity (so it never starves) — but
+      // only on a key its project(s) are allowed to run on. Enforced here rather
+      // than via the generic gate (which would blanket-deny a keyless mutation).
+      if (projectAccess.restricted) {
+        const denied = await projectAccess.gateRunnerConfig(a.provider, a.credentialId ?? null);
+        if (denied) throw new Error(denied);
+      }
+      return operations.configureRunner(ws, a);
+    },
+    { selfGuarded: true },
+  );
   tool("update_runner", "author", "Update a fleet runner's model or name.", { runnerId: z.string(), ...UpdateRunnerRequest.shape }, (a) => {
     const { runnerId, ...patch } = a;
     return operations.updateAgent(ws, runnerId, patch);

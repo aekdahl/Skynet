@@ -661,6 +661,53 @@ function ProjectGithubAccount({ project, onChange }: { project: Project; onChang
   );
 }
 
+// Which provider keys this project may run agents on. Empty = any workspace key
+// (the default). Narrowing it confines BOTH what the fleet assigns here and what
+// a project-scoped MCP token may spin up. Hidden until there's a real choice
+// (at least one usable key), to keep the header clean.
+function ProjectRunnerKeys({ project, onChange }: { project: Project; onChange: (ids: string[]) => void }) {
+  const { providers } = useStore();
+  const [secrets, setSecrets] = useState<SecretMeta[]>([]);
+  useEffect(() => {
+    api.fetchSecrets().then(({ secrets }) => setSecrets(secrets.filter((s) => s.provider !== "github"))).catch(() => setSecrets([]));
+  }, []);
+  const provName = (id: string) => providers.find((p) => p.id === id)?.name ?? id;
+  // Candidates = every stored runner key, plus each available provider's DEFAULT
+  // key (id === provider) that isn't already a stored row (covers env-only keys).
+  const seen = new Set(secrets.map((s) => s.id));
+  const candidates = [
+    ...secrets.map((s) => ({ id: s.id, label: s.name || `${provName(s.provider)}${s.isDefault ? " default" : " key"}`, last4: s.last4 as string | undefined })),
+    ...providers.filter((p) => p.available && !seen.has(p.id)).map((p) => ({ id: p.id, label: `${p.name} default`, last4: undefined })),
+  ];
+  if (candidates.length === 0) return null; // nothing to confine to yet
+
+  const enabled = project.enabledRunnerCredentialIds;
+  const toggle = (id: string) => onChange(enabled.includes(id) ? enabled.filter((x) => x !== id) : [...enabled, id]);
+  const summary = enabled.length === 0 ? "All keys" : `${enabled.length} key${enabled.length === 1 ? "" : "s"}`;
+  return (
+    <details className="proj-keys">
+      <summary className="proj-keys-summary" title="Which provider keys this project may run agents on. All keys = any key in the workspace; narrowing confines assignment (and project-scoped MCP tokens) to the chosen keys.">
+        <span className="proj-approval-label mono">Keys</span>
+        <span className="proj-keys-value">{summary}</span>
+      </summary>
+      <div className="proj-keys-menu">
+        <div className="proj-keys-hint">
+          {enabled.length === 0
+            ? "Runs on any workspace key. Pick keys to confine this project."
+            : "Only runners on these keys are assignable here."}
+        </div>
+        {candidates.map((c) => (
+          <label key={c.id} className="proj-keys-item">
+            <input type="checkbox" checked={enabled.includes(c.id)} onChange={() => toggle(c.id)} />
+            <span className="proj-keys-name">{c.label}</span>
+            {c.last4 && <span className="proj-keys-fp mono">····{c.last4}</span>}
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export function ProjectView({
   project,
   now,
@@ -905,6 +952,7 @@ export function ProjectView({
               <span className="proj-autonomy-label">Autonomy</span>
             </label>
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
+            <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
             {project.repoPath && (
               <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
                 ▶ Preview app

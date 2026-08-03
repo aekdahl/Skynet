@@ -364,6 +364,8 @@ export function updateProject(
     // null clears the field back to "no project rules".
     instructions?: string | null;
     githubCredentialId?: string | null;
+    // Which provider keys the project may run on (credential ids; empty = all).
+    enabledRunnerCredentialIds?: string[];
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);

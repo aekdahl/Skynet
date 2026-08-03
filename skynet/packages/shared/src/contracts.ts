@@ -233,6 +233,13 @@ export const Project = z.object({
   // workspace keep work repos on the business account and personal repos on a
   // personal account (separate billing + storage).
   githubCredentialId: z.string().nullable().default(null),
+  // Which provider keys this project may run agents on — a list of secret-store
+  // credential ids (a runner's effective id is `credentialId ?? provider`, so a
+  // provider's default key is the provider id itself). Assignment to this project
+  // is confined to fleet runners whose key is in this set, and a project-scoped
+  // MCP token may only create runners with these keys. EMPTY = every key in the
+  // workspace (the default — unchanged behavior); a non-empty list confines it.
+  enabledRunnerCredentialIds: z.array(z.string()).default([]),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -566,6 +573,9 @@ export const UpdateProjectRequest = z.object({
   // Project-scoped agent guidance. `null` clears the field back to "no rules".
   instructions: z.string().nullable().optional(),
   githubCredentialId: z.string().nullable().optional(), // pick the GitHub account (null clears → default)
+  // Which provider keys the project may run on (secret-store credential ids;
+  // empty = all keys). See Project.enabledRunnerCredentialIds.
+  enabledRunnerCredentialIds: z.array(z.string()).optional(),
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 

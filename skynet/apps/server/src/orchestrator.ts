@@ -655,6 +655,10 @@ export class Orchestrator {
   private acquireAgent(
     workspaceId: string,
     eligible?: TaskAssignment,
+    // The project's enabled-key allowlist (secret-store credential ids; empty =
+    // any key). A runner is assignable only if its key (credentialId ?? provider)
+    // is in this set — the project-level provider-key confinement.
+    allowedCredentialIds: string[] = [],
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
@@ -665,9 +669,18 @@ export class Orchestrator {
       // considers the whole fleet (historical behavior).
       const inPool = (id: string) =>
         eligible?.mode === "agents" ? eligible.agentIds.includes(id) : true;
-      const eligibleRunners = runners.filter((r) => inPool(r.id));
-      if (eligible?.mode === "agents" && eligibleRunners.length === 0) {
+      const keyAllowed = (r: Agent) =>
+        allowedCredentialIds.length === 0 || allowedCredentialIds.includes(r.credentialId ?? r.provider);
+      const pooled = runners.filter((r) => inPool(r.id));
+      if (eligible?.mode === "agents" && pooled.length === 0) {
         throw new NoCapacityError("None of this task's assigned agents exist in the fleet.");
+      }
+      // Confine to runners on a key this project is allowed to run on.
+      const eligibleRunners = pooled.filter(keyAllowed);
+      if (eligibleRunners.length === 0) {
+        throw new NoCapacityError(
+          "No fleet runner uses a provider key enabled for this project — enable one of its keys in the project's settings, or add a runner on an allowed key in Fleet.",
+        );
       }
       const idle = eligibleRunners.filter((r) => r.status === "idle");
       if (idle.length === 0) {
@@ -689,6 +702,11 @@ export class Orchestrator {
     });
   }
 
+  /** A project's enabled-runner-key allowlist (empty = any key). */
+  private async projectKeyAllowlist(projectId: string): Promise<string[]> {
+    return (await this.store.getProject(projectId))?.enabledRunnerCredentialIds ?? [];
+  }
+
   /**
    * Acquire an idle runner, or PROVISION a fresh one on demand when the fleet is
    * fully occupied — used by fork so a family can branch even when every runner
@@ -701,11 +719,18 @@ export class Orchestrator {
     provider: TaskRun["provider"],
     model: string,
     credentialId?: string | null,
+    // The owning project's enabled-key allowlist (empty = any). Confines which
+    // idle runner may be reused, so a fork/retry can't land on a key the project
+    // isn't allowed to run on. The provisioned fallback uses the requested
+    // credential, which the caller already resolved from an allowed run.
+    allowedCredentialIds: string[] = [],
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
-      // Prefer an idle agent whose provider/credential can actually execute.
-      for (const r of runners.filter((r) => r.status === "idle")) {
+      const keyAllowed = (r: Agent) =>
+        allowedCredentialIds.length === 0 || allowedCredentialIds.includes(r.credentialId ?? r.provider);
+      // Prefer an idle agent that's on an allowed key AND can actually execute.
+      for (const r of runners.filter((r) => r.status === "idle" && keyAllowed(r))) {
         if (await this.providerUsable(workspaceId, r.provider, r.credentialId)) {
           await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
           return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
@@ -774,7 +799,7 @@ export class Orchestrator {
     const current: TaskAssignment = task.assignment ?? { mode: "unassigned", agentIds: [] };
     const assignment: TaskAssignment =
       current.mode === "unassigned" ? { mode: "any", agentIds: [] } : current;
-    const runner = await this.acquireAgent(project.workspaceId, assignment);
+    const runner = await this.acquireAgent(project.workspaceId, assignment, project.enabledRunnerCredentialIds);
     const runId = `${this.slug(task.text)}-${++this.seq}`;
     // runId is unique → unique branch & worktree path (two same-named tasks
     // never collide on the same branch).
@@ -857,7 +882,7 @@ export class Orchestrator {
 
     // Fork provisions capacity on demand: if no runner is idle, spin one up
     // (inheriting the parent's provider/model) rather than refusing the fork.
-    const runner = await this.acquireOrProvisionRunner(parent.workspaceId, parent.provider, parent.model, parent.credentialId);
+    const runner = await this.acquireOrProvisionRunner(parent.workspaceId, parent.provider, parent.model, parent.credentialId, await this.projectKeyAllowlist(parent.projectId));
     const runId = `${this.slug(parent.name)}-fork-${++this.seq}`;
     const stepIndex = Math.max(0, parent.plan.findIndex((s) => s.state === "now"));
     const forkBranch = `${parent.branch}-fork`;
@@ -1002,7 +1027,7 @@ export class Orchestrator {
     }
     let acq: { id: string; provider: TaskRun["provider"]; model: string };
     try {
-      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId);
+      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId, await this.projectKeyAllowlist(run.projectId));
     } catch (err) {
       await this.hub.runLog(runId, `cannot revise — ${(err as Error).message}`);
       return;
@@ -1139,7 +1164,7 @@ export class Orchestrator {
         await this.freeRunner(live.agentId);
         this.live.delete(runId);
       }
-      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model);
+      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, undefined, await this.projectKeyAllowlist(run.projectId));
       if (reassign && live) {
         await live.handle.stop().catch(() => undefined);
         await this.freeRunner(live.agentId);

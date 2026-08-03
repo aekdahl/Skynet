@@ -203,11 +203,30 @@ describe("MCP project scoping", () => {
     expect(noProject.isError).toBe(true);
     expect(text(noProject)).toMatch(/workspace-level/);
 
-    const noRunner = await client.callTool({ name: "configure_runner", arguments: { provider: "claude", model: "opus" } });
-    expect(noRunner.isError).toBe(true);
-    expect(text(noRunner)).toMatch(/workspace-level/);
+    // Mutating shared fleet capacity (retire) is still off-limits — it isn't
+    // attributable to a project. (Creating a runner IS allowed — see below.)
+    const retire = await client.callTool({ name: "retire_runner", arguments: { runnerId: "r-anything" } });
+    expect(retire.isError).toBe(true);
+    expect(text(retire)).toMatch(/workspace-level/);
 
     expect((await store.listProjects(DEFAULT_WORKSPACE)).map((p) => p.id).sort()).toEqual(["A", "B"]); // none created
+  });
+
+  it("lets a scoped token add fleet capacity, but only on its project's enabled keys", async () => {
+    const { client, store } = await connect(scoped);
+    // Project A is confined to the claude default key; the token is scoped to A.
+    await store.putProject(
+      Project.parse({ id: "A", workspaceId: DEFAULT_WORKSPACE, name: "A", goal: "", runIds: [], status: "active", enabledRunnerCredentialIds: ["claude"] }),
+    );
+
+    // An enabled key → capacity is added (no starving a project-scoped token).
+    const ok = json(await client.callTool({ name: "configure_runner", arguments: { provider: "claude", model: "opus" } }));
+    expect(ok.id).toBeTruthy();
+
+    // A key the project doesn't permit → refused.
+    const denied = await client.callTool({ name: "configure_runner", arguments: { provider: "gemini", model: "g" } });
+    expect(denied.isError).toBe(true);
+    expect(text(denied)).toMatch(/permit runner key "gemini"/);
   });
 
   it("an UNSCOPED token still sees & acts across the whole workspace", async () => {
