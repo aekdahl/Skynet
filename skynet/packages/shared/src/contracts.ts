@@ -222,6 +222,11 @@ export const Project = z.object({
   // workspace keep work repos on the business account and personal repos on a
   // personal account (separate billing + storage).
   githubCredentialId: z.string().nullable().default(null),
+  // Which stored LLM provider credential this project's agent runs bill to — a
+  // secret-store credential id. Applied only when it matches the run's provider
+  // (else the agent's own credential / the provider default), so a work project's
+  // token spend lands on the business account. null → no project-level pin.
+  llmCredentialId: z.string().nullable().default(null),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -527,6 +532,7 @@ export const CreateProjectRequest = z.object({
   repoUrl: z.string().optional(), // or paste an existing repo's git URL to clone (normalized to "owner/repo")
   createRepo: CreateRepoSpec.optional(), // or have Skynet create a new repo and bind it
   githubCredentialId: z.string().nullable().optional(), // which GitHub account to use (null/omit → default)
+  llmCredentialId: z.string().nullable().optional(), // which LLM provider credential to bill (null/omit → none)
   // Governance chosen at creation. Omitted → the server defaults apply (autonomy
   // on; approvalLevel from SKYNET_APPROVAL_LEVEL). Both remain editable later.
   autonomy: z.boolean().optional(),
@@ -551,6 +557,7 @@ export const UpdateProjectRequest = z.object({
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
   githubCredentialId: z.string().nullable().optional(), // pick the GitHub account (null clears → default)
+  llmCredentialId: z.string().nullable().optional(), // pick the LLM credential to bill (null clears)
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 
