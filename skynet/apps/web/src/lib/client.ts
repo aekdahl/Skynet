@@ -297,6 +297,9 @@ export interface ServiceTokenMeta {
   id: string;
   label: string;
   scopes: McpScope[];
+  // Empty = every project in the workspace; a non-empty list = the projects this
+  // token is confined to (both its reads and its writes).
+  projectIds: string[];
   createdAt: number;
   expiresAt: number | null;
   lastUsedAt: number | null;
@@ -306,8 +309,8 @@ export interface ServiceTokenMeta {
 export function listServiceTokens() {
   return req<ServiceTokenMeta[]>("GET", "/api/service-tokens");
 }
-export function createServiceToken(body: { label: string; scopes: McpScope[]; ttlMs?: number | null }) {
-  return req<{ token: string; id: string; scopes: McpScope[]; label: string; expiresAt: number | null }>(
+export function createServiceToken(body: { label: string; scopes: McpScope[]; projectIds?: string[]; ttlMs?: number | null }) {
+  return req<{ token: string; id: string; scopes: McpScope[]; projectIds: string[]; label: string; expiresAt: number | null }>(
     "POST",
     "/api/service-tokens",
     body,

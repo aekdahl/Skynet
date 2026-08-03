@@ -1290,6 +1290,17 @@ button.kb-done:hover { opacity: 1; }
 .mcp-scope-name { font-weight: 600; min-width: 68px; }
 .mcp-scope-hint { color: var(--faint); }
 .mcp-scope-warn .mcp-scope-name, .mcp-scope-warn .mcp-scope-hint { color: var(--warn); }
+.mcp-projects { margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 8px; }
+.mcp-projects-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.mcp-projects-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.mcp-projects-hint { font-size: 11px; color: var(--faint); }
+.mcp-project-list { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.mcp-project { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
+.mcp-project input { flex: none; }
+.mcp-project-on .mcp-project-name { font-weight: 600; color: var(--accent); }
+.mcp-tok-projects { display: flex; gap: 5px; flex-wrap: wrap; }
+.mcp-badge-ws { color: var(--faint); background: var(--panel); border-color: var(--line); }
+.mcp-badge-proj { color: var(--text); background: color-mix(in oklch, var(--text), transparent 90%); border-color: var(--line); }
 .mcp-reveal { margin-top: 12px; background: var(--panel); border: 1px solid color-mix(in oklch, var(--ok), transparent 55%); border-left: 3px solid var(--ok); border-radius: 10px; padding: 13px 15px; display: flex; flex-direction: column; gap: 11px; }
 .mcp-reveal-head { display: flex; align-items: center; justify-content: space-between; }
 .mcp-token-line { display: flex; align-items: center; gap: 8px; }

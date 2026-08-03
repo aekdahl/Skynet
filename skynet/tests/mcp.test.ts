@@ -7,7 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { LoggingMessageNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { HitlItem, ProviderId, ServerEvent } from "@skynet/shared";
-import { DEFAULT_WORKSPACE } from "@skynet/shared";
+import { DEFAULT_WORKSPACE, Project, Task, TaskRun } from "@skynet/shared";
 import type { Principal } from "../apps/server/src/auth.js";
 import { InProcessBus } from "../apps/server/src/bus.js";
 import { Hub } from "../apps/server/src/hub.js";
@@ -113,6 +113,111 @@ describe("MCP tool core", () => {
     const res = json(await client.callTool({ name: "wait_for_hitl", arguments: { timeoutMs: 1000 } }));
     expect(res.waited).toBe(false);
     expect(res.hitl.id).toBe("q9");
+  });
+});
+
+// A service token can be confined to a subset of the workspace's projects
+// (Principal.projectIds). The MCP layer must enforce that in BOTH directions:
+// reads are filtered to the allowed projects and writes are gated to them.
+describe("MCP project scoping", () => {
+  // Token scoped to project "A" only (full capability within it).
+  const scoped: Principal = {
+    workspaceId: DEFAULT_WORKSPACE,
+    operatorId: "mcp:scoped",
+    scopes: ["observe", "author", "approver"],
+    projectIds: ["A"],
+  };
+  const project = (id: string) => Project.parse({ id, workspaceId: DEFAULT_WORKSPACE, name: `Proj ${id}`, goal: "", runIds: [], status: "active" });
+  const task = (id: string, projectId: string) => Task.parse({ id, workspaceId: DEFAULT_WORKSPACE, projectId, text: id, state: "todo" });
+  // Only id + projectId are read by the scope filter; putRun stores as-is, so a
+  // minimal record is enough (a full TaskRun.parse would need ~15 fields).
+  const run = (id: string, projectId: string) => ({ id, workspaceId: DEFAULT_WORKSPACE, projectId } as unknown as TaskRun);
+
+  /** Seed two projects (A allowed, B not) with a task + run each, directly in the store. */
+  async function seedTwoProjects(store: Awaited<ReturnType<typeof connect>>["store"]) {
+    await store.putProject(project("A"));
+    await store.putProject(project("B"));
+    await store.putTask(task("ta", "A"));
+    await store.putTask(task("tb", "B"));
+    await store.putRun(run("ra", "A"));
+    await store.putRun(run("rb", "B"));
+  }
+
+  it("filters reads down to the allowed projects", async () => {
+    const { client, store } = await connect(scoped);
+    await seedTwoProjects(store);
+
+    const projects = json(await client.callTool({ name: "list_projects", arguments: {} }));
+    expect(projects.map((p: { id: string }) => p.id)).toEqual(["A"]);
+
+    const runs = json(await client.callTool({ name: "list_agents", arguments: {} }));
+    expect(runs.map((r: { id: string }) => r.id)).toEqual(["ra"]);
+
+    const snap = json(await client.callTool({ name: "get_snapshot", arguments: {} }));
+    expect(snap.projects.map((p: { id: string }) => p.id)).toEqual(["A"]);
+    expect(snap.runs.map((r: { id: string }) => r.id)).toEqual(["ra"]);
+    expect(snap.tasks.map((t: { id: string }) => t.id)).toEqual(["ta"]);
+  });
+
+  it("filters the HITL queue by the run's project", async () => {
+    const { client, store, hub } = await connect(scoped);
+    await seedTwoProjects(store);
+    const hitl = (id: string, runId: string): HitlItem => ({
+      id, workspaceId: DEFAULT_WORKSPACE, runId, kind: "approval", title: id, why: "", risk: "low",
+      raisedAt: 0, resolvedAt: null, resolution: null, command: null, options: null, recommended: null, steps: null, diff: null,
+    });
+    await hub.raiseHitl(hitl("qa", "ra")); // project A → visible
+    await hub.raiseHitl(hitl("qb", "rb")); // project B → hidden
+
+    const queue = json(await client.callTool({ name: "list_hitl", arguments: {} }));
+    expect(queue.map((h: { id: string }) => h.id)).toEqual(["qa"]);
+  });
+
+  it("gates writes to the allowed projects (by projectId or a resolved task id)", async () => {
+    const { client, store } = await connect(scoped);
+    await seedTwoProjects(store);
+
+    // Allowed project → ok.
+    const okTask = json(await client.callTool({ name: "create_task", arguments: { projectId: "A", text: "new" } }));
+    expect(okTask.id).toBeTruthy();
+    const okUpdate = json(await client.callTool({ name: "update_task", arguments: { taskId: "ta", text: "renamed" } }));
+    expect(okUpdate.text).toBe("renamed");
+
+    // Disallowed project, named directly…
+    const deniedCreate = await client.callTool({ name: "create_task", arguments: { projectId: "B", text: "nope" } });
+    expect(deniedCreate.isError).toBe(true);
+    expect(text(deniedCreate)).toMatch(/scoped to project "B"/);
+
+    // …and reached via a task that belongs to it (resolved server-side).
+    const deniedUpdate = await client.callTool({ name: "update_task", arguments: { taskId: "tb", text: "nope" } });
+    expect(deniedUpdate.isError).toBe(true);
+    expect(text(deniedUpdate)).toMatch(/scoped to project "B"/);
+    expect((await store.getTask("tb"))?.text).toBe("tb"); // untouched
+  });
+
+  it("refuses workspace-level actions a project-scoped token can't attribute", async () => {
+    const { client, store } = await connect(scoped);
+    await seedTwoProjects(store);
+
+    const noProject = await client.callTool({ name: "create_project", arguments: { name: "X", goal: "" } });
+    expect(noProject.isError).toBe(true);
+    expect(text(noProject)).toMatch(/workspace-level/);
+
+    const noRunner = await client.callTool({ name: "configure_runner", arguments: { provider: "claude", model: "opus" } });
+    expect(noRunner.isError).toBe(true);
+    expect(text(noRunner)).toMatch(/workspace-level/);
+
+    expect((await store.listProjects(DEFAULT_WORKSPACE)).map((p) => p.id).sort()).toEqual(["A", "B"]); // none created
+  });
+
+  it("an UNSCOPED token still sees & acts across the whole workspace", async () => {
+    const { client, store } = await connect(author); // no projectIds
+    await seedTwoProjects(store);
+    const projects = json(await client.callTool({ name: "list_projects", arguments: {} }));
+    expect(projects.map((p: { id: string }) => p.id).sort()).toEqual(["A", "B"]);
+    // And it can create a project (workspace-level) — the scoped token could not.
+    const created = json(await client.callTool({ name: "create_project", arguments: { name: "C", goal: "" } }));
+    expect(created.id).toBeTruthy();
   });
 });
 

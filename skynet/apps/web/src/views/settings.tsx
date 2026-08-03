@@ -643,9 +643,13 @@ const rel = (ms: number): string => {
 };
 
 function McpAccessSection() {
+  const { projects } = useStore();
   const [tokens, setTokens] = useState<ServiceTokenMeta[] | null>(null);
   const [label, setLabel] = useState("");
   const [scopes, setScopes] = useState<Record<McpScope, boolean>>({ observe: true, author: true, approver: false, admin: false });
+  // Project confinement. Empty = workspace-wide (every project); a non-empty set
+  // restricts the token — both its reads and its writes — to just those projects.
+  const [projectIds, setProjectIds] = useState<string[]>([]);
   const [minted, setMinted] = useState<{ token: string; label: string } | null>(null);
   // The id of the token minted this session — highlighted in the index so it's
   // obvious the token still exists after the one-time secret reveal is dismissed.
@@ -679,10 +683,11 @@ function McpAccessSection() {
     setBusy(true);
     setErr(null);
     try {
-      const created = await api.createServiceToken({ label: label.trim(), scopes: selected });
+      const created = await api.createServiceToken({ label: label.trim(), scopes: selected, projectIds });
       setMinted({ token: created.token, label: created.label });
       setJustId(created.id);
       setLabel("");
+      setProjectIds([]);
       await load();
     } catch (e) {
       setErr(`Couldn't mint the token: ${(e as Error).message}`);
@@ -705,14 +710,15 @@ function McpAccessSection() {
   };
 
   // The raw token can't be re-shown (only a hash is stored), so "copy it again"
-  // means minting a FRESH key with the same label + scopes and revoking the old
-  // one — the reveal above shows & copies it once. Preserves a still-valid expiry.
+  // means minting a FRESH key with the same label + scopes + project confinement
+  // and revoking the old one — the reveal above shows & copies it once. Preserves
+  // a still-valid expiry.
   const regenerate = async (t: ServiceTokenMeta) => {
     setBusy(true);
     setErr(null);
     try {
       const ttlMs = t.expiresAt != null && t.expiresAt > Date.now() ? t.expiresAt - Date.now() : undefined;
-      const created = await api.createServiceToken({ label: t.label, scopes: t.scopes, ttlMs });
+      const created = await api.createServiceToken({ label: t.label, scopes: t.scopes, projectIds: t.projectIds, ttlMs });
       await api.revokeServiceToken(t.id);
       setMinted({ token: created.token, label: created.label });
       setJustId(created.id);
@@ -739,6 +745,7 @@ function McpAccessSection() {
       <div className="settings-setup-sub">
         Scoped tokens let runs drive this workspace over MCP — the same tools you use, gated by scope.
         Grant <span className="mono">approver</span> only to a token you trust to resolve gates without a human.
+        Confine a token to specific projects and it can neither see nor touch anything outside them.
       </div>
 
       {err && <div className="settings-warn">{err}</div>}
@@ -766,6 +773,35 @@ function McpAccessSection() {
             </label>
           ))}
         </div>
+        {projects.length > 0 && (
+          <div className="mcp-projects">
+            <div className="mcp-projects-head">
+              <span className="mcp-projects-title">Projects</span>
+              <span className="mcp-projects-hint">
+                {projectIds.length === 0
+                  ? "All projects — this token can see & act across the whole workspace."
+                  : `Confined to ${projectIds.length} project${projectIds.length === 1 ? "" : "s"} — it can neither see nor touch the others.`}
+              </span>
+            </div>
+            <div className="mcp-project-list">
+              {projects.map((p) => {
+                const on = projectIds.includes(p.id);
+                return (
+                  <label key={p.id} className={`mcp-project${on ? " mcp-project-on" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={(e) =>
+                        setProjectIds((v) => (e.target.checked ? [...v, p.id] : v.filter((id) => id !== p.id)))
+                      }
+                    />
+                    <span className="mcp-project-name">{p.name}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {minted && (
@@ -814,6 +850,17 @@ function McpAccessSection() {
                         </span>
                       ))}
                     </span>
+                  </div>
+                  <div className="mcp-tok-projects">
+                    {t.projectIds.length === 0 ? (
+                      <span className="mcp-badge mcp-badge-ws mono">all projects</span>
+                    ) : (
+                      t.projectIds.map((id) => (
+                        <span className="mcp-badge mcp-badge-proj mono" key={id}>
+                          {projects.find((p) => p.id === id)?.name ?? id}
+                        </span>
+                      ))
+                    )}
                   </div>
                   <div className="mcp-tok-meta mono">
                     <span className="mcp-tok-fp">····{t.last4}</span>

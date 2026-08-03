@@ -9,6 +9,7 @@ import { z } from "zod";
 import { config, now } from "../config.js";
 import { cookieToken, tokenFrom, SESSION_COOKIE, type Principal } from "../auth.js";
 import { TelegramClient } from "../telegram/client.js";
+import type { Operations } from "../operations.js";
 import { mfaEnabled, createChallenge, verifyChallenge } from "./mfa.js";
 import type { SessionStore } from "./sessions.js";
 import type { ServiceTokenStore } from "./service-tokens.js";
@@ -29,6 +30,9 @@ const MfaRequest = z.object({
 const CreateServiceTokenRequest = z.object({
   label: z.string().min(1),
   scopes: z.array(z.enum(["observe", "author", "approver", "admin"])).min(1),
+  // Confine the token to these projects (all must belong to the caller's
+  // workspace). Omit / empty → workspace-wide, the historical default.
+  projectIds: z.array(z.string()).optional(),
   ttlMs: z.number().int().positive().nullable().optional(),
 });
 
@@ -120,9 +124,9 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
  */
 export async function registerServiceTokenRoutes(
   app: FastifyInstance,
-  deps: { serviceTokens: ServiceTokenStore },
+  deps: { serviceTokens: ServiceTokenStore; operations: Pick<Operations, "listProjects"> },
 ): Promise<void> {
-  const { serviceTokens } = deps;
+  const { serviceTokens, operations } = deps;
 
   // Only a human operator (no scopes = full authority) may manage tokens.
   const requireHuman = (req: FastifyRequest, reply: FastifyReply): boolean => {
@@ -138,15 +142,28 @@ export async function registerServiceTokenRoutes(
     if (!requireHuman(req, reply)) return reply;
     const body = CreateServiceTokenRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    const ws = req.principal!.workspaceId;
+    // Validate the project allowlist up front so a typo can't mint a token that
+    // silently sees/does nothing. Every id must be a real project in the caller's
+    // own workspace (this also prevents scoping a token at another workspace's id).
+    const projectIds = body.data.projectIds ?? [];
+    if (projectIds.length > 0) {
+      const owned = new Set((await operations.listProjects(ws)).map((p) => p.id));
+      const unknown = projectIds.filter((id) => !owned.has(id));
+      if (unknown.length > 0) {
+        return reply.code(400).send({ error: `Unknown project(s) for this workspace: ${unknown.join(", ")}` });
+      }
+    }
     const created = await serviceTokens.create({
-      workspaceId: req.principal!.workspaceId,
+      workspaceId: ws,
       operatorId: `token:${body.data.label}`, // attribution in the audit trail
       scopes: body.data.scopes,
       label: body.data.label,
+      projectIds,
       ttlMs: body.data.ttlMs ?? null,
     });
     // Return the secret token plus the metadata; callers must store it now.
-    return reply.code(201).send({ token: created.token, id: created.id, scopes: body.data.scopes, label: created.label, expiresAt: created.expiresAt });
+    return reply.code(201).send({ token: created.token, id: created.id, scopes: body.data.scopes, projectIds, label: created.label, expiresAt: created.expiresAt });
   });
 
   // List this workspace's tokens as non-secret metadata.
