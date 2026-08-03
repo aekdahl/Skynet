@@ -423,6 +423,9 @@ export class Operations {
       // Optional: pin to a specific GitHub account at creation, else the default
       // connection (chosen later in project settings).
       githubCredentialId: input.githubCredentialId ?? null,
+      // Runner-key confinement is opt-in and set later in project settings —
+      // a fresh project runs on any workspace key until narrowed.
+      enabledRunnerCredentialIds: [],
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
