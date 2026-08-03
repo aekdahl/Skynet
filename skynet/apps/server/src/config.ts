@@ -201,6 +201,13 @@ export const config = {
   // /status, and the kill switch (/stop, /quit) work WITHOUT it and never depend
   // on the LLM. Replaces the older approve-only SKYNET_TELEGRAM_APPROVE flag.
   telegramControl: process.env.SKYNET_TELEGRAM_CONTROL === "true",
+
+  // ── MFA (second factor on the public login) ────────────────────────────────
+  // Opt-in Telegram OTP after the password. SKYNET_MFA_DISABLE is the SSH
+  // break-glass: set it on the box + restart to log in with password only if you
+  // ever lose Telegram AND your recovery codes.
+  mfa: process.env.SKYNET_MFA === "true",
+  mfaBreakGlass: process.env.SKYNET_MFA_DISABLE === "true",
 };
 
 export const now = (): number => Date.now();
