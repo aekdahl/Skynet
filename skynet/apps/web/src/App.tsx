@@ -162,7 +162,7 @@ export function App() {
   // The server rejected our token (dev token in production, or a wiped/expired
   // session) — sign in rather than spinning on reconnect.
   if (store.wsPhase === "unauthorized") {
-    return <LoginView onLogin={store.login} />;
+    return <LoginView onLogin={store.login} onVerifyMfa={store.verifyMfa} />;
   }
 
   if (!store.loaded) {

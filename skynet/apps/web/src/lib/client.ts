@@ -27,7 +27,9 @@ const token = () =>
  * /api/auth/login) and persist it. On success the stored token authorizes both
  * REST and the WebSocket; callers reload so the app re-connects with it.
  */
-export async function login(email: string, password: string): Promise<void> {
+export type LoginResult = { mfaRequired: false } | { mfaRequired: true; challengeId: string };
+
+export async function login(email: string, password: string): Promise<LoginResult> {
   const res = await fetch("/api/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -37,6 +39,26 @@ export async function login(email: string, password: string): Promise<void> {
     if (res.status === 401) throw new Error("Invalid email or password.");
     const text = await res.text().catch(() => "");
     throw new Error(text || `Login failed (${res.status}).`);
+  }
+  const data = (await res.json()) as { token?: string; mfaRequired?: boolean; challengeId?: string };
+  // MFA on: the password was correct but no session yet — a code went to Telegram.
+  if (data.mfaRequired && data.challengeId) return { mfaRequired: true, challengeId: data.challengeId };
+  if (typeof localStorage !== "undefined" && data.token) localStorage.setItem(TOKEN_KEY, data.token);
+  return { mfaRequired: false };
+}
+
+/** Second factor: exchange the challenge + the Telegram code (or a recovery
+ *  code) for a session token. */
+export async function verifyMfa(challengeId: string, code: string): Promise<void> {
+  const res = await fetch("/api/auth/mfa", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ challengeId, code }),
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("That code is invalid or expired.");
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Verification failed (${res.status}).`);
   }
   const data = (await res.json()) as { token: string };
   if (typeof localStorage !== "undefined") localStorage.setItem(TOKEN_KEY, data.token);

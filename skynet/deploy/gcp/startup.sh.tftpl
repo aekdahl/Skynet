@@ -93,6 +93,13 @@ GITHUB_TOKEN=$${GITHUB_TOKEN}
 # Behind Caddy: trust X-Forwarded-For so per-IP rate limiting keys on the real caller.
 SKYNET_TRUST_PROXY=true
 %{ endif ~}
+%{ if public_ui ~}
+# Public UI (no IAP): require a Telegram OTP second factor on login. Recovery
+# codes are written to /data/mfa-recovery-codes.txt on first boot (retrieve over
+# SSH). Break-glass if you lose Telegram AND the codes: set SKYNET_MFA_DISABLE=1
+# here + reboot to log in with password only.
+SKYNET_MFA=true
+%{ endif ~}
 %{ if enable_mcp_https ~}
 # Narrow /mcp door only: register the injected token as a scoped bootstrap
 # service token. (public_ui uses a service token minted in Settings instead.)

@@ -247,6 +247,7 @@ resource "google_compute_instance" "vm" {
       # service token, so no deploy-time token is injected there.
       caddy_enabled    = local.caddy_enabled
       enable_mcp_https = var.enable_mcp_https
+      public_ui        = var.public_ui
       mcp_domain       = var.mcp_domain
       mcp_scopes       = var.mcp_scopes
       caddyfile = var.public_ui ? templatefile("${path.module}/Caddyfile-public.tftpl", {

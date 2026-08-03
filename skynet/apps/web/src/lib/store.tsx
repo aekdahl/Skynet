@@ -161,7 +161,8 @@ export interface Store extends StoreState {
   // Re-fetch the snapshot and force the socket to reconnect now (Retry button).
   retry: () => void;
   // Exchange operator credentials for a session token, then reconnect with it.
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<api.LoginResult>;
+  verifyMfa: (challengeId: string, code: string) => Promise<void>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -544,9 +545,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         connRef.current?.reconnect();
       },
       login: async (email, password) => {
-        await api.login(email, password);
-        // Re-init the whole app with the new token — simplest + bulletproof:
-        // token() now returns the session, so REST + the WS reconnect authorized.
+        const result = await api.login(email, password);
+        // No MFA → session is set; re-init with the new token. MFA → the caller
+        // (LoginView) collects the code and calls verifyMfa.
+        if (!result.mfaRequired) location.reload();
+        return result;
+      },
+      verifyMfa: async (challengeId, code) => {
+        await api.verifyMfa(challengeId, code);
+        // Session set — re-init the whole app with the new token.
         location.reload();
       },
     };
