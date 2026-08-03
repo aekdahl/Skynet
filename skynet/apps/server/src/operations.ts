@@ -417,6 +417,9 @@ export class Operations {
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo,
+      // Optional: pin to a specific GitHub account at creation, else the default
+      // connection (chosen later in project settings).
+      githubCredentialId: input.githubCredentialId ?? null,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
@@ -479,7 +482,7 @@ export class Operations {
     const base = config.reposDir ? resolvePath(config.reposDir) : resolvePath(dirname(config.dbPath), "repos");
     const dest = join(base, project.id);
     if (!existsSync(join(dest, ".git"))) {
-      await githubService.cloneRepo(ws, project.repo, dest);
+      await githubService.cloneRepo(ws, project.repo, dest, project.githubCredentialId);
     }
     return this.hub.upsertProject({ ...project, repoPath: dest, gitBacked: true });
   }
