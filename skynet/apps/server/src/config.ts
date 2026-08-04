@@ -71,7 +71,13 @@ export const config = {
   // outside dev/test.
   authRequired: process.env.AUTH_REQUIRED != null ? process.env.AUTH_REQUIRED === "true" : !devMode,
   // Lifetime of a login session before it expires (→ 401). Default 12h.
+  //
+  // Two TTLs: MFA-verified sessions can last much longer than password-only
+  // ones, because the second factor already raised the bar. Rechecking MFA
+  // every 12h is more friction than the security buys — a re-verify every ~30d
+  // is the industry-common "trust this device" duration.
   sessionTtlMs: Number(process.env.SESSION_TTL_MS ?? 12 * 60 * 60 * 1000),
+  sessionTtlMfaMs: Number(process.env.SESSION_TTL_MFA_MS ?? 30 * 24 * 60 * 60 * 1000),
 
   // ── First operator (production login seed) ─────────────────────────────────
   // In dev/test the operator directory is seeded with the demo pair so the login
