@@ -9,14 +9,17 @@ import { Markdown } from "./markdown";
 // module scope so it survives navigating between pages within a session (a reload
 // starts fresh — matching the project chat).
 
+// One confirm-first action Steward proposed, with its own accept/dismiss state —
+// a single message can carry several (Steward's "action budget"), each resolved
+// independently or all at once.
+type ProposedAction = { action: api.AssistantAction; state: "pending" | "done" | "dismissed" };
 type Msg = {
   role: "user" | "assistant";
   content: string;
-  action?: api.AssistantAction;
-  // Which project a proposed action targets (captured at propose time, so
+  actions?: ProposedAction[];
+  // Which project the proposed actions target (captured at propose time, so
   // confirming later runs against the right project even after you navigate).
   actionProjectId?: string | null;
-  actionState?: "pending" | "done" | "dismissed";
 };
 
 let thread: Msg[] = [];
@@ -37,7 +40,7 @@ export function StewardDock({
   focusProjectName: string | null;
   onClose: () => void;
 }) {
-  const { projects, createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject } = useStore();
+  const { projects, createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject, createFeature, createMilestone, updateFeature } = useStore();
   const [msgs, setMsgs] = useState<Msg[]>(thread);
   const [input, setInput] = useState(draftCache);
   const [busy, setBusy] = useState(false);
@@ -74,25 +77,59 @@ export function StewardDock({
         if (a.plannedStartAt !== undefined) patch.plannedStartAt = a.plannedStartAt;
         return updateTask(projectId, a.taskId!, patch);
       }
+      case "set_assignment":
+        // Agent eligibility. `agents` mode carries the pool; any/unassigned clear it.
+        return updateTask(projectId, a.taskId!, {
+          assignment: { mode: a.mode ?? "unassigned", agentIds: a.mode === "agents" ? (a.agentIds ?? []) : [] },
+        });
+      // Roadmap: create/link features + milestones via the same guarded store paths.
+      case "add_feature": return createFeature(projectId, a.name ?? "", a.description, a.milestoneId ?? undefined);
+      case "add_milestone": return createMilestone(projectId, a.name ?? "", a.description, a.targetAt ?? undefined);
+      case "set_task_feature": return updateTask(projectId, a.taskId!, { featureId: a.featureId ?? null });
+      case "set_feature_milestone": return updateFeature(a.featureId!, { milestoneId: a.milestoneId ?? null });
     }
   };
 
-  const resolveAction = async (idx: number, accept: boolean) => {
-    const m = msgs[idx];
-    if (!m?.action || m.actionState !== "pending") return;
-    if (!accept) {
-      setMsgs((x) => x.map((mm, i) => (i === idx ? { ...mm, actionState: "dismissed" } : mm)));
-      return;
-    }
+  const setActionState = (mi: number, ai: number, state: ProposedAction["state"]) =>
+    setMsgs((x) => x.map((mm, i) => (i === mi ? { ...mm, actions: mm.actions?.map((pa, j) => (j === ai ? { ...pa, state } : pa)) } : mm)));
+
+  // Resolve ONE proposed action within a message.
+  const resolveAction = async (mi: number, ai: number, accept: boolean) => {
+    const m = msgs[mi];
+    const pa = m?.actions?.[ai];
+    if (!pa || pa.state !== "pending") return;
+    if (!accept) { setActionState(mi, ai, "dismissed"); return; }
     const projectId = m.actionProjectId ?? effFocusId;
     if (!projectId) { setErr("Tell me which project, then I can apply this."); return; }
     try {
-      await runAction(m.action, projectId);
-      setMsgs((x) => x.map((mm, i) => (i === idx ? { ...mm, actionState: "done" } : mm)));
+      await runAction(pa.action, projectId);
+      setActionState(mi, ai, "done");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't apply that — try again.");
     }
   };
+
+  // Confirm every pending action in a message, in order (they may build on each
+  // other), stopping at the first failure so the operator can see what broke.
+  const confirmAll = async (mi: number) => {
+    const m = msgs[mi];
+    if (!m?.actions) return;
+    const projectId = m.actionProjectId ?? effFocusId;
+    if (!projectId) { setErr("Tell me which project, then I can apply this."); return; }
+    for (let ai = 0; ai < m.actions.length; ai++) {
+      if (m.actions[ai]!.state !== "pending") continue;
+      try {
+        await runAction(m.actions[ai]!.action, projectId);
+        setActionState(mi, ai, "done");
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "Couldn't apply that — try again.");
+        return;
+      }
+    }
+  };
+
+  const dismissAll = (mi: number) =>
+    setMsgs((x) => x.map((mm, i) => (i === mi ? { ...mm, actions: mm.actions?.map((pa) => (pa.state === "pending" ? { ...pa, state: "dismissed" } : pa)) } : mm)));
 
   const ask = async (q: string) => {
     const question = q.trim();
@@ -103,16 +140,33 @@ export function StewardDock({
     setInput("");
     setBusy(true);
     try {
-      const { reply, action, projectId } = await api.stewardChat(question, history, focusProjectId ?? undefined);
+      // Stream deltas into the last (assistant) bubble as they arrive.
+      const onDelta = (chunk: string) =>
+        setMsgs((m) => {
+          const next = m.slice();
+          const last = next[next.length - 1]!;
+          next[next.length - 1] = { ...last, content: last.content + chunk };
+          return next;
+        });
+      const { reply, actions, projectId } = await api.streamStewardChat(
+        question,
+        history,
+        focusProjectId ?? undefined,
+        onDelta,
+      );
       // Steward resolved a project from the conversation → carry that focus so the
       // header + later turns reflect the project it's now working on.
       if (!focusProjectId && projectId) setResolvedId(projectId);
+      // Reconcile to the authoritative CLEAN reply (strips a trailing action JSON
+      // that may have streamed through) and attach any proposed action.
       setMsgs((m) => {
         const next = m.slice();
         next[next.length - 1] = {
           role: "assistant",
           content: reply,
-          ...(action ? { action, actionProjectId: projectId ?? effFocusId, actionState: "pending" as const } : {}),
+          ...(actions && actions.length
+            ? { actions: actions.map((action) => ({ action, state: "pending" as const })), actionProjectId: projectId ?? effFocusId }
+            : {}),
         };
         return next;
       });
@@ -158,21 +212,34 @@ export function StewardDock({
             ) : (
               <div className="asst-text">{m.content}</div>
             )}
-            {m.action && (
-              <div className="asst-propose">
-                {m.actionState === "done" ? (
-                  <span className="asst-propose-done">✓ {m.action.summary}</span>
-                ) : m.actionState === "dismissed" ? (
-                  <span className="asst-propose-done muted">Dismissed: {m.action.summary}</span>
-                ) : (
-                  <>
-                    <span className="asst-propose-label">{m.action.summary}</span>
+            {m.actions && m.actions.length > 0 && (
+              <div className="asst-propose-group">
+                {m.actions.length > 1 && m.actions.some((pa) => pa.state === "pending") && (
+                  <div className="asst-propose-all">
+                    <span className="asst-propose-all-label">{m.actions.length} changes</span>
                     <span className="asst-propose-actions">
-                      <button className="btn btn-primary btn-sm" onClick={() => void resolveAction(i, true)}>Confirm</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => void resolveAction(i, false)}>Dismiss</button>
+                      <button className="btn btn-primary btn-sm" onClick={() => void confirmAll(i)}>Confirm all</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => dismissAll(i)}>Dismiss all</button>
                     </span>
-                  </>
+                  </div>
                 )}
+                {m.actions.map((pa, ai) => (
+                  <div className="asst-propose" key={ai}>
+                    {pa.state === "done" ? (
+                      <span className="asst-propose-done">✓ {pa.action.summary}</span>
+                    ) : pa.state === "dismissed" ? (
+                      <span className="asst-propose-done muted">Dismissed: {pa.action.summary}</span>
+                    ) : (
+                      <>
+                        <span className="asst-propose-label">{pa.action.summary}</span>
+                        <span className="asst-propose-actions">
+                          <button className="btn btn-primary btn-sm" onClick={() => void resolveAction(i, ai, true)}>Confirm</button>
+                          <button className="btn btn-ghost btn-sm" onClick={() => void resolveAction(i, ai, false)}>Dismiss</button>
+                        </span>
+                      </>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>

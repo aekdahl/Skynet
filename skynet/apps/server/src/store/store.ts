@@ -7,14 +7,17 @@ import type {
   TaskRun,
   AuditRecord,
   Dependency,
+  Feature,
   GithubConnection,
   HitlItem,
+  Milestone,
   Module,
   Project,
   ProviderInfo,
   Agent,
   Snapshot,
   Task,
+  WorkspaceSettings,
 } from "@skynet/shared";
 import type { StoredServiceToken } from "../auth/service-tokens.js";
 
@@ -49,6 +52,18 @@ export interface Store {
   putTask(task: Task): Promise<Task>;
   deleteTask(id: string): Promise<void>;
 
+  // features (task grouping)
+  listFeatures(workspaceId: string): Promise<Feature[]>;
+  getFeature(id: string): Promise<Feature | undefined>;
+  putFeature(feature: Feature): Promise<Feature>;
+  deleteFeature(id: string): Promise<void>;
+
+  // milestones (roadmap grouping)
+  listMilestones(workspaceId: string): Promise<Milestone[]>;
+  getMilestone(id: string): Promise<Milestone | undefined>;
+  putMilestone(milestone: Milestone): Promise<Milestone>;
+  deleteMilestone(id: string): Promise<void>;
+
   // fleet
   listAgents(workspaceId: string): Promise<Agent[]>;
   /** Every runner across all workspaces — for maintenance sweeps (reconcile). */
@@ -81,6 +96,11 @@ export interface Store {
   getGithubConnection(workspaceId: string): Promise<GithubConnection | undefined>;
   putGithubConnection(connection: GithubConnection): Promise<void>;
   deleteGithubConnection(workspaceId: string): Promise<void>;
+
+  // Workspace settings (one per workspace) — the live fleet policy. Same
+  // durable-Store pattern as the GitHub connection; undefined until first set.
+  getWorkspaceSettings(workspaceId: string): Promise<WorkspaceSettings | undefined>;
+  putWorkspaceSettings(settings: WorkspaceSettings): Promise<void>;
   // A PAT's sealed ciphertext (pat auth mode). Server-side only; never part of
   // the GithubConnection contract. Sealed/opened by the GithubService.
   getGithubToken(workspaceId: string): Promise<string | undefined>;

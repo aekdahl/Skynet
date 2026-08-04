@@ -6,7 +6,9 @@
 
 import type {
   TaskRun,
+  Feature,
   HitlItem,
+  Milestone,
   PlanStep,
   Project,
   Resolution,
@@ -265,6 +267,28 @@ export class Hub {
     const existing = await this.store.getTask(id);
     await this.store.deleteTask(id);
     if (existing) this.bus.publish(existing.workspaceId, { type: "task.deleted", id });
+  }
+
+  async upsertFeature(feature: Feature): Promise<Feature> {
+    await this.store.putFeature(feature);
+    this.bus.publish(feature.workspaceId, { type: "feature.upserted", feature });
+    return feature;
+  }
+  async deleteFeature(id: string): Promise<void> {
+    const existing = await this.store.getFeature(id);
+    await this.store.deleteFeature(id);
+    if (existing) this.bus.publish(existing.workspaceId, { type: "feature.deleted", id });
+  }
+
+  async upsertMilestone(milestone: Milestone): Promise<Milestone> {
+    await this.store.putMilestone(milestone);
+    this.bus.publish(milestone.workspaceId, { type: "milestone.upserted", milestone });
+    return milestone;
+  }
+  async deleteMilestone(id: string): Promise<void> {
+    const existing = await this.store.getMilestone(id);
+    await this.store.deleteMilestone(id);
+    if (existing) this.bus.publish(existing.workspaceId, { type: "milestone.deleted", id });
   }
 
   async upsertAgent(agent: Agent): Promise<Agent> {

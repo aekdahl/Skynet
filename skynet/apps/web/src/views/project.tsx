@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import type { TaskRun, Project, Task, TaskAssignment, Agent } from "@skynet/shared";
+import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import {
@@ -19,6 +19,7 @@ import { Markdown } from "../components/markdown";
 import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
+import { FeaturesLens, RoadmapLens } from "./project-grouping";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -158,11 +159,23 @@ function TaskCard({
   const {
     queue,
     fleet,
+    providers,
+    features,
+    milestones,
     updateTask,
     deleteTask,
     forceTaskDone,
     archiveTask,
   } = useStore();
+  // Features + milestones available to this task (same project, not archived).
+  const projFeatures = features.filter((f) => f.projectId === task.projectId && !f.archived);
+  const projMilestones = milestones.filter((m) => m.projectId === task.projectId && !m.archived);
+  const feature = task.featureId ? projFeatures.find((f) => f.id === task.featureId) : undefined;
+  // Effective milestone: the task's own, or (fallback) the feature's roll-up.
+  const effectiveMilestoneId = task.milestoneId ?? feature?.milestoneId ?? null;
+  const milestone = effectiveMilestoneId
+    ? projMilestones.find((m) => m.id === effectiveMilestoneId)
+    : undefined;
   const [editing, setEditing] = useState(false);
   const [detail, setDetail] = useState(false); // full-detail modal for a card with no run
   const [draft, setDraft] = useState(task.text);
@@ -177,6 +190,20 @@ function TaskCard({
   const noFleet = fleet.length === 0;
   const dnd = useContext(BoardDnd);
   const dragging = dnd?.drag?.taskId === task.id;
+  // Once a run exists, the eligibility ("any agent") is moot — surface WHO is
+  // actually doing the work: the fleet runner the run executes on. Falls back to
+  // the run's provider·model if that runner was since retired, and only reverts
+  // to the eligibility chip when nothing has picked the task up yet.
+  const runner = run?.agentId ? fleet.find((f) => f.id === run.agentId) : undefined;
+  const workedBy = runner?.name ?? (run?.agentId ? `${run.provider} · ${run.model}` : undefined);
+  const workedByPinfo = workedBy ? providers.find((p) => p.id === (runner?.provider ?? run?.provider)) : undefined;
+  // An agent has actively taken this task once it's `ongoing` (the invariant:
+  // an ongoing task always carries a live run). Lock the card so no one can
+  // move, edit, or reassign it out from under the running agent — only the
+  // run's emergency controls remain (open the card → pause/stop/resume) plus
+  // the Force-done escape hatch. `review`/`done` are human-decision states and
+  // stay interactive.
+  const locked = s === "ongoing";
 
   if (editing) {
     return (
@@ -223,12 +250,18 @@ function TaskCard({
     <>
     {dnd?.dropBeforeId === task.id && <div className="kb-drop-line" aria-hidden="true" />}
     <div
-      className={"kb-card kb-card-" + s + (dragging ? " kb-card-dragging" : "")}
+      className={"kb-card kb-card-" + s + (dragging ? " kb-card-dragging" : "") + (locked ? " kb-card-locked" : "")}
       role="button"
       tabIndex={0}
       data-card-id={task.id}
-      draggable
+      draggable={!locked}
       onDragStart={(e) => {
+        // A locked (agent-owned) card never drags — no one moves it off the
+        // running agent. draggable=false already blocks it; guard here too.
+        if (locked) {
+          e.preventDefault();
+          return;
+        }
         // Don't hijack drags that begin on an inner control (select, buttons,
         // inputs) — those stay clickable; only the card body starts a drag.
         if ((e.target as HTMLElement).closest("input,select,textarea,button,label,a")) {
@@ -246,6 +279,27 @@ function TaskCard({
       <div className="kb-card-top">
         {run && <StatusDot status={run.status} />}
         <span className="kb-task" title={task.description ?? undefined}>{task.text}</span>
+        {task.source?.kind === "github_issue" && (
+          <a
+            className="kb-source mono"
+            href={task.source.url || undefined}
+            target="_blank"
+            rel="noreferrer"
+            onClick={stop}
+            title={`Imported from GitHub issue ${task.source.repo}#${task.source.number} — status syncs back when enabled`}
+          >
+            #{task.source.number} ↗
+          </a>
+        )}
+        {locked && (
+          <span
+            className="kb-lock"
+            title="An agent is working on this — the card is locked, so it can't be moved or edited. Open it for emergency controls (pause · stop)."
+            aria-label="Locked — an agent is working on this task"
+          >
+            🔒
+          </span>
+        )}
         {(s === "backlog" || s === "triage" || s === "todo") && (
           <span className="kb-card-tools" onClick={stop}>
             <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>✎</button>
@@ -275,8 +329,12 @@ function TaskCard({
       )}
 
       {s === "triage" && task.assessment && <div className="kb-assessment">{task.assessment}</div>}
-      {s === "review" && task.reviewFlaggedReason && (
-        <div className="kb-flag">⚠ flagged for you — {task.reviewFlaggedReason}</div>
+      {s === "review" && task.reviewVerdict && (
+        task.reviewVerdict.decision === "flag" ? (
+          <div className="kb-flag">⚠ flagged for you — {task.reviewVerdict.reason}</div>
+        ) : (
+          <div className="kb-review-ok">✓ reviewer approved — awaiting you</div>
+        )
       )}
 
       {(task.estimatedDurationMs != null || task.plannedStartAt != null) && (
@@ -292,6 +350,24 @@ function TaskCard({
         </div>
       )}
 
+      {(feature || milestone) && (
+        <div className="kb-tags" onClick={stop}>
+          {feature && (
+            <span className="kb-feat-chip" title={`Feature — ${feature.description ?? feature.name}`}>
+              ⊞ {feature.name}
+            </span>
+          )}
+          {milestone && (
+            <span
+              className="kb-ms-chip"
+              title={milestone.targetAt ? `Milestone — target ${new Date(milestone.targetAt).toLocaleDateString()}` : "Milestone"}
+            >
+              ◉ {milestone.name}
+            </span>
+          )}
+        </div>
+      )}
+
       {(s === "backlog" || s === "triage" || s === "todo") ? (
         <AgentEligibility
           task={task}
@@ -301,7 +377,19 @@ function TaskCard({
         />
       ) : (
         <div className="kb-elig-ro">
-          <AgentEligibility task={task} fleet={fleet} editable={false} onChange={() => {}} />
+          {workedBy ? (
+            <span
+              className="kb-elig-chip kb-elig-agent mono"
+              title={s === "done" ? "Completed by this agent" : "Agent working on this task"}
+            >
+              <span className="kb-elig-glyph" style={workedByPinfo ? { color: workedByPinfo.color } : undefined}>
+                {workedByPinfo?.glyph ?? "◆"}
+              </span>{" "}
+              {workedBy}
+            </span>
+          ) : (
+            <AgentEligibility task={task} fleet={fleet} editable={false} onChange={() => {}} />
+          )}
         </div>
       )}
 
@@ -368,12 +456,59 @@ function TaskCard({
                 <p className="kb-detail-assess">{task.assessment}</p>
               </div>
             )}
-            {task.reviewFlaggedReason && (
+            {task.reviewVerdict && (
               <div className="kb-detail-section">
-                <div className="kb-detail-label mono">FLAGGED FOR REVIEW</div>
-                <p className="kb-detail-assess">⚠ {task.reviewFlaggedReason}</p>
+                <div className="kb-detail-label mono">
+                  REVIEW ·{" "}
+                  <span className={task.reviewVerdict.decision === "flag" ? "kb-verdict-flag" : "kb-verdict-approve"}>
+                    {task.reviewVerdict.decision === "flag" ? "⚠ FLAGGED" : "✓ APPROVED"}
+                  </span>
+                </div>
+                <p className="kb-detail-assess">{task.reviewVerdict.reason}</p>
+                <div className="kb-detail-meta mono">
+                  by {task.reviewVerdict.by} · {new Date(task.reviewVerdict.at).toLocaleString()}
+                </div>
               </div>
             )}
+            <div className="kb-detail-section kb-detail-grouping">
+              <div className="kb-detail-label mono">GROUPING</div>
+              <label className="kb-detail-row">
+                <span className="kb-detail-row-lbl">Feature</span>
+                <select
+                  className="kb-detail-select"
+                  value={task.featureId ?? ""}
+                  onChange={(e) => updateTask(pid, task.id, { featureId: e.target.value || null })}
+                >
+                  <option value="">— none —</option>
+                  {projFeatures.map((f) => (
+                    <option key={f.id} value={f.id}>{f.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="kb-detail-row">
+                <span className="kb-detail-row-lbl">Milestone</span>
+                <select
+                  className="kb-detail-select"
+                  value={task.milestoneId ?? ""}
+                  onChange={(e) => updateTask(pid, task.id, { milestoneId: e.target.value || null })}
+                  title={
+                    feature?.milestoneId && !task.milestoneId
+                      ? `Inherits from feature — ${projMilestones.find((m) => m.id === feature.milestoneId)?.name ?? ""}`
+                      : undefined
+                  }
+                >
+                  <option value="">
+                    {feature?.milestoneId ? "— inherit from feature —" : "— none —"}
+                  </option>
+                  {projMilestones.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                      {m.targetAt ? ` · ${new Date(m.targetAt).toLocaleDateString()}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </div>
         </div>
       )}
@@ -512,6 +647,113 @@ function ProjectStats({
   );
 }
 
+// Which GitHub account this project's clone/push/PR use. Only meaningful once
+// extra accounts exist (added in Integrations); until then it's hidden to keep
+// the header clean. "Default" → the workspace's default GitHub connection.
+function ProjectGithubAccount({ project, onChange }: { project: Project; onChange: (id: string | null) => void }) {
+  const [accounts, setAccounts] = useState<SecretMeta[]>([]);
+  useEffect(() => {
+    api.fetchSecrets().then(({ secrets }) => setAccounts(secrets.filter((s) => s.provider === "github"))).catch(() => setAccounts([]));
+  }, []);
+  if (accounts.length === 0) return null; // nothing to choose between yet
+  return (
+    <label className="proj-approval" title="Which GitHub account this project's repos push to and are stored under (e.g. business vs personal). Manage accounts in Integrations.">
+      <span className="proj-approval-label mono">GitHub</span>
+      <select
+        className="proj-approval-select"
+        value={project.githubCredentialId ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+      >
+        <option value="">Default connection</option>
+        {accounts.map((a) => (
+          <option key={a.id} value={a.id}>{a.name || "account"} · ····{a.last4}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+// Which provider keys this project may run agents on. Empty = any workspace key
+// (the default). Narrowing it confines BOTH what the fleet assigns here and what
+// a project-scoped MCP token may spin up. Hidden until there's a real choice
+// (at least one usable key), to keep the header clean.
+function ProjectRunnerKeys({ project, onChange }: { project: Project; onChange: (ids: string[]) => void }) {
+  const { providers } = useStore();
+  const [secrets, setSecrets] = useState<SecretMeta[]>([]);
+  useEffect(() => {
+    api.fetchSecrets().then(({ secrets }) => setSecrets(secrets.filter((s) => s.provider !== "github"))).catch(() => setSecrets([]));
+  }, []);
+  const provName = (id: string) => providers.find((p) => p.id === id)?.name ?? id;
+  // Candidates = every stored runner key, plus each available provider's DEFAULT
+  // key (id === provider) that isn't already a stored row (covers env-only keys).
+  const seen = new Set(secrets.map((s) => s.id));
+  const candidates = [
+    ...secrets.map((s) => ({ id: s.id, label: s.name || `${provName(s.provider)}${s.isDefault ? " default" : " key"}`, last4: s.last4 as string | undefined })),
+    ...providers.filter((p) => p.available && !seen.has(p.id)).map((p) => ({ id: p.id, label: `${p.name} default`, last4: undefined })),
+  ];
+  if (candidates.length === 0) return null; // nothing to confine to yet
+
+  const enabled = project.enabledRunnerCredentialIds;
+  const toggle = (id: string) => onChange(enabled.includes(id) ? enabled.filter((x) => x !== id) : [...enabled, id]);
+  const summary = enabled.length === 0 ? "All keys" : `${enabled.length} key${enabled.length === 1 ? "" : "s"}`;
+  return (
+    <details className="proj-keys">
+      <summary className="proj-keys-summary" title="Which provider keys this project may run agents on. All keys = any key in the workspace; narrowing confines assignment (and project-scoped MCP tokens) to the chosen keys.">
+        <span className="proj-approval-label mono">Keys</span>
+        <span className="proj-keys-value">{summary}</span>
+      </summary>
+      <div className="proj-keys-menu">
+        <div className="proj-keys-hint">
+          {enabled.length === 0
+            ? "Runs on any workspace key. Pick keys to confine this project."
+            : "Only runners on these keys are assignable here."}
+        </div>
+        {candidates.map((c) => (
+          <label key={c.id} className="proj-keys-item">
+            <input type="checkbox" checked={enabled.includes(c.id)} onChange={() => toggle(c.id)} />
+            <span className="proj-keys-name">{c.label}</span>
+            {c.last4 && <span className="proj-keys-fp mono">····{c.last4}</span>}
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+// Import a GitHub-connected project's issues as tasks + toggle write-back of task
+// status to those issues. Only shown when the project is bound to a GitHub repo.
+function ProjectSourceSync({ project, onToggle }: { project: Project; onToggle: (on: boolean) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  if (!project.repo) return null;
+  const importIssues = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await api.importGithubIssues(project.id);
+      setNote(r.imported ? `Imported ${r.imported} issue${r.imported === 1 ? "" : "s"}${r.skipped ? ` · ${r.skipped} already here` : ""}` : "No new issues");
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setBusy(false);
+      setTimeout(() => setNote(null), 4000);
+    }
+  };
+  return (
+    <>
+      <button className="btn" disabled={busy} onClick={() => void importIssues()} title="Import this repo's open GitHub issues as tasks — each links back to its issue.">
+        {busy ? "Importing…" : "⤒ Import issues"}
+      </button>
+      <label className="proj-autonomy" title="When on, moving a task to review/done comments + closes its linked GitHub issue (reopens if it moves back out of done).">
+        <input type="checkbox" className="proj-autonomy-cb" checked={project.syncSourceStatus} onChange={(e) => onToggle(e.target.checked)} />
+        <span className="proj-autonomy-switch" aria-hidden="true" />
+        <span className="proj-autonomy-label">Sync to source</span>
+      </label>
+      {note && <span className="proj-sync-note mono">{note}</span>}
+    </>
+  );
+}
+
 export function ProjectView({
   project,
   now,
@@ -529,18 +771,28 @@ export function ProjectView({
     runs,
     queue,
     tasks,
+    features,
+    milestones,
     fleet,
     updateProject,
     removeApprovalRule,
     deleteProject,
     cloneProjectRepo,
     createTask,
+    createFeature,
+    updateFeature,
+    deleteFeature,
+    createMilestone,
+    updateMilestone,
+    deleteMilestone,
     archiveAgent,
     archiveTask,
     transitionTask,
     assignTask,
     reorderTask,
   } = useStore();
+  const projFeatures = features.filter((f) => f.projectId === project.id && !f.archived);
+  const projMilestones = milestones.filter((m) => m.projectId === project.id && !m.archived);
   const noFleet = fleet.length === 0;
   // Board drag state: the card being dragged + (for backlog reorder) the card it
   // would drop before. Held here so lanes highlight + cards show the drop line.
@@ -575,10 +827,10 @@ export function ProjectView({
   // scoped to just this project; Archived shows soft-hidden tasks + restore).
   // Persisted per-project in sessionStorage so switching back restores the
   // last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "timeline" | "archived">(() => {
+  const [lens, setLens] = useState<"kanban" | "features" | "roadmap" | "timeline" | "archived">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "timeline" || v === "archived" ? v : "kanban";
+    return v === "timeline" || v === "archived" || v === "features" || v === "roadmap" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -618,12 +870,17 @@ export function ProjectView({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [name, setName] = useState(project.name);
   const [goal, setGoal] = useState(project.goal);
+  // The "house rules" — rides every agent prompt on this project (and Steward's
+  // grounding). Kept as its own local state so Cancel restores the pristine
+  // value if the operator opened the editor and changed their mind.
+  const [instructions, setInstructions] = useState(project.instructions ?? "");
 
   useEffect(() => {
     setName(project.name);
     setGoal(project.goal);
+    setInstructions(project.instructions ?? "");
     setFolded(false);
-  }, [project.id, project.name, project.goal]);
+  }, [project.id, project.name, project.goal, project.instructions]);
 
   return (
     <section className="projview">
@@ -633,18 +890,48 @@ export function ProjectView({
       {editing ? (
         <div className="projview-edit">
           <input className="qx-input" value={name} onChange={(e) => setName(e.target.value)} />
-          <textarea className="qx-input" rows={2} value={goal} onChange={(e) => setGoal(e.target.value)} />
+          <textarea
+            className="qx-input"
+            rows={2}
+            placeholder="Goal — what does done look like?"
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+          />
+          <label className="projview-instructions-label mono">
+            Instructions <span className="projview-instructions-hint">— house rules every agent on this project sees. Packages to use, code structure, conventions. Markdown OK.</span>
+          </label>
+          <textarea
+            className="qx-input projview-instructions"
+            rows={8}
+            placeholder={"e.g.\n- Use the @acme/agents SDK for all agent scaffolding.\n- Follow src/agents/<name>/{index.ts,tools.ts,prompt.md}.\n- Reuse buildTool() from lib/tools; don't hand-roll tool schemas."}
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+          />
           <div className="qx-row">
             <button
               className="btn btn-primary"
               onClick={() => {
-                updateProject(project.id, { name: name.trim() || project.name, goal: goal.trim() });
+                // Trim to detect real content; blank clears the field on the server.
+                const nextInstructions = instructions.trim() ? instructions.trim() : null;
+                updateProject(project.id, {
+                  name: name.trim() || project.name,
+                  goal: goal.trim(),
+                  instructions: nextInstructions,
+                });
                 setEditing(false);
               }}
             >
               Save
             </button>
-            <button className="btn btn-ghost" onClick={() => { setName(project.name); setGoal(project.goal); setEditing(false); }}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setName(project.name);
+                setGoal(project.goal);
+                setInstructions(project.instructions ?? "");
+                setEditing(false);
+              }}
+            >
               Cancel
             </button>
           </div>
@@ -654,6 +941,15 @@ export function ProjectView({
           <div className="projview-head-main">
             <h2>{project.name}</h2>
             <p>{project.goal}</p>
+            {project.instructions && (
+              <button
+                className="proj-instructions-chip mono"
+                title={project.instructions}
+                onClick={() => setEditing(true)}
+              >
+                ⓘ Instructions active — click to view/edit
+              </button>
+            )}
             {project.repoPath && (
               <div className="mono proj-repo-line" title={project.repoPath}>
                 {project.gitBacked ? "◈ git" : "📁"} {project.repoPath}
@@ -701,6 +997,9 @@ export function ProjectView({
               <span className="proj-autonomy-switch" aria-hidden="true" />
               <span className="proj-autonomy-label">Autonomy</span>
             </label>
+            <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
+            <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
+            <ProjectSourceSync project={project} onToggle={(on) => updateProject(project.id, { syncSourceStatus: on })} />
             {project.repoPath && (
               <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
                 ▶ Preview app
@@ -782,13 +1081,27 @@ export function ProjectView({
 
       <div className="projview-lens">
         <div className="lens-switch">
-          {(["kanban", "timeline", "archived"] as const).map((id) => (
+          {(["kanban", "features", "roadmap", "timeline", "archived"] as const).map((id) => (
             <button
               key={id}
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : id === "timeline" ? "Timeline" : "Archived"}
+              {id === "kanban"
+                ? "Kanban"
+                : id === "features"
+                ? "Features"
+                : id === "roadmap"
+                ? "Roadmap"
+                : id === "timeline"
+                ? "Timeline"
+                : "Archived"}
+              {id === "features" && projFeatures.length > 0 && (
+                <span className="lens-btn-count">{projFeatures.length}</span>
+              )}
+              {id === "roadmap" && projMilestones.length > 0 && (
+                <span className="lens-btn-count">{projMilestones.length}</span>
+              )}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
@@ -797,7 +1110,33 @@ export function ProjectView({
         </div>
       </div>
 
-      {lens === "timeline" ? (
+      {lens === "features" ? (
+        <FeaturesLens
+          project={project}
+          features={projFeatures}
+          milestones={projMilestones}
+          tasks={tasks.filter((t) => t.projectId === project.id && !hidden(t))}
+          runs={runById}
+          onOpenTask={onOpenTask}
+          onCreate={(name, description) => void createFeature(project.id, name, description || undefined)}
+          onUpdate={(fid, patch) => void updateFeature(fid, patch)}
+          onDelete={(fid) => void deleteFeature(fid)}
+        />
+      ) : lens === "roadmap" ? (
+        <RoadmapLens
+          project={project}
+          features={projFeatures}
+          milestones={projMilestones}
+          tasks={tasks.filter((t) => t.projectId === project.id && !hidden(t))}
+          runs={runById}
+          onOpenTask={onOpenTask}
+          onCreate={(name, description, targetAt) =>
+            void createMilestone(project.id, name, description || undefined, targetAt)
+          }
+          onUpdate={(mid, patch) => void updateMilestone(mid, patch)}
+          onDelete={(mid) => void deleteMilestone(mid)}
+        />
+      ) : lens === "timeline" ? (
         <div className="projview-timeline">
           <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
         </div>

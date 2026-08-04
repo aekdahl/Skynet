@@ -9,7 +9,9 @@ import {
   TaskRunStatus,
   ApprovalLevel,
   Dependency,
+  Feature,
   HitlItem,
+  Milestone,
   Module,
   PlanStep,
   Project,
@@ -19,6 +21,7 @@ import {
   Task,
   Timestamp,
   Usage,
+  WorkspaceSettings,
 } from "./contracts.js";
 
 // ─── Connect-time snapshot ────────────────────────────────────────────────
@@ -28,6 +31,8 @@ export const Snapshot = z.object({
   queue: z.array(HitlItem), // open + recently-resolved HITL items
   projects: z.array(Project),
   tasks: z.array(Task),
+  features: z.array(Feature).default([]),
+  milestones: z.array(Milestone).default([]),
   fleet: z.array(Agent),
   modules: z.array(Module),
   deps: z.array(Dependency),
@@ -37,6 +42,8 @@ export const Snapshot = z.object({
   // create-project form can pre-select what a new project would otherwise get.
   // Optional for forward-compat with older servers that don't send it.
   defaultApprovalLevel: ApprovalLevel.optional(),
+  // The live workspace fleet policy (auto-scale + cap). Optional for forward-compat.
+  workspaceSettings: WorkspaceSettings.optional(),
 });
 export type Snapshot = z.infer<typeof Snapshot>;
 
@@ -70,6 +77,10 @@ export const ServerEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("project.deleted"), id: z.string() }),
   z.object({ type: z.literal("task.upserted"), task: Task }),
   z.object({ type: z.literal("task.deleted"), id: z.string() }),
+  z.object({ type: z.literal("feature.upserted"), feature: Feature }),
+  z.object({ type: z.literal("feature.deleted"), id: z.string() }),
+  z.object({ type: z.literal("milestone.upserted"), milestone: Milestone }),
+  z.object({ type: z.literal("milestone.deleted"), id: z.string() }),
   z.object({ type: z.literal("agent.upserted"), agent: Agent }),
   z.object({ type: z.literal("agent.deleted"), id: z.string() }),
 

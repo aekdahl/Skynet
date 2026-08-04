@@ -46,7 +46,7 @@ const mkRun = (id: string, status: TaskRun["status"]): TaskRun => ({
 });
 const mkTask = (over: Partial<Task>): Task => ({
   id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do X", state: "backlog",
-  runId: null, autoPick: false, assessment: null, reviewFlaggedReason: null,
+  runId: null, autoPick: false, assessment: null, reviewVerdict: null,
   assignment: { mode: "any", agentIds: [] }, ...over,
 });
 

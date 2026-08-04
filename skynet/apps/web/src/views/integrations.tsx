@@ -11,6 +11,7 @@ import {
   type GithubInstallation,
   type GithubRepo,
   type SafetyPolicy,
+  type SecretMeta,
 } from "@skynet/shared";
 import * as api from "../lib/client";
 import { PlaceholderNote } from "../components/common";
@@ -581,6 +582,93 @@ function IntegrationSection({
   );
 }
 
+// Secondary GitHub ACCOUNTS — extra PATs beyond the default connection, so a
+// project can push to / store in a specific account (e.g. work on the business
+// account it pays for, personal on your own). Stored as `github` credentials in
+// the secret store; a project picks one in its settings. The default connection
+// above is unchanged and is the fallback for projects that pick nothing.
+function GithubAccounts() {
+  const [accounts, setAccounts] = useState<SecretMeta[] | null>(null);
+  const [name, setName] = useState("");
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = () =>
+    api.fetchSecrets()
+      .then(({ secrets }) => setAccounts(secrets.filter((s) => s.provider === "github")))
+      .catch(() => setAccounts([]));
+  useEffect(() => { void load(); }, []);
+
+  const add = async () => {
+    if (!name.trim() || !token.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.createCredential("github", name.trim(), token.trim());
+      setName("");
+      setToken("");
+      await load();
+    } catch (e) {
+      setErr(e instanceof api.ApiError && e.status === 501 ? "Secret store is disabled — set SKYNET_MASTER_KEY." : `Couldn't add the account: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (id: string) => {
+    setBusy(true);
+    setErr(null);
+    try { await api.deleteSecret(id); await load(); }
+    catch (e) { setErr(`Couldn't remove: ${(e as Error).message}`); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="gh-card">
+      <div className="gh-card-head"><span className="gh-card-title">Additional accounts</span></div>
+      <p className="gh-card-sub">
+        Add another GitHub account (a fine-grained PAT) so a project can push and store under it — e.g. keep
+        work repos on your business account and personal repos on your own. Pick the account per project in its settings.
+      </p>
+      {err && <div className="gh-warn">{err}</div>}
+      {accounts && accounts.length > 0 && (
+        <div className="settings-list gh-acct-list">
+          {accounts.map((a) => (
+            <div className="mcp-tok-row" key={a.id}>
+              <div className="mcp-tok-main">
+                <div className="mcp-tok-top"><span className="settings-name">{a.name || "account"}</span></div>
+                <div className="mcp-tok-meta mono"><span className="mcp-tok-fp">····{a.last4}</span></div>
+              </div>
+              <button className="btn btn-ghost" disabled={busy} onClick={() => void remove(a.id)}>Remove</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="gh-acct-add">
+        <input
+          className="settings-input gh-acct-name"
+          placeholder="Name — e.g. Business, Personal"
+          maxLength={60}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <input
+          type="password"
+          className="settings-input"
+          autoComplete="off"
+          placeholder="GitHub PAT (Contents + Pull requests)…"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+        />
+        <button className="btn btn-primary" disabled={busy || !name.trim() || !token.trim()} onClick={() => void add()}>
+          Add account
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function IntegrationsView() {
   const [github, setGithub] = useState<GithubConnection>(emptyConnection);
   const [appConfigured, setAppConfigured] = useState(false);
@@ -647,6 +735,7 @@ export function IntegrationsView() {
             summary={summary}
           >
             <GithubConnect github={github} brokerConfigured={brokerConfigured} onConnected={onConnected} onChanged={setGithub} onDisconnect={onDisconnect} embedded />
+            <GithubAccounts />
             <SafetySettings safety={github.safety} onChange={onUpdateSafety} />
             {github.connected && github.auth === "app" && !appConfigured && !brokerConfigured && (
               <div className="gh-warn">
