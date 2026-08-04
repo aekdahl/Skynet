@@ -51,6 +51,18 @@ gcloud compute ssh skynet-server --zone=europe-west1-b --project=YOUR_PROJECT --
 ```
 Access is IAM-gated (your `operator_email`), fully private — no public IP, no open ports, no TLS to manage.
 
+> **If the tunnel drops** (`Reauthentication failed` / `TokenRefreshError` /
+> `channel N: connect failed`) — your gcloud login expired on the org's reauth
+> interval, which a long-lived tunnel can't refresh non-interactively. Just
+> re-auth and reopen:
+> ```bash
+> gcloud auth login
+> gcloud compute ssh skynet-server --zone=europe-west1-b --project=YOUR_PROJECT --tunnel-through-iap -- -N -L 48080:localhost:8080
+> ```
+> The VM is unaffected (the app runs with `--restart=always`). Prefer no tunnel
+> at all? Drive the fleet from **Telegram** — outbound-only, so it never needs a
+> tunnel or re-auth (see below).
+
 > **Why an SSH-forward and not `start-iap-tunnel`?** The board holds a live
 > WebSocket. `gcloud compute start-iap-tunnel` turns every browser connection
 > into its own fragile IAP proxy socket and drops the WS mid-snapshot — the UI
