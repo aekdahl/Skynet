@@ -70,6 +70,44 @@ variable "mcp_scopes" {
   description = "Scopes granted to the injected MCP token (SKYNET_BOOTSTRAP_SCOPES). Default observe+author lets an agent plan/run work but NOT approve its own HITL gates. Add 'approver' only if you deliberately want the token to self-resolve gates."
 }
 
+# ── Optional: also serve the human web UI on the SAME instance (shared state) ─
+# One Skynet, one /data file store: the UI and /mcp operate on the SAME fleet.
+# Empty (default) = headless, MCP-only (unchanged). When set, Caddy publishes the
+# full app (SPA + /api + /ws) on this second hostname, gated by the app's own
+# login; /mcp stays on mcp_domain gated by the Bearer token. Point ui_domain's A
+# record at the SAME static IP as mcp_domain.
+variable "ui_domain" {
+  type        = string
+  default     = ""
+  description = "Optional second DNS name for the human web UI on the same VM/instance (shared datastore). Empty = headless, MCP-only. A real DNS hostname (not a bare IP), A-record → the same static IP as mcp_domain. Enabling this requires admin_email + the <name_prefix>-admin-password secret (else the production login directory is empty and nobody can sign in)."
+  validation {
+    condition     = var.ui_domain == "" || !can(regex("^[0-9.]+$", var.ui_domain))
+    error_message = "ui_domain must be empty or a DNS hostname (not a bare IP) — ACME cannot issue a cert for an IP."
+  }
+}
+
+variable "ui_source_ranges" {
+  type        = list(string)
+  default     = []
+  description = "CIDR allowlist for the UI hostname (human operators), enforced per-hostname by Caddy (remote_ip). Only used when ui_domain is set. Empty → the UI reuses allowed_source_ranges. Never 0.0.0.0/0. The VM firewall opens :443 to the UNION of this and allowed_source_ranges; Caddy then restricts each hostname to its own set."
+  validation {
+    condition     = !contains(var.ui_source_ranges, "0.0.0.0/0")
+    error_message = "ui_source_ranges must not contain 0.0.0.0/0 — the UI is never opened to the whole internet."
+  }
+}
+
+variable "admin_email" {
+  type        = string
+  default     = ""
+  description = "Email of the single admin operator seeded for UI login (SKYNET_ADMIN_EMAIL). REQUIRED when ui_domain is set; ignored otherwise. The password is NOT here — add it as the <name_prefix>-admin-password Secret Manager secret."
+}
+
+variable "admin_workspace" {
+  type        = string
+  default     = ""
+  description = "Workspace the seeded admin belongs to (SKYNET_ADMIN_WORKSPACE). Empty → the default single-tenant workspace. Only used when ui_domain is set."
+}
+
 # ── Ingress lockdown (this replaces IAP) ─────────────────────────────────────
 variable "allowed_source_ranges" {
   type        = list(string)

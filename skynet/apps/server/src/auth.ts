@@ -35,11 +35,27 @@ export interface Principal {
   // Undefined = full authority (human sessions, dev tokens). A service token
   // carries an explicit subset; scope-gated call sites check these before acting.
   scopes?: Scope[];
+  // Undefined = every project in the workspace (the default — humans, unscoped
+  // tokens). A non-empty allowlist narrows the token to just these projects:
+  // the MCP layer both gates mutations to them and filters reads down to them,
+  // so a project-scoped token can neither touch nor see other projects' work.
+  // Mirrors the `scopes` capability model, but on the project axis.
+  projectIds?: string[];
 }
 
 /** True if the principal may exercise `scope`. Humans (no scopes) always may. */
 export function hasScope(principal: Principal, scope: Scope): boolean {
   return principal.scopes === undefined || principal.scopes.includes(scope);
+}
+
+/**
+ * True if the principal may act on / see `projectId`. An unrestricted principal
+ * (no `projectIds` — humans, workspace-wide tokens) always may; a project-scoped
+ * token may only when the id is in its allowlist. Callers must still enforce the
+ * workspace boundary separately (this assumes the project is in-workspace).
+ */
+export function allowsProject(principal: Principal, projectId: string): boolean {
+  return principal.projectIds === undefined || principal.projectIds.includes(projectId);
 }
 
 // Dev tokens — two workspaces so isolation is demonstrable. These resolve

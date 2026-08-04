@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { SecretMeta } from "@skynet/shared";
+import type { SecretMeta, WorkspaceSettings, UpdateWorkspaceSettingsRequest } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import type { McpScope, ServiceTokenMeta } from "../lib/client";
@@ -308,6 +308,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
         })}
       </div>
 
+      <FleetAutomationSection />
       <McpAccessSection />
       <TelegramSetup />
       <AdvancedSettingsSection />
@@ -326,7 +327,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
           <div className="settings-setup-text">
             <div className="settings-setup-title">First-time setup</div>
             <div className="settings-setup-sub">
-              Re-run the onboarding wizard (connect GitHub, add a fleet runner).
+              Re-run the onboarding wizard (name the workspace, add a fleet runner).
             </div>
           </div>
           <button className="btn btn-ghost" onClick={onRerunSetup}>
@@ -476,6 +477,89 @@ SKYNET_TELEGRAM_CONTROL=true   # optional — approve / commands`}</pre>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Fleet auto-scale ───────────────────────────────────────────────────────
+// The live workspace fleet policy: auto-provision a runner when a task has none
+// free (cloned from a busy one on an allowed key), bounded by a hard cap so it
+// can't run away. Live (no restart); the cap applies to EVERY creation path.
+function FleetAutomationSection() {
+  const [settings, setSettings] = useState<WorkspaceSettings | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.fetchWorkspaceSettings().then(setSettings).catch(() => setErr("Couldn't load fleet settings."));
+  }, []);
+
+  const save = async (patch: UpdateWorkspaceSettingsRequest) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setSettings(await api.updateWorkspaceSettings(patch));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const clampMax = (v: string) => Math.max(0, Math.floor(Number(v) || 0));
+
+  return (
+    <div className="settings-setup">
+      <div className="settings-setup-text">
+        <div className="settings-setup-title">Fleet auto-scale</div>
+        <div className="settings-setup-sub">
+          Add a runner automatically when a task needs one and none is free — cloned from a busy runner on a key the
+          project is allowed to use. The max is the safety valve so auto-creation can’t run away (default 100; 0 = no
+          cap); it caps every way runners get created, including MCP tokens. Auto-created runners are retired again once
+          they’ve sat idle past the timeout below — operator-added runners are never touched.
+        </div>
+        {err && <div className="settings-warn">{err}</div>}
+        {settings && (
+          <div className="fleet-auto">
+            <label className="proj-autonomy" title="When a task needs a runner and none is idle, auto-provision one (up to the max).">
+              <input
+                type="checkbox"
+                className="proj-autonomy-cb"
+                checked={settings.autoProvisionRunners}
+                disabled={busy}
+                onChange={(e) => void save({ autoProvisionRunners: e.target.checked })}
+              />
+              <span className="proj-autonomy-switch" aria-hidden="true" />
+              <span className="proj-autonomy-label">Auto-create runners when needed</span>
+            </label>
+            <label className="fleet-auto-max" title="Hard ceiling on total fleet size. 0 = no cap.">
+              <span className="fleet-auto-max-label">Max runners</span>
+              <input
+                type="number"
+                min={0}
+                className="qx-input fleet-auto-max-input"
+                value={settings.maxRunners}
+                disabled={busy}
+                onChange={(e) => setSettings({ ...settings, maxRunners: clampMax(e.target.value) })}
+                onBlur={(e) => void save({ maxRunners: clampMax(e.target.value) })}
+              />
+              <span className="fleet-auto-max-hint mono">0 = no cap</span>
+            </label>
+            <label className="fleet-auto-max" title="Retire an auto-created runner once it has sat idle this long. Operator-added runners are never auto-retired. 0 = never.">
+              <span className="fleet-auto-max-label">Retire idle after</span>
+              <input
+                type="number"
+                min={0}
+                className="qx-input fleet-auto-max-input"
+                value={settings.retireIdleRunnersAfterMinutes}
+                disabled={busy}
+                onChange={(e) => setSettings({ ...settings, retireIdleRunnersAfterMinutes: clampMax(e.target.value) })}
+                onBlur={(e) => void save({ retireIdleRunnersAfterMinutes: clampMax(e.target.value) })}
+              />
+              <span className="fleet-auto-max-hint mono">min · 0 = never</span>
+            </label>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -643,9 +727,13 @@ const rel = (ms: number): string => {
 };
 
 function McpAccessSection() {
+  const { projects } = useStore();
   const [tokens, setTokens] = useState<ServiceTokenMeta[] | null>(null);
   const [label, setLabel] = useState("");
   const [scopes, setScopes] = useState<Record<McpScope, boolean>>({ observe: true, author: true, approver: false, admin: false });
+  // Project confinement. Empty = workspace-wide (every project); a non-empty set
+  // restricts the token — both its reads and its writes — to just those projects.
+  const [projectIds, setProjectIds] = useState<string[]>([]);
   const [minted, setMinted] = useState<{ token: string; label: string } | null>(null);
   // The id of the token minted this session — highlighted in the index so it's
   // obvious the token still exists after the one-time secret reveal is dismissed.
@@ -679,10 +767,11 @@ function McpAccessSection() {
     setBusy(true);
     setErr(null);
     try {
-      const created = await api.createServiceToken({ label: label.trim(), scopes: selected });
+      const created = await api.createServiceToken({ label: label.trim(), scopes: selected, projectIds });
       setMinted({ token: created.token, label: created.label });
       setJustId(created.id);
       setLabel("");
+      setProjectIds([]);
       await load();
     } catch (e) {
       setErr(`Couldn't mint the token: ${(e as Error).message}`);
@@ -704,6 +793,27 @@ function McpAccessSection() {
     }
   };
 
+  // The raw token can't be re-shown (only a hash is stored), so "copy it again"
+  // means minting a FRESH key with the same label + scopes + project confinement
+  // and revoking the old one — the reveal above shows & copies it once. Preserves
+  // a still-valid expiry.
+  const regenerate = async (t: ServiceTokenMeta) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const ttlMs = t.expiresAt != null && t.expiresAt > Date.now() ? t.expiresAt - Date.now() : undefined;
+      const created = await api.createServiceToken({ label: t.label, scopes: t.scopes, projectIds: t.projectIds, ttlMs });
+      await api.revokeServiceToken(t.id);
+      setMinted({ token: created.token, label: created.label });
+      setJustId(created.id);
+      await load();
+    } catch (e) {
+      setErr(`Couldn't regenerate the token: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const httpSnippet = (token: string) =>
     `claude mcp add --transport http skynet ${origin}/mcp --header "Authorization: Bearer ${token}"`;
   const stdioSnippet = (token: string) =>
@@ -719,6 +829,7 @@ function McpAccessSection() {
       <div className="settings-setup-sub">
         Scoped tokens let runs drive this workspace over MCP — the same tools you use, gated by scope.
         Grant <span className="mono">approver</span> only to a token you trust to resolve gates without a human.
+        Confine a token to specific projects and it can neither see nor touch anything outside them.
       </div>
 
       {err && <div className="settings-warn">{err}</div>}
@@ -746,6 +857,35 @@ function McpAccessSection() {
             </label>
           ))}
         </div>
+        {projects.length > 0 && (
+          <div className="mcp-projects">
+            <div className="mcp-projects-head">
+              <span className="mcp-projects-title">Projects</span>
+              <span className="mcp-projects-hint">
+                {projectIds.length === 0
+                  ? "All projects — this token can see & act across the whole workspace."
+                  : `Confined to ${projectIds.length} project${projectIds.length === 1 ? "" : "s"} — it can neither see nor touch the others.`}
+              </span>
+            </div>
+            <div className="mcp-project-list">
+              {projects.map((p) => {
+                const on = projectIds.includes(p.id);
+                return (
+                  <label key={p.id} className={`mcp-project${on ? " mcp-project-on" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={(e) =>
+                        setProjectIds((v) => (e.target.checked ? [...v, p.id] : v.filter((id) => id !== p.id)))
+                      }
+                    />
+                    <span className="mcp-project-name">{p.name}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {minted && (
@@ -795,6 +935,17 @@ function McpAccessSection() {
                       ))}
                     </span>
                   </div>
+                  <div className="mcp-tok-projects">
+                    {t.projectIds.length === 0 ? (
+                      <span className="mcp-badge mcp-badge-ws mono">all projects</span>
+                    ) : (
+                      t.projectIds.map((id) => (
+                        <span className="mcp-badge mcp-badge-proj mono" key={id}>
+                          {projects.find((p) => p.id === id)?.name ?? id}
+                        </span>
+                      ))
+                    )}
+                  </div>
                   <div className="mcp-tok-meta mono">
                     <span className="mcp-tok-fp">····{t.last4}</span>
                     <span>created {rel(t.createdAt)}</span>
@@ -806,9 +957,19 @@ function McpAccessSection() {
                     )}
                   </div>
                 </div>
-                <button className="btn btn-ghost" disabled={busy} onClick={() => void revoke(t.id)}>
-                  Revoke
-                </button>
+                <div className="mcp-tok-actions">
+                  <button
+                    className="btn btn-ghost"
+                    disabled={busy}
+                    title="Get a copyable key: mints a fresh token with the same label & scopes, then revokes this one (the old key stops working)."
+                    onClick={() => void regenerate(t)}
+                  >
+                    Regenerate
+                  </button>
+                  <button className="btn btn-ghost" disabled={busy} onClick={() => void revoke(t.id)}>
+                    Revoke
+                  </button>
+                </div>
               </div>
             ))}
           </div>

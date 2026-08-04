@@ -81,12 +81,24 @@ resource "google_project_iam_member" "vm_ar_reader" {
 # `gcloud secrets versions add` (see README / setup.sh output). The MCP token is
 # the credential MCP clients present as `Authorization: Bearer <token>`.
 locals {
-  secret_ids = [
-    "mcp-token",        # the Bearer token every /mcp request must carry
-    "anthropic-api-key",
-    "master-key",       # file-store encryption key
-    "github-token",     # optional — leave a blank/placeholder version if unused
-  ]
+  # Serving the human UI is opt-in via ui_domain. When set, the ONE instance also
+  # serves the SPA + /api + /ws (shared /data file store), and we need an admin
+  # secret + a second Caddy site.
+  ui_enabled = trimspace(var.ui_domain) != ""
+  # Per-hostname allowlists (Caddy remote_ip). The UI reuses the MCP allowlist
+  # unless its own is given. The VM firewall opens :443 to the UNION.
+  ui_ranges    = length(var.ui_source_ranges) > 0 ? var.ui_source_ranges : var.allowed_source_ranges
+  https_ranges = local.ui_enabled ? distinct(concat(var.allowed_source_ranges, local.ui_ranges)) : var.allowed_source_ranges
+
+  secret_ids = concat(
+    [
+      "mcp-token", # the Bearer token every /mcp request must carry
+      "anthropic-api-key",
+      "master-key",   # file-store encryption key
+      "github-token", # optional — leave a blank/placeholder version if unused
+    ],
+    local.ui_enabled ? ["admin-password"] : [], # UI login credential (seeded operator)
+  )
 }
 
 resource "google_secret_manager_secret" "s" {
@@ -122,13 +134,14 @@ resource "google_compute_subnetwork" "subnet" {
 # A custom VPC has NO default allow rules, so everything below is deny-by-default
 # except what these three rules open, all scoped to the tagged VM.
 
-# 1) The MCP data plane: TLS on :443, ONLY from the source-IP allowlist. This is
-#    the ingress lockdown that replaces Google IAP.
+# 1) The data plane: TLS on :443, ONLY from the source-IP allowlist (the ingress
+#    lockdown that replaces Google IAP). When the UI is enabled this is the UNION
+#    of the MCP + UI allowlists; Caddy then restricts each hostname to its own set.
 resource "google_compute_firewall" "mcp_https" {
   name          = "${var.name_prefix}-allow-mcp-https"
   network       = google_compute_network.vpc.id
   direction     = "INGRESS"
-  source_ranges = var.allowed_source_ranges
+  source_ranges = local.https_ranges
   target_tags   = [var.name_prefix]
   allow {
     protocol = "tcp"
@@ -224,12 +237,22 @@ resource "google_compute_instance" "vm" {
       name_prefix = var.name_prefix
       mcp_domain  = var.mcp_domain
       mcp_scopes  = var.mcp_scopes
-      # Render the Caddy config here (domain/email/port already substituted) and
-      # embed the result verbatim; the startup script writes it to /data/Caddyfile.
+      # UI-on-the-same-instance (opt-in). headless=false serves the SPA + /api + /ws.
+      headless        = local.ui_enabled ? "false" : "true"
+      ui_enabled      = local.ui_enabled
+      ui_domain       = var.ui_domain
+      admin_email     = var.admin_email
+      admin_workspace = var.admin_workspace
+      # Render the Caddy config here (domain/email/port/ranges already substituted)
+      # and embed the result verbatim; the startup script writes it to /data/Caddyfile.
       caddyfile = templatefile("${path.module}/Caddyfile.tftpl", {
         mcp_domain = var.mcp_domain
         acme_email = var.acme_email
         app_port   = var.app_port
+        ui_enabled = local.ui_enabled
+        ui_domain  = var.ui_domain
+        mcp_ranges = join(" ", var.allowed_source_ranges)
+        ui_ranges  = join(" ", local.ui_ranges)
       })
     })
   }
@@ -239,6 +262,12 @@ resource "google_compute_instance" "vm" {
     precondition {
       condition     = length(var.image) > 0
       error_message = "var.image is empty — run ./setup.sh (it builds + pushes the image and passes it in), or set -var image=..."
+    }
+    # A production UI with no seeded admin = a login page nobody can pass. Require
+    # admin_email when the UI is enabled (the password rides the admin-password secret).
+    precondition {
+      condition     = !local.ui_enabled || length(trimspace(var.admin_email)) > 0
+      error_message = "ui_domain is set but admin_email is empty — set admin_email and add a value to the ${var.name_prefix}-admin-password secret, else UI login is disabled (empty operator directory in production)."
     }
   }
 

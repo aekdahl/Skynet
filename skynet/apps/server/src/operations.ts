@@ -33,8 +33,9 @@ import type {
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
+  UpdateWorkspaceSettingsRequest,
 } from "@skynet/shared";
-import { modelValidForProvider } from "@skynet/shared";
+import { modelValidForProvider, WorkspaceSettings } from "@skynet/shared";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
@@ -49,7 +50,7 @@ import {
   type AssistantAction,
   type ChatTurn,
 } from "./project-assistant.js";
-import { askStewardWorkspace, decideFocusProject } from "./steward/assistant.js";
+import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -136,29 +137,46 @@ export class Operations {
     question: string,
     history?: ChatTurn[],
     focusProjectId?: string,
-  ): Promise<{ reply: string; action: AssistantAction | null; actions: AssistantAction[]; projectId: string | null }> {
-    // An explicit page focus wins; otherwise Steward DECIDES which project the
-    // operator means — interpreting the message, not name-matching. When it's
-    // ambiguous which project, it asks instead of guessing (clarify), and we
-    // return that question with no focus set. (No page focus present.)
+  ): Promise<{ reply: string; actions: AssistantAction[]; projectId: string | null }> {
+    // An explicit page focus wins; otherwise resolve the project from the
+    // conversation so the workspace dock can act on it, not just report on it.
     let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
     if (project && project.workspaceId !== workspaceId) project = null; // stale / not ours
     if (!project) {
-      const decision = await decideFocusProject(this.store, workspaceId, question, history);
-      if (decision.clarify) {
-        return { reply: decision.clarify, action: null, actions: [], projectId: null };
-      }
-      if (decision.projectId) {
-        const p = await this.store.getProject(decision.projectId);
-        if (p && p.workspaceId === workspaceId) project = p;
-      }
+      const projects = await this.store.listProjects(workspaceId);
+      const id = resolveFocusProject(projects.map((p) => ({ id: p.id, name: p.name })), question, history);
+      project = id ? projects.find((p) => p.id === id) ?? null : null;
     }
     if (project) {
-      const { reply, action, actions } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
-      return { reply, action, actions, projectId: project.id };
+      const { reply, actions } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id };
     }
-    const { reply, action, actions } = await askStewardWorkspace(this.store, { workspaceId, question, history });
-    return { reply, action, actions, projectId: null };
+    const { reply, actions } = await askStewardWorkspace(this.store, { workspaceId, question, history });
+    return { reply, actions, projectId: null };
+  }
+
+  /** Streaming form of {@link stewardChat} — yields the reply as text deltas, then
+   *  RETURNS the clean reply + any proposed action + the resolved project. Same
+   *  focus resolution as stewardChat, so streaming and non-streaming agree. */
+  async *stewardChatStream(
+    workspaceId: string,
+    question: string,
+    history?: ChatTurn[],
+    focusProjectId?: string,
+  ): AsyncGenerator<string, { reply: string; actions: AssistantAction[]; projectId: string | null }> {
+    let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
+    if (project && project.workspaceId !== workspaceId) project = null;
+    if (!project) {
+      const projects = await this.store.listProjects(workspaceId);
+      const id = resolveFocusProject(projects.map((p) => ({ id: p.id, name: p.name })), question, history);
+      project = id ? projects.find((p) => p.id === id) ?? null : null;
+    }
+    if (project) {
+      const { reply, actions } = yield* askStewardStream(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id };
+    }
+    const { reply, actions } = yield* askStewardWorkspaceStream(this.store, { workspaceId, question, history });
+    return { reply, actions, projectId: null };
   }
 
   // ── reads (workspace-scoped) ──────────────────────────────────────────────
@@ -166,7 +184,20 @@ export class Operations {
     const snap = await this.store.snapshot(ws);
     snap.providers = await withSecretAvailability(snap.providers, ws);
     snap.defaultApprovalLevel = config.defaultApprovalLevel;
+    snap.workspaceSettings = await this.getWorkspaceSettings(ws);
     return snap;
+  }
+
+  /** The live workspace fleet policy, defaulted when never set. */
+  async getWorkspaceSettings(ws: string): Promise<WorkspaceSettings> {
+    return (await this.store.getWorkspaceSettings(ws)) ?? WorkspaceSettings.parse({ workspaceId: ws });
+  }
+
+  /** Patch the workspace fleet policy (auto-scale + cap). */
+  async updateWorkspaceSettings(ws: string, patch: UpdateWorkspaceSettingsRequest): Promise<WorkspaceSettings> {
+    const next = WorkspaceSettings.parse({ ...(await this.getWorkspaceSettings(ws)), ...patch, workspaceId: ws });
+    await this.store.putWorkspaceSettings(next);
+    return next;
   }
   listProviders(ws: string): Promise<ProviderInfo[]> {
     return this.store.listProviders().then((p) => withSecretAvailability(p, ws));
@@ -400,6 +431,17 @@ export class Operations {
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo,
+      // Project-scoped agent guidance is optional at creation. Trimmed to null
+      // when blank so the "no rules" grounding path is unambiguous downstream.
+      instructions: input.instructions?.trim() || null,
+      // Optional: pin to a specific GitHub account at creation, else the default
+      // connection (chosen later in project settings).
+      githubCredentialId: input.githubCredentialId ?? null,
+      // Runner-key confinement is opt-in and set later in project settings —
+      // a fresh project runs on any workspace key until narrowed.
+      enabledRunnerCredentialIds: [],
+      // Source-of-truth write-back is opt-in (outward-facing) — enabled in settings.
+      syncSourceStatus: false,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
@@ -416,7 +458,14 @@ export class Operations {
             return { repoPath: rp, gitBacked: rp ? isGitRepo(rp) : false };
           })()
         : {};
-    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind });
+    // Normalize instructions: empty / whitespace-only clears back to null so
+    // downstream "no rules" branches don't have to distinguish "" from null.
+    // `patch.instructions === undefined` means the field is untouched.
+    const instructions =
+      patch.instructions === undefined
+        ? {}
+        : { instructions: patch.instructions?.trim() ? patch.instructions.trim() : null };
+    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     return updated;
   }
@@ -462,7 +511,7 @@ export class Operations {
     const base = config.reposDir ? resolvePath(config.reposDir) : resolvePath(dirname(config.dbPath), "repos");
     const dest = join(base, project.id);
     if (!existsSync(join(dest, ".git"))) {
-      await githubService.cloneRepo(ws, project.repo, dest);
+      await githubService.cloneRepo(ws, project.repo, dest, project.githubCredentialId);
     }
     return this.hub.upsertProject({ ...project, repoPath: dest, gitBacked: true });
   }
@@ -504,8 +553,38 @@ export class Operations {
       // updateTask (Steward or the task detail modal).
       featureId: null,
       milestoneId: null,
+      // Provenance — set when importing from a source of truth (GitHub issue, …).
+      source: input.source ?? null,
     };
     return this.hub.upsertTask(task);
+  }
+
+  /** Import a GitHub-connected project's OPEN issues as backlog tasks, each linked
+   *  back to its issue (Task.source) so status changes can be written back. Skips
+   *  issues already imported (deduped by repo#number). Uses the project's GitHub
+   *  account. See docs/task-source-sync.md. */
+  async importGithubIssues(ws: string, projectId: string): Promise<{ imported: number; skipped: number }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repo) throw new Error("Project isn't bound to a GitHub repo — set its repo first.");
+    const issues = await githubService.listIssues(ws, project.repo, project.githubCredentialId);
+    const existing = await this.store.listTasks(ws);
+    const seen = new Set(
+      existing.flatMap((t) =>
+        t.projectId === projectId && t.source?.kind === "github_issue" ? [`${t.source.repo}#${t.source.number}`] : [],
+      ),
+    );
+    let imported = 0;
+    for (const iss of issues) {
+      if (seen.has(`${project.repo}#${iss.number}`)) continue;
+      await this.createTask(ws, projectId, {
+        text: iss.title,
+        description: iss.body || undefined,
+        source: { kind: "github_issue", repo: project.repo, number: iss.number, url: iss.url },
+      });
+      imported++;
+    }
+    return { imported, skipped: issues.length - imported };
   }
   async updateTask(ws: string, tid: string, patch: UpdateTaskRequest): Promise<Task> {
     const task = await this.store.getTask(tid);
@@ -798,13 +877,19 @@ export class Operations {
     // an unknown provider or an empty model is a 400 (fail() maps Error → 400).
     const invalid = modelValidForProvider(await this.store.listProviders(), input.provider, input.model);
     if (invalid) throw new Error(invalid);
+    // Honor the workspace fleet cap — the safety valve against runaway creation
+    // (a project-scoped MCP token, an over-eager script). 0 = no cap.
+    const { maxRunners } = await this.getWorkspaceSettings(ws);
+    const fleet = await this.store.listAgents(ws);
+    if (maxRunners > 0 && fleet.length >= maxRunners) {
+      throw new Error(`Fleet is at its maximum of ${maxRunners} runner${maxRunners === 1 ? "" : "s"} — raise the limit in settings or retire an idle runner.`);
+    }
     // The id is a stable, opaque handle (runs reference it as agentId); the name
     // is the human-facing label shown on the board. Keeping them separate means
     // a rename never moves the id, and two agents can share a display name
     // without colliding. Auto-name to `<provider>-<name>` when none is given.
     const id = this.uid("runner");
-    const existing = await this.store.listAgents(ws);
-    const name = input.name?.trim() || generateAgentName(input.provider, existing.map((a) => a.name));
+    const name = input.name?.trim() || generateAgentName(input.provider, fleet.map((a) => a.name));
     const runner: Agent = {
       id,
       workspaceId: ws,
@@ -814,6 +899,7 @@ export class Operations {
       model: input.model,
       status: "idle",
       idleSince: now(),
+      autoProvisioned: false, // an operator added this — the idle reaper leaves it alone
     };
     return this.hub.upsertAgent(runner);
   }

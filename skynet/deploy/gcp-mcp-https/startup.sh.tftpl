@@ -50,6 +50,15 @@ except Exception:
 MCP_TOKEN=$(get_secret mcp-token)
 ANTHROPIC_API_KEY=$(get_secret anthropic-api-key)
 GITHUB_TOKEN=$(get_secret github-token)
+%{ if ui_enabled ~}
+# UI enabled: the admin login credential. Fail loudly if unset — otherwise the
+# production operator directory is empty and the served UI has no way to sign in.
+ADMIN_PASSWORD=$(get_secret admin-password)
+if [ -z "$${ADMIN_PASSWORD}" ]; then
+  echo "[skynet-mcp] FATAL: ui_domain is set but secret ${name_prefix}-admin-password has no value — add one with 'gcloud secrets versions add ${name_prefix}-admin-password', then reboot." >&2
+  exit 1
+fi
+%{ endif ~}
 
 # The MCP token is the whole point of this deploy — fail loudly if it's unset
 # rather than booting an endpoint that rejects every request.
@@ -73,8 +82,10 @@ cat >"$${ENVF}" <<EOF
 NODE_ENV=production
 # Reject every request without a valid token — no open default.
 AUTH_REQUIRED=true
-# MCP-first: serve only the API + WS + /mcp (no web SPA / live preview).
-SKYNET_HEADLESS=true
+# Headless (true) = MCP-first: API + WS + /mcp, no SPA / live preview. When the
+# UI is enabled (ui_domain set) this is false so the same instance also serves
+# the web SPA + /api + /ws to human operators.
+SKYNET_HEADLESS=${headless}
 # We sit behind Caddy: trust its X-Forwarded-For so per-IP rate limiting keys on
 # the real caller, not the proxy.
 SKYNET_TRUST_PROXY=true
@@ -92,6 +103,15 @@ ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}
 SKYNET_BOOTSTRAP_TOKEN=$${MCP_TOKEN}
 SKYNET_BOOTSTRAP_SCOPES=${mcp_scopes}
 GITHUB_TOKEN=$${GITHUB_TOKEN}
+%{ if ui_enabled ~}
+# UI mode: seed the single admin operator so the web login works (in production
+# the operator directory is otherwise empty). PUBLIC_URL makes notification deep
+# links open the right run in the UI.
+SKYNET_ADMIN_EMAIL=${admin_email}
+SKYNET_ADMIN_PASSWORD=$${ADMIN_PASSWORD}
+SKYNET_ADMIN_WORKSPACE=${admin_workspace}
+PUBLIC_URL=https://${ui_domain}
+%{ endif ~}
 EOF
 
 # ── 5. Render the Caddyfile (from the templated file baked in by Terraform) ──
@@ -123,4 +143,4 @@ docker run -d --restart=always --name caddy \
   -v /data/caddy:/data \
   caddy:2
 
-echo "[skynet-mcp] up — https://${mcp_domain}/mcp (TLS via Caddy; app private on skynet-net:${app_port})"
+echo "[skynet-mcp] up — https://${mcp_domain}/mcp%{ if ui_enabled } + UI https://${ui_domain}/%{ endif } (TLS via Caddy; app private on skynet-net:${app_port})"

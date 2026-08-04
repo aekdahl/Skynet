@@ -19,6 +19,7 @@ import {
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
+  UpdateWorkspaceSettingsRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
   MoveTaskRequest,
@@ -149,6 +150,19 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return { markdown };
     } catch {
       return { markdown: "# Roadmap\n\nROADMAP.md isn't bundled with this build — see the repository." };
+    }
+  });
+
+  // Live workspace fleet policy (auto-scale + cap). Per-workspace, applied at
+  // runtime (no restart) — unlike the env knobs below.
+  app.get("/api/settings/fleet", (req) => ops.getWorkspaceSettings(ws(req)));
+  app.patch("/api/settings/fleet", async (req, reply) => {
+    const body = UpdateWorkspaceSettingsRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateWorkspaceSettings(ws(req), body.data);
+    } catch (err) {
+      return fail(reply, err);
     }
   });
 
@@ -437,6 +451,48 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     },
   );
 
+  // Streaming Steward chat: the reply is written as text/plain deltas so the dock
+  // renders it live, then a final control frame — a RS (\x1e) sentinel followed by
+  // {reply, action, projectId} — carries the CLEAN reply (trailing action JSON
+  // stripped) and any confirm-first action. The sentinel never occurs in prose.
+  app.post<{ Body: { question?: string; history?: ChatTurn[]; projectId?: string } }>(
+    "/api/steward/chat/stream",
+    async (req, reply) => {
+      const question = (req.body?.question ?? "").trim();
+      if (!question) return reply.code(400).send({ error: "Ask Steward something." });
+      const history = Array.isArray(req.body?.history)
+        ? req.body!.history
+            .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
+            .slice(-16)
+        : undefined;
+      const focus = typeof req.body?.projectId === "string" ? req.body!.projectId : undefined;
+      reply.hijack();
+      const raw = reply.raw;
+      raw.writeHead(200, {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        "x-accel-buffering": "no",
+      });
+      try {
+        const gen = ops.stewardChatStream(ws(req), question, history, focus);
+        let result: { reply: string; actions: unknown; projectId: string | null } | undefined;
+        for (;;) {
+          const { value, done } = await gen.next();
+          if (done) {
+            result = value;
+            break;
+          }
+          raw.write(value);
+        }
+        raw.write("\x1e" + JSON.stringify(result));
+      } catch (err) {
+        raw.write(`\n[stream error] ${(err as Error).message}`);
+      } finally {
+        raw.end();
+      }
+    },
+  );
+
   // ── live preview (Phase-1 v0) — run the project's web app + iframe it ─────
   app.get<{ Params: { id: string } }>("/api/projects/:id/preview", async (req, reply) => {
     try {
@@ -465,6 +521,16 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.createTask(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Import a GitHub-connected project's open issues as tasks (linked back to the
+  // issue via Task.source, so status changes can be written back).
+  app.post<{ Params: { id: string } }>("/api/projects/:id/import/github-issues", async (req, reply) => {
+    try {
+      return await ops.importGithubIssues(ws(req), req.params.id);
     } catch (err) {
       return fail(reply, err);
     }

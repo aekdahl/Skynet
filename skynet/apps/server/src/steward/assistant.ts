@@ -15,7 +15,7 @@
 // Either way the answer stays grounded — the model is told never to invent repo
 // content or project state.
 
-import type { Agent, HitlItem, Project, Task, TaskAssignment, TaskRun } from "@skynet/shared";
+import type { Agent, Feature, HitlItem, Milestone, Project, Task, TaskAssignment, TaskRun } from "@skynet/shared";
 import { ProjectStatus, TaskState } from "@skynet/shared";
 import {
   oneShotRepoAssistant,
@@ -40,13 +40,17 @@ const STAGES: Task["state"][] = ["backlog", "triage", "todo", "ongoing", "review
 const KEY_DOCS = ["README.md", "ROADMAP.md", "docs/ROADMAP.md", "AGENTS.md", "CLAUDE.md"];
 const MAX_DOC_CHARS = 8000;
 const MAX_HISTORY = 8;
+/** Steward's per-input action budget ("loops"). It can propose up to this many
+ *  changes from one message; asked for more, it proposes the first N and reports
+ *  that it ran out so the operator can ask it to continue. */
+export const MAX_STEWARD_ACTIONS = 10;
 
 const SYSTEM =
   "You are Steward, the repo-aware project assistant for a Skynet workspace — you help the operator understand the CURRENT STATUS and CONTENT of one project, and you can perform project & task actions on request. " +
   "Answer conversationally and concisely. Ground every answer in the PROJECT STATUS below, and when the question is about the code or docs, in the repository content (open files such as ROADMAP.md / README.md as needed). " +
   "For questions about how this workspace is configured — approvals, autonomy, the runner sandbox, integration, Telegram, MCP, backends, vendor CLIs — ground the answer in the WORKSPACE SETTINGS section (the LIVE runtime config), NOT the committed repo docs, which may be out of date. Secret values there are shown only as set/not-set — never claim to know a secret's value. " +
   "If a file or fact isn't available to you, say so plainly — never invent repo content, project state, or settings.\n" +
-  'ACTIONS: ONLY when the operator is clearly asking you to CHANGE something, append as the FINAL line a JSON object and nothing after it — the operator confirms before anything runs. For a SINGLE change use {"proposeAction": <one action object>}. When the operator asks for SEVERAL changes at once (e.g. "add these five tasks", "add a task for each endpoint"), propose them ALL in one turn as {"proposeActions": [<action>, <action>, …]} — do NOT ask them to repeat themselves per item; the operator approves the whole batch once. Never include an action line for questions, summaries, or chat. ' +
+  `ACTIONS: ONLY when the operator is clearly asking you to CHANGE something, append as the FINAL line a JSON object exactly {"proposeActions": [<action>, …]} — a LIST of 1 to ${MAX_STEWARD_ACTIONS} action objects, in the order they should apply — and NOTHING after it. The operator confirms before anything runs. Include it ONLY for change requests, never for questions, summaries, or chat. If the operator asks for MORE than ${MAX_STEWARD_ACTIONS} changes at once, propose the first ${MAX_STEWARD_ACTIONS} and say in your reply that there are more so they can ask you to continue. ` +
   "Use the task ids from PROJECT STATUS (each task is listed as `[id] text`); if a request references a task that isn't listed, ask instead of guessing. Valid action objects:\n" +
   '  {"kind":"add_task","text":"<title>","description":"<optional — the full brief the agent gets>"}\n' +
   '  {"kind":"move_task","taskId":"<id>","to":"backlog|triage|todo|ongoing|review|done"}\n' +
@@ -61,6 +65,13 @@ const SYSTEM =
   '  {"kind":"set_status","status":"active|paused|done"}\n' +
   '  {"kind":"set_schedule","taskId":"<id>","estimatedDurationMs":<ms or null>,"plannedStartAt":<epoch ms or null>}\n' +
   '  {"kind":"set_assignment","taskId":"<id>","mode":"any|agents|unassigned","agentIds":["<agent id>", …]}\n' +
+  '  {"kind":"add_feature","name":"<feature name>","description":"<optional>","milestoneId":"<optional milestone id>"}\n' +
+  '  {"kind":"add_milestone","name":"<milestone name>","description":"<optional>","targetAt":<optional epoch ms>}\n' +
+  '  {"kind":"set_task_feature","taskId":"<id>","featureId":"<feature id, or null to unlink>"}\n' +
+  '  {"kind":"set_feature_milestone","featureId":"<feature id>","milestoneId":"<milestone id, or null to detach>"}\n' +
+  "Notes on the roadmap actions (features + milestones): a FEATURE groups tasks; a MILESTONE is a dated release/checkpoint that features roll up into — that's the roadmap. " +
+  "Use the feature ids from the FEATURES list and milestone ids from the MILESTONES list in PROJECT STATUS; if the operator names one that isn't listed, propose add_feature/add_milestone to create it (you can create it and link in the same batch), and never invent an id. " +
+  "For `targetAt` prefer an epoch-ms timestamp for the date the operator gives.\n" +
   "Notes on set_schedule: either or both fields may be present. `estimatedDurationMs` = how long you think the task takes; " +
   "`plannedStartAt` = when it should start (epoch ms). Pass `null` for a field to clear it (e.g. unschedule). " +
   "For durations, prefer minutes-to-milliseconds math (30m = 1_800_000).\n" +
@@ -122,7 +133,11 @@ export type ProjectActionKind =
   | "set_autonomy"
   | "set_status"
   | "set_schedule"
-  | "set_assignment";
+  | "set_assignment"
+  | "add_feature"
+  | "add_milestone"
+  | "set_task_feature"
+  | "set_feature_milestone";
 
 export interface AssistantAction {
   kind: ProjectActionKind;
@@ -144,6 +159,13 @@ export interface AssistantAction {
   // `agentIds` is the pool for `agents` mode (empty otherwise).
   mode?: TaskAssignment["mode"];
   agentIds?: string[];
+  // Roadmap linkage. `featureId` links a task to a feature (set_task_feature)
+  // or is the target of set_feature_milestone; `milestoneId` links a feature (or
+  // feature-at-creation) to a milestone; `targetAt` is a milestone's date. `null`
+  // clears the respective link.
+  featureId?: string | null;
+  milestoneId?: string | null;
+  targetAt?: number | null;
 }
 
 /** The grounding the action validator resolves ids against (this project only).
@@ -153,6 +175,10 @@ export interface ProjectActionContext {
   project: { id: string; name: string };
   tasks: { id: string; text: string; state: Task["state"] }[];
   agents?: { id: string; name: string }[];
+  // The project's features + milestones, so the roadmap actions resolve their
+  // ids against real records (a misparse can't invent one, mirroring `tasks`).
+  features?: { id: string; name: string }[];
+  milestones?: { id: string; name: string }[];
 }
 
 const clip = (s: string): string => (s.length > 60 ? s.slice(0, 57) + "…" : s);
@@ -306,6 +332,62 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
           : `Clear agent eligibility on “${clip(t.text)}”`,
       };
     }
+    case "add_feature": {
+      // Create a feature (a task grouping). Optionally slot it under a milestone
+      // — if `milestoneId` is given it must resolve to a real one.
+      const name = str(o.name);
+      if (!name) return null;
+      const description = str(o.description);
+      let milestoneId: string | undefined;
+      if (o.milestoneId != null) {
+        const m = (ctx.milestones ?? []).find((x) => x.id === o.milestoneId);
+        if (!m) return null; // named a milestone we don't have → refuse, don't guess
+        milestoneId = m.id;
+      }
+      const mName = milestoneId ? (ctx.milestones ?? []).find((x) => x.id === milestoneId)!.name : null;
+      return {
+        kind,
+        name,
+        ...(description ? { description } : {}),
+        ...(milestoneId ? { milestoneId } : {}),
+        summary: `Create feature: “${clip(name)}”${mName ? ` under milestone “${clip(mName)}”` : ""}`,
+      };
+    }
+    case "add_milestone": {
+      const name = str(o.name);
+      if (!name) return null;
+      const description = str(o.description);
+      let targetAt: number | undefined;
+      if (o.targetAt != null) {
+        if (typeof o.targetAt !== "number" || !Number.isFinite(o.targetAt)) return null;
+        targetAt = Math.round(o.targetAt);
+      }
+      return {
+        kind,
+        name,
+        ...(description ? { description } : {}),
+        ...(targetAt != null ? { targetAt } : {}),
+        summary: `Create milestone: “${clip(name)}”${targetAt != null ? ` (target ${new Date(targetAt).toISOString().slice(0, 10)})` : ""}`,
+      };
+    }
+    case "set_task_feature": {
+      // Link a task to a feature (or `null` to unlink). Both ids validated.
+      const t = task(o.taskId);
+      if (!t) return null;
+      if (o.featureId === null) return { kind, taskId: t.id, featureId: null, summary: `Unlink “${clip(t.text)}” from its feature` };
+      const f = (ctx.features ?? []).find((x) => x.id === o.featureId);
+      if (!f) return null;
+      return { kind, taskId: t.id, featureId: f.id, summary: `Put “${clip(t.text)}” under feature “${clip(f.name)}”` };
+    }
+    case "set_feature_milestone": {
+      // Roll a feature up into a milestone (or `null` to detach).
+      const f = (ctx.features ?? []).find((x) => x.id === o.featureId);
+      if (!f) return null;
+      if (o.milestoneId === null) return { kind, featureId: f.id, milestoneId: null, summary: `Detach feature “${clip(f.name)}” from its milestone` };
+      const m = (ctx.milestones ?? []).find((x) => x.id === o.milestoneId);
+      if (!m) return null;
+      return { kind, featureId: f.id, milestoneId: m.id, summary: `Roll feature “${clip(f.name)}” into milestone “${clip(m.name)}”` };
+    }
     default:
       return null;
   }
@@ -328,48 +410,65 @@ function lastTopLevelObject(s: string): { json: string; start: number } | null {
 }
 
 /**
- * PURE: split an assistant answer into its human `reply` and an OPTIONAL validated
- * action. The model appends a final-line `{"proposeAction": <action>}` only when
- * the operator clearly asked to change something; we strip it from the shown reply
- * and validate it against the project context.
+ * PURE: split an assistant answer into its human `reply` and a validated LIST of
+ * confirm-first actions (0..N). The model appends a final-line
+ * `{"proposeActions": [<action>, …]}` only when the operator asked to change
+ * something; we strip it from the shown reply and validate each action against the
+ * project context. The list is capped at {@link MAX_STEWARD_ACTIONS} — when the
+ * model proposed MORE than that, the reply is annotated so the operator knows to
+ * ask it to continue ("ran out of loops"). A legacy single `proposeAction` object
+ * is still accepted (treated as a one-item list).
  */
 export function splitProposedAction(
   text: string,
   ctx: ProjectActionContext,
-): { reply: string; action: AssistantAction | null; actions: AssistantAction[] } {
+): { reply: string; actions: AssistantAction[] } {
   const trimmed = (text ?? "").trim();
   const body = trimmed.replace(/\n?```\s*$/, "").trimEnd();
   const found = lastTopLevelObject(body);
-  if (!found) return { reply: trimmed, action: null, actions: [] };
+  if (!found) return { reply: trimmed, actions: [] };
   try {
     const obj = JSON.parse(found.json) as Record<string, unknown>;
-    // A batch ({"proposeActions":[…]}) or a single ({"proposeAction":…}). Both
-    // validate each candidate against the project context — an invalid one is
-    // dropped, never guessed — so the operator approves only real, valid actions.
-    const isBatch = obj && typeof obj === "object" && Array.isArray((obj as { proposeActions?: unknown }).proposeActions);
-    const isSingle = obj && typeof obj === "object" && "proposeAction" in obj;
-    if (isBatch || isSingle) {
-      const candidates = isBatch ? ((obj as { proposeActions: unknown[] }).proposeActions) : [(obj as { proposeAction: unknown }).proposeAction];
-      const actions = candidates
-        .map((c) => validateProjectAction(c, ctx))
+    // Prefer a `proposeActions` list; fall back to a single `proposeAction`.
+    const rawList = Array.isArray(obj?.proposeActions)
+      ? (obj.proposeActions as unknown[])
+      : obj && typeof obj === "object" && "proposeAction" in obj
+        ? [obj.proposeAction]
+        : null;
+    if (rawList) {
+      const validated = rawList
+        .map((a) => validateProjectAction(a, ctx))
         .filter((a): a is AssistantAction => a !== null);
+      const actions = validated.slice(0, MAX_STEWARD_ACTIONS);
+      // "Ran out of loops": the model asked for more changes than the budget.
+      const overflow = rawList.length > MAX_STEWARD_ACTIONS;
       const stripped = body.slice(0, found.start).replace(/```[a-zA-Z]*\s*$/, "").trim();
-      const reply = stripped
+      let reply = stripped
         ? stripped
         : actions.length === 1
           ? `Want me to ${actions[0]!.summary[0]!.toLowerCase()}${actions[0]!.summary.slice(1)}?`
           : actions.length > 1
             ? `Want me to make these ${actions.length} changes?`
             : "Hmm — I couldn't map that to something on this board.";
-      return { reply, action: actions[0] ?? null, actions };
+      if (overflow) {
+        reply += `\n\n(That's the first ${MAX_STEWARD_ACTIONS} — I ran out of action slots for one go. Ask me to continue for the rest.)`;
+      }
+      return { reply, actions };
     }
   } catch {
     /* not a JSON tail — the whole answer is the reply */
   }
-  return { reply: trimmed, action: null, actions: [] };
+  return { reply: trimmed, actions: [] };
 }
 
-function statusContext(project: Project, tasks: Task[], runs: TaskRun[], agents: Agent[] = []): string {
+export function statusContext(
+  project: Project,
+  tasks: Task[],
+  runs: TaskRun[],
+  agents: Agent[] = [],
+  features: Feature[] = [],
+  milestones: Milestone[] = [],
+): string {
   const agentName = (id: string): string => agents.find((a) => a.id === id)?.name ?? id;
   // Compact "who may take this" tag so Steward can report + change eligibility.
   const eligibility = (t: Task): string => {
@@ -378,21 +477,60 @@ function statusContext(project: Project, tasks: Task[], runs: TaskRun[], agents:
     if (m === "agents") return ` → ${t.assignment.agentIds.map(agentName).join(", ")}`;
     return "";
   };
+  // Which feature (if any) a task is already under — so Steward knows what to
+  // link/relink and doesn't re-propose an existing grouping.
+  const featureTag = (t: Task): string => {
+    const f = t.featureId ? features.find((x) => x.id === t.featureId) : undefined;
+    return f ? ` ⟨feat ${f.id}⟩` : "";
+  };
   const lines: string[] = [
     `PROJECT: ${project.name}`,
     `GOAL: ${project.goal?.trim() || "(none set yet)"}`,
     `REPO: ${project.repo ?? project.repoPath ?? "(not connected)"}`,
     `AUTONOMY: ${project.autonomy ? "on (agents may self-advance tasks)" : "off (human-driven)"}`,
-    "BOARD (tasks by stage — `→` shows current agent eligibility):",
   ];
+  // Project-scoped agent guidance (rides every task prompt). Steward sees it
+  // too so it can answer "what are the project rules?" and honor them itself.
+  // A run of dashes bounds the block so Steward doesn't confuse it with task text.
+  if (project.instructions?.trim()) {
+    lines.push(
+      "INSTRUCTIONS (rules for every agent on this project):",
+      "---",
+      project.instructions.trim(),
+      "---",
+    );
+  }
+  lines.push("BOARD (tasks by stage — `→` shows current agent eligibility):");
   for (const s of STAGES) {
     // Archived tasks are OFF the board — excluded from the stage grouping, listed
     // separately below so they stay readable without cluttering the live board.
     const items = tasks.filter((t) => t.state === s && !t.archived);
     lines.push(
       items.length
-        ? `  ${s} (${items.length}): ${items.slice(0, 20).map((t) => `[${t.id}] ${t.text}${eligibility(t)}`).join(" · ")}`
+        ? `  ${s} (${items.length}): ${items.slice(0, 20).map((t) => `[${t.id}] ${t.text}${eligibility(t)}${featureTag(t)}`).join(" · ")}`
         : `  ${s}: 0`,
+    );
+  }
+  // ROADMAP: features group tasks; milestones are dated buckets features roll up
+  // into. Listed with ids so Steward can link (set_task_feature) + roll up
+  // (set_feature_milestone) against real records.
+  const liveFeatures = features.filter((f) => !f.archived);
+  if (liveFeatures.length) {
+    const mName = (id: string | null) => (id ? milestones.find((m) => m.id === id)?.name ?? id : null);
+    lines.push(
+      `FEATURES (task groupings): ${liveFeatures
+        .slice(0, 30)
+        .map((f) => `[${f.id}] ${f.name} (${f.status})${f.milestoneId ? ` → milestone “${mName(f.milestoneId)}”` : ""}`)
+        .join(" · ")}`,
+    );
+  }
+  const liveMilestones = milestones.filter((m) => !m.archived);
+  if (liveMilestones.length) {
+    lines.push(
+      `MILESTONES (roadmap): ${liveMilestones
+        .slice(0, 30)
+        .map((m) => `[${m.id}] ${m.name} (${m.status}${m.targetAt != null ? `, target ${new Date(m.targetAt).toISOString().slice(0, 10)}` : ""})`)
+        .join(" · ")}`,
     );
   }
   if (agents.length) {
@@ -457,17 +595,23 @@ export async function prepareStewardCall(
   const { workspaceId, project, question } = opts;
   const history = opts.history ?? [];
 
-  const [allTasks, allRuns, agents] = await Promise.all([
+  const [allTasks, allRuns, agents, allFeatures, allMilestones] = await Promise.all([
     store.listTasks(workspaceId),
     store.listRuns(workspaceId),
     store.listAgents(workspaceId),
+    store.listFeatures(workspaceId),
+    store.listMilestones(workspaceId),
   ]);
   const projectTasks = allTasks.filter((t) => t.projectId === project.id);
+  const features = allFeatures.filter((f) => f.projectId === project.id && !f.archived);
+  const milestones = allMilestones.filter((m) => m.projectId === project.id && !m.archived);
   const context = statusContext(
     project,
     projectTasks,
     allRuns.filter((r) => r.projectId === project.id),
     agents,
+    features,
+    milestones,
   );
   const actionCtx: ProjectActionContext = {
     project: { id: project.id, name: project.name },
@@ -475,6 +619,8 @@ export async function prepareStewardCall(
     // Fleet is workspace-wide (agents aren't project-scoped) — it's the pool
     // set_assignment validates agentIds against.
     agents: agents.map((a) => ({ id: a.id, name: a.name })),
+    features: features.map((f) => ({ id: f.id, name: f.name })),
+    milestones: milestones.map((m) => ({ id: m.id, name: m.name })),
   };
   const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
   // Live, secret-safe settings snapshot so settings questions ground in real
@@ -501,7 +647,7 @@ export async function prepareStewardCall(
 export async function askSteward(
   store: Store,
   opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
-): Promise<{ reply: string; action: AssistantAction | null; actions: AssistantAction[] }> {
+): Promise<{ reply: string; actions: AssistantAction[] }> {
   const c = await prepareStewardCall(store, opts);
   const answer = c.repo
     ? await oneShotRepoAssistant({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey })
@@ -555,82 +701,6 @@ export function resolveFocusProject(
   return null;
 }
 
-/** A validated focus decision. `projectId` = the project Steward judged the
- *  operator is working on; `clarify` = a question to ask when it's genuinely
- *  ambiguous WHICH project (so Steward asks instead of guessing). At most one is
- *  set; both null = a general/workspace turn. */
-export interface FocusDecision {
-  projectId: string | null;
-  clarify: string | null;
-}
-
-const FOCUS_INSTRUCTION =
-  "Decide which ONE project (if any) the operator's latest message is about, so the assistant can focus + act on it. " +
-  "You are given the project list (each as `[id] name`) and the recent conversation. " +
-  "Rules: if the message clearly concerns exactly one project (named, or an unambiguous reference like 'it'/'that project' resolvable from the conversation), pick it. " +
-  "If the operator clearly wants to DO something to a project but it's ambiguous WHICH one, do NOT guess — ask a short question naming the likely candidates. " +
-  "If it's a general or cross-project question (status, 'what's running'), pick nothing. " +
-  'Respond with ONLY this JSON and nothing else: {"projectId":"<id from the list>"|null,"clarify":"<one short question>"|null}. Set at most one of the two.';
-
-/** PURE: validate a focus-decision reply. `projectId` must be a real id from the
- *  list; anything else is dropped. `clarify` is taken only when no valid project
- *  was chosen (a concrete project wins over a question). */
-export function parseFocusDecision(raw: string, validIds: Set<string>): FocusDecision {
-  const found = lastTopLevelObject((raw ?? "").trim());
-  if (!found) return { projectId: null, clarify: null };
-  try {
-    const o = JSON.parse(found.json) as Record<string, unknown>;
-    const projectId = typeof o.projectId === "string" && validIds.has(o.projectId) ? o.projectId : null;
-    if (projectId) return { projectId, clarify: null };
-    const clarify = typeof o.clarify === "string" && o.clarify.trim() ? o.clarify.trim() : null;
-    return { projectId: null, clarify };
-  } catch {
-    return { projectId: null, clarify: null };
-  }
-}
-
-/**
- * Decide which project the operator is working on — Steward's judgment, NOT a
- * name-matching regex. Returns the chosen project, or a clarifying question when
- * it's ambiguous which one (so the caller asks instead of guessing). Falls back
- * to the deterministic {@link resolveFocusProject} when there's no consult-capable
- * key (so a no-LLM deployment still focuses on an unambiguous mention). Trivial
- * cases short-circuit without a model call (0 projects → none; 1 → that one).
- */
-export async function decideFocusProject(
-  store: Store,
-  workspaceId: string,
-  question: string,
-  history: ChatTurn[] = [],
-): Promise<FocusDecision> {
-  const projects = await store.listProjects(workspaceId);
-  if (projects.length === 0) return { projectId: null, clarify: null };
-  if (projects.length === 1) return { projectId: projects[0]!.id, clarify: null };
-  const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
-  if (!apiKey) {
-    // No model available — degrade to the deterministic unambiguous-mention pick.
-    return { projectId: resolveFocusProject(projects.map((p) => ({ id: p.id, name: p.name })), question, history), clarify: null };
-  }
-  const list = projects.map((p) => `  [${p.id}] ${p.name}`).join("\n");
-  const convo = history
-    .slice(-MAX_HISTORY)
-    .map((t) => `${t.role === "user" ? "Operator" : "Assistant"}: ${t.content}`)
-    .join("\n");
-  const prompt = [
-    FOCUS_INSTRUCTION,
-    "",
-    "PROJECTS:",
-    list,
-    convo ? `\nRECENT CONVERSATION:\n${convo}` : "",
-    "",
-    `Operator's latest message: ${question}`,
-  ]
-    .filter((s) => s !== "")
-    .join("\n");
-  const raw = await oneShotText({ prompt, apiKey }).catch(() => "");
-  return parseFocusDecision(raw, new Set(projects.map((p) => p.id)));
-}
-
 const WORKSPACE_SYSTEM =
   "You are Steward, the operator's assistant for a Skynet workspace. Answer conversationally and concisely about the CURRENT STATUS across the whole workspace — projects, their task boards, active runs, and open approvals — grounded ONLY in the WORKSPACE STATUS below. " +
   "For questions about how the workspace is configured — approvals, autonomy, the runner sandbox, integration, Telegram, MCP, backends, vendor CLIs — ground the answer in the WORKSPACE SETTINGS section (the LIVE runtime config), not from memory. Secret values there are shown only as set/not-set — never claim to know a secret's value. " +
@@ -660,10 +730,12 @@ function workspaceStatusContext(projects: Project[], tasks: Task[], runs: TaskRu
 
 /** Ask Steward workspace-wide (the global dock with no project focused). Grounds
  *  on a cross-project status snapshot; answer-only (no proposed actions). */
-export async function askStewardWorkspace(
+/** Build the workspace-wide prompt (+ resolve the key). Shared by the
+ *  accumulating and streaming answer paths so they ground identically. */
+async function buildWorkspaceCall(
   store: Store,
   opts: { workspaceId: string; question: string; history?: ChatTurn[] },
-): Promise<{ reply: string; action: AssistantAction | null; actions: AssistantAction[] }> {
+): Promise<{ prompt: string; apiKey?: string }> {
   const { workspaceId, question } = opts;
   const [projects, tasks, runs, gates] = await Promise.all([
     store.listProjects(workspaceId),
@@ -690,18 +762,49 @@ export async function askStewardWorkspace(
     .filter((s) => s !== "")
     .join("\n");
   const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
+  return { prompt, apiKey };
+}
+
+export async function askStewardWorkspace(
+  store: Store,
+  opts: { workspaceId: string; question: string; history?: ChatTurn[] },
+): Promise<{ reply: string; actions: AssistantAction[] }> {
+  const { prompt, apiKey } = await buildWorkspaceCall(store, opts);
   const reply = await oneShotText({ prompt, apiKey });
-  return { reply, action: null, actions: [] };
+  return { reply, actions: [] };
+}
+
+/** Streaming form of {@link askStewardWorkspace} — yields text deltas, then
+ *  RETURNS the full reply. Workspace mode never proposes an action. */
+export async function* askStewardWorkspaceStream(
+  store: Store,
+  opts: { workspaceId: string; question: string; history?: ChatTurn[] },
+): AsyncGenerator<string, { reply: string; actions: AssistantAction[] }> {
+  const { prompt, apiKey } = await buildWorkspaceCall(store, opts);
+  let full = "";
+  for await (const delta of oneShotTextStream({ prompt, apiKey })) {
+    full += delta;
+    yield delta;
+  }
+  return { reply: full, actions: [] };
 }
 
 /** Streaming form of {@link askSteward} — yields the answer as text deltas so the
- *  web "Ask about this project" panel renders it live. Display-only: proposed
- *  actions come from the accumulating {@link askSteward}. */
+ *  dock renders it live, then RETURNS the clean reply + any confirm-first proposed
+ *  action. The action is parsed from the FULL accumulated text, so the trailing
+ *  action JSON is never the shown reply (the caller reconciles to `reply`). */
 export async function* askStewardStream(
   store: Store,
   opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
-): AsyncGenerator<string> {
+): AsyncGenerator<string, { reply: string; actions: AssistantAction[] }> {
   const c = await prepareStewardCall(store, opts);
-  if (c.repo) yield* oneShotRepoAssistantStream({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey });
-  else yield* oneShotTextStream({ prompt: c.prompt, apiKey: c.apiKey });
+  let full = "";
+  const gen = c.repo
+    ? oneShotRepoAssistantStream({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey })
+    : oneShotTextStream({ prompt: c.prompt, apiKey: c.apiKey });
+  for await (const delta of gen) {
+    full += delta;
+    yield delta;
+  }
+  return splitProposedAction(full, c.actionCtx);
 }
