@@ -327,7 +327,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
           <div className="settings-setup-text">
             <div className="settings-setup-title">First-time setup</div>
             <div className="settings-setup-sub">
-              Re-run the onboarding wizard (connect GitHub, add a fleet runner).
+              Re-run the onboarding wizard (name the workspace, add a fleet runner).
             </div>
           </div>
           <button className="btn btn-ghost" onClick={onRerunSetup}>
