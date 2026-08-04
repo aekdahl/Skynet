@@ -21,6 +21,7 @@ import {
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
+  UpdateWorkspaceSettingsRequest,
   type ServerEvent,
   type Snapshot,
 } from "@skynet/shared";
@@ -225,8 +226,28 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     readOnly: true,
     filter: (r) => projectAccess.filterByRun(r as { runId: string }[]),
   });
+  tool(
+    "get_settings",
+    "observe",
+    "Read the workspace's non-secret settings: the fleet auto-scale policy (autoProvisionRunners + maxRunners) and which providers have a usable key. Project settings live on each project (update_project); secrets are never exposed via MCP.",
+    {},
+    async () => {
+      const [fleet, providers] = await Promise.all([operations.getWorkspaceSettings(ws), operations.listProviders(ws)]);
+      return { fleet, providers: providers.map((p) => ({ id: p.id, name: p.name, available: p.available })) };
+    },
+    // Non-secret workspace metadata (already visible in get_snapshot), so a
+    // project-scoped token may read it too — skip the workspace-level gate.
+    { readOnly: true, selfGuarded: true },
+  );
 
   // ── author ──────────────────────────────────────────────────────────────
+  tool(
+    "update_settings",
+    "author",
+    "Update the workspace fleet policy: autoProvisionRunners (auto-add a runner, cloned from a busy one on an allowed key, when a task has none free) and maxRunners (hard cap on fleet size; 0 = no cap). Workspace-level — a project-scoped token cannot change it.",
+    UpdateWorkspaceSettingsRequest.shape,
+    (a) => operations.updateWorkspaceSettings(ws, a),
+  );
   tool("create_project", "author", "Create a project. Bind it to a repo (\"owner/repo\" via `repo`, or an existing repo's git URL via `repoUrl` to clone it) to enable the PR flow.", CreateProjectRequest.shape, (a) => operations.createProject(ws, a));
   tool("update_project", "author", "Update a project's name, goal, status, or bound repo.", { projectId: z.string(), ...UpdateProjectRequest.shape }, (a) => {
     const { projectId, ...patch } = a;

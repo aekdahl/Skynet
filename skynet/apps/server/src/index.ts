@@ -254,6 +254,22 @@ async function main() {
     setInterval(gc, Math.max(300_000, config.worktreeGcMs)).unref();
   }
 
+  // Idle-runner reaper: retire auto-provisioned runners that have sat idle past
+  // the workspace's TTL (retireIdleRunnersAfterMinutes; 0 = off, per workspace),
+  // so auto-scaled capacity is reclaimed instead of piling up. A janitorial sweep
+  // like the run reaper above — cheap, and a no-op when no workspace enables it.
+  {
+    const reapRunners = () =>
+      orchestrator
+        .reapIdleRunners()
+        .then((n) => {
+          if (n) app.log.info(`idle-runner reaper: retired ${n} idle auto-provisioned runner(s)`);
+        })
+        .catch((err) => app.log.warn(`idle-runner reaper: ${(err as Error).message}`));
+    await reapRunners();
+    setInterval(reapRunners, 60_000).unref();
+  }
+
   // Autonomy loop: triage backlog items, start auto-pick tasks, review finished
   // runs — for projects with autonomy on. Disabled when autonomyMs <= 0.
   if (config.autonomyMs > 0) {

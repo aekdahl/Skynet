@@ -33,8 +33,9 @@ import type {
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
+  UpdateWorkspaceSettingsRequest,
 } from "@skynet/shared";
-import { modelValidForProvider } from "@skynet/shared";
+import { modelValidForProvider, WorkspaceSettings } from "@skynet/shared";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
@@ -183,7 +184,20 @@ export class Operations {
     const snap = await this.store.snapshot(ws);
     snap.providers = await withSecretAvailability(snap.providers, ws);
     snap.defaultApprovalLevel = config.defaultApprovalLevel;
+    snap.workspaceSettings = await this.getWorkspaceSettings(ws);
     return snap;
+  }
+
+  /** The live workspace fleet policy, defaulted when never set. */
+  async getWorkspaceSettings(ws: string): Promise<WorkspaceSettings> {
+    return (await this.store.getWorkspaceSettings(ws)) ?? WorkspaceSettings.parse({ workspaceId: ws });
+  }
+
+  /** Patch the workspace fleet policy (auto-scale + cap). */
+  async updateWorkspaceSettings(ws: string, patch: UpdateWorkspaceSettingsRequest): Promise<WorkspaceSettings> {
+    const next = WorkspaceSettings.parse({ ...(await this.getWorkspaceSettings(ws)), ...patch, workspaceId: ws });
+    await this.store.putWorkspaceSettings(next);
+    return next;
   }
   listProviders(ws: string): Promise<ProviderInfo[]> {
     return this.store.listProviders().then((p) => withSecretAvailability(p, ws));
@@ -831,13 +845,19 @@ export class Operations {
     // an unknown provider or an empty model is a 400 (fail() maps Error → 400).
     const invalid = modelValidForProvider(await this.store.listProviders(), input.provider, input.model);
     if (invalid) throw new Error(invalid);
+    // Honor the workspace fleet cap — the safety valve against runaway creation
+    // (a project-scoped MCP token, an over-eager script). 0 = no cap.
+    const { maxRunners } = await this.getWorkspaceSettings(ws);
+    const fleet = await this.store.listAgents(ws);
+    if (maxRunners > 0 && fleet.length >= maxRunners) {
+      throw new Error(`Fleet is at its maximum of ${maxRunners} runner${maxRunners === 1 ? "" : "s"} — raise the limit in settings or retire an idle runner.`);
+    }
     // The id is a stable, opaque handle (runs reference it as agentId); the name
     // is the human-facing label shown on the board. Keeping them separate means
     // a rename never moves the id, and two agents can share a display name
     // without colliding. Auto-name to `<provider>-<name>` when none is given.
     const id = this.uid("runner");
-    const existing = await this.store.listAgents(ws);
-    const name = input.name?.trim() || generateAgentName(input.provider, existing.map((a) => a.name));
+    const name = input.name?.trim() || generateAgentName(input.provider, fleet.map((a) => a.name));
     const runner: Agent = {
       id,
       workspaceId: ws,
@@ -847,6 +867,7 @@ export class Operations {
       model: input.model,
       status: "idle",
       idleSince: now(),
+      autoProvisioned: false, // an operator added this — the idle reaper leaves it alone
     };
     return this.hub.upsertAgent(runner);
   }
