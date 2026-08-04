@@ -16,6 +16,16 @@ export async function registerMcp(app: FastifyInstance, deps: McpDeps): Promise<
     const principal = req.principal!;
     const server = buildMcpServer(principal, deps);
     // Stateless mode: no session id, JSON responses (not SSE) for simple tool calls.
+    //
+    // NOTE (push notifications): stateless mode means push events emitted by
+    // buildMcpServer (HITL-raised / review-needed via `notifications/message`)
+    // are only visible to a client during the response of a request it made
+    // — a client that isn't currently blocked on a tool call won't receive
+    // them. Full push over HTTP needs session mode (`sessionIdGenerator: () =>
+    // crypto.randomUUID()`, drop `enableJsonResponse`), where the client
+    // holds an SSE stream open via GET /mcp. Stdio-connected clients get
+    // push regardless — the pipe is bidirectional by construction. Deferred
+    // until we have a real HTTP MCP client on the fleet.
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
 
     // We write to the raw socket via the transport, so take the response away

@@ -15,10 +15,10 @@ export {
   prefetchProjectDocs,
   validateProjectAction,
   splitProposedAction,
+  MAX_STEWARD_ACTIONS,
   prepareStewardCall,
   askSteward,
   askStewardStream,
-  // Back-compat aliases for the original project-assistant names.
+  // Back-compat alias for the original project-assistant name.
   askSteward as answerProjectQuestion,
-  askStewardStream as answerProjectQuestionStream,
 } from "./steward/assistant.js";

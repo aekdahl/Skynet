@@ -30,12 +30,18 @@ const ALLOW = new Set<string>([
   "startGithubDevice", "pollGithubDevice", "fetchGithubInstallations",
   "fetchGithubInstallationRepos", "connectGithub", "disconnectGithub",
   "fetchGithubOwners", // lists org/user owners for repo creation — needs a live remote
+  "fetchGithubRepos", // live repo list for the project-creation picker — needs a live remote
   "cloneProjectRepo", // clones a connected GitHub repo — needs a live remote + token
+  "importGithubIssues", // imports a repo's issues as tasks — needs a live GitHub repo + token; the pure write-back mapping is covered by task-sync.test.ts
   "removeApprovalRule", // revokes a standing approval rule — needs a run that raised + remembered a command gate; no offline journey (covered by approval-policy.test.ts + the server route)
   // destructive bulk variants (the per-record paths ARE covered)
   "archiveAllAudit", "clearAudit",
   // low-value control-plane (runner rename/model tweak)
   "updateAgent",
+  // add a second named credential for a provider — needs a real key + the secret
+  // store (master key), so no offline journey; the route is guarded server-side
+  // and the set/delete-by-id paths it shares ARE journey-covered.
+  "createCredential",
   // streaming variant of sendAgentMessage (which IS journey-covered) — same
   // chat surface, just delta-rendered; no separate journey needed.
   "streamAgentMessage",
@@ -43,9 +49,6 @@ const ALLOW = new Set<string>([
   // and streams the output; not runnable in an offline journey. The runner
   // + fixed-command guarantees are covered by provider-install.test.ts.
   "streamInstallProvider",
-  // "ask about this project" assistant (+ its streaming variant) — a UI-only
-  // conversational surface with no fleet journey; needs a real provider key.
-  "projectChat", "streamProjectChat",
   // live preview (Phase-1 v0) — spawns a real dev server + iframes it; a
   // stateful UI control surface with no offline journey (needs a repo + toolchain).
   "previewStatus", "previewStart", "previewStop", "previewRestart", "previewRefresh",
@@ -55,24 +58,37 @@ const ALLOW = new Set<string>([
   "login",
   // read-only doc render for the Roadmap page — no operator journey to exercise
   "fetchRoadmap",
-  // repo-aware project chat (status + repo content + propose-a-task) — needs a
-  // live provider key and a real repo to ground against, so there's no offline
-  // journey; the parse contract is covered by project-assistant.test.ts
-  "projectChat",
-  // global Steward dock chat (workspace-wide / focused-project) — same live-provider
-  // requirement as projectChat, so no offline journey exercises it.
+  // global Steward dock chat (workspace-wide / focused-project) — needs a live
+  // provider key + a real repo to ground against, so no offline journey exercises
+  // it; the project-chat parse contract is covered by project-assistant.test.ts.
   "stewardChat",
+  "streamStewardChat", // streaming variant of stewardChat — same live-key requirement
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",
+  // MFA challenge exchange (POST /api/auth/mfa) — an auth primitive like `login`;
+  // needs a live challenge id + code, so no offline journey exercises it (the
+  // login screen drives it live).
+  "verifyMfa",
   // desktop Advanced settings (env editor + engine restart) — a desktop-only
   // control-plane surface with no in-app operator journey
   "fetchEnvSettings", "saveEnvSettings", "restartEngine",
+  // workspace fleet policy (auto-scale + cap) — a settings control-plane surface
+  // covered server-side by fleet-autoscale.test.ts + mcp.test.ts; no offline
+  // operator journey drives the Settings toggle.
+  "fetchWorkspaceSettings", "updateWorkspaceSettings",
   // escape hatch — bypasses HUMAN_TRANSITIONS to force a task done; parse +
   // sync-run behavior covered by task-transitions.test.ts (server side).
   // No happy-path journey exercises it because the normal review → done path
   // is the intended path; this is only reached when that path is stuck.
   "forceTaskDone",
+  // Feature + milestone CRUD (task grouping + roadmap) — exercised by the
+  // features-and-roadmap tests (features-roadmap.test.ts) which drive the
+  // full Operations path with real store + hub. No fleet journey shape uses
+  // them yet (there's no run started by "create a feature"), so they're
+  // allowlisted here rather than dropped into a Simulation journey.
+  "createFeature", "updateFeature", "deleteFeature",
+  "createMilestone", "updateMilestone", "deleteMilestone",
 ]);
 
 describe("client API coverage", () => {

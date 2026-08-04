@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import type { SecretMeta } from "@skynet/shared";
+import type { SecretMeta, WorkspaceSettings, UpdateWorkspaceSettingsRequest } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import type { McpScope, ServiceTokenMeta } from "../lib/client";
 import { InstallControls } from "../components/install-controls";
-import { providerReadiness } from "../lib/derive";
+import { fmtWait, providerReadiness } from "../lib/derive";
 
 // Provider keys live in the encrypted secret store, scoped to this workspace.
 // A vendor's runners are only selectable in create-agent once its key is set
@@ -36,7 +36,40 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
     void load();
   }, [load]);
 
-  const configured = new Map((metas ?? []).map((m) => [m.provider, m]));
+  // The DEFAULT credential per provider (id === provider) drives the main card;
+  // any extra named credentials (a second key/account) are listed below it.
+  const configured = new Map((metas ?? []).filter((m) => m.isDefault).map((m) => [m.provider, m]));
+  const extrasFor = (providerId: string) => (metas ?? []).filter((m) => m.provider === providerId && !m.isDefault);
+
+  // Rotate / remove a NAMED credential by its id. Unlike the provider default,
+  // these never touch provider availability (the default key still stands).
+  const rotateCredential = async (id: string) => {
+    const key = (drafts[id] ?? "").trim();
+    if (!key) return;
+    setBusy(id);
+    setErr(null);
+    try {
+      await api.setSecret(id, key);
+      setDrafts((d) => ({ ...d, [id]: "" }));
+      await load();
+    } catch (e) {
+      setErr(`Couldn't rotate the key: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const removeCredential = async (id: string) => {
+    setBusy(id);
+    setErr(null);
+    try {
+      await api.deleteSecret(id);
+      await load();
+    } catch (e) {
+      setErr(`Couldn't remove the key: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const save = async (id: string) => {
     const key = (drafts[id] ?? "").trim();
@@ -102,7 +135,13 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
           const envBacked = envSet.has(p.id);
           const draft = drafts[p.id] ?? "";
           const req = p.requirements;
-          const rd = providerReadiness(p);
+          // Drive the readiness badge from the freshly-fetched secret store (this
+          // view re-fetches on mount) rather than the snapshot's `available`, so
+          // the badge can never contradict the "via Settings ····" pill above it
+          // for a key that's actually set. Until secrets load (`metas === null`),
+          // fall back to the snapshot.
+          const credentialSet = metas ? Boolean(meta) || envBacked : undefined;
+          const rd = providerReadiness(p, credentialSet);
           return (
             <div className="settings-row" key={p.id}>
               <div className="settings-prov">
@@ -156,10 +195,14 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                     {req.runtime === "cli" ? (
                       <>
                         Runtime: <code>{req.bin}</code> CLI
-                        {p.binOnPath === true ? " — found on PATH" : " — not found on PATH"}
+                        {p.binOnPath === true ? " — ✓ found on PATH" : " — not found on PATH"}
                       </>
                     ) : (
-                      <>Runtime: in-process (no CLI to install)</>
+                      // SDK providers run the agent as a Node import (no
+                      // subprocess) — that's the desired state, not a
+                      // limitation. Read as "all good", complete with a
+                      // checkmark so it doesn't look like something's missing.
+                      <>Runtime: SDK — ✓ runs in-process (no CLI needed)</>
                     )}
                     {" · "}
                     {req.cliLogin ? (
@@ -231,11 +274,41 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                   )}
                 </div>
               )}
+
+              {/* Extra named credentials — a second key for this provider (e.g.
+                  another account). Each rotates / removes independently; agents
+                  pick one in the Configure-agent form. */}
+              {extrasFor(p.id).map((c) => (
+                <div className="settings-cred" key={c.id}>
+                  <span className="settings-cred-name">
+                    {c.name || "key"} <span className="mono settings-cred-last4">····{c.last4}</span>
+                  </span>
+                  <div className="settings-key">
+                    <input
+                      type="password"
+                      className="settings-input"
+                      autoComplete="off"
+                      placeholder="Rotate this key…"
+                      value={drafts[c.id] ?? ""}
+                      onChange={(e) => setDrafts((d) => ({ ...d, [c.id]: e.target.value }))}
+                      onKeyDown={(e) => e.key === "Enter" && rotateCredential(c.id)}
+                    />
+                    <button className="btn btn-primary" disabled={busy === c.id || !(drafts[c.id] ?? "").trim()} onClick={() => rotateCredential(c.id)}>
+                      Rotate
+                    </button>
+                    <button className="btn btn-ghost" disabled={busy === c.id} onClick={() => removeCredential(c.id)}>
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ))}
+              <AddCredentialForm provider={p.id} providerName={p.name} onAdded={load} />
             </div>
           );
         })}
       </div>
 
+      <FleetAutomationSection />
       <McpAccessSection />
       <TelegramSetup />
       <AdvancedSettingsSection />
@@ -254,7 +327,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
           <div className="settings-setup-text">
             <div className="settings-setup-title">First-time setup</div>
             <div className="settings-setup-sub">
-              Re-run the onboarding wizard (connect GitHub, add a fleet runner).
+              Re-run the onboarding wizard (name the workspace, add a fleet runner).
             </div>
           </div>
           <button className="btn btn-ghost" onClick={onRerunSetup}>
@@ -263,6 +336,71 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
         </div>
       )}
     </section>
+  );
+}
+
+// "Add another key" for a provider — a named credential (a second account/key).
+// Collapsed to a link until used, so the provider card stays tidy when there's
+// just the one key. On success it re-fetches the secret list (onAdded).
+function AddCredentialForm({ provider, providerName, onAdded }: { provider: string; providerName: string; onAdded: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const add = async () => {
+    if (!name.trim() || !key.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.createCredential(provider, name.trim(), key.trim());
+      setName("");
+      setKey("");
+      setOpen(false);
+      await onAdded();
+    } catch (e) {
+      setErr(e instanceof api.ApiError && e.status === 501 ? "The secret store is disabled — no master key configured." : `Couldn't add the key: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button className="btn btn-ghost btn-sm settings-cred-add" onClick={() => setOpen(true)}>
+        + Add another {providerName} key
+      </button>
+    );
+  }
+  return (
+    <div className="settings-cred settings-cred-new">
+      <input
+        className="settings-input settings-cred-nameinput"
+        placeholder="Name — e.g. personal, work-org"
+        maxLength={60}
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+      />
+      <div className="settings-key">
+        <input
+          type="password"
+          className="settings-input"
+          autoComplete="off"
+          placeholder="API key…"
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+        />
+        <button className="btn btn-primary" disabled={busy || !name.trim() || !key.trim()} onClick={add}>
+          Add key
+        </button>
+        <button className="btn btn-ghost" disabled={busy} onClick={() => { setOpen(false); setName(""); setKey(""); setErr(null); }}>
+          Cancel
+        </button>
+      </div>
+      {err && <div className="settings-warn">{err}</div>}
+    </div>
   );
 }
 
@@ -339,6 +477,89 @@ SKYNET_TELEGRAM_CONTROL=true   # optional — approve / commands`}</pre>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Fleet auto-scale ───────────────────────────────────────────────────────
+// The live workspace fleet policy: auto-provision a runner when a task has none
+// free (cloned from a busy one on an allowed key), bounded by a hard cap so it
+// can't run away. Live (no restart); the cap applies to EVERY creation path.
+function FleetAutomationSection() {
+  const [settings, setSettings] = useState<WorkspaceSettings | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.fetchWorkspaceSettings().then(setSettings).catch(() => setErr("Couldn't load fleet settings."));
+  }, []);
+
+  const save = async (patch: UpdateWorkspaceSettingsRequest) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setSettings(await api.updateWorkspaceSettings(patch));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const clampMax = (v: string) => Math.max(0, Math.floor(Number(v) || 0));
+
+  return (
+    <div className="settings-setup">
+      <div className="settings-setup-text">
+        <div className="settings-setup-title">Fleet auto-scale</div>
+        <div className="settings-setup-sub">
+          Add a runner automatically when a task needs one and none is free — cloned from a busy runner on a key the
+          project is allowed to use. The max is the safety valve so auto-creation can’t run away (default 100; 0 = no
+          cap); it caps every way runners get created, including MCP tokens. Auto-created runners are retired again once
+          they’ve sat idle past the timeout below — operator-added runners are never touched.
+        </div>
+        {err && <div className="settings-warn">{err}</div>}
+        {settings && (
+          <div className="fleet-auto">
+            <label className="proj-autonomy" title="When a task needs a runner and none is idle, auto-provision one (up to the max).">
+              <input
+                type="checkbox"
+                className="proj-autonomy-cb"
+                checked={settings.autoProvisionRunners}
+                disabled={busy}
+                onChange={(e) => void save({ autoProvisionRunners: e.target.checked })}
+              />
+              <span className="proj-autonomy-switch" aria-hidden="true" />
+              <span className="proj-autonomy-label">Auto-create runners when needed</span>
+            </label>
+            <label className="fleet-auto-max" title="Hard ceiling on total fleet size. 0 = no cap.">
+              <span className="fleet-auto-max-label">Max runners</span>
+              <input
+                type="number"
+                min={0}
+                className="qx-input fleet-auto-max-input"
+                value={settings.maxRunners}
+                disabled={busy}
+                onChange={(e) => setSettings({ ...settings, maxRunners: clampMax(e.target.value) })}
+                onBlur={(e) => void save({ maxRunners: clampMax(e.target.value) })}
+              />
+              <span className="fleet-auto-max-hint mono">0 = no cap</span>
+            </label>
+            <label className="fleet-auto-max" title="Retire an auto-created runner once it has sat idle this long. Operator-added runners are never auto-retired. 0 = never.">
+              <span className="fleet-auto-max-label">Retire idle after</span>
+              <input
+                type="number"
+                min={0}
+                className="qx-input fleet-auto-max-input"
+                value={settings.retireIdleRunnersAfterMinutes}
+                disabled={busy}
+                onChange={(e) => setSettings({ ...settings, retireIdleRunnersAfterMinutes: clampMax(e.target.value) })}
+                onBlur={(e) => void save({ retireIdleRunnersAfterMinutes: clampMax(e.target.value) })}
+              />
+              <span className="fleet-auto-max-hint mono">min · 0 = never</span>
+            </label>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -498,11 +719,25 @@ function AdvancedSettingsSection() {
   );
 }
 
+// Relative "3m ago" / "in 2h" from an epoch-ms timestamp, using the single-unit
+// duration rule the rest of the app follows.
+const rel = (ms: number): string => {
+  const deltaSec = (ms - Date.now()) / 1000;
+  return deltaSec >= 0 ? `in ${fmtWait(deltaSec)}` : `${fmtWait(-deltaSec)} ago`;
+};
+
 function McpAccessSection() {
+  const { projects } = useStore();
   const [tokens, setTokens] = useState<ServiceTokenMeta[] | null>(null);
   const [label, setLabel] = useState("");
   const [scopes, setScopes] = useState<Record<McpScope, boolean>>({ observe: true, author: true, approver: false, admin: false });
+  // Project confinement. Empty = workspace-wide (every project); a non-empty set
+  // restricts the token — both its reads and its writes — to just those projects.
+  const [projectIds, setProjectIds] = useState<string[]>([]);
   const [minted, setMinted] = useState<{ token: string; label: string } | null>(null);
+  // The id of the token minted this session — highlighted in the index so it's
+  // obvious the token still exists after the one-time secret reveal is dismissed.
+  const [justId, setJustId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -532,9 +767,11 @@ function McpAccessSection() {
     setBusy(true);
     setErr(null);
     try {
-      const created = await api.createServiceToken({ label: label.trim(), scopes: selected });
+      const created = await api.createServiceToken({ label: label.trim(), scopes: selected, projectIds });
       setMinted({ token: created.token, label: created.label });
+      setJustId(created.id);
       setLabel("");
+      setProjectIds([]);
       await load();
     } catch (e) {
       setErr(`Couldn't mint the token: ${(e as Error).message}`);
@@ -556,6 +793,27 @@ function McpAccessSection() {
     }
   };
 
+  // The raw token can't be re-shown (only a hash is stored), so "copy it again"
+  // means minting a FRESH key with the same label + scopes + project confinement
+  // and revoking the old one — the reveal above shows & copies it once. Preserves
+  // a still-valid expiry.
+  const regenerate = async (t: ServiceTokenMeta) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const ttlMs = t.expiresAt != null && t.expiresAt > Date.now() ? t.expiresAt - Date.now() : undefined;
+      const created = await api.createServiceToken({ label: t.label, scopes: t.scopes, projectIds: t.projectIds, ttlMs });
+      await api.revokeServiceToken(t.id);
+      setMinted({ token: created.token, label: created.label });
+      setJustId(created.id);
+      await load();
+    } catch (e) {
+      setErr(`Couldn't regenerate the token: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const httpSnippet = (token: string) =>
     `claude mcp add --transport http skynet ${origin}/mcp --header "Authorization: Bearer ${token}"`;
   const stdioSnippet = (token: string) =>
@@ -571,6 +829,7 @@ function McpAccessSection() {
       <div className="settings-setup-sub">
         Scoped tokens let runs drive this workspace over MCP — the same tools you use, gated by scope.
         Grant <span className="mono">approver</span> only to a token you trust to resolve gates without a human.
+        Confine a token to specific projects and it can neither see nor touch anything outside them.
       </div>
 
       {err && <div className="settings-warn">{err}</div>}
@@ -598,6 +857,35 @@ function McpAccessSection() {
             </label>
           ))}
         </div>
+        {projects.length > 0 && (
+          <div className="mcp-projects">
+            <div className="mcp-projects-head">
+              <span className="mcp-projects-title">Projects</span>
+              <span className="mcp-projects-hint">
+                {projectIds.length === 0
+                  ? "All projects — this token can see & act across the whole workspace."
+                  : `Confined to ${projectIds.length} project${projectIds.length === 1 ? "" : "s"} — it can neither see nor touch the others.`}
+              </span>
+            </div>
+            <div className="mcp-project-list">
+              {projects.map((p) => {
+                const on = projectIds.includes(p.id);
+                return (
+                  <label key={p.id} className={`mcp-project${on ? " mcp-project-on" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={(e) =>
+                        setProjectIds((v) => (e.target.checked ? [...v, p.id] : v.filter((id) => id !== p.id)))
+                      }
+                    />
+                    <span className="mcp-project-name">{p.name}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {minted && (
@@ -616,27 +904,76 @@ function McpAccessSection() {
           </div>
           <SnippetBlock title="Claude Code (remote HTTP)" text={httpSnippet(minted.token)} copied={copied === "http"} onCopy={() => copy("http", httpSnippet(minted.token))} />
           <SnippetBlock title="Local stdio (mcp.json) — needs the skynet-mcp binary" text={stdioSnippet(minted.token)} copied={copied === "stdio"} onCopy={() => copy("stdio", stdioSnippet(minted.token))} />
+          <div className="mcp-reveal-note">
+            Copy it now — the secret is shown only once. The token stays active and listed below (as <span className="mono">····{minted.token.slice(-4)}</span>); dismissing this doesn’t revoke it.
+          </div>
         </div>
       )}
 
-      <div className="settings-list mcp-tok-list">
-        {tokens?.length === 0 && <div className="settings-setup-sub">No tokens yet.</div>}
-        {tokens?.map((t) => (
-          <div className="mcp-tok-row" key={t.id}>
-            <span className="settings-name">{t.label}</span>
-            <span className="mcp-tok-scopes">
-              {t.scopes.map((s) => (
-                <span className="mcp-badge mono" key={s}>
-                  {s}
-                </span>
-              ))}
-            </span>
-            <span className="mcp-tok-meta mono">····{t.last4}</span>
-            <button className="btn btn-ghost" disabled={busy} onClick={() => void revoke(t.id)}>
-              Revoke
-            </button>
+      <div className="mcp-tok-index">
+        <div className="mcp-tok-index-head">
+          <span className="settings-setup-title">Active tokens</span>
+          {tokens && tokens.length > 0 && <span className="mcp-tok-count mono">{tokens.length}</span>}
+        </div>
+        {tokens === null ? (
+          <div className="settings-setup-sub">Loading…</div>
+        ) : tokens.length === 0 ? (
+          <div className="settings-setup-sub">No tokens yet — mint one above to connect a run over MCP.</div>
+        ) : (
+          <div className="settings-list mcp-tok-list">
+            {tokens.map((t) => (
+              <div className={`mcp-tok-row${t.id === justId ? " mcp-tok-new" : ""}`} key={t.id}>
+                <div className="mcp-tok-main">
+                  <div className="mcp-tok-top">
+                    <span className="settings-name">{t.label}</span>
+                    {t.id === justId && <span className="mcp-tok-tag mono">just created</span>}
+                    <span className="mcp-tok-scopes">
+                      {t.scopes.map((s) => (
+                        <span className="mcp-badge mono" key={s}>
+                          {s}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                  <div className="mcp-tok-projects">
+                    {t.projectIds.length === 0 ? (
+                      <span className="mcp-badge mcp-badge-ws mono">all projects</span>
+                    ) : (
+                      t.projectIds.map((id) => (
+                        <span className="mcp-badge mcp-badge-proj mono" key={id}>
+                          {projects.find((p) => p.id === id)?.name ?? id}
+                        </span>
+                      ))
+                    )}
+                  </div>
+                  <div className="mcp-tok-meta mono">
+                    <span className="mcp-tok-fp">····{t.last4}</span>
+                    <span>created {rel(t.createdAt)}</span>
+                    <span>{t.lastUsedAt ? `used ${rel(t.lastUsedAt)}` : "never used"}</span>
+                    {t.expiresAt != null && (
+                      <span className={t.expiresAt <= Date.now() ? "mcp-tok-expired" : undefined}>
+                        {t.expiresAt <= Date.now() ? "expired" : `expires ${rel(t.expiresAt)}`}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="mcp-tok-actions">
+                  <button
+                    className="btn btn-ghost"
+                    disabled={busy}
+                    title="Get a copyable key: mints a fresh token with the same label & scopes, then revokes this one (the old key stops working)."
+                    onClick={() => void regenerate(t)}
+                  >
+                    Regenerate
+                  </button>
+                  <button className="btn btn-ghost" disabled={busy} onClick={() => void revoke(t.id)}>
+                    Revoke
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
+        )}
       </div>
     </div>
   );

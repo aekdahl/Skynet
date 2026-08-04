@@ -36,6 +36,36 @@ describe("splitEstMinutesTag — triage duration tag", () => {
   it("rounds fractional estimates to a whole minute", () => {
     expect(splitEstMinutesTag('body.\n{"estMinutes": 12.7}').estMinutes).toBe(13);
   });
+
+  it("parses `clarity` alongside estMinutes (drives auto-promote triage→todo)", () => {
+    const r = splitEstMinutesTag('Clear scope.\n{"estMinutes":15,"clarity":"clear"}');
+    expect(r.estMinutes).toBe(15);
+    expect(r.clarity).toBe("clear");
+    expect(r.body).toBe("Clear scope.");
+  });
+
+  it("clarity works independently — missing estMinutes doesn't drop clarity", () => {
+    const r = splitEstMinutesTag('Ambiguous ask.\n{"clarity":"unclear"}');
+    expect(r.estMinutes).toBeNull();
+    expect(r.clarity).toBe("unclear");
+    expect(r.body).toBe("Ambiguous ask.");
+  });
+
+  it("bogus clarity values are dropped (never fabricated)", () => {
+    expect(splitEstMinutesTag('body.\n{"clarity":"maybe"}').clarity).toBeNull();
+    expect(splitEstMinutesTag('body.\n{"clarity":true}').clarity).toBeNull();
+    expect(splitEstMinutesTag('body.\n{"estMinutes":30,"clarity":42}').clarity).toBeNull();
+    // …but a valid estMinutes still survives a bogus clarity.
+    expect(splitEstMinutesTag('body.\n{"estMinutes":30,"clarity":42}').estMinutes).toBe(30);
+  });
+
+  it("returns nulls all the way down when neither field parses (no false positive)", () => {
+    const r = splitEstMinutesTag('The config looks like {"port": 8080} in the file.');
+    expect(r.estMinutes).toBeNull();
+    expect(r.clarity).toBeNull();
+    // Body left untouched — we didn't recognize the tail as our tag.
+    expect(r.body).toContain('{"port": 8080}');
+  });
 });
 
 const ctx: ProjectActionContext = {

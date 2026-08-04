@@ -49,6 +49,7 @@ const sys = { type: "system", session_id: "s1" };
 const ok = { type: "result", subtype: "success", is_error: false, num_turns: 1 };
 const overload = { type: "result", subtype: "error_during_execution", is_error: true, result: "Overloaded (529)" };
 const nonTransient = { type: "result", subtype: "error_during_execution", is_error: true, result: "syntax error in tool" };
+const maxTurns = { type: "result", subtype: "error_max_turns", is_error: true, result: "" };
 
 afterEach(() => __setClaudeTestHooks(null));
 
@@ -107,5 +108,28 @@ describe("ClaudeRunner error handling", () => {
     expect(events.onCompleted).not.toHaveBeenCalled();
     expect(q.fn).toHaveBeenCalledTimes(4); // initial + MAX_API_RETRIES(3)
     expect(events.onFailed).toHaveBeenCalledWith("a1", expect.stringContaining("after 3 retries"));
+  });
+
+  it("ran out of turns is not a failure: resumes the session and completes", async () => {
+    q.push([sys, maxTurns]); // first attempt hits the turn budget
+    q.push([ok]); // continued attempt finishes
+    const events = fakeEvents();
+    await new ClaudeRunnerProvider().start(spec, events);
+
+    await vi.waitFor(() => expect(events.onCompleted).toHaveBeenCalled(), { timeout: 2000, interval: 20 });
+    expect(events.onFailed).not.toHaveBeenCalled();
+    expect(q.fn).toHaveBeenCalledTimes(2); // initial + one continue (session resume)
+    expect(events.onLog).toHaveBeenCalledWith("a1", expect.stringContaining("continuing where it left off"));
+  });
+
+  it("hands off after the continue budget: fails with error_max_turns (never done)", async () => {
+    for (let i = 0; i < 6; i++) q.push([sys, maxTurns]); // never finishes within budget
+    const events = fakeEvents();
+    await new ClaudeRunnerProvider().start(spec, events);
+
+    await vi.waitFor(() => expect(events.onFailed).toHaveBeenCalled(), { timeout: 2000, interval: 20 });
+    expect(events.onCompleted).not.toHaveBeenCalled();
+    expect(q.fn).toHaveBeenCalledTimes(4); // initial + MAX_TURN_CONTINUES(3)
+    expect(events.onFailed).toHaveBeenCalledWith("a1", expect.stringContaining("error_max_turns"));
   });
 });

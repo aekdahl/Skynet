@@ -9,12 +9,17 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   ConfigureRunnerRequest,
+  CreateFeatureRequest,
+  CreateMilestoneRequest,
   CreateProjectRequest,
   CreateTaskRequest,
   ProviderId,
   ResolveRequest,
   ChatRequest,
+  UpdateFeatureRequest,
+  UpdateMilestoneRequest,
   UpdateProjectRequest,
+  UpdateWorkspaceSettingsRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
   MoveTaskRequest,
@@ -145,6 +150,19 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return { markdown };
     } catch {
       return { markdown: "# Roadmap\n\nROADMAP.md isn't bundled with this build — see the repository." };
+    }
+  });
+
+  // Live workspace fleet policy (auto-scale + cap). Per-workspace, applied at
+  // runtime (no restart) — unlike the env knobs below.
+  app.get("/api/settings/fleet", (req) => ops.getWorkspaceSettings(ws(req)));
+  app.patch("/api/settings/fleet", async (req, reply) => {
+    const body = UpdateWorkspaceSettingsRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateWorkspaceSettings(ws(req), body.data);
+    } catch (err) {
+      return fail(reply, err);
     }
   });
 
@@ -433,45 +451,21 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     },
   );
 
-  // Repo-aware project assistant — chat about this project's status + content.
-  app.post<{ Params: { id: string }; Body: { question?: string; history?: ChatTurn[] } }>(
-    "/api/projects/:id/chat",
+  // Streaming Steward chat: the reply is written as text/plain deltas so the dock
+  // renders it live, then a final control frame — a RS (\x1e) sentinel followed by
+  // {reply, action, projectId} — carries the CLEAN reply (trailing action JSON
+  // stripped) and any confirm-first action. The sentinel never occurs in prose.
+  app.post<{ Body: { question?: string; history?: ChatTurn[]; projectId?: string } }>(
+    "/api/steward/chat/stream",
     async (req, reply) => {
       const question = (req.body?.question ?? "").trim();
-      if (!question) return reply.code(400).send({ error: "Ask a question about the project." });
+      if (!question) return reply.code(400).send({ error: "Ask Steward something." });
       const history = Array.isArray(req.body?.history)
         ? req.body!.history
             .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
             .slice(-16)
         : undefined;
-      try {
-        const { reply, action } = await ops.projectAssistant(ws(req), req.params.id, question, history);
-        return { reply, action };
-      } catch (err) {
-        return fail(reply, err);
-      }
-    },
-  );
-
-  // Streaming form of the project assistant — same answer, written as text/plain
-  // chunks so "Ask about this project" renders it as it's generated. Ownership /
-  // bad-request errors stay JSON (validated before we hijack the socket).
-  app.post<{ Params: { id: string }; Body: { question?: string; history?: ChatTurn[] } }>(
-    "/api/projects/:id/chat/stream",
-    async (req, reply) => {
-      const question = (req.body?.question ?? "").trim();
-      if (!question) return reply.code(400).send({ error: "Ask a question about the project." });
-      const history = Array.isArray(req.body?.history)
-        ? req.body!.history
-            .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
-            .slice(-16)
-        : undefined;
-      // Validate the project exists / is ours before taking over the socket.
-      try {
-        await ops.getProject(ws(req), req.params.id);
-      } catch (err) {
-        return fail(reply, err);
-      }
+      const focus = typeof req.body?.projectId === "string" ? req.body!.projectId : undefined;
       reply.hijack();
       const raw = reply.raw;
       raw.writeHead(200, {
@@ -480,9 +474,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
         "x-accel-buffering": "no",
       });
       try {
-        for await (const delta of ops.projectAssistantStream(ws(req), req.params.id, question, history)) {
-          raw.write(delta);
+        const gen = ops.stewardChatStream(ws(req), question, history, focus);
+        let result: { reply: string; actions: unknown; projectId: string | null } | undefined;
+        for (;;) {
+          const { value, done } = await gen.next();
+          if (done) {
+            result = value;
+            break;
+          }
+          raw.write(value);
         }
+        raw.write("\x1e" + JSON.stringify(result));
       } catch (err) {
         raw.write(`\n[stream error] ${(err as Error).message}`);
       } finally {
@@ -519,6 +521,16 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.createTask(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Import a GitHub-connected project's open issues as tasks (linked back to the
+  // issue via Task.source, so status changes can be written back).
+  app.post<{ Params: { id: string } }>("/api/projects/:id/import/github-issues", async (req, reply) => {
+    try {
+      return await ops.importGithubIssues(ws(req), req.params.id);
     } catch (err) {
       return fail(reply, err);
     }
@@ -606,6 +618,62 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.reorderTask(ws(req), req.params.tid, body.data.beforeId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── features (task grouping) ──────────────────────────────────────────
+  app.post<{ Params: { id: string } }>("/api/projects/:id/features", async (req, reply) => {
+    const body = CreateFeatureRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.createFeature(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.patch<{ Params: { fid: string } }>("/api/features/:fid", async (req, reply) => {
+    const body = UpdateFeatureRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateFeature(ws(req), req.params.fid, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.delete<{ Params: { fid: string } }>("/api/features/:fid", async (req, reply) => {
+    try {
+      await ops.deleteFeature(ws(req), req.params.fid);
+      return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── milestones (roadmap) ──────────────────────────────────────────────
+  app.post<{ Params: { id: string } }>("/api/projects/:id/milestones", async (req, reply) => {
+    const body = CreateMilestoneRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.createMilestone(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.patch<{ Params: { mid: string } }>("/api/milestones/:mid", async (req, reply) => {
+    const body = UpdateMilestoneRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateMilestone(ws(req), req.params.mid, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.delete<{ Params: { mid: string } }>("/api/milestones/:mid", async (req, reply) => {
+    try {
+      await ops.deleteMilestone(ws(req), req.params.mid);
+      return { ok: true };
     } catch (err) {
       return fail(reply, err);
     }

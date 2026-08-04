@@ -43,6 +43,7 @@ import {
   completedNotice,
   inQuietHours,
   parseQuietHours,
+  runLink,
   esc,
   type Names,
 } from "./notices.js";
@@ -1039,6 +1040,8 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     const project = await operations.getProject(ws, run.projectId).catch(() => null);
     return { run: run.name || runId, project: project?.name ?? "" };
   };
+  // Deep link to open the run in the app (empty unless PUBLIC_URL is configured).
+  const linkFor = (runId: string): string | undefined => runLink(config.publicUrl, runId);
 
   // De-dupe run notices: only push when a run's status actually CHANGES, so a run
   // that re-emits "review" doesn't send the same line three times (the reported
@@ -1049,7 +1052,7 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     lastNotice.set(it.runId, "review"); // the gate IS the review heads-up
     const opts: NotifyOpts = { parse_mode: "HTML" };
     if (config.telegramControl) opts.reply_markup = gateKeyboard(it);
-    const sent = await notify(decisionCardHtml(it, await nameOf(it.runId), config.telegramControl), opts);
+    const sent = await notify(decisionCardHtml(it, await nameOf(it.runId), config.telegramControl, linkFor(it.runId)), opts);
     if (sent.messageId) {
       // A reply to this card → "request changes"; completion edits it in place.
       if (config.telegramControl) control.noteCard(sent.messageId, it.id, it.runId);
@@ -1069,7 +1072,7 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
         const covered = (await operations.listHitl(ws).catch(() => []))
           .some((g) => g.runId === runId && !g.resolvedAt);
         if (covered) return;
-        await notify(reviewNotice(await nameOf(runId)));
+        await notify(reviewNotice(await nameOf(runId), linkFor(runId)));
       })();
     }, 700);
   };
@@ -1094,7 +1097,7 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
         // No card to edit → a fresh "shipped" line. Low value, so hold it during
         // quiet hours (the /inbox digest still reflects it whenever you look).
         if (inQuietHours(new Date(), quiet)) return;
-        await notify(completedNotice(names));
+        await notify(completedNotice(names, linkFor(event.runId)));
       })();
     }
   };
