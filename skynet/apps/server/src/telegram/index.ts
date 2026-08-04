@@ -23,8 +23,19 @@
 //     logged either; only the action KIND is.
 
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
-import type { Agent, HitlItem, Project, ProviderInfo, ServerEvent, Task, TaskRun } from "@skynet/shared";
-import type { ConfigureRunnerRequest, CreateProjectRequest, CreateTaskRequest, ResolveRequest, UpdateProjectRequest, UpdateTaskRequest } from "@skynet/shared";
+import type { Agent, Feature, HitlItem, Milestone, Project, ProviderInfo, ServerEvent, Task, TaskRun } from "@skynet/shared";
+import type {
+  ConfigureRunnerRequest,
+  CreateFeatureRequest,
+  CreateMilestoneRequest,
+  CreateProjectRequest,
+  CreateTaskRequest,
+  ResolveRequest,
+  UpdateFeatureRequest,
+  UpdateMilestoneRequest,
+  UpdateProjectRequest,
+  UpdateTaskRequest,
+} from "@skynet/shared";
 import type { config as Config } from "../config.js";
 import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
@@ -130,6 +141,8 @@ export interface ControlOps {
   listTasks(ws: string): Promise<Task[]>;
   listAgents(ws: string): Promise<Agent[]>;
   listProviders(ws: string): Promise<ProviderInfo[]>;
+  listFeatures?(ws: string): Promise<Feature[]>;
+  listMilestones?(ws: string): Promise<Milestone[]>;
   resolveHitl(ws: string, id: string, input: ResolveRequest, operatorId: string): Promise<HitlItem>;
   /** The real unified diff of a run's branch, for the "View diff" button.
    *  Optional so existing fakes/callers don't have to implement it. */
@@ -144,6 +157,11 @@ export interface ControlOps {
   transitionTask?(ws: string, taskId: string, to: Task["state"], operatorId: string): Promise<Task>;
   updateTask?(ws: string, taskId: string, patch: UpdateTaskRequest): Promise<Task>;
   updateProject?(ws: string, id: string, patch: UpdateProjectRequest): Promise<Project>;
+  // Grouping / roadmap ops — mirror the shape Steward uses.
+  createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature>;
+  updateFeature(ws: string, featureId: string, patch: UpdateFeatureRequest): Promise<Feature>;
+  createMilestone(ws: string, projectId: string, input: CreateMilestoneRequest): Promise<Milestone>;
+  updateMilestone(ws: string, milestoneId: string, patch: UpdateMilestoneRequest): Promise<Milestone>;
   /** Spin up (or restart) the project's live preview; resolves when it's live or
    *  failed, with the URL in the returned state. */
   previewStart(ws: string, projectId: string): Promise<PreviewState>;
@@ -520,6 +538,133 @@ export function createOwnerControl(deps: OwnerControlDeps): {
               (err) => notify(`⚠ Couldn't start the preview for ${name}: ${(err as Error).message}`),
             );
             return `🚀 Spinning up a live preview of ${name} — I'll send the link here when it's ready.`;
+          },
+        };
+      }
+      case "create_feature": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const projName = project?.name ?? action.projectId;
+        const ms = action.milestoneId ? ctx.milestones.find((m) => m.id === action.milestoneId) : undefined;
+        const msPart = ms ? ` under milestone "${ms.name}"` : "";
+        return {
+          kind: action.kind,
+          summary: `Create feature "${action.featureName}" in ${projName}${msPart}?`,
+          run: async () => {
+            const f = await operations.createFeature(ws, action.projectId!, {
+              name: action.featureName!,
+              ...(action.featureDescription ? { description: action.featureDescription } : {}),
+              ...(action.milestoneId ? { milestoneId: action.milestoneId } : {}),
+            });
+            return `⊞ Feature "${f.name}" created (${f.id}) in ${projName}.`;
+          },
+        };
+      }
+      case "set_task_feature": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        if (action.featureId == null) {
+          return {
+            kind: action.kind,
+            summary: `Unlink task ${action.taskId} — "${task?.text ?? "?"}" from its feature?`,
+            run: async () => {
+              if (!operations.updateTask) throw new Error("editing tasks isn't available here");
+              await operations.updateTask(ws, action.taskId!, { featureId: null });
+              return `⊞ Task ${action.taskId} unlinked from its feature.`;
+            },
+          };
+        }
+        const feature = ctx.features.find((f) => f.id === action.featureId);
+        return {
+          kind: action.kind,
+          summary: `Move task ${action.taskId} — "${task?.text ?? "?"}" into feature "${feature?.name ?? action.featureId}"?`,
+          run: async () => {
+            if (!operations.updateTask) throw new Error("editing tasks isn't available here");
+            await operations.updateTask(ws, action.taskId!, { featureId: action.featureId ?? null });
+            return `⊞ Task ${action.taskId} → feature "${feature?.name ?? action.featureId}".`;
+          },
+        };
+      }
+      case "archive_feature": {
+        const feature = ctx.features.find((f) => f.id === action.featureId);
+        return {
+          kind: action.kind,
+          summary: `Archive feature "${feature?.name ?? action.featureId}" (hide, recoverable)?`,
+          run: async () => {
+            await operations.updateFeature(ws, action.featureId!, { archived: true });
+            return `🗃 Archived feature "${feature?.name ?? action.featureId}".`;
+          },
+        };
+      }
+      case "create_milestone": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const projName = project?.name ?? action.projectId;
+        const when = action.targetAt ? ` (target ${new Date(action.targetAt).toISOString().slice(0, 10)})` : "";
+        return {
+          kind: action.kind,
+          summary: `Create milestone "${action.milestoneName}" in ${projName}${when}?`,
+          run: async () => {
+            const m = await operations.createMilestone(ws, action.projectId!, {
+              name: action.milestoneName!,
+              ...(action.milestoneDescription ? { description: action.milestoneDescription } : {}),
+              ...(action.targetAt !== undefined ? { targetAt: action.targetAt } : {}),
+            });
+            return `◉ Milestone "${m.name}" created (${m.id}) in ${projName}${when}.`;
+          },
+        };
+      }
+      case "set_feature_milestone": {
+        const feature = ctx.features.find((f) => f.id === action.featureId);
+        if (action.milestoneId == null) {
+          return {
+            kind: action.kind,
+            summary: `Unlink feature "${feature?.name ?? action.featureId}" from its milestone?`,
+            run: async () => {
+              await operations.updateFeature(ws, action.featureId!, { milestoneId: null });
+              return `◉ Feature "${feature?.name ?? action.featureId}" unlinked from its milestone.`;
+            },
+          };
+        }
+        const ms = ctx.milestones.find((m) => m.id === action.milestoneId);
+        return {
+          kind: action.kind,
+          summary: `Attach feature "${feature?.name ?? action.featureId}" to milestone "${ms?.name ?? action.milestoneId}"?`,
+          run: async () => {
+            await operations.updateFeature(ws, action.featureId!, { milestoneId: action.milestoneId ?? null });
+            return `◉ Feature "${feature?.name ?? action.featureId}" → milestone "${ms?.name ?? action.milestoneId}".`;
+          },
+        };
+      }
+      case "set_task_milestone": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        if (action.milestoneId == null) {
+          return {
+            kind: action.kind,
+            summary: `Unlink task ${action.taskId} — "${task?.text ?? "?"}" from its milestone?`,
+            run: async () => {
+              if (!operations.updateTask) throw new Error("editing tasks isn't available here");
+              await operations.updateTask(ws, action.taskId!, { milestoneId: null });
+              return `◉ Task ${action.taskId} unlinked from its milestone.`;
+            },
+          };
+        }
+        const ms = ctx.milestones.find((m) => m.id === action.milestoneId);
+        return {
+          kind: action.kind,
+          summary: `Attach task ${action.taskId} — "${task?.text ?? "?"}" to milestone "${ms?.name ?? action.milestoneId}"?`,
+          run: async () => {
+            if (!operations.updateTask) throw new Error("editing tasks isn't available here");
+            await operations.updateTask(ws, action.taskId!, { milestoneId: action.milestoneId ?? null });
+            return `◉ Task ${action.taskId} → milestone "${ms?.name ?? action.milestoneId}".`;
+          },
+        };
+      }
+      case "mark_milestone_shipped": {
+        const ms = ctx.milestones.find((m) => m.id === action.milestoneId);
+        return {
+          kind: action.kind,
+          summary: `Mark milestone "${ms?.name ?? action.milestoneId}" as shipped?`,
+          run: async () => {
+            await operations.updateMilestone(ws, action.milestoneId!, { status: "shipped" });
+            return `🚢 Milestone "${ms?.name ?? action.milestoneId}" shipped.`;
           },
         };
       }

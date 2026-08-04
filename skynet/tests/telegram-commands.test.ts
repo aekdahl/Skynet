@@ -132,11 +132,18 @@ function makeControl(opts: { controlEnabled: boolean; consult: () => Promise<str
     listTasks: async () => [],
     listAgents: async () => [],
     listProviders: async () => [],
+    listFeatures: async () => [],
+    listMilestones: async () => [],
     resolveHitl,
     createTask: vi.fn(),
+    updateTask: vi.fn(),
     assignTask: vi.fn(),
     archiveTask: vi.fn(),
     configureRunner: vi.fn(),
+    createFeature: vi.fn(),
+    updateFeature: vi.fn(),
+    createMilestone: vi.fn(),
+    updateMilestone: vi.fn(),
     previewStart,
   } as unknown as ControlOps;
 
@@ -307,11 +314,18 @@ describe("createOwnerControl — conversational memory", () => {
       listTasks: async () => [],
       listAgents: async () => [],
       listProviders: async () => [],
+      listFeatures: async () => [],
+      listMilestones: async () => [],
       resolveHitl: vi.fn(),
       createTask,
+      updateTask: vi.fn(),
       assignTask: vi.fn(),
       archiveTask: vi.fn(),
       configureRunner: vi.fn(),
+      createFeature: vi.fn(),
+      updateFeature: vi.fn(),
+      createMilestone: vi.fn(),
+      updateMilestone: vi.fn(),
     } as unknown as ControlOps;
 
     const notes: string[] = [];
@@ -385,9 +399,13 @@ describe("createOwnerControl — workspace scoping (regression)", () => {
     const listProviders = vi.fn(async () => []);
     const resolveHitl = vi.fn(async () => ({}) as never);
     const operations = {
-      listHitl, listRuns, listProjects, listTasks, listAgents, listProviders, resolveHitl,
-      createTask: vi.fn(), assignTask: vi.fn(), archiveTask: vi.fn(),
+      listHitl, listRuns, listProjects, listTasks, listAgents, listProviders,
+      listFeatures: vi.fn(async () => []), listMilestones: vi.fn(async () => []),
+      resolveHitl,
+      createTask: vi.fn(), updateTask: vi.fn(), assignTask: vi.fn(), archiveTask: vi.fn(),
       createProject: vi.fn(), configureRunner: vi.fn(),
+      createFeature: vi.fn(), updateFeature: vi.fn(),
+      createMilestone: vi.fn(), updateMilestone: vi.fn(),
     } as unknown as ControlOps;
     const orchestrator = {
       consult: vi.fn(async () => JSON.stringify({ reply: "ok", action: null })),
@@ -422,9 +440,12 @@ describe("createOwnerControl — workspace scoping (regression)", () => {
       listHitl, listRuns: vi.fn(async () => []), listProjects: vi.fn(async () => []),
       listTasks: vi.fn(async () => []), listAgents: vi.fn(async () => []),
       listProviders: vi.fn(async () => []),
+      listFeatures: vi.fn(async () => []), listMilestones: vi.fn(async () => []),
       resolveHitl: vi.fn(async () => ({}) as never),
-      createTask: vi.fn(), assignTask: vi.fn(), archiveTask: vi.fn(),
+      createTask: vi.fn(), updateTask: vi.fn(), assignTask: vi.fn(), archiveTask: vi.fn(),
       createProject: vi.fn(), configureRunner: vi.fn(),
+      createFeature: vi.fn(), updateFeature: vi.fn(),
+      createMilestone: vi.fn(), updateMilestone: vi.fn(),
     } as unknown as ControlOps;
     const orchestrator = {
       consult: vi.fn(async () => JSON.stringify({ reply: "ok", action: null })),
@@ -542,9 +563,12 @@ describe("createOwnerControl — HITL approve/reject buttons", () => {
       listHitl: async () => [openGate], // gate is open
       listRuns: async () => [], listProjects: async () => [], listTasks: async () => [],
       listAgents: async () => [], listProviders: async () => [],
+      listFeatures: async () => [], listMilestones: async () => [],
       resolveHitl,
-      createTask: vi.fn(), assignTask: vi.fn(), archiveTask: vi.fn(),
+      createTask: vi.fn(), updateTask: vi.fn(), assignTask: vi.fn(), archiveTask: vi.fn(),
       createProject: vi.fn(), configureRunner: vi.fn(),
+      createFeature: vi.fn(), updateFeature: vi.fn(),
+      createMilestone: vi.fn(), updateMilestone: vi.fn(),
     } as unknown as ControlOps;
     const orchestrator = {
       consult: vi.fn(),
