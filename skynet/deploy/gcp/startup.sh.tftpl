@@ -128,6 +128,10 @@ cat >/data/Caddyfile <<'CADDYEOF'
 ${caddyfile}
 CADDYEOF
 docker rm -f caddy >/dev/null 2>&1 || true
+# A SIGKILL'd Caddy (docker rm -f, or a reboot mid-issuance) can leave a stale
+# ACME storage lock that a fresh Caddy then blocks on — wedged with no cert
+# (accepts TCP on :443 but never completes TLS). Clear stale locks before start.
+rm -rf /data/caddy/locks 2>/dev/null || true
 docker run -d --restart=always --name caddy \
   --network host \
   -v /data/Caddyfile:/etc/caddy/Caddyfile:ro \

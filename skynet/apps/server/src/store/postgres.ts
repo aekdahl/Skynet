@@ -19,6 +19,7 @@ import type {
   Agent,
   Snapshot,
   Task,
+  WorkspaceSettings,
 } from "@skynet/shared";
 import { now } from "../config.js";
 import type { Store } from "./store.js";
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS hitl_audit (id bigserial PRIMARY KEY, workspace_id te
                                        at bigint NOT NULL, payload jsonb);
 ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS github_connections (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS workspace_settings (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS github_tokens      (workspace_id text PRIMARY KEY, ciphertext text NOT NULL);
 CREATE TABLE IF NOT EXISTS service_tokens     (id text PRIMARY KEY, token_hash text NOT NULL, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE INDEX IF NOT EXISTS service_tokens_hash ON service_tokens(token_hash);
@@ -223,6 +225,20 @@ export class PostgresStore implements Store {
   }
   async deleteGithubConnection(ws: string): Promise<void> {
     await this.pool.query("DELETE FROM github_connections WHERE workspace_id=$1", [ws]);
+  }
+
+  async getWorkspaceSettings(ws: string): Promise<WorkspaceSettings | undefined> {
+    const { rows } = await this.pool.query<{ data: WorkspaceSettings }>(
+      "SELECT data FROM workspace_settings WHERE workspace_id=$1",
+      [ws],
+    );
+    return rows[0]?.data;
+  }
+  async putWorkspaceSettings(settings: WorkspaceSettings): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO workspace_settings(workspace_id,data) VALUES($1,$2::jsonb) ON CONFLICT(workspace_id) DO UPDATE SET data=$2::jsonb",
+      [settings.workspaceId, J(settings)],
+    );
   }
 
   async getGithubToken(ws: string): Promise<string | undefined> {

@@ -74,6 +74,10 @@ const ALLOW = new Set<string>([
   // desktop Advanced settings (env editor + engine restart) — a desktop-only
   // control-plane surface with no in-app operator journey
   "fetchEnvSettings", "saveEnvSettings", "restartEngine",
+  // workspace fleet policy (auto-scale + cap) — a settings control-plane surface
+  // covered server-side by fleet-autoscale.test.ts + mcp.test.ts; no offline
+  // operator journey drives the Settings toggle.
+  "fetchWorkspaceSettings", "updateWorkspaceSettings",
   // escape hatch — bypasses HUMAN_TRANSITIONS to force a task done; parse +
   // sync-run behavior covered by task-transitions.test.ts (server side).
   // No happy-path journey exercises it because the normal review → done path

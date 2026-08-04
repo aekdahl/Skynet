@@ -240,6 +240,35 @@ describe("MCP project scoping", () => {
   });
 });
 
+// Non-secret settings over MCP: the workspace fleet policy is readable + writable
+// (writable only by a workspace-wide token — it's a workspace-level action).
+describe("MCP settings", () => {
+  it("reads and writes the workspace fleet policy", async () => {
+    const { client } = await connect(author);
+    const before = json(await client.callTool({ name: "get_settings", arguments: {} }));
+    expect(before.fleet).toMatchObject({ autoProvisionRunners: false, maxRunners: 100, retireIdleRunnersAfterMinutes: 30 }); // defaults (bounded, not unlimited)
+    expect(Array.isArray(before.providers)).toBe(true); // non-secret provider availability
+
+    const updated = json(await client.callTool({ name: "update_settings", arguments: { autoProvisionRunners: true, maxRunners: 5 } }));
+    expect(updated).toMatchObject({ autoProvisionRunners: true, maxRunners: 5 });
+
+    const after = json(await client.callTool({ name: "get_settings", arguments: {} }));
+    expect(after.fleet).toMatchObject({ autoProvisionRunners: true, maxRunners: 5 });
+  });
+
+  it("a project-scoped token may READ settings but not change them", async () => {
+    const scoped: Principal = { workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:scoped", scopes: ["observe", "author"], projectIds: ["A"] };
+    const { client } = await connect(scoped);
+    // Non-secret workspace metadata → readable even when project-confined.
+    const read = json(await client.callTool({ name: "get_settings", arguments: {} }));
+    expect(read.fleet).toBeDefined();
+    // Changing workspace-wide policy is a workspace-level action → denied.
+    const denied = await client.callTool({ name: "update_settings", arguments: { maxRunners: 3 } });
+    expect(denied.isError).toBe(true);
+    expect(text(denied)).toMatch(/workspace-level/);
+  });
+});
+
 describe("waitForEvent", () => {
   it("resolves with the first matching event and ignores non-matches", async () => {
     const bus = new InProcessBus();
