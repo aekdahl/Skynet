@@ -1681,8 +1681,16 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .op-navitem { display: flex; align-items: center; gap: 11px; padding: 8px 11px; border-radius: 7px; color: var(--muted); border: none; background: none; text-align: left; font-family: var(--font-ui); font-size: 13px; width: 100%; cursor: pointer; }
 .op-navitem .ic { width: 16px; text-align: center; opacity: 0.85; }
 .op-navitem .badge { margin-left: auto; font-family: var(--font-mono); font-size: 10px; background: var(--warn); color: #0B0D11; border-radius: 9px; padding: 1px 7px; font-weight: 600; }
-.op-navitem.on { background: var(--raised); color: var(--text); }
-.op-navitem:hover:not(.on) { background: var(--raised); color: var(--text); }
+/* Current view (router-derived, exactly one at a time): raised bg + accent
+   marker + bolder label so it reads as selected, not merely hovered. */
+.op-navitem.on { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
+.op-navitem.on .ic { opacity: 1; color: var(--accent); }
+/* Hover is a lighter, distinct wash so it never masquerades as the active item. */
+.op-navitem:hover:not(.on) { background: color-mix(in oklch, var(--raised), transparent 45%); color: var(--text); }
+/* Keyboard focus gets its own ring; a lingering mouse :focus after a click does
+   not (so clicking through Home → Inbox → Audit leaves only ONE highlight). */
+.op-navitem:focus { outline: none; }
+.op-navitem:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .op-navsec { font-size: 10px; font-weight: 600; letter-spacing: 0.12em; color: var(--faint); padding: 16px 13px 7px; }
 /* Secondary "QA & testing" group — collapsed by default so the primary nav is
    the core loop. Reuses the section-header look but is a real toggle. */

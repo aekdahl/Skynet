@@ -155,6 +155,19 @@ export function App() {
   const agent = store.runs.find((a) => a.id === runId);
   const project = store.projects.find((p) => p.id === projectId);
 
+  // [w7] Reflect the current view (and its project / agent / run context) in the
+  // window title so browser tabs, history, and bookmarks are legible. Declared
+  // after agent/project so it can read their resolved names.
+  useEffect(() => {
+    const label = VIEW_LABEL[view] ?? "Home";
+    let ctx: string | null = null;
+    if (view === "project") ctx = project?.name ?? null;
+    else if (view === "task") ctx = agent?.name ?? null;
+    else if (view === "agentDetail")
+      ctx = store.fleet.find((f) => f.id === agentId)?.name ?? null;
+    document.title = ctx ? `${ctx} · ${label} — Skynet` : `${label} — Skynet`;
+  }, [view, project, agent, agentId, store.fleet]);
+
   // Before the first snapshot lands, render a skeleton of the shell with a real
   // connect→connected lifecycle and a retry affordance — never a dead-end
   // "Connecting…" message. The socket auto-reconnects; ConnectingShell surfaces

@@ -14,6 +14,54 @@ import { workspaceName } from "../lib/firstrun";
 import { devToolsEnabled } from "../lib/dev";
 import type { ViewName, Lens } from "../App";
 
+// The single source of truth for the sidebar highlight. Exactly one primary nav
+// key is "current" for a given router state (or none), so highlights can never
+// accumulate — every item derives its `.on` from `active === <key>`, not from
+// its own ad-hoc predicate. Detail views fold onto their parent (project →
+// Projects, agentDetail → Fleet) so the highlight is never orphaned.
+type NavKey =
+  | "home"
+  | "queue"
+  | "audit"
+  | "projects"
+  | "fleet"
+  | "integrations"
+  | "roadmap"
+  | "settings"
+  | "acceptance"
+  | "simulation";
+
+function activeNav(view: ViewName, lens: Lens): NavKey | null {
+  switch (view) {
+    // The timeline lens is a distinct Home mode; leave Home un-highlighted there.
+    case "home":
+      return lens === "timeline" ? null : "home";
+    case "queue":
+      return "queue";
+    case "audit":
+      return "audit";
+    case "projects":
+    case "project":
+      return "projects";
+    case "fleet":
+    case "agentDetail":
+      return "fleet";
+    case "integrations":
+      return "integrations";
+    case "roadmap":
+      return "roadmap";
+    case "settings":
+      return "settings";
+    case "acceptance":
+      return "acceptance";
+    case "simulation":
+      return "simulation";
+    // task detail has no home in the primary nav
+    default:
+      return null;
+  }
+}
+
 // In the desktop app the OS draws the real window controls over this bar, so we
 // drop our decorative traffic lights and let it act as the window drag region.
 const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
@@ -140,12 +188,14 @@ export function OpSidebar({
 }) {
   const { projects, runs, queue } = useStore();
   const queueCount = openQueue(queue).length;
+  // Single source of truth for the highlight — see activeNav above.
+  const active = activeNav(view, lens);
   // QA & testing surfaces (Acceptance / Simulation) are internal tooling — they
   // stay OUT of the operator nav for GA. Shown only in a dev build, or when
   // opted in on any build via localStorage `skynet.devtools=1`, or when one of
   // their views is already active (a deep link) so the highlight is never
   // orphaned. Auto-expanded when active.
-  const qaActive = view === "acceptance" || view === "simulation";
+  const qaActive = active === "acceptance" || active === "simulation";
   const devTools = devToolsEnabled();
   const showQa = devTools || qaActive;
   const [qaOpen, setQaOpen] = useState(qaActive);
@@ -187,21 +237,16 @@ export function OpSidebar({
             setLens("subway");
             setView("home");
           },
-          view === "home" && lens !== "timeline",
+          active === "home",
         )}
-        {item("Inbox", "⊙", () => setView("queue"), view === "queue", queueCount)}
-        {item("Audit", "❑", () => setView("audit"), view === "audit")}
-        {item(
-          "Projects",
-          "▤",
-          () => setView("projects"),
-          view === "projects" || view === "project",
-        )}
-        {item("Fleet", "◇", () => setView("fleet"), view === "fleet")}
-        {item("Integrations", "⑂", () => setView("integrations"), view === "integrations")}
+        {item("Inbox", "⊙", () => setView("queue"), active === "queue", queueCount)}
+        {item("Audit", "❑", () => setView("audit"), active === "audit")}
+        {item("Projects", "▤", () => setView("projects"), active === "projects")}
+        {item("Fleet", "◇", () => setView("fleet"), active === "fleet")}
+        {item("Integrations", "⑂", () => setView("integrations"), active === "integrations")}
         {/* Roadmap is dev-only (see lib/dev) — hidden from release builds. */}
-        {devTools && item("Roadmap", "◈", () => setView("roadmap"), view === "roadmap")}
-        {item("Settings", "⚙", () => setView("settings"), view === "settings")}
+        {devTools && item("Roadmap", "◈", () => setView("roadmap"), active === "roadmap")}
+        {item("Settings", "⚙", () => setView("settings"), active === "settings")}
       </nav>
       {showQa && (
         <>
@@ -215,8 +260,8 @@ export function OpSidebar({
           </button>
           {(qaOpen || qaActive) && (
             <nav className="op-nav op-nav-sub">
-              {item("Acceptance", "✓", () => setView("acceptance"), view === "acceptance")}
-              {item("Simulation", "◐", () => setView("simulation"), view === "simulation")}
+              {item("Acceptance", "✓", () => setView("acceptance"), active === "acceptance")}
+              {item("Simulation", "◐", () => setView("simulation"), active === "simulation")}
             </nav>
           )}
         </>
