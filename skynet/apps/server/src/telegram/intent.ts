@@ -31,8 +31,9 @@ export interface IntentOps {
   listTasks(ws: string): Promise<Task[]>;
   listAgents(ws: string): Promise<Agent[]>;
   listProviders(ws: string): Promise<ProviderInfo[]>;
-  listFeatures(ws: string): Promise<Feature[]>;
-  listMilestones(ws: string): Promise<Milestone[]>;
+  // Optional so a minimal fake needn't stub the roadmap reads (see buildContext).
+  listFeatures?(ws: string): Promise<Feature[]>;
+  listMilestones?(ws: string): Promise<Milestone[]>;
 }
 
 /** The grounding snapshot handed to the LLM (and validated against by parseIntent). */
@@ -202,8 +203,11 @@ export async function buildContext(operations: IntentOps, ws: string): Promise<I
     operations.listTasks(ws),
     operations.listAgents(ws),
     operations.listProviders(ws),
-    operations.listFeatures(ws),
-    operations.listMilestones(ws),
+    // Roadmap grounding is optional — a minimal caller/fake without it just gets
+    // no feature/milestone context (those intents simply won't have anything to
+    // reference), rather than crashing.
+    operations.listFeatures?.(ws) ?? [],
+    operations.listMilestones?.(ws) ?? [],
   ]);
   return {
     gates: gatesRaw

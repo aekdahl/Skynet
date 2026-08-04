@@ -141,15 +141,14 @@ export interface ControlOps {
   listTasks(ws: string): Promise<Task[]>;
   listAgents(ws: string): Promise<Agent[]>;
   listProviders(ws: string): Promise<ProviderInfo[]>;
-  listFeatures(ws: string): Promise<Feature[]>;
-  listMilestones(ws: string): Promise<Milestone[]>;
+  listFeatures?(ws: string): Promise<Feature[]>;
+  listMilestones?(ws: string): Promise<Milestone[]>;
   resolveHitl(ws: string, id: string, input: ResolveRequest, operatorId: string): Promise<HitlItem>;
   /** The real unified diff of a run's branch, for the "View diff" button.
    *  Optional so existing fakes/callers don't have to implement it. */
   runDiff?(ws: string, runId: string): Promise<{ patch: string; add: number; del: number; files: string[] }>;
   createProject(ws: string, input: CreateProjectRequest): Promise<Project>;
   createTask(ws: string, projectId: string, input: CreateTaskRequest): Promise<Task>;
-  updateTask(ws: string, taskId: string, patch: UpdateTaskRequest): Promise<Task>;
   assignTask(ws: string, projectId: string, taskId: string): Promise<TaskRun>;
   archiveTask(ws: string, projectId: string, taskId: string, archived: boolean): Promise<Task>;
   configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent>;
@@ -567,6 +566,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
             kind: action.kind,
             summary: `Unlink task ${action.taskId} — "${task?.text ?? "?"}" from its feature?`,
             run: async () => {
+              if (!operations.updateTask) throw new Error("editing tasks isn't available here");
               await operations.updateTask(ws, action.taskId!, { featureId: null });
               return `⊞ Task ${action.taskId} unlinked from its feature.`;
             },
@@ -577,6 +577,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           kind: action.kind,
           summary: `Move task ${action.taskId} — "${task?.text ?? "?"}" into feature "${feature?.name ?? action.featureId}"?`,
           run: async () => {
+            if (!operations.updateTask) throw new Error("editing tasks isn't available here");
             await operations.updateTask(ws, action.taskId!, { featureId: action.featureId ?? null });
             return `⊞ Task ${action.taskId} → feature "${feature?.name ?? action.featureId}".`;
           },
@@ -639,6 +640,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
             kind: action.kind,
             summary: `Unlink task ${action.taskId} — "${task?.text ?? "?"}" from its milestone?`,
             run: async () => {
+              if (!operations.updateTask) throw new Error("editing tasks isn't available here");
               await operations.updateTask(ws, action.taskId!, { milestoneId: null });
               return `◉ Task ${action.taskId} unlinked from its milestone.`;
             },
@@ -649,6 +651,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           kind: action.kind,
           summary: `Attach task ${action.taskId} — "${task?.text ?? "?"}" to milestone "${ms?.name ?? action.milestoneId}"?`,
           run: async () => {
+            if (!operations.updateTask) throw new Error("editing tasks isn't available here");
             await operations.updateTask(ws, action.taskId!, { milestoneId: action.milestoneId ?? null });
             return `◉ Task ${action.taskId} → milestone "${ms?.name ?? action.milestoneId}".`;
           },
