@@ -1475,9 +1475,13 @@ button.kb-done:hover { opacity: 1; }
 .proj-new-form { display: flex; flex-direction: column; gap: 10px; align-items: stretch; cursor: default; }
 
 /* ===== project edit / delete ===== */
-.projview-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
-.projview-head-main { min-width: 0; }
-.projview-head-tools { display: flex; gap: 8px; align-items: center; flex: none; }
+.projview-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 20px; flex-wrap: wrap; }
+/* Grow to fill, but never shrink below a readable width — otherwise a crowded
+   tools row would collapse the title/goal to one word per line. */
+.projview-head-main { flex: 1 1 300px; min-width: min(300px, 100%); }
+/* Let the controls wrap onto multiple lines (right-aligned) instead of squeezing
+   the title column. */
+.projview-head-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .projview-edit { display: flex; flex-direction: column; gap: 10px; }
 .projview-edit .qx-input:first-of-type { font-size: 18px; font-weight: 600; }
 .del-confirm { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--danger); }
