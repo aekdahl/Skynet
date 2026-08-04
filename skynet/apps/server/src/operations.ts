@@ -14,9 +14,13 @@ import type {
   TaskRun,
   AuditRecord,
   ConfigureRunnerRequest,
+  CreateFeatureRequest,
+  CreateMilestoneRequest,
   CreateProjectRequest,
   CreateTaskRequest,
+  Feature,
   HitlItem,
+  Milestone,
   Project,
   ProviderInfo,
   ResolveRequest,
@@ -24,20 +28,29 @@ import type {
   Agent,
   Snapshot,
   Task,
+  UpdateFeatureRequest,
+  UpdateMilestoneRequest,
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
+  UpdateWorkspaceSettingsRequest,
 } from "@skynet/shared";
-import { modelValidForProvider } from "@skynet/shared";
+import { modelValidForProvider, WorkspaceSettings } from "@skynet/shared";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
+import { normalizeCommand, rememberableRisk } from "./approval-policy.js";
 import { config, now } from "./config.js";
 import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { projectPreview, type PreviewState } from "./preview/project-preview.js";
-import { githubService } from "./github/index.js";
-import { answerProjectQuestion, answerProjectQuestionStream, type ChatTurn } from "./project-assistant.js";
+import { githubService, parseRepoRef } from "./github/index.js";
+import {
+  answerProjectQuestion,
+  type AssistantAction,
+  type ChatTurn,
+} from "./project-assistant.js";
+import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -112,37 +125,79 @@ export class Operations {
     return t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
   }
 
-  /** Repo-aware project chat assistant — answers about the project's live status
-   *  and its repository content (see project-assistant.ts). */
-  async projectAssistant(
+  /** Global Steward chat (the sidebar dock, available on every page). Runs the
+   *  full project assistant — repo-aware, proposes confirm-first actions — whenever
+   *  a single project is in scope: the page you're on (`focusProjectId`), OR, from
+   *  the workspace view, the project the conversation is clearly about (resolved
+   *  from the message + history). Only when no single project can be pinned down
+   *  does it answer workspace-wide (cross-project status, answer-only). The
+   *  returned `projectId` tells the dock which project any action targets. */
+  async stewardChat(
     workspaceId: string,
-    projectId: string,
     question: string,
     history?: ChatTurn[],
-  ): Promise<string> {
-    const project = await this.store.getProject(projectId);
-    if (!project || project.workspaceId !== workspaceId) throw new NotFoundError("Project");
-    return answerProjectQuestion(this.store, { workspaceId, project, question, history });
+    focusProjectId?: string,
+  ): Promise<{ reply: string; actions: AssistantAction[]; projectId: string | null }> {
+    // An explicit page focus wins; otherwise resolve the project from the
+    // conversation so the workspace dock can act on it, not just report on it.
+    let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
+    if (project && project.workspaceId !== workspaceId) project = null; // stale / not ours
+    if (!project) {
+      const projects = await this.store.listProjects(workspaceId);
+      const id = resolveFocusProject(projects.map((p) => ({ id: p.id, name: p.name })), question, history);
+      project = id ? projects.find((p) => p.id === id) ?? null : null;
+    }
+    if (project) {
+      const { reply, actions } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id };
+    }
+    const { reply, actions } = await askStewardWorkspace(this.store, { workspaceId, question, history });
+    return { reply, actions, projectId: null };
   }
 
-  /** Streaming form of {@link projectAssistant} — yields the answer as text
-   *  deltas. Ownership is validated before the first yield (404 stays JSON). */
-  async *projectAssistantStream(
+  /** Streaming form of {@link stewardChat} — yields the reply as text deltas, then
+   *  RETURNS the clean reply + any proposed action + the resolved project. Same
+   *  focus resolution as stewardChat, so streaming and non-streaming agree. */
+  async *stewardChatStream(
     workspaceId: string,
-    projectId: string,
     question: string,
     history?: ChatTurn[],
-  ): AsyncGenerator<string> {
-    const project = await this.store.getProject(projectId);
-    if (!project || project.workspaceId !== workspaceId) throw new NotFoundError("Project");
-    yield* answerProjectQuestionStream(this.store, { workspaceId, project, question, history });
+    focusProjectId?: string,
+  ): AsyncGenerator<string, { reply: string; actions: AssistantAction[]; projectId: string | null }> {
+    let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
+    if (project && project.workspaceId !== workspaceId) project = null;
+    if (!project) {
+      const projects = await this.store.listProjects(workspaceId);
+      const id = resolveFocusProject(projects.map((p) => ({ id: p.id, name: p.name })), question, history);
+      project = id ? projects.find((p) => p.id === id) ?? null : null;
+    }
+    if (project) {
+      const { reply, actions } = yield* askStewardStream(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id };
+    }
+    const { reply, actions } = yield* askStewardWorkspaceStream(this.store, { workspaceId, question, history });
+    return { reply, actions, projectId: null };
   }
 
   // ── reads (workspace-scoped) ──────────────────────────────────────────────
   async snapshot(ws: string): Promise<Snapshot> {
     const snap = await this.store.snapshot(ws);
     snap.providers = await withSecretAvailability(snap.providers, ws);
+    snap.defaultApprovalLevel = config.defaultApprovalLevel;
+    snap.workspaceSettings = await this.getWorkspaceSettings(ws);
     return snap;
+  }
+
+  /** The live workspace fleet policy, defaulted when never set. */
+  async getWorkspaceSettings(ws: string): Promise<WorkspaceSettings> {
+    return (await this.store.getWorkspaceSettings(ws)) ?? WorkspaceSettings.parse({ workspaceId: ws });
+  }
+
+  /** Patch the workspace fleet policy (auto-scale + cap). */
+  async updateWorkspaceSettings(ws: string, patch: UpdateWorkspaceSettingsRequest): Promise<WorkspaceSettings> {
+    const next = WorkspaceSettings.parse({ ...(await this.getWorkspaceSettings(ws)), ...patch, workspaceId: ws });
+    await this.store.putWorkspaceSettings(next);
+    return next;
   }
   listProviders(ws: string): Promise<ProviderInfo[]> {
     return this.store.listProviders().then((p) => withSecretAvailability(p, ws));
@@ -152,6 +207,12 @@ export class Operations {
   }
   listTasks(ws: string): Promise<Task[]> {
     return this.store.listTasks(ws);
+  }
+  listFeatures(ws: string): Promise<Feature[]> {
+    return this.store.listFeatures(ws);
+  }
+  listMilestones(ws: string): Promise<Milestone[]> {
+    return this.store.listMilestones(ws);
   }
   listRuns(ws: string): Promise<TaskRun[]> {
     return this.store.listRuns(ws);
@@ -218,31 +279,6 @@ export class Operations {
     return projectPreview.refresh(projectId);
   }
 
-  // ── per-run pre-merge preview ("Preview this change") ─────────────────────
-  // Preview a single run's branch (`agent/<runId>`) BEFORE it merges, so an
-  // operator can verify the change visually. Scoped to the run's workspace; the
-  // run's project must have a local folder.
-  async runPreviewState(ws: string, runId: string): Promise<PreviewState> {
-    await this.getRun(ws, runId);
-    return projectPreview.state(`run:${runId}`);
-  }
-  private async runPreviewOpts(ws: string, runId: string) {
-    const run = await this.getRun(ws, runId);
-    const project = await this.getProject(ws, run.projectId);
-    if (!project.repoPath) throw new Error("This project has no local folder to preview.");
-    return { repoPath: project.repoPath, projectId: run.projectId, branch: run.branch, workspaceId: ws };
-  }
-  async runPreviewStart(ws: string, runId: string): Promise<PreviewState> {
-    return projectPreview.startRun(runId, await this.runPreviewOpts(ws, runId));
-  }
-  async runPreviewRestart(ws: string, runId: string): Promise<PreviewState> {
-    return projectPreview.restartRun(runId, await this.runPreviewOpts(ws, runId));
-  }
-  async runPreviewStop(ws: string, runId: string): Promise<PreviewState> {
-    await this.getRun(ws, runId);
-    return projectPreview.stop(`run:${runId}`);
-  }
-
   // ── HITL ──────────────────────────────────────────────────────────────────
   /** Resolve a HITL item and deliver the decision to the agent (idempotent). */
   async resolveHitl(ws: string, hitlId: string, input: ResolveRequest, operatorId: string): Promise<HitlItem> {
@@ -275,8 +311,31 @@ export class Operations {
     // wins in the Hub; a later resolve returns the existing item, unchanged `at`).
     if (resolved && resolved.resolution?.at === resolution.at) {
       await this.orchestrator.deliver(item, resolution);
+      // Approve-and-remember: add a standing "approve always" rule for this exact
+      // command to the project, so identical future commands auto-approve. Honored
+      // only for rememberable (low/medium, non-deny) commands — boundary/high-risk
+      // ops can never become a persistent auto-approval. De-duped by command.
+      if (input.remember && input.action === "approve" && item.kind === "approval" && item.command) {
+        await this.rememberApproval(item.runId, item.command, operatorId);
+      }
     }
     return resolved ?? item;
+  }
+
+  /** Add a standing "approve always" rule for `command` to the run's project, if
+   *  the command is rememberable (low/medium, non-deny) and not already stored.
+   *  Best-effort — a non-rememberable command or a missing project is a silent
+   *  no-op (the approval itself already succeeded). */
+  private async rememberApproval(runId: string, command: string, operatorId: string): Promise<void> {
+    const cap = rememberableRisk(command);
+    if (!cap) return; // high-risk / boundary ops can never become a standing rule
+    const run = await this.store.getRun(runId);
+    const project = run ? await this.store.getProject(run.projectId) : undefined;
+    if (!project) return;
+    const norm = normalizeCommand(command);
+    if (project.approvalRules.some((r) => normalizeCommand(r.command) === norm)) return; // de-dupe
+    const rule = { id: this.uid("ar"), command: norm, riskCap: cap, createdBy: operatorId, createdAt: now() };
+    await this.hub.upsertProject({ ...project, approvalRules: [...project.approvalRules, rule] });
   }
 
   // ── agent actions ───────────────────────────────────────────────────────
@@ -333,9 +392,30 @@ export class Operations {
 
   // ── projects ──────────────────────────────────────────────────────────────
   async createProject(ws: string, input: CreateProjectRequest): Promise<Project> {
+    // "Create a new repo" binding: make the GitHub repo FIRST (outward-facing, so
+    // it's gated behind an explicit confirm in the UI) and bind the project to it.
+    // If this throws (bad token, name taken, missing scope) the project is never
+    // created — the operator sees the GitHub error, not an orphaned project. A new
+    // repo supersedes any local folder; the fresh repo is auto-cloned below.
+    let repo = input.repo;
+    let repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
+    // Cloning an EXISTING repo: the operator pastes its git URL (HTTPS/SSH) — we
+    // normalize it to the "owner/repo" slug and bind to it, so the existing
+    // repo-bound path takes over (auto-clone below via the workspace's GitHub
+    // token). A repo URL supersedes any local folder; the fresh checkout wins.
+    if (input.repoUrl) {
+      const slug = parseRepoRef(input.repoUrl);
+      if (!slug) throw new Error(`Not a recognizable GitHub repo URL: ${input.repoUrl}`);
+      repo = slug;
+      repoPath = null;
+    }
+    if (input.createRepo) {
+      const created = await githubService.createRepo(ws, input.createRepo, { description: input.goal });
+      repo = created.name; // "owner/repo"
+      repoPath = null;
+    }
     // A local repoPath that contains a .git is git-backed → Skynet auto-manages a
     // worktree per agent + the merge queue against it (desktop-first default).
-    const repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
     const project: Project = {
       id: this.uid("p"),
       workspaceId: ws,
@@ -343,10 +423,25 @@ export class Operations {
       goal: input.goal,
       runIds: [],
       status: "active",
-      autonomy: true,
+      // Governance is chosen at creation when the form sends it, else the
+      // server defaults (autonomy on; approvalLevel from SKYNET_APPROVAL_LEVEL).
+      autonomy: input.autonomy ?? true,
+      approvalLevel: input.approvalLevel ?? config.defaultApprovalLevel,
+      approvalRules: [],
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
-      repo: input.repo,
+      repo,
+      // Project-scoped agent guidance is optional at creation. Trimmed to null
+      // when blank so the "no rules" grounding path is unambiguous downstream.
+      instructions: input.instructions?.trim() || null,
+      // Optional: pin to a specific GitHub account at creation, else the default
+      // connection (chosen later in project settings).
+      githubCredentialId: input.githubCredentialId ?? null,
+      // Runner-key confinement is opt-in and set later in project settings —
+      // a fresh project runs on any workspace key until narrowed.
+      enabledRunnerCredentialIds: [],
+      // Source-of-truth write-back is opt-in (outward-facing) — enabled in settings.
+      syncSourceStatus: false,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
@@ -363,9 +458,24 @@ export class Operations {
             return { repoPath: rp, gitBacked: rp ? isGitRepo(rp) : false };
           })()
         : {};
-    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind });
+    // Normalize instructions: empty / whitespace-only clears back to null so
+    // downstream "no rules" branches don't have to distinguish "" from null.
+    // `patch.instructions === undefined` means the field is untouched.
+    const instructions =
+      patch.instructions === undefined
+        ? {}
+        : { instructions: patch.instructions?.trim() ? patch.instructions.trim() : null };
+    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     return updated;
+  }
+  /** Remove one standing "approve always" rule from a project (the operator
+   *  revoking a previously-remembered auto-approval). No-op if it's already gone. */
+  async removeApprovalRule(ws: string, id: string, ruleId: string): Promise<Project> {
+    const existing = await this.store.getProject(id);
+    if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
+    const approvalRules = (existing.approvalRules ?? []).filter((r) => r.id !== ruleId);
+    return this.hub.upsertProject({ ...existing, approvalRules });
   }
   /**
    * A repo-bound project with no local checkout is cloned in the BACKGROUND so
@@ -401,7 +511,7 @@ export class Operations {
     const base = config.reposDir ? resolvePath(config.reposDir) : resolvePath(dirname(config.dbPath), "repos");
     const dest = join(base, project.id);
     if (!existsSync(join(dest, ".git"))) {
-      await githubService.cloneRepo(ws, project.repo, dest);
+      await githubService.cloneRepo(ws, project.repo, dest, project.githubCredentialId);
     }
     return this.hub.upsertProject({ ...project, repoPath: dest, gitBacked: true });
   }
@@ -431,16 +541,65 @@ export class Operations {
       runId: null,
       autoPick: false,
       assessment: null,
-      reviewFlaggedReason: null,
+      reviewVerdict: null,
       assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,
       archived: false,
+      // Scheduling starts blank — the autonomous triage step estimates
+      // `estimatedDurationMs`; `plannedStartAt` is operator-set via Steward/UI.
+      estimatedDurationMs: null,
+      plannedStartAt: null,
+      // Grouping / roadmap linkage starts unassigned — set later via
+      // updateTask (Steward or the task detail modal).
+      featureId: null,
+      milestoneId: null,
+      // Provenance — set when importing from a source of truth (GitHub issue, …).
+      source: input.source ?? null,
     };
     return this.hub.upsertTask(task);
+  }
+
+  /** Import a GitHub-connected project's OPEN issues as backlog tasks, each linked
+   *  back to its issue (Task.source) so status changes can be written back. Skips
+   *  issues already imported (deduped by repo#number). Uses the project's GitHub
+   *  account. See docs/task-source-sync.md. */
+  async importGithubIssues(ws: string, projectId: string): Promise<{ imported: number; skipped: number }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repo) throw new Error("Project isn't bound to a GitHub repo — set its repo first.");
+    const issues = await githubService.listIssues(ws, project.repo, project.githubCredentialId);
+    const existing = await this.store.listTasks(ws);
+    const seen = new Set(
+      existing.flatMap((t) =>
+        t.projectId === projectId && t.source?.kind === "github_issue" ? [`${t.source.repo}#${t.source.number}`] : [],
+      ),
+    );
+    let imported = 0;
+    for (const iss of issues) {
+      if (seen.has(`${project.repo}#${iss.number}`)) continue;
+      await this.createTask(ws, projectId, {
+        text: iss.title,
+        description: iss.body || undefined,
+        source: { kind: "github_issue", repo: project.repo, number: iss.number, url: iss.url },
+      });
+      imported++;
+    }
+    return { imported, skipped: issues.length - imported };
   }
   async updateTask(ws: string, tid: string, patch: UpdateTaskRequest): Promise<Task> {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    // Enforce that a referenced feature/milestone exists and belongs to the
+    // task's project — cross-project linkage would produce nonsensical roadmap
+    // rollups. `null` explicitly clears the assignment.
+    if (patch.featureId !== undefined && patch.featureId !== null) {
+      const f = await this.store.getFeature(patch.featureId);
+      if (!f || f.workspaceId !== ws || f.projectId !== task.projectId) throw new NotFoundError("Feature");
+    }
+    if (patch.milestoneId !== undefined && patch.milestoneId !== null) {
+      const m = await this.store.getMilestone(patch.milestoneId);
+      if (!m || m.workspaceId !== ws || m.projectId !== task.projectId) throw new NotFoundError("Milestone");
+    }
     if (patch.assignment) {
       // Clearing eligibility back to `unassigned` is only allowed while parked in
       // backlog — otherwise a running/queued task could lose the set it left
@@ -455,7 +614,19 @@ export class Operations {
         if (unknown.length > 0) throw new NotFoundError(`Agent(s) ${unknown.join(", ")}`);
       }
     }
-    return this.hub.upsertTask({ ...task, ...patch });
+    // Auto-pick defaults to ON the FIRST time eligibility gets set (unassigned →
+    // any/agents). Once an operator has said "any agent can take this" they
+    // usually want the autonomy loop to pick it up automatically — asking them
+    // to also tick the Auto-pick box is a redundant step. Toggling between
+    // `any` ↔ `agents` doesn't re-flip (operator already made an autoPick
+    // choice), and an explicit `autoPick` in the same patch wins (user override).
+    const settingEligibility =
+      patch.assignment &&
+      patch.assignment.mode !== "unassigned" &&
+      task.assignment.mode === "unassigned";
+    const autoPickPatch: Pick<Task, "autoPick"> | Record<string, never> =
+      settingEligibility && patch.autoPick === undefined ? { autoPick: true } : {};
+    return this.hub.upsertTask({ ...task, ...patch, ...autoPickPatch });
   }
   /**
    * Manually promote (up) or demote (down) a task within its project's backlog.
@@ -477,6 +648,27 @@ export class Operations {
     backlog.splice(target, 0, task);
     for (let i = 0; i < backlog.length; i++) {
       if (rank(backlog[i]!) !== i) await this.hub.upsertTask({ ...backlog[i]!, order: i });
+    }
+    return (await this.store.getTask(tid))!;
+  }
+  /** Drag-reorder within a state (the backlog): move `tid` to sit immediately
+   *  before `beforeId` (null = end), then renumber `order` 0..n-1. Same ordering
+   *  model as moveTask, but to an arbitrary position rather than one step. */
+  async reorderTask(ws: string, tid: string, beforeId: string | null): Promise<Task> {
+    const task = await this.store.getTask(tid);
+    if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    const rank = (t: Task) => t.order ?? 0;
+    const list = (await this.store.listTasks(ws))
+      .filter((t) => t.projectId === task.projectId && t.state === task.state)
+      .sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
+    const from = list.findIndex((t) => t.id === tid);
+    if (from < 0) return task;
+    list.splice(from, 1);
+    let to = beforeId ? list.findIndex((t) => t.id === beforeId) : -1;
+    if (to < 0) to = list.length; // unknown/self/none → append
+    list.splice(to, 0, task);
+    for (let i = 0; i < list.length; i++) {
+      if (rank(list[i]!) !== i) await this.hub.upsertTask({ ...list[i]!, order: i });
     }
     return (await this.store.getTask(tid))!;
   }
@@ -558,36 +750,156 @@ export class Operations {
       await this.hub.setRunArchived(task.runId, true).catch(() => undefined);
     }
 
-    return this.hub.upsertTask({
+    const updated = await this.hub.upsertTask({
       ...task,
       state: to,
       ...(abandonsRun ? { runId: null } : {}),
-      reviewFlaggedReason: null,
+      reviewVerdict: null,
     });
+
+    // Sync the linked TaskRun's status to match — the "review → done" path with
+    // NO open HITL falls through here without going via resolveHitl → merge
+    // (which sets run.status="done"), so without this the run could stay at
+    // "review"/"running" while the board shows the card in Done. Idempotent —
+    // best-effort so a bus/persistence hiccup doesn't undo the transition.
+    if (to === "done" && !abandonsRun && updated.runId) {
+      await this.hub.runStatus(updated.runId, "done").catch(() => undefined);
+    }
+    return updated;
+  }
+
+  /**
+   * Force a task to `done` — the escape hatch when the normal review→done path
+   * fails (e.g. the merge queue chokes on a conflict, an HITL got stuck, or the
+   * run finished but the task didn't advance and there's no HITL to resolve).
+   * Bypasses HUMAN_TRANSITIONS: usable from ANY state (except archived).
+   * ALWAYS syncs run.status to "done" when a run is linked. Never merges the
+   * branch — this is a "call it done" operator override, not a work-completion
+   * signal for the runner; use the normal Approve → Done for that.
+   */
+  async forceTaskDone(ws: string, tid: string): Promise<Task> {
+    const task = await this.store.getTask(tid);
+    if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    if (task.archived) throw new NotFoundError("Task"); // archived is a soft-hide, not force-doneable
+    const updated = await this.hub.upsertTask({
+      ...task,
+      state: "done",
+      reviewVerdict: null,
+    });
+    if (updated.runId) {
+      await this.hub.runStatus(updated.runId, "done").catch(() => undefined);
+    }
+    return updated;
+  }
+
+  // ── features (task grouping) ───────────────────────────────────────────
+  async createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (input.milestoneId != null) {
+      const m = await this.store.getMilestone(input.milestoneId);
+      if (!m || m.workspaceId !== ws || m.projectId !== projectId) throw new NotFoundError("Milestone");
+    }
+    const inProject = (await this.store.listFeatures(ws)).filter((f) => f.projectId === projectId);
+    const feature: Feature = {
+      id: this.uid(`f-${this.slug(project.name)}`),
+      workspaceId: ws,
+      projectId,
+      name: input.name,
+      description: input.description?.trim() || null,
+      status: "active",
+      milestoneId: input.milestoneId ?? null,
+      order: inProject.length,
+      archived: false,
+      createdAt: now(),
+    };
+    return this.hub.upsertFeature(feature);
+  }
+  async updateFeature(ws: string, fid: string, patch: UpdateFeatureRequest): Promise<Feature> {
+    const feature = await this.store.getFeature(fid);
+    if (!feature || feature.workspaceId !== ws) throw new NotFoundError("Feature");
+    if (patch.milestoneId !== undefined && patch.milestoneId !== null) {
+      const m = await this.store.getMilestone(patch.milestoneId);
+      if (!m || m.workspaceId !== ws || m.projectId !== feature.projectId) throw new NotFoundError("Milestone");
+    }
+    return this.hub.upsertFeature({ ...feature, ...patch });
+  }
+  async deleteFeature(ws: string, fid: string): Promise<void> {
+    const feature = await this.store.getFeature(fid);
+    if (!feature || feature.workspaceId !== ws) throw new NotFoundError("Feature");
+    // Clear the featureId on any tasks that referenced it — leaving dangling
+    // pointers would render a "phantom feature" chip on the board.
+    const tasks = (await this.store.listTasks(ws)).filter((t) => t.featureId === fid);
+    for (const t of tasks) await this.hub.upsertTask({ ...t, featureId: null });
+    await this.hub.deleteFeature(fid);
+  }
+
+  // ── milestones (roadmap grouping) ──────────────────────────────────────
+  async createMilestone(ws: string, projectId: string, input: CreateMilestoneRequest): Promise<Milestone> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const inProject = (await this.store.listMilestones(ws)).filter((m) => m.projectId === projectId);
+    const milestone: Milestone = {
+      id: this.uid(`m-${this.slug(project.name)}`),
+      workspaceId: ws,
+      projectId,
+      name: input.name,
+      description: input.description?.trim() || null,
+      targetAt: input.targetAt ?? null,
+      status: "planned",
+      order: inProject.length,
+      archived: false,
+      createdAt: now(),
+    };
+    return this.hub.upsertMilestone(milestone);
+  }
+  async updateMilestone(ws: string, mid: string, patch: UpdateMilestoneRequest): Promise<Milestone> {
+    const milestone = await this.store.getMilestone(mid);
+    if (!milestone || milestone.workspaceId !== ws) throw new NotFoundError("Milestone");
+    return this.hub.upsertMilestone({ ...milestone, ...patch });
+  }
+  async deleteMilestone(ws: string, mid: string): Promise<void> {
+    const milestone = await this.store.getMilestone(mid);
+    if (!milestone || milestone.workspaceId !== ws) throw new NotFoundError("Milestone");
+    // Clear the milestoneId on features + tasks that referenced it.
+    const features = (await this.store.listFeatures(ws)).filter((f) => f.milestoneId === mid);
+    for (const f of features) await this.hub.upsertFeature({ ...f, milestoneId: null });
+    const tasks = (await this.store.listTasks(ws)).filter((t) => t.milestoneId === mid);
+    for (const t of tasks) await this.hub.upsertTask({ ...t, milestoneId: null });
+    await this.hub.deleteMilestone(mid);
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────
   async configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent> {
-    // A runner's model must be one the chosen provider actually offers — the
-    // provider catalog is the single source of truth (DEF-004). An invalid model
-    // is a 400 (fail() maps a plain Error → 400), matching the HTTP contract.
+    // Validate the provider+model pairing. ADVISORY on the model: the catalog is
+    // curated suggestions, not an allowlist, so any non-empty model is accepted for
+    // a known provider (a just-released model works without a catalog edit); only
+    // an unknown provider or an empty model is a 400 (fail() maps Error → 400).
     const invalid = modelValidForProvider(await this.store.listProviders(), input.provider, input.model);
     if (invalid) throw new Error(invalid);
+    // Honor the workspace fleet cap — the safety valve against runaway creation
+    // (a project-scoped MCP token, an over-eager script). 0 = no cap.
+    const { maxRunners } = await this.getWorkspaceSettings(ws);
+    const fleet = await this.store.listAgents(ws);
+    if (maxRunners > 0 && fleet.length >= maxRunners) {
+      throw new Error(`Fleet is at its maximum of ${maxRunners} runner${maxRunners === 1 ? "" : "s"} — raise the limit in settings or retire an idle runner.`);
+    }
     // The id is a stable, opaque handle (runs reference it as agentId); the name
     // is the human-facing label shown on the board. Keeping them separate means
     // a rename never moves the id, and two agents can share a display name
     // without colliding. Auto-name to `<provider>-<name>` when none is given.
     const id = this.uid("runner");
-    const existing = await this.store.listAgents(ws);
-    const name = input.name?.trim() || generateAgentName(input.provider, existing.map((a) => a.name));
+    const name = input.name?.trim() || generateAgentName(input.provider, fleet.map((a) => a.name));
     const runner: Agent = {
       id,
       workspaceId: ws,
       name,
       provider: input.provider,
+      credentialId: input.credentialId ?? null,
       model: input.model,
       status: "idle",
       idleSince: now(),
+      autoProvisioned: false, // an operator added this — the idle reaper leaves it alone
     };
     return this.hub.upsertAgent(runner);
   }

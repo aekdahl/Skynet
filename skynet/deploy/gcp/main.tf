@@ -74,14 +74,18 @@ resource "google_project_iam_member" "vm_ar_reader" {
 # Terraform NEVER holds the secret values — you add versions with
 # `gcloud secrets versions add` (see README / setup.sh output).
 locals {
-  secret_ids = [
-    "anthropic-api-key",
-    "telegram-bot-token",
-    "telegram-owner-chat-id",
-    "admin-password",
-    "master-key",
-    "github-token", # optional — leave a blank/placeholder version if unused
-  ]
+  secret_ids = concat(
+    [
+      "anthropic-api-key",
+      "telegram-bot-token",
+      "telegram-owner-chat-id",
+      "admin-password",
+      "master-key",
+      "github-token", # optional — leave a blank/placeholder version if unused
+    ],
+    # The Bearer credential for the public /mcp door (only when enabled).
+    var.enable_mcp_https ? ["mcp-token"] : [],
+  )
 }
 
 resource "google_secret_manager_secret" "s" {
@@ -114,8 +118,9 @@ resource "google_compute_subnetwork" "subnet" {
   network       = google_compute_network.vpc.id
 }
 
-# The ONLY ingress: Google IAP's range → SSH + the app port, to tagged VMs.
-# Everything else is denied (a custom VPC has no default allow rules).
+# The base ingress: Google IAP's range → SSH + the app port, to tagged VMs.
+# Everything else is denied (a custom VPC has no default allow rules). The human
+# UI/api/ws are reachable ONLY through this — never publicly.
 resource "google_compute_firewall" "iap_ingress" {
   name      = "${var.name_prefix}-allow-iap"
   network   = google_compute_network.vpc.id
@@ -127,6 +132,62 @@ resource "google_compute_firewall" "iap_ingress" {
     protocol = "tcp"
     ports    = ["22", tostring(var.app_port)]
   }
+}
+
+# Caddy + Let's Encrypt on :443. Two mutually-exclusive modes, one firewall:
+#   • enable_mcp_https → narrow /mcp door, locked to mcp_allowed_source_ranges.
+#   • public_ui        → whole app public (UI + /mcp), open at the edge and gated
+#                        by the app's own login/MFA + Bearer (not by IP).
+locals {
+  caddy_enabled = var.enable_mcp_https || var.public_ui
+}
+
+resource "google_compute_firewall" "mcp_https" {
+  count         = local.caddy_enabled ? 1 : 0
+  name          = "${var.name_prefix}-allow-mcp-https"
+  network       = google_compute_network.vpc.id
+  direction     = "INGRESS"
+  source_ranges = var.public_ui ? ["0.0.0.0/0"] : var.mcp_allowed_source_ranges
+  target_tags   = ["${var.name_prefix}"]
+  allow {
+    protocol = "tcp"
+    ports    = ["443"]
+  }
+}
+
+# ACME HTTP-01 on :80 from anywhere — Caddy serves ONLY the Let's Encrypt
+# challenge + a 301 to https; no MCP data on :80. Off if you use DNS-01.
+resource "google_compute_firewall" "acme_http" {
+  count         = local.caddy_enabled && var.open_acme_http ? 1 : 0
+  name          = "${var.name_prefix}-allow-acme-http"
+  network       = google_compute_network.vpc.id
+  direction     = "INGRESS"
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["${var.name_prefix}"]
+  allow {
+    protocol = "tcp"
+    ports    = ["80"]
+  }
+}
+
+# A static external IP so the /mcp DNS A-record + ACME cert are stable. Only
+# reserved when the public door is enabled; otherwise the VM keeps its ephemeral
+# egress IP (unchanged).
+resource "google_compute_address" "mcp" {
+  count        = var.enable_mcp_https && !var.public_ui ? 1 : 0
+  name         = "${var.name_prefix}-mcp-ip"
+  region       = var.region
+  address_type = "EXTERNAL"
+  depends_on   = [google_project_service.apis]
+}
+
+# public_ui points DNS at a pre-reserved static IP (<name_prefix>-public-ip,
+# created out of band so the A-record can be set before the first apply).
+# Referenced (not managed) so Terraform never churns the IP the DNS depends on.
+data "google_compute_address" "public" {
+  count  = var.public_ui ? 1 : 0
+  name   = "${var.name_prefix}-public-ip"
+  region = var.region
 }
 
 # ── The VM ──────────────────────────────────────────────────────────────────
@@ -157,10 +218,13 @@ resource "google_compute_instance" "vm" {
 
   network_interface {
     subnetwork = google_compute_subnetwork.subnet.id
-    # Ephemeral external IP for EGRESS only (reach Anthropic/Telegram/GitHub).
-    # Nothing is reachable inbound — the firewall allows only the IAP range.
-    # (For no external IP at all, add Cloud NAT — see README.)
-    access_config {}
+    # External IP for EGRESS (reach Anthropic/Telegram/GitHub). Ephemeral by
+    # default (inbound still denied except the IAP range). When the public /mcp
+    # door is enabled we pin a STATIC IP so the mcp_domain A-record + ACME cert
+    # are stable; `null` here keeps the ephemeral IP (unchanged behaviour).
+    access_config {
+      nat_ip = var.public_ui ? one(data.google_compute_address.public[*].address) : one(google_compute_address.mcp[*].address)
+    }
   }
 
   service_account {
@@ -178,6 +242,24 @@ resource "google_compute_instance" "vm" {
       admin_email      = var.admin_email
       admin_workspace  = var.admin_workspace
       telegram_control = var.telegram_control ? "true" : "false"
+      # Caddy runs in either mode (caddy_enabled). The bootstrap /mcp token is
+      # only for the narrow enable_mcp_https door — public_ui uses a Settings
+      # service token, so no deploy-time token is injected there.
+      caddy_enabled    = local.caddy_enabled
+      enable_mcp_https = var.enable_mcp_https
+      public_ui        = var.public_ui
+      mcp_domain       = var.mcp_domain
+      mcp_scopes       = var.mcp_scopes
+      caddyfile = var.public_ui ? templatefile("${path.module}/Caddyfile-public.tftpl", {
+        mcp_domain = var.mcp_domain
+        acme_email = var.acme_email
+        app_port   = var.app_port
+        }) : (var.enable_mcp_https ? templatefile("${path.module}/Caddyfile.tftpl", {
+          mcp_domain = var.mcp_domain
+          acme_email = var.acme_email
+          app_port   = var.app_port
+          mcp_ranges = join(" ", var.mcp_allowed_source_ranges)
+      }) : "")
     })
   }
 
@@ -186,6 +268,22 @@ resource "google_compute_instance" "vm" {
     precondition {
       condition     = length(var.image) > 0
       error_message = "var.image is empty — run ./setup.sh (it builds + pushes the image and passes it in), or set -var image=..."
+    }
+    # Caddy (either mode) needs a domain + ACME email for the Let's Encrypt cert.
+    precondition {
+      condition     = !local.caddy_enabled || (length(trimspace(var.mcp_domain)) > 0 && length(trimspace(var.acme_email)) > 0)
+      error_message = "enable_mcp_https / public_ui require mcp_domain and acme_email (Caddy needs them for the Let's Encrypt cert)."
+    }
+    # The narrow /mcp door additionally needs a client allowlist (and the
+    # <name_prefix>-mcp-token secret). public_ui does not — it's login/Bearer-gated.
+    precondition {
+      condition     = !var.enable_mcp_https || var.public_ui || length(var.mcp_allowed_source_ranges) > 0
+      error_message = "enable_mcp_https requires a non-empty mcp_allowed_source_ranges (and the <name_prefix>-mcp-token secret). For an open, login-gated box use public_ui instead."
+    }
+    # One TLS mode at a time — they configure Caddy differently.
+    precondition {
+      condition     = !(var.enable_mcp_https && var.public_ui)
+      error_message = "Set either enable_mcp_https (narrow /mcp door) or public_ui (whole app public) — not both."
     }
   }
 

@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import type { TaskRun, Project, Task, TaskAssignment, Agent } from "@skynet/shared";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
+import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import {
   agentsForProject,
   curStep,
+  fmtDurMs,
+  fmtWait,
   openQueue,
   projectQueue,
   STATUS_META,
@@ -14,10 +16,61 @@ import {
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
 import { ProjectDelivery, visualLeadOf } from "../components/preview";
+import { Markdown } from "../components/markdown";
 import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
+import { TimelineView } from "./home";
+import { FeaturesLens, RoadmapLens } from "./project-grouping";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
+
+// ─── Board drag & drop ───────────────────────────────────────────────────────
+// Cards are dragged between lanes instead of clicking move buttons. A drop that's
+// a legal human transition applies it; todo→ongoing starts the run; review→done
+// approves; a drop inside the backlog reorders. Illegal targets don't accept the
+// drop (validated here + enforced server-side).
+const KB_TRANSITIONS: Record<string, string[]> = {
+  backlog: ["triage"],
+  triage: ["todo", "backlog"],
+  todo: ["triage", "backlog"],
+  ongoing: ["todo"],
+  review: ["done", "todo"],
+  done: ["triage", "backlog"],
+};
+type DragInfo = { taskId: string; from: string; mode: TaskAssignment["mode"] };
+/** Whether the current drag may drop into lane `to`. Mirrors the server rules so
+ *  invalid lanes simply don't accept the drop (no bad request round-trip). */
+function laneAccepts(drag: DragInfo | null, to: string, noFleet: boolean): boolean {
+  if (!drag) return false;
+  const from = drag.from;
+  if (to === from) return from === "backlog"; // same lane → reorder (backlog only)
+  if (from === "todo" && to === "ongoing") return !noFleet; // "Start" needs an agent
+  if (from === "backlog" && to === "triage" && drag.mode === "unassigned") return false;
+  return (KB_TRANSITIONS[from] ?? []).includes(to);
+}
+const BoardDnd = createContext<{
+  drag: DragInfo | null;
+  begin: (d: DragInfo) => void;
+  end: () => void;
+  dropBeforeId: string | null;
+} | null>(null);
+
+/** Human-readable duration for the task-card ⏱ chip. Small ms values render
+ *  as seconds; up to an hour as minutes; then hours (one decimal). */
+function fmtDurationChip(ms: number): string {
+  if (ms < 60_000) return Math.max(1, Math.round(ms / 1000)) + "s";
+  if (ms < 3_600_000) return Math.round(ms / 60_000) + "m";
+  const h = ms / 3_600_000;
+  return (h < 10 ? h.toFixed(1) : Math.round(h)) + "h";
+}
+/** Relative-when-close, absolute-when-not planned-start chip. */
+function fmtStartChip(at: number): string {
+  const dSec = Math.round((at - Date.now()) / 1000);
+  const abs = Math.abs(dSec);
+  if (abs < 1) return "now";
+  if (abs >= 86400) return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return dSec >= 0 ? `in ${fmtWait(abs)}` : `${fmtWait(abs)} ago`;
+}
 
 // Agent-eligibility picker: who may take this task. `unassigned` blocks leaving
 // backlog; `any` = whole fleet; `agents` = a chosen pool (≥1). Editable in the
@@ -107,22 +160,51 @@ function TaskCard({
   const {
     queue,
     fleet,
+    providers,
+    features,
+    milestones,
     updateTask,
     deleteTask,
-    moveTask,
-    transitionTask,
-    assignTask,
-    archiveAgent,
+    forceTaskDone,
+    archiveTask,
   } = useStore();
+  // Features + milestones available to this task (same project, not archived).
+  const projFeatures = features.filter((f) => f.projectId === task.projectId && !f.archived);
+  const projMilestones = milestones.filter((m) => m.projectId === task.projectId && !m.archived);
+  const feature = task.featureId ? projFeatures.find((f) => f.id === task.featureId) : undefined;
+  // Effective milestone: the task's own, or (fallback) the feature's roll-up.
+  const effectiveMilestoneId = task.milestoneId ?? feature?.milestoneId ?? null;
+  const milestone = effectiveMilestoneId
+    ? projMilestones.find((m) => m.id === effectiveMilestoneId)
+    : undefined;
   const [editing, setEditing] = useState(false);
+  const [detail, setDetail] = useState(false); // full-detail modal for a card with no run
   const [draft, setDraft] = useState(task.text);
   const [descDraft, setDescDraft] = useState(task.description ?? "");
   const pid = task.projectId;
   const s = task.state;
-  const move = (to: string) => transitionTask(pid, task.id, to);
   const q = run ? openQueue(queue).find((it) => it.runId === run.id) : undefined;
   const openRun = run ? () => onOpenTask(run.id) : undefined;
+  // A card is always openable: a run card opens its live activity; a card with no
+  // run opens a read-only detail modal (the card itself clamps title/description).
+  const openCard = openRun ?? (() => setDetail(true));
   const noFleet = fleet.length === 0;
+  const dnd = useContext(BoardDnd);
+  const dragging = dnd?.drag?.taskId === task.id;
+  // Once a run exists, the eligibility ("any agent") is moot — surface WHO is
+  // actually doing the work: the fleet runner the run executes on. Falls back to
+  // the run's provider·model if that runner was since retired, and only reverts
+  // to the eligibility chip when nothing has picked the task up yet.
+  const runner = run?.agentId ? fleet.find((f) => f.id === run.agentId) : undefined;
+  const workedBy = runner?.name ?? (run?.agentId ? `${run.provider} · ${run.model}` : undefined);
+  const workedByPinfo = workedBy ? providers.find((p) => p.id === (runner?.provider ?? run?.provider)) : undefined;
+  // An agent has actively taken this task once it's `ongoing` (the invariant:
+  // an ongoing task always carries a live run). Lock the card so no one can
+  // move, edit, or reassign it out from under the running agent — only the
+  // run's emergency controls remain (open the card → pause/stop/resume) plus
+  // the Force-done escape hatch. `review`/`done` are human-decision states and
+  // stay interactive.
+  const locked = s === "ongoing";
 
   if (editing) {
     return (
@@ -166,30 +248,63 @@ function TaskCard({
   }
 
   return (
+    <>
+    {dnd?.dropBeforeId === task.id && <div className="kb-drop-line" aria-hidden="true" />}
     <div
-      className={"kb-card kb-card-" + s}
-      {...(openRun
-        ? {
-            role: "button",
-            tabIndex: 0,
-            onClick: openRun,
-            onKeyDown: (e: React.KeyboardEvent) =>
-              (e.key === "Enter" || e.key === " ") && openRun(),
-          }
-        : {})}
+      className={"kb-card kb-card-" + s + (dragging ? " kb-card-dragging" : "") + (locked ? " kb-card-locked" : "")}
+      role="button"
+      tabIndex={0}
+      data-card-id={task.id}
+      draggable={!locked}
+      onDragStart={(e) => {
+        // A locked (agent-owned) card never drags — no one moves it off the
+        // running agent. draggable=false already blocks it; guard here too.
+        if (locked) {
+          e.preventDefault();
+          return;
+        }
+        // Don't hijack drags that begin on an inner control (select, buttons,
+        // inputs) — those stay clickable; only the card body starts a drag.
+        if ((e.target as HTMLElement).closest("input,select,textarea,button,label,a")) {
+          e.preventDefault();
+          return;
+        }
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", task.id);
+        dnd?.begin({ taskId: task.id, from: s, mode: task.assignment.mode });
+      }}
+      onDragEnd={() => dnd?.end()}
+      onClick={openCard}
+      onKeyDown={(e: React.KeyboardEvent) => (e.key === "Enter" || e.key === " ") && openCard()}
     >
       <div className="kb-card-top">
         {run && <StatusDot status={run.status} />}
         <span className="kb-task" title={task.description ?? undefined}>{task.text}</span>
+        {task.source?.kind === "github_issue" && (
+          <a
+            className="kb-source mono"
+            href={task.source.url || undefined}
+            target="_blank"
+            rel="noreferrer"
+            onClick={stop}
+            title={`Imported from GitHub issue ${task.source.repo}#${task.source.number} — status syncs back when enabled`}
+          >
+            #{task.source.number} ↗
+          </a>
+        )}
+        {locked && (
+          <span
+            className="kb-lock"
+            title="An agent is working on this — the card is locked, so it can't be moved or edited. Open it for emergency controls (pause · stop)."
+            aria-label="Locked — an agent is working on this task"
+          >
+            🔒
+          </span>
+        )}
         {(s === "backlog" || s === "triage" || s === "todo") && (
           <span className="kb-card-tools" onClick={stop}>
-            {s === "backlog" && (
-              <>
-                <button className="kb-tool" title="Move up" onClick={() => moveTask(pid, task.id, "up")}>↑</button>
-                <button className="kb-tool" title="Move down" onClick={() => moveTask(pid, task.id, "down")}>↓</button>
-              </>
-            )}
             <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>✎</button>
+            <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
             <button className="kb-tool kb-tool-del" title="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
           </span>
         )}
@@ -215,8 +330,43 @@ function TaskCard({
       )}
 
       {s === "triage" && task.assessment && <div className="kb-assessment">{task.assessment}</div>}
-      {s === "review" && task.reviewFlaggedReason && (
-        <div className="kb-flag">⚠ flagged for you — {task.reviewFlaggedReason}</div>
+      {s === "review" && task.reviewVerdict && (
+        task.reviewVerdict.decision === "flag" ? (
+          <div className="kb-flag">⚠ flagged for you — {task.reviewVerdict.reason}</div>
+        ) : (
+          <div className="kb-review-ok">✓ reviewer approved — awaiting you</div>
+        )
+      )}
+
+      {(task.estimatedDurationMs != null || task.plannedStartAt != null) && (
+        <div className="kb-sched" onClick={stop}>
+          {task.estimatedDurationMs != null && (
+            <span className="kb-sched-chip" title="Estimated duration">⏱ {fmtDurMs(task.estimatedDurationMs)}</span>
+          )}
+          {task.plannedStartAt != null && (
+            <span className="kb-sched-chip" title={new Date(task.plannedStartAt).toLocaleString()}>
+              📅 {fmtStartChip(task.plannedStartAt)}
+            </span>
+          )}
+        </div>
+      )}
+
+      {(feature || milestone) && (
+        <div className="kb-tags" onClick={stop}>
+          {feature && (
+            <span className="kb-feat-chip" title={`Feature — ${feature.description ?? feature.name}`}>
+              ⊞ {feature.name}
+            </span>
+          )}
+          {milestone && (
+            <span
+              className="kb-ms-chip"
+              title={milestone.targetAt ? `Milestone — target ${new Date(milestone.targetAt).toLocaleDateString()}` : "Milestone"}
+            >
+              ◉ {milestone.name}
+            </span>
+          )}
+        </div>
       )}
 
       {(s === "backlog" || s === "triage" || s === "todo") ? (
@@ -228,33 +378,29 @@ function TaskCard({
         />
       ) : (
         <div className="kb-elig-ro">
-          <AgentEligibility task={task} fleet={fleet} editable={false} onChange={() => {}} />
+          {workedBy ? (
+            <span
+              className="kb-elig-chip kb-elig-agent mono"
+              title={s === "done" ? "Completed by this agent" : "Agent working on this task"}
+            >
+              <span className="kb-elig-glyph" style={workedByPinfo ? { color: workedByPinfo.color } : undefined}>
+                {workedByPinfo?.glyph ?? "◆"}
+              </span>{" "}
+              {workedBy}
+            </span>
+          ) : (
+            <AgentEligibility task={task} fleet={fleet} editable={false} onChange={() => {}} />
+          )}
         </div>
       )}
 
-      <div className="kb-actions" onClick={stop}>
-        {s === "backlog" && (
-          <button
-            className="kb-move"
-            disabled={task.assignment.mode === "unassigned"}
-            title={
-              task.assignment.mode === "unassigned"
-                ? "Pick an agent (Any, or specific agents) before moving out of backlog."
-                : "Move to Triage"
-            }
-            onClick={() => move("triage")}
-          >
-            → Triage
-          </button>
-        )}
-        {s === "triage" && (
-          <>
-            <button className="kb-move kb-move-primary" onClick={() => move("todo")}>Approve → Todo</button>
-            <button className="kb-move" onClick={() => move("backlog")}>↩ Backlog</button>
-          </>
-        )}
-        {s === "todo" && (
-          <>
+      {/* Non-move controls only — stage changes happen by dragging the card to
+          another lane (todo→ongoing starts, review→done approves, backlog drags
+          reorder). The escape hatches (Force done / Sync), Auto-pick, and Archive
+          can't be expressed as a lane move, so they stay as buttons. */}
+      {(s === "todo" || s === "ongoing" || s === "review" || s === "done") && (
+        <div className="kb-actions" onClick={stop}>
+          {s === "todo" && (
             <label className="kb-autopick" title="When on, an idle agent starts this task autonomously.">
               <input
                 type="checkbox"
@@ -263,37 +409,111 @@ function TaskCard({
               />{" "}
               Auto-pick
             </label>
+          )}
+          {(s === "ongoing" || s === "review") && (
             <button
-              className="kb-move kb-move-primary"
-              disabled={noFleet}
-              title={noFleet ? "Configure an agent in Fleet first." : "Start now on an idle agent"}
-              onClick={() => assignTask(pid, task.id)}
+              className="kb-move kb-move-force"
+              title="Skip the normal approval path — mark this task done and sync the run's status. Use when the run finished the work out-of-band or is stuck."
+              onClick={() => forceTaskDone(pid, task.id)}
             >
-              ▶ Start
+              ⚡ Force done
             </button>
-            <button className="kb-move" onClick={() => move("triage")}>↩ Triage</button>
-          </>
-        )}
-        {s === "ongoing" && (
-          <button className="kb-move" onClick={() => move("todo")}>↩ Abandon</button>
-        )}
-        {s === "review" && (
-          <>
-            <button className="kb-move kb-move-primary" onClick={() => move("done")}>✓ Approve → Done</button>
-            <button className="kb-move" onClick={() => move("todo")}>↩ Redo</button>
-          </>
-        )}
-        {s === "done" && (
-          <>
-            <button className="kb-move" onClick={() => move("triage")}>↩ Triage</button>
-            <button className="kb-move" onClick={() => move("backlog")}>↩ Backlog</button>
-            {run && (
-              <button className="kb-archive" title="Archive — hide from the board" onClick={() => archiveAgent(run.id, true)}>⤓</button>
-            )}
-          </>
-        )}
+          )}
+          {s === "done" && (
+            <>
+              {run && run.status !== "done" && (
+                <button
+                  className="kb-move kb-move-force"
+                  title={`Task is Done but the run's status is "${run.status}" — click to resync.`}
+                  onClick={() => forceTaskDone(pid, task.id)}
+                >
+                  ⚡ Sync run → done
+                </button>
+              )}
+              <button className="kb-archive" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓ Archive</button>
+            </>
+          )}
+        </div>
+      )}
       </div>
-    </div>
+      {detail && (
+        <div className="kb-detail-overlay" onClick={() => setDetail(false)}>
+          <div className="kb-detail" role="dialog" aria-modal="true" onClick={stop}>
+            <div className="kb-detail-head">
+              <span className="kb-detail-state mono">{s}</span>
+              <button className="kb-detail-close" onClick={() => setDetail(false)} aria-label="Close">
+                ×
+              </button>
+            </div>
+            <h3 className="kb-detail-title">{task.text}</h3>
+            {task.description ? (
+              <p className="kb-detail-desc">{task.description}</p>
+            ) : (
+              <p className="kb-detail-desc kb-detail-empty">No description.</p>
+            )}
+            {task.assessment && (
+              <div className="kb-detail-section">
+                <div className="kb-detail-label mono">TRIAGE</div>
+                <p className="kb-detail-assess">{task.assessment}</p>
+              </div>
+            )}
+            {task.reviewVerdict && (
+              <div className="kb-detail-section">
+                <div className="kb-detail-label mono">
+                  REVIEW ·{" "}
+                  <span className={task.reviewVerdict.decision === "flag" ? "kb-verdict-flag" : "kb-verdict-approve"}>
+                    {task.reviewVerdict.decision === "flag" ? "⚠ FLAGGED" : "✓ APPROVED"}
+                  </span>
+                </div>
+                <p className="kb-detail-assess">{task.reviewVerdict.reason}</p>
+                <div className="kb-detail-meta mono">
+                  by {task.reviewVerdict.by} · {new Date(task.reviewVerdict.at).toLocaleString()}
+                </div>
+              </div>
+            )}
+            <div className="kb-detail-section kb-detail-grouping">
+              <div className="kb-detail-label mono">GROUPING</div>
+              <label className="kb-detail-row">
+                <span className="kb-detail-row-lbl">Feature</span>
+                <select
+                  className="kb-detail-select"
+                  value={task.featureId ?? ""}
+                  onChange={(e) => updateTask(pid, task.id, { featureId: e.target.value || null })}
+                >
+                  <option value="">— none —</option>
+                  {projFeatures.map((f) => (
+                    <option key={f.id} value={f.id}>{f.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="kb-detail-row">
+                <span className="kb-detail-row-lbl">Milestone</span>
+                <select
+                  className="kb-detail-select"
+                  value={task.milestoneId ?? ""}
+                  onChange={(e) => updateTask(pid, task.id, { milestoneId: e.target.value || null })}
+                  title={
+                    feature?.milestoneId && !task.milestoneId
+                      ? `Inherits from feature — ${projMilestones.find((m) => m.id === feature.milestoneId)?.name ?? ""}`
+                      : undefined
+                  }
+                >
+                  <option value="">
+                    {feature?.milestoneId ? "— inherit from feature —" : "— none —"}
+                  </option>
+                  {projMilestones.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                      {m.targetAt ? ` · ${new Date(m.targetAt).toLocaleDateString()}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -352,112 +572,186 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
   );
 }
 
-// ─── Project assistant ──────────────────────────────────────────────────────
-// A repo-aware chat: ask about the project's current status or its content
-// (the assistant reads files like ROADMAP.md). Uses the same general-purpose
-// LLM as the rest of Skynet, via POST /api/projects/:id/chat.
+// ─── Project stats ──────────────────────────────────────────────────────────
+// Compact per-project numbers derived from the runs + tasks the store already
+// holds — no extra fetch. Shown above the kanban/timeline lens toggle. Cells
+// that have no data (vendor didn't report tokens/cost) render as "—", not 0,
+// so a missing signal doesn't look like a zeroed real one.
 
-type AsstMsg = { role: "user" | "assistant"; content: string };
-const ASSISTANT_SUGGESTIONS = [
-  "What's the current status of this project?",
-  "Summarize the roadmap",
-  "What's blocked or waiting on me?",
-];
+function fmtNum(n: number): string {
+  if (n < 1_000) return String(n);
+  if (n < 1_000_000) return (n / 1_000).toFixed(n < 10_000 ? 1 : 0) + "k";
+  return (n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0) + "M";
+}
+function fmtCost(usd: number): string {
+  if (usd < 0.01) return "<$0.01";
+  if (usd < 1) return "$" + usd.toFixed(2);
+  if (usd < 100) return "$" + usd.toFixed(2);
+  return "$" + Math.round(usd).toLocaleString();
+}
+function ProjectStats({
+  project,
+  runs,
+  tasks,
+  fleet,
+}: {
+  project: Project;
+  runs: TaskRun[];
+  tasks: Task[];
+  fleet: Agent[];
+}) {
+  const projTasks = tasks.filter((t) => t.projectId === project.id && !t.archived);
+  const projRuns = runs.filter((r) => r.projectId === project.id && !r.archived);
+  // Vendor-reported usage sums (nulls stay nulls — a missing signal, not 0).
+  let inTok = 0, outTok = 0, dur = 0, usdKnown = false, usdTotal = 0, durKnown = false;
+  for (const r of projRuns) {
+    const u = r.usage;
+    if (!u) continue;
+    inTok += u.inputTokens;
+    outTok += u.outputTokens;
+    if (u.costUsd != null) { usdKnown = true; usdTotal += u.costUsd; }
+    if (u.durationMs != null) { durKnown = true; dur += u.durationMs; }
+  }
+  // Which provider · model pairs actually ran on this project (dedup for the
+  // "Models used" tile). Empty for a fresh project — display renders "—" then.
+  const modelPairs = new Set<string>();
+  for (const r of projRuns) modelPairs.add(`${r.provider} · ${r.model}`);
+  void fleet; // reserved for future name-based grouping; unused today.
+  const activeRuns = projRuns.filter((r) => r.status === "running" || r.status === "waiting").length;
+  const doneRuns = projRuns.filter((r) => r.status === "done").length;
+  const openTasks = projTasks.filter((t) => t.state !== "done").length;
+  const doneTasks = projTasks.filter((t) => t.state === "done").length;
 
-function ProjectAssistant({ projectId }: { projectId: string }) {
-  const [open, setOpen] = useState(false);
-  const [msgs, setMsgs] = useState<AsstMsg[]>([]);
-  const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const threadRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
-  }, [msgs, busy]);
-
-  const ask = async (q: string) => {
-    const question = q.trim();
-    if (!question || busy) return;
-    setErr(null);
-    const history = msgs.slice();
-    // Add the operator line + an empty assistant bubble the stream fills in-place.
-    setMsgs([...msgs, { role: "user", content: question }, { role: "assistant", content: "" }]);
-    setInput("");
-    setBusy(true);
-    const appendToLast = (chunk: string) =>
-      setMsgs((m) => {
-        const next = m.slice();
-        const last = next[next.length - 1];
-        if (last && last.role === "assistant") next[next.length - 1] = { role: "assistant", content: last.content + chunk };
-        return next;
-      });
-    try {
-      await api.streamProjectChat(projectId, question, history, appendToLast);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Couldn't reach the assistant — try again.");
-      // Drop the empty assistant bubble on failure so the thread isn't left blank.
-      setMsgs((m) => (m[m.length - 1]?.content === "" ? m.slice(0, -1) : m));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const cells: { label: string; value: string; title?: string }[] = [
+    { label: "Tasks", value: `${openTasks} open · ${doneTasks} done` },
+    { label: "Runs", value: `${activeRuns} active · ${doneRuns} done` },
+    { label: "Tokens in", value: inTok ? fmtNum(inTok) : "—", title: "Prompt tokens sent to the model, summed across runs" },
+    { label: "Tokens out", value: outTok ? fmtNum(outTok) : "—", title: "Completion tokens the model generated" },
+    { label: "Spend", value: usdKnown ? fmtCost(usdTotal) : "—", title: "Cost in USD (vendor-reported; may be — if the provider didn't include it)" },
+    { label: "Run time", value: durKnown ? fmtDurMs(dur) : "—", title: "Cumulative wall-clock across runs (vendor-reported)" },
+    {
+      label: "Models used",
+      value: modelPairs.size ? String(modelPairs.size) : "—",
+      title: modelPairs.size ? [...modelPairs].join("\n") : "No runs yet",
+    },
+  ];
 
   return (
-    <div className="proj-assistant">
-      <button className="proj-assistant-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <span className="fold-caret">{open ? "▾" : "▸"}</span>
-        <span className="proj-assistant-title">ASK ABOUT THIS PROJECT</span>
-        <span className="proj-assistant-sub">status &amp; repo content · reads files like ROADMAP.md</span>
-      </button>
-      {open && (
-        <div className="proj-assistant-body">
-          <div className="proj-assistant-thread" ref={threadRef}>
-            {msgs.length === 0 && (
-              <div className="asst-welcome">
-                <p>Ask about this project’s current status, or what’s in the repository.</p>
-                <div className="asst-sugg">
-                  {ASSISTANT_SUGGESTIONS.map((s) => (
-                    <button key={s} className="asst-chip" onClick={() => void ask(s)}>{s}</button>
-                  ))}
-                </div>
-              </div>
-            )}
-            {msgs.map((m, i) => (
-              <div key={i} className={"asst-msg asst-" + m.role}>
-                <span className="asst-who mono">{m.role === "user" ? "you" : "assistant"}</span>
-                <div className="asst-text">{m.content}</div>
-              </div>
-            ))}
-            {busy && (
-              <div className="asst-msg asst-assistant">
-                <span className="asst-who mono">assistant</span>
-                <div className="asst-text asst-think">reading the project…</div>
-              </div>
-            )}
-          </div>
-          {err && <div className="asst-err">{err}</div>}
-          <form
-            className="asst-input"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void ask(input);
-            }}
-          >
-            <input
-              className="qx-input"
-              placeholder="Ask about status, the roadmap, a file…"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              disabled={busy}
-            />
-            <button className="btn btn-primary" type="submit" disabled={busy || !input.trim()}>
-              Ask
-            </button>
-          </form>
+    <div className="proj-stats">
+      {cells.map((c) => (
+        <div key={c.label} className="proj-stat" title={c.title}>
+          <span className="proj-stat-lbl">{c.label}</span>
+          <span className="proj-stat-val">{c.value}</span>
         </div>
-      )}
+      ))}
     </div>
+  );
+}
+
+// Which GitHub account this project's clone/push/PR use. Only meaningful once
+// extra accounts exist (added in Integrations); until then it's hidden to keep
+// the header clean. "Default" → the workspace's default GitHub connection.
+function ProjectGithubAccount({ project, onChange }: { project: Project; onChange: (id: string | null) => void }) {
+  const [accounts, setAccounts] = useState<SecretMeta[]>([]);
+  useEffect(() => {
+    api.fetchSecrets().then(({ secrets }) => setAccounts(secrets.filter((s) => s.provider === "github"))).catch(() => setAccounts([]));
+  }, []);
+  if (accounts.length === 0) return null; // nothing to choose between yet
+  return (
+    <label className="proj-approval" title="Which GitHub account this project's repos push to and are stored under (e.g. business vs personal). Manage accounts in Integrations.">
+      <span className="proj-approval-label mono">GitHub</span>
+      <select
+        className="proj-approval-select"
+        value={project.githubCredentialId ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+      >
+        <option value="">Default connection</option>
+        {accounts.map((a) => (
+          <option key={a.id} value={a.id}>{a.name || "account"} · ····{a.last4}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+// Which provider keys this project may run agents on. Empty = any workspace key
+// (the default). Narrowing it confines BOTH what the fleet assigns here and what
+// a project-scoped MCP token may spin up. Hidden until there's a real choice
+// (at least one usable key), to keep the header clean.
+function ProjectRunnerKeys({ project, onChange }: { project: Project; onChange: (ids: string[]) => void }) {
+  const { providers } = useStore();
+  const [secrets, setSecrets] = useState<SecretMeta[]>([]);
+  useEffect(() => {
+    api.fetchSecrets().then(({ secrets }) => setSecrets(secrets.filter((s) => s.provider !== "github"))).catch(() => setSecrets([]));
+  }, []);
+  const provName = (id: string) => providers.find((p) => p.id === id)?.name ?? id;
+  // Candidates = every stored runner key, plus each available provider's DEFAULT
+  // key (id === provider) that isn't already a stored row (covers env-only keys).
+  const seen = new Set(secrets.map((s) => s.id));
+  const candidates = [
+    ...secrets.map((s) => ({ id: s.id, label: s.name || `${provName(s.provider)}${s.isDefault ? " default" : " key"}`, last4: s.last4 as string | undefined })),
+    ...providers.filter((p) => p.available && !seen.has(p.id)).map((p) => ({ id: p.id, label: `${p.name} default`, last4: undefined })),
+  ];
+  if (candidates.length === 0) return null; // nothing to confine to yet
+
+  const enabled = project.enabledRunnerCredentialIds;
+  const toggle = (id: string) => onChange(enabled.includes(id) ? enabled.filter((x) => x !== id) : [...enabled, id]);
+  const summary = enabled.length === 0 ? "All keys" : `${enabled.length} key${enabled.length === 1 ? "" : "s"}`;
+  return (
+    <details className="proj-keys">
+      <summary className="proj-keys-summary" title="Which provider keys this project may run agents on. All keys = any key in the workspace; narrowing confines assignment (and project-scoped MCP tokens) to the chosen keys.">
+        <span className="proj-approval-label mono">Keys</span>
+        <span className="proj-keys-value">{summary}</span>
+      </summary>
+      <div className="proj-keys-menu">
+        <div className="proj-keys-hint">
+          {enabled.length === 0
+            ? "Runs on any workspace key. Pick keys to confine this project."
+            : "Only runners on these keys are assignable here."}
+        </div>
+        {candidates.map((c) => (
+          <label key={c.id} className="proj-keys-item">
+            <input type="checkbox" checked={enabled.includes(c.id)} onChange={() => toggle(c.id)} />
+            <span className="proj-keys-name">{c.label}</span>
+            {c.last4 && <span className="proj-keys-fp mono">····{c.last4}</span>}
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+// Import a GitHub-connected project's issues as tasks + toggle write-back of task
+// status to those issues. Only shown when the project is bound to a GitHub repo.
+function ProjectSourceSync({ project, onToggle }: { project: Project; onToggle: (on: boolean) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  if (!project.repo) return null;
+  const importIssues = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await api.importGithubIssues(project.id);
+      setNote(r.imported ? `Imported ${r.imported} issue${r.imported === 1 ? "" : "s"}${r.skipped ? ` · ${r.skipped} already here` : ""}` : "No new issues");
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setBusy(false);
+      setTimeout(() => setNote(null), 4000);
+    }
+  };
+  return (
+    <>
+      <button className="btn" disabled={busy} onClick={() => void importIssues()} title="Import this repo's open GitHub issues as tasks — each links back to its issue.">
+        {busy ? "Importing…" : "⤒ Import issues"}
+      </button>
+      <label className="proj-autonomy" title="When on, moving a task to review/done comments + closes its linked GitHub issue (reopens if it moves back out of done).">
+        <input type="checkbox" className="proj-autonomy-cb" checked={project.syncSourceStatus} onChange={(e) => onToggle(e.target.checked)} />
+        <span className="proj-autonomy-switch" aria-hidden="true" />
+        <span className="proj-autonomy-label">Sync to source</span>
+      </label>
+      {note && <span className="proj-sync-note mono">{note}</span>}
+    </>
   );
 }
 
@@ -465,23 +759,84 @@ export function ProjectView({
   project,
   now,
   onOpenTask,
+  onOpenAgent,
   onBack,
 }: {
   project: Project;
   now: number;
   onOpenTask: (id: string) => void;
+  onOpenAgent: (id: string) => void;
   onBack: () => void;
 }) {
   const {
     runs,
     queue,
     tasks,
+    features,
+    milestones,
+    fleet,
     updateProject,
+    removeApprovalRule,
     deleteProject,
     cloneProjectRepo,
     createTask,
+    createFeature,
+    updateFeature,
+    deleteFeature,
+    createMilestone,
+    updateMilestone,
+    deleteMilestone,
     archiveAgent,
+    archiveTask,
+    transitionTask,
+    assignTask,
+    reorderTask,
   } = useStore();
+  const projFeatures = features.filter((f) => f.projectId === project.id && !f.archived);
+  const projMilestones = milestones.filter((m) => m.projectId === project.id && !m.archived);
+  const noFleet = fleet.length === 0;
+  // Board drag state: the card being dragged + (for backlog reorder) the card it
+  // would drop before. Held here so lanes highlight + cards show the drop line.
+  const [drag, setDrag] = useState<DragInfo | null>(null);
+  const [dropBeforeId, setDropBeforeId] = useState<string | null>(null);
+  // The backlog card the pointer sits above → new task is inserted before it
+  // (null = end). Excludes the dragged card so it doesn't target itself.
+  const beforeIdAt = (laneEl: HTMLElement, clientY: number, draggedId: string): string | null => {
+    const cards = Array.from(laneEl.querySelectorAll<HTMLElement>("[data-card-id]")).filter(
+      (el) => el.getAttribute("data-card-id") !== draggedId,
+    );
+    for (const el of cards) {
+      const r = el.getBoundingClientRect();
+      if (clientY < r.top + r.height / 2) return el.getAttribute("data-card-id");
+    }
+    return null;
+  };
+  const performDrop = (to: string, e: React.DragEvent) => {
+    const d = drag;
+    if (!d || !laneAccepts(d, to, noFleet)) return;
+    if (to === d.from) {
+      if (d.from === "backlog") void reorderTask(project.id, d.taskId, beforeIdAt(e.currentTarget as HTMLElement, e.clientY, d.taskId));
+    } else if (d.from === "todo" && to === "ongoing") {
+      void assignTask(project.id, d.taskId); // "Start" on an idle agent
+    } else {
+      void transitionTask(project.id, d.taskId, to);
+    }
+    setDrag(null);
+    setDropBeforeId(null);
+  };
+  // Per-project lens (Kanban is the default; Timeline mirrors Home's timeline
+  // scoped to just this project; Archived shows soft-hidden tasks + restore).
+  // Persisted per-project in sessionStorage so switching back restores the
+  // last chosen lens.
+  const [lens, setLens] = useState<"kanban" | "features" | "roadmap" | "timeline" | "archived">(() => {
+    if (typeof sessionStorage === "undefined") return "kanban";
+    const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
+    return v === "timeline" || v === "archived" || v === "features" || v === "roadmap" ? v : "kanban";
+  });
+  useEffect(() => {
+    if (typeof sessionStorage !== "undefined")
+      sessionStorage.setItem(`skynet.proj.lens.${project.id}`, lens);
+  }, [lens, project.id]);
   const [cloning, setCloning] = useState(false);
   const [cloneErr, setCloneErr] = useState<string | null>(null);
   const cloneRepo = async () => {
@@ -498,30 +853,35 @@ export function ProjectView({
   const runById = new Map(runs.map((r) => [r.id, r]));
   const pa = agentsForProject(runs, project.id);
   const items = openQueue(queue).filter((q) => pa.some((a) => a.id === q.runId));
-  const archived = pa.filter((a) => a.archived);
   const lead = visualLeadOf(project, runs);
-  // The project line shows once there's a run OR any up-next task (a task in
-  // todo/triage/backlog with no run yet) — so a task landing in TODO appears as a
-  // not-started station immediately, before the first run.
-  const upNext = projectQueue(tasks, project.id);
-  const showLine = pa.length > 0 || upNext.shared.length > 0 || upNext.pinned.size > 0;
-  // A card is hidden from its column when its run has been archived (it shows in
-  // the Archived section instead).
-  const hidden = (t: Task) => !!(t.runId && runById.get(t.runId)?.archived);
+  // A card leaves the board when the TASK is archived, or (legacy) its run is —
+  // it moves to the Archived section, stays in the store, and Steward still reads it.
+  const hidden = (t: Task) => t.archived || !!(t.runId && runById.get(t.runId)?.archived);
+  const archivedTasks = tasks.filter((t) => t.projectId === project.id && hidden(t));
+  // Restore un-archives the task and, if its run was archived too, the run.
+  const restoreTask = (t: Task) => {
+    if (t.archived) void archiveTask(project.id, t.id, false);
+    const r = t.runId ? runById.get(t.runId) : undefined;
+    if (r?.archived) void archiveAgent(r.id, false);
+  };
 
   const [folded, setFolded] = useState(false);
-  const [showArchived, setShowArchived] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [name, setName] = useState(project.name);
   const [goal, setGoal] = useState(project.goal);
+  // The "house rules" — rides every agent prompt on this project (and Steward's
+  // grounding). Kept as its own local state so Cancel restores the pristine
+  // value if the operator opened the editor and changed their mind.
+  const [instructions, setInstructions] = useState(project.instructions ?? "");
 
   useEffect(() => {
     setName(project.name);
     setGoal(project.goal);
+    setInstructions(project.instructions ?? "");
     setFolded(false);
-  }, [project.id, project.name, project.goal]);
+  }, [project.id, project.name, project.goal, project.instructions]);
 
   return (
     <section className="projview">
@@ -531,18 +891,48 @@ export function ProjectView({
       {editing ? (
         <div className="projview-edit">
           <input className="qx-input" value={name} onChange={(e) => setName(e.target.value)} />
-          <textarea className="qx-input" rows={2} value={goal} onChange={(e) => setGoal(e.target.value)} />
+          <textarea
+            className="qx-input"
+            rows={2}
+            placeholder="Goal — what does done look like?"
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+          />
+          <label className="projview-instructions-label mono">
+            Instructions <span className="projview-instructions-hint">— house rules every agent on this project sees. Packages to use, code structure, conventions. Markdown OK.</span>
+          </label>
+          <textarea
+            className="qx-input projview-instructions"
+            rows={8}
+            placeholder={"e.g.\n- Use the @acme/agents SDK for all agent scaffolding.\n- Follow src/agents/<name>/{index.ts,tools.ts,prompt.md}.\n- Reuse buildTool() from lib/tools; don't hand-roll tool schemas."}
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+          />
           <div className="qx-row">
             <button
               className="btn btn-primary"
               onClick={() => {
-                updateProject(project.id, { name: name.trim() || project.name, goal: goal.trim() });
+                // Trim to detect real content; blank clears the field on the server.
+                const nextInstructions = instructions.trim() ? instructions.trim() : null;
+                updateProject(project.id, {
+                  name: name.trim() || project.name,
+                  goal: goal.trim(),
+                  instructions: nextInstructions,
+                });
                 setEditing(false);
               }}
             >
               Save
             </button>
-            <button className="btn btn-ghost" onClick={() => { setName(project.name); setGoal(project.goal); setEditing(false); }}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setName(project.name);
+                setGoal(project.goal);
+                setInstructions(project.instructions ?? "");
+                setEditing(false);
+              }}
+            >
               Cancel
             </button>
           </div>
@@ -552,6 +942,15 @@ export function ProjectView({
           <div className="projview-head-main">
             <h2>{project.name}</h2>
             <p>{project.goal}</p>
+            {project.instructions && (
+              <button
+                className="proj-instructions-chip mono"
+                title={project.instructions}
+                onClick={() => setEditing(true)}
+              >
+                ⓘ Instructions active — click to view/edit
+              </button>
+            )}
             {project.repoPath && (
               <div className="mono proj-repo-line" title={project.repoPath}>
                 {project.gitBacked ? "◈ git" : "📁"} {project.repoPath}
@@ -574,6 +973,21 @@ export function ProjectView({
             )}
           </div>
           <div className="projview-head-tools">
+            <label
+              className="proj-approval"
+              title="How much an agent may run without asking. Dangerous or outward-facing steps (git push, merge, infra, destructive commands) always ask, regardless of this setting."
+            >
+              <span className="proj-approval-label mono">Approvals</span>
+              <select
+                className="proj-approval-select"
+                value={project.approvalLevel ?? "trusted"}
+                onChange={(e) => updateProject(project.id, { approvalLevel: e.target.value })}
+              >
+                <option value="manual">Manual · ask for everything</option>
+                <option value="assisted">Assisted · auto-approve low-risk</option>
+                <option value="trusted">Trusted · auto-approve low + medium</option>
+              </select>
+            </label>
             <label className="proj-autonomy" title="When on, agents autonomously triage backlog items, pick up auto-pick tasks, and review finished work.">
               <input
                 type="checkbox"
@@ -584,6 +998,9 @@ export function ProjectView({
               <span className="proj-autonomy-switch" aria-hidden="true" />
               <span className="proj-autonomy-label">Autonomy</span>
             </label>
+            <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
+            <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
+            <ProjectSourceSync project={project} onToggle={(on) => updateProject(project.id, { syncSourceStatus: on })} />
             {project.repoPath && (
               <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
                 ▶ Preview app
@@ -603,13 +1020,31 @@ export function ProjectView({
         </div>
       )}
 
+      {(project.approvalRules?.length ?? 0) > 0 && (
+        <div className="proj-approval-rules">
+          <span className="proj-approval-rules-label mono">Always allowed</span>
+          {project.approvalRules!.map((r) => (
+            <span key={r.id} className="approval-rule-chip mono" title={`auto-approved (${r.riskCap}-risk) in this project`}>
+              <span className="approval-rule-cmd">$ {r.command}</span>
+              <button
+                className="approval-rule-x"
+                title="Revoke — this command will ask again"
+                onClick={() => removeApprovalRule(project.id, r.id)}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
       {lead && (
         <div className="proj-delivery">
           <button className="proj-delivery-head" onClick={() => setFolded((f) => !f)}>
             <span className="fold-caret">{folded ? "▸" : "▾"}</span>
             <span className="proj-delivery-title">LIVE PREVIEW</span>
             <span className="proj-delivery-sub">
-              aimed delivery · {lead.status === "done" ? "shipped" : "building"} · {lead.name}
+              merged work · {lead.status === "done" ? "shipped" : "building"} · {lead.name}
             </span>
           </button>
           {!folded && (
@@ -636,19 +1071,134 @@ export function ProjectView({
         </div>
       )}
 
-      {showLine && (
+      {agentsForProject(runs, project.id).length > 0 && (
         <div className="projview-line">
           <div className="panel-head">PROJECT LINE</div>
-          <SwDiagram project={project} onOpenTask={onOpenTask} />
+          <SwDiagram project={project} onOpenTask={onOpenTask} onOpenAgent={onOpenAgent} />
         </div>
       )}
 
-      <div className="kb-cols kb-cols-6">
+      <ProjectStats project={project} runs={runs} tasks={tasks} fleet={fleet} />
+
+      <div className="projview-lens">
+        <div className="lens-switch">
+          {(["kanban", "features", "roadmap", "timeline", "archived"] as const).map((id) => (
+            <button
+              key={id}
+              className={"lens-btn" + (lens === id ? " on" : "")}
+              onClick={() => setLens(id)}
+            >
+              {id === "kanban"
+                ? "Kanban"
+                : id === "features"
+                ? "Features"
+                : id === "roadmap"
+                ? "Roadmap"
+                : id === "timeline"
+                ? "Timeline"
+                : "Archived"}
+              {id === "features" && projFeatures.length > 0 && (
+                <span className="lens-btn-count">{projFeatures.length}</span>
+              )}
+              {id === "roadmap" && projMilestones.length > 0 && (
+                <span className="lens-btn-count">{projMilestones.length}</span>
+              )}
+              {id === "archived" && archivedTasks.length > 0 && (
+                <span className="lens-btn-count">{archivedTasks.length}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {lens === "features" ? (
+        <FeaturesLens
+          project={project}
+          features={projFeatures}
+          milestones={projMilestones}
+          tasks={tasks.filter((t) => t.projectId === project.id && !hidden(t))}
+          runs={runById}
+          onOpenTask={onOpenTask}
+          onCreate={(name, description) => void createFeature(project.id, name, description || undefined)}
+          onUpdate={(fid, patch) => void updateFeature(fid, patch)}
+          onDelete={(fid) => void deleteFeature(fid)}
+        />
+      ) : lens === "roadmap" ? (
+        <RoadmapLens
+          project={project}
+          features={projFeatures}
+          milestones={projMilestones}
+          tasks={tasks.filter((t) => t.projectId === project.id && !hidden(t))}
+          runs={runById}
+          onOpenTask={onOpenTask}
+          onCreate={(name, description, targetAt) =>
+            void createMilestone(project.id, name, description || undefined, targetAt)
+          }
+          onUpdate={(mid, patch) => void updateMilestone(mid, patch)}
+          onDelete={(mid) => void deleteMilestone(mid)}
+        />
+      ) : lens === "timeline" ? (
+        <div className="projview-timeline">
+          <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
+        </div>
+      ) : lens === "archived" ? (
+        <div className="projview-archived">
+          {archivedTasks.length === 0 ? (
+            <div className="kb-empty">No archived tasks. Archive a task from its ⤓ button to soft-hide it — it stays in the store and can be restored from here.</div>
+          ) : (
+            <div className="kb-archive-list">
+              {archivedTasks.map((t) => {
+                const r = t.runId ? runById.get(t.runId) : undefined;
+                return (
+                  <div key={t.id} className="kb-archive-row">
+                    <button
+                      className="kb-archive-name"
+                      title={r ? "Open the run" : "Archived task"}
+                      disabled={!r}
+                      onClick={() => r && onOpenTask(r.id)}
+                    >
+                      {t.state === "done" ? "✓ " : ""}
+                      {t.text}
+                    </button>
+                    <span className="kb-archive-branch mono">{t.state}{r ? " · " + r.branch : ""}</span>
+                    <button className="btn btn-ghost btn-sm" onClick={() => restoreTask(t)}>
+                      Restore
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : (
+      <BoardDnd.Provider value={{ drag, begin: setDrag, end: () => { setDrag(null); setDropBeforeId(null); }, dropBeforeId }}>
+      <div className={"kb-cols kb-cols-6" + (drag ? " kb-dragging" : "")}>
         {TASK_STATES.map((st) => {
           const colTasks = tasksInState(tasks, project.id, st).filter((t) => !hidden(t));
           const meta = TASK_STATE_META[st];
+          const accepts = laneAccepts(drag, st, noFleet);
           return (
-            <div className={"kb-col kb-col-" + st} key={st}>
+            <div
+              className={
+                "kb-col kb-col-" + st +
+                (drag && accepts ? " kb-col-drop-ok" : "") +
+                (drag && !accepts && drag.from !== st ? " kb-col-drop-no" : "")
+              }
+              key={st}
+              onDragOver={(e) => {
+                if (!accepts) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                if (st === "backlog" && drag!.from === "backlog") {
+                  setDropBeforeId(beforeIdAt(e.currentTarget, e.clientY, drag!.taskId));
+                }
+              }}
+              onDrop={(e) => {
+                if (!accepts) return;
+                e.preventDefault();
+                performDrop(st, e);
+              }}
+            >
               <div className="kb-head" style={{ color: meta.color }}>
                 <span className="kb-pip" style={{ background: meta.color }} aria-hidden="true" />
                 {meta.label}
@@ -663,71 +1213,42 @@ export function ProjectView({
                     onOpenTask={onOpenTask}
                   />
                 ))}
+                {st === "backlog" && drag?.from === "backlog" && dropBeforeId === null && <div className="kb-drop-line" aria-hidden="true" />}
                 {st === "backlog" && <AddTaskCard onAdd={(text, description) => createTask(project.id, text, description)} />}
-                {colTasks.length === 0 && st !== "backlog" && <div className="kb-empty">No tasks</div>}
+                {colTasks.length === 0 && st !== "backlog" && <div className="kb-empty">{accepts ? "Drop here" : "No tasks"}</div>}
               </div>
             </div>
           );
         })}
       </div>
-
-      <ProjectAssistant projectId={project.id} />
-
-      {archived.length > 0 && (
-        <div className="kb-archive-sec">
-          <button className="kb-archive-head" onClick={() => setShowArchived((s) => !s)}>
-            {showArchived ? "▾" : "▸"} ARCHIVED · {archived.length}
-          </button>
-          {showArchived && (
-            <div className="kb-archive-list">
-              {archived.map((a) => (
-                <div key={a.id} className="kb-archive-row">
-                  <button className="kb-archive-name" onClick={() => onOpenTask(a.id)}>
-                    {a.status === "done" ? "✓ " : ""}
-                    {a.name}
-                  </button>
-                  <span className="kb-archive-branch mono">{a.branch}</span>
-                  <button className="btn btn-ghost btn-sm" onClick={() => archiveAgent(a.id, false)}>
-                    Restore
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+      </BoardDnd.Provider>
       )}
 
-      {previewOpen && <LivePreviewModal id={project.id} kind="project" title={"Live preview · " + project.name} onClose={() => setPreviewOpen(false)} />}
+
+      {previewOpen && <LivePreviewModal id={project.id} title={"Live preview · " + project.name} onClose={() => setPreviewOpen(false)} />}
     </section>
   );
 }
 
 // ─── Live preview modal (Phase-1 v0) ────────────────────────────────────────
-// Runs a web app (server-side, sandboxed) and iframes it here. Two callers:
-//   • PROJECT — the integration branch, refreshing as the fleet merges.
-//   • RUN ("Preview this change") — a single run's branch, PRE-merge, so an
-//     operator can verify a change before approving it. Pinned to the branch.
+// Runs the PROJECT's web app (server-side, sandboxed) and iframes it here — the
+// integration branch, refreshing as the fleet merges. It shows MERGED work only:
+// an in-flight run's changes appear once that run is approved and merged (there's
+// no per-run pre-merge preview — project level is the single, unambiguous view).
 // Polls status while open; the app runs on its own localhost origin so its code
 // can't reach the console. See docs/live-preview.md.
 const DEVICES: Record<string, number | null> = { Desktop: null, Tablet: 768, Mobile: 390 };
 
 export function LivePreviewModal({
   id,
-  kind,
   title,
   onClose,
 }: {
   id: string;
-  kind: "project" | "run";
   title: string;
   onClose: () => void;
 }) {
-  // Bind the four preview actions to the right surface (project vs run). Kept in
-  // a ref so the poll effect can stay keyed on the stable [id, kind].
-  const ctl =
-    kind === "run"
-      ? { status: () => api.runPreviewStatus(id), start: () => api.runPreviewStart(id), stop: () => api.runPreviewStop(id), restart: () => api.runPreviewRestart(id) }
-      : { status: () => api.previewStatus(id), start: () => api.previewStart(id), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
+  const ctl = { status: () => api.previewStatus(id), start: () => api.previewStart(id), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
   const ctlRef = useRef(ctl);
   ctlRef.current = ctl;
 
@@ -757,7 +1278,7 @@ export function LivePreviewModal({
       alive = false;
       clearInterval(iv);
     };
-  }, [id, kind]);
+  }, [id]);
 
   // Reserve right-hand board space while docked (removed on close / when modal).
   useEffect(() => {
@@ -785,6 +1306,16 @@ export function LivePreviewModal({
     window.addEventListener("pointerup", up);
   };
 
+  // Keep the log view pinned to the newest line as output streams in — but only
+  // when the operator is already near the bottom, so it never yanks the view
+  // while they've scrolled up to read an earlier error.
+  const logRef = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) el.scrollTop = el.scrollHeight;
+  }, [st?.logs, showLogs]);
+
   const width = DEVICES[device];
   const live = st?.status === "live" && st.url;
 
@@ -792,6 +1323,12 @@ export function LivePreviewModal({
       <div className={"lp-modal lp-mode-" + mode} onClick={(e) => e.stopPropagation()}>
         <div className="lp-bar">
           <span className="lp-title">{title}</span>
+          <span
+            className="lp-scope mono"
+            title="Reflects the integration branch — merged changes only. An in-flight run's work appears here after it's approved and merged; unmerged/uncommitted changes aren't shown."
+          >
+            merged · integration branch
+          </span>
           <span className={"lp-status lp-status-" + (st?.status ?? "idle")}>
             {st?.status === "live" ? "● live" : st?.status === "starting" ? "◐ starting…" : st?.status === "failed" ? "✕ failed" : st?.status ?? "…"}
           </span>
@@ -836,7 +1373,7 @@ export function LivePreviewModal({
             </div>
           )}
           {showLogs && (
-            <pre className="lp-logs mono">{(st?.logs ?? []).join("\n") || "(no output yet)"}</pre>
+            <pre ref={logRef} className="lp-logs mono">{(st?.logs ?? []).join("\n") || "(no output yet)"}</pre>
           )}
         </div>
       </div>

@@ -49,6 +49,29 @@ export async function registerGithubRoutes(app: FastifyInstance): Promise<void> 
     }
   });
 
+  // The repos this connection can bind a project to — fetched LIVE so a stale
+  // connect-time snapshot (from before the repo list was paginated, or before
+  // newer repos existed) no longer hides repos in the project-creation picker.
+  app.get<{ Querystring: { credentialId?: string } }>("/api/github/repos", async (req, reply) => {
+    try {
+      // ?credentialId=<github cred> lists THAT account's repos (the picker for a
+      // business/personal account); omitted → the workspace default connection.
+      return { repos: await githubService.reposForCredential(req.principal!.workspaceId, req.query.credentialId) };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
+  // Accounts a new repo can be created under (the user + their orgs), for the
+  // "create new repo" flow in project creation.
+  app.get("/api/github/owners", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      return { owners: await githubService.listRepoOwners(req.principal!.workspaceId) };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
   // Record an installation after the App is installed on GitHub.
   app.put("/api/github", async (req: FastifyRequest, reply: FastifyReply) => {
     const body = ConnectGithubRequest.safeParse(req.body);

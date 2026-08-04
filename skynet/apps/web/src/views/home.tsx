@@ -12,9 +12,9 @@ import {
   KIND_META,
   modName,
   openQueue,
-  projectQueue,
   providerOf,
   providerInfo,
+  projectShipped,
   providerReadiness,
   runnerIdleLabel,
   runnerName,
@@ -183,6 +183,7 @@ export function HomeView({
   setLens,
   now,
   onOpenTask,
+  onOpenAgent,
   onOpenProject,
   onCreate,
   onGoInbox,
@@ -194,6 +195,7 @@ export function HomeView({
   setLens: (l: Lens) => void;
   now: number;
   onOpenTask: (id: string) => void;
+  onOpenAgent: (id: string) => void;
   onOpenProject: (id: string) => void;
   onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
   onGoInbox: () => void;
@@ -303,7 +305,7 @@ export function HomeView({
       </div>
       <div className="home-lens">
         {lens === "subway" && (
-          <SubwayView now={now} onOpenTask={onOpenTask} onOpenProject={onOpenProject} />
+          <SubwayView now={now} onOpenTask={onOpenTask} onOpenAgent={onOpenAgent} onOpenProject={onOpenProject} />
         )}
         {lens === "timeline" && <TimelineView now={now} onOpenTask={onOpenTask} />}
         {lens === "ledger" && (
@@ -426,10 +428,12 @@ function LedgerView({
 function SubwayView({
   now,
   onOpenTask,
+  onOpenAgent,
   onOpenProject,
 }: {
   now: number;
   onOpenTask: (id: string) => void;
+  onOpenAgent: (id: string) => void;
   onOpenProject: (id: string) => void;
 }) {
   const { runs, tasks, queue, projects, modules } = useStore();
@@ -443,7 +447,9 @@ function SubwayView({
       <div className="sw-list">
         {projects.map((p) => {
           const pa = agentsForProject(runs, p.id);
-          const allDone = pa.length > 0 && pa.every((a) => a.status === "done");
+          // "Shipped" = every task done (see projectShipped) — not merely every
+          // run done, else an unstarted backlog would still badge "shipped".
+          const allDone = projectShipped(tasks, p.id);
           const q = oq.find((it) => pa.some((a) => a.id === it.runId));
           const conflictAgent = pa.find(
             (a) =>
@@ -467,12 +473,9 @@ function SubwayView({
                 o.modules.includes(mod),
             ),
           );
-          const backlog = tasks.filter((t) => t.projectId === p.id && !t.runId).length;
-          // Show the line once there's a run OR any up-next task (todo/triage/
-          // backlog, no run yet) — a task landing in TODO becomes a not-started
-          // station immediately, not an empty-state placeholder.
-          const upNext = projectQueue(tasks, p.id);
-          const hasLine = pa.length > 0 || upNext.shared.length > 0 || upNext.pinned.size > 0;
+          // Unstarted work: no run yet AND not already done (a force-done task has
+          // no runId but isn't backlog — counting it would contradict "✓ shipped").
+          const backlog = tasks.filter((t) => t.projectId === p.id && !t.runId && t.state !== "done").length;
           return (
             <div key={p.id} className={"sw-proj" + (allDone ? " sw-proj-done" : "")}>
               <div className="sw-proj-head">
@@ -494,8 +497,8 @@ function SubwayView({
                 )}
                 {allDone && <span className="expill expill-done">✓ shipped</span>}
               </div>
-              {hasLine ? (
-                <SwDiagram project={p} onOpenTask={onOpenTask} />
+              {pa.length > 0 ? (
+                <SwDiagram project={p} onOpenTask={onOpenTask} onOpenAgent={onOpenAgent} />
               ) : tasks.some((t) => t.projectId === p.id) ? (
                 <EmptyState
                   compact
@@ -560,9 +563,7 @@ function RosterView({
                   <span className="rs-task">{a.name}</span>
                   <span className="rs-hb mono">
                     ♥{" "}
-                    {q
-                      ? fmtWait(waitedSecs(q, now))
-                      : Math.floor(heartbeatSecs(a, now)) + "s"}{" "}
+                    {q ? fmtWait(waitedSecs(q, now)) : fmtWait(heartbeatSecs(a, now))}{" "}
                     · {a.branch}
                   </span>
                 </button>
@@ -636,14 +637,39 @@ function RosterView({
 
 // ─── Timeline lens ───────────────────────────────────────────────────────────
 
-function TimelineView({
+// Exported so the project page can reuse it in single-lane mode via `projectId`:
+// the same layout, deps, and legend the workspace view uses — just filtered to
+// one project's lane and one project's cross-run deps. Kept in-file to avoid
+// duplicating the axis/tick/bar math (only place that owns it).
+export function TimelineView({
   now,
   onOpenTask,
+  projectId,
+  hideHeader,
 }: {
   now: number;
   onOpenTask: (id: string) => void;
+  /** When set, filter to just this project's lane (used by the project page). */
+  projectId?: string;
+  /** When true, drop the "Today's run" panel head (the project page shows its
+   *  own lens toggle instead). */
+  hideHeader?: boolean;
 }) {
-  const { runs, queue, projects, deps, fleet } = useStore();
+  const store = useStore();
+  const runs = store.runs;
+  const queue = store.queue;
+  const projects = projectId
+    ? store.projects.filter((p) => p.id === projectId)
+    : store.projects;
+  const deps = projectId
+    // Only cross-run deps within THIS project (a workspace-wide dep on a run in
+    // another project's lane would render with no target here).
+    ? store.deps.filter((d) =>
+        runs.some((r) => r.id === d.fromAgentId && r.projectId === projectId) &&
+        runs.some((r) => r.id === d.toAgentId && r.projectId === projectId),
+      )
+    : store.deps;
+  const fleet = store.fleet;
   const oq = openQueue(queue);
   const W = 185;
   const NOW = 144;
@@ -680,10 +706,12 @@ function TimelineView({
 
   return (
     <section className="vw">
-      <ViewHead
-        title="Today's run"
-        sub="What each agent has been doing, where it stalled, and where it's headed"
-      />
+      {!hideHeader && (
+        <ViewHead
+          title="Today's run"
+          sub="What each agent has been doing, where it stalled, and where it's headed"
+        />
+      )}
       <div className="tl-wrap">
         <div className="tl-axis">
           {ticks.map((t) => (

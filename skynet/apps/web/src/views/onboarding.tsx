@@ -1,25 +1,23 @@
 // ─── First-run setup ──────────────────────────────────────────────────────
 // Shown once for a fresh, empty workspace (App gates on it). Sets the workspace
-// up against the REAL backend: name it (local), connect GitHub (reuses the
-// Integrations connect flow → /api/github), review the module map (read-only —
-// it's defined by .skynet/modules.json in the repo), and configure the fleet
+// up against the REAL backend: name it (local), review the module map (read-only
+// — it's defined by .skynet/modules.json in the repo), and configure the fleet
 // (creates runners → /api/fleet/runners). No workspace-create API is needed.
+// GitHub is deliberately NOT a wizard step — Integrations owns that connect flow
+// post-onboarding, so a first-run user never meets it mid-wizard.
 
 import { useEffect, useState } from "react";
-import type { GithubConnection, GithubRepo, ProviderInfo } from "@skynet/shared";
+import type { ProviderInfo } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import * as api from "../lib/client";
-import { setOnboarded, setWorkspaceName } from "../lib/firstrun";
+import { operatorHandle, setOnboarded, setOperatorHandle, setWorkspaceName, workspaceName } from "../lib/firstrun";
 import { PrimaryButton } from "../components/empty";
-import { GithubConnect, emptyConnection } from "./integrations";
 
-const STEPS = ["Workspace", "GitHub", "Module map", "Fleet"];
+const STEPS = ["Workspace", "Module map", "Fleet"];
 
 // Right-column context for each step — the "why" and what happens next, so the
 // form column stays focused on the single input the step asks for.
 const STEP_NOTES = [
   "Name your team's mission control. Every project, agent, and decision lives under it — you can rename it later.",
-  "Optional now. Runs branch, push, and open PRs through least-privilege tokens. You can also connect GitHub later from Integrations.",
   "Read-only here. The map comes from .skynet/modules.json in your repo and powers conflict detection and the allowlist.",
   "Each row becomes an agent you can assign work to — same provider on different models is fine. Agents are auto-named; add, retire, rename, or retune the fleet anytime.",
 ];
@@ -38,28 +36,15 @@ function Mark() {
 export function Onboarding({ onDone }: { onDone: () => void }) {
   const store = useStore();
   const [step, setStep] = useState(0);
-  const [workspace, setWorkspace] = useState("");
-  const [operator, setOperator] = useState("");
+  // Prefill from anything a previous setup already saved, so re-running the
+  // wizard shows the current values rather than blank fields.
+  const [workspace, setWorkspace] = useState(() => workspaceName());
+  const [operator, setOperator] = useState(() => operatorHandle());
   // The fleet to stand up: one row per agent (provider + model). Multiple rows
   // may share a provider on different models. Seeded with one row on the first
   // credentialed provider once the catalog is available.
   const [fleetRows, setFleetRows] = useState<{ provider: string; model: string }[]>([]);
-  const [github, setGithub] = useState<GithubConnection>(emptyConnection);
-  const [brokerConfigured, setBrokerConfigured] = useState(false);
   const [busy, setBusy] = useState(false);
-
-  // Load any existing GitHub connection so the connect step reflects reality.
-  useEffect(() => {
-    let cancelled = false;
-    api.fetchGithub().then(({ connection, brokerConfigured }) => {
-      if (cancelled) return;
-      setGithub(connection);
-      setBrokerConfigured(brokerConfigured);
-    }).catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const firstReadyProvider = (): ProviderInfo | undefined =>
     store.providers.find((p) => p.available !== false) ?? store.providers[0];
@@ -76,25 +61,16 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const valid = [
     workspace.trim().length > 0,
     true,
-    true,
     fleetRows.length > 0 && fleetRows.every((r) => r.model),
   ];
   const last = step === STEPS.length - 1;
   const canNext = valid[step];
 
-  const onConnected = async (installation: GithubConnection["installation"], repos: GithubRepo[]) => {
-    if (!installation) return;
-    setGithub(await api.connectGithub({ installation, repos }));
-  };
-  const onDisconnect = async () => {
-    await api.disconnectGithub();
-    setGithub(emptyConnection());
-  };
-
   const finish = async () => {
     setBusy(true);
     try {
       setWorkspaceName(workspace.trim());
+      setOperatorHandle(operator.trim());
       // Stand up the fleet: one runner per row. Names are auto-assigned
       // server-side (<provider>-<name>); the operator renames later in Fleet.
       for (const row of fleetRows) {
@@ -193,14 +169,6 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
         {step === 1 && (
           <>
-            <h1 className="ob-h">Connect GitHub</h1>
-            <p className="ob-sub">Install the Skynet App on the repos your fleet will work in — runs branch, push, and open PRs through least-privilege tokens. You can also do this later from Integrations.</p>
-            <GithubConnect github={github} brokerConfigured={brokerConfigured} onConnected={onConnected} onChanged={setGithub} onDisconnect={onDisconnect} />
-          </>
-        )}
-
-        {step === 2 && (
-          <>
             <h1 className="ob-h">Your module map</h1>
             <p className="ob-sub">
               Skynet shows your codebase as modules, not file paths. This map is defined by{" "}
@@ -220,7 +188,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           </>
         )}
 
-        {step === 3 && (
+        {step === 2 && (
           <>
             <h1 className="ob-h">Configure your fleet</h1>
             <p className="ob-sub">Add the agents Skynet can spin up — a provider and model each. Add several (even the same provider on different models); rename, retire, or tune them anytime in Fleet.</p>

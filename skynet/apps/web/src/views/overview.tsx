@@ -1,6 +1,7 @@
-import { useState } from "react";
-import type { Project } from "@skynet/shared";
+import { useEffect, useState } from "react";
+import type { ApprovalLevel, GithubOwner, Project } from "@skynet/shared";
 import { useStore } from "../lib/store";
+import * as api from "../lib/client";
 import {
   agentsForProject,
   backlogTasks,
@@ -8,6 +9,7 @@ import {
   fmtWait,
   modName,
   openQueue,
+  projectShipped,
   waitedSecs,
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
@@ -29,7 +31,9 @@ function ProjectCard({
   const waiting = openQueue(queue).filter((q) =>
     pa.some((a) => a.id === q.runId),
   );
-  const allDone = pa.length > 0 && pa.every((a) => a.status === "done");
+  // "Shipped" = every task done (see projectShipped), not merely every run done —
+  // an unstarted backlog would otherwise badge the project shipped.
+  const allDone = projectShipped(tasks, project.id);
   const empty = pa.length === 0;
   const prog = pa.length
     ? pa.reduce((n, a) => n + a.progress, 0) / pa.length
@@ -41,6 +45,21 @@ function ProjectCard({
   const conflictMod = conflictAgent
     ? conflictModulesForAgent(conflictAgent, runs)[0]
     : undefined;
+
+  // A card is a glance, not a changelog. Only in-flight runs earn their own row
+  // (waiting-on-you first, then running); finished runs collapse to a single
+  // "✓ N merged" count so a shipped project doesn't stack 15 "merged" rows.
+  const MAX_RUN_ROWS = 4;
+  const activeSorted = pa
+    .filter((a) => a.status !== "done")
+    .sort(
+      (x, y) =>
+        (waiting.some((q) => q.runId === x.id) ? 0 : 1) -
+        (waiting.some((q) => q.runId === y.id) ? 0 : 1),
+    );
+  const activeRuns = activeSorted.slice(0, MAX_RUN_ROWS);
+  const hiddenActive = activeSorted.length - activeRuns.length;
+  const mergedCount = pa.filter((a) => a.status === "done").length;
 
   return (
     <button className={"proj" + (allDone ? " proj-done" : "")} onClick={onOpen}>
@@ -64,7 +83,7 @@ function ProjectCard({
         status={waiting.length > 0 ? "waiting" : allDone ? "done" : "running"}
       />
       <div className="proj-runs">
-        {pa.map((a) => {
+        {activeRuns.map((a) => {
           const q = waiting.find((it) => it.runId === a.id);
           return (
             <div key={a.id} className="proj-agent">
@@ -73,13 +92,17 @@ function ProjectCard({
               <span className="proj-agent-state mono">
                 {q
                   ? "waiting " + fmtWait(waitedSecs(q, now))
-                  : a.status === "done"
-                    ? "merged"
-                    : Math.round(a.progress * 100) + "%"}
+                  : Math.round(a.progress * 100) + "%"}
               </span>
             </div>
           );
         })}
+        {hiddenActive > 0 && (
+          <div className="proj-backlog mono">+ {hiddenActive} more running</div>
+        )}
+        {mergedCount > 0 && (
+          <div className="proj-merged mono">✓ {mergedCount} merged</div>
+        )}
         {backlog.length > 0 && (
           <div className="proj-backlog mono">○ {backlog.length} in backlog</div>
         )}
@@ -98,26 +121,140 @@ function ProjectCard({
   );
 }
 
+// Where a new project's work happens: a local folder, an already-connected repo,
+// or a brand-new repo Skynet creates on GitHub (gated behind a confirm step).
+type BindMode = "folder" | "existing" | "new";
+
+/** Accounts a new repo can be created under. null = loading; [] = GitHub not
+ *  connected (the "New repo" mode is hidden in that case). */
+function useRepoOwners(): GithubOwner[] | null {
+  const [owners, setOwners] = useState<GithubOwner[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .fetchGithubOwners()
+      .then((o) => !cancelled && setOwners(o))
+      .catch(() => !cancelled && setOwners([]));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return owners;
+}
+
+// Project name → a sane default repo slug (GitHub allows letters/digits/. - _).
+const slugRepo = (s: string): string =>
+  s
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "")
+    .slice(0, 100);
+
 export function NewProjectCard({
   onCreate,
 }: {
-  onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
+  onCreate: (
+    name: string,
+    goal: string,
+    opts?: {
+      repo?: string;
+      repoPath?: string;
+      createRepo?: { name: string; private: boolean; owner?: string };
+      autonomy?: boolean;
+      approvalLevel?: ApprovalLevel;
+    },
+  ) => void | Promise<void>;
 }) {
+  // The server's default approval level seeds the picker, so a new project's
+  // shown default matches what it would otherwise be created with.
+  const { defaultApprovalLevel } = useStore();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
+  const [mode, setMode] = useState<BindMode>("folder");
+  const [autonomy, setAutonomy] = useState(true);
+  const [approvalLevel, setApprovalLevel] = useState<ApprovalLevel>(defaultApprovalLevel ?? "trusted");
+  // While the operator hasn't touched the picker, keep it in sync with the
+  // server default as it arrives (the snapshot may land after first render).
+  const [approvalTouched, setApprovalTouched] = useState(false);
   const [repo, setRepo] = useState("");
   const [repoPath, setRepoPath] = useState("");
+  const [newRepoName, setNewRepoName] = useState("");
+  const [newRepoNameTouched, setNewRepoNameTouched] = useState(false);
+  const [newRepoOwner, setNewRepoOwner] = useState("");
+  const [newRepoPrivate, setNewRepoPrivate] = useState(true);
+  const [confirming, setConfirming] = useState(false); // new-repo confirm gate
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const repos = useConnectedRepos();
-  // A project can bind to a local folder (desktop default) or a GitHub repo.
-  // Requiring a GitHub repo only makes sense when no local folder is chosen.
+  const owners = useRepoOwners();
   const hasRepos = (repos?.length ?? 0) > 0;
+  const canCreate = (owners?.length ?? 0) > 0;
+
+  // Default the owner to the authenticated user (first entry) once loaded.
+  useEffect(() => {
+    if (owners && owners.length && !newRepoOwner) setNewRepoOwner(owners[0]!.login);
+  }, [owners, newRepoOwner]);
+
+  // Adopt the server default approval level once it lands, unless the operator
+  // has already chosen one this session.
+  useEffect(() => {
+    if (!approvalTouched && defaultApprovalLevel) setApprovalLevel(defaultApprovalLevel);
+  }, [defaultApprovalLevel, approvalTouched]);
+
+  // The repo name follows the project name until the operator edits it directly.
+  const effectiveRepoName = newRepoNameTouched ? newRepoName : slugRepo(name);
+  const repoNameValid = /^[A-Za-z0-9._-]+$/.test(effectiveRepoName);
+
+  const reset = () => {
+    setOpen(false);
+    setConfirming(false);
+    setCreating(false);
+    setError(null);
+    setName("");
+    setGoal("");
+    setMode("folder");
+    setRepo("");
+    setRepoPath("");
+    setNewRepoName("");
+    setNewRepoNameTouched(false);
+    setAutonomy(true);
+    setApprovalLevel(defaultApprovalLevel ?? "trusted");
+    setApprovalTouched(false);
+  };
+
+  const submit = async (opts: { repo?: string; repoPath?: string; createRepo?: { name: string; private: boolean; owner?: string } }) => {
+    setCreating(true);
+    setError(null);
+    try {
+      await onCreate(name.trim(), goal.trim() || "No goal set yet.", { ...opts, autonomy, approvalLevel });
+      reset();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't create the project.");
+      setCreating(false);
+    }
+  };
+
+  const invalidNew = mode === "new" && (!repoNameValid || !newRepoOwner);
+  const invalidExisting = mode === "existing" && !repo;
+  const disabled = !name.trim() || invalidNew || invalidExisting;
+  const reason = !name.trim()
+    ? "Name your project to continue."
+    : invalidExisting
+      ? "Pick a connected repository."
+      : invalidNew
+        ? "Enter a valid repository name."
+        : "";
+
   if (!open)
     return (
       <button className="proj proj-new" onClick={() => setOpen(true)}>
         <span className="proj-new-plus">+</span> New project
       </button>
     );
+
   return (
     <div className="proj proj-new-form">
       <input
@@ -134,35 +271,161 @@ export function NewProjectCard({
         value={goal}
         onChange={(e) => setGoal(e.target.value)}
       />
-      <div className="rp-label">Local folder <span className="rp-hint">· runs work here</span></div>
-      <FolderPicker value={repoPath} onChange={setRepoPath} />
-      {!repoPath && <RepoPicker repos={repos} value={repo} onChange={setRepo} />}
-      <div className="qx-row">
-        <PrimaryButton
-          disabled={!name.trim() || (!repoPath && hasRepos && !repo)}
-          reason={
-            !name.trim()
-              ? "Name your project to continue."
-              : "Pick a local folder or a connected repo."
-          }
-          onClick={() => {
-            onCreate(name.trim(), goal.trim() || "No goal set yet.", {
-              repo: repoPath ? undefined : repo || undefined,
-              repoPath: repoPath || undefined,
-            });
-            setOpen(false);
-            setName("");
-            setGoal("");
-            setRepo("");
-            setRepoPath("");
-          }}
+
+      {(hasRepos || canCreate) && (
+        <div className="np-modes" role="tablist" aria-label="Where work happens">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "folder"}
+            className={"np-mode" + (mode === "folder" ? " np-mode-on" : "")}
+            onClick={() => { setMode("folder"); setError(null); }}
+          >
+            Local folder
+          </button>
+          {hasRepos && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "existing"}
+              className={"np-mode" + (mode === "existing" ? " np-mode-on" : "")}
+              onClick={() => { setMode("existing"); setError(null); }}
+            >
+              Existing repo
+            </button>
+          )}
+          {canCreate && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "new"}
+              className={"np-mode" + (mode === "new" ? " np-mode-on" : "")}
+              onClick={() => { setMode("new"); setError(null); }}
+            >
+              New repo
+            </button>
+          )}
+        </div>
+      )}
+
+      {mode === "folder" && (
+        <>
+          <div className="rp-label">Local folder <span className="rp-hint">· runs work here</span></div>
+          <FolderPicker value={repoPath} onChange={setRepoPath} />
+        </>
+      )}
+      {mode === "existing" && <RepoPicker repos={repos} value={repo} onChange={setRepo} />}
+      {mode === "new" && (
+        <div className="np-newrepo">
+          <div className="rp-label">New repository <span className="rp-hint">· Skynet creates it on GitHub</span></div>
+          <div className="np-newrepo-row">
+            <select
+              className="rp-select np-owner"
+              value={newRepoOwner}
+              onChange={(e) => setNewRepoOwner(e.target.value)}
+              aria-label="Repository owner"
+            >
+              {owners?.map((o) => (
+                <option key={o.login} value={o.login}>
+                  {o.login}{o.type === "org" ? " (org)" : ""}
+                </option>
+              ))}
+            </select>
+            <span className="np-slash" aria-hidden="true">/</span>
+            <input
+              className="qx-input np-reponame"
+              placeholder="repo-name"
+              value={effectiveRepoName}
+              onChange={(e) => { setNewRepoNameTouched(true); setNewRepoName(e.target.value); }}
+              aria-label="Repository name"
+            />
+          </div>
+          <label className="np-private">
+            <input
+              type="checkbox"
+              className="proj-autonomy-cb"
+              checked={newRepoPrivate}
+              onChange={(e) => setNewRepoPrivate(e.target.checked)}
+            />
+            <span className="proj-autonomy-switch" aria-hidden="true" />
+            <span className="np-private-label">{newRepoPrivate ? "Private" : "Public"} repository</span>
+          </label>
+        </div>
+      )}
+
+      {/* Governance chosen up front — same controls as the project header, so a
+          new project starts with the policy the operator wants (both editable
+          later on the project page). */}
+      <div className="np-governance">
+        <label
+          className="proj-approval"
+          title="How much an agent may run without asking. Dangerous or outward-facing steps (git push, merge, infra, destructive commands) always ask, regardless of this setting."
         >
-          Create project
-        </PrimaryButton>
-        <button className="btn btn-ghost" onClick={() => setOpen(false)}>
-          Cancel
-        </button>
+          <span className="proj-approval-label mono">Approvals</span>
+          <select
+            className="proj-approval-select"
+            value={approvalLevel}
+            onChange={(e) => { setApprovalTouched(true); setApprovalLevel(e.target.value as ApprovalLevel); }}
+          >
+            <option value="manual">Manual · ask for everything</option>
+            <option value="assisted">Assisted · auto-approve low-risk</option>
+            <option value="trusted">Trusted · auto-approve low + medium</option>
+          </select>
+        </label>
+        <label className="proj-autonomy" title="When on, agents autonomously triage backlog items, pick up auto-pick tasks, and review finished work.">
+          <input
+            type="checkbox"
+            className="proj-autonomy-cb"
+            checked={autonomy}
+            onChange={(e) => setAutonomy(e.target.checked)}
+          />
+          <span className="proj-autonomy-switch" aria-hidden="true" />
+          <span className="proj-autonomy-label">Autonomy</span>
+        </label>
       </div>
+
+      {confirming && mode === "new" ? (
+        <div className="np-confirm">
+          <p className="np-confirm-text">
+            Create a new <strong>{newRepoPrivate ? "private" : "public"}</strong> repository{" "}
+            <code className="np-confirm-repo">{newRepoOwner}/{effectiveRepoName}</code> on GitHub and bind this project to it?
+          </p>
+          {error && <div className="np-error">{error}</div>}
+          <div className="qx-row">
+            <PrimaryButton
+              disabled={creating}
+              onClick={() => void submit({ createRepo: { name: effectiveRepoName, private: newRepoPrivate, owner: newRepoOwner } })}
+            >
+              {creating ? "Creating…" : "Create repo & project"}
+            </PrimaryButton>
+            <button className="btn btn-ghost" disabled={creating} onClick={() => { setConfirming(false); setError(null); }}>
+              Back
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {error && <div className="np-error">{error}</div>}
+          <div className="qx-row">
+            <PrimaryButton
+              disabled={disabled || creating}
+              reason={reason}
+              onClick={() => {
+                if (mode === "new") { setConfirming(true); return; } // gate the outward-facing repo creation
+                void submit({
+                  repo: mode === "existing" ? repo || undefined : undefined,
+                  repoPath: mode === "folder" ? repoPath || undefined : undefined,
+                });
+              }}
+            >
+              {creating ? "Creating…" : mode === "new" ? "Review & create" : "Create project"}
+            </PrimaryButton>
+            <button className="btn btn-ghost" onClick={reset}>
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

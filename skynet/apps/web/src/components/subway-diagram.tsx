@@ -17,16 +17,24 @@ import { StatusDot } from "./common";
 //
 // Rendered on the Home "Subway" lens (one per project) and at the top of the
 // project detail page (that project's line, above the kanban).
-type SwTrack = { agentId: string; runs: TaskRun[]; queued: Task[]; parentRunId: string | null };
+type SwTrack = { agentId: string; runs: TaskRun[]; queued: Task[]; queuedOverflow: number; parentRunId: string | null };
 
 const swShort = (s: string) => (s.length > 18 ? s.slice(0, 17).trimEnd() + "…" : s);
+
+// A large backlog would otherwise render dozens of "up next" stations — an
+// unreadable, endlessly-scrolling smear. Show a handful per lane, then a single
+// "+N more" chip. Runs (the real branch structure) are never capped.
+const QUEUE_CAP = 5; // per-agent up-next stations
+const SHARED_CAP = 8; // the shared "up next" lane
 
 export function SwDiagram({
   project,
   onOpenTask,
+  onOpenAgent,
 }: {
   project: Project;
   onOpenTask: (id: string) => void;
+  onOpenAgent: (agentId: string) => void;
 }) {
   const { runs, tasks, fleet } = useStore();
   const mine = agentsForProject(runs, project.id);
@@ -42,16 +50,20 @@ export function SwDiagram({
     list.push(r);
     byAgent.set(k, list);
   }
+  const capQueue = (list: Task[]) => ({ queued: list.slice(0, QUEUE_CAP), queuedOverflow: Math.max(0, list.length - QUEUE_CAP) });
   const tracks: SwTrack[] = [];
   byAgent.forEach((list, agentId) => {
     list.sort((a, b) => a.startedAt - b.startedAt);
-    tracks.push({ agentId, runs: list, queued: pinned.get(agentId) ?? [], parentRunId: list[0]!.parentId ?? null });
+    tracks.push({ agentId, runs: list, ...capQueue(pinned.get(agentId) ?? []), parentRunId: list[0]!.parentId ?? null });
   });
   // An agent with a pinned queue but no runs yet still gets a track, so its
   // upcoming work is visible before it has started anything.
   pinned.forEach((queued, agentId) => {
-    if (!byAgent.has(agentId)) tracks.push({ agentId, runs: [], queued, parentRunId: null });
+    if (!byAgent.has(agentId)) tracks.push({ agentId, runs: [], ...capQueue(queued), parentRunId: null });
   });
+  // Shared "up next" lane, capped the same way.
+  const sharedShown = shared.slice(0, SHARED_CAP);
+  const sharedOverflow = Math.max(0, shared.length - SHARED_CAP);
   const trackOfRun = (runId: string) => tracks.find((t) => t.runs.some((r) => r.id === runId));
   const parentOf = (t: SwTrack) => (t.parentRunId ? trackOfRun(t.parentRunId) : undefined);
   const childrenOf = (t: SwTrack) => tracks.filter((x) => parentOf(x) === t);
@@ -109,14 +121,26 @@ export function SwDiagram({
     if (p) junctions.add(p.agentId + ":" + ((junctionCol.get(t) ?? 0) - (baseCol.get(p) ?? 0)));
   }
 
-  // Stations on a track = its runs (worked) + its queued tasks (up next).
-  const stationCount = (t: SwTrack) => t.runs.length + t.queued.length;
+  // Stations on a track = its runs (worked) + its queued tasks (up next) + a
+  // "+N more" overflow chip when the queue was capped.
+  const stationCount = (t: SwTrack) => t.runs.length + t.queued.length + (t.queuedOverflow > 0 ? 1 : 0);
   const lastColOf = (t: SwTrack) => (baseCol.get(t) ?? 1) + Math.max(1, stationCount(t)) - 1;
-  // The shared "up next" lane fans from START at col 1 → one station per task.
-  const sharedLastCol = shared.length;
+  // The shared "up next" lane fans from START at col 1 → one station per shown
+  // task, plus its own overflow chip.
+  const sharedLastCol = sharedShown.length + (sharedOverflow > 0 ? 1 : 0);
   const END_COL = Math.max(2, sharedLastCol, ...order.map(lastColOf)) + 1;
   const totalCols = END_COL + 1;
   const X = (c: number) => (c / (totalCols - 1)) * 100;
+  // Positions are percentages of the canvas, so a project with many stations
+  // (a long "up next" lane, several runs) would crush columns together until the
+  // labels overlap. Enforce a minimum per-column pitch: the diagram grows to that
+  // width and its container scrolls horizontally when it exceeds the viewport.
+  // (When there are few columns, minWidth stays below the container, so it just
+  // fills the width as before — spacing only ever increases.)
+  const SWB_COL_PX = 132; // min horizontal gap between adjacent stations
+  const NAME_W = 274,
+    PAD_R = 56; // must match .swb-canvas left/right in styles.css
+  const minWidth = NAME_W + PAD_R + Math.max(1, totalCols - 1) * SWB_COL_PX;
   const ROW0 = 44,
     ROW_H = 76,
     TY = 28;
@@ -126,10 +150,14 @@ export function SwDiagram({
   const laneRow = order.length; // the shared "up next" lane sits below the agents
   const totalRows = order.length + (shared.length ? 1 : 0);
   return (
-    <div className="swb" style={{ height: ROW0 + totalRows * ROW_H + 6 + "px" }}>
+    <div className="swb-scroll">
+    <div className="swb" style={{ height: ROW0 + totalRows * ROW_H + 6 + "px", minWidth: minWidth + "px" }}>
       {order.map((t, r) => {
         const head = t.runs.find((x) => x.status !== "done") ?? t.runs[t.runs.length - 1];
         const p = parentOf(t);
+        // The track's name IS a fleet agent → its name opens that agent's detail.
+        // (A track with no fleet agent falls back to opening its current run.)
+        const agentBacked = fleet.some((a) => a.id === t.agentId);
         const rn = head ? runnerName(head, fleet) : fleet.find((a) => a.id === t.agentId)?.name ?? t.agentId;
         const parentRn = p ? runnerName(p.runs[0]!, fleet) : "";
         const done = t.runs.filter((x) => x.status === "done").length;
@@ -141,7 +169,12 @@ export function SwDiagram({
             : t.queued.length + " queued";
         return (
           <div key={t.agentId} className="swb-row" style={{ top: ROW0 + r * ROW_H + "px", height: ROW_H + "px" }}>
-            <button className="swb-name" onClick={() => head && onOpenTask(head.id)} disabled={!head}>
+            <button
+              className="swb-name"
+              onClick={() => (agentBacked ? onOpenAgent(t.agentId) : head && onOpenTask(head.id))}
+              disabled={!agentBacked && !head}
+              title={agentBacked ? "Open agent detail" : head ? "Open run" : undefined}
+            >
               {head ? <StatusDot status={head.status} /> : <span className="sw-dot-idle" title="idle — nothing running yet" />}
               <span className="sw-task-text">
                 <span className="sw-tname">{rn}</span>
@@ -254,6 +287,19 @@ export function SwDiagram({
               </span>,
             );
           });
+          if (t.queuedOverflow > 0) {
+            const col = base + t.runs.length + t.queued.length;
+            els.push(
+              <span
+                key="qmore"
+                className="swb-st sw-more"
+                title={`${t.queuedOverflow} more queued — open the board to see the full backlog`}
+                style={{ left: X(col) + "%", top: yr + "px" }}
+              >
+                <span className="sw-label sw-label-more">+{t.queuedOverflow} more</span>
+              </span>,
+            );
+          }
           // rejoin the main path (END) — ALWAYS drawn so start↔end is connected;
           // grey while the track's subtree is unfinished, green once it merges.
           {
@@ -280,13 +326,14 @@ export function SwDiagram({
           return <Fragment key={t.agentId}>{els}</Fragment>;
         })}
         {/* shared "up next" lane — tasks any agent could take, not pinned to a line */}
-        {shared.length > 0 && (() => {
+        {sharedShown.length > 0 && (() => {
           const yl = rowY(laneRow);
           const els: ReactNode[] = [];
+          const segEnd = sharedLastCol; // last drawn column (incl. any overflow chip)
           els.push(
             <span key="lin" className="swb-seg swb-seg-pending" style={{ left: X(0) + "%", width: X(1) - X(0) + "%", top: yl + "px" }} />,
           );
-          for (let j = 1; j < shared.length; j++) {
+          for (let j = 1; j < segEnd; j++) {
             els.push(
               <span
                 key={"lseg" + j}
@@ -295,7 +342,7 @@ export function SwDiagram({
               />,
             );
           }
-          shared.forEach((task, j) => {
+          sharedShown.forEach((task, j) => {
             els.push(
               <span
                 key={"ls" + task.id}
@@ -307,9 +354,22 @@ export function SwDiagram({
               </span>,
             );
           });
+          if (sharedOverflow > 0) {
+            els.push(
+              <span
+                key="lmore"
+                className="swb-st sw-more"
+                title={`${sharedOverflow} more up next — open the board to see the full backlog`}
+                style={{ left: X(1 + sharedShown.length) + "%", top: yl + "px" }}
+              >
+                <span className="sw-label sw-label-more">+{sharedOverflow} more</span>
+              </span>,
+            );
+          }
           return <Fragment key="lane">{els}</Fragment>;
         })()}
       </div>
+    </div>
     </div>
   );
 }

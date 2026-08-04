@@ -20,6 +20,7 @@
 // SPA iframes that port directly (desktop = same machine, no proxy).
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -30,8 +31,25 @@ import { wrapForSandbox } from "@skynet/runner-sdk/sandbox";
 import { oneShotRepoAssistant } from "@skynet/runner-sdk/claude";
 import { gitBin } from "../git-bin.js";
 import { secretService } from "../secrets/index.js";
+import { publicOrigin } from "./public-origin.js";
 
 const exec = promisify(execFile);
+
+/**
+ * Environment for preview subprocesses (dependency install + the dev server).
+ * A live preview is a DEV run, so force `NODE_ENV=development`: otherwise a
+ * production server (NODE_ENV=production, as on staging) makes `npm`/`pnpm`/`yarn`
+ * **skip devDependencies** at install time, so tooling the dev script needs
+ * (concurrently, vite, …) is never installed and `npm run dev` fails with
+ * "<tool>: not found". Also clear npm's production-omit signals in case they were
+ * inherited. Overrides here apply only to the child — the server keeps its own env.
+ */
+export function previewEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "development", ...extra };
+  delete env.npm_config_production; // legacy "--production" signal
+  delete env.npm_config_omit; // "--omit=dev"
+  return env;
+}
 
 export type PreviewStatus = "idle" | "starting" | "live" | "failed" | "stopped";
 
@@ -59,6 +77,7 @@ interface Live {
   port?: number;
   recipe?: PreviewRecipe;
   key: string; // map key: projectId, or `run:<runId>`
+  token: string; // unguessable id for the public /p/<token>/ proxy path
   dir: string; // detached worktree dir
   gitRepo: string; // repo the worktree was added in (for cleanup)
   recipeKey: string; // agentRecipe cache key (the project id)
@@ -81,9 +100,28 @@ interface StartSpec {
   refreshBranch?: string; // branch to re-point to on refresh (project previews only)
 }
 
+// Files whose change (when a merge is folded into the preview) means the
+// worktree's dependencies may be stale.
+const DEP_MANIFESTS = new Set(["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"]);
+
 const LOG_CAP = 200;
 const IDLE_MS = 15 * 60 * 1000; // auto-stop a preview no one is watching
 const HEALTH_TIMEOUT_MS = 45_000;
+
+/** The tail of the dev server's own output, as a " — …" suffix for a failure
+ *  message. So a failed preview says WHY (e.g. "sh: vite: command not found")
+ *  instead of an opaque code. PURE — unit-tested. */
+export function previewLogTail(logs: string[]): string {
+  const lines = logs.filter((l) => l.trim());
+  if (!lines.length) return "";
+  const tail = lines.slice(-3).join(" / ");
+  return ` — ${tail.length > 400 ? "…" + tail.slice(-400) : tail}`;
+}
+
+/** A non-zero exit turned into an operator-readable reason (code + output tail). */
+export function previewExitReason(code: number | null, logs: string[]): string {
+  return `preview process exited (code ${code ?? "?"})${previewLogTail(logs)}`;
+}
 
 export class ProjectPreviewManager {
   private previews = new Map<string, Live>();
@@ -112,15 +150,37 @@ export class ProjectPreviewManager {
     const p = this.previews.get(key);
     if (!p) return { status: "idle", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null };
     p.lastTouched = Date.now(); // polling status counts as "watching" → defers idle stop
+    // Public origin known (hosted) → hand back the proxied `/p/<token>/` URL so
+    // the preview is reachable from a phone; else the loopback URL (desktop, same
+    // machine, iframed directly).
+    const origin = publicOrigin();
     return {
       status: p.status,
-      url: p.status === "live" && p.port ? `http://127.0.0.1:${p.port}` : null,
+      url:
+        p.status === "live" && p.port
+          ? origin
+            ? `${origin}/p/${p.token}/`
+            : `http://127.0.0.1:${p.port}`
+          : null,
       port: p.port ?? null,
       recipe: p.recipe ? { cmd: p.recipe.cmd, source: p.recipe.source } : null,
       error: p.error,
       logs: p.logs.slice(-80),
       startedAt: p.startedAt,
     };
+  }
+
+  /** The live loopback port for a preview proxy token — used by the /p/<token>/
+   *  reverse proxy. undefined unless that preview is currently live. A poll here
+   *  also counts as "watching" (defers the idle stop). */
+  portForToken(token: string): number | undefined {
+    for (const p of this.previews.values()) {
+      if (p.token === token && p.status === "live" && p.port) {
+        p.lastTouched = Date.now();
+        return p.port;
+      }
+    }
+    return undefined;
   }
 
   private log(p: Live, line: string) {
@@ -254,14 +314,15 @@ export class ProjectPreviewManager {
   }
 
   /** Poll the port until the app answers (any HTTP response) or we give up. */
-  private waitForPort(port: number, until: number): Promise<boolean> {
+  private waitForPort(port: number, until: number, alive: () => boolean = () => true): Promise<boolean> {
     return new Promise((res) => {
       const tick = () => {
+        if (!alive()) return res(false); // the process died — stop polling a dead port
         const req = httpGet({ host: "127.0.0.1", port, path: "/", timeout: 1500 }, (r) => {
           r.resume();
           res(true);
         });
-        req.on("error", () => (Date.now() > until ? res(false) : setTimeout(tick, 400)));
+        req.on("error", () => (Date.now() > until || !alive() ? res(false) : setTimeout(tick, 400)));
         req.on("timeout", () => req.destroy());
       };
       tick();
@@ -315,6 +376,23 @@ export class ProjectPreviewManager {
     await this.runToCompletion(install, p.dir, p, 5 * 60_000);
   }
 
+  /** A fresh detached worktree has no `.env`, yet many dev scripts assume one —
+   *  e.g. `node --watch --env-file-if-exists=.env` CRASHES because `--watch` tries
+   *  to watch a path that doesn't exist, and dotenv-based scripts abort. Drop an
+   *  empty `.env` (only when absent) so those start cleanly. Harmless for apps that
+   *  ignore it; the worktree is ephemeral, never the operator's real checkout. */
+  private async ensureEnvFile(p: Live): Promise<void> {
+    if (!existsSync(join(p.dir, "package.json"))) return; // not a node project
+    const envPath = join(p.dir, ".env");
+    if (existsSync(envPath)) return; // respect a real one (e.g. a symlinked checkout's)
+    try {
+      await writeFile(envPath, "");
+      this.log(p, "created an empty .env (fresh worktree) so dev scripts that expect one start cleanly");
+    } catch {
+      /* best-effort — not fatal */
+    }
+  }
+
   /** Infer the install command: descriptor override, then the lockfile's package
    *  manager, else npm. */
   private installCmd(dir: string): string {
@@ -331,7 +409,7 @@ export class ProjectPreviewManager {
    *  dev server) is the wrapped one. Rejects on non-zero exit or timeout. */
   private runToCompletion(cmd: string, cwd: string, p: Live, timeoutMs: number): Promise<void> {
     return new Promise((res, rej) => {
-      const child = spawn("/bin/sh", ["-c", cmd], { cwd, env: { ...process.env } });
+      const child = spawn("/bin/sh", ["-c", cmd], { cwd, env: previewEnv() });
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
         rej(new Error(`\`${cmd}\` timed out after ${Math.round(timeoutMs / 1000)}s`));
@@ -389,7 +467,7 @@ export class ProjectPreviewManager {
     if (!hasBranch) {
       await this.stop(key);
       const p: Live = {
-        status: "failed", key, dir: this.previewDir(key), gitRepo: opts.repoPath, recipeKey: opts.projectId,
+        status: "failed", key, token: randomBytes(9).toString("base64url"), dir: this.previewDir(key), gitRepo: opts.repoPath, recipeKey: opts.projectId,
         logs: [], error: `This run has no commits to preview yet (branch ${opts.branch} doesn't exist).`,
         startedAt: Date.now(), lastTouched: Date.now(),
       };
@@ -419,7 +497,8 @@ export class ProjectPreviewManager {
     }
 
     const p: Live = {
-      status: "starting", key: spec.key, dir: this.previewDir(spec.key), gitRepo: spec.gitRepo,
+      status: "starting", key: spec.key, token: randomBytes(9).toString("base64url"),
+      dir: this.previewDir(spec.key), gitRepo: spec.gitRepo,
       recipeKey: spec.recipeKey, refreshBranch: spec.refreshBranch,
       logs: [], error: null, startedAt: Date.now(), lastTouched: Date.now(),
     };
@@ -447,26 +526,43 @@ export class ProjectPreviewManager {
       // dev command (else `concurrently`/`vite`/etc. aren't found).
       await this.ensureDeps(p, spec.gitRepo);
       if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded during install
+      await this.ensureEnvFile(p); // a fresh worktree has no .env — many dev scripts crash without one
 
-      this.log(p, `▸ ${recipe.cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
+      // When we'll serve this preview through the public `/p/<token>/` proxy
+      // (hosted — a public origin is known), a Vite dev server must emit its
+      // asset + HMR URLs under that base, else they 404 off the prefix. Inject
+      // `--base=/p/<token>/` for a Vite recipe that doesn't already set one.
+      let cmd = recipe.cmd;
+      if (publicOrigin() && /(^|\s|\/)vite(\s|$)/.test(cmd) && !/--base[=\s]/.test(cmd)) {
+        cmd = `${cmd} --base=/p/${p.token}/`;
+        this.log(p, `serving behind Skynet's proxy — added --base=/p/${p.token}/ for Vite`);
+      }
+      this.log(p, `▸ ${cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
 
       // Spawn via a shell so "npm run dev" etc. work; wrap for the opt-in OS
       // sandbox (no-op unless SKYNET_RUNNER_SANDBOX). PORT is injected two ways
       // (env + common Vite/CRA/Next var) so most dev servers pick it up.
-      const wrapped = wrapForSandbox("/bin/sh", ["-c", recipe.cmd], { cwd: p.dir });
+      const wrapped = wrapForSandbox("/bin/sh", ["-c", cmd], { cwd: p.dir });
       if (wrapped.note) this.log(p, wrapped.note);
       const child = spawn(wrapped.bin, wrapped.args, {
         cwd: p.dir,
-        env: { ...process.env, PORT: String(recipe.port), VITE_PORT: String(recipe.port), BROWSER: "none" },
+        env: previewEnv({ PORT: String(recipe.port), VITE_PORT: String(recipe.port), BROWSER: "none" }),
       });
       p.child = child;
       child.stdout?.on("data", (b) => this.log(p, b.toString()));
       child.stderr?.on("data", (b) => this.log(p, b.toString()));
-      child.on("exit", (code) => {
+      // Finalize a failure on "close" (not "exit"): it fires AFTER stdout/stderr
+      // have drained, so the captured logs — and thus the surfaced reason — are
+      // complete. `closed` also lets the health wait bail the instant it dies.
+      let closed = false;
+      child.on("close", (code) => {
+        closed = true;
         if (this.previews.get(spec.key) !== p) return; // superseded
         if (p.status !== "stopped") {
           p.status = "failed";
-          p.error = p.error ?? `preview process exited (code ${code ?? "?"})`;
+          // Include the output tail so the operator sees WHY it exited, not just
+          // an opaque code (this is the message the Telegram/UI failure shows).
+          p.error = p.error ?? previewExitReason(code, p.logs);
         }
       });
       child.on("error", (err) => {
@@ -474,14 +570,20 @@ export class ProjectPreviewManager {
         p.error = err.message;
       });
 
-      const ok = await this.waitForPort(recipe.port, Date.now() + HEALTH_TIMEOUT_MS);
+      // Bail the health wait the moment the child dies (else a dev server that
+      // exits code 1 in a second still made us wait the full timeout).
+      const ok = await this.waitForPort(
+        recipe.port,
+        Date.now() + HEALTH_TIMEOUT_MS,
+        () => this.previews.get(spec.key) === p && !closed && p.status === "starting",
+      );
       if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded mid-wait
       if (ok && p.status === "starting") {
         p.status = "live";
         this.armIdle(spec.key, p);
       } else if (p.status === "starting") {
         p.status = "failed";
-        p.error = p.error ?? `the app didn't start listening on port ${recipe.port} within ${HEALTH_TIMEOUT_MS / 1000}s`;
+        p.error = p.error ?? `the app didn't start listening on port ${recipe.port} within ${HEALTH_TIMEOUT_MS / 1000}s${previewLogTail(p.logs)}`;
       }
     } catch (err) {
       p.status = "failed";
@@ -498,11 +600,38 @@ export class ProjectPreviewManager {
     if (!p || p.status !== "live" || !p.refreshBranch) return this.state(key);
     const hasBranch = (await this.git(p.gitRepo, "branch", "--list", p.refreshBranch).catch(() => ({ stdout: "" }))).stdout.trim();
     if (hasBranch) {
+      const before = (await this.git(p.dir, "rev-parse", "HEAD").catch(() => ({ stdout: "" }))).stdout.trim();
       await this.git(p.dir, "checkout", "--detach", p.refreshBranch).catch((e) => this.log(p, `refresh: ${(e as Error).message}`));
       this.log(p, "↻ refreshed to integration branch tip");
+      const after = (await this.git(p.dir, "rev-parse", "HEAD").catch(() => ({ stdout: "" }))).stdout.trim();
+      if (before && after && before !== after) await this.reconcileDepsOnRefresh(p, before, after);
     }
     p.lastTouched = Date.now();
     return this.state(key);
+  }
+
+  /** After a refresh folds new merged work into the preview, reconcile deps if a
+   *  dependency manifest changed — so a live preview reflects merged dep changes.
+   *  Re-installs ONLY when node_modules is a real dir; when it's a symlink to the
+   *  operator's checkout we leave it alone (their deps, not ours to modify) and
+   *  just note it. Best-effort + time-boxed; never breaks the refresh. */
+  private async reconcileDepsOnRefresh(p: Live, before: string, after: string): Promise<void> {
+    const changed = (await this.git(p.dir, "diff", "--name-only", before, after).catch(() => ({ stdout: "" }))).stdout.split("\n");
+    if (!changed.some((f) => DEP_MANIFESTS.has(f.trim().split("/").pop() ?? ""))) return;
+    const nm = join(p.dir, "node_modules");
+    let symlink = false;
+    try {
+      symlink = lstatSync(nm).isSymbolicLink();
+    } catch {
+      return; // no node_modules at all → nothing to reconcile (started fresh next time)
+    }
+    if (symlink) {
+      this.log(p, "merged changes touched dependencies — this preview uses the project checkout's node_modules; run an install there if the app needs the new deps.");
+      return;
+    }
+    const cmd = this.installCmd(p.dir);
+    this.log(p, `merged changes touched dependencies — re-installing (${cmd})…`);
+    await this.runToCompletion(cmd, p.dir, p, 3 * 60_000).catch((e) => this.log(p, `re-install failed: ${(e as Error).message}`));
   }
 
   async restart(projectId: string, repoPath: string, workspaceId?: string): Promise<PreviewState> {

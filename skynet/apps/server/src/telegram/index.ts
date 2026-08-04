@@ -28,9 +28,12 @@ import type { ConfigureRunnerRequest, CreateProjectRequest, CreateTaskRequest, R
 import type { config as Config } from "../config.js";
 import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
+import type { PreviewState } from "../preview/project-preview.js";
 import type { Orchestrator } from "../orchestrator.js";
+import { prefetchProjectDocs } from "../project-assistant.js";
 import { TelegramClient } from "./client.js";
 import { decide } from "./commands.js";
+import { decisionCardHtml, gateKeyboard, reviewNotice, completedNotice, runLink, esc, type Names } from "./notices.js";
 import {
   buildContext,
   INTENT_SYSTEM_PROMPT,
@@ -43,6 +46,28 @@ import {
 } from "./intent.js";
 
 const log = (line: string): void => console.log(`[telegram] ${line}`);
+
+// Repo grounding for the conversational assistant: prefetch each project's key
+// docs + file tree so the owner can ask about roadmap items, features, or bugs
+// over Telegram. Bounded hard — Telegram context is workspace-wide, so we trim
+// each doc small and cap the total, and skip projects with no repo bound.
+const TG_DOC_PER_DOC_CHARS = 2500;
+const TG_DOC_TOTAL_CAP = 12000;
+
+async function gatherProjectDocs(
+  operations: Pick<ControlOps, "listProjects">,
+  ws: string,
+): Promise<string> {
+  const projects = await operations.listProjects(ws).catch(() => [] as Project[]);
+  let out = "";
+  for (const p of projects) {
+    if (out.length >= TG_DOC_TOTAL_CAP) break;
+    if (!p.repo && !p.repoPath) continue;
+    const docs = await prefetchProjectDocs(ws, p, TG_DOC_PER_DOC_CHARS).catch(() => "");
+    if (docs) out += `\n\n### PROJECT ${p.name} (${p.id})${docs}`;
+  }
+  return out.slice(0, TG_DOC_TOTAL_CAP);
+}
 
 /** Exit code the desktop main (main.cjs) treats as an intentional remote quit. */
 const REMOTE_SHUTDOWN_CODE = 42;
@@ -92,19 +117,41 @@ export interface ControlOps {
   listAgents(ws: string): Promise<Agent[]>;
   listProviders(ws: string): Promise<ProviderInfo[]>;
   resolveHitl(ws: string, id: string, input: ResolveRequest, operatorId: string): Promise<HitlItem>;
+  /** The real unified diff of a run's branch, for the "View diff" button.
+   *  Optional so existing fakes/callers don't have to implement it. */
+  runDiff?(ws: string, runId: string): Promise<{ patch: string; add: number; del: number; files: string[] }>;
   createProject(ws: string, input: CreateProjectRequest): Promise<Project>;
   createTask(ws: string, projectId: string, input: CreateTaskRequest): Promise<Task>;
   assignTask(ws: string, projectId: string, taskId: string): Promise<TaskRun>;
   archiveTask(ws: string, projectId: string, taskId: string, archived: boolean): Promise<Task>;
   configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent>;
+  /** Spin up (or restart) the project's live preview; resolves when it's live or
+   *  failed, with the URL in the returned state. */
+  previewStart(ws: string, projectId: string): Promise<PreviewState>;
 }
 
 /** The Orchestrator methods the control handler needs. */
 export interface ControlOrch {
-  consult(ws: string, question: string, context?: string): Promise<string | null>;
+  consult(ws: string, question: string, context?: string, system?: string): Promise<string | null>;
   stopAll(reason: string): Promise<number>;
   setPaused(p: boolean): void;
   isPaused(): boolean;
+}
+
+/** What the widened `notify` returns — the messageId lets callers edit the
+ *  message later (e.g. strip the inline confirm buttons after tapping). */
+export interface NotifyResult {
+  messageId: number;
+}
+
+/** Optional shape for widened `notify`: pass `reply_markup` to attach an inline
+ *  keyboard (Confirm/Cancel, Approve/Reject). Kept OPTIONAL so callers that
+ *  only care about text stay unchanged, and so `notify` remains fake-friendly. */
+export interface NotifyOpts {
+  reply_markup?: import("./client.js").InlineKeyboardMarkup;
+  /** Render the body as Telegram HTML (bold / code / italic). Text must be
+   *  escaped by the caller (see notices.esc). */
+  parse_mode?: "HTML";
 }
 
 export interface OwnerControlDeps {
@@ -113,8 +160,16 @@ export interface OwnerControlDeps {
   ownerChatId: string;
   operations: ControlOps;
   orchestrator: ControlOrch;
-  /** Send a reply to the owner. */
-  notify: (text: string) => Promise<void>;
+  /** Send a reply to the owner. Returns the sent-message id when the caller
+   *  needs it (to edit later); passing no opts sends plain text. */
+  notify: (text: string, opts?: NotifyOpts) => Promise<NotifyResult>;
+  /** Strip the inline keyboard from a previously-sent message (best-effort:
+   *  telegram errors are swallowed). Called after Confirm/Cancel resolves a
+   *  pending action, so the buttons don't stay tappable. Optional for tests. */
+  editReplyMarkup?: (chatId: string, messageId: number) => Promise<void>;
+  /** Acknowledge a tapped inline-keyboard button (dismisses the client's
+   *  loading spinner). Optional for tests. */
+  ackCallback?: (callbackQueryId: string, opts?: { text?: string }) => Promise<void>;
   /** Shut the app down (defaults to process.exit; injectable for tests). */
   onQuit?: () => void;
   /** Workspace to act in (defaults to DEFAULT_WORKSPACE). */
@@ -122,11 +177,17 @@ export interface OwnerControlDeps {
 }
 
 interface Pending {
+  /** Short opaque id that rides in the inline button's callback_data. Guards
+   *  against a stale tap after a new pending has replaced this one. */
+  id: string;
   summary: string;
   /** Runs the confirmed action; resolves to a short success string. */
   run: () => Promise<string>;
   /** The action kind, for logging only (never the message contents). */
   kind: Action["kind"];
+  /** id of the notify message that carries the Confirm/Cancel buttons — we edit
+   *  it after resolution to strip the buttons. 0 if the send didn't return one. */
+  messageId: number;
 }
 
 /**
@@ -136,13 +197,45 @@ interface Pending {
  * owner message; deterministic commands are decided first (see `decide`).
  */
 export function createOwnerControl(deps: OwnerControlDeps): {
-  handle: (chatId: string, text: string) => Promise<void>;
+  handle: (chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
+  handleCallback: (
+    chatId: string,
+    data: string,
+    callbackQueryId: string,
+    messageId: number,
+  ) => Promise<void>;
+  /** Register a decision card the bridge just sent, so a reply to it (or a
+   *  "Request changes" tap) routes guidance to the right gate. */
+  noteCard: (messageId: number, gateId: string, runId: string) => void;
 } {
   const { operations, orchestrator, notify } = deps;
+  const editReplyMarkup = deps.editReplyMarkup ?? (async () => undefined);
+  const ackCallback = deps.ackCallback ?? (async () => undefined);
   const ws = deps.ws ?? DEFAULT_WORKSPACE;
   const operatorId = `telegram:${deps.ownerChatId}`;
   const onQuit = deps.onQuit ?? (() => process.exit(REMOTE_SHUTDOWN_CODE));
   const pending = new Map<string, Pending>();
+  // Monotonic counter for pending ids. Small (fits in 64-byte callback_data
+  // trivially) and unique-per-process — enough to distinguish a stale tap on an
+  // older pending from a live one, since only one pending exists per chat.
+  let pendingSeq = 0;
+
+  /** Two-button Confirm/Cancel keyboard for a pending action. */
+  const confirmKeyboard = (pendingId: string) => ({
+    inline_keyboard: [[
+      { text: "✓ Confirm", callback_data: `confirm:${pendingId}` },
+      { text: "✕ Cancel", callback_data: `cancel:${pendingId}` },
+    ]],
+  });
+  /** Two-button Approve/Reject keyboard for a HITL gate. The gate id rides in
+   *  the callback_data so the tap resolves the exact gate the buttons were on
+   *  (a later gate can't be resolved by an older button). */
+  const hitlKeyboard = (gateId: string) => ({
+    inline_keyboard: [[
+      { text: "✓ Approve", callback_data: `hitl:approve:${gateId}` },
+      { text: "✕ Reject", callback_data: `hitl:reject:${gateId}` },
+    ]],
+  });
 
   // Short conversational memory (in-memory, owner-scoped, capped, cleared on
   // restart). Lets back-references ("remove that task", "it") resolve to a
@@ -159,6 +252,32 @@ export function createOwnerControl(deps: OwnerControlDeps): {
   const openGates = async (): Promise<HitlItem[]> =>
     (await operations.listHitl(ws)).filter((h) => !h.resolvedAt);
 
+  // ── "Request changes" / reply-to-resume ───────────────────────────────────
+  // A decision card's message id → its gate, so replying to that message sends
+  // the reply as `modify` guidance (the SAME path the app's "Request changes →
+  // resume" uses). Tapping ✏️ instead arms `awaitingGuidance`, so the operator's
+  // NEXT message becomes the guidance even without an explicit reply.
+  const cardGate = new Map<number, { gateId: string; runId: string }>();
+  let awaitingGuidance: { gateId: string; runId: string; messageId: number } | null = null;
+  const noteCard = (messageId: number, gateId: string, runId: string): void => {
+    if (messageId) cardGate.set(messageId, { gateId, runId });
+  };
+  /** Deliver operator text as `modify` guidance to a gate — resumes the agent. */
+  const sendGuidance = async (chatId: string, gate: { gateId: string; messageId?: number }, text: string): Promise<void> => {
+    const stillOpen = (await openGates()).some((g) => g.id === gate.gateId);
+    if (!stillOpen) {
+      await notify("That decision was already handled — nothing to change.");
+      return;
+    }
+    try {
+      await operations.resolveHitl(ws, gate.gateId, { action: "modify", guidance: text }, operatorId);
+      await notify("↩ Sent your changes — resuming the agent. I'll re-check when it's back.");
+      if (gate.messageId) await editReplyMarkup(chatId, gate.messageId).catch(() => undefined);
+    } catch (err) {
+      await notify(`Couldn't send those changes: ${(err as Error).message}`);
+    }
+  };
+
   const statusText = async (): Promise<string> => {
     const runs = await operations.listRuns(ws);
     const active = runs.filter((r) => r.status === "running" || r.status === "waiting").length;
@@ -169,8 +288,10 @@ export function createOwnerControl(deps: OwnerControlDeps): {
   };
 
   /** Turn a validated Action into a human-readable summary + a deferred executor
-   *  (run on confirm). Never executes here — only describes. */
-  const toPending = (action: Action, ctx: IntentContext): Pending | null => {
+   *  (run on confirm). Never executes here — only describes. The `id` and
+   *  `messageId` are stamped at the call site where we mint the nonce and know
+   *  the message id after `notify` returns. */
+  const toPending = (action: Action, ctx: IntentContext): Omit<Pending, "id" | "messageId"> | null => {
     switch (action.kind) {
       case "approve":
       case "reject": {
@@ -253,10 +374,57 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           },
         };
       }
+      case "preview": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const name = project?.name ?? action.projectId;
+        const summary = `Preview ${name} — spin up a live preview and send the link here?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            // Reply immediately, then push the URL when the preview is ready.
+            // previewStart resolves only once the dev server is live (or failed),
+            // so fire-and-forget it and notify on settle — never block this reply.
+            void operations.previewStart(ws, action.projectId!).then(
+              (st) =>
+                notify(
+                  st.status === "live" && st.url
+                    ? `🔗 Preview ready for ${name}: ${st.url}`
+                    : `⚠ Couldn't start the preview for ${name}: ${st.error ?? st.status}`,
+                ),
+              (err) => notify(`⚠ Couldn't start the preview for ${name}: ${(err as Error).message}`),
+            );
+            return `🚀 Spinning up a live preview of ${name} — I'll send the link here when it's ready.`;
+          },
+        };
+      }
       // status / none are handled before this point.
       default:
         return null;
     }
+  };
+
+  /** Resolve a pending action — shared by the "yes/no" free-text path AND the
+   *  Confirm/Cancel button tap. `p` is the popped pending; caller has already
+   *  removed it from the map. On success, strip the buttons off the original
+   *  message so it can't be double-tapped. */
+  const runPending = async (chatId: string, p: Pending, accepted: boolean): Promise<void> => {
+    if (!accepted) {
+      await notify("Cancelled.");
+      if (p.messageId) await editReplyMarkup(chatId, p.messageId).catch(() => undefined);
+      return;
+    }
+    log(`executing confirmed action: ${p.kind}`);
+    try {
+      const outcome = await p.run();
+      // Record the OUTCOME (with ids) so later back-references ("remove that
+      // task", "it") can resolve. This is the memory that makes undo work.
+      pushHistory(chatId, { role: "assistant", text: outcome });
+      await notify(outcome);
+    } catch (err) {
+      await notify(`Couldn't complete that: ${(err as Error).message}`);
+    }
+    if (p.messageId) await editReplyMarkup(chatId, p.messageId).catch(() => undefined);
   };
 
   /** The free-text (non-slash-command) path: pending affirmation first, then the
@@ -266,20 +434,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     const p = pending.get(chatId);
     if (p) {
       pending.delete(chatId);
-      if (!isAffirmative(text)) {
-        await notify("Cancelled.");
-        return;
-      }
-      log(`executing confirmed action: ${p.kind}`);
-      try {
-        const outcome = await p.run();
-        // Record the OUTCOME (with ids) so later back-references ("remove that
-        // task", "it") can resolve. This is the memory that makes undo work.
-        pushHistory(chatId, { role: "assistant", text: outcome });
-        await notify(outcome);
-      } catch (err) {
-        await notify(`Couldn't complete that: ${(err as Error).message}`);
-      }
+      await runPending(chatId, p, isAffirmative(text));
       return;
     }
 
@@ -296,8 +451,13 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     //    not duplicated into RECENT CONVERSATION.
     const priorHistory = [...(history.get(chatId) ?? [])];
     pushHistory(chatId, { role: "owner", text });
-    const ctx = await buildContext(operations, ws);
-    const raw = await orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx, priorHistory));
+    const [ctx, docs] = await Promise.all([buildContext(operations, ws), gatherProjectDocs(operations, ws)]);
+    // The operator's own text rides as `question` (runner labels it OPERATOR
+    // MESSAGE); INTENT_SYSTEM_PROMPT rides as `system` (the role framing);
+    // `renderContext` is GROUNDING only (workspace + repo docs + recent
+    // conversation). Reversing this made Claude read the system prompt as a
+    // prompt-injection attempt in the operator's message.
+    const raw = await orchestrator.consult(ws, text, renderContext(ctx, priorHistory, docs), INTENT_SYSTEM_PROMPT);
     if (raw == null) {
       await notify(
         "Conversational control needs an Anthropic (Claude) key to interpret messages — set ANTHROPIC_API_KEY (or add a Claude agent), then retry. Meanwhile you can add a backlog item with: /task <text>",
@@ -318,16 +478,18 @@ export function createOwnerControl(deps: OwnerControlDeps): {
       return;
     }
 
-    // A privileged action: describe it and wait for an explicit yes. The reply
-    // rides along so the owner always gets context before confirming.
+    // A privileged action: describe it and wait for confirmation — either a tap
+    // on the ✓ Confirm / ✕ Cancel buttons, or a typed "yes/no". The reply rides
+    // along so the owner always gets context before confirming.
     if (action && action.kind !== "none") {
-      const next = toPending(action, ctx);
-      if (next) {
-        pending.set(chatId, next);
-        log(`awaiting confirmation for action: ${next.kind}`);
-        const out = [reply, `${next.summary} — reply yes / no`].filter(Boolean).join("\n\n");
+      const draft = toPending(action, ctx);
+      if (draft) {
+        const id = `p-${++pendingSeq}`;
+        log(`awaiting confirmation for action: ${draft.kind}`);
+        const out = [reply, `${draft.summary} — tap a button below or reply yes / no.`].filter(Boolean).join("\n\n");
         pushHistory(chatId, { role: "assistant", text: out });
-        await notify(out);
+        const sent = await notify(out, { reply_markup: confirmKeyboard(id) });
+        pending.set(chatId, { ...draft, id, messageId: sent.messageId });
         return;
       }
     }
@@ -338,7 +500,30 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     await notify(out);
   };
 
-  const handle = async (chatId: string, text: string): Promise<void> => {
+  const handle = async (chatId: string, text: string, replyToMessageId?: number): Promise<void> => {
+    // Owner-bound guardrail (mirrors `decide`'s ignore): never act on another chat.
+    if (String(chatId) !== deps.ownerChatId) {
+      log("ignored message from non-owner chat");
+      return;
+    }
+
+    // "Request changes" flow — a reply to a decision card, or the next message
+    // after tapping ✏️, becomes `modify` guidance that resumes the agent. An
+    // explicit reply always wins; the armed state defers to a real slash command.
+    if (deps.controlEnabled && text.trim()) {
+      const replied = replyToMessageId != null ? cardGate.get(replyToMessageId) : undefined;
+      if (replied) {
+        await sendGuidance(chatId, { gateId: replied.gateId, messageId: replyToMessageId }, text.trim());
+        return;
+      }
+      if (awaitingGuidance && !text.trim().startsWith("/")) {
+        const g = awaitingGuidance;
+        awaitingGuidance = null;
+        await sendGuidance(chatId, { gateId: g.gateId, messageId: g.messageId }, text.trim());
+        return;
+      }
+    }
+
     const action = decide({ chatId, ownerChatId: deps.ownerChatId, controlEnabled: deps.controlEnabled, text });
 
     // Owner-bound guardrail: never echo a non-owner's content.
@@ -501,12 +686,125 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     }
   };
 
-  return { handle };
+  /**
+   * Inbound inline-button tap. Owner-check happens at the poll-loop level (same
+   * as `handle`), so by the time we get here the chat is the owner's.
+   *
+   * `data` shape (closed set — never parse anything else):
+   *   `confirm:<pendingId>`   → run the pending action (if the id still matches)
+   *   `cancel:<pendingId>`    → drop the pending
+   *   `hitl:approve:<gateId>` → resolveHitl approve (if control is enabled + gate open)
+   *   `hitl:reject:<gateId>`  → resolveHitl reject  (ditto)
+   *
+   * Every branch calls `ackCallback` to dismiss the client's loading spinner —
+   * Telegram REQUIRES it, otherwise the button spins for ~30 seconds.
+   */
+  const handleCallback = async (
+    chatId: string,
+    data: string,
+    callbackQueryId: string,
+    messageId: number,
+  ): Promise<void> => {
+    // Parse `<kind>:<rest>` — kind is a closed set (see doc above), rest is
+    // opaque data we validate before acting on. Anything else = ignore.
+    const colon = data.indexOf(":");
+    if (colon < 0) {
+      await ackCallback(callbackQueryId);
+      return;
+    }
+    const kind = data.slice(0, colon);
+    const rest = data.slice(colon + 1);
+
+    // ── Pending confirm/cancel — must match the STORED pending id, else stale
+    if (kind === "confirm" || kind === "cancel") {
+      const p = pending.get(chatId);
+      // A different pending has replaced this one (or there is none) — refuse
+      // and tell the operator via the callback toast. Never runs the old action.
+      if (!p || p.id !== rest) {
+        await ackCallback(callbackQueryId, { text: "That action has already been handled." });
+        // Strip the stale buttons so the message reads as done.
+        if (messageId) await editReplyMarkup(chatId, messageId).catch(() => undefined);
+        return;
+      }
+      pending.delete(chatId);
+      // Ack BEFORE running so the spinner dismisses immediately even if the
+      // action takes a moment. `runPending` sends its own outcome message +
+      // edits the confirm message to remove the buttons.
+      await ackCallback(callbackQueryId).catch(() => undefined);
+      await runPending(chatId, p, kind === "confirm");
+      return;
+    }
+
+    // ── HITL actions — approve/reject/modify/diff. Same gate rule as /approve.
+    if (kind === "hitl") {
+      const sepInRest = rest.indexOf(":");
+      const decision = sepInRest > 0 ? rest.slice(0, sepInRest) : rest;
+      const gateId = sepInRest > 0 ? rest.slice(sepInRest + 1) : "";
+      if (!["approve", "reject", "modify", "diff"].includes(decision) || !gateId) {
+        await ackCallback(callbackQueryId);
+        return;
+      }
+      if (!deps.controlEnabled) {
+        await ackCallback(callbackQueryId, { text: "Control is off — set SKYNET_TELEGRAM_CONTROL." });
+        return;
+      }
+      // Refuse to act on a gate that's no longer open (already resolved from
+      // the app or another tap). The button is stripped either way.
+      const gate = (await openGates()).find((g) => g.id === gateId);
+      if (!gate) {
+        await ackCallback(callbackQueryId, { text: "Gate already handled." });
+        if (messageId) await editReplyMarkup(chatId, messageId).catch(() => undefined);
+        return;
+      }
+
+      // 🔍 View diff — send the run's real patch (truncated), no resolution.
+      if (decision === "diff") {
+        await ackCallback(callbackQueryId).catch(() => undefined);
+        try {
+          const d = operations.runDiff ? await operations.runDiff(ws, gate.runId) : null;
+          if (!d) {
+            await notify("Diff isn't available for this run.");
+          } else {
+            const MAX = 3200; // keep well under Telegram's 4096-char message cap
+            const clipped = d.patch.length > MAX ? d.patch.slice(0, MAX) + "\n… (truncated — open the app for the full diff)" : d.patch;
+            const head = `🔍 <b>${d.files.length} file(s)</b> · <code>+${d.add} −${d.del}</code>`;
+            await notify(`${head}\n<pre>${esc(clipped)}</pre>`, { parse_mode: "HTML" });
+          }
+        } catch (err) {
+          await notify(`Couldn't load the diff: ${(err as Error).message}`);
+        }
+        return; // leave the decision buttons in place
+      }
+
+      // ✏️ Request changes — arm guidance capture; the next message resumes the agent.
+      if (decision === "modify") {
+        await ackCallback(callbackQueryId, { text: "Send your changes as a message." }).catch(() => undefined);
+        awaitingGuidance = { gateId, runId: gate.runId, messageId };
+        await notify("✏️ Reply with the changes you want — I'll send them to the agent and it'll resume.");
+        return; // keep the buttons; guidance arrives as the next message
+      }
+
+      await ackCallback(callbackQueryId).catch(() => undefined);
+      try {
+        await operations.resolveHitl(ws, gateId, { action: decision as "approve" | "reject" }, operatorId);
+        await notify(`${decision === "approve" ? "✅" : "🚫"} Gate ${gateId} ${decision}d.`);
+      } catch (err) {
+        await notify(`Couldn't ${decision} gate ${gateId}: ${(err as Error).message}`);
+      }
+      if (messageId) await editReplyMarkup(chatId, messageId).catch(() => undefined);
+      return;
+    }
+
+    // Unknown kind — silently ack so the spinner stops; don't leak internals.
+    await ackCallback(callbackQueryId).catch(() => undefined);
+  };
+
+  return { handle, handleCallback, noteCard };
 }
 
 /** The narrow slice {@link simulateConversational} needs from the orchestrator. */
 export interface SimulateOrch {
-  consult(ws: string, question: string, context?: string): Promise<string | null>;
+  consult(ws: string, question: string, context?: string, system?: string): Promise<string | null>;
 }
 
 export interface SimulateDeps {
@@ -529,8 +827,8 @@ export async function simulateConversational(
   text: string,
 ): Promise<{ reply: string | null; action: Action | null; error?: string }> {
   const ws = deps.ws ?? DEFAULT_WORKSPACE;
-  const ctx = await buildContext(deps.operations, ws);
-  const raw = await deps.orchestrator.consult(ws, INTENT_SYSTEM_PROMPT, renderContext(text, ctx));
+  const [ctx, docs] = await Promise.all([buildContext(deps.operations, ws), gatherProjectDocs(deps.operations, ws)]);
+  const raw = await deps.orchestrator.consult(ws, text, renderContext(ctx, undefined, docs), INTENT_SYSTEM_PROMPT);
   if (raw == null) return { reply: null, action: null, error: "no-llm" };
   const { reply, action } = parseResponse(raw, ctx);
   return { reply, action };
@@ -555,40 +853,114 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
 
   const client = new TelegramClient(token);
 
-  /** Best-effort notify the owner; a Telegram outage must never break the bridge. */
-  const notify = async (text: string): Promise<void> => {
+  /** Best-effort notify the owner; a Telegram outage must never break the bridge.
+   *  Returns the sent-message id (or 0 on failure) so callers can strip inline
+   *  buttons later. Accepts an optional inline keyboard via `reply_markup`. */
+  const notify = async (text: string, opts?: NotifyOpts): Promise<NotifyResult> => {
     try {
-      await client.sendMessage(ownerChatId, text);
+      const sent = await client.sendMessage(ownerChatId, text, opts);
+      return { messageId: sent.messageId };
     } catch (err) {
       // The client scrubs the token from its errors, so this is safe to log.
       log(`sendMessage failed: ${(err as Error).message}`);
+      return { messageId: 0 };
+    }
+  };
+  /** Best-effort strip the inline keyboard from a message — swallow errors so a
+   *  Telegram outage never breaks the bridge; the buttons just stay tappable. */
+  const editReplyMarkup = async (chatId: string, messageId: number): Promise<void> => {
+    try {
+      await client.editMessageReplyMarkup(chatId, messageId, null);
+    } catch (err) {
+      log(`editMessageReplyMarkup failed: ${(err as Error).message}`);
+    }
+  };
+  /** Best-effort ack a callback_query (dismisses the client's loading spinner). */
+  const ackCallback = async (callbackQueryId: string, opts?: { text?: string }): Promise<void> => {
+    try {
+      await client.answerCallbackQuery(callbackQueryId, opts);
+    } catch (err) {
+      log(`answerCallbackQuery failed: ${(err as Error).message}`);
     }
   };
 
   // ── Outbound: push workspace events to the owner ──────────────────────────
+  // Notifications lead with human names — a run's task title + its project — not
+  // the raw ids that made these unreadable ("Run pin-the-node-docker-image-to-a-
+  // d-1 needs attention"). Best-effort lookups: on failure we fall back to the id.
+  const nameOf = async (runId: string): Promise<Names> => {
+    const run = await operations.getRun(ws, runId).catch(() => null);
+    if (!run) return { run: runId, project: "" };
+    const project = await operations.getProject(ws, run.projectId).catch(() => null);
+    return { run: run.name || runId, project: project?.name ?? "" };
+  };
+  // Deep link to open the run in the app (empty unless PUBLIC_URL is configured).
+  const linkFor = (runId: string): string | undefined => runLink(config.publicUrl, runId);
+
+  // De-dupe run notices: only push when a run's status actually CHANGES, so a run
+  // that re-emits "review" doesn't send the same line three times (the reported
+  // spam). A gate raise also records "review" so we never double-notify a review.
+  const lastNotice = new Map<string, string>();
+
+  const announceGate = async (it: HitlItem): Promise<void> => {
+    lastNotice.set(it.runId, "review"); // the gate IS the review heads-up
+    const opts: NotifyOpts = { parse_mode: "HTML" };
+    if (config.telegramControl) opts.reply_markup = gateKeyboard(it);
+    const sent = await notify(decisionCardHtml(it, await nameOf(it.runId), config.telegramControl, linkFor(it.runId)), opts);
+    // Remember which gate this card is for, so a reply to it → "request changes".
+    if (config.telegramControl && sent.messageId) control.noteCard(sent.messageId, it.id, it.runId);
+  };
+
+  const announceReview = (runId: string): void => {
+    if (lastNotice.get(runId) === "review") return; // already flagged (gate or prior review)
+    lastNotice.set(runId, "review");
+    // A gate for this run (diff/merge/escalation) is raised right AFTER the status
+    // flips to review; wait a beat, then only ping if NO gate covers it — otherwise
+    // the richer, actionable gate notice already went out. This is the case where a
+    // run parks in review with nothing to tap (e.g. a flagged auto-review).
+    setTimeout(() => {
+      void (async () => {
+        const covered = (await operations.listHitl(ws).catch(() => []))
+          .some((g) => g.runId === runId && !g.resolvedAt);
+        if (covered) return;
+        await notify(reviewNotice(await nameOf(runId), linkFor(runId)));
+      })();
+    }, 700);
+  };
+
   const handler = (event: ServerEvent): void => {
     if (event.type === "hitl.raised") {
-      const it = event.item;
-      const lines = [`🔔 Gate ${it.id} (${it.kind}, risk ${it.risk}): ${it.title}`];
-      if (it.command) lines.push(it.command);
-      lines.push(`reply /approve ${it.id} or /reject ${it.id}`);
-      void notify(lines.join("\n"));
+      void announceGate(event.item);
     } else if (event.type === "run.status" && event.status === "review") {
-      void notify(`⚠︎ Run ${event.runId} needs attention`);
+      announceReview(event.runId);
     } else if (event.type === "run.completed") {
-      void notify(`✅ Run ${event.runId} merged/done`);
+      lastNotice.set(event.runId, "done");
+      void (async () => {
+        await notify(completedNotice(await nameOf(event.runId), linkFor(event.runId)));
+      })();
     }
   };
-  bus.subscribe(DEFAULT_WORKSPACE, handler);
+  // Scope to the SAME workspace the web/admin uses. `config.adminWorkspace` is
+  // set by the deployer (e.g. GCP setup.sh writes "skynet") and by the seed path
+  // in index.ts — hardcoding DEFAULT_WORKSPACE here made Telegram query a
+  // different empty universe than the web (the "workspace looks empty" bug).
+  const ws = config.adminWorkspace || DEFAULT_WORKSPACE;
 
   // ── Inbound: owner-only control (deterministic commands + confirmed intents) ─
+  // Created BEFORE subscribing, so a gate raised during boot can register its
+  // decision card via `control.noteCard` without a temporal-dead-zone hazard.
   const control = createOwnerControl({
     controlEnabled: config.telegramControl,
     ownerChatId,
     operations,
     orchestrator,
     notify,
+    editReplyMarkup,
+    ackCallback,
+    ws,
   });
+
+  bus.subscribe(ws, handler);
 
   // Long-poll loop — fire-and-forget (never awaited at boot). Each iteration is
   // isolated: an error is caught + backed off so the loop survives, and it never
@@ -601,9 +973,24 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
         const updates = await client.getUpdates(offset, POLL_TIMEOUT_S);
         for (const u of updates) {
           offset = Math.max(offset, u.update_id + 1); // ack past this update
+          // Inline-button tap → dispatch to handleCallback. Owner-bound: taps
+          // from any other chat are ignored silently (defense-in-depth; the
+          // bot is owner-scoped anyway, but never trust the source).
+          if (u.callback_query) {
+            const cq = u.callback_query;
+            const chatId = cq.message?.chat.id;
+            const messageId = cq.message?.message_id ?? 0;
+            const data = cq.data ?? "";
+            if (chatId != null && String(chatId) === ownerChatId && data) {
+              await control.handleCallback(String(chatId), data, cq.id, messageId).catch((err) =>
+                log(`callback handler error: ${(err as Error).message}`),
+              );
+            }
+            continue;
+          }
           const msg = u.message;
           if (!msg || typeof msg.text !== "string") continue;
-          await control.handle(String(msg.chat.id), msg.text).catch((err) =>
+          await control.handle(String(msg.chat.id), msg.text, msg.reply_to_message?.message_id).catch((err) =>
             log(`handler error: ${(err as Error).message}`),
           );
         }
