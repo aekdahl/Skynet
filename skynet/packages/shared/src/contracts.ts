@@ -423,6 +423,10 @@ export const Agent = z.object({
   model: z.string(),
   status: AgentStatus,
   idleSince: Timestamp.nullable().default(null),
+  // True when the fleet CREATED this runner on demand (auto-scale or fork/retry
+  // provisioning) rather than an operator adding it. Such runners are the only
+  // ones the idle reaper auto-retires (see retireIdleRunnersAfterMinutes).
+  autoProvisioned: z.boolean().default(false),
 });
 export type Agent = z.infer<typeof Agent>;
 
@@ -773,9 +777,15 @@ export const WorkspaceSettings = z.object({
   // `maxRunners`. Off = today's behavior (the task waits for a runner to free).
   autoProvisionRunners: z.boolean().default(false),
   // Hard ceiling on total fleet size, enforced on every creation path (auto-scale,
-  // fork/retry provisioning, and explicit configure). 0 = no cap. The safety valve
-  // that keeps auto-creation from running away.
-  maxRunners: z.number().int().min(0).default(0),
+  // fork/retry provisioning, and explicit configure). Defaults to 100 — a sane
+  // upper bound rather than unbounded; set 0 to explicitly remove the cap. The
+  // safety valve that keeps auto-creation from running away.
+  maxRunners: z.number().int().min(0).default(100),
+  // Auto-decommission: retire a SYSTEM-provisioned runner (one auto-scale/fork
+  // created) once it has sat idle this many minutes, so auto-scaled capacity is
+  // reclaimed instead of accumulating. Operator-added runners are never touched.
+  // 0 = never auto-retire. Default 30.
+  retireIdleRunnersAfterMinutes: z.number().int().min(0).default(30),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 
@@ -783,6 +793,7 @@ export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 export const UpdateWorkspaceSettingsRequest = z.object({
   autoProvisionRunners: z.boolean().optional(),
   maxRunners: z.number().int().min(0).optional(),
+  retireIdleRunnersAfterMinutes: z.number().int().min(0).optional(),
 });
 export type UpdateWorkspaceSettingsRequest = z.infer<typeof UpdateWorkspaceSettingsRequest>;
 

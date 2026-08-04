@@ -246,7 +246,7 @@ describe("MCP settings", () => {
   it("reads and writes the workspace fleet policy", async () => {
     const { client } = await connect(author);
     const before = json(await client.callTool({ name: "get_settings", arguments: {} }));
-    expect(before.fleet).toMatchObject({ autoProvisionRunners: false, maxRunners: 0 }); // defaults
+    expect(before.fleet).toMatchObject({ autoProvisionRunners: false, maxRunners: 100, retireIdleRunnersAfterMinutes: 30 }); // defaults (bounded, not unlimited)
     expect(Array.isArray(before.providers)).toBe(true); // non-secret provider availability
 
     const updated = json(await client.callTool({ name: "update_settings", arguments: { autoProvisionRunners: true, maxRunners: 5 } }));

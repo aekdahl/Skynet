@@ -4,6 +4,7 @@
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
 import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo } from "@skynet/shared";
+import { WorkspaceSettings } from "@skynet/shared";
 import {
   type HitlRaise,
   type RunnerEvents,
@@ -689,12 +690,12 @@ export class Orchestrator {
         // (already on an allowed key) and provision a fresh one instead of
         // making the task wait. At the cap we fall through to NoCapacityError —
         // the task queues until a runner frees up. Atomic under acquireExclusive.
-        const settings = await this.store.getWorkspaceSettings(workspaceId);
-        const underCap = !settings?.maxRunners || runners.length < settings.maxRunners;
+        const settings = await this.fleetPolicy(workspaceId);
+        const underCap = !settings.maxRunners || runners.length < settings.maxRunners;
         const template = eligibleRunners[0]; // a busy runner on an allowed key
-        if (settings?.autoProvisionRunners && underCap && template && (await this.providerUsable(workspaceId, template.provider, template.credentialId))) {
+        if (settings.autoProvisionRunners && underCap && template && (await this.providerUsable(workspaceId, template.provider, template.credentialId))) {
           const id = `runner-auto-${++this.seq}`;
-          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null };
+          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null, autoProvisioned: true };
           await this.hub.upsertAgent(runner);
           return { id, provider: template.provider, model: template.model, credentialId: template.credentialId ?? null };
         }
@@ -714,6 +715,12 @@ export class Orchestrator {
         "No credential for any available agent — add a key for its provider/credential in Settings (or sign in a CLI-login provider). Nothing runs without one.",
       );
     });
+  }
+
+  /** The workspace fleet policy, defaulted when never set (so maxRunners=100 and
+   *  the reaper TTL apply to unconfigured workspaces too). */
+  private async fleetPolicy(ws: string): Promise<WorkspaceSettings> {
+    return (await this.store.getWorkspaceSettings(ws)) ?? WorkspaceSettings.parse({ workspaceId: ws });
   }
 
   /** A project's enabled-runner-key allowlist (empty = any key). */
@@ -752,8 +759,8 @@ export class Orchestrator {
       }
       // Respect the workspace fleet cap — fork/retry provisioning is auto-creation
       // too, so the ceiling applies here as well (0 = no cap).
-      const settings = await this.store.getWorkspaceSettings(workspaceId);
-      if (settings?.maxRunners && runners.length >= settings.maxRunners) {
+      const settings = await this.fleetPolicy(workspaceId);
+      if (settings.maxRunners && runners.length >= settings.maxRunners) {
         throw new NoCapacityError(`Fleet is at its maximum of ${settings.maxRunners} runners — free a runner or raise the limit in settings.`);
       }
       // None idle+usable → provision one for the requested provider + credential,
@@ -764,7 +771,7 @@ export class Orchestrator {
         );
       }
       const id = `runner-auto-${++this.seq}`;
-      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null };
+      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null, autoProvisioned: true };
       await this.hub.upsertAgent(runner);
       return { id, provider, model, credentialId: credentialId ?? null };
     });
@@ -1769,6 +1776,33 @@ export class Orchestrator {
       await this.hub.runStatus(a.id, "done").catch(() => undefined);
       await this.hub.runCompleted(a.id, a.branch).catch(() => undefined);
     }
+  }
+
+  /**
+   * Auto-decommission: retire SYSTEM-provisioned runners (auto-scale / fork
+   * created) that have sat idle past the workspace's TTL, so auto-scaled capacity
+   * doesn't accumulate. Only touches `autoProvisioned` idle runners — an operator's
+   * manually-added fleet is never auto-retired, and a busy runner is never touched.
+   * Per-workspace TTL (retireIdleRunnersAfterMinutes; 0 = off). Returns the count
+   * retired. Runs as a janitorial sweep, independent of the pause/kill switch.
+   */
+  async reapIdleRunners(): Promise<number> {
+    const allAgents = await this.store.listAllAgents().catch(() => [] as Agent[]);
+    const workspaces = [...new Set(allAgents.map((a) => a.workspaceId))];
+    let retired = 0;
+    for (const ws of workspaces) {
+      const ttlMin = (await this.fleetPolicy(ws)).retireIdleRunnersAfterMinutes;
+      if (!ttlMin || ttlMin <= 0) continue; // reaping disabled for this workspace
+      const cutoff = now() - ttlMin * 60_000;
+      for (const a of allAgents) {
+        if (a.workspaceId !== ws || !a.autoProvisioned) continue; // operator runners are off-limits
+        if (a.status !== "idle" || a.idleSince == null || a.idleSince > cutoff) continue; // busy or still fresh
+        if (this.isBusy(a.id)) continue; // a live run is mid-flight despite the status
+        await this.hub.deleteAgent(a.id).catch(() => undefined);
+        retired++;
+      }
+    }
+    return retired;
   }
 
   /** "Too long" guard: a run that has been actively `running` past config

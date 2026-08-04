@@ -867,6 +867,7 @@ export class Operations {
       model: input.model,
       status: "idle",
       idleSince: now(),
+      autoProvisioned: false, // an operator added this — the idle reaper leaves it alone
     };
     return this.hub.upsertAgent(runner);
   }

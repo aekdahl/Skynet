@@ -7,7 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderId, Agent, Project, Task, WorkspaceSettings } from "@skynet/shared";
-import { DEFAULT_WORKSPACE } from "@skynet/shared";
+import { DEFAULT_WORKSPACE, WorkspaceSettings as WorkspaceSettingsSchema } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
 import { Operations } from "../apps/server/src/operations.js";
 import { Orchestrator, NoCapacityError } from "../apps/server/src/orchestrator.js";
@@ -87,13 +87,53 @@ describe("fleet cap on explicit runner creation", () => {
   });
 });
 
+describe("idle-runner reaper (auto-decommission)", () => {
+  const agent = (over: Partial<Agent>): Agent => ({
+    id: "x", workspaceId: WS, name: "x", provider: "claude", credentialId: null, model: "opus",
+    status: "idle", idleSince: 0, autoProvisioned: false, ...over,
+  });
+
+  it("retires auto-provisioned runners idle past the TTL, sparing everything else", async () => {
+    const store = new MemoryStore({ seed: false });
+    const orch = build(store);
+    await store.putWorkspaceSettings({ workspaceId: WS, autoProvisionRunners: true, maxRunners: 100, retireIdleRunnersAfterMinutes: 30 });
+    await store.putAgent(agent({ id: "auto-stale", autoProvisioned: true, status: "idle", idleSince: 0 })); // reaped
+    await store.putAgent(agent({ id: "auto-fresh", autoProvisioned: true, status: "idle", idleSince: Date.now() })); // kept — still fresh
+    await store.putAgent(agent({ id: "auto-busy", autoProvisioned: true, status: "busy", idleSince: null })); // kept — busy
+    await store.putAgent(agent({ id: "manual-stale", autoProvisioned: false, status: "idle", idleSince: 0 })); // kept — operator's
+
+    expect(await orch.reapIdleRunners()).toBe(1);
+    expect((await store.listAgents(WS)).map((a) => a.id).sort()).toEqual(["auto-busy", "auto-fresh", "manual-stale"]);
+  });
+
+  it("does nothing when the workspace's TTL is 0 (disabled)", async () => {
+    const store = new MemoryStore({ seed: false });
+    const orch = build(store);
+    await store.putWorkspaceSettings({ workspaceId: WS, autoProvisionRunners: true, maxRunners: 100, retireIdleRunnersAfterMinutes: 0 });
+    await store.putAgent(agent({ id: "auto-stale", autoProvisioned: true, status: "idle", idleSince: 0 }));
+    expect(await orch.reapIdleRunners()).toBe(0);
+    expect(await fleetSize(store)).toBe(1);
+  });
+});
+
+describe("fleet policy defaults", () => {
+  it("defaults maxRunners to 100 — a bound, never unlimited", () => {
+    expect(WorkspaceSettingsSchema.parse({ workspaceId: WS })).toMatchObject({
+      autoProvisionRunners: false,
+      maxRunners: 100,
+      retireIdleRunnersAfterMinutes: 30,
+    });
+  });
+});
+
 describe("workspace settings persistence", () => {
   it("survives the durable store round-trip", async () => {
     const path = join(mkdtempSync(join(tmpdir(), "skynet-ws-")), "db.json");
     const fs = FileStore.create(path);
-    await fs.putWorkspaceSettings({ workspaceId: WS, autoProvisionRunners: true, maxRunners: 7 });
+    const saved = { workspaceId: WS, autoProvisionRunners: true, maxRunners: 7, retireIdleRunnersAfterMinutes: 45 };
+    await fs.putWorkspaceSettings(saved);
     fs.flush();
     const reopened = FileStore.create(path);
-    expect(await reopened.getWorkspaceSettings(WS)).toEqual({ workspaceId: WS, autoProvisionRunners: true, maxRunners: 7 });
+    expect(await reopened.getWorkspaceSettings(WS)).toEqual(saved);
   });
 });

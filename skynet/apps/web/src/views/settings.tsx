@@ -513,8 +513,9 @@ function FleetAutomationSection() {
         <div className="settings-setup-title">Fleet auto-scale</div>
         <div className="settings-setup-sub">
           Add a runner automatically when a task needs one and none is free — cloned from a busy runner on a key the
-          project is allowed to use. The max is the safety valve so auto-creation can’t run away (0 = no cap); it caps
-          every way runners get created, including MCP tokens.
+          project is allowed to use. The max is the safety valve so auto-creation can’t run away (default 100; 0 = no
+          cap); it caps every way runners get created, including MCP tokens. Auto-created runners are retired again once
+          they’ve sat idle past the timeout below — operator-added runners are never touched.
         </div>
         {err && <div className="settings-warn">{err}</div>}
         {settings && (
@@ -542,6 +543,19 @@ function FleetAutomationSection() {
                 onBlur={(e) => void save({ maxRunners: clampMax(e.target.value) })}
               />
               <span className="fleet-auto-max-hint mono">0 = no cap</span>
+            </label>
+            <label className="fleet-auto-max" title="Retire an auto-created runner once it has sat idle this long. Operator-added runners are never auto-retired. 0 = never.">
+              <span className="fleet-auto-max-label">Retire idle after</span>
+              <input
+                type="number"
+                min={0}
+                className="qx-input fleet-auto-max-input"
+                value={settings.retireIdleRunnersAfterMinutes}
+                disabled={busy}
+                onChange={(e) => setSettings({ ...settings, retireIdleRunnersAfterMinutes: clampMax(e.target.value) })}
+                onBlur={(e) => void save({ retireIdleRunnersAfterMinutes: clampMax(e.target.value) })}
+              />
+              <span className="fleet-auto-max-hint mono">min · 0 = never</span>
             </label>
           </div>
         )}
