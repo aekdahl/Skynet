@@ -135,8 +135,9 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
    (complete `parseHash`); derive the sidebar `.on` highlight purely from router state
    (highlights currently accumulate — three "active" at once); give focus a distinct
    `:focus-visible` ring instead of the active style; window title reflects view/project.
-2. [ ] **Onboarding step 2 (GitHub) is a PLACEHOLDER** mid-wizard — move it to Integrations
-   post-wizard (or an optional "connect later" card without placeholder framing).
+2. [x] **Onboarding step 2 (GitHub) is a PLACEHOLDER** mid-wizard — removed the GitHub step
+   from the wizard (now Workspace → Module map → Fleet). Integrations already owns the connect
+   flow post-onboarding, so a first-run user never meets the unfinished App-install mid-wizard.
 3. [ ] **Blocked-CTA / disabled-state system** — one pattern app-wide: distinct disabled
    treatment + an inline, readable reason ("Select at least one provider", "name required")
    next to the button. Applies to GetStarted, wizard step 4, task composer, fleet form.

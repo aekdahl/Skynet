@@ -59,9 +59,15 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
 
   // Public — the one /api route reachable without an existing token.
   // Issue a session (httpOnly cookie + body token). Shared by the direct-login
-  // and the MFA second-factor paths.
-  async function issueSession(reply: FastifyReply, principal: Principal) {
-    const session = await sessions.create(principal, config.sessionTtlMs);
+  // (mfa: false) and the MFA second-factor (mfa: true) paths.
+  //
+  // MFA-verified sessions get the longer TTL (`sessionTtlMfaMs`, default 30d)
+  // because the second factor already raised the security bar — re-doing MFA
+  // every 12h is more friction than it buys. Password-only sessions keep the
+  // shorter TTL (`sessionTtlMs`, default 12h).
+  async function issueSession(reply: FastifyReply, principal: Principal, opts: { mfa: boolean }) {
+    const ttl = opts.mfa ? config.sessionTtlMfaMs : config.sessionTtlMs;
+    const session = await sessions.create(principal, ttl);
     setSessionCookie(reply, session.token, session.expiresAt);
     return { token: session.token, principal, expiresAt: session.expiresAt };
   }
@@ -72,7 +78,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     const principal = operators.verify(body.data.email, body.data.password);
     if (!principal) return reply.code(401).send({ error: "Invalid credentials" });
     // No MFA (or broken-glass via SKYNET_MFA_DISABLE): issue the session directly.
-    if (!mfaEnabled()) return issueSession(reply, principal);
+    if (!mfaEnabled()) return issueSession(reply, principal, { mfa: false });
     // MFA on: don't issue a session yet. Send a one-time code to the owner's
     // Telegram and require it (or a recovery code) at /api/auth/mfa. The code
     // never leaves the server except via Telegram, so a stolen password alone
@@ -99,7 +105,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     const principal = verifyChallenge(body.data.challengeId, body.data.code);
     if (!principal) return reply.code(401).send({ error: "Invalid or expired code" });
-    return issueSession(reply, principal);
+    return issueSession(reply, principal, { mfa: true });
   });
 
   // Authenticated — destroy the presented session and clear the cookie.

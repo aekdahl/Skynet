@@ -17,6 +17,7 @@ import type {
   Agent,
   Snapshot,
   Task,
+  WorkspaceSettings,
 } from "@skynet/shared";
 import type { StoredServiceToken } from "../auth/service-tokens.js";
 
@@ -95,6 +96,11 @@ export interface Store {
   getGithubConnection(workspaceId: string): Promise<GithubConnection | undefined>;
   putGithubConnection(connection: GithubConnection): Promise<void>;
   deleteGithubConnection(workspaceId: string): Promise<void>;
+
+  // Workspace settings (one per workspace) — the live fleet policy. Same
+  // durable-Store pattern as the GitHub connection; undefined until first set.
+  getWorkspaceSettings(workspaceId: string): Promise<WorkspaceSettings | undefined>;
+  putWorkspaceSettings(settings: WorkspaceSettings): Promise<void>;
   // A PAT's sealed ciphertext (pat auth mode). Server-side only; never part of
   // the GithubConnection contract. Sealed/opened by the GithubService.
   getGithubToken(workspaceId: string): Promise<string | undefined>;

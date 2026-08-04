@@ -11,6 +11,8 @@ import {
   type ResolveAction,
   type SafetyPolicy,
   type SecretMeta,
+  type WorkspaceSettings,
+  type UpdateWorkspaceSettingsRequest,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 
@@ -267,6 +269,14 @@ export function saveEnvSettings(updates: Record<string, string>) {
 /** Ask the desktop shell to relaunch the local engine so staged changes apply. */
 export function restartEngine() {
   return req<{ restarting: boolean }>("POST", "/api/settings/restart");
+}
+/** Read the live workspace fleet policy (auto-scale + cap). */
+export function fetchWorkspaceSettings() {
+  return req<WorkspaceSettings>("GET", "/api/settings/fleet");
+}
+/** Update the live workspace fleet policy. */
+export function updateWorkspaceSettings(patch: UpdateWorkspaceSettingsRequest) {
+  return req<WorkspaceSettings>("PATCH", "/api/settings/fleet", patch);
 }
 
 // Provider secrets (Settings). `env` = providers a server env var supplies a
