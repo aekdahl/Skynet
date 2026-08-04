@@ -7,3 +7,4 @@ export type { GitProvider, GithubConnectionStore, PushRequest, PushResult, Safet
 export { evaluateSafety, requiresApproval } from "./safety.js";
 export { GithubService, githubService, configureGithub } from "./service.js";
 export { registerGithubRoutes } from "./routes.js";
+export { parseRepoRef } from "./repo-ref.js";

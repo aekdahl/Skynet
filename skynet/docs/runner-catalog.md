@@ -30,7 +30,7 @@ These run as a command-line process we can drive non-interactively. Ideal `runne
 | **Auggie CLI** | Augment | ◻ Augment's CLI agent (distinct from the IDE in Tier 3) |
 | **Qwen Code** | Alibaba | ◻ model-vendor coding CLI |
 | **Grok CLI** | xAI | ◻ model-vendor coding CLI |
-| **Kimi CLI** | Moonshot | ◻ model-vendor coding CLI |
+| **Kimi Code** | Moonshot | ◻ model-vendor coding CLI ([MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — install script, Kimi models by default, OpenAI-compatible for others |
 | **SWE-agent** | Princeton | ◻ research-grade, CLI, good for benchmarks |
 | **Plandex** | open source | ◻ CLI, plan-based long tasks |
 | **gptme** | open source | ◻ terminal agent |

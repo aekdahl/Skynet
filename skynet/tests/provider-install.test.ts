@@ -27,9 +27,11 @@ describe("provider-install", () => {
     // shown in the UI verbatim before running).
     expect(installCommandFor("codex")).toEqual({ packageManager: "npm", command: "npm install -g @openai/codex" });
     expect(installCommandFor("gemini")).toEqual({ packageManager: "npm", command: "npm install -g @google/gemini-cli" });
-    // The rest stay null (brew / sign-in / manual — no scriptable install).
+    // The GitHub Copilot CLI is a standalone npm package now, so it's scriptable too.
+    expect(installCommandFor("copilot")).toEqual({ packageManager: "npm", command: "npm install -g @github/copilot" });
+    // The rest stay null: cursor is a `curl | bash` script and hermes is a manual
+    // download — neither is a plain npm install the no-shell installer will run.
     expect(installCommandFor("cursor")).toBeNull();
-    expect(installCommandFor("copilot")).toBeNull();
     expect(installCommandFor("hermes")).toBeNull();
   });
 });

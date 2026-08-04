@@ -4,7 +4,7 @@
 // pin-the-node-docker-image-to-a-d-1 needs attention").
 import { describe, it, expect } from "vitest";
 import type { HitlItem } from "@skynet/shared";
-import { gateNotice, reviewNotice, completedNotice } from "../apps/server/src/telegram/notices.js";
+import { gateNotice, decisionCardHtml, reviewNotice, completedNotice, runLink } from "../apps/server/src/telegram/notices.js";
 
 const UGLY_RUN_ID = "pin-the-node-docker-image-to-a-d-1";
 const UGLY_GATE_ID = "q-diff-pin-the-node-docker-image-to-a-d-1-20";
@@ -81,5 +81,27 @@ describe("reviewNotice / completedNotice", () => {
     expect(msg).toContain("Pin the Node Docker image to a digest");
     expect(msg).toContain("Takeoff");
     expect(msg).not.toContain(UGLY_RUN_ID);
+  });
+});
+
+describe("deep links", () => {
+  it("runLink builds the run hash route, or nothing without a base URL", () => {
+    expect(runLink("https://skynet.example.com", UGLY_RUN_ID)).toBe(
+      `https://skynet.example.com/#/agent/${UGLY_RUN_ID}`,
+    );
+    expect(runLink("", UGLY_RUN_ID)).toBeUndefined();
+  });
+
+  it("appends the link when given (and omits it otherwise)", () => {
+    const link = `https://skynet.example.com/#/agent/${UGLY_RUN_ID}`;
+    // review
+    expect(reviewNotice(NAMES, link)).toContain(link);
+    expect(reviewNotice(NAMES)).not.toContain("http");
+    // completed
+    expect(completedNotice(NAMES, link)).toContain(link);
+    // gate decision card — an HTML <a> the operator can tap
+    const card = decisionCardHtml(item({}), NAMES, true, link);
+    expect(card).toContain(`<a href="${link}">`);
+    expect(decisionCardHtml(item({}), NAMES, true)).not.toContain("<a href");
   });
 });
