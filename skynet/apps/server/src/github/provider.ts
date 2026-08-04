@@ -181,6 +181,28 @@ export class GitHubProvider implements GitProvider {
     await this.api(token, "PATCH", `/repos/${repo}/issues/${number}`, { state });
   }
 
+  async getFile(token: string, repo: string, path: string): Promise<{ content: string; sha: string } | null> {
+    try {
+      const r = await this.api<{ content?: string; encoding?: string; sha: string }>(
+        token,
+        "GET",
+        `/repos/${repo}/contents/${path.replace(/^\/+/, "")}`,
+      );
+      const content = r.encoding === "base64" && r.content ? Buffer.from(r.content, "base64").toString("utf8") : r.content ?? "";
+      return { content, sha: r.sha };
+    } catch {
+      return null; // absent file/repo/dir
+    }
+  }
+
+  async putFile(token: string, repo: string, path: string, content: string, sha: string, message: string): Promise<void> {
+    await this.api(token, "PUT", `/repos/${repo}/contents/${path.replace(/^\/+/, "")}`, {
+      message,
+      content: Buffer.from(content, "utf8").toString("base64"),
+      sha,
+    });
+  }
+
   async listInstallations(token: string): Promise<GithubInstallation[]> {
     type Inst = { id: number; account: { login: string; type: string }; app_slug: string };
     const insts = await this.paginate<Inst>(

@@ -91,6 +91,12 @@ export interface GitProvider {
   commentIssue(token: string, repo: string, number: number, body: string): Promise<void>;
   /** Open or close an issue (write-back on task status change). */
   setIssueState(token: string, repo: string, number: number, state: "open" | "closed"): Promise<void>;
+  /** Read a file's decoded text + blob sha (the sha is needed to commit an update).
+   *  Returns null if the file/repo is absent. */
+  getFile(token: string, repo: string, path: string): Promise<{ content: string; sha: string } | null>;
+  /** Commit an updated file (single-file commit via the Contents API). `sha` is
+   *  the blob sha from getFile — GitHub rejects a stale sha, so edits are safe. */
+  putFile(token: string, repo: string, path: string, content: string, sha: string, message: string): Promise<void>;
 }
 
 /** A GitHub issue, trimmed to what task import needs. */

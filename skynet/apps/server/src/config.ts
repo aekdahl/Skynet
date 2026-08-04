@@ -207,6 +207,10 @@ export const config = {
   // /status, and the kill switch (/stop, /quit) work WITHOUT it and never depend
   // on the LLM. Replaces the older approve-only SKYNET_TELEGRAM_APPROVE flag.
   telegramControl: process.env.SKYNET_TELEGRAM_CONTROL === "true",
+  // Quiet hours "22-7" (local, 24h): hold low-value "shipped" pings overnight so
+  // the phone stays quiet. Decisions and "needs a look" always go through. Unset
+  // or malformed → never quiet.
+  telegramQuietHours: process.env.SKYNET_TELEGRAM_QUIET_HOURS || undefined,
 
   // ── MFA (second factor on the public login) ────────────────────────────────
   // Opt-in Telegram OTP after the password. SKYNET_MFA_DISABLE is the SSH

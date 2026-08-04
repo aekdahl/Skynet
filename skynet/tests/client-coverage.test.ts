@@ -33,6 +33,7 @@ const ALLOW = new Set<string>([
   "fetchGithubRepos", // live repo list for the project-creation picker — needs a live remote
   "cloneProjectRepo", // clones a connected GitHub repo — needs a live remote + token
   "importGithubIssues", // imports a repo's issues as tasks — needs a live GitHub repo + token; the pure write-back mapping is covered by task-sync.test.ts
+  "importRepoFile", // imports a repo file's checklist items as tasks — needs a live GitHub repo + token; pure parse/flip covered by checklist.test.ts
   "removeApprovalRule", // revokes a standing approval rule — needs a run that raised + remembered a command gate; no offline journey (covered by approval-policy.test.ts + the server route)
   // destructive bulk variants (the per-record paths ARE covered)
   "archiveAllAudit", "clearAudit",
