@@ -200,7 +200,7 @@ export function GithubConnect({
           <div>
             <div style={{ fontWeight: 600 }}>
               Personal access token{" "}
-              <span style={{ color: "var(--faint)", fontWeight: 400, fontSize: 12 }}>· ····{github.tokenLast4}</span>
+              <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>· ····{github.tokenLast4}</span>
             </div>
             <div className="gh-conn-meta">
               {repos.length} repo{repos.length === 1 ? "" : "s"} · stored encrypted on this machine
@@ -312,7 +312,7 @@ export function GithubConnect({
           <div>
             <div style={{ fontWeight: 600 }}>
               {inst.account}{" "}
-              <span style={{ color: "var(--faint)", fontWeight: 400, fontSize: 12 }}>· {inst.type}</span>
+              <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>· {inst.type}</span>
             </div>
             <div className="gh-conn-meta">
               Skynet App · installation #{inst.id} · {repos.length} repo{repos.length === 1 ? "" : "s"}

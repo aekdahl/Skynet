@@ -68,7 +68,7 @@ export function InstallControls() {
         {alerts ? "✓ Inbox alerts on" : "Enable Inbox alerts"}
       </button>
       {note && (
-        <span style={{ color: "var(--faint)", fontSize: 12, flexBasis: "100%" }}>{note}</span>
+        <span style={{ color: "var(--muted)", fontSize: 12, flexBasis: "100%" }}>{note}</span>
       )}
     </div>
   );

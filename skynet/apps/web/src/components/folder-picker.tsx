@@ -116,14 +116,14 @@ function BrowseModal({
               <span style={{ opacity: 0.7 }}>↑</span> <span>..</span>
             </button>
           )}
-          {loading && <div style={{ padding: 12, color: "var(--faint)" }}>Loading…</div>}
+          {loading && <div style={{ padding: 12, color: "var(--muted)" }}>Loading…</div>}
           {!loading && listing && !listing.exists && (
             <div style={{ padding: 12, color: "var(--warn, #d88)" }}>
               Folder not found — check the path, or navigate to it.
             </div>
           )}
           {!loading && listing?.exists && listing.entries.length === 0 && (
-            <div style={{ padding: 12, color: "var(--faint)" }}>No subfolders here.</div>
+            <div style={{ padding: 12, color: "var(--muted)" }}>No subfolders here.</div>
           )}
           {!loading &&
             listing?.entries.map((e: FsEntry) => (
