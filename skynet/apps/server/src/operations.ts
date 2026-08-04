@@ -44,6 +44,7 @@ import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { projectPreview, type PreviewState } from "./preview/project-preview.js";
 import { githubService, parseRepoRef } from "./github/index.js";
+import { parseChecklist } from "./tasks/checklist.js";
 import {
   answerProjectQuestion,
   type AssistantAction,
@@ -571,6 +572,33 @@ export class Operations {
       imported++;
     }
     return { imported, skipped: issues.length - imported };
+  }
+
+  /** Import a repo file's OPEN checklist items (`- [ ] …`) as backlog tasks, each
+   *  linked back to the file+item so completing the task checks the box (Phase 2).
+   *  Deduped by path+label. GitHub-repo-backed projects only. */
+  async importRepoFile(ws: string, projectId: string, path: string): Promise<{ imported: number; skipped: number }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repo) throw new Error("Repo-file import needs a GitHub-bound project.");
+    const file = await githubService.getRepoFileWithSha(ws, project.repo, path, project.githubCredentialId);
+    if (!file) throw new Error(`File not found in the repo: ${path}`);
+    const open = parseChecklist(file.content).filter((i) => !i.checked); // unchecked = still to do
+    const existing = await this.store.listTasks(ws);
+    const seen = new Set(
+      existing.flatMap((t) =>
+        t.projectId === projectId && t.source?.kind === "repo_file" && t.source.path === path
+          ? [t.source.anchor.trim().toLowerCase()]
+          : [],
+      ),
+    );
+    let imported = 0;
+    for (const it of open) {
+      if (seen.has(it.label.trim().toLowerCase())) continue;
+      await this.createTask(ws, projectId, { text: it.label, source: { kind: "repo_file", path, anchor: it.label } });
+      imported++;
+    }
+    return { imported, skipped: open.length - imported };
   }
   async updateTask(ws: string, tid: string, patch: UpdateTaskRequest): Promise<Task> {
     const task = await this.store.getTask(tid);

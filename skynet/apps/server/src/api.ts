@@ -522,6 +522,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Import a repo file's open checklist items as tasks (Phase 2). Body: { path }.
+  app.post<{ Params: { id: string }; Body: { path?: string } }>("/api/projects/:id/import/repo-file", async (req, reply) => {
+    const path = (req.body?.path ?? "").trim();
+    if (!path) return reply.code(400).send({ error: "A file path is required (e.g. TODO.md)." });
+    try {
+      return await ops.importRepoFile(ws(req), req.params.id, path);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.patch<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid", async (req, reply) => {
     const body = UpdateTaskRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });

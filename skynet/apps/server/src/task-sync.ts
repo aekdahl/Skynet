@@ -14,6 +14,7 @@ import type { Task, TaskState } from "@skynet/shared";
 import type { Bus } from "./bus.js";
 import type { Store } from "./store/store.js";
 import { githubService } from "./github/index.js";
+import { repoFileChecked, setChecklistItem } from "./tasks/checklist.js";
 
 /** PURE: the GitHub-issue write-back for a state transition — a comment and/or an
  *  issue open/closed flip. `{}` when the transition needs nothing. Kept pure so
@@ -52,11 +53,45 @@ async function writeBack(task: Task, from: TaskState, to: TaskState, deps: SyncD
   const project = await deps.store.getProject(task.projectId);
   if (!project?.syncSourceStatus) return; // opt-in per project
   const src = task.source;
-  if (!src || src.kind !== "github_issue") return; // Phase 1: GitHub issues only
-  const plan = githubIssuePlan(from, to);
-  if (!plan.comment && !plan.state) return;
+  if (!src) return;
   const cred = project.githubCredentialId; // write under the project's GitHub account
-  if (plan.comment) await githubService.commentIssue(task.workspaceId, src.repo, src.number, plan.comment, cred);
-  if (plan.state) await githubService.setIssueState(task.workspaceId, src.repo, src.number, plan.state, cred);
-  deps.log?.(`[task-sync] ${src.repo}#${src.number} ← task ${task.id} is now ${to}`);
+
+  // Phase 1 — GitHub issue: comment / close / reopen.
+  if (src.kind === "github_issue") {
+    const plan = githubIssuePlan(from, to);
+    if (!plan.comment && !plan.state) return;
+    if (plan.comment) await githubService.commentIssue(task.workspaceId, src.repo, src.number, plan.comment, cred);
+    if (plan.state) await githubService.setIssueState(task.workspaceId, src.repo, src.number, plan.state, cred);
+    deps.log?.(`[task-sync] ${src.repo}#${src.number} ← task ${task.id} is now ${to}`);
+    return;
+  }
+
+  // Phase 2 — repo file: flip the linked `- [ ]` checklist item and commit it
+  // (single-file Contents-API commit). GitHub-repo-backed projects only for now.
+  if (src.kind === "repo_file") {
+    const checked = repoFileChecked(from, to);
+    if (checked === null) return;
+    if (!project.repo) return; // needs a GitHub repo to commit the edit
+    const file = await githubService.getRepoFileWithSha(task.workspaceId, project.repo, src.path, cred);
+    if (!file) {
+      deps.log?.(`[task-sync] ${src.path} not found — skipped`);
+      return;
+    }
+    const next = setChecklistItem(file.content, src.anchor, checked);
+    if (next === null) {
+      deps.log?.(`[task-sync] ${src.path}: no checklist item "${src.anchor}" — skipped`);
+      return;
+    }
+    await githubService.commitRepoFile(
+      task.workspaceId,
+      project.repo,
+      src.path,
+      next,
+      file.sha,
+      `Skynet: ${checked ? "check off" : "reopen"} "${src.anchor}"`,
+      cred,
+    );
+    deps.log?.(`[task-sync] ${src.path} ← "${src.anchor}" ${checked ? "checked" : "unchecked"}`);
+    return;
+  }
 }

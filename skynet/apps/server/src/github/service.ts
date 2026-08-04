@@ -157,6 +157,16 @@ export class GithubService {
     await this.provider.setIssueState(await this.projectToken(workspaceId, githubCredentialId), repo, number, state);
   }
 
+  /** Read a repo file's text + blob sha (for repo-file task import + write-back). */
+  async getRepoFileWithSha(workspaceId: string, repo: string, path: string, githubCredentialId?: string | null): Promise<{ content: string; sha: string } | null> {
+    return this.provider.getFile(await this.projectToken(workspaceId, githubCredentialId), repo, path);
+  }
+  /** Commit an updated repo file (single-file Contents-API commit) — the repo-file
+   *  write-back path (flip a checklist item when a task completes/reopens). */
+  async commitRepoFile(workspaceId: string, repo: string, path: string, content: string, sha: string, message: string, githubCredentialId?: string | null): Promise<void> {
+    await this.provider.putFile(await this.projectToken(workspaceId, githubCredentialId), repo, path, content, sha, message);
+  }
+
   /** Repos a given GitHub account can bind to — a pinned credential's PAT lists
    *  ITS repos (the create-project picker for a business/personal account); no
    *  credentialId falls back to the workspace default connection's repos. */
