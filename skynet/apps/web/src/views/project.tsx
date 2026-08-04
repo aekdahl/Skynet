@@ -291,6 +291,14 @@ function TaskCard({
             #{task.source.number} ↗
           </a>
         )}
+        {task.source?.kind === "repo_file" && (
+          <span
+            className="kb-source mono"
+            title={`Imported from ${task.source.path} — completing this checks its box when sync is enabled`}
+          >
+            📄 {task.source.path.split("/").pop()}
+          </span>
+        )}
         {locked && (
           <span
             className="kb-lock"
@@ -726,12 +734,12 @@ function ProjectSourceSync({ project, onToggle }: { project: Project; onToggle: 
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   if (!project.repo) return null;
-  const importIssues = async () => {
+  const runImport = async (fn: () => Promise<{ imported: number; skipped: number }>, unit: string) => {
     setBusy(true);
     setNote(null);
     try {
-      const r = await api.importGithubIssues(project.id);
-      setNote(r.imported ? `Imported ${r.imported} issue${r.imported === 1 ? "" : "s"}${r.skipped ? ` · ${r.skipped} already here` : ""}` : "No new issues");
+      const r = await fn();
+      setNote(r.imported ? `Imported ${r.imported} ${unit}${r.imported === 1 ? "" : "s"}${r.skipped ? ` · ${r.skipped} already here` : ""}` : `No new ${unit}s`);
     } catch (e) {
       setNote(e instanceof Error ? e.message : "Import failed");
     } finally {
@@ -739,10 +747,18 @@ function ProjectSourceSync({ project, onToggle }: { project: Project; onToggle: 
       setTimeout(() => setNote(null), 4000);
     }
   };
+  const importIssues = () => runImport(() => api.importGithubIssues(project.id), "issue");
+  const importFile = () => {
+    const path = window.prompt("Import a repo file's checklist (`- [ ] …`) as tasks. File path:", "TODO.md");
+    if (path && path.trim()) void runImport(() => api.importRepoFile(project.id, path.trim()), "task");
+  };
   return (
     <>
       <button className="btn" disabled={busy} onClick={() => void importIssues()} title="Import this repo's open GitHub issues as tasks — each links back to its issue.">
         {busy ? "Importing…" : "⤒ Import issues"}
+      </button>
+      <button className="btn" disabled={busy} onClick={importFile} title="Import a repo file's open checklist items (- [ ] …) as tasks — completing one checks its box.">
+        ⤒ Import file
       </button>
       <label className="proj-autonomy" title="When on, moving a task to review/done comments + closes its linked GitHub issue (reopens if it moves back out of done).">
         <input type="checkbox" className="proj-autonomy-cb" checked={project.syncSourceStatus} onChange={(e) => onToggle(e.target.checked)} />

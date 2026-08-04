@@ -81,8 +81,11 @@ deferred; the field reserves the seam.
 
 1. **GitHub issues** *(done)* — import open issues → tasks (`source` set,
    deduped); on transition, comment / close / reopen. Opt-in per project.
-2. **repo files** — flip `- [ ]`→`- [x]` or a `status:` frontmatter field for the
-   linked anchor, committed through the existing push/PR flow (human-gated).
+2. **repo files** *(done)* — a repo file's `- [ ]` checklist items import as tasks
+   (anchored by label); completing a task flips its box to `- [x]` (reopening
+   unchecks it), committed via the GitHub Contents API (single-file commit under
+   the project's account). GitHub-repo-backed projects; a local-worktree / PR
+   variant + `status:` frontmatter are future refinements.
 3. **external / webhook** — Linear/Jira adapters or a generic outbound webhook
    (`{task, from, to, prUrl}`); optional two-way.
 
