@@ -52,6 +52,43 @@ describe("Operations — workspace-scoped domain layer", () => {
     await expect(ops.getRun("resistance", agent.id)).rejects.toBeInstanceOf(NotFoundError);
   });
 
+  it("createProject honours governance chosen at creation, else falls back to defaults", async () => {
+    const { ops } = setup();
+    // Explicit choices at creation are persisted verbatim.
+    const chosen = await ops.createProject(DEFAULT_WORKSPACE, {
+      name: "Locked down",
+      goal: "",
+      repo: undefined,
+      autonomy: false,
+      approvalLevel: "manual",
+    });
+    expect(chosen.autonomy).toBe(false);
+    expect(chosen.approvalLevel).toBe("manual");
+
+    // Omitting them keeps the historical defaults (autonomy on; trusted default).
+    const defaulted = await ops.createProject(DEFAULT_WORKSPACE, { name: "Default", goal: "", repo: undefined });
+    expect(defaulted.autonomy).toBe(true);
+    expect(defaulted.approvalLevel).toBe("trusted");
+  });
+
+  it("createProject accepts an existing repo's git URL and binds the normalized slug", async () => {
+    const { ops } = setup();
+    // A pasted clone/web URL is normalized to "owner/repo" and bound, which is
+    // what drives the background auto-clone (best-effort; no GitHub connection
+    // in this test, so the clone is skipped but the binding stands).
+    const project = await ops.createProject(DEFAULT_WORKSPACE, {
+      name: "Cloned",
+      goal: "",
+      repoUrl: "https://github.com/acme/app.git",
+    });
+    expect(project.repo).toBe("acme/app");
+
+    // Garbage that isn't a repo reference is rejected up front — no orphan project.
+    await expect(
+      ops.createProject(DEFAULT_WORKSPACE, { name: "Bad", goal: "", repoUrl: "not a repo" }),
+    ).rejects.toThrow(/repo URL/);
+  });
+
   it("rejects cross-workspace access with NotFoundError", async () => {
     const { ops } = setup();
     const mine = await ops.createProject(DEFAULT_WORKSPACE, { name: "Mine", goal: "", repo: undefined });

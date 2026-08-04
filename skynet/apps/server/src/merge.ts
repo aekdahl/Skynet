@@ -22,6 +22,7 @@ import { promisify } from "node:util";
 import { rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { assertApprovable, CommandDeniedError, runBounded } from "./command-safety.js";
+import { gitBin } from "./git-bin.js";
 
 const exec = promisify(execFile);
 
@@ -78,7 +79,7 @@ export class MergeEngine {
   }
 
   private async git(cwd: string, ...args: string[]): Promise<string> {
-    const { stdout } = await exec("git", ["-C", cwd, ...args]);
+    const { stdout } = await exec(gitBin(), ["-C", cwd, ...args]);
     return stdout.trim();
   }
 

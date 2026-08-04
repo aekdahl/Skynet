@@ -87,6 +87,18 @@ export interface ConsultSpec {
   apiKey?: string | null;
   /** What the agent did — its final summary and/or recent log, for grounding. */
   context?: string;
+  /**
+   * Optional system framing for callers that want to control the model's ROLE and
+   * output contract themselves — e.g. the Telegram intent classifier, which
+   * supplies its own "You are Skynet's assistant, return {reply, action}" prompt
+   * plus a data payload framed as "OPERATOR MESSAGE (untrusted)". When set, the
+   * runner uses THIS as the primary framing instead of its default "finished
+   * agent answering follow-ups" wrapper (the default wrapper mis-labels a caller-
+   * supplied system prompt as "operator's question", which Claude then correctly
+   * treats as a prompt-injection attempt). `question` remains the actual user
+   * message; `context` is untrusted data to classify/ground against.
+   */
+  system?: string;
 }
 
 export interface RunnerProvider {
@@ -98,4 +110,11 @@ export interface RunnerProvider {
    * tool-less query seeded from stored state — returns the answer text.
    */
   consult?(spec: ConsultSpec, question: string): Promise<string>;
+  /**
+   * Optional streaming variant of {@link consult}: yields the answer as text
+   * deltas (token-level when the provider supports it) so the UI can render the
+   * reply as it's generated. Callers fall back to `consult` (a single chunk)
+   * when a provider doesn't implement this.
+   */
+  consultStream?(spec: ConsultSpec, question: string): AsyncIterable<string>;
 }

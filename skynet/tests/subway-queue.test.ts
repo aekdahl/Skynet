@@ -6,7 +6,7 @@ import { projectQueue } from "../apps/web/src/lib/derive.js";
 
 const mk = (over: Partial<Task>): Task => ({
   id: "t", workspaceId: "w", projectId: "p1", text: "x", state: "todo", runId: null,
-  autoPick: false, assessment: null, reviewFlaggedReason: null,
+  autoPick: false, assessment: null, reviewVerdict: null,
   assignment: { mode: "any", agentIds: [] }, ...over,
 });
 

@@ -6,11 +6,15 @@ import {
   type TaskRun,
   type TaskAssignment,
   type GithubInstallation,
+  type GithubOwner,
   type GithubRepo,
   type ResolveAction,
   type SafetyPolicy,
   type SecretMeta,
+  type WorkspaceSettings,
+  type UpdateWorkspaceSettingsRequest,
 } from "@skynet/shared";
+import { parseStewardStream, type StewardReply } from "./steward-stream";
 
 // ─── auth ───────────────────────────────────────────────────────────────────
 // The session token drives both REST (Bearer) and the WS (?token=). It's set by
@@ -25,7 +29,9 @@ const token = () =>
  * /api/auth/login) and persist it. On success the stored token authorizes both
  * REST and the WebSocket; callers reload so the app re-connects with it.
  */
-export async function login(email: string, password: string): Promise<void> {
+export type LoginResult = { mfaRequired: false } | { mfaRequired: true; challengeId: string };
+
+export async function login(email: string, password: string): Promise<LoginResult> {
   const res = await fetch("/api/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -35,6 +41,26 @@ export async function login(email: string, password: string): Promise<void> {
     if (res.status === 401) throw new Error("Invalid email or password.");
     const text = await res.text().catch(() => "");
     throw new Error(text || `Login failed (${res.status}).`);
+  }
+  const data = (await res.json()) as { token?: string; mfaRequired?: boolean; challengeId?: string };
+  // MFA on: the password was correct but no session yet — a code went to Telegram.
+  if (data.mfaRequired && data.challengeId) return { mfaRequired: true, challengeId: data.challengeId };
+  if (typeof localStorage !== "undefined" && data.token) localStorage.setItem(TOKEN_KEY, data.token);
+  return { mfaRequired: false };
+}
+
+/** Second factor: exchange the challenge + the Telegram code (or a recovery
+ *  code) for a session token. */
+export async function verifyMfa(challengeId: string, code: string): Promise<void> {
+  const res = await fetch("/api/auth/mfa", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ challengeId, code }),
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("That code is invalid or expired.");
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Verification failed (${res.status}).`);
   }
   const data = (await res.json()) as { token: string };
   if (typeof localStorage !== "undefined") localStorage.setItem(TOKEN_KEY, data.token);
@@ -73,9 +99,26 @@ export async function fetchSnapshot(): Promise<Snapshot> {
 }
 
 // Decision audit trail — resolved HITL decisions, newest first (W8).
+//
+// Parses each row INDEPENDENTLY (safeParse) and drops any that don't match the
+// current schema. A `.array().parse()` throws on the first bad row and blanks
+// the entire audit page — so one legacy record from an older schema (or from a
+// half-applied migration) makes it look like every approval was lost. Per-row
+// parse keeps the good rows visible; drops are logged so we can diagnose.
 export async function fetchAudit(): Promise<AuditRecord[]> {
   const raw = await req<unknown>("GET", "/api/audit");
-  return AuditRecord.array().parse(raw);
+  if (!Array.isArray(raw)) return [];
+  const out: AuditRecord[] = [];
+  for (const row of raw) {
+    const parsed = AuditRecord.safeParse(row);
+    if (parsed.success) out.push(parsed.data);
+    else {
+      const id = row && typeof row === "object" ? (row as { hitlId?: unknown }).hitlId : undefined;
+      const paths = parsed.error.issues.map((i) => i.path.join(".")).join(", ");
+      console.warn(`[audit] dropped invalid record ${String(id ?? "(no id)")}: ${paths}`);
+    }
+  }
+  return out;
 }
 // Audit maintenance — archive/restore + delete, per-record and bulk.
 export function archiveAudit(hitlId: string, archived: boolean) {
@@ -94,7 +137,7 @@ export function clearAudit() {
 // HITL
 export function resolveHitl(
   id: string,
-  body: { action: ResolveAction; optionIndex?: number; guidance?: string },
+  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean },
 ) {
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
 }
@@ -102,6 +145,47 @@ export function resolveHitl(
 // TaskRun chat / fork
 export function sendAgentMessage(id: string, text: string) {
   return req<{ reply: string }>("POST", `/api/runs/${id}/messages`, { text });
+}
+
+/**
+ * Streaming chat: POST the question and read the text/plain reply as it streams,
+ * calling `onDelta` with each chunk. Resolves with the full reply. Falls back to
+ * the non-streaming endpoint if the browser/response can't stream (older
+ * runtime, or the body isn't readable) so the caller always gets an answer.
+ */
+export async function streamAgentMessage(
+  id: string,
+  text: string,
+  onDelta: (chunk: string) => void,
+): Promise<string> {
+  const res = await fetch(`/api/runs/${encodeURIComponent(id)}/messages/stream`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(res.status, body || res.statusText);
+  }
+  if (!res.body) {
+    // No readable stream — fall back to the whole reply, delivered as one chunk.
+    const { reply } = await sendAgentMessage(id, text);
+    onDelta(reply);
+    return reply;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let full = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    if (chunk) {
+      full += chunk;
+      onDelta(chunk);
+    }
+  }
+  return full;
 }
 
 // Telegram conversational assistant — DRY-RUN. Runs the assistant pipeline
@@ -186,17 +270,32 @@ export function saveEnvSettings(updates: Record<string, string>) {
 export function restartEngine() {
   return req<{ restarting: boolean }>("POST", "/api/settings/restart");
 }
+/** Read the live workspace fleet policy (auto-scale + cap). */
+export function fetchWorkspaceSettings() {
+  return req<WorkspaceSettings>("GET", "/api/settings/fleet");
+}
+/** Update the live workspace fleet policy. */
+export function updateWorkspaceSettings(patch: UpdateWorkspaceSettingsRequest) {
+  return req<WorkspaceSettings>("PATCH", "/api/settings/fleet", patch);
+}
 
 // Provider secrets (Settings). `env` = providers a server env var supplies a
 // key for (a stored key overrides it).
 export function fetchSecrets() {
   return req<{ secrets: SecretMeta[]; env: string[] }>("GET", "/api/secrets");
 }
-export function setSecret(provider: string, apiKey: string) {
-  return req<{ secret: SecretMeta }>("PUT", `/api/secrets/${provider}`, { apiKey });
+// Set or rotate a credential's key by id — a provider id targets that provider's
+// DEFAULT credential; a `cred-…` id rotates an existing named one.
+export function setSecret(id: string, apiKey: string) {
+  return req<{ secret: SecretMeta }>("PUT", `/api/secrets/${id}`, { apiKey });
 }
-export function deleteSecret(provider: string) {
-  return req<unknown>("DELETE", `/api/secrets/${provider}`);
+export function deleteSecret(id: string) {
+  return req<unknown>("DELETE", `/api/secrets/${id}`);
+}
+// Create a NAMED credential — a second key for a provider that already has one
+// ("Claude on another account"). Agents can then be pinned to it via credentialId.
+export function createCredential(provider: string, name: string, apiKey: string) {
+  return req<{ secret: SecretMeta }>("POST", "/api/credentials", { provider, name, apiKey });
 }
 
 // ─── Service tokens (MCP / programmatic access) ────────────────────────────
@@ -208,6 +307,9 @@ export interface ServiceTokenMeta {
   id: string;
   label: string;
   scopes: McpScope[];
+  // Empty = every project in the workspace; a non-empty list = the projects this
+  // token is confined to (both its reads and its writes).
+  projectIds: string[];
   createdAt: number;
   expiresAt: number | null;
   lastUsedAt: number | null;
@@ -217,8 +319,8 @@ export interface ServiceTokenMeta {
 export function listServiceTokens() {
   return req<ServiceTokenMeta[]>("GET", "/api/service-tokens");
 }
-export function createServiceToken(body: { label: string; scopes: McpScope[]; ttlMs?: number | null }) {
-  return req<{ token: string; id: string; scopes: McpScope[]; label: string; expiresAt: number | null }>(
+export function createServiceToken(body: { label: string; scopes: McpScope[]; projectIds?: string[]; ttlMs?: number | null }) {
+  return req<{ token: string; id: string; scopes: McpScope[]; projectIds: string[]; label: string; expiresAt: number | null }>(
     "POST",
     "/api/service-tokens",
     body,
@@ -238,6 +340,8 @@ export interface FsListing {
   path: string;
   parent: string | null;
   entries: FsEntry[];
+  exists: boolean;
+  isGitRepo: boolean;
 }
 /** List subfolders of `path` (default: home) on the server machine. */
 export function browseFolder(path?: string) {
@@ -246,14 +350,40 @@ export function browseFolder(path?: string) {
 }
 
 // Projects
-export function createProject(body: { name: string; goal: string; repoPath?: string; repo?: string }) {
+export function createProject(body: {
+  name: string;
+  goal: string;
+  repoPath?: string;
+  repo?: string;
+  createRepo?: { name: string; private: boolean; owner?: string };
+  autonomy?: boolean;
+  approvalLevel?: string;
+  instructions?: string;
+}) {
   return req<unknown>("POST", "/api/projects", body);
 }
 export function updateProject(
   id: string,
-  body: { name?: string; goal?: string; status?: string; autonomy?: boolean; repoPath?: string | null },
+  body: {
+    name?: string;
+    goal?: string;
+    status?: string;
+    autonomy?: boolean;
+    approvalLevel?: string;
+    repoPath?: string | null;
+    // null clears the field back to "no project rules".
+    instructions?: string | null;
+    githubCredentialId?: string | null;
+    // Which provider keys the project may run on (credential ids; empty = all).
+    enabledRunnerCredentialIds?: string[];
+    syncSourceStatus?: boolean;
+  },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
+}
+/** Revoke one standing "approve always" rule from a project's approval policy. */
+export function removeApprovalRule(projectId: string, ruleId: string) {
+  return req<unknown>("DELETE", `/api/projects/${projectId}/approval-rules/${ruleId}`);
 }
 export function deleteProject(id: string) {
   return req<unknown>("DELETE", `/api/projects/${id}`);
@@ -262,6 +392,10 @@ export function deleteProject(id: string) {
  *  (headless/GCP), so agents can work on it. Sets repoPath + gitBacked. */
 export function cloneProjectRepo(id: string) {
   return req<unknown>("POST", `/api/projects/${id}/clone`);
+}
+// Import the project's open GitHub issues as tasks (linked back via Task.source).
+export function importGithubIssues(projectId: string) {
+  return req<{ imported: number; skipped: number }>("POST", `/api/projects/${projectId}/import/github-issues`);
 }
 
 // Tasks
@@ -279,6 +413,12 @@ export function updateTask(
     description?: string | null;
     autoPick?: boolean;
     assignment?: TaskAssignment;
+    // Scheduling — null clears the field on the task.
+    estimatedDurationMs?: number | null;
+    plannedStartAt?: number | null;
+    // Grouping — null clears the linkage.
+    featureId?: string | null;
+    milestoneId?: string | null;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${projectId}/tasks/${taskId}`, body);
@@ -286,19 +426,228 @@ export function updateTask(
 export function deleteTask(projectId: string, taskId: string) {
   return req<unknown>("DELETE", `/api/projects/${projectId}/tasks/${taskId}`);
 }
+// Reversible soft-hide: an archived task leaves the kanban but stays in the store
+// (recoverable, still read by Steward). Un-archive with archived=false.
+export function archiveTask(projectId: string, taskId: string, archived = true) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/archive`, { archived });
+}
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
 }
+
+// Features (task grouping)
+export function createFeature(projectId: string, body: { name: string; description?: string; milestoneId?: string | null }) {
+  return req<unknown>("POST", `/api/projects/${projectId}/features`, body);
+}
+export function updateFeature(
+  featureId: string,
+  body: {
+    name?: string;
+    description?: string | null;
+    status?: "active" | "paused" | "shipped";
+    milestoneId?: string | null;
+    archived?: boolean;
+  },
+) {
+  return req<unknown>("PATCH", `/api/features/${featureId}`, body);
+}
+export function deleteFeature(featureId: string) {
+  return req<unknown>("DELETE", `/api/features/${featureId}`);
+}
+
+// Milestones (roadmap)
+export function createMilestone(projectId: string, body: { name: string; description?: string; targetAt?: number | null }) {
+  return req<unknown>("POST", `/api/projects/${projectId}/milestones`, body);
+}
+export function updateMilestone(
+  milestoneId: string,
+  body: {
+    name?: string;
+    description?: string | null;
+    targetAt?: number | null;
+    status?: "planned" | "in-progress" | "shipped";
+    archived?: boolean;
+  },
+) {
+  return req<unknown>("PATCH", `/api/milestones/${milestoneId}`, body);
+}
+export function deleteMilestone(milestoneId: string) {
+  return req<unknown>("DELETE", `/api/milestones/${milestoneId}`);
+}
+// A project/task action the assistant proposes (confirm-first). Kept in sync with
+// AssistantAction in apps/server/src/project-assistant.ts; `summary` is the label.
+export interface AssistantAction {
+  kind:
+    | "add_task"
+    | "move_task"
+    | "rename_task"
+    | "set_task_desc"
+    | "remove_task"
+    | "archive_task"
+    | "reorder_task"
+    | "rename_project"
+    | "set_goal"
+    | "set_autonomy"
+    | "set_status"
+    | "set_schedule"
+    | "set_assignment"
+    | "add_feature"
+    | "add_milestone"
+    | "set_task_feature"
+    | "set_feature_milestone";
+  summary: string;
+  taskId?: string;
+  text?: string;
+  description?: string;
+  to?: string;
+  direction?: "up" | "down";
+  name?: string;
+  goal?: string;
+  autonomy?: boolean;
+  status?: string;
+  estimatedDurationMs?: number | null;
+  plannedStartAt?: number | null;
+  // Agent eligibility (set_assignment): `mode` = who may take the task, `agentIds`
+  // = the pool for `agents` mode (empty otherwise).
+  mode?: "any" | "agents" | "unassigned";
+  agentIds?: string[];
+  // Roadmap linkage (add_feature / add_milestone / set_task_feature /
+  // set_feature_milestone). `null` clears the respective link.
+  featureId?: string | null;
+  milestoneId?: string | null;
+  targetAt?: number | null;
+}
+// Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
+// (full project assistant + actions); omit it for a workspace-wide answer. The
+// response echoes which project the action (if any) targets.
+export function stewardChat(
+  question: string,
+  history: { role: "user" | "assistant"; content: string }[],
+  projectId?: string,
+) {
+  return req<{ reply: string; actions?: AssistantAction[]; projectId?: string | null }>(
+    "POST",
+    "/api/steward/chat",
+    { question, history, projectId },
+  );
+}
+
+/**
+ * Streaming Steward chat: reads the reply as text/plain deltas (calling `onDelta`
+ * with each), then a final RS-sentinel (\x1e) control frame carrying the CLEAN
+ * reply + any action + resolved project. Resolves with that authoritative reply
+ * (the caller reconciles its streamed text to it, so a trailing action JSON that
+ * streamed through is cleaned up). Falls back to non-streaming stewardChat.
+ */
+export async function streamStewardChat(
+  question: string,
+  history: { role: "user" | "assistant"; content: string }[],
+  projectId: string | undefined,
+  onDelta: (chunk: string) => void,
+): Promise<StewardReply> {
+  const res = await fetch("/api/steward/chat/stream", {
+    method: "POST",
+    headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" },
+    body: JSON.stringify({ question, history, projectId }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(res.status, body || res.statusText);
+  }
+  if (!res.body) {
+    const r = await stewardChat(question, history, projectId);
+    onDelta(r.reply);
+    return r;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks = (async function* () {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      const chunk = decoder.decode(value, { stream: true });
+      if (chunk) yield chunk;
+    }
+  })();
+  return parseStewardStream(chunks, onDelta);
+}
+
+// ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
+export interface PreviewState {
+  status: "idle" | "starting" | "live" | "failed" | "stopped";
+  url: string | null;
+  port: number | null;
+  recipe: { cmd: string; source: string } | null;
+  error: string | null;
+  logs: string[];
+  startedAt: number | null;
+}
+export function previewStatus(projectId: string) {
+  return req<PreviewState>("GET", `/api/projects/${projectId}/preview`);
+}
+export function previewStart(projectId: string) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/start`);
+}
+export function previewStop(projectId: string) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/stop`);
+}
+export function previewRestart(projectId: string) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/restart`);
+}
+export function previewRefresh(projectId: string) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/refresh`);
+}
+
+// Provider CLI installer — POSTs to /api/providers/:id/install and streams the
+// npm output as text/plain deltas so the Settings modal can render live. On
+// completion the caller re-fetches the snapshot to pick up the re-probed
+// `binOnPath`. Falls back to a synchronous body read when the response isn't
+// streamable (older runtime); the whole body is delivered as one onDelta call.
+export async function streamInstallProvider(
+  providerId: string,
+  onDelta: (chunk: string) => void,
+): Promise<void> {
+  const res = await fetch(`/api/providers/${encodeURIComponent(providerId)}/install`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token()}` },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(res.status, body || res.statusText);
+  }
+  if (!res.body) {
+    onDelta(await res.text().catch(() => ""));
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    if (chunk) onDelta(chunk);
+  }
+}
+
 // Guarded kanban move (backlog→triage, triage→todo, review→done, demote, …).
 export function transitionTask(projectId: string, taskId: string, to: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/state`, { to });
 }
+// Escape hatch — force a task to `done` bypassing HUMAN_TRANSITIONS, and always
+// sync the linked run's status. For when the normal review → done path fails.
+export function forceTaskDone(projectId: string, taskId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/force-done`);
+}
 export function moveTask(projectId: string, taskId: string, direction: "up" | "down") {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/move`, { direction });
 }
+/** Drag-reorder a task to sit before `beforeId` in its lane (null = end). */
+export function reorderTask(projectId: string, taskId: string, beforeId: string | null) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/reorder`, { beforeId });
+}
 
 // Fleet
-export function createAgent(body: { provider: string; model: string; name?: string }) {
+export function createAgent(body: { provider: string; model: string; name?: string; credentialId?: string }) {
   return req<unknown>("POST", "/api/fleet/runners", body);
 }
 export function updateAgent(id: string, body: { model?: string; name?: string }) {
@@ -329,12 +678,25 @@ export function startGithubDevice() {
 export function pollGithubDevice(deviceCode: string) {
   return req<{ authorized: boolean }>("POST", "/api/github/device/poll", { device_code: deviceCode });
 }
+export async function fetchGithubOwners(): Promise<GithubOwner[]> {
+  const raw = await req<{ owners: GithubOwner[] }>("GET", "/api/github/owners");
+  return raw.owners;
+}
 export async function fetchGithubInstallations(): Promise<GithubInstallation[]> {
   const raw = await req<{ installations: GithubInstallation[] }>("GET", "/api/github/installations");
   return raw.installations;
 }
 export async function fetchGithubInstallationRepos(installationId: number): Promise<GithubRepo[]> {
   const raw = await req<{ repos: GithubRepo[] }>("GET", `/api/github/installations/${installationId}/repos`);
+  return raw.repos;
+}
+/** The repos the connection can currently bind — fetched live (a PAT connection
+ *  re-lists all of its repos), so the picker isn't limited to a stale snapshot. */
+export async function fetchGithubRepos(credentialId?: string): Promise<GithubRepo[]> {
+  // A credentialId lists that GitHub account's repos (business/personal); omit for
+  // the workspace's default connection.
+  const q = credentialId ? `?credentialId=${encodeURIComponent(credentialId)}` : "";
+  const raw = await req<{ repos: GithubRepo[] }>("GET", `/api/github/repos${q}`);
   return raw.repos;
 }
 export async function connectGithub(body: {

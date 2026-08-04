@@ -18,7 +18,7 @@ export function QueueCard({
   selected: boolean;
   onOpen: () => void;
 }) {
-  const { resolveHitl, sendAgentMessage } = useStore();
+  const { resolveHitl, streamAgentMessage } = useStore();
   const k = KIND_META[item.kind];
   const [mode, setMode] = useState<null | "modify" | "chat">(null);
   const [draft, setDraft] = useState("");
@@ -28,13 +28,20 @@ export function QueueCard({
   const send = async () => {
     if (!draft.trim() || !agent) return;
     const text = draft.trim();
-    setMsgs((m) => [...m, { who: "you", text }]);
+    const runId = agent.id;
+    setMsgs((m) => [...m, { who: "you", text }, { who: "agent", text: "" }]);
     setDraft("");
+    const appendToLast = (chunk: string) =>
+      setMsgs((m) => {
+        const next = [...m];
+        const last = next[next.length - 1];
+        if (last && last.who === "agent") next[next.length - 1] = { who: "agent", text: last.text + chunk };
+        return next;
+      });
     try {
-      const reply = await sendAgentMessage(agent.id, text);
-      setMsgs((m) => [...m, { who: "agent", text: reply }]);
+      await streamAgentMessage(runId, text, appendToLast);
     } catch {
-      /* ignore */
+      appendToLast("(couldn't get a reply)");
     }
   };
 
@@ -86,7 +93,35 @@ export function QueueCard({
         <DiffView runId={item.runId} add={item.diff.add} del={item.diff.del} />
       )}
 
-      {item.options ? (
+      {item.kind === "escalation" ? (
+        <div className="qcard-actions">
+          <button
+            className={"btn btn-primary" + (mode === "modify" ? " btn-lit" : "")}
+            onClick={() => setMode(mode === "modify" ? null : "modify")}
+          >
+            Help &amp; resume
+          </button>
+          <button
+            className="btn"
+            title="Hand this run to a different runner to retry fresh"
+            onClick={() => resolveHitl(item.id, "reassign", { guidance: draft.trim() })}
+          >
+            Reassign
+          </button>
+          <button className="btn btn-danger" onClick={() => resolveHitl(item.id, "reject")}>
+            Stop run
+          </button>
+          <button
+            className={"btn btn-ghost" + (mode === "chat" ? " btn-lit" : "")}
+            onClick={() => setMode(mode === "chat" ? null : "chat")}
+          >
+            Chat
+          </button>
+          <button className="btn btn-ghost" onClick={onOpen}>
+            Open agent
+          </button>
+        </div>
+      ) : item.options ? (
         <div className="qcard-actions">
           {item.options.map((opt, i) => (
             <button
@@ -122,6 +157,15 @@ export function QueueCard({
           >
             Approve
           </button>
+          {item.kind === "approval" && item.command && item.risk !== "high" && (
+            <button
+              className="btn btn-ghost"
+              title="Approve now and always auto-approve this exact command in this project"
+              onClick={() => resolveHitl(item.id, "approve", { remember: true })}
+            >
+              Always allow
+            </button>
+          )}
           <button
             className="btn btn-danger"
             onClick={() => resolveHitl(item.id, "reject")}

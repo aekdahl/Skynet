@@ -17,8 +17,12 @@ import { registerMcp } from "./mcp/http.js";
 import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
 import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
+import { projectPreview } from "./preview/project-preview.js";
+import { registerLivePreviewProxy } from "./preview/preview-proxy.js";
+import { recordPublicOrigin } from "./preview/public-origin.js";
 import { registerSecretsRoutes } from "./secrets/index.js";
 import { registerGithubRoutes, configureGithub, githubService } from "./github/index.js";
+import { startTaskSourceSync } from "./task-sync.js";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { registerEvalsRoutes } from "./evals/index.js";
 import { registerSimulationRoutes } from "./simulation/index.js";
@@ -30,6 +34,7 @@ import { StoreServiceTokenStore } from "./auth/service-tokens.js";
 import { seedBootstrapToken } from "./auth/bootstrap.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
 import { registerAuthRoutes, registerServiceTokenRoutes } from "./auth/routes.js";
+import { mfaEnabled, ensureRecoveryCodes } from "./auth/mfa.js";
 import { startTelegramBridge } from "./telegram/index.js";
 import { MemoryStore } from "./store/memory.js";
 import type { Store } from "./store/store.js";
@@ -64,6 +69,10 @@ async function main() {
   // Persist the GitHub connection in the same Store as the rest of the domain
   // (file for the desktop app, Postgres for hosted) — durable, no side-store.
   configureGithub(store);
+
+  // Write task status changes back to their imported source of truth (GitHub
+  // issues today). Off unless a project opts in (syncSourceStatus). Best-effort.
+  startTaskSourceSync(bus, { store, log: (m) => console.log(m) });
 
   // Deploy-time convenience: if a GITHUB_TOKEN is present (the GCP self-host
   // loads it from Secret Manager) and the workspace has no GitHub connection
@@ -113,6 +122,9 @@ async function main() {
   // written to disk.
   const serviceTokens = new StoreServiceTokenStore(store);
   configureAuth({ sessions, serviceTokens });
+  // MFA on (SKYNET_MFA): generate recovery codes once (plaintext written to a
+  // 0600 file on /data for one-time SSH retrieval; hashes persisted).
+  if (mfaEnabled()) ensureRecoveryCodes((m) => console.log(m));
   // Headless/sandbox deploys: register the agent-provided bootstrap token so it
   // can call /mcp without a human login (no-op unless SKYNET_BOOTSTRAP_TOKEN set).
   const bootstrap = await seedBootstrapToken(serviceTokens);
@@ -164,7 +176,7 @@ async function main() {
   app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: "per-runner", sessions: config.sessions }));
 
   await registerAuthRoutes(app, { sessions, operators });
-  await registerServiceTokenRoutes(app, { serviceTokens });
+  await registerServiceTokenRoutes(app, { serviceTokens, operations });
   await registerApi(app, { operations, orchestrator });
   // MCP endpoint (Streamable HTTP) — runs drive Skynet through the same
   // scoped-principal auth as the /api routes. stdio clients proxy to this too.
@@ -188,6 +200,17 @@ async function main() {
     // W5 live preview: mount the sandboxed /preview route, stamp visual/previewUrl
     // onto already-stored runs, then warm their builds. No-op unless PREVIEW != off.
     await registerPreview(app, { store });
+    // Learn Skynet's public origin from forwarded headers so live previews get a
+    // phone-reachable URL, and front their loopback dev servers at /p/<token>/.
+    app.addHook("onRequest", (req, _reply, done) => {
+      recordPublicOrigin(
+        req.headers["x-forwarded-proto"] as string | undefined,
+        req.headers["x-forwarded-host"] as string | undefined,
+        req.headers.host,
+      );
+      done();
+    });
+    registerLivePreviewProxy(app, (t) => projectPreview.portForToken(t));
     const stamped = await backfillPreviews(store);
     if (stamped) app.log.info(`preview: stamped ${stamped} agent(s) with a live preview URL`);
     const queued = await kickoffPreviewBuilds(store);
@@ -200,12 +223,21 @@ async function main() {
   // empty). Runs once at boot, before we listen, so nothing is mid-assign.
   await orchestrator.reconcileRunners().catch((err) => app.log.warn(`runner reconcile: ${(err as Error).message}`));
 
+  // Keep the fleet on latest main: fetch each active project's base from origin
+  // and flag any in-flight run that's fallen behind. Once at boot (so the first
+  // run branches off fresh main), then on the reaper's interval.
+  const syncBase = () =>
+    orchestrator.syncBaseAndFlagStale().catch((err) => app.log.warn(`base sync: ${(err as Error).message}`));
+  await syncBase();
+
   // Reap presumed-dead runs (frees runners orphaned by a crash/restart). Run
   // once at boot to clear restart orphans, then on an interval. Bounded to a
   // sane minimum so it can't spin hot; disabled when agentReapMs <= 0.
   if (config.agentReapMs > 0) {
-    const sweep = () =>
-      orchestrator.reapStaleAgents().catch((err) => app.log.warn(`reaper: ${(err as Error).message}`));
+    const sweep = () => {
+      void orchestrator.reapStaleAgents().catch((err) => app.log.warn(`reaper: ${(err as Error).message}`));
+      void syncBase();
+    };
     await sweep();
     const every = Math.max(30_000, Math.min(config.agentReapMs, 60_000));
     setInterval(sweep, every).unref();
@@ -225,6 +257,22 @@ async function main() {
         .catch((err) => app.log.warn(`worktree gc: ${(err as Error).message}`));
     await gc();
     setInterval(gc, Math.max(300_000, config.worktreeGcMs)).unref();
+  }
+
+  // Idle-runner reaper: retire auto-provisioned runners that have sat idle past
+  // the workspace's TTL (retireIdleRunnersAfterMinutes; 0 = off, per workspace),
+  // so auto-scaled capacity is reclaimed instead of piling up. A janitorial sweep
+  // like the run reaper above — cheap, and a no-op when no workspace enables it.
+  {
+    const reapRunners = () =>
+      orchestrator
+        .reapIdleRunners()
+        .then((n) => {
+          if (n) app.log.info(`idle-runner reaper: retired ${n} idle auto-provisioned runner(s)`);
+        })
+        .catch((err) => app.log.warn(`idle-runner reaper: ${(err as Error).message}`));
+    await reapRunners();
+    setInterval(reapRunners, 60_000).unref();
   }
 
   // Autonomy loop: triage backlog items, start auto-pick tasks, review finished

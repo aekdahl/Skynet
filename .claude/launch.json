@@ -1,25 +1,7 @@
 {
   "version": "0.0.1",
   "configurations": [
-    {
-      "name": "skynet",
-      "runtimeExecutable": "sh",
-      "runtimeArgs": ["-c", "pnpm -C skynet --filter @skynet/server dev"],
-      "port": 8080,
-      "autoPort": false
-    },
-    {
-      "name": "skynet-web",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["-C", "skynet", "--filter", "@skynet/web", "dev"],
-      "port": 5173,
-      "autoPort": true
-    },
-    {
-      "name": "tower",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8231", "--directory", "Project Skynet DRAFT"],
-      "port": 8231
-    }
+    { "name": "skynet", "runtimeExecutable": "sh", "runtimeArgs": ["-c", "pnpm -C skynet --filter @skynet/server dev"], "port": 8080, "autoPort": false },
+    { "name": "skynet-web", "runtimeExecutable": "pnpm", "runtimeArgs": ["-C", "skynet", "--filter", "@skynet/web", "dev"], "port": 5173, "autoPort": true }
   ]
 }

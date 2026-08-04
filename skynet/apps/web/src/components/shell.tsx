@@ -11,6 +11,7 @@ import {
 } from "../lib/derive";
 import { StatusDot } from "./common";
 import { workspaceName } from "../lib/firstrun";
+import { devToolsEnabled } from "../lib/dev";
 import type { ViewName, Lens } from "../App";
 
 // In the desktop app the OS draws the real window controls over this bar, so we
@@ -145,9 +146,7 @@ export function OpSidebar({
   // their views is already active (a deep link) so the highlight is never
   // orphaned. Auto-expanded when active.
   const qaActive = view === "acceptance" || view === "simulation";
-  const devTools =
-    (import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV === true ||
-    (typeof localStorage !== "undefined" && localStorage.getItem("skynet.devtools") === "1");
+  const devTools = devToolsEnabled();
   const showQa = devTools || qaActive;
   const [qaOpen, setQaOpen] = useState(qaActive);
 
@@ -179,7 +178,6 @@ export function OpSidebar({
       <div className="op-ws">
         <span className="op-ws-logo">S</span>
         <span className="op-ws-name">{workspaceName() || "Skynet"}</span>
-        <span className="op-ws-caret">▾</span>
       </div>
       <nav className="op-nav">
         {item(
@@ -201,7 +199,8 @@ export function OpSidebar({
         )}
         {item("Fleet", "◇", () => setView("fleet"), view === "fleet")}
         {item("Integrations", "⑂", () => setView("integrations"), view === "integrations")}
-        {item("Roadmap", "◈", () => setView("roadmap"), view === "roadmap")}
+        {/* Roadmap is dev-only (see lib/dev) — hidden from release builds. */}
+        {devTools && item("Roadmap", "◈", () => setView("roadmap"), view === "roadmap")}
         {item("Settings", "⚙", () => setView("settings"), view === "settings")}
       </nav>
       {showQa && (

@@ -13,12 +13,28 @@ import type {
 
 // ─── time formatting ───────────────────────────────────────────────────────
 
+// The one duration formatter for user-facing "how long X has been running / X
+// ago" text — SINGLE UNIT ONLY. Rolls up at each boundary:
+//   < 1m  → seconds  ("42s")
+//   < 1h  → minutes  ("15m")   — never "15m 30s"
+//   < 1d  → hours    ("2h")    — never "2h 45m"
+//   ≥ 1d  → days     ("3d")    — never "3d 04h"
+// This is deliberate: readers glance at time indicators, and stitching two
+// units together ("504m 02s") crossed into cognitive-load territory. Use
+// fmtDurMs below when the input is milliseconds. If you need higher precision
+// for a debug view, add a purpose-built formatter — don't relax this rule.
 export function fmtWait(sec: number): string {
   const s = Math.max(0, Math.floor(sec));
+  if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
-  const r = s % 60;
-  return m > 0 ? `${m}m ${String(r).padStart(2, "0")}s` : `${r}s`;
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
 }
+
+/** Same single-unit rule for callers that already have milliseconds. */
+export const fmtDurMs = (ms: number): string => fmtWait(ms / 1000);
 
 export function fmtClock(sec: number): string {
   const s = Math.max(0, Math.floor(sec));
@@ -39,17 +55,14 @@ export const waitedSecs = (hitl: HitlItem, now: number) =>
   Math.max(0, (now - hitl.raisedAt) / 1000);
 
 export function fmtElapsed(agent: TaskRun, now: number): string {
-  const mins = Math.floor(startedMins(agent, now));
-  const h = Math.floor(mins / 60);
-  return `${h > 0 ? `${h}h ` : ""}${mins % 60}m elapsed`;
+  return `${fmtWait((now - agent.startedAt) / 1000)} elapsed`;
 }
 
 export function runnerIdleLabel(runner: Agent, now: number): string {
   if (runner.idleSince == null) return "now";
-  const mins = Math.floor((now - runner.idleSince) / 60000);
-  if (mins <= 0) return "now";
-  const h = Math.floor(mins / 60);
-  return h > 0 ? `${h}h ${mins % 60}m` : `${mins}m`;
+  const sec = (now - runner.idleSince) / 1000;
+  if (sec < 1) return "now";
+  return fmtWait(sec);
 }
 
 // ─── plan helpers ───────────────────────────────────────────────────────────
@@ -81,6 +94,14 @@ export const backlogTasks = (tasks: Task[], projectId: string) =>
 
 export const doneTasks = (tasks: Task[], projectId: string) =>
   tasks.filter((t) => t.projectId === projectId && t.state === "done");
+
+// A project is "shipped" only when it HAS tasks and EVERY one is done — not
+// merely when its runs are done. Unstarted backlog tasks have no run, so a
+// runs-all-done check would badge a project shipped with work still in backlog.
+export const projectShipped = (tasks: Task[], projectId: string): boolean => {
+  const t = tasksForProject(tasks, projectId);
+  return t.length > 0 && t.every((x) => x.state === "done");
+};
 
 // A task is "queued" — a FUTURE station on the subway — when it has no run yet:
 // not started and not done. (ongoing/review/done all carry a runId → already a
@@ -213,6 +234,7 @@ export const KIND_META: Record<HitlKind, { label: string; color: string }> = {
   plan: { label: "PLAN REVIEW", color: "var(--violet)" },
   diff: { label: "DIFF REVIEW", color: "var(--ok)" },
   merge: { label: "MERGE CONFLICT", color: "var(--danger)" },
+  escalation: { label: "NEEDS HELP", color: "var(--danger)" },
 };
 
 export const providerInfo = (
@@ -238,8 +260,14 @@ export interface ProviderReadiness {
   credentialSet: boolean;
 }
 
-export function providerReadiness(p: ProviderInfo): ProviderReadiness {
-  const credentialSet = p.available !== false;
+// `credentialOverride` lets a caller that has a FRESHER credential signal than
+// the snapshot (the Settings view re-fetches the secret store on mount) drive the
+// badge from that instead of the snapshot's `available`. Without it, the snapshot
+// and a just-set key can disagree — the card would show the stored key in its
+// pill while the badge still claimed "needs a credential". Omit it to keep the
+// snapshot-driven behavior (Fleet / Home have no fresher source).
+export function providerReadiness(p: ProviderInfo, credentialOverride?: boolean): ProviderReadiness {
+  const credentialSet = credentialOverride ?? p.available !== false;
   const req = p.requirements;
   if (!req) return { ready: credentialSet, missing: credentialSet ? [] : ["setup"], credentialSet };
 

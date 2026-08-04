@@ -8,19 +8,30 @@ import { useEffect, useState } from "react";
 import type { GithubRepo } from "@skynet/shared";
 import * as api from "../lib/client";
 
-/** The repos the connected GitHub installation has selected. `null` while loading. */
+/** The repos the connection can bind to. `null` while loading. Fetched LIVE (not
+ *  from the connect-time snapshot) so a connection made before the repo list was
+ *  paginated — or before newer repos existed — still shows every current repo. */
 export function useConnectedRepos(): GithubRepo[] | null {
   const [repos, setRepos] = useState<GithubRepo[] | null>(null);
   useEffect(() => {
     let cancelled = false;
     api
-      .fetchGithub()
-      .then(({ connection }) => {
-        if (!cancelled) setRepos(connection.repos.filter((r) => r.selected));
+      .fetchGithubRepos()
+      .then((rs) => {
+        if (!cancelled) setRepos(rs.filter((r) => r.selected));
       })
-      .catch(() => {
-        if (!cancelled) setRepos([]);
-      });
+      .catch(() =>
+        // Live fetch failed (offline / transient GitHub error / token gone) — fall
+        // back to the stored snapshot so the picker isn't needlessly empty.
+        api
+          .fetchGithub()
+          .then(({ connection }) => {
+            if (!cancelled) setRepos(connection.repos.filter((r) => r.selected));
+          })
+          .catch(() => {
+            if (!cancelled) setRepos([]);
+          }),
+      );
     return () => {
       cancelled = true;
     };
@@ -39,11 +50,19 @@ export function RepoPicker({
 }) {
   if (repos === null) return <div className="rp-note">Loading repositories…</div>;
   if (repos.length === 0)
-    return <div className="rp-note">Connect GitHub (Integrations) to bind a repository to this project.</div>;
+    return (
+      <div className="rp-note">
+        Connect GitHub in{" "}
+        <a className="rp-link" href="#/integrations">
+          Integrations
+        </a>{" "}
+        to bind a repository to this project.
+      </div>
+    );
   return (
     <label className="rp">
       <span className="rp-label">
-        Repository <span className="rp-hint">· one per project</span>
+        Repository <span className="rp-hint">· one per project, cloned locally</span>
       </span>
       <select className="rp-select" value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">Select repository…</option>

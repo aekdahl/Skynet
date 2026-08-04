@@ -886,10 +886,46 @@ export const JOURNEYS: Journey[] = [
         steps.push(step("task advanced backlog → triage after assigning", false, (e as Error).message));
       }
       try {
+        await api.archiveTask(p.id, editTask.id, true);
+        s = await settle((sn) => sn.tasks.find((t) => t.id === editTask.id)?.archived === true);
+        const gone = s.tasks.find((t) => t.id === editTask.id)?.archived === true;
+        await api.archiveTask(p.id, editTask.id, false);
+        s = await settle((sn) => sn.tasks.find((t) => t.id === editTask.id)?.archived === false);
+        const back = s.tasks.find((t) => t.id === editTask.id)?.archived === false;
+        steps.push(step("task archived then restored (kept in store, off/on the board)", gone && back));
+      } catch (e) {
+        steps.push(step("task archived then restored (kept in store, off/on the board)", false, (e as Error).message));
+      }
+      try {
         await api.moveTask(p.id, delTask.id, "up");
         steps.push(step("task reordered (move accepted)", true));
       } catch (e) {
         steps.push(step("task reordered (move accepted)", false, (e as Error).message));
+      }
+      // Drag-reorder to an arbitrary slot — the pointer sibling of moveTask.
+      // Seed two fresh backlog tasks (order A < B), drag A to the end, and
+      // assert the order flips (B now precedes A).
+      try {
+        await api.createTask(p.id, "Sim: reorder A");
+        await api.createTask(p.id, "Sim: reorder B");
+        s = await settle(
+          (sn) => sn.tasks.filter((t) => t.projectId === p.id && t.text.startsWith("Sim: reorder ")).length >= 2,
+        );
+        const rA = s.tasks.find((t) => t.projectId === p.id && t.text === "Sim: reorder A");
+        const rB = s.tasks.find((t) => t.projectId === p.id && t.text === "Sim: reorder B");
+        if (!rA || !rB) throw new Error("reorder seed tasks missing");
+        const startedInOrder = (rA.order ?? -1) < (rB.order ?? -1);
+        await api.reorderTask(p.id, rA.id, null); // drag A past B, to the end of the backlog
+        s = await settle((sn) => {
+          const a = sn.tasks.find((t) => t.id === rA.id)?.order ?? -1;
+          const b = sn.tasks.find((t) => t.id === rB.id)?.order ?? -1;
+          return b < a;
+        });
+        const a2 = s.tasks.find((t) => t.id === rA.id)?.order ?? -1;
+        const b2 = s.tasks.find((t) => t.id === rB.id)?.order ?? -1;
+        steps.push(step("task drag-reordered (A moved after B)", startedInOrder && b2 < a2));
+      } catch (e) {
+        steps.push(step("task drag-reordered (A moved after B)", false, (e as Error).message));
       }
       await api.deleteTask(p.id, delTask.id);
       s = await settle((sn) => !sn.tasks.some((t) => t.id === delTask.id));

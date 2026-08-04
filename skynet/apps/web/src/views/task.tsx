@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import {
@@ -15,61 +15,23 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { StatusDot } from "../components/common";
-import { PreviewFor } from "../components/preview";
+import { Markdown } from "../components/markdown";
 import { HitlContext, RiskChip } from "../components/hitl-context";
 
-function AgentChat({ agent }: { agent: TaskRun }) {
-  const { sendAgentMessage } = useStore();
-  const now = agent.plan.find((p) => p.state === "now");
-  const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
-  const [draft, setDraft] = useState("");
-  const send = async () => {
-    if (!draft.trim()) return;
-    const text = draft.trim();
-    setMsgs((m) => [...m, { who: "you", text }]);
-    setDraft("");
-    try {
-      const reply = await sendAgentMessage(agent.id, text);
-      setMsgs((m) => [...m, { who: "agent", text: reply }]);
-    } catch {
-      /* ignore */
-    }
-  };
-  return (
-    <div className="panel panel-chat">
-      <div className="panel-head">
-        CHAT <span className="panel-sub">discuss the task — agent keeps working</span>
-      </div>
-      <div className="qx-thread">
-        <div className="qx-msg qx-agent">
-          <span className="qx-who mono">{agent.name}</span>
-          {agent.status === "done"
-            ? "This task is merged. Ask me anything about what shipped."
-            : 'Currently on “' +
-              (now ? now.text : "…") +
-              '”. Ask about my approach or redirect me — I’ll keep working meanwhile.'}
-        </div>
-        {msgs.map((m, i) => (
-          <div key={i} className={"qx-msg " + (m.who === "you" ? "qx-you" : "qx-agent")}>
-            <span className="qx-who mono">{m.who === "you" ? "you" : agent.name}</span>
-            {m.text}
-          </div>
-        ))}
-      </div>
-      <div className="qx-row">
-        <input
-          className="qx-input qx-line"
-          placeholder="Message the agent…"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-        />
-        <button className="btn" onClick={send}>
-          Send
-        </button>
-      </div>
-    </div>
-  );
+// Cheap guard: does this text actually contain markdown worth rendering (bold,
+// inline code, a bullet/number/heading line, or a link)? Agent prose does; plain
+// telemetry ("3m elapsed", "installing dependencies…") doesn't — so we only route
+// the former through <Markdown/> and leave everything else rendering verbatim.
+const looksMarkdown = (t: string): boolean =>
+  /\*\*|`|\[[^\]]+\]\([^)]+\)|(^|\n)\s*(?:[-*]\s|\d+\.\s|#{1,4}\s)/.test(t);
+
+// A log line is either a conversation turn (the orchestrator records chat as
+// `you: …` and the agent's reply as `↳ …`) or plain telemetry. Classifying here
+// lets the LIVE LOG render as one chronological conversation+telemetry stream.
+function chatTurn(line: string): { who: "you" | "agent"; text: string } | null {
+  if (line.startsWith("you: ")) return { who: "you", text: line.slice(5) };
+  if (line.startsWith("↳ ")) return { who: "agent", text: line.slice(2) };
+  return null;
 }
 
 // The runner logs its final prose answer as a plain log line (no ▸/↳/marker).
@@ -91,6 +53,13 @@ function finalAnswer(agent: TaskRun): string | null {
 }
 
 // Compact token/cost summary for the detail header, when the runner reported it.
+/** Compact duration for the TRIAGE panel-head chip: 15s / 30m / 2.5h. */
+function fmtEstDur(ms: number): string {
+  if (ms < 60_000) return Math.max(1, Math.round(ms / 1000)) + "s";
+  if (ms < 3_600_000) return Math.round(ms / 60_000) + "m";
+  const h = ms / 3_600_000;
+  return (h < 10 ? h.toFixed(1) : Math.round(h)) + "h";
+}
 function fmtUsage(u: TaskRun["usage"]): string | null {
   if (!u) return null;
   const tok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
@@ -119,34 +88,67 @@ export function TaskDetail({
     modules,
     resolveHitl,
     forkAgent,
-    sendAgentMessage,
+    streamAgentMessage,
     pauseAgent,
     resumeAgent,
     stopAgent,
     archiveAgent,
   } = useStore();
   const q = openQueue(queue).find((it) => it.runId === agent.id);
-  // The backing task's longer description (the run's name is the short task text).
-  const taskDesc = tasks.find((t) => t.runId === agent.id)?.description ?? null;
+  // The backing task carries the operator's brief AND the autonomous triage
+  // metadata (assessment note + duration estimate) — surface both here so
+  // opening a run detail shows what the fleet decided during triage, not just
+  // its plan.
+  const backingTask = tasks.find((t) => t.runId === agent.id) ?? null;
+  const taskDesc = backingTask?.description ?? null;
   const doneCount = planDone(agent);
-  const [mode, setMode] = useState<null | "modify" | "chat">(null);
   const [draft, setDraft] = useState("");
-  const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
+  const [showDiff, setShowDiff] = useState(false);
+  // In-flight assistant reply for the chat path — streamed here so it types in
+  // live, then dropped once the persisted `↳` line lands in the log (below).
+  const [streaming, setStreaming] = useState<string | null>(null);
+  const logRef = useRef<HTMLDivElement>(null);
 
   const conflictMods = conflictModulesForAgent(agent, runs);
   const conflictMod = conflictMods[0];
   const answer = finalAnswer(agent);
 
+  // Keep the conversation pinned to the newest entry as it grows / streams.
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [agent.log, streaming]);
+
+  // Once the streamed reply is persisted to the log, drop the transient bubble
+  // so it isn't shown twice.
+  useEffect(() => {
+    if (streaming == null) return;
+    for (let i = agent.log.length - 1; i >= 0; i--) {
+      const t = chatTurn(agent.log[i]?.line ?? "");
+      if (t?.who === "agent") {
+        if (t.text.trim() === streaming.trim()) setStreaming(null);
+        break;
+      }
+    }
+  }, [agent.log, streaming]);
+
+  // The single composer. When the agent is waiting on a decision (q), the reply
+  // is delivered as guidance that RESUMES the same agent (the actionable path).
+  // Otherwise it's a chat message — relayed live to a running agent, or answered
+  // from the log for a finished one.
   const send = async () => {
-    if (!draft.trim()) return;
     const text = draft.trim();
-    setMsgs((m) => [...m, { who: "you", text }]);
+    if (!text) return;
+    if (q) {
+      resolveHitl(q.id, "modify", { guidance: text });
+      setDraft("");
+      return;
+    }
     setDraft("");
+    setStreaming("");
     try {
-      const reply = await sendAgentMessage(agent.id, text);
-      setMsgs((m) => [...m, { who: "agent", text: reply }]);
+      await streamAgentMessage(agent.id, text, (chunk) => setStreaming((s) => (s ?? "") + chunk));
     } catch {
-      /* ignore */
+      setStreaming((s) => (s ?? "") + " (couldn't get a reply)");
     }
   };
 
@@ -166,58 +168,61 @@ export function TaskDetail({
           <span className="status-word" style={{ color: STATUS_META[agent.status].color }}>
             {STATUS_META[agent.status].label}
           </span>
-          <button
-            className="btn btn-ghost btn-fork"
-            disabled={fleet.length === 0}
-            title={
-              fleet.length === 0
-                ? "Configure an agent in Fleet before forking runs."
-                : "Duplicate this run with the same context to work on something else"
-            }
-            onClick={() => forkAgent(agent.id)}
-          >
-            ⑂ Fork run
-          </button>
+          <div className="detail-actions">
+            <button
+              className="btn btn-ghost btn-icon btn-fork"
+              disabled={fleet.length === 0}
+              title={
+                fleet.length === 0
+                  ? "Configure an agent in Fleet before forking runs."
+                  : "Duplicate this run with the same context to work on something else"
+              }
+              onClick={() => forkAgent(agent.id)}
+            >
+              <span className="btn-gly" aria-hidden="true">⑂</span> Fork
+            </button>
 
-          {/* Lifecycle controls */}
-          {agent.status === "paused" ? (
-            <button
-              className="btn btn-ghost"
-              title="Resume this agent"
-              onClick={() => resumeAgent(agent.id)}
-            >
-              ▶ Resume
-            </button>
-          ) : (
-            agent.status !== "done" && (
+            {/* Lifecycle controls */}
+            {agent.status === "paused" ? (
               <button
-                className="btn btn-ghost"
-                title="Pause this run; resume later"
-                onClick={() => pauseAgent(agent.id)}
+                className="btn btn-ghost btn-icon"
+                title="Resume this agent"
+                onClick={() => resumeAgent(agent.id)}
               >
-                ⏸ Pause
+                <span className="btn-gly" aria-hidden="true">▶</span> Resume
               </button>
-            )
-          )}
-          {agent.status !== "done" && (
+            ) : (
+              agent.status !== "done" && (
+                <button
+                  className="btn btn-ghost btn-icon"
+                  title="Pause this run; resume later"
+                  onClick={() => pauseAgent(agent.id)}
+                >
+                  <span className="btn-gly" aria-hidden="true">⏸</span> Pause
+                </button>
+              )
+            )}
+            {agent.status !== "done" && (
+              <button
+                className="btn btn-ghost btn-icon btn-stop"
+                title="Stop this run — halts execution and frees its agent"
+                onClick={() => {
+                  if (confirm(`Stop “${agent.name}”? This frees its agent; the run won't resume.`))
+                    void stopAgent(agent.id);
+                }}
+              >
+                <span className="btn-gly" aria-hidden="true">◼</span> Stop
+              </button>
+            )}
             <button
-              className="btn btn-ghost btn-stop"
-              title="Stop this run — halts execution and frees its agent"
-              onClick={() => {
-                if (confirm(`Stop “${agent.name}”? This frees its agent; the run won't resume.`))
-                  void stopAgent(agent.id);
-              }}
+              className="btn btn-ghost btn-icon"
+              title={agent.archived ? "Restore to the board" : "Archive — hide from the board (kept in history)"}
+              onClick={() => archiveAgent(agent.id, !agent.archived)}
             >
-              ◼ Stop run
+              <span className="btn-gly" aria-hidden="true">{agent.archived ? "⊕" : "⊘"}</span>{" "}
+              {agent.archived ? "Unarchive" : "Archive"}
             </button>
-          )}
-          <button
-            className="btn btn-ghost"
-            title={agent.archived ? "Restore to the board" : "Archive — hide from the board (kept in history)"}
-            onClick={() => archiveAgent(agent.id, !agent.archived)}
-          >
-            {agent.archived ? "⊕ Unarchive" : "⊘ Archive"}
-          </button>
+          </div>
         </div>
         <div className="detail-meta">
           <span className="mono">{agent.branch}</span>
@@ -229,9 +234,7 @@ export function TaskDetail({
           ) : (
             <span className="hb">
               ♥ heartbeat{" "}
-              {q
-                ? fmtWait(waitedSecs(q, now))
-                : Math.floor(heartbeatSecs(agent, now)) + "s"}{" "}
+              {q ? fmtWait(waitedSecs(q, now)) : fmtWait(heartbeatSecs(agent, now))}{" "}
               ago
             </span>
           )}
@@ -254,122 +257,7 @@ export function TaskDetail({
       {answer && (
         <div className="detail-result">
           <div className="detail-result-label mono">ANSWER</div>
-          <div className="detail-result-body">{answer}</div>
-        </div>
-      )}
-
-      {q && (
-        <div className="detail-blocked-wrap">
-          <div className="detail-blocked">
-            <span
-              className="kind-chip"
-              style={{
-                color: KIND_META[q.kind].color,
-                borderColor: KIND_META[q.kind].color,
-              }}
-            >
-              {KIND_META[q.kind].label}
-            </span>
-            <span className="detail-blocked-title">{q.title}</span>
-            <RiskChip risk={q.risk} />
-            <span className="qcard-wait">{fmtWait(waitedSecs(q, now))}</span>
-            {q.options ? (
-              q.options.map((opt, i) => (
-                <button
-                  key={i}
-                  className={"btn" + (i === q.recommended ? " btn-primary" : "")}
-                  onClick={() => resolveHitl(q.id, "option", { optionIndex: i })}
-                >
-                  “{opt}”
-                </button>
-              ))
-            ) : (
-              <>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => resolveHitl(q.id, "approve")}
-                >
-                  Approve
-                </button>
-                <button
-                  className="btn btn-danger"
-                  onClick={() => resolveHitl(q.id, "reject")}
-                >
-                  Reject
-                </button>
-              </>
-            )}
-            <button
-              className={"btn btn-ghost" + (mode === "modify" ? " btn-lit" : "")}
-              onClick={() => setMode(mode === "modify" ? null : "modify")}
-            >
-              Modify
-            </button>
-            <button
-              className={"btn btn-ghost" + (mode === "chat" ? " btn-lit" : "")}
-              onClick={() => setMode(mode === "chat" ? null : "chat")}
-            >
-              Chat
-            </button>
-          </div>
-          <HitlContext q={q} runName={agent.name} openDiff />
-          {mode === "modify" && (
-            <div className="qx detail-modify">
-              <textarea
-                className="qx-input"
-                rows={3}
-                autoFocus
-                placeholder="Adjust the instruction — the agent resumes with this guidance…"
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-              />
-              <div className="qx-row">
-                <button
-                  className="btn btn-primary"
-                  onClick={() => resolveHitl(q.id, "modify", { guidance: draft.trim() })}
-                >
-                  Send &amp; resume
-                </button>
-                <button className="btn btn-ghost" onClick={() => setMode(null)}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-          {mode === "chat" && (
-            <div className="qx detail-modify">
-              <div className="qx-thread">
-                <div className="qx-msg qx-agent">
-                  <span className="qx-who mono">{agent.name}</span>
-                  {q.why}
-                </div>
-                {msgs.map((m, i) => (
-                  <div
-                    key={i}
-                    className={"qx-msg " + (m.who === "you" ? "qx-you" : "qx-agent")}
-                  >
-                    <span className="qx-who mono">
-                      {m.who === "you" ? "you" : agent.name}
-                    </span>
-                    {m.text}
-                  </div>
-                ))}
-              </div>
-              <div className="qx-row">
-                <input
-                  className="qx-input qx-line"
-                  placeholder="Discuss before deciding…"
-                  value={draft}
-                  autoFocus
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && send()}
-                />
-                <button className="btn" onClick={send}>
-                  Send
-                </button>
-              </div>
-            </div>
-          )}
+          <div className="detail-result-body log-md"><Markdown text={answer} /></div>
         </div>
       )}
 
@@ -391,6 +279,17 @@ export function TaskDetail({
 
       <div className="detail-cols">
         <div className="panel">
+          {(backingTask?.assessment || backingTask?.estimatedDurationMs != null) && (
+            <>
+              <div className="panel-head">
+                TRIAGE
+                {backingTask?.estimatedDurationMs != null && (
+                  <span className="panel-sub">est. {fmtEstDur(backingTask.estimatedDurationMs)}</span>
+                )}
+              </div>
+              {backingTask?.assessment && <p className="task-triage-note">{backingTask.assessment}</p>}
+            </>
+          )}
           <div className="panel-head">
             PLAN{" "}
             <span className="panel-sub">
@@ -421,22 +320,28 @@ export function TaskDetail({
               </span>
             ))}
           </div>
-          <AgentChat agent={agent} />
         </div>
         <div className="detail-right">
-          {agent.visual && (
-            <div className="panel panel-preview">
-              <div className="panel-head">
-                LIVE PREVIEW{" "}
-                <span className="panel-sub">what's actually built right now</span>
-              </div>
-              <PreviewFor agent={agent} />
-            </div>
-          )}
           <div className="panel panel-log">
-            <div className="panel-head">LIVE LOG</div>
-            <div className="log">
+            <div className="panel-head">
+              LIVE LOG <span className="panel-sub">activity + conversation — reply below</span>
+            </div>
+            <div className="log" ref={logRef}>
               {agent.log.map((l, i) => {
+                // Conversation turns render as chat bubbles; everything else is
+                // telemetry (with foldable tool detail).
+                const turn = chatTurn(l.line);
+                if (turn) {
+                  return (
+                    <div key={i} className={"log-turn log-turn-" + turn.who}>
+                      <span className="log-who mono">{turn.who === "you" ? "you" : agent.name}</span>
+                      {/* A conversation turn is always prose — render its markdown
+                          unconditionally. The old looksMarkdown gate left plainer
+                          replies showing raw markdown syntax instead of formatting. */}
+                      <div className="log-turn-text log-md"><Markdown text={turn.text} /></div>
+                    </div>
+                  );
+                }
                 const cls =
                   "log-line" +
                   (l.line.includes("⏸")
@@ -450,13 +355,109 @@ export function TaskDetail({
                     <summary>{l.line}</summary>
                     <pre className="log-detail">{l.detail}</pre>
                   </details>
+                ) : looksMarkdown(l.line) ? (
+                  // Marker-less agent prose (e.g. the final answer) — render its
+                  // markdown instead of showing raw **bold**/`code`/- bullets.
+                  <div key={i} className="log-prose log-md">
+                    <Markdown text={l.line} />
+                  </div>
                 ) : (
                   <div key={i} className={cls}>
                     {l.line}
                   </div>
                 );
               })}
-              {agent.status === "running" && <div className="log-line log-cursor">▌</div>}
+              {streaming != null && (
+                <div className="log-turn log-turn-agent">
+                  <span className="log-who mono">{agent.name}</span>
+                  {/* Render the reply as markdown while it streams, so it doesn't
+                      reflow from raw text to formatted when it lands in the log. */}
+                  <div className="log-turn-text log-md">
+                    <Markdown text={streaming} />
+                    <span className="log-cursor">▌</span>
+                  </div>
+                </div>
+              )}
+              {agent.status === "running" && streaming == null && <div className="log-line log-cursor">▌</div>}
+            </div>
+
+            {/* The one place to respond: quick decision buttons when the agent is
+                waiting, plus a composer that resumes it (when waiting) or chats. */}
+            <div className={"log-compose" + (q ? " log-compose-blocked" : "")}>
+              {q && (
+                <div className="log-decision">
+                  <span
+                    className="kind-chip"
+                    style={{ color: KIND_META[q.kind].color, borderColor: KIND_META[q.kind].color }}
+                  >
+                    {KIND_META[q.kind].label}
+                  </span>
+                  <span className="log-decision-title">{q.title}</span>
+                  <RiskChip risk={q.risk} />
+                  <span className="qcard-wait">{fmtWait(waitedSecs(q, now))}</span>
+                  <span className="log-decision-actions">
+                    {q.kind === "escalation" ? (
+                      // The agent (or a guard) halted this run and asked for help.
+                      // There's nothing to "approve": the operator either hands it
+                      // to a fresh runner, stops it, or types guidance below and
+                      // resumes (the composer's "Send & resume" = the modify action).
+                      <>
+                        <button
+                          className="btn btn-sm"
+                          title="Hand this run to a different runner to retry fresh (with your guidance below, if any)"
+                          onClick={() => resolveHitl(q.id, "reassign", { guidance: draft.trim() })}
+                        >
+                          Reassign
+                        </button>
+                        <button className="btn btn-sm btn-danger" onClick={() => resolveHitl(q.id, "reject")}>
+                          Stop run
+                        </button>
+                      </>
+                    ) : q.options ? (
+                      q.options.map((opt, i) => (
+                        <button
+                          key={i}
+                          className={"btn btn-sm" + (i === q.recommended ? " btn-primary" : "")}
+                          onClick={() => resolveHitl(q.id, "option", { optionIndex: i })}
+                        >
+                          “{opt}”
+                        </button>
+                      ))
+                    ) : (
+                      <>
+                        <button className="btn btn-sm btn-primary" onClick={() => resolveHitl(q.id, "approve")}>
+                          Approve
+                        </button>
+                        <button className="btn btn-sm btn-danger" onClick={() => resolveHitl(q.id, "reject")}>
+                          Reject
+                        </button>
+                      </>
+                    )}
+                    <button className="btn btn-sm btn-ghost" onClick={() => setShowDiff((v) => !v)}>
+                      {showDiff ? "Hide details" : "Details"}
+                    </button>
+                  </span>
+                </div>
+              )}
+              {q && showDiff && <HitlContext q={q} runName={agent.name} openDiff />}
+              <div className="qx-row log-composer">
+                <input
+                  className="qx-input qx-line"
+                  placeholder={
+                    q
+                      ? "Reply and resume — e.g. “yes, commit and open a PR”…"
+                      : agent.status === "done"
+                        ? "Ask about what shipped…"
+                        : "Message the agent — it keeps working…"
+                  }
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && send()}
+                />
+                <button className={"btn" + (q ? " btn-primary" : "")} onClick={send} disabled={!draft.trim()}>
+                  {q ? "Send & resume" : "Send"}
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -12,10 +12,23 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { existsSync } from "node:fs";
 import { mkdir, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { gitBin } from "./git-bin.js";
 
 const exec = promisify(execFile);
+
+// Files whose change (folding in main) means the worktree's deps may be stale.
+const DEP_MANIFESTS = new Set(["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"]);
+
+/** Infer the install command from the lockfile present, else npm. */
+function pmInstallCmd(dir: string): string {
+  if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm install";
+  if (existsSync(join(dir, "yarn.lock"))) return "yarn install";
+  if (existsSync(join(dir, "bun.lockb"))) return "bun install";
+  return "npm install";
+}
 
 export interface ProvisionOpts {
   /** Preferred ref to branch from — the project's integration branch for a
@@ -55,7 +68,7 @@ export class WorktreeProvisioner {
   }
 
   private async git(cwd: string, ...args: string[]): Promise<string> {
-    const { stdout } = await exec("git", ["-C", cwd, ...args]);
+    const { stdout } = await exec(gitBin(), ["-C", cwd, ...args]);
     return stdout.trim();
   }
 
@@ -74,15 +87,100 @@ export class WorktreeProvisioner {
     }
   }
 
+  /** Best-effort refresh of the base branch from origin, so `origin/<base>` is
+   *  current before we branch/merge. No-op (swallowed) when the repo has no
+   *  usable remote (a pure-local project) or is offline — callers then fall back
+   *  to the local base branch. */
+  async fetchBase(): Promise<void> {
+    await this.git(this.repo, "fetch", "--quiet", "origin", this.baseBranch).catch(() => undefined);
+  }
+
+  /** The freshest base ref to cut from / sync to: the fetched `origin/<base>`
+   *  when a remote gave us one, else the local base branch. */
+  async freshBase(): Promise<string> {
+    return (await this.refExists(`refs/remotes/origin/${this.baseBranch}`)) ? `origin/${this.baseBranch}` : this.baseBranch;
+  }
+
+  /** True when the latest base has commits the agent's branch doesn't — i.e. the
+   *  branch is behind `main` and should sync. Used to flag stale in-flight runs. */
+  async baseAheadOf(branch: string): Promise<boolean> {
+    const base = await this.freshBase();
+    if (!(await this.refExists(branch))) return false;
+    // Exit 0 = base IS an ancestor of the branch (branch already has base = up to
+    // date); non-zero = base has commits the branch lacks (behind).
+    try {
+      await this.git(this.repo, "merge-base", "--is-ancestor", base, branch);
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
   /**
-   * Create an isolated worktree on a fresh `branch`, cut from `opts.baseRef`
-   * (when it exists) else the base branch. Cleans up any stale worktree/branch
-   * left by a prior agent with the same id so provisioning is idempotent.
+   * Merge the latest base (`origin/<base>`) into an agent's worktree branch, so a
+   * PR opens against current `main` (and conflicts surface HERE, not at merge
+   * time). Fetches first. Returns `{ok:true}` on a clean merge; on conflict the
+   * merge is ABORTED (worktree left clean) and `{ok:false, conflicts}` is returned
+   * so the caller can escalate instead of pushing a broken branch.
+   */
+  async mergeBase(runId: string): Promise<{ ok: boolean; conflicts?: string[]; depsChanged?: boolean }> {
+    const path = this.pathFor(runId);
+    await this.fetchBase();
+    const base = await this.freshBase();
+    const before = await this.git(path, "rev-parse", "HEAD").catch(() => "");
+    // A merge when already current is a harmless "Already up to date" no-op.
+    try {
+      await this.git(path, "-c", "user.name=Skynet", "-c", "user.email=skynet@local", "merge", "--no-edit", base);
+      // Did folding in main touch a dependency manifest? (so the caller can
+      // re-install — node_modules is gitignored, but a revise/checks/preview
+      // running in this worktree afterward needs the new deps.)
+      const after = await this.git(path, "rev-parse", "HEAD").catch(() => "");
+      let depsChanged = false;
+      if (before && after && before !== after) {
+        const changed = (await this.git(path, "diff", "--name-only", before, after).catch(() => "")).split("\n");
+        depsChanged = changed.some((f) => DEP_MANIFESTS.has(f.split("/").pop() ?? ""));
+      }
+      return { ok: true, depsChanged };
+    } catch {
+      const conflicts = (await this.git(path, "diff", "--name-only", "--diff-filter=U").catch(() => ""))
+        .split("\n")
+        .filter(Boolean);
+      await this.git(path, "merge", "--abort").catch(() => undefined);
+      return { ok: false, conflicts };
+    }
+  }
+
+  /**
+   * Re-install dependencies in an agent's worktree — for use after a mergeBase
+   * that changed a dependency manifest. Only runs when node_modules already
+   * exists (deps were installed for this run); otherwise there's nothing to
+   * reconcile and we skip (the agent/preview installs on demand). Best-effort +
+   * time-boxed; a failure is reported, never fatal (the PR's source is correct
+   * regardless — node_modules is gitignored). */
+  async installDeps(runId: string): Promise<{ installed: boolean; note?: string }> {
+    const path = this.pathFor(runId);
+    if (!existsSync(join(path, "node_modules"))) return { installed: false };
+    const cmd = pmInstallCmd(path);
+    try {
+      await exec("/bin/sh", ["-c", cmd], { cwd: path, timeout: 3 * 60_000 });
+      return { installed: true, note: cmd };
+    } catch (err) {
+      return { installed: false, note: `${cmd} failed: ${(err as Error).message}` };
+    }
+  }
+
+  /**
+   * Create an isolated worktree on a fresh `branch`. Fetches origin first, then
+   * cuts from `opts.baseRef` when it exists (a fork's parent branch) else the
+   * freshest base (`origin/<base>`) — so a new run always starts on latest main,
+   * not a stale local branch. Cleans up any stale worktree/branch left by a prior
+   * agent with the same id so provisioning is idempotent.
    */
   async provision(runId: string, branch: string, opts: ProvisionOpts = {}): Promise<ProvisionResult> {
     await mkdir(this.root, { recursive: true }).catch(() => undefined);
     const path = this.pathFor(runId);
-    const baseRef = opts.baseRef && (await this.refExists(opts.baseRef)) ? opts.baseRef : this.baseBranch;
+    await this.fetchBase(); // refresh origin/<base> so a fresh run starts on latest main
+    const baseRef = opts.baseRef && (await this.refExists(opts.baseRef)) ? opts.baseRef : await this.freshBase();
 
     // Clear anything stale at this path / branch name.
     await this.removePath(path);
@@ -139,7 +237,7 @@ export class WorktreeProvisioner {
    */
   async patch(runId: string, baseRef: string, maxBytes = 200_000): Promise<string> {
     try {
-      const { stdout } = await exec("git", ["-C", this.pathFor(runId), "diff", `${baseRef}...HEAD`], {
+      const { stdout } = await exec(gitBin(), ["-C", this.pathFor(runId), "diff", `${baseRef}...HEAD`], {
         maxBuffer: 8 * 1024 * 1024,
       });
       return stdout.length > maxBytes ? stdout.slice(0, maxBytes) + "\n… (diff truncated — review the full branch)" : stdout;

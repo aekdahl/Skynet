@@ -83,12 +83,18 @@ export function isAutoAllowed(toolName: string): boolean {
   return AUTO_ALLOW.has(toolName);
 }
 
+// Map a Fleet model slug to what the Claude Code SDK expects. The friendly
+// catalog slugs (opus-*/sonnet-*/haiku-*/fable-*) map to the CLI aliases; ANY
+// other non-empty value passes through verbatim, so a model released after our
+// catalog — picked via the Fleet "custom model" option, e.g. a full id like
+// "claude-opus-4-9-…" — still reaches the SDK instead of being silently dropped.
+// Empty → undefined = the SDK's own default.
 const mapModel = (m: string): string | undefined =>
   m.startsWith("fable") ? "claude-fable-5"
     : m.startsWith("opus") ? "opus"
     : m.startsWith("sonnet") ? "sonnet"
     : m.startsWith("haiku") ? "haiku"
-    : undefined;
+    : m.trim() || undefined;
 
 // Build the env handed to the TaskRun SDK subprocess. `Options.env` REPLACES the
 // subprocess environment, so we spread the ambient env (PATH/HOME/…) and then
@@ -122,8 +128,72 @@ export function buildRunnerEnv(): Record<string, string> {
   return env;
 }
 
-/** A one-shot, tool-less query — used for consults (gate questions, follow-ups
- *  about finished work). Returns the answer text, or `fallback` if empty. */
+/**
+ * Yield an SDK query's answer as text deltas. With `includePartialMessages` the
+ * SDK emits `stream_event`s carrying token-level `text_delta`s — we yield those
+ * live. The final `assistant` message is a safety net: if partials didn't arrive
+ * (older transport / tool turns), emit any text not already streamed. A failure
+ * yields one apologetic chunk, but only if nothing was emitted yet. Shared by
+ * every one-shot streaming helper below.
+ */
+async function* streamQueryText(q: AsyncIterable<SDKMessage>): AsyncGenerator<string> {
+  let emitted = "";
+  try {
+    for await (const msg of q) {
+      if (msg.type === "stream_event") {
+        // Anthropic streaming: content_block_delta → { delta: { type:"text_delta", text } }.
+        const ev = (msg as { event?: { type?: string; delta?: { type?: string; text?: string } } }).event;
+        if (ev?.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
+          emitted += ev.delta.text;
+          yield ev.delta.text;
+        }
+      } else if (msg.type === "assistant") {
+        // Safety net: emit any final text the partial stream didn't already cover.
+        // (A tool-using assistant emits a fresh text block per turn; only the
+        // trailing answer extends `emitted`, so guard on the startsWith prefix.)
+        const { text } = readAssistant((msg as { message: { content?: unknown } }).message);
+        if (text && text.length > emitted.length && text.startsWith(emitted)) {
+          const suffix = text.slice(emitted.length);
+          emitted += suffix;
+          yield suffix;
+        } else if (text && !emitted) {
+          emitted = text;
+          yield text;
+        }
+      } else if (msg.type === "result") {
+        break;
+      }
+    }
+  } catch (err) {
+    if (!emitted) yield `couldn't look into that right now (${(err as Error).message}).`;
+  }
+}
+
+/** A one-shot, tool-less consult that STREAMS the answer as text deltas. */
+async function* oneShotConsultStream(opts: {
+  prompt: string;
+  cwd: string;
+  model: string;
+  env: Record<string, string>;
+}): AsyncGenerator<string> {
+  const q = query({
+    prompt: opts.prompt,
+    options: {
+      cwd: opts.cwd,
+      model: mapModel(opts.model),
+      permissionMode: "default",
+      // Deny every tool so this stays a pure text answer.
+      canUseTool: () => Promise.resolve({ behavior: "deny", message: "Answer in text only; do not use tools." } as PermissionResult),
+      maxTurns: 4,
+      env: opts.env,
+      includePartialMessages: true,
+    },
+  });
+  yield* streamQueryText(q as AsyncIterable<SDKMessage>);
+}
+
+/** Accumulating (non-streaming) consult — the whole answer, or `fallback` if
+ *  empty. Delegates to {@link oneShotConsultStream} so both share one query. */
 async function oneShotConsult(opts: {
   prompt: string;
   cwd: string;
@@ -131,46 +201,91 @@ async function oneShotConsult(opts: {
   env: Record<string, string>;
   fallback: string;
 }): Promise<string> {
-  try {
-    const q = query({
-      prompt: opts.prompt,
-      options: {
-        cwd: opts.cwd,
-        model: mapModel(opts.model),
-        permissionMode: "default",
-        // Deny every tool so this stays a pure text answer.
-        canUseTool: () => Promise.resolve({ behavior: "deny", message: "Answer in text only; do not use tools." } as PermissionResult),
-        maxTurns: 4,
-        env: opts.env,
-      },
-    });
-    let answer = "";
-    for await (const msg of q as AsyncIterable<SDKMessage>) {
-      if (msg.type === "assistant") {
-        const { text } = readAssistant((msg as { message: { content?: unknown } }).message);
-        if (text) answer += (answer ? "\n" : "") + text;
-      } else if (msg.type === "result") {
-        break;
-      }
-    }
-    return answer.trim() || opts.fallback;
-  } catch (err) {
-    return `couldn't look into that right now (${(err as Error).message}).`;
-  }
+  let answer = "";
+  for await (const delta of oneShotConsultStream(opts)) answer += delta;
+  return answer.trim() || opts.fallback;
 }
 
 /** A one-shot, tool-less text query authenticated exactly like a live runner
  *  (via {@link buildRunnerEnv} — so it works standalone AND nested inside a
  *  Claude Code session, where a raw `fetch` to the API has no egress). Used by
  *  out-of-band callers such as the eval judge. Returns the model's text. */
-export async function oneShotText(opts: { prompt: string; model?: string; cwd?: string }): Promise<string> {
-  return oneShotConsult({
+export async function oneShotText(opts: { prompt: string; model?: string; cwd?: string; apiKey?: string }): Promise<string> {
+  let out = "";
+  for await (const delta of oneShotTextStream(opts)) out += delta;
+  return out;
+}
+
+/** Streaming variant of {@link oneShotText} — yields the answer as text deltas. */
+export function oneShotTextStream(opts: {
+  prompt: string;
+  model?: string;
+  cwd?: string;
+  apiKey?: string;
+}): AsyncIterable<string> {
+  const env = buildRunnerEnv();
+  if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
+  return oneShotConsultStream({
     prompt: opts.prompt,
     cwd: opts.cwd ?? process.cwd(),
     model: opts.model ?? "opus",
-    env: buildRunnerEnv(),
-    fallback: "",
+    env,
   });
+}
+
+// Read-only tools a repo-aware assistant may use — inspect the tree/files, never
+// mutate. Everything else (Bash, Write, Edit, …) is denied.
+const ASSISTANT_READ_TOOLS = new Set(["Read", "LS", "Glob", "Grep", "NotebookRead"]);
+
+/**
+ * A repo-aware one-shot assistant: same auth path as {@link oneShotText}, but it
+ * can READ the repository at `cwd` (Read/LS/Glob/Grep) to ground its answer in
+ * actual file content — e.g. opening ROADMAP.md — while every mutating tool is
+ * denied. Bounded turns; returns the final text. Used by the project assistant.
+ */
+export async function oneShotRepoAssistant(opts: {
+  prompt: string;
+  cwd: string;
+  model?: string;
+  apiKey?: string;
+}): Promise<string> {
+  let answer = "";
+  for await (const delta of oneShotRepoAssistantStream(opts)) answer += delta;
+  return answer.trim() || "(no answer)";
+}
+
+/** Streaming variant of {@link oneShotRepoAssistant} — yields the answer as text
+ *  deltas. Read-only tool turns (Read/Grep/…) interleave; only the model's text
+ *  is yielded, so the reply appears as it's written after any file lookups. */
+export function oneShotRepoAssistantStream(opts: {
+  prompt: string;
+  cwd: string;
+  model?: string;
+  apiKey?: string;
+}): AsyncIterable<string> {
+  const env = buildRunnerEnv();
+  if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
+  const q = query({
+    prompt: opts.prompt,
+    options: {
+      cwd: opts.cwd,
+      model: mapModel(opts.model ?? "opus"),
+      permissionMode: "default",
+      // The preset loads the full tool suite (so Read/Grep/Glob exist); the
+      // gate narrows it to read-only.
+      systemPrompt: { type: "preset", preset: "claude_code" },
+      canUseTool: (name, input) =>
+        Promise.resolve(
+          ASSISTANT_READ_TOOLS.has(name)
+            ? ({ behavior: "allow", updatedInput: input } as PermissionResult)
+            : ({ behavior: "deny", message: "Read-only assistant — only Read/LS/Glob/Grep are allowed." } as PermissionResult),
+        ),
+      maxTurns: 14,
+      env,
+      includePartialMessages: true,
+    },
+  });
+  return streamQueryText(q as AsyncIterable<SDKMessage>);
 }
 
 // A tool call the assistant requested: its name, input args, and id (to pair
@@ -337,6 +452,32 @@ function buildQuestionRaise(q: ParsedQuestion): HitlRaise {
   };
 }
 
+// The agent hands off via AskUserQuestion with an escalation header ("ESCALATE",
+// "BLOCKED", …). We key on the HEADER only — not the body — so an ordinary
+// question that merely mentions "blocked" isn't misread as a give-up.
+function isEscalation(q: ParsedQuestion): boolean {
+  return /^\s*(escalate|blocked|stuck|hand.?off|give.?up|take.?over|need.*human)/i.test(q.header);
+}
+
+// Turn an escalation AskUserQuestion into an `escalation` HITL: the agent has
+// stopped and needs a human (help & resume, reassign, or stop). Unlike a
+// question, there's no answer that mechanically continues it — the operator's
+// guidance rides the trusted operator channel on resume (see resume()).
+function buildEscalationRaise(q: ParsedQuestion): HitlRaise {
+  return {
+    kind: "escalation",
+    title: /^\s*escalate\s*$/i.test(q.header) ? "Agent is blocked — needs a human" : q.header,
+    why: q.prompt,
+    risk: "medium",
+    rationale: q.prompt,
+    command: null,
+    options: null,
+    recommended: null,
+    steps: null,
+    diff: null,
+  };
+}
+
 // Short human label of the chosen answer, for the activity log.
 function describeAnswer(q: ParsedQuestion, decision?: Resolution): string {
   if (decision?.action === "option" && decision.optionIndex != null) {
@@ -384,6 +525,11 @@ export function isTransientApiError(text: string): boolean {
 }
 
 const MAX_API_RETRIES = 3;
+// `error_max_turns` is NOT a failure — the SDK session is intact and the work is
+// resumable; the agent just hit its per-session turn budget. Continue it (resume,
+// fresh budget) up to this many times before handing off to a human. Its own
+// budget, separate from API retries.
+const MAX_TURN_CONTINUES = 3;
 /** Exponential backoff, capped at 30s: attempt 1→2s, 2→4s, 3→8s. */
 export function retryBackoffMs(attempt: number): number {
   return Math.min(30_000, 1_000 * 2 ** attempt);
@@ -440,6 +586,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
   private baseOptions?: Options; // query options minus resume, reused per relaunch
   private initialPrompt = ""; // the kickoff message, re-sent if we retry pre-session
   private apiRetries = 0; // transient retries spent (budget MAX_API_RETRIES)
+  private turnContinues = 0; // turn-budget continues spent (budget MAX_TURN_CONTINUES)
   private lastApiError = ""; // most recent overload/error text seen, for classification
 
   constructor(
@@ -456,9 +603,11 @@ class ClaudeRunnerHandle implements RunnerHandle {
       `Task: ${spec.task}. ` +
       `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
       `Only if it requires code changes, make them and run any relevant checks. Then stop when done. ` +
+      `Make code changes ONLY — do NOT run git commit, git push, or gh pr, and do NOT ask the operator whether to commit, push, or open a PR. Skynet owns that: when you finish it auto-commits your worktree, then gates the push and PR behind a separate review/approval step it controls. So never say you "didn't commit" or ask "should I open a PR?" — leave version control entirely to Skynet. Your "done" message should simply summarize what you changed and why, nothing about committing, pushing, or PRs. ` +
       `For anything beyond a one-line answer, use the TodoWrite tool to lay out your plan as concrete steps BEFORE you start, and keep it updated (mark each step in_progress, then completed) as you work — this is how your plan and progress are surfaced to the operator, so maintain it even for research/exploration tasks. ` +
       `Ask before running destructive or irreversible commands. ` +
-      `Be honest when you're blocked: if you cannot reproduce a reported problem, or the task lacks information you'd need to fix it correctly (a stack trace, reproduction steps, failing logs, expected vs actual behavior), do NOT guess or make a speculative edit. Use the AskUserQuestion tool to ask the operator for exactly what you need, or if no answer is possible, report plainly what you could and couldn't determine and stop WITHOUT changing code. Asking for the missing detail is the correct, honest outcome here — a fabricated fix is a failure, not progress.`;
+      `Be honest when you're blocked: if you cannot reproduce a reported problem, or the task lacks information you'd need to fix it correctly (a stack trace, reproduction steps, failing logs, expected vs actual behavior), do NOT guess or make a speculative edit. Use the AskUserQuestion tool to ask the operator for exactly what you need, or if no answer is possible, report plainly what you could and couldn't determine and stop WITHOUT changing code. Asking for the missing detail is the correct, honest outcome here — a fabricated fix is a failure, not progress. ` +
+      `If you have genuinely TRIED and cannot make further progress — the task is beyond what you can do here, a prerequisite is missing that you can't obtain, or you keep hitting the same failure — HAND OFF to a human instead of thrashing or churning. Call the AskUserQuestion tool with the header set to "ESCALATE" and, in the question, say what you tried, what's blocking you, and what a human could do to help or decide. This halts the run so a human can help and resume you, reassign it, or stop it. Escalating when truly stuck is the right call — far better than burning time on an approach that isn't working.`;
     this.input.push(this.initialPrompt);
 
     const canUseTool: CanUseTool = (toolName, input) => {
@@ -466,6 +615,9 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // AskUserQuestion is the agent asking the operator a decision — surface it
       // as a `question` HITL with real option buttons, not a generic "approve".
       const question = toolName === "AskUserQuestion" ? parseAskUserQuestion(input) : null;
+      // A question whose header signals a hand-off is an ESCALATION, not a
+      // routine decision — the agent has given up and wants a human.
+      const escalation = question && isEscalation(question) ? buildEscalationRaise(question) : null;
       return new Promise<PermissionResult>((resolve) => {
         // One gate at a time — the SDK serializes tool calls in a turn.
         // Register the gate BEFORE emitting the event: a synchronous resume
@@ -474,11 +626,14 @@ class ClaudeRunnerHandle implements RunnerHandle {
         this.gate = resolve;
         this.gateInput = input;
         this.gateTool = toolName;
-        this.gateQuestion = question;
+        // An escalation is NOT an answerable question: resume() delivers the
+        // operator's guidance on the trusted operator channel (help & resume),
+        // or the orchestrator stops/reassigns the run.
+        this.gateQuestion = escalation ? null : question;
         this.events.onStatus(this.runId, "waiting");
         this.events.onHitl(
           this.runId,
-          question ? buildQuestionRaise(question) : this.buildRaise(toolName, input),
+          escalation ?? (question ? buildQuestionRaise(question) : this.buildRaise(toolName, input)),
         );
       });
     };
@@ -647,6 +802,22 @@ class ClaudeRunnerHandle implements RunnerHandle {
       if (outcome.done) {
         this.finish();
         return;
+      }
+
+      // Ran out of turns — NOT a failure. Resume the same session (fresh turn
+      // budget) and keep going, a bounded number of times. The agent picks up
+      // exactly where it left off; only when it can't finish within the continue
+      // budget does it hand off (→ onFailed → the orchestrator escalates it).
+      if (outcome.reason === "error_max_turns" && this.turnContinues < MAX_TURN_CONTINUES) {
+        this.turnContinues++;
+        this.events.onLog(
+          this.runId,
+          `ran out of turns — continuing where it left off [${this.turnContinues}/${MAX_TURN_CONTINUES}]`,
+        );
+        await this.q?.interrupt().catch(() => undefined); // release the exhausted session
+        if (this.finished) return;
+        this.relaunch();
+        continue;
       }
 
       // Errored. A transient overload/rate-limit is retryable: back off and
@@ -907,6 +1078,17 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     if (this.cap) clearTimeout(this.cap);
+    // Release a parked permission/escalation gate so its canUseTool promise
+    // never dangles when we tear the session down (e.g. operator stops an
+    // escalated run while it's blocked in the gate).
+    if (this.gate) {
+      const gate = this.gate;
+      this.gate = null;
+      this.gateInput = null;
+      this.gateTool = null;
+      this.gateQuestion = null;
+      gate({ behavior: "deny", message: "Run stopped by operator." });
+    }
     await this.q?.interrupt().catch(() => undefined);
     this.input.close();
   }
@@ -930,20 +1112,43 @@ export class ClaudeRunnerProvider implements RunnerProvider {
   /** Answer a follow-up about a finished agent with no live handle (e.g. after a
    *  server restart) — a fresh tool-less query grounded in the agent's state. */
   async consult(spec: ConsultSpec, question: string): Promise<string> {
-    const base = buildRunnerEnv();
-    const env = spec.apiKey ? { ...base, ANTHROPIC_API_KEY: spec.apiKey } : base;
-    const prompt =
-      "You are an AI coding agent that has FINISHED a task. Answer the operator's follow-up " +
+    const answer = await oneShotConsult({
+      ...consultQuery(spec, question),
+      fallback: "The task is complete — ask me anything about what I did.",
+    });
+    return answer;
+  }
+
+  /** Streaming variant of {@link consult} — yields the answer as text deltas. */
+  consultStream(spec: ConsultSpec, question: string): AsyncIterable<string> {
+    return oneShotConsultStream(consultQuery(spec, question));
+  }
+}
+
+/** The shared (prompt, cwd, model, env) for a consult — used by both the
+ *  accumulating and streaming paths so they ask identically. */
+function consultQuery(
+  spec: ConsultSpec,
+  question: string,
+): { prompt: string; cwd: string; model: string; env: Record<string, string> } {
+  const base = buildRunnerEnv();
+  const env = spec.apiKey ? { ...base, ANTHROPIC_API_KEY: spec.apiKey } : base;
+  // Two framings share this function:
+  //   • spec.system set  → caller owns the ROLE (e.g. Telegram intent classifier
+  //     with its own "you are Skynet's assistant, return {reply, action}" prompt).
+  //     `question` is the actual operator message (untrusted data — the caller's
+  //     system prompt already says how to treat it); `context` is the grounding.
+  //   • spec.system unset → the original use case: a FINISHED agent answering an
+  //     operator follow-up about what it did. `context` is the agent's own log,
+  //     `question` the operator's follow-up.
+  const prompt = spec.system
+    ? `${spec.system}\n\n` +
+      (spec.context ? `=== GROUNDING ===\n${spec.context}\n\n` : "") +
+      `=== OPERATOR MESSAGE ===\n${question}`
+    : "You are an AI coding agent that has FINISHED a task. Answer the operator's follow-up " +
       "question directly and concisely, based on what you did. Do NOT use any tools — just explain.\n\n" +
       `Task: ${spec.task}\n` +
       (spec.context ? `What you did (your log / final answer):\n${spec.context}\n` : "") +
       `\nOperator's question: ${question}`;
-    return oneShotConsult({
-      prompt,
-      cwd: spec.cwd ?? process.cwd(),
-      model: spec.model,
-      env,
-      fallback: "The task is complete — ask me anything about what I did.",
-    });
-  }
+  return { prompt, cwd: spec.cwd ?? process.cwd(), model: spec.model, env };
 }

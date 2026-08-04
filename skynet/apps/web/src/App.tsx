@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNow, useStore } from "./lib/store";
 import { initialView, onNavigate } from "./pwa/launch"; // [pwa] Inbox-first launch + push deep-link
 import { parseHash, toHash } from "./lib/routing"; // [w7] deep links
+import { gateView } from "./lib/dev"; // dev-only pages hidden from release builds
 import { TitleBar, OpSidebar, OpStatusBar, ConnectingShell } from "./components/shell";
+import { StewardDock } from "./components/steward-dock";
 import { useTweaks } from "./components/tweaks";
 import { HomeView } from "./views/home";
 import { OverviewView } from "./views/overview";
@@ -59,7 +61,11 @@ export function App() {
 
   // [w7] A URL hash deep-link wins over the PWA launch default.
   const route0 = parseHash();
-  const [view, setView] = useState<ViewName>(() => route0?.view ?? initialView() ?? "home");
+  // setView is gated: a dev-only view (see lib/dev) coerces to "home" on a
+  // release build, so a deep link / stale hash / PWA nav can't reach it. Every
+  // navigation path flows through here, so guarding it once covers them all.
+  const [view, setViewRaw] = useState<ViewName>(() => gateView(route0?.view ?? initialView() ?? "home"));
+  const setView = useCallback((v: ViewName) => setViewRaw(gateView(v)), []);
   const [lens, setLens] = useState<Lens>(() => route0?.lens ?? "subway");
   const [projectId, setProjectId] = useState<string | null>(() => route0?.projectId ?? null);
   const [runId, setRunId] = useState<string | null>(() => route0?.runId ?? null);
@@ -70,6 +76,13 @@ export function App() {
   const [onboarded, setOnboarded] = useState(isOnboarded);
   // Re-run setup on demand (from Settings), even after it's been completed/skipped.
   const [rerunSetup, setRerunSetup] = useState(false);
+  // Steward dock — a chat available on every page. When open it collapses the left
+  // nav to an icon rail (root class), reclaiming width for the conversation.
+  const [stewardOpen, setStewardOpen] = useState(false);
+  useEffect(() => {
+    document.documentElement.classList.toggle("steward-open", stewardOpen);
+    return () => document.documentElement.classList.remove("steward-open");
+  }, [stewardOpen]);
 
   // [pwa] A push / notification click (relayed by the service worker) or a
   // manifest shortcut navigates the app in-place — usually to the Inbox.
@@ -123,7 +136,17 @@ export function App() {
     setView("project");
   };
 
-  const createProject = async (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => {
+  const createProject = async (
+    name: string,
+    goal: string,
+    opts?: {
+      repo?: string;
+      repoPath?: string;
+      createRepo?: { name: string; private: boolean; owner?: string };
+      autonomy?: boolean;
+      approvalLevel?: string;
+    },
+  ) => {
     await store.createProject(name, goal, opts);
     setFromP("projects");
     setView("projects");
@@ -139,7 +162,7 @@ export function App() {
   // The server rejected our token (dev token in production, or a wiped/expired
   // session) — sign in rather than spinning on reconnect.
   if (store.wsPhase === "unauthorized") {
-    return <LoginView onLogin={store.login} />;
+    return <LoginView onLogin={store.login} onVerifyMfa={store.verifyMfa} />;
   }
 
   if (!store.loaded) {
@@ -147,8 +170,9 @@ export function App() {
   }
 
   // First run: a loaded, empty workspace that hasn't been set up yet → the
-  // onboarding wizard (sets up GitHub + fleet against the real backend). All
-  // hooks above run unconditionally; only the render branches here.
+  // onboarding wizard (names the workspace + stands up the fleet against the
+  // real backend; GitHub is connected later from Integrations). All hooks above
+  // run unconditionally; only the render branches here.
   if (
     store.loaded &&
     (rerunSetup ||
@@ -163,6 +187,13 @@ export function App() {
       />
     );
   }
+
+  // Steward auto-focuses whatever project you're viewing (project page, or the
+  // project behind an open run) so it can manage it; elsewhere it's workspace-wide.
+  const stewardFocus =
+    project ??
+    (view === "task" && agent ? store.projects.find((p) => p.id === agent.projectId) : undefined) ??
+    null;
 
   return (
     <div className="app" style={{ "--accent": t.accent } as React.CSSProperties} data-density={t.density}>
@@ -192,6 +223,7 @@ export function App() {
                 setLens={setLens}
                 now={now}
                 onOpenTask={openTask}
+                onOpenAgent={openAgent}
                 onOpenProject={openProject}
                 onCreate={createProject}
                 onGoInbox={() => setView("queue")}
@@ -224,6 +256,7 @@ export function App() {
                 project={project}
                 now={now}
                 onOpenTask={openTask}
+                onOpenAgent={openAgent}
                 onBack={() => setView(fromP)}
               />
             )}
@@ -270,6 +303,18 @@ export function App() {
           </div>
         </main>
       </div>
+      {store.loaded && stewardOpen && (
+        <StewardDock
+          focusProjectId={stewardFocus?.id ?? null}
+          focusProjectName={stewardFocus?.name ?? null}
+          onClose={() => setStewardOpen(false)}
+        />
+      )}
+      {store.loaded && !stewardOpen && (
+        <button className="steward-fab" onClick={() => setStewardOpen(true)} title="Ask Steward (available on every page)">
+          <span className="steward-fab-mark" aria-hidden="true">✦</span> Steward
+        </button>
+      )}
       <OpStatusBar onOpenTask={openTask} />
     </div>
   );

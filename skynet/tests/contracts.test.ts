@@ -23,6 +23,7 @@ const agent: TaskRun = {
   status: "waiting",
   agentId: "runner-01",
   provider: "claude",
+  credentialId: null,
   model: "opus-4.5",
   branch: "agent/billing-hooks",
   modules: ["api/billing", "db/migrations"],
@@ -123,7 +124,7 @@ describe("contracts round-trip", () => {
 
   it("Snapshot validates a full default-provider catalog and WsMessage wraps it", () => {
     const snapshot: Snapshot = {
-      runs: [agent], queue: [], projects: [], tasks: [], fleet: [],
+      runs: [agent], queue: [], projects: [], tasks: [], features: [], milestones: [], fleet: [],
       modules: [], deps: [], providers: DEFAULT_PROVIDERS, serverTime: 42,
     };
     expect(Snapshot.parse(wire(snapshot))).toEqual(snapshot);

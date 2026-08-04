@@ -37,3 +37,19 @@ export function setWorkspaceName(name: string): void {
     /* ignore */
   }
 }
+
+export function operatorHandle(): string {
+  try {
+    return localStorage.getItem(`skynet.operator.${tokenKey()}`) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function setOperatorHandle(handle: string): void {
+  try {
+    localStorage.setItem(`skynet.operator.${tokenKey()}`, handle);
+  } catch {
+    /* ignore */
+  }
+}

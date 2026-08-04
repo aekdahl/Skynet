@@ -9,19 +9,29 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   ConfigureRunnerRequest,
+  CreateFeatureRequest,
+  CreateMilestoneRequest,
   CreateProjectRequest,
   CreateTaskRequest,
+  ProviderId,
   ResolveRequest,
   ChatRequest,
+  UpdateFeatureRequest,
+  UpdateMilestoneRequest,
   UpdateProjectRequest,
+  UpdateWorkspaceSettingsRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
   MoveTaskRequest,
+  ReorderTaskRequest,
 } from "@skynet/shared";
+import { installProviderCli } from "./provider-install.js";
+import { installCommandFor } from "./provider-requirements.js";
 import { readFile } from "node:fs/promises";
 import { authenticate, type Principal } from "./auth.js";
 import { requiresAuth } from "./auth-guard.js";
 import { config, RESTART_EXIT_CODE } from "./config.js";
+import { listDir } from "./fs-browse.js";
 import {
   currentEnvSettings,
   envSettingsWritable,
@@ -32,6 +42,7 @@ import {
 import { CommandDeniedError } from "./command-safety.js";
 import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import { NotFoundError, type Operations, RunnerBusyError } from "./operations.js";
+import type { ChatTurn } from "./project-assistant.js";
 import { simulateConversational } from "./telegram/index.js";
 import { simulationGrade } from "./simulation/grade.js";
 
@@ -84,10 +95,51 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   // ── reads (workspace-scoped) ──────────────────────────────────────────────
   app.get("/api/snapshot", (req) => ops.snapshot(ws(req)));
   app.get("/api/providers", (req) => ops.listProviders(ws(req)));
+
+  // Install a provider's CLI in-place, streaming stdout+stderr as text/plain
+  // so the Settings UI can render live output. The command is FIXED per
+  // provider on the server (see provider-requirements.ts INSTALL_COMMAND) —
+  // the client only sends the provider id; there's no way for a caller to
+  // inject shell text. Providers without a scriptable install (brew/manual)
+  // return 400. Post-install the client refreshes the snapshot to pick up
+  // the re-probed `binOnPath`.
+  app.post<{ Params: { id: string } }>("/api/providers/:id/install", async (req, reply) => {
+    const parsed = ProviderId.safeParse(req.params.id);
+    if (!parsed.success) return reply.code(400).send({ error: "unknown provider id" });
+    const id = parsed.data;
+    if (!installCommandFor(id)) {
+      return reply.code(400).send({ error: `no auto-install available for "${id}"; use the docs link on the provider card` });
+    }
+    reply.header("content-type", "text/plain; charset=utf-8");
+    reply.hijack();
+    const raw = reply.raw;
+    raw.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-cache" });
+    try {
+      for await (const ev of installProviderCli(id)) {
+        if (ev.kind === "line" || ev.kind === "error") raw.write((ev.text ?? "") + "\n");
+        else if (ev.kind === "done") {
+          raw.write(`\n[done] exit=${ev.exitCode ?? "spawn-failed"} binOnPath=${ev.binOnPath ? "yes" : "no"}\n`);
+        }
+      }
+    } catch (err) {
+      raw.write(`\n[error] ${(err as Error).message}\n`);
+    } finally {
+      raw.end();
+    }
+  });
   app.get("/api/projects", (req) => ops.listProjects(ws(req)));
   app.get("/api/fleet/runners", (req) => ops.listAgents(ws(req)));
   // Decision audit trail — resolved HITL items, newest first (W8, Backend Brief §11).
   app.get("/api/audit", (req) => ops.listAudit(ws(req)));
+
+  // Local folder browser powering the project folder picker. Gated by
+  // config.allowLocalFs — it reveals the server machine's filesystem, so it's on
+  // only outside production (desktop = server = the same machine), never hosted.
+  app.get<{ Querystring: { path?: string } }>("/api/fs/list", async (req, reply) => {
+    if (!config.allowLocalFs)
+      return reply.code(403).send({ error: "Local folder browsing is disabled on this server" });
+    return listDir(req.query.path);
+  });
 
   // The product roadmap (ROADMAP.md at the repo root), served so the Settings
   // view can render it in-app. Read per request (it's small and edited often in
@@ -98,6 +150,19 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return { markdown };
     } catch {
       return { markdown: "# Roadmap\n\nROADMAP.md isn't bundled with this build — see the repository." };
+    }
+  });
+
+  // Live workspace fleet policy (auto-scale + cap). Per-workspace, applied at
+  // runtime (no restart) — unlike the env knobs below.
+  app.get("/api/settings/fleet", (req) => ops.getWorkspaceSettings(ws(req)));
+  app.patch("/api/settings/fleet", async (req, reply) => {
+    const body = UpdateWorkspaceSettingsRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateWorkspaceSettings(ws(req), body.data);
+    } catch (err) {
+      return fail(reply, err);
     }
   });
 
@@ -224,6 +289,37 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Streaming chat: the same reply as /messages, but written as text/plain
+  // chunks so the UI renders it as it's generated. Ownership is validated BEFORE
+  // we take over the socket, so a bad id / cross-workspace run still returns a
+  // clean JSON error; once streaming starts we can only append.
+  app.post<{ Params: { id: string } }>("/api/runs/:id/messages/stream", async (req, reply) => {
+    const body = ChatRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      await ops.getRun(ws(req), req.params.id); // 404 / cross-ws → JSON error, no stream
+    } catch (err) {
+      return fail(reply, err);
+    }
+    reply.hijack(); // we own the raw response from here
+    const raw = reply.raw;
+    raw.writeHead(200, {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      "x-accel-buffering": "no", // don't let a proxy buffer the stream
+    });
+    try {
+      for await (const delta of ops.chatAgentStream(ws(req), req.params.id, body.data.text)) {
+        raw.write(delta);
+      }
+    } catch (err) {
+      // Headers are already sent — surface the failure inline rather than a 500.
+      raw.write(`\n[stream error] ${(err as Error).message}`);
+    } finally {
+      raw.end();
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/runs/:id/fork", async (req, reply) => {
     try {
       return await ops.forkAgent(ws(req), req.params.id);
@@ -284,7 +380,12 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post("/api/projects", async (req, reply) => {
     const body = CreateProjectRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
-    return ops.createProject(ws(req), body.data);
+    try {
+      return await ops.createProject(ws(req), body.data);
+    } catch (err) {
+      // createRepo can fail (bad token, name taken, missing scope) — surface it.
+      return fail(reply, err);
+    }
   });
 
   app.patch<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {
@@ -306,6 +407,18 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Revoke one standing "approve always" rule from a project's approval policy.
+  app.delete<{ Params: { id: string; ruleId: string } }>(
+    "/api/projects/:id/approval-rules/:ruleId",
+    async (req, reply) => {
+      try {
+        return await ops.removeApprovalRule(ws(req), req.params.id, req.params.ruleId);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
   // Clone a GitHub-connected project's repo into a managed local checkout (for a
   // headless server with no folder to point at). Sets repoPath + gitBacked.
   app.post<{ Params: { id: string } }>("/api/projects/:id/clone", async (req, reply) => {
@@ -316,12 +429,108 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Global Steward chat (the sidebar dock, every page). Optional `projectId`
+  // focuses the page you're on — then it's the full project assistant (actions);
+  // otherwise it answers workspace-wide.
+  app.post<{ Body: { question?: string; history?: ChatTurn[]; projectId?: string } }>(
+    "/api/steward/chat",
+    async (req, reply) => {
+      const question = (req.body?.question ?? "").trim();
+      if (!question) return reply.code(400).send({ error: "Ask Steward something." });
+      const history = Array.isArray(req.body?.history)
+        ? req.body!.history
+            .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
+            .slice(-16)
+        : undefined;
+      try {
+        const focus = typeof req.body?.projectId === "string" ? req.body!.projectId : undefined;
+        return await ops.stewardChat(ws(req), question, history, focus);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
+  // Streaming Steward chat: the reply is written as text/plain deltas so the dock
+  // renders it live, then a final control frame — a RS (\x1e) sentinel followed by
+  // {reply, action, projectId} — carries the CLEAN reply (trailing action JSON
+  // stripped) and any confirm-first action. The sentinel never occurs in prose.
+  app.post<{ Body: { question?: string; history?: ChatTurn[]; projectId?: string } }>(
+    "/api/steward/chat/stream",
+    async (req, reply) => {
+      const question = (req.body?.question ?? "").trim();
+      if (!question) return reply.code(400).send({ error: "Ask Steward something." });
+      const history = Array.isArray(req.body?.history)
+        ? req.body!.history
+            .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
+            .slice(-16)
+        : undefined;
+      const focus = typeof req.body?.projectId === "string" ? req.body!.projectId : undefined;
+      reply.hijack();
+      const raw = reply.raw;
+      raw.writeHead(200, {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        "x-accel-buffering": "no",
+      });
+      try {
+        const gen = ops.stewardChatStream(ws(req), question, history, focus);
+        let result: { reply: string; actions: unknown; projectId: string | null } | undefined;
+        for (;;) {
+          const { value, done } = await gen.next();
+          if (done) {
+            result = value;
+            break;
+          }
+          raw.write(value);
+        }
+        raw.write("\x1e" + JSON.stringify(result));
+      } catch (err) {
+        raw.write(`\n[stream error] ${(err as Error).message}`);
+      } finally {
+        raw.end();
+      }
+    },
+  );
+
+  // ── live preview (Phase-1 v0) — run the project's web app + iframe it ─────
+  app.get<{ Params: { id: string } }>("/api/projects/:id/preview", async (req, reply) => {
+    try {
+      return await ops.previewState(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  const previewAction =
+    (fn: (ws: string, id: string) => Promise<unknown>) =>
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      try {
+        return await fn(ws(req), req.params.id);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    };
+  app.post<{ Params: { id: string } }>("/api/projects/:id/preview/start", previewAction((w, i) => ops.previewStart(w, i)));
+  app.post<{ Params: { id: string } }>("/api/projects/:id/preview/stop", previewAction((w, i) => ops.previewStop(w, i)));
+  app.post<{ Params: { id: string } }>("/api/projects/:id/preview/restart", previewAction((w, i) => ops.previewRestart(w, i)));
+  app.post<{ Params: { id: string } }>("/api/projects/:id/preview/refresh", previewAction((w, i) => ops.previewRefresh(w, i)));
+
   // ── tasks ──────────────────────────────────────────────────────────────
   app.post<{ Params: { id: string } }>("/api/projects/:id/tasks", async (req, reply) => {
     const body = CreateTaskRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.createTask(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Import a GitHub-connected project's open issues as tasks (linked back to the
+  // issue via Task.source, so status changes can be written back).
+  app.post<{ Params: { id: string } }>("/api/projects/:id/import/github-issues", async (req, reply) => {
+    try {
+      return await ops.importGithubIssues(ws(req), req.params.id);
     } catch (err) {
       return fail(reply, err);
     }
@@ -379,12 +588,92 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Force a task to `done` — bypasses HUMAN_TRANSITIONS and always syncs the
+  // linked run's status to "done". The escape hatch when the normal
+  // review → done path fails (merge queue stuck, HITL wedged, run finished
+  // without advancing the card). Never merges the branch: it's a
+  // "call it done" operator override, not a work-completion signal.
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/force-done", async (req, reply) => {
+    try {
+      return await ops.forceTaskDone(ws(req), req.params.tid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // Manually promote (up) / demote (down) a task's backlog priority.
   app.post<{ Params: { id: string; tid: string }; Body: { direction?: string } }>("/api/projects/:id/tasks/:tid/move", async (req, reply) => {
     const direction = req.body?.direction;
     if (direction !== "up" && direction !== "down") return reply.code(400).send({ error: "direction must be 'up' or 'down'" });
     try {
       return await ops.moveTask(ws(req), req.params.tid, direction);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Drag-reorder a task to an arbitrary backlog position (before `beforeId`, or end).
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/reorder", async (req, reply) => {
+    const body = ReorderTaskRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.reorderTask(ws(req), req.params.tid, body.data.beforeId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── features (task grouping) ──────────────────────────────────────────
+  app.post<{ Params: { id: string } }>("/api/projects/:id/features", async (req, reply) => {
+    const body = CreateFeatureRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.createFeature(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.patch<{ Params: { fid: string } }>("/api/features/:fid", async (req, reply) => {
+    const body = UpdateFeatureRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateFeature(ws(req), req.params.fid, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.delete<{ Params: { fid: string } }>("/api/features/:fid", async (req, reply) => {
+    try {
+      await ops.deleteFeature(ws(req), req.params.fid);
+      return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── milestones (roadmap) ──────────────────────────────────────────────
+  app.post<{ Params: { id: string } }>("/api/projects/:id/milestones", async (req, reply) => {
+    const body = CreateMilestoneRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.createMilestone(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.patch<{ Params: { mid: string } }>("/api/milestones/:mid", async (req, reply) => {
+    const body = UpdateMilestoneRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateMilestone(ws(req), req.params.mid, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.delete<{ Params: { mid: string } }>("/api/milestones/:mid", async (req, reply) => {
+    try {
+      await ops.deleteMilestone(ws(req), req.params.mid);
+      return { ok: true };
     } catch (err) {
       return fail(reply, err);
     }

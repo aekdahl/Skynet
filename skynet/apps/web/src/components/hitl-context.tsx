@@ -18,11 +18,11 @@ export function HitlContext({ q, runName, openDiff = false }: { q: HitlItem; run
       value: <pre className="hitl-ctx-cmd mono">{q.command}</pre>,
       cls: "hitl-ctx-what",
     });
-  if (q.rationale) rows.push({ label: "Agent's reason", value: q.rationale, cls: "hitl-ctx-reason" });
-  if (q.why) rows.push({ label: "Why you're asked", value: q.why });
+  if (q.rationale) rows.push({ label: q.kind === "escalation" ? "Agent's account" : "Agent's reason", value: q.rationale, cls: "hitl-ctx-reason" });
+  if (q.why) rows.push({ label: q.kind === "escalation" ? "What happened" : "Why you're asked", value: q.why });
 
   const flags = q.flags ?? [];
-  const flagLabel = q.kind === "merge" ? "Conflicts in" : "Flagged";
+  const flagLabel = q.kind === "merge" ? "Conflicts in" : q.kind === "escalation" ? "Trigger" : "Flagged";
   const showDiff = !!q.diff && (q.kind === "diff" || q.kind === "merge");
   if (rows.length === 0 && flags.length === 0 && !showDiff) return null;
   return (

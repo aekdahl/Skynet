@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Skynet MCP-over-HTTPS VM startup (Debian 12). Mounts the data disk, installs
+# Docker, fetches secrets from Secret Manager via the VM's service account, and
+# runs TWO containers on a private docker network:
+#   • skynet — headless server (API + /mcp), reachable ONLY on the private
+#     network (never published to the host or internet).
+#   • caddy  — terminates TLS on :443, publishes ONLY /mcp, obtains a Let's
+#     Encrypt cert (HTTP-01 on :80), and requires an Authorization: Bearer token.
+# Re-runs safely on reboot. (Terraform template vars are the plain dollar-brace
+# form; shell vars use a doubled dollar so Terraform leaves them literal.)
+set -euo pipefail
+exec > >(tee -a /var/log/skynet-startup.log) 2>&1
+echo "[skynet-mcp] startup $(date -u)"
+
+# ── 1. Data disk → /data (format only if brand new; never reformat) ──────────
+DEV=/dev/disk/by-id/google-skynet-data
+mkdir -p /data
+if ! blkid "$${DEV}" >/dev/null 2>&1; then
+  echo "[skynet-mcp] formatting new data disk"
+  mkfs.ext4 -m 0 -F -E lazy_itable_init=0,lazy_journal_init=0,discard "$${DEV}"
+fi
+grep -q "/data" /etc/fstab || echo "$${DEV} /data ext4 discard,defaults,nofail 0 2" >>/etc/fstab
+mount -a
+mkdir -p /data /data/caddy
+
+# ── 2. Docker ────────────────────────────────────────────────────────────────
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[skynet-mcp] installing docker"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y docker.io curl python3
+  systemctl enable --now docker
+fi
+
+# ── 3. Access token + secret helper (Secret Manager REST via metadata SA) ────
+TOKEN=$(curl -s -H "Metadata-Flavor: Google" \
+  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+get_secret() { # $1 = short name; prints value, empty if not set
+  curl -s -H "Authorization: Bearer $${TOKEN}" \
+    "https://secretmanager.googleapis.com/v1/projects/${project_id}/secrets/${name_prefix}-$${1}/versions/latest:access" \
+    | python3 -c 'import sys,json,base64
+try:
+  d=json.load(sys.stdin); sys.stdout.write(base64.b64decode(d["payload"]["data"]).decode())
+except Exception:
+  pass'
+}
+
+MCP_TOKEN=$(get_secret mcp-token)
+ANTHROPIC_API_KEY=$(get_secret anthropic-api-key)
+GITHUB_TOKEN=$(get_secret github-token)
+%{ if ui_enabled ~}
+# UI enabled: the admin login credential. Fail loudly if unset — otherwise the
+# production operator directory is empty and the served UI has no way to sign in.
+ADMIN_PASSWORD=$(get_secret admin-password)
+if [ -z "$${ADMIN_PASSWORD}" ]; then
+  echo "[skynet-mcp] FATAL: ui_domain is set but secret ${name_prefix}-admin-password has no value — add one with 'gcloud secrets versions add ${name_prefix}-admin-password', then reboot." >&2
+  exit 1
+fi
+%{ endif ~}
+
+# The MCP token is the whole point of this deploy — fail loudly if it's unset
+# rather than booting an endpoint that rejects every request.
+if [ -z "$${MCP_TOKEN}" ]; then
+  echo "[skynet-mcp] FATAL: secret ${name_prefix}-mcp-token has no value — add one with 'gcloud secrets versions add ${name_prefix}-mcp-token', then reboot." >&2
+  exit 1
+fi
+
+# Master key: prefer the secret; else persist a generated one on /data (stable
+# across reboots) so file-store encryption keeps working.
+MASTER_KEY=$(get_secret master-key)
+if [ -z "$${MASTER_KEY}" ]; then
+  if [ ! -f /data/master.key ]; then openssl rand -base64 32 >/data/master.key; chmod 600 /data/master.key; fi
+  MASTER_KEY=$(cat /data/master.key)
+fi
+
+# ── 4. Env file (tmpfs, 0600) ────────────────────────────────────────────────
+ENVF=/run/skynet.env
+umask 077
+cat >"$${ENVF}" <<EOF
+NODE_ENV=production
+# Reject every request without a valid token — no open default.
+AUTH_REQUIRED=true
+# Headless (true) = MCP-first: API + WS + /mcp, no SPA / live preview. When the
+# UI is enabled (ui_domain set) this is false so the same instance also serves
+# the web SPA + /api + /ws to human operators.
+SKYNET_HEADLESS=${headless}
+# We sit behind Caddy: trust its X-Forwarded-For so per-IP rate limiting keys on
+# the real caller, not the proxy.
+SKYNET_TRUST_PROXY=true
+# Single-node self-host: durable data on the /data disk (STORE=file); bus and
+# session store in-process.
+STORE=file
+BUS=memory
+SESSIONS=memory
+SKYNET_DB_PATH=/data/skynet-data.json
+SKYNET_MASTER_KEY=$${MASTER_KEY}
+PORT=${app_port}
+ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}
+# The injected MCP token: registered at boot as a scoped service token, so every
+# /mcp request must present `Authorization: Bearer <this value>`.
+SKYNET_BOOTSTRAP_TOKEN=$${MCP_TOKEN}
+SKYNET_BOOTSTRAP_SCOPES=${mcp_scopes}
+GITHUB_TOKEN=$${GITHUB_TOKEN}
+%{ if ui_enabled ~}
+# UI mode: seed the single admin operator so the web login works (in production
+# the operator directory is otherwise empty). PUBLIC_URL makes notification deep
+# links open the right run in the UI.
+SKYNET_ADMIN_EMAIL=${admin_email}
+SKYNET_ADMIN_PASSWORD=$${ADMIN_PASSWORD}
+SKYNET_ADMIN_WORKSPACE=${admin_workspace}
+PUBLIC_URL=https://${ui_domain}
+%{ endif ~}
+EOF
+
+# ── 5. Render the Caddyfile (from the templated file baked in by Terraform) ──
+# Terraform already substituted mcp_domain/acme_email/app_port into this file.
+cat >/data/Caddyfile <<'CADDYEOF'
+${caddyfile}
+CADDYEOF
+
+# ── 6. Private network so Caddy reaches Skynet by name, and Skynet stays off
+#      the host/internet entirely (never published with -p) ───────────────────
+docker network create skynet-net >/dev/null 2>&1 || true
+
+# ── 7. Pull + run the app (NOT published to the host — private network only) ─
+echo "$${TOKEN}" | docker login -u oauth2accesstoken --password-stdin "https://${region}-docker.pkg.dev"
+docker pull "${image}"
+docker rm -f skynet >/dev/null 2>&1 || true
+docker run -d --restart=always --name skynet \
+  --network skynet-net \
+  --env-file "$${ENVF}" \
+  -v /data:/data \
+  "${image}"
+
+# ── 8. Run Caddy: terminate TLS, publish ONLY :80 (ACME) + :443 (MCP) ───────
+docker rm -f caddy >/dev/null 2>&1 || true
+docker run -d --restart=always --name caddy \
+  --network skynet-net \
+  -p 80:80 -p 443:443 \
+  -v /data/Caddyfile:/etc/caddy/Caddyfile:ro \
+  -v /data/caddy:/data \
+  caddy:2
+
+echo "[skynet-mcp] up — https://${mcp_domain}/mcp%{ if ui_enabled } + UI https://${ui_domain}/%{ endif } (TLS via Caddy; app private on skynet-net:${app_port})"
