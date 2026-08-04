@@ -16,6 +16,7 @@ import type {
   Agent,
   Snapshot,
   Task,
+  WorkspaceSettings,
 } from "@skynet/shared";
 import type { AuditRecord } from "@skynet/shared";
 import { now } from "../config.js";
@@ -36,6 +37,7 @@ export class MemoryStore implements Store {
   protected deps: Dependency[] = [];
   protected audit: AuditRecord[] = [];
   protected github = new Map<string, GithubConnection>(); // keyed by workspaceId
+  protected workspaceSettings = new Map<string, WorkspaceSettings>(); // keyed by workspaceId
   protected githubTokens = new Map<string, string>(); // workspaceId → sealed PAT ciphertext
   protected serviceTokens = new Map<string, StoredServiceToken>(); // keyed by id (holds a hash, never the raw token)
   private providers: ProviderInfo[] = PROVIDERS;
@@ -129,6 +131,9 @@ export class MemoryStore implements Store {
   async getGithubConnection(ws: string) { return this.github.get(ws); }
   async putGithubConnection(connection: GithubConnection) { this.github.set(connection.workspaceId, connection); this.persist(); }
   async deleteGithubConnection(ws: string) { this.github.delete(ws); this.persist(); }
+
+  async getWorkspaceSettings(ws: string) { return this.workspaceSettings.get(ws); }
+  async putWorkspaceSettings(settings: WorkspaceSettings) { this.workspaceSettings.set(settings.workspaceId, settings); this.persist(); }
 
   async getGithubToken(ws: string) { return this.githubTokens.get(ws); }
   async putGithubToken(ws: string, ciphertext: string) { this.githubTokens.set(ws, ciphertext); this.persist(); }

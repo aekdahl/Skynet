@@ -19,6 +19,14 @@ export const ProviderId = z.enum([
 ]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
+// A credential in the secret store belongs to a fleet provider OR to "github" — a
+// GitHub PAT, so a project can be pinned to a specific GitHub account (business vs
+// personal billing/storage). `github` is deliberately NOT a fleet provider: it
+// never appears in the runner catalog or provider-availability, only as a stored
+// credential a project's git operations can authenticate with.
+export const CredentialProvider = z.union([ProviderId, z.literal("github")]);
+export type CredentialProvider = z.infer<typeof CredentialProvider>;
+
 export const TaskRunStatus = z.enum(["running", "waiting", "paused", "review", "done"]);
 export type TaskRunStatus = z.infer<typeof TaskRunStatus>;
 
@@ -208,8 +216,46 @@ export const Project = z.object({
   repoPath: z.string().nullable().default(null),
   gitBacked: z.boolean().default(false),
   repo: z.string().optional(),
+  // Free-form markdown that rides EVERY agent prompt on this project — the
+  // "house rules" for this codebase (which packages to use, code structure,
+  // conventions the agent should follow). Steward also sees it in its
+  // grounding. Nullable = no rules set; equivalent to today's behavior.
+  //
+  // Repo-file convention: when set, this is Skynet's copy of what would
+  // otherwise live in `.skynet/instructions.md` at the repo root. A future
+  // "sync to repo" toggle can push this back to a committed file so a
+  // vendor-neutral rule set travels with the codebase; for now it's stored
+  // on the project record for instant editability without a commit.
+  instructions: z.string().nullable().default(null),
+  // Which stored GitHub credential this project's git operations (clone / push /
+  // PR / repo listing) authenticate with — a secret-store credential id of a
+  // `github` PAT. null → the workspace's default GitHub connection. Lets one
+  // workspace keep work repos on the business account and personal repos on a
+  // personal account (separate billing + storage).
+  githubCredentialId: z.string().nullable().default(null),
+  // Which provider keys this project may run agents on — a list of secret-store
+  // credential ids (a runner's effective id is `credentialId ?? provider`, so a
+  // provider's default key is the provider id itself). Assignment to this project
+  // is confined to fleet runners whose key is in this set, and a project-scoped
+  // MCP token may only create runners with these keys. EMPTY = every key in the
+  // workspace (the default — unchanged behavior); a non-empty list confines it.
+  enabledRunnerCredentialIds: z.array(z.string()).default([]),
+  // Opt-in: write task status changes back to their imported source of truth
+  // (e.g. close/comment the GitHub issue on done). Outward-facing, so off by
+  // default. See docs/task-source-sync.md.
+  syncSourceStatus: z.boolean().default(false),
 });
 export type Project = z.infer<typeof Project>;
+
+// Provenance for a task imported from an external source of truth, so Skynet can
+// write status changes BACK to it (see docs/task-source-sync.md). Set at import;
+// carried for the task's life. `syncedAt`/`sourceRev` reserve a future two-way sync.
+export const TaskSource = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("github_issue"), repo: z.string(), number: z.number().int(), url: z.string().default("") }),
+  z.object({ kind: z.literal("repo_file"), path: z.string(), anchor: z.string().default("") }), // Phase 2
+  z.object({ kind: z.literal("external"), system: z.string(), id: z.string(), url: z.string().default("") }), // Phase 3
+]);
+export type TaskSource = z.infer<typeof TaskSource>;
 
 export const Task = z.object({
   id: z.string(),
@@ -228,9 +274,20 @@ export const Task = z.object({
   // Short agent-written assessment produced during autonomous triage
   // (backlog → triage): clarity / rough effort / risks.
   assessment: z.string().nullable().default(null),
-  // Set when an autonomous review couldn't confidently approve and flagged the
-  // task for a human (the task stays in `review`).
-  reviewFlaggedReason: z.string().nullable().default(null),
+  // Auto-review verdict left by an agent on a review-state task. ALWAYS
+  // recorded once an agent has looked at the run — approve OR flag — so a
+  // human can audit what the reviewer thought regardless of whether the
+  // merge went through. When `decision === "flag"`, the task stays in
+  // `review` and the reason is the "flagged for you" note.
+  reviewVerdict: z
+    .object({
+      decision: z.enum(["approve", "flag"]),
+      reason: z.string(),
+      by: z.string(), // reviewer agent name (or id, as a fallback)
+      at: Timestamp,
+    })
+    .nullable()
+    .default(null),
   // Agent eligibility — who may take this task (see TaskAssignment). Defaults to
   // `unassigned`; a task must carry `any`/`agents` before it can leave `backlog`.
   assignment: TaskAssignment.default({ mode: "unassigned", agentIds: [] }),
@@ -260,6 +317,9 @@ export const Task = z.object({
   // the Feature (Feature.milestoneId); this field is for orphan tasks that
   // don't sit under a feature but still need to appear on the roadmap.
   milestoneId: z.string().nullable().default(null),
+  // Where this task was imported from (GitHub issue / repo file / tracker), so a
+  // status change can be written back to it. null → a native Skynet task.
+  source: TaskSource.nullable().default(null),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -316,6 +376,10 @@ export const DiffSummary = z.object({
   add: z.number().int().nonnegative(),
   del: z.number().int().nonnegative(),
   modules: z.array(z.string()), // module ids — never a raw patch
+  // The changed file paths, so a reviewer (esp. on Telegram) sees WHAT changed
+  // without opening the full diff. Optional/defaulted so the empty-diff merge
+  // gates that carry no file list stay valid.
+  files: z.array(z.string()).default([]),
 });
 export type DiffSummary = z.infer<typeof DiffSummary>;
 
@@ -376,6 +440,10 @@ export const Agent = z.object({
   model: z.string(),
   status: AgentStatus,
   idleSince: Timestamp.nullable().default(null),
+  // True when the fleet CREATED this runner on demand (auto-scale or fork/retry
+  // provisioning) rather than an operator adding it. Such runners are the only
+  // ones the idle reaper auto-retires (see retireIdleRunnersAfterMinutes).
+  autoProvisioned: z.boolean().default(false),
 });
 export type Agent = z.infer<typeof Agent>;
 
@@ -494,12 +562,16 @@ export const CreateProjectRequest = z.object({
   name: z.string().min(1),
   goal: z.string().default(""),
   repoPath: z.string().optional(), // absolute path to a local folder to work in
-  repo: z.string().optional(), // or bind to one connected GitHub repo at creation
+  repo: z.string().optional(), // or bind to one connected GitHub repo at creation ("owner/repo")
+  repoUrl: z.string().optional(), // or paste an existing repo's git URL to clone (normalized to "owner/repo")
   createRepo: CreateRepoSpec.optional(), // or have Skynet create a new repo and bind it
+  githubCredentialId: z.string().nullable().optional(), // which GitHub account to use (null/omit → default)
   // Governance chosen at creation. Omitted → the server defaults apply (autonomy
   // on; approvalLevel from SKYNET_APPROVAL_LEVEL). Both remain editable later.
   autonomy: z.boolean().optional(),
   approvalLevel: ApprovalLevel.optional(),
+  // Project-scoped agent guidance that rides every prompt (see Project.instructions).
+  instructions: z.string().optional(),
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 
@@ -519,12 +591,20 @@ export const UpdateProjectRequest = z.object({
   approvalLevel: ApprovalLevel.optional(),
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
+  // Project-scoped agent guidance. `null` clears the field back to "no rules".
+  instructions: z.string().nullable().optional(),
+  githubCredentialId: z.string().nullable().optional(), // pick the GitHub account (null clears → default)
+  // Which provider keys the project may run on (secret-store credential ids;
+  // empty = all keys). See Project.enabledRunnerCredentialIds.
+  enabledRunnerCredentialIds: z.array(z.string()).optional(),
+  syncSourceStatus: z.boolean().optional(), // write status changes back to the source of truth
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 
 export const CreateTaskRequest = z.object({
   text: z.string().min(1),
   description: z.string().optional(),
+  source: TaskSource.optional(), // set when importing from a source of truth
 });
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequest>;
 
@@ -622,7 +702,7 @@ export const SecretMeta = z.object({
   id: z.string().default(""), // credential id (defaults to the provider for legacy rows)
   name: z.string().default(""), // display name ("" → provider's catalog name)
   workspaceId: z.string(),
-  provider: ProviderId,
+  provider: CredentialProvider,
   isDefault: z.boolean().default(false),
   last4: z.string(), // last 4 chars of the key — for recognition, not reuse
   updatedAt: Timestamp,
@@ -636,9 +716,10 @@ export const SetSecretRequest = z.object({
 });
 export type SetSecretRequest = z.infer<typeof SetSecretRequest>;
 
-/** Body for creating a NAMED credential (a "duplicate" of a provider). */
+/** Body for creating a NAMED credential (a "duplicate" of a provider, or a
+ *  secondary GitHub account PAT). */
 export const CreateCredentialRequest = z.object({
-  provider: ProviderId,
+  provider: CredentialProvider,
   name: z.string().min(1).max(60),
   apiKey: z.string().min(1),
 });
@@ -704,6 +785,36 @@ export const GithubConnection = z.object({
   safety: SafetyPolicy,
 });
 export type GithubConnection = z.infer<typeof GithubConnection>;
+
+// ─── Workspace settings (live, per-workspace fleet policy) ──────────────────
+// Non-secret operator settings that govern the workspace at runtime (no engine
+// restart). Persisted as a workspace-keyed singleton, mirroring GithubConnection.
+export const WorkspaceSettings = z.object({
+  workspaceId: z.string(),
+  // When on, assigning a task with no free runner AUTO-PROVISIONS a fresh runner
+  // (cloned from a busy one already on an allowed key) instead of waiting — up to
+  // `maxRunners`. Off = today's behavior (the task waits for a runner to free).
+  autoProvisionRunners: z.boolean().default(false),
+  // Hard ceiling on total fleet size, enforced on every creation path (auto-scale,
+  // fork/retry provisioning, and explicit configure). Defaults to 100 — a sane
+  // upper bound rather than unbounded; set 0 to explicitly remove the cap. The
+  // safety valve that keeps auto-creation from running away.
+  maxRunners: z.number().int().min(0).default(100),
+  // Auto-decommission: retire a SYSTEM-provisioned runner (one auto-scale/fork
+  // created) once it has sat idle this many minutes, so auto-scaled capacity is
+  // reclaimed instead of accumulating. Operator-added runners are never touched.
+  // 0 = never auto-retire. Default 30.
+  retireIdleRunnersAfterMinutes: z.number().int().min(0).default(30),
+});
+export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
+
+/** Patch for the live workspace settings (all fields optional). */
+export const UpdateWorkspaceSettingsRequest = z.object({
+  autoProvisionRunners: z.boolean().optional(),
+  maxRunners: z.number().int().min(0).optional(),
+  retireIdleRunnersAfterMinutes: z.number().int().min(0).optional(),
+});
+export type UpdateWorkspaceSettingsRequest = z.infer<typeof UpdateWorkspaceSettingsRequest>;
 
 /** Body to record/refresh an installation after the App is installed on GitHub. */
 export const ConnectGithubRequest = z.object({

@@ -21,8 +21,11 @@ class FakeProvider implements GitProvider {
     if (token === "bad") throw new Error("401 Bad credentials");
     return { login: "octocat" };
   }
+  // Settable so a test can simulate GitHub returning MORE repos than a stale
+  // connect-time snapshot captured.
+  repoList: GithubRepo[] = [{ id: 1, name: "octocat/repo", defaultBranch: "main", private: false, selected: false }];
   async listRepos(): Promise<GithubRepo[]> {
-    return [{ id: 1, name: "octocat/repo", defaultBranch: "main", private: false, selected: false }];
+    return this.repoList;
   }
   lastMergeToken?: string;
   lastMergeNumber?: number;
@@ -72,6 +75,32 @@ describe("GitHub PAT auth", () => {
     // The PAT plaintext (not an installation token) was used for both ops.
     expect(fake.lastPushToken).toBe("github_pat_SECRET1234");
     expect(fake.lastPrToken).toBe("github_pat_SECRET1234");
+  });
+
+  it("availableRepos re-lists LIVE and refreshes a stale connect-time snapshot", async () => {
+    const fake = new FakeProvider();
+    const svc = new GithubService(new MemoryGithubStore(), fake, false);
+    // Connected when only ONE repo was visible → the stored snapshot holds 1.
+    const conn = await svc.connectViaPat("ws-r", "github_pat_SECRET1234");
+    expect(conn.repos).toHaveLength(1);
+
+    // Later GitHub returns MORE (pagination fixed / new repos created).
+    fake.repoList = [
+      { id: 1, name: "octocat/repo", defaultBranch: "main", private: false, selected: false },
+      { id: 2, name: "octocat/two", defaultBranch: "main", private: false, selected: false },
+      { id: 3, name: "octocat/three", defaultBranch: "main", private: true, selected: false },
+    ];
+
+    const live = await svc.availableRepos("ws-r");
+    expect(live).toHaveLength(3); // the full current list, not the stale snapshot
+    expect(live.every((r) => r.selected)).toBe(true); // a PAT reaches them all
+    // …and the stored snapshot was refreshed, so fetchGithub() sees them too.
+    expect((await svc.get("ws-r"))?.repos).toHaveLength(3);
+  });
+
+  it("availableRepos returns [] when nothing is connected", async () => {
+    const svc = new GithubService(new MemoryGithubStore(), new FakeProvider(), false);
+    expect(await svc.availableRepos("nobody")).toEqual([]);
   });
 
   it("merges a PR with the resolved token (approve → merge)", async () => {

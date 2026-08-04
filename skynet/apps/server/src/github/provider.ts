@@ -11,7 +11,7 @@ import { execFile } from "node:child_process";
 import { createSign } from "node:crypto";
 import { promisify } from "node:util";
 import type { GithubInstallation, GithubRepo } from "@skynet/shared";
-import type { GitProvider, MergeResult, PrRef, PrStatus } from "./types.js";
+import type { GitProvider, GithubIssue, MergeResult, PrRef, PrStatus } from "./types.js";
 import { gitBin } from "../git-bin.js";
 
 const exec = promisify(execFile);
@@ -23,6 +23,18 @@ export function redactToken(msg: string, token: string): string {
 }
 
 const b64url = (input: string | Buffer): string => Buffer.from(input).toString("base64url");
+
+/** The `rel="next"` URL from a GitHub `Link` header (`<url>; rel="next", …`),
+ *  or null on the last page. GitHub is the source of truth for the next page —
+ *  more robust than guessing `page+1` (it stops exactly when there's no more). */
+export function parseNextLink(header: string | null): string | null {
+  if (!header) return null;
+  for (const part of header.split(",")) {
+    const m = part.match(/<([^>]+)>\s*;\s*rel="next"/);
+    if (m) return m[1]!;
+  }
+  return null;
+}
 
 interface CachedToken {
   token: string;
@@ -48,6 +60,37 @@ export class GitHubProvider implements GitProvider {
     signer.update(`${header}.${payload}`);
     const signature = signer.sign(this.privateKey).toString("base64url");
     return `${header}.${payload}.${signature}`;
+  }
+
+  /**
+   * GET every page of a paginated GitHub list endpoint, following the
+   * `Link: rel="next"` header until the last page — so a workspace with more than
+   * one page of repos/installations gets ALL of them, not just the first 100.
+   * `pick` selects the array out of each page's body (identity for the array
+   * endpoints; a selector for the wrapped ones like `{ repositories: [...] }`).
+   * Bounded by a hard page cap so a pathological account can't loop unbounded.
+   */
+  private async paginate<T>(token: string, path: string, pick: (body: unknown) => T[]): Promise<T[]> {
+    const out: T[] = [];
+    // The `next` URL is absolute (GitHub returns a full href); page 1 is relative.
+    let url: string | null = `${this.apiBase}${path}`;
+    for (let page = 0; page < 50 && url; page++) {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`GitHub API GET ${path} → ${res.status}: ${text.slice(0, 300)}`);
+      }
+      out.push(...pick(await res.json()));
+      url = parseNextLink(res.headers.get("link"));
+    }
+    return out;
   }
 
   private async api<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {
@@ -87,10 +130,12 @@ export class GitHubProvider implements GitProvider {
   }
 
   async listRepos(token: string): Promise<GithubRepo[]> {
-    const repos = await this.api<Array<{ id: number; full_name: string; default_branch: string; private: boolean }>>(
+    // Paginated — a user with >100 repos would otherwise silently lose everything
+    // past the first page (and `sort=updated` made the LEAST-recent ones vanish).
+    const repos = await this.paginate<{ id: number; full_name: string; default_branch: string; private: boolean }>(
       token,
-      "GET",
       "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member",
+      (b) => b as Array<{ id: number; full_name: string; default_branch: string; private: boolean }>,
     );
     return repos.map((r) => ({ id: r.id, name: r.full_name, defaultBranch: r.default_branch, private: r.private, selected: false }));
   }
@@ -98,7 +143,7 @@ export class GitHubProvider implements GitProvider {
   /** Orgs the token's user belongs to (login only). PAT/user-token path; an App
    *  installation token can't list a user's orgs and will throw (caller catches). */
   async listOrgs(token: string): Promise<string[]> {
-    const orgs = await this.api<Array<{ login: string }>>(token, "GET", "/user/orgs?per_page=100");
+    const orgs = await this.paginate<{ login: string }>(token, "/user/orgs?per_page=100", (b) => b as Array<{ login: string }>);
     return orgs.map((o) => o.login);
   }
 
@@ -118,13 +163,32 @@ export class GitHubProvider implements GitProvider {
     return { id: r.id, name: r.full_name, defaultBranch: r.default_branch, private: r.private, selected: true };
   }
 
+  async listIssues(token: string, repo: string): Promise<GithubIssue[]> {
+    // GitHub's /issues returns PRs too — they carry a `pull_request` key. Drop
+    // them so import brings in real issues only. Paginated.
+    type Raw = { number: number; title: string; body: string | null; html_url: string; state: string; pull_request?: unknown };
+    const raw = await this.paginate<Raw>(token, `/repos/${repo}/issues?state=open&per_page=100`, (b) => b as Raw[]);
+    return raw
+      .filter((i) => !i.pull_request)
+      .map((i) => ({ number: i.number, title: i.title, body: i.body ?? "", url: i.html_url, state: i.state === "closed" ? "closed" : "open" }));
+  }
+
+  async commentIssue(token: string, repo: string, number: number, body: string): Promise<void> {
+    await this.api(token, "POST", `/repos/${repo}/issues/${number}/comments`, { body });
+  }
+
+  async setIssueState(token: string, repo: string, number: number, state: "open" | "closed"): Promise<void> {
+    await this.api(token, "PATCH", `/repos/${repo}/issues/${number}`, { state });
+  }
+
   async listInstallations(token: string): Promise<GithubInstallation[]> {
-    const data = await this.api<{ installations: Array<{ id: number; account: { login: string; type: string }; app_slug: string }> }>(
+    type Inst = { id: number; account: { login: string; type: string }; app_slug: string };
+    const insts = await this.paginate<Inst>(
       token,
-      "GET",
       "/user/installations?per_page=100",
+      (b) => (b as { installations?: Inst[] }).installations ?? [],
     );
-    return (data.installations ?? []).map((i) => ({
+    return insts.map((i) => ({
       id: i.id,
       account: i.account.login,
       type: i.account.type === "Organization" ? "Organization" : "User",
@@ -133,12 +197,13 @@ export class GitHubProvider implements GitProvider {
   }
 
   async listInstallationRepos(token: string, installationId: number): Promise<GithubRepo[]> {
-    const data = await this.api<{ repositories: Array<{ id: number; full_name: string; default_branch: string; private: boolean }> }>(
+    type Repo = { id: number; full_name: string; default_branch: string; private: boolean };
+    const repos = await this.paginate<Repo>(
       token,
-      "GET",
       `/user/installations/${installationId}/repositories?per_page=100`,
+      (b) => (b as { repositories?: Repo[] }).repositories ?? [],
     );
-    return (data.repositories ?? []).map((r) => ({ id: r.id, name: r.full_name, defaultBranch: r.default_branch, private: r.private, selected: false }));
+    return repos.map((r) => ({ id: r.id, name: r.full_name, defaultBranch: r.default_branch, private: r.private, selected: false }));
   }
 
   async pushBranch(token: string, repo: string, worktreePath: string, branch: string, force: boolean): Promise<void> {

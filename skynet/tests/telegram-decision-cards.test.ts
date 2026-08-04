@@ -17,7 +17,7 @@ const gate = (over: Partial<HitlItem> = {}): HitlItem =>
     kind: "diff",
     title: "Ready to push",
     risk: "medium",
-    diff: { add: 214, del: 18, files: 3 },
+    diff: { add: 214, del: 18, modules: ["server"], files: ["src/rate-limit.ts", "src/server.ts", "tests/rate-limit.test.ts"] },
     rationale: "Added a token-bucket limiter; returns 429 with Retry-After.",
     resolvedAt: null,
     options: null,
@@ -36,6 +36,23 @@ describe("decisionCardHtml", () => {
     expect(html).toContain("<i>"); // the agent's rationale, italicized
     expect(html).toContain("Retry-After");
     expect(html).toMatch(/reply to this message/i); // control on → guidance hint
+  });
+
+  it("lists the changed files + touched areas so it's approvable without opening the diff", () => {
+    const html = decisionCardHtml(gate(), { run: "rate-limiter", project: "Takeoff" }, true);
+    expect(html).toContain("· 3 files"); // count on the stats line
+    expect(html).toContain("<code>src/rate-limit.ts</code>");
+    expect(html).toContain("<code>tests/rate-limit.test.ts</code>");
+    expect(html).toContain("Areas: server");
+  });
+
+  it("collapses a long file list into “…and N more”", () => {
+    const files = Array.from({ length: 12 }, (_, i) => `src/file${i}.ts`);
+    const html = decisionCardHtml(gate({ diff: { add: 1, del: 0, modules: [], files } } as Partial<HitlItem>), { run: "r", project: "" }, true);
+    expect(html).toContain("· 12 files");
+    expect(html).toContain("<code>src/file0.ts</code>");
+    expect(html).toContain("…and 4 more"); // 12 − MAX_FILES_SHOWN(8)
+    expect(html).not.toContain("src/file8.ts"); // beyond the shown window
   });
 
   it("escapes HTML-significant characters in dynamic text", () => {

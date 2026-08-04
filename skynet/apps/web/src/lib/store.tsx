@@ -95,11 +95,25 @@ export interface Store extends StoreState {
       createRepo?: { name: string; private: boolean; owner?: string };
       autonomy?: boolean;
       approvalLevel?: string;
+      instructions?: string;
     },
   ) => Promise<void>;
   updateProject: (
     id: string,
-    patch: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string },
+    patch: {
+      name?: string;
+      goal?: string;
+      status?: string;
+      autonomy?: boolean;
+      approvalLevel?: string;
+      repoPath?: string | null;
+      // null clears the project's instructions back to "no rules".
+      instructions?: string | null;
+      githubCredentialId?: string | null;
+      // Which provider keys the project may run on (credential ids; empty = all).
+      enabledRunnerCredentialIds?: string[];
+      syncSourceStatus?: boolean;
+    },
   ) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
@@ -150,7 +164,7 @@ export interface Store extends StoreState {
   transitionTask: (projectId: string, taskId: string, to: string) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
-  createAgent: (provider: string, model: string, name?: string) => Promise<void>;
+  createAgent: (provider: string, model: string, name?: string, credentialId?: string) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
   // audit trail maintenance — mirror archive (agent) + delete (project/task/runner)
@@ -161,7 +175,8 @@ export interface Store extends StoreState {
   // Re-fetch the snapshot and force the socket to reconnect now (Retry button).
   retry: () => void;
   // Exchange operator credentials for a session token, then reconnect with it.
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<api.LoginResult>;
+  verifyMfa: (challengeId: string, code: string) => Promise<void>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -424,6 +439,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           createRepo: opts?.createRepo,
           autonomy: opts?.autonomy,
           approvalLevel: opts?.approvalLevel,
+          instructions: opts?.instructions,
         });
       },
       updateProject: async (id, patch) => {
@@ -509,8 +525,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           throw e;
         }
       },
-      createAgent: async (provider, model, name) => {
-        await api.createAgent({ provider, model, name });
+      createAgent: async (provider, model, name, credentialId) => {
+        await api.createAgent({ provider, model, name, credentialId });
       },
       updateAgent: async (id, patch) => {
         await api.updateAgent(id, patch);
@@ -544,9 +560,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         connRef.current?.reconnect();
       },
       login: async (email, password) => {
-        await api.login(email, password);
-        // Re-init the whole app with the new token — simplest + bulletproof:
-        // token() now returns the session, so REST + the WS reconnect authorized.
+        const result = await api.login(email, password);
+        // No MFA → session is set; re-init with the new token. MFA → the caller
+        // (LoginView) collects the code and calls verifyMfa.
+        if (!result.mfaRequired) location.reload();
+        return result;
+      },
+      verifyMfa: async (challengeId, code) => {
+        await api.verifyMfa(challengeId, code);
+        // Session set — re-init the whole app with the new token.
         location.reload();
       },
     };

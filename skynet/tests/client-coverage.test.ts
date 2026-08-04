@@ -30,12 +30,18 @@ const ALLOW = new Set<string>([
   "startGithubDevice", "pollGithubDevice", "fetchGithubInstallations",
   "fetchGithubInstallationRepos", "connectGithub", "disconnectGithub",
   "fetchGithubOwners", // lists org/user owners for repo creation — needs a live remote
+  "fetchGithubRepos", // live repo list for the project-creation picker — needs a live remote
   "cloneProjectRepo", // clones a connected GitHub repo — needs a live remote + token
+  "importGithubIssues", // imports a repo's issues as tasks — needs a live GitHub repo + token; the pure write-back mapping is covered by task-sync.test.ts
   "removeApprovalRule", // revokes a standing approval rule — needs a run that raised + remembered a command gate; no offline journey (covered by approval-policy.test.ts + the server route)
   // destructive bulk variants (the per-record paths ARE covered)
   "archiveAllAudit", "clearAudit",
   // low-value control-plane (runner rename/model tweak)
   "updateAgent",
+  // add a second named credential for a provider — needs a real key + the secret
+  // store (master key), so no offline journey; the route is guarded server-side
+  // and the set/delete-by-id paths it shares ARE journey-covered.
+  "createCredential",
   // streaming variant of sendAgentMessage (which IS journey-covered) — same
   // chat surface, just delta-rendered; no separate journey needed.
   "streamAgentMessage",
@@ -56,20 +62,26 @@ const ALLOW = new Set<string>([
   // provider key + a real repo to ground against, so no offline journey exercises
   // it; the project-chat parse contract is covered by project-assistant.test.ts.
   "stewardChat",
+  "streamStewardChat", // streaming variant of stewardChat — same live-key requirement
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",
+  // MFA challenge exchange (POST /api/auth/mfa) — an auth primitive like `login`;
+  // needs a live challenge id + code, so no offline journey exercises it (the
+  // login screen drives it live).
+  "verifyMfa",
   // desktop Advanced settings (env editor + engine restart) — a desktop-only
   // control-plane surface with no in-app operator journey
   "fetchEnvSettings", "saveEnvSettings", "restartEngine",
+  // workspace fleet policy (auto-scale + cap) — a settings control-plane surface
+  // covered server-side by fleet-autoscale.test.ts + mcp.test.ts; no offline
+  // operator journey drives the Settings toggle.
+  "fetchWorkspaceSettings", "updateWorkspaceSettings",
   // escape hatch — bypasses HUMAN_TRANSITIONS to force a task done; parse +
   // sync-run behavior covered by task-transitions.test.ts (server side).
   // No happy-path journey exercises it because the normal review → done path
   // is the intended path; this is only reached when that path is stuck.
   "forceTaskDone",
-  // Steward action executor for reorder_task — covered by the validator +
-  // executor tests in project-assistant.test.ts; no journey shape uses it.
-  "reorderTask",
   // Feature + milestone CRUD (task grouping + roadmap) — exercised by the
   // features-and-roadmap tests (features-roadmap.test.ts) which drive the
   // full Operations path with real store + hub. No fleet journey shape uses

@@ -162,7 +162,7 @@ export function App() {
   // The server rejected our token (dev token in production, or a wiped/expired
   // session) — sign in rather than spinning on reconnect.
   if (store.wsPhase === "unauthorized") {
-    return <LoginView onLogin={store.login} />;
+    return <LoginView onLogin={store.login} onVerifyMfa={store.verifyMfa} />;
   }
 
   if (!store.loaded) {
@@ -170,8 +170,9 @@ export function App() {
   }
 
   // First run: a loaded, empty workspace that hasn't been set up yet → the
-  // onboarding wizard (sets up GitHub + fleet against the real backend). All
-  // hooks above run unconditionally; only the render branches here.
+  // onboarding wizard (names the workspace + stands up the fleet against the
+  // real backend; GitHub is connected later from Integrations). All hooks above
+  // run unconditionally; only the render branches here.
   if (
     store.loaded &&
     (rerunSetup ||
