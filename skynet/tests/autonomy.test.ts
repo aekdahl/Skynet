@@ -18,12 +18,13 @@ class NullBus implements Bus {
 class AutoProvider implements RunnerProvider {
   readonly id = "claude" as const;
   started = 0;
+  consults = 0;
   constructor(private reply = "ok") {}
   async start(spec: StartSpec, _e: RunnerEvents): Promise<RunnerHandle> {
     this.started++;
     return { runId: spec.runId, provider: this.id, async pause() {}, async resume() {}, async message() {}, async stop() {} };
   }
-  async consult(): Promise<string> { return this.reply; }
+  async consult(): Promise<string> { this.consults++; return this.reply; }
 }
 
 const project: Project = {
@@ -38,7 +39,7 @@ const idleAgent: Agent = {
 // for `unassigned` tasks is covered explicitly below.
 const mkTask = (over: Partial<Task>): Task => ({
   id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do X", state: "backlog",
-  runId: null, autoPick: false, assessment: null, reviewFlaggedReason: null,
+  runId: null, autoPick: false, assessment: null, reviewVerdict: null,
   assignment: { mode: "any", agentIds: [] }, ...over,
 });
 
@@ -149,8 +150,8 @@ describe("autonomy loop", () => {
     expect(provider.started).toBe(0);
   });
 
-  it("auto-review that FLAGs sets reviewFlaggedReason and leaves the HITL open", async () => {
-    const { store, orch } = await setup("FLAG: missing tests");
+  it("auto-review that FLAGs records the verdict on the task and leaves the HITL open", async () => {
+    const { store, orch } = await setup('{"verdict":"flag","reason":"missing tests"}');
     const run: TaskRun = {
       id: "r1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "do X", status: "review",
       runnerId: null, agentId: "a1", model: "opus-4.8", branch: "agent/r1", modules: [], progress: 1,
@@ -166,7 +167,10 @@ describe("autonomy loop", () => {
     await store.putHitl(hitl);
     await store.putTask(mkTask({ state: "review", runId: "r1" }));
     await orch.tickAutonomy();
-    expect((await store.getTask("t1"))?.reviewFlaggedReason).toContain("missing tests");
+    const flagged = await store.getTask("t1");
+    expect(flagged?.reviewVerdict?.decision).toBe("flag");
+    expect(flagged?.reviewVerdict?.reason).toContain("missing tests");
+    expect(flagged?.reviewVerdict?.by).toBe("a1");
     expect((await store.getHitl("q1"))?.resolvedAt).toBeNull();
     // The review is recorded on the run's live log: WHO reviewed + the verdict,
     // with the reviewer's full reasoning foldable in `detail`.
@@ -181,7 +185,7 @@ describe("autonomy loop", () => {
     // For local merges completeMerged() ALSO writes done (idempotent); for the
     // GitHub PR path pushToGithub stops at review waiting for a human — this
     // guarantees the KANBAN task doesn't strand there.
-    const { store, orch } = await setup("APPROVE: looks good");
+    const { store, orch } = await setup('{"verdict":"approve","reason":"looks good"}');
     const run: TaskRun = {
       id: "r1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "do X", status: "review",
       runnerId: null, agentId: "a1", model: "opus-4.8", branch: "agent/r1", modules: [], progress: 1,
@@ -245,6 +249,68 @@ describe("autonomy loop", () => {
     await orch.tickAutonomy();
     const t = await store.getTask("t1");
     expect(t?.state).toBe("done"); // NOT clobbered back to review
-    expect(t?.reviewFlaggedReason).toBeNull();
+    expect(t?.reviewVerdict).toBeNull();
+  });
+
+  it("auto-review runs even when project.autonomy is OFF — records verdict but does NOT resolve the HITL", async () => {
+    // Reviewing is diagnostic; the audit trail must exist for a human even when
+    // the project has opted out of autonomous spending. The APPROVE-and-merge
+    // step, in contrast, DOES stay gated on autonomy.
+    const store = new MemoryStore();
+    const hub = new Hub(store, new NullBus());
+    const provider = new AutoProvider('{"verdict":"approve","reason":"looks good"}');
+    const orch = new Orchestrator(store, hub, provider);
+    await store.putProject({ ...project, autonomy: false });
+    await store.putAgent(idleAgent);
+    const run: TaskRun = {
+      id: "r1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "do X", status: "review",
+      runnerId: null, agentId: "a1", model: "opus-4.8", branch: "agent/r1", modules: [], progress: 1,
+      plan: [], modifiedFiles: [], log: [], startedAt: 0, lastHeartbeatAt: 0, visual: false,
+      previewUrl: null, dependsOn: [], parentId: null, branchFromStep: null, archived: false,
+    };
+    const hitl: HitlItem = {
+      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "r1", kind: "diff", title: "Review",
+      why: "", risk: "medium", raisedAt: 0, expiresAt: null, resolvedAt: null, resolution: null,
+      command: null, options: null, recommended: null, steps: null, diff: null,
+    };
+    await store.putRun(run);
+    await store.putHitl(hitl);
+    await store.putTask(mkTask({ state: "review", runId: "r1" }));
+    await orch.tickAutonomy();
+    const t = await store.getTask("t1");
+    expect(t?.state).toBe("review"); // still awaiting the human
+    expect(t?.reviewVerdict?.decision).toBe("approve");
+    expect(t?.reviewVerdict?.reason).toContain("looks good");
+    expect((await store.getHitl("q1"))?.resolvedAt).toBeNull();
+    // Log line notes the "awaiting human" flavor of the approve verdict.
+    const alog = (await store.getRun("r1"))?.log.find((l) => /auto-reviewed by a1/i.test(l.line));
+    expect(alog?.line).toMatch(/awaiting human/i);
+  });
+
+  it("does not re-review a task that already has a verdict (idempotent)", async () => {
+    // Once the verdict exists, subsequent ticks must NOT spend another LLM call.
+    const { store, orch, provider } = await setup('{"verdict":"approve","reason":"looks good"}');
+    const run: TaskRun = {
+      id: "r1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "do X", status: "review",
+      runnerId: null, agentId: "a1", model: "opus-4.8", branch: "agent/r1", modules: [], progress: 1,
+      plan: [], modifiedFiles: [], log: [], startedAt: 0, lastHeartbeatAt: 0, visual: false,
+      previewUrl: null, dependsOn: [], parentId: null, branchFromStep: null, archived: false,
+    };
+    const hitl: HitlItem = {
+      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "r1", kind: "diff", title: "Review",
+      why: "", risk: "medium", raisedAt: 0, expiresAt: null, resolvedAt: null, resolution: null,
+      command: null, options: null, recommended: null, steps: null, diff: null,
+    };
+    await store.putRun(run);
+    await store.putHitl(hitl);
+    await store.putTask(mkTask({
+      state: "review", runId: "r1",
+      reviewVerdict: { decision: "flag", reason: "prior verdict", by: "a1", at: 1 },
+    }));
+    const consultsBefore = provider.consults;
+    await orch.tickAutonomy();
+    expect(provider.consults).toBe(consultsBefore); // no new consult fired
+    const t = await store.getTask("t1");
+    expect(t?.reviewVerdict?.reason).toBe("prior verdict"); // unchanged
   });
 });

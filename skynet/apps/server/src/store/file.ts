@@ -8,7 +8,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
-import type { GithubConnection } from "@skynet/shared";
+import type { GithubConnection, WorkspaceSettings } from "@skynet/shared";
 import { Agent, AuditRecord, Dependency, Feature, HitlItem, Milestone, Module, Project, Task, TaskRun } from "@skynet/shared";
 import type { z } from "zod";
 import { MemoryStore } from "./memory.js";
@@ -89,6 +89,7 @@ export class FileStore extends MemoryStore {
       this.audit = fillArray(d.audit, AuditRecord, "audit record");
       // GitHub connections are keyed by workspaceId (not id), so fill directly.
       if (Array.isArray(d.github)) for (const c of d.github as GithubConnection[]) this.github.set(c.workspaceId, c);
+      if (Array.isArray(d.workspaceSettings)) for (const s of d.workspaceSettings as WorkspaceSettings[]) this.workspaceSettings.set(s.workspaceId, s);
       if (d.githubTokens && typeof d.githubTokens === "object")
         for (const [ws, ct] of Object.entries(d.githubTokens as Record<string, string>)) this.githubTokens.set(ws, ct);
       // Service tokens hold a hash (never the raw secret) — a plain array keyed
@@ -125,6 +126,7 @@ export class FileStore extends MemoryStore {
       deps: this.deps,
       audit: this.audit,
       github: [...this.github.values()],
+      workspaceSettings: [...this.workspaceSettings.values()],
       githubTokens: Object.fromEntries(this.githubTokens),
       serviceTokens: [...this.serviceTokens.values()],
     };

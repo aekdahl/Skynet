@@ -7,7 +7,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { config, now } from "../config.js";
-import { cookieToken, tokenFrom, SESSION_COOKIE } from "../auth.js";
+import { cookieToken, tokenFrom, SESSION_COOKIE, type Principal } from "../auth.js";
+import { TelegramClient } from "../telegram/client.js";
+import type { Operations } from "../operations.js";
+import { mfaEnabled, createChallenge, verifyChallenge } from "./mfa.js";
 import type { SessionStore } from "./sessions.js";
 import type { ServiceTokenStore } from "./service-tokens.js";
 import type { OperatorDirectory } from "./operators.js";
@@ -17,10 +20,19 @@ const LoginRequest = z.object({
   password: z.string().min(1),
 });
 
+// Second-factor exchange: a login challenge id + the Telegram OTP (or a recovery code).
+const MfaRequest = z.object({
+  challengeId: z.string().min(1),
+  code: z.string().min(1),
+});
+
 // Mirrors the Scope tuple in auth.ts. A minted token is narrowed to this subset.
 const CreateServiceTokenRequest = z.object({
   label: z.string().min(1),
   scopes: z.array(z.enum(["observe", "author", "approver", "admin"])).min(1),
+  // Confine the token to these projects (all must belong to the caller's
+  // workspace). Omit / empty → workspace-wide, the historical default.
+  projectIds: z.array(z.string()).optional(),
   ttlMs: z.number().int().positive().nullable().optional(),
 });
 
@@ -46,14 +58,54 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
   const { sessions, operators } = deps;
 
   // Public — the one /api route reachable without an existing token.
+  // Issue a session (httpOnly cookie + body token). Shared by the direct-login
+  // (mfa: false) and the MFA second-factor (mfa: true) paths.
+  //
+  // MFA-verified sessions get the longer TTL (`sessionTtlMfaMs`, default 30d)
+  // because the second factor already raised the security bar — re-doing MFA
+  // every 12h is more friction than it buys. Password-only sessions keep the
+  // shorter TTL (`sessionTtlMs`, default 12h).
+  async function issueSession(reply: FastifyReply, principal: Principal, opts: { mfa: boolean }) {
+    const ttl = opts.mfa ? config.sessionTtlMfaMs : config.sessionTtlMs;
+    const session = await sessions.create(principal, ttl);
+    setSessionCookie(reply, session.token, session.expiresAt);
+    return { token: session.token, principal, expiresAt: session.expiresAt };
+  }
+
   app.post("/api/auth/login", async (req: FastifyRequest, reply: FastifyReply) => {
     const body = LoginRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     const principal = operators.verify(body.data.email, body.data.password);
     if (!principal) return reply.code(401).send({ error: "Invalid credentials" });
-    const session = await sessions.create(principal, config.sessionTtlMs);
-    setSessionCookie(reply, session.token, session.expiresAt);
-    return { token: session.token, principal, expiresAt: session.expiresAt };
+    // No MFA (or broken-glass via SKYNET_MFA_DISABLE): issue the session directly.
+    if (!mfaEnabled()) return issueSession(reply, principal, { mfa: false });
+    // MFA on: don't issue a session yet. Send a one-time code to the owner's
+    // Telegram and require it (or a recovery code) at /api/auth/mfa. The code
+    // never leaves the server except via Telegram, so a stolen password alone
+    // can't complete the login.
+    const { challengeId, code } = createChallenge(principal);
+    if (config.telegramBotToken && config.telegramOwnerChatId) {
+      try {
+        await new TelegramClient(config.telegramBotToken).sendMessage(
+          config.telegramOwnerChatId,
+          `Skynet login code: ${code}\nExpires in 5 minutes. If this wasn't you, ignore it.`,
+        );
+      } catch (err) {
+        req.log.warn(`[mfa] Telegram OTP send failed (use a recovery code): ${(err as Error).message}`);
+      }
+    } else {
+      req.log.warn("[mfa] enabled but no Telegram configured — log in with a recovery code.");
+    }
+    return { mfaRequired: true, challengeId };
+  });
+
+  // Second factor: exchange a challenge + OTP (or a recovery code) for a session.
+  app.post("/api/auth/mfa", async (req: FastifyRequest, reply: FastifyReply) => {
+    const body = MfaRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    const principal = verifyChallenge(body.data.challengeId, body.data.code);
+    if (!principal) return reply.code(401).send({ error: "Invalid or expired code" });
+    return issueSession(reply, principal, { mfa: true });
   });
 
   // Authenticated — destroy the presented session and clear the cookie.
@@ -78,9 +130,9 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
  */
 export async function registerServiceTokenRoutes(
   app: FastifyInstance,
-  deps: { serviceTokens: ServiceTokenStore },
+  deps: { serviceTokens: ServiceTokenStore; operations: Pick<Operations, "listProjects"> },
 ): Promise<void> {
-  const { serviceTokens } = deps;
+  const { serviceTokens, operations } = deps;
 
   // Only a human operator (no scopes = full authority) may manage tokens.
   const requireHuman = (req: FastifyRequest, reply: FastifyReply): boolean => {
@@ -96,15 +148,28 @@ export async function registerServiceTokenRoutes(
     if (!requireHuman(req, reply)) return reply;
     const body = CreateServiceTokenRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    const ws = req.principal!.workspaceId;
+    // Validate the project allowlist up front so a typo can't mint a token that
+    // silently sees/does nothing. Every id must be a real project in the caller's
+    // own workspace (this also prevents scoping a token at another workspace's id).
+    const projectIds = body.data.projectIds ?? [];
+    if (projectIds.length > 0) {
+      const owned = new Set((await operations.listProjects(ws)).map((p) => p.id));
+      const unknown = projectIds.filter((id) => !owned.has(id));
+      if (unknown.length > 0) {
+        return reply.code(400).send({ error: `Unknown project(s) for this workspace: ${unknown.join(", ")}` });
+      }
+    }
     const created = await serviceTokens.create({
-      workspaceId: req.principal!.workspaceId,
+      workspaceId: ws,
       operatorId: `token:${body.data.label}`, // attribution in the audit trail
       scopes: body.data.scopes,
       label: body.data.label,
+      projectIds,
       ttlMs: body.data.ttlMs ?? null,
     });
     // Return the secret token plus the metadata; callers must store it now.
-    return reply.code(201).send({ token: created.token, id: created.id, scopes: body.data.scopes, label: created.label, expiresAt: created.expiresAt });
+    return reply.code(201).send({ token: created.token, id: created.id, scopes: body.data.scopes, projectIds, label: created.label, expiresAt: created.expiresAt });
   });
 
   // List this workspace's tokens as non-secret metadata.

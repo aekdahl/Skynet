@@ -43,7 +43,7 @@ import type { Orchestrator } from "../orchestrator.js";
 import { prefetchProjectDocs } from "../project-assistant.js";
 import { TelegramClient } from "./client.js";
 import { decide } from "./commands.js";
-import { decisionCardHtml, gateKeyboard, reviewNotice, completedNotice, esc, type Names } from "./notices.js";
+import { decisionCardHtml, gateKeyboard, reviewNotice, completedNotice, runLink, esc, type Names } from "./notices.js";
 import {
   buildContext,
   INTENT_SYSTEM_PROMPT,
@@ -1035,6 +1035,8 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     const project = await operations.getProject(ws, run.projectId).catch(() => null);
     return { run: run.name || runId, project: project?.name ?? "" };
   };
+  // Deep link to open the run in the app (empty unless PUBLIC_URL is configured).
+  const linkFor = (runId: string): string | undefined => runLink(config.publicUrl, runId);
 
   // De-dupe run notices: only push when a run's status actually CHANGES, so a run
   // that re-emits "review" doesn't send the same line three times (the reported
@@ -1045,7 +1047,7 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     lastNotice.set(it.runId, "review"); // the gate IS the review heads-up
     const opts: NotifyOpts = { parse_mode: "HTML" };
     if (config.telegramControl) opts.reply_markup = gateKeyboard(it);
-    const sent = await notify(decisionCardHtml(it, await nameOf(it.runId), config.telegramControl), opts);
+    const sent = await notify(decisionCardHtml(it, await nameOf(it.runId), config.telegramControl, linkFor(it.runId)), opts);
     // Remember which gate this card is for, so a reply to it → "request changes".
     if (config.telegramControl && sent.messageId) control.noteCard(sent.messageId, it.id, it.runId);
   };
@@ -1062,7 +1064,7 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
         const covered = (await operations.listHitl(ws).catch(() => []))
           .some((g) => g.runId === runId && !g.resolvedAt);
         if (covered) return;
-        await notify(reviewNotice(await nameOf(runId)));
+        await notify(reviewNotice(await nameOf(runId), linkFor(runId)));
       })();
     }, 700);
   };
@@ -1075,7 +1077,7 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     } else if (event.type === "run.completed") {
       lastNotice.set(event.runId, "done");
       void (async () => {
-        await notify(completedNotice(await nameOf(event.runId)));
+        await notify(completedNotice(await nameOf(event.runId), linkFor(event.runId)));
       })();
     }
   };
