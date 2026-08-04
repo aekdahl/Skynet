@@ -11,6 +11,8 @@ import {
   type ResolveAction,
   type SafetyPolicy,
   type SecretMeta,
+  type WorkspaceSettings,
+  type UpdateWorkspaceSettingsRequest,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 
@@ -27,7 +29,9 @@ const token = () =>
  * /api/auth/login) and persist it. On success the stored token authorizes both
  * REST and the WebSocket; callers reload so the app re-connects with it.
  */
-export async function login(email: string, password: string): Promise<void> {
+export type LoginResult = { mfaRequired: false } | { mfaRequired: true; challengeId: string };
+
+export async function login(email: string, password: string): Promise<LoginResult> {
   const res = await fetch("/api/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -37,6 +41,26 @@ export async function login(email: string, password: string): Promise<void> {
     if (res.status === 401) throw new Error("Invalid email or password.");
     const text = await res.text().catch(() => "");
     throw new Error(text || `Login failed (${res.status}).`);
+  }
+  const data = (await res.json()) as { token?: string; mfaRequired?: boolean; challengeId?: string };
+  // MFA on: the password was correct but no session yet — a code went to Telegram.
+  if (data.mfaRequired && data.challengeId) return { mfaRequired: true, challengeId: data.challengeId };
+  if (typeof localStorage !== "undefined" && data.token) localStorage.setItem(TOKEN_KEY, data.token);
+  return { mfaRequired: false };
+}
+
+/** Second factor: exchange the challenge + the Telegram code (or a recovery
+ *  code) for a session token. */
+export async function verifyMfa(challengeId: string, code: string): Promise<void> {
+  const res = await fetch("/api/auth/mfa", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ challengeId, code }),
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("That code is invalid or expired.");
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Verification failed (${res.status}).`);
   }
   const data = (await res.json()) as { token: string };
   if (typeof localStorage !== "undefined") localStorage.setItem(TOKEN_KEY, data.token);
@@ -246,6 +270,14 @@ export function saveEnvSettings(updates: Record<string, string>) {
 export function restartEngine() {
   return req<{ restarting: boolean }>("POST", "/api/settings/restart");
 }
+/** Read the live workspace fleet policy (auto-scale + cap). */
+export function fetchWorkspaceSettings() {
+  return req<WorkspaceSettings>("GET", "/api/settings/fleet");
+}
+/** Update the live workspace fleet policy. */
+export function updateWorkspaceSettings(patch: UpdateWorkspaceSettingsRequest) {
+  return req<WorkspaceSettings>("PATCH", "/api/settings/fleet", patch);
+}
 
 // Provider secrets (Settings). `env` = providers a server env var supplies a
 // key for (a stored key overrides it).
@@ -275,6 +307,9 @@ export interface ServiceTokenMeta {
   id: string;
   label: string;
   scopes: McpScope[];
+  // Empty = every project in the workspace; a non-empty list = the projects this
+  // token is confined to (both its reads and its writes).
+  projectIds: string[];
   createdAt: number;
   expiresAt: number | null;
   lastUsedAt: number | null;
@@ -284,8 +319,8 @@ export interface ServiceTokenMeta {
 export function listServiceTokens() {
   return req<ServiceTokenMeta[]>("GET", "/api/service-tokens");
 }
-export function createServiceToken(body: { label: string; scopes: McpScope[]; ttlMs?: number | null }) {
-  return req<{ token: string; id: string; scopes: McpScope[]; label: string; expiresAt: number | null }>(
+export function createServiceToken(body: { label: string; scopes: McpScope[]; projectIds?: string[]; ttlMs?: number | null }) {
+  return req<{ token: string; id: string; scopes: McpScope[]; projectIds: string[]; label: string; expiresAt: number | null }>(
     "POST",
     "/api/service-tokens",
     body,
@@ -323,12 +358,26 @@ export function createProject(body: {
   createRepo?: { name: string; private: boolean; owner?: string };
   autonomy?: boolean;
   approvalLevel?: string;
+  instructions?: string;
 }) {
   return req<unknown>("POST", "/api/projects", body);
 }
 export function updateProject(
   id: string,
-  body: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string; repoPath?: string | null; githubCredentialId?: string | null; llmCredentialId?: string | null },
+  body: {
+    name?: string;
+    goal?: string;
+    status?: string;
+    autonomy?: boolean;
+    approvalLevel?: string;
+    repoPath?: string | null;
+    // null clears the field back to "no project rules".
+    instructions?: string | null;
+    githubCredentialId?: string | null;
+    // Which provider keys the project may run on (credential ids; empty = all).
+    enabledRunnerCredentialIds?: string[];
+    syncSourceStatus?: boolean;
+  },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
 }
@@ -343,6 +392,10 @@ export function deleteProject(id: string) {
  *  (headless/GCP), so agents can work on it. Sets repoPath + gitBacked. */
 export function cloneProjectRepo(id: string) {
   return req<unknown>("POST", `/api/projects/${id}/clone`);
+}
+// Import the project's open GitHub issues as tasks (linked back via Task.source).
+export function importGithubIssues(projectId: string) {
+  return req<{ imported: number; skipped: number }>("POST", `/api/projects/${projectId}/import/github-issues`);
 }
 
 // Tasks
@@ -437,7 +490,11 @@ export interface AssistantAction {
     | "set_autonomy"
     | "set_status"
     | "set_schedule"
-    | "set_assignment";
+    | "set_assignment"
+    | "add_feature"
+    | "add_milestone"
+    | "set_task_feature"
+    | "set_feature_milestone";
   summary: string;
   taskId?: string;
   text?: string;
@@ -454,6 +511,11 @@ export interface AssistantAction {
   // = the pool for `agents` mode (empty otherwise).
   mode?: "any" | "agents" | "unassigned";
   agentIds?: string[];
+  // Roadmap linkage (add_feature / add_milestone / set_task_feature /
+  // set_feature_milestone). `null` clears the respective link.
+  featureId?: string | null;
+  milestoneId?: string | null;
+  targetAt?: number | null;
 }
 // Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
 // (full project assistant + actions); omit it for a workspace-wide answer. The

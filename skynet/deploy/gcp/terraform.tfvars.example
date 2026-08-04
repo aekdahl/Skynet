@@ -25,3 +25,14 @@ telegram_control = false              # true = allow approve/create/etc. over Te
 # mcp_allowed_source_ranges = ["203.0.113.7/32"]   # your MCP client egress IP(s); never 0.0.0.0/0
 # mcp_scopes                = "observe,author"      # add "approver" only to self-resolve HITL gates
 # open_acme_http            = true                  # :80 for ACME HTTP-01 (false = use DNS-01)
+
+# ── Optional: serve the WHOLE app publicly (public_ui) — drops IAP for the UI ──
+# Instead of the narrow /mcp door above, expose the whole app over HTTPS at
+# mcp_domain: UI gated by the app login (+ MFA), /mcp by a Bearer service token
+# minted in Settings. Opens :443/:80 to the internet; keeps IAP for SSH only.
+# Pre-reserve the static IP first:  gcloud compute addresses create skynet-public-ip --region=<region>
+# then point mcp_domain's A-record at it BEFORE apply. Mutually exclusive with enable_mcp_https.
+# public_ui  = true
+# mcp_domain = "skynet.example.com"   # A-record → the skynet-public-ip address
+# acme_email = "you@example.com"      # Let's Encrypt account email
+# open_acme_http = true               # :80 for ACME HTTP-01

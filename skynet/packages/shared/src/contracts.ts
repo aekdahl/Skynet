@@ -216,19 +216,46 @@ export const Project = z.object({
   repoPath: z.string().nullable().default(null),
   gitBacked: z.boolean().default(false),
   repo: z.string().optional(),
+  // Free-form markdown that rides EVERY agent prompt on this project — the
+  // "house rules" for this codebase (which packages to use, code structure,
+  // conventions the agent should follow). Steward also sees it in its
+  // grounding. Nullable = no rules set; equivalent to today's behavior.
+  //
+  // Repo-file convention: when set, this is Skynet's copy of what would
+  // otherwise live in `.skynet/instructions.md` at the repo root. A future
+  // "sync to repo" toggle can push this back to a committed file so a
+  // vendor-neutral rule set travels with the codebase; for now it's stored
+  // on the project record for instant editability without a commit.
+  instructions: z.string().nullable().default(null),
   // Which stored GitHub credential this project's git operations (clone / push /
   // PR / repo listing) authenticate with — a secret-store credential id of a
   // `github` PAT. null → the workspace's default GitHub connection. Lets one
   // workspace keep work repos on the business account and personal repos on a
   // personal account (separate billing + storage).
   githubCredentialId: z.string().nullable().default(null),
-  // Which stored LLM provider credential this project's agent runs bill to — a
-  // secret-store credential id. Applied only when it matches the run's provider
-  // (else the agent's own credential / the provider default), so a work project's
-  // token spend lands on the business account. null → no project-level pin.
-  llmCredentialId: z.string().nullable().default(null),
+  // Which provider keys this project may run agents on — a list of secret-store
+  // credential ids (a runner's effective id is `credentialId ?? provider`, so a
+  // provider's default key is the provider id itself). Assignment to this project
+  // is confined to fleet runners whose key is in this set, and a project-scoped
+  // MCP token may only create runners with these keys. EMPTY = every key in the
+  // workspace (the default — unchanged behavior); a non-empty list confines it.
+  enabledRunnerCredentialIds: z.array(z.string()).default([]),
+  // Opt-in: write task status changes back to their imported source of truth
+  // (e.g. close/comment the GitHub issue on done). Outward-facing, so off by
+  // default. See docs/task-source-sync.md.
+  syncSourceStatus: z.boolean().default(false),
 });
 export type Project = z.infer<typeof Project>;
+
+// Provenance for a task imported from an external source of truth, so Skynet can
+// write status changes BACK to it (see docs/task-source-sync.md). Set at import;
+// carried for the task's life. `syncedAt`/`sourceRev` reserve a future two-way sync.
+export const TaskSource = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("github_issue"), repo: z.string(), number: z.number().int(), url: z.string().default("") }),
+  z.object({ kind: z.literal("repo_file"), path: z.string(), anchor: z.string().default("") }), // Phase 2
+  z.object({ kind: z.literal("external"), system: z.string(), id: z.string(), url: z.string().default("") }), // Phase 3
+]);
+export type TaskSource = z.infer<typeof TaskSource>;
 
 export const Task = z.object({
   id: z.string(),
@@ -290,6 +317,9 @@ export const Task = z.object({
   // the Feature (Feature.milestoneId); this field is for orphan tasks that
   // don't sit under a feature but still need to appear on the roadmap.
   milestoneId: z.string().nullable().default(null),
+  // Where this task was imported from (GitHub issue / repo file / tracker), so a
+  // status change can be written back to it. null → a native Skynet task.
+  source: TaskSource.nullable().default(null),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -410,6 +440,10 @@ export const Agent = z.object({
   model: z.string(),
   status: AgentStatus,
   idleSince: Timestamp.nullable().default(null),
+  // True when the fleet CREATED this runner on demand (auto-scale or fork/retry
+  // provisioning) rather than an operator adding it. Such runners are the only
+  // ones the idle reaper auto-retires (see retireIdleRunnersAfterMinutes).
+  autoProvisioned: z.boolean().default(false),
 });
 export type Agent = z.infer<typeof Agent>;
 
@@ -537,6 +571,8 @@ export const CreateProjectRequest = z.object({
   // on; approvalLevel from SKYNET_APPROVAL_LEVEL). Both remain editable later.
   autonomy: z.boolean().optional(),
   approvalLevel: ApprovalLevel.optional(),
+  // Project-scoped agent guidance that rides every prompt (see Project.instructions).
+  instructions: z.string().optional(),
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 
@@ -556,14 +592,20 @@ export const UpdateProjectRequest = z.object({
   approvalLevel: ApprovalLevel.optional(),
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
+  // Project-scoped agent guidance. `null` clears the field back to "no rules".
+  instructions: z.string().nullable().optional(),
   githubCredentialId: z.string().nullable().optional(), // pick the GitHub account (null clears → default)
-  llmCredentialId: z.string().nullable().optional(), // pick the LLM credential to bill (null clears)
+  // Which provider keys the project may run on (secret-store credential ids;
+  // empty = all keys). See Project.enabledRunnerCredentialIds.
+  enabledRunnerCredentialIds: z.array(z.string()).optional(),
+  syncSourceStatus: z.boolean().optional(), // write status changes back to the source of truth
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 
 export const CreateTaskRequest = z.object({
   text: z.string().min(1),
   description: z.string().optional(),
+  source: TaskSource.optional(), // set when importing from a source of truth
 });
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequest>;
 
@@ -744,6 +786,36 @@ export const GithubConnection = z.object({
   safety: SafetyPolicy,
 });
 export type GithubConnection = z.infer<typeof GithubConnection>;
+
+// ─── Workspace settings (live, per-workspace fleet policy) ──────────────────
+// Non-secret operator settings that govern the workspace at runtime (no engine
+// restart). Persisted as a workspace-keyed singleton, mirroring GithubConnection.
+export const WorkspaceSettings = z.object({
+  workspaceId: z.string(),
+  // When on, assigning a task with no free runner AUTO-PROVISIONS a fresh runner
+  // (cloned from a busy one already on an allowed key) instead of waiting — up to
+  // `maxRunners`. Off = today's behavior (the task waits for a runner to free).
+  autoProvisionRunners: z.boolean().default(false),
+  // Hard ceiling on total fleet size, enforced on every creation path (auto-scale,
+  // fork/retry provisioning, and explicit configure). Defaults to 100 — a sane
+  // upper bound rather than unbounded; set 0 to explicitly remove the cap. The
+  // safety valve that keeps auto-creation from running away.
+  maxRunners: z.number().int().min(0).default(100),
+  // Auto-decommission: retire a SYSTEM-provisioned runner (one auto-scale/fork
+  // created) once it has sat idle this many minutes, so auto-scaled capacity is
+  // reclaimed instead of accumulating. Operator-added runners are never touched.
+  // 0 = never auto-retire. Default 30.
+  retireIdleRunnersAfterMinutes: z.number().int().min(0).default(30),
+});
+export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
+
+/** Patch for the live workspace settings (all fields optional). */
+export const UpdateWorkspaceSettingsRequest = z.object({
+  autoProvisionRunners: z.boolean().optional(),
+  maxRunners: z.number().int().min(0).optional(),
+  retireIdleRunnersAfterMinutes: z.number().int().min(0).optional(),
+});
+export type UpdateWorkspaceSettingsRequest = z.infer<typeof UpdateWorkspaceSettingsRequest>;
 
 /** Body to record/refresh an installation after the App is installed on GitHub. */
 export const ConnectGithubRequest = z.object({

@@ -21,6 +21,7 @@ import {
   Task,
   Timestamp,
   Usage,
+  WorkspaceSettings,
 } from "./contracts.js";
 
 // ─── Connect-time snapshot ────────────────────────────────────────────────
@@ -41,6 +42,8 @@ export const Snapshot = z.object({
   // create-project form can pre-select what a new project would otherwise get.
   // Optional for forward-compat with older servers that don't send it.
   defaultApprovalLevel: ApprovalLevel.optional(),
+  // The live workspace fleet policy (auto-scale + cap). Optional for forward-compat.
+  workspaceSettings: WorkspaceSettings.optional(),
 });
 export type Snapshot = z.infer<typeof Snapshot>;
 

@@ -4,6 +4,7 @@
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
 import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo } from "@skynet/shared";
+import { WorkspaceSettings } from "@skynet/shared";
 import {
   type HitlRaise,
   type RunnerEvents,
@@ -138,25 +139,16 @@ export function splitEstMinutesTag(
 const SCOPE_NOTE =
   "\n\n---\nScope discipline: do exactly what's asked above, then stop. Don't expand into adjacent or unrequested work — extra features, UI, refactors, or speculative follow-ups. When the requested change is complete, report and finish rather than inventing more scope. If you're genuinely blocked, or the task is too big for one focused session, escalate (AskUserQuestion with header \"ESCALATE\") instead of grinding through your turn budget.";
 
-/**
- * PURE: which stored credential id authenticates a run's LLM calls. Prefers the
- * PROJECT's pinned LLM credential — but ONLY when it belongs to the run's provider
- * (a Claude credential can't authenticate a Codex run, so a mismatched pin safely
- * falls back) — else the agent's own credential, else the provider default (whose
- * id === the provider). This is what makes a work project's token spend bill to
- * the chosen account.
- */
-export function pickLlmCredential(
-  provider: string,
-  projectLlmCredentialId: string | null | undefined,
-  runnerCredentialId: string | null | undefined,
-  creds: { id: string; provider: string }[],
-): string {
-  if (projectLlmCredentialId) {
-    const m = creds.find((c) => c.id === projectLlmCredentialId);
-    if (m && m.provider === provider) return projectLlmCredentialId;
-  }
-  return runnerCredentialId ?? provider;
+/** Prepend the project's `instructions` (the "house rules" for this codebase)
+ *  to any prompt an agent will see. When there are no instructions this is a
+ *  no-op — the prompt is returned unchanged, so runs on projects that never
+ *  set the field behave exactly as they did before. The banner is fenced with
+ *  a clear label so an agent that reads a stack of prompts knows what's
+ *  project-scoped guidance vs. task-scoped ask. Exported for tests + reuse. */
+export function withInstructions(instructions: string | null | undefined, body: string): string {
+  const trimmed = instructions?.trim();
+  if (!trimmed) return body;
+  return `=== PROJECT INSTRUCTIONS (apply to every task in this project) ===\n${trimmed}\n\n=== TASK ===\n${body}`;
 }
 
 export class Orchestrator {
@@ -664,6 +656,10 @@ export class Orchestrator {
   private acquireAgent(
     workspaceId: string,
     eligible?: TaskAssignment,
+    // The project's enabled-key allowlist (secret-store credential ids; empty =
+    // any key). A runner is assignable only if its key (credentialId ?? provider)
+    // is in this set — the project-level provider-key confinement.
+    allowedCredentialIds: string[] = [],
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
@@ -674,12 +670,35 @@ export class Orchestrator {
       // considers the whole fleet (historical behavior).
       const inPool = (id: string) =>
         eligible?.mode === "agents" ? eligible.agentIds.includes(id) : true;
-      const eligibleRunners = runners.filter((r) => inPool(r.id));
-      if (eligible?.mode === "agents" && eligibleRunners.length === 0) {
+      const keyAllowed = (r: Agent) =>
+        allowedCredentialIds.length === 0 || allowedCredentialIds.includes(r.credentialId ?? r.provider);
+      const pooled = runners.filter((r) => inPool(r.id));
+      if (eligible?.mode === "agents" && pooled.length === 0) {
         throw new NoCapacityError("None of this task's assigned agents exist in the fleet.");
+      }
+      // Confine to runners on a key this project is allowed to run on.
+      const eligibleRunners = pooled.filter(keyAllowed);
+      if (eligibleRunners.length === 0) {
+        throw new NoCapacityError(
+          "No fleet runner uses a provider key enabled for this project — enable one of its keys in the project's settings, or add a runner on an allowed key in Fleet.",
+        );
       }
       const idle = eligibleRunners.filter((r) => r.status === "idle");
       if (idle.length === 0) {
+        // Auto-scale: every eligible runner is busy. If the workspace policy
+        // allows it AND we're under the fleet cap, clone an eligible runner
+        // (already on an allowed key) and provision a fresh one instead of
+        // making the task wait. At the cap we fall through to NoCapacityError —
+        // the task queues until a runner frees up. Atomic under acquireExclusive.
+        const settings = await this.fleetPolicy(workspaceId);
+        const underCap = !settings.maxRunners || runners.length < settings.maxRunners;
+        const template = eligibleRunners[0]; // a busy runner on an allowed key
+        if (settings.autoProvisionRunners && underCap && template && (await this.providerUsable(workspaceId, template.provider, template.credentialId))) {
+          const id = `runner-auto-${++this.seq}`;
+          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null, autoProvisioned: true };
+          await this.hub.upsertAgent(runner);
+          return { id, provider: template.provider, model: template.model, credentialId: template.credentialId ?? null };
+        }
         throw new NoCapacityError(
           eligible?.mode === "agents"
             ? "This task's assigned agents are all busy — it waits until one frees up."
@@ -698,6 +717,17 @@ export class Orchestrator {
     });
   }
 
+  /** The workspace fleet policy, defaulted when never set (so maxRunners=100 and
+   *  the reaper TTL apply to unconfigured workspaces too). */
+  private async fleetPolicy(ws: string): Promise<WorkspaceSettings> {
+    return (await this.store.getWorkspaceSettings(ws)) ?? WorkspaceSettings.parse({ workspaceId: ws });
+  }
+
+  /** A project's enabled-runner-key allowlist (empty = any key). */
+  private async projectKeyAllowlist(projectId: string): Promise<string[]> {
+    return (await this.store.getProject(projectId))?.enabledRunnerCredentialIds ?? [];
+  }
+
   /**
    * Acquire an idle runner, or PROVISION a fresh one on demand when the fleet is
    * fully occupied — used by fork so a family can branch even when every runner
@@ -710,15 +740,28 @@ export class Orchestrator {
     provider: TaskRun["provider"],
     model: string,
     credentialId?: string | null,
+    // The owning project's enabled-key allowlist (empty = any). Confines which
+    // idle runner may be reused, so a fork/retry can't land on a key the project
+    // isn't allowed to run on. The provisioned fallback uses the requested
+    // credential, which the caller already resolved from an allowed run.
+    allowedCredentialIds: string[] = [],
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
-      // Prefer an idle agent whose provider/credential can actually execute.
-      for (const r of runners.filter((r) => r.status === "idle")) {
+      const keyAllowed = (r: Agent) =>
+        allowedCredentialIds.length === 0 || allowedCredentialIds.includes(r.credentialId ?? r.provider);
+      // Prefer an idle agent that's on an allowed key AND can actually execute.
+      for (const r of runners.filter((r) => r.status === "idle" && keyAllowed(r))) {
         if (await this.providerUsable(workspaceId, r.provider, r.credentialId)) {
           await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
           return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
         }
+      }
+      // Respect the workspace fleet cap — fork/retry provisioning is auto-creation
+      // too, so the ceiling applies here as well (0 = no cap).
+      const settings = await this.fleetPolicy(workspaceId);
+      if (settings.maxRunners && runners.length >= settings.maxRunners) {
+        throw new NoCapacityError(`Fleet is at its maximum of ${settings.maxRunners} runners — free a runner or raise the limit in settings.`);
       }
       // None idle+usable → provision one for the requested provider + credential,
       // but only if that credential is usable (else nothing can run).
@@ -728,7 +771,7 @@ export class Orchestrator {
         );
       }
       const id = `runner-auto-${++this.seq}`;
-      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null };
+      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null, autoProvisioned: true };
       await this.hub.upsertAgent(runner);
       return { id, provider, model, credentialId: credentialId ?? null };
     });
@@ -795,7 +838,7 @@ export class Orchestrator {
     const current: TaskAssignment = task.assignment ?? { mode: "unassigned", agentIds: [] };
     const assignment: TaskAssignment =
       current.mode === "unassigned" ? { mode: "any", agentIds: [] } : current;
-    const runner = await this.acquireAgent(project.workspaceId, assignment);
+    const runner = await this.acquireAgent(project.workspaceId, assignment, project.enabledRunnerCredentialIds);
     const runId = `${this.slug(task.text)}-${++this.seq}`;
     // runId is unique → unique branch & worktree path (two same-named tasks
     // never collide on the same branch).
@@ -858,7 +901,8 @@ export class Orchestrator {
       const apiKey = await this.llmKey(project.workspaceId, runner.provider, project.llmCredentialId, runner.credentialId);
       // The agent gets the full brief: the short name plus the longer
       // description when one exists (the run's display name stays the short text).
-      const brief = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
+      const taskBody = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
+      const brief = withInstructions(project.instructions, taskBody);
       const handle = await provider.start(
         { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey },
         this.events(),
@@ -878,7 +922,7 @@ export class Orchestrator {
 
     // Fork provisions capacity on demand: if no runner is idle, spin one up
     // (inheriting the parent's provider/model) rather than refusing the fork.
-    const runner = await this.acquireOrProvisionRunner(parent.workspaceId, parent.provider, parent.model, parent.credentialId);
+    const runner = await this.acquireOrProvisionRunner(parent.workspaceId, parent.provider, parent.model, parent.credentialId, await this.projectKeyAllowlist(parent.projectId));
     const runId = `${this.slug(parent.name)}-fork-${++this.seq}`;
     const stepIndex = Math.max(0, parent.plan.findIndex((s) => s.state === "now"));
     const forkBranch = `${parent.branch}-fork`;
@@ -925,7 +969,17 @@ export class Orchestrator {
       const { cwd, baseRef } = await this.provisionCwd(git, runId, agent.branch, parent.branch);
       const apiKey = await this.llmKey(parent.workspaceId, runner.provider, project?.llmCredentialId, runner.credentialId);
       const handle = await provider.start(
-        { runId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex, apiKey },
+        {
+          runId,
+          projectId: parent.projectId,
+          task: withInstructions(project?.instructions, parent.name),
+          model: runner.model,
+          branch: agent.branch,
+          cwd,
+          parentId,
+          branchFromStep: stepIndex,
+          apiKey,
+        },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId: null, branch: agent.branch, baseRef, git });
@@ -1013,19 +1067,21 @@ export class Orchestrator {
     }
     let acq: { id: string; provider: TaskRun["provider"]; model: string };
     try {
-      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId);
+      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId, await this.projectKeyAllowlist(run.projectId));
     } catch (err) {
       await this.hub.runLog(runId, `cannot revise — ${(err as Error).message}`);
       return;
     }
     const provider = await this.getProvider(acq.provider);
     const cwd = review.git.worktrees.pathFor(runId);
-    const reviseProject = await this.store.getProject(run.projectId);
-    const apiKey = await this.llmKey(run.workspaceId, acq.provider, reviseProject?.llmCredentialId, run.credentialId);
-    const revisePrompt =
+    const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+    const project = await this.store.getProject(run.projectId);
+    const revisePrompt = withInstructions(
+      project?.instructions,
       `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
       `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
-      `only the changes needed to address the request, then stop.`;
+      `only the changes needed to address the request, then stop.`,
+    );
     await this.hub.runStatus(runId, "running");
     if (review.taskId) {
       const task = await this.store.getTask(review.taskId);
@@ -1148,7 +1204,7 @@ export class Orchestrator {
         await this.freeRunner(live.agentId);
         this.live.delete(runId);
       }
-      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model);
+      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, undefined, await this.projectKeyAllowlist(run.projectId));
       if (reassign && live) {
         await live.handle.stop().catch(() => undefined);
         await this.freeRunner(live.agentId);
@@ -1161,11 +1217,14 @@ export class Orchestrator {
     }
     const provider = await this.getProvider(acq.provider);
     const cwd = git.worktrees.pathFor(runId);
-    const escProject = await this.store.getProject(run.projectId);
-    const apiKey = await this.llmKey(run.workspaceId, acq.provider, escProject?.llmCredentialId, run.credentialId);
-    const prompt = reassign
-      ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
-      : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`;
+    const apiKey = await secretService.resolve(run.workspaceId, run.provider);
+    const project = await this.store.getProject(run.projectId);
+    const prompt = withInstructions(
+      project?.instructions,
+      reassign
+        ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+        : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
+    );
     await this.hub.runStatus(runId, "running");
     if (ctx?.taskId) {
       const task = await this.store.getTask(ctx.taskId);
@@ -1732,6 +1791,33 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Auto-decommission: retire SYSTEM-provisioned runners (auto-scale / fork
+   * created) that have sat idle past the workspace's TTL, so auto-scaled capacity
+   * doesn't accumulate. Only touches `autoProvisioned` idle runners — an operator's
+   * manually-added fleet is never auto-retired, and a busy runner is never touched.
+   * Per-workspace TTL (retireIdleRunnersAfterMinutes; 0 = off). Returns the count
+   * retired. Runs as a janitorial sweep, independent of the pause/kill switch.
+   */
+  async reapIdleRunners(): Promise<number> {
+    const allAgents = await this.store.listAllAgents().catch(() => [] as Agent[]);
+    const workspaces = [...new Set(allAgents.map((a) => a.workspaceId))];
+    let retired = 0;
+    for (const ws of workspaces) {
+      const ttlMin = (await this.fleetPolicy(ws)).retireIdleRunnersAfterMinutes;
+      if (!ttlMin || ttlMin <= 0) continue; // reaping disabled for this workspace
+      const cutoff = now() - ttlMin * 60_000;
+      for (const a of allAgents) {
+        if (a.workspaceId !== ws || !a.autoProvisioned) continue; // operator runners are off-limits
+        if (a.status !== "idle" || a.idleSince == null || a.idleSince > cutoff) continue; // busy or still fresh
+        if (this.isBusy(a.id)) continue; // a live run is mid-flight despite the status
+        await this.hub.deleteAgent(a.id).catch(() => undefined);
+        retired++;
+      }
+    }
+    return retired;
+  }
+
   /** "Too long" guard: a run that has been actively `running` past config
    *  .runStuckMs (since it started) without finishing is escalated to a human
    *  rather than left to spin. 0 disables. Skips runs already escalated or parked
@@ -1873,14 +1959,16 @@ export class Orchestrator {
         };
       }
       const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
+      const project = await this.store.getProject(task.projectId);
       // The estimate is for AGENT wall-clock time, not human developer time —
       // these differ by an order of magnitude on typical coding tasks (an
       // autonomous agent's 20-minute feature is a person's afternoon). Without
       // this anchor the LLM defaults to its stronger "human developer time"
       // prior and returns estimates 10–30× too high, so we spell it out AND
       // give concrete agent-wall-clock anchors for S/M/L.
+      const taskBody = task.description ? `${task.text}\n\n${task.description}` : task.text;
       const reply = await provider.consult(
-        { task: task.description ? `${task.text}\n\n${task.description}` : task.text, model: agent.model, cwd: config.runnerCwd, apiKey },
+        { task: withInstructions(project?.instructions, taskBody), model: agent.model, cwd: config.runnerCwd, apiKey },
         [
           "You are triaging a backlog item for a coding project.",
           "In 2-3 short lines: is the ask clear, rough effort (S/M/L), and any risks? Be terse.",
@@ -1933,8 +2021,9 @@ export class Orchestrator {
       if (provider.consult && run) {
         const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
         const context = run.log.slice(-30).map((l) => l.line).join("\n").slice(-3000);
+        const project = await this.store.getProject(task.projectId);
         const reply = await provider.consult(
-          { task: task.text, model: agent.model, cwd: config.runnerCwd, apiKey, context },
+          { task: withInstructions(project?.instructions, task.text), model: agent.model, cwd: config.runnerCwd, apiKey, context },
           `Review whether this run satisfies the task "${task.text}". ${REVIEW_OUTPUT_INSTRUCTION}`,
         );
         // The verdict is the MODEL's, read from a structured field — we never

@@ -12,17 +12,23 @@ import {
   TaskRunStatus,
   ChatRequest,
   ConfigureRunnerRequest,
+  CreateFeatureRequest,
+  CreateMilestoneRequest,
   CreateProjectRequest,
   CreateTaskRequest,
   ResolveRequest,
+  UpdateFeatureRequest,
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
+  UpdateWorkspaceSettingsRequest,
   type ServerEvent,
+  type Snapshot,
 } from "@skynet/shared";
 import { hasScope, type Principal, type Scope } from "../auth.js";
 import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
+import { projectScope } from "./project-scope.js";
 import { clampWait, waitForEvent } from "./watch.js";
 
 export interface McpDeps {
@@ -76,6 +82,9 @@ export interface HitlNotification {
 export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   const { operations, bus } = deps;
   const ws = principal.workspaceId;
+  // Project confinement (Principal.projectIds). Unrestricted for humans /
+  // workspace-wide tokens — `restricted` is false and every check below no-ops.
+  const projectAccess = projectScope(principal, operations, ws);
   // `capabilities.logging` is required for `sendLoggingMessage` to fire — the
   // SDK silently drops the notification otherwise. We only *send* logs (HITL
   // push, review push); we do not implement `logging/setLevel`, so the
@@ -85,48 +94,50 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     { instructions: INSTRUCTIONS, capabilities: { logging: {} } },
   );
 
-  // Push HITL raises to the client. Subscribe once per constructed server; the
-  // `close()` override below tears the subscription down so a disconnecting
-  // client doesn't leave a dangling handler on the bus. Only fires for gates
-  // in the caller's workspace (bus.subscribe already scopes to `ws`).
+  // Push a raised HITL gate to the client. Best-effort — swallow send errors
+  // (transport may be closing / not supporting logging); the wait_for_* long-poll
+  // remains the reliable fallback for clients that missed the push.
+  const pushHitl = (event: Extract<ServerEvent, { type: "hitl.raised" }>): void => {
+    const data: HitlNotification = {
+      workspaceId: ws,
+      hitlId: event.item.id,
+      runId: event.item.runId,
+      kind: event.item.kind,
+      risk: event.item.risk,
+      title: event.item.title,
+      // Include the approve tool + args only for clients that hold the scope
+      // — a hint that leaks the action name to an unauth'd client is fine
+      // (the scope check still runs on invoke), but keeping it tight is
+      // better UX (no dead-end suggestion).
+      ...(hasScope(principal, "approver")
+        ? { approverHint: { tool: "resolve_hitl" as const, args: { hitlId: event.item.id } } }
+        : {}),
+    };
+    void server.server
+      .sendLoggingMessage({ level: event.item.risk === "high" ? "warning" : "info", logger: "skynet.hitl", data })
+      .catch(() => undefined);
+  };
+  // A run just entered "needs attention" — distinct logger so clients can route
+  // (a review push isn't necessarily an approval decision — see the run's HITL).
+  const pushReview = (runId: string): void => {
+    void server.server
+      .sendLoggingMessage({ level: "info", logger: "skynet.run", data: { workspaceId: ws, runId, status: "review" as const } })
+      .catch(() => undefined);
+  };
+
+  // Push HITL raises / review flips to the client. Subscribe once per constructed
+  // server; the `close()` override below tears the subscription down so a
+  // disconnecting client doesn't leave a dangling handler on the bus. bus.subscribe
+  // already scopes to the workspace; for a PROJECT-scoped token we additionally
+  // resolve the run's project and drop pushes outside the allowlist (async,
+  // best-effort) so a confined token is never notified about work it can't see.
+  const confined = async (runId: string): Promise<boolean> =>
+    !projectAccess.restricted || (await projectAccess.filterByRun([{ runId }])).length > 0;
   const unsubscribeBus = bus.subscribe(ws, (event) => {
     if (event.type === "hitl.raised" && !event.item.resolvedAt) {
-      const data: HitlNotification = {
-        workspaceId: ws,
-        hitlId: event.item.id,
-        runId: event.item.runId,
-        kind: event.item.kind,
-        risk: event.item.risk,
-        title: event.item.title,
-        // Include the approve tool + args only for clients that hold the scope
-        // — a hint that leaks the action name to an unauth'd client is fine
-        // (the scope check still runs on invoke), but keeping it tight is
-        // better UX (no dead-end suggestion).
-        ...(hasScope(principal, "approver")
-          ? { approverHint: { tool: "resolve_hitl" as const, args: { hitlId: event.item.id } } }
-          : {}),
-      };
-      // Best-effort: swallow send errors (transport may be closing / not
-      // supporting logging). The wait_for_* long-poll remains the reliable
-      // fallback for clients that missed the push.
-      void server.server
-        .sendLoggingMessage({
-          level: event.item.risk === "high" ? "warning" : "info",
-          logger: "skynet.hitl",
-          data,
-        })
-        .catch(() => undefined);
+      void confined(event.item.runId).then((allow) => allow && pushHitl(event));
     } else if (event.type === "run.status" && event.status === "review") {
-      // A run just entered "needs attention" — same push shape. Distinct
-      // logger so clients can route (a review push isn't necessarily an
-      // approval decision — see the run's HITL for the actual gate).
-      void server.server
-        .sendLoggingMessage({
-          level: "info",
-          logger: "skynet.run",
-          data: { workspaceId: ws, runId: event.runId, status: "review" as const },
-        })
-        .catch(() => undefined);
+      void confined(event.runId).then((allow) => allow && pushReview(event.runId));
     }
   });
   // Preserve the SDK's own `close()` and add our unsubscribe on top of it.
@@ -143,19 +154,39 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
 
   // Register a scope-gated tool. Enforcing scope here (not just at token mint)
   // means a stolen/over-broad token still can't exceed its granted capabilities.
+  //
+  // opts.filter marks a workspace-wide READ: its result is narrowed to the
+  // token's allowed projects before returning. Any other tool that mutates or
+  // names a specific record is GATED — a project-scoped token must resolve to an
+  // allowed project or the call is refused (see project-scope.ts). opts.selfGuarded
+  // opts a tool out of the wrapper's gate/filter because it enforces confinement
+  // in its own body (the optional-runId waits).
   const tool = <S extends Shape>(
     name: string,
     scope: Scope,
     description: string,
     inputSchema: S,
     run: (args: Args<S>) => Promise<unknown> | unknown,
-    readOnly = false,
+    opts: {
+      readOnly?: boolean;
+      filter?: (result: unknown) => Promise<unknown> | unknown;
+      selfGuarded?: boolean;
+    } = {},
   ): void => {
     const cb = async (args: unknown): Promise<CallToolResult> => {
       if (!hasScope(principal, scope)) {
         return err(`Forbidden: "${name}" requires the "${scope}" scope, which this token was not granted.`);
       }
       try {
+        if (projectAccess.restricted && !opts.selfGuarded) {
+          if (opts.filter) {
+            // Workspace-wide read → confine the result to allowed projects.
+            return ok(await opts.filter(await run(args as Args<S>)));
+          }
+          // Mutation / id-scoped call → gate on the project it targets.
+          const denied = await projectAccess.gate((args ?? {}) as Record<string, unknown>);
+          if (denied) return err(denied);
+        }
         return ok(await run(args as Args<S>));
       } catch (e) {
         return err(errMsg(e));
@@ -166,20 +197,57 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     // cast is safe: the callback ignores `extra` and returns a CallToolResult.
     server.registerTool(
       name,
-      { description, inputSchema, annotations: { readOnlyHint: readOnly } },
+      { description, inputSchema, annotations: { readOnlyHint: opts.readOnly ?? false } },
       cb as unknown as ToolCallback<S>,
     );
   };
 
   // ── observe ───────────────────────────────────────────────────────────────
-  tool("get_snapshot", "observe", "Full workspace snapshot: projects, runs, fleet runners, HITL queue, providers.", {}, () => operations.snapshot(ws), true);
-  tool("list_projects", "observe", "List the workspace's projects.", {}, () => operations.listProjects(ws), true);
-  tool("list_agents", "observe", "List the workspace's runs (running, waiting, in review, done).", {}, () => operations.listRuns(ws), true);
-  tool("get_agent", "observe", "Get one agent including its plan and recent activity log.", { runId: z.string() }, (a) => operations.getRun(ws, a.runId), true);
-  tool("list_hitl", "observe", "List the open human-in-the-loop queue (decisions awaiting an operator).", {}, () => operations.listHitl(ws), true);
-  tool("list_audit", "observe", "List resolved HITL decisions, newest first (the audit trail).", {}, () => operations.listAudit(ws), true);
+  // The workspace-wide reads carry a `filter` so a project-scoped token sees
+  // only its own projects' data; `get_agent` names a run and is gated instead.
+  tool("get_snapshot", "observe", "Full workspace snapshot: projects, runs, fleet runners, HITL queue, providers.", {}, () => operations.snapshot(ws), {
+    readOnly: true,
+    filter: (r) => projectAccess.filterSnapshot(r as Snapshot),
+  });
+  tool("list_projects", "observe", "List the workspace's projects.", {}, () => operations.listProjects(ws), {
+    readOnly: true,
+    filter: (r) => projectAccess.filterProjects(r as { id: string }[]),
+  });
+  tool("list_agents", "observe", "List the workspace's runs (running, waiting, in review, done).", {}, () => operations.listRuns(ws), {
+    readOnly: true,
+    filter: (r) => projectAccess.filterByProjectId(r as { projectId: string }[]),
+  });
+  tool("get_agent", "observe", "Get one agent including its plan and recent activity log.", { runId: z.string() }, (a) => operations.getRun(ws, a.runId), { readOnly: true });
+  tool("list_hitl", "observe", "List the open human-in-the-loop queue (decisions awaiting an operator).", {}, () => operations.listHitl(ws), {
+    readOnly: true,
+    filter: (r) => projectAccess.filterByRun(r as { runId: string }[]),
+  });
+  tool("list_audit", "observe", "List resolved HITL decisions, newest first (the audit trail).", {}, () => operations.listAudit(ws), {
+    readOnly: true,
+    filter: (r) => projectAccess.filterByRun(r as { runId: string }[]),
+  });
+  tool(
+    "get_settings",
+    "observe",
+    "Read the workspace's non-secret settings: the fleet auto-scale policy (autoProvisionRunners + maxRunners) and which providers have a usable key. Project settings live on each project (update_project); secrets are never exposed via MCP.",
+    {},
+    async () => {
+      const [fleet, providers] = await Promise.all([operations.getWorkspaceSettings(ws), operations.listProviders(ws)]);
+      return { fleet, providers: providers.map((p) => ({ id: p.id, name: p.name, available: p.available })) };
+    },
+    // Non-secret workspace metadata (already visible in get_snapshot), so a
+    // project-scoped token may read it too — skip the workspace-level gate.
+    { readOnly: true, selfGuarded: true },
+  );
 
   // ── author ──────────────────────────────────────────────────────────────
+  tool(
+    "update_settings",
+    "author",
+    "Update the workspace fleet policy: autoProvisionRunners (auto-add a runner, cloned from a busy one on an allowed key, when a task has none free) and maxRunners (hard cap on fleet size; 0 = no cap). Workspace-level — a project-scoped token cannot change it.",
+    UpdateWorkspaceSettingsRequest.shape,
+    (a) => operations.updateWorkspaceSettings(ws, a),
+  );
   tool("create_project", "author", "Create a project. Bind it to a repo (\"owner/repo\" via `repo`, or an existing repo's git URL via `repoUrl` to clone it) to enable the PR flow.", CreateProjectRequest.shape, (a) => operations.createProject(ws, a));
   tool("update_project", "author", "Update a project's name, goal, status, or bound repo.", { projectId: z.string(), ...UpdateProjectRequest.shape }, (a) => {
     const { projectId, ...patch } = a;
@@ -189,9 +257,21 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     const { projectId, ...body } = a;
     return operations.createTask(ws, projectId, body);
   });
-  tool("update_task", "author", "Update a task's text or state (backlog | assigned | done).", { taskId: z.string(), ...UpdateTaskRequest.shape }, (a) => {
+  tool("update_task", "author", "Update a task's text, state (backlog | assigned | done), or roadmap link (featureId / milestoneId).", { taskId: z.string(), ...UpdateTaskRequest.shape }, (a) => {
     const { taskId, ...patch } = a;
     return operations.updateTask(ws, taskId, patch);
+  });
+  tool("create_feature", "author", "Create a feature (a task grouping) in a project. Optionally roll it up into a milestone via `milestoneId`.", { projectId: z.string(), ...CreateFeatureRequest.shape }, (a) => {
+    const { projectId, ...body } = a;
+    return operations.createFeature(ws, projectId, body);
+  });
+  tool("update_feature", "author", "Update a feature's name, description, status, milestone (milestoneId), or archived flag.", { featureId: z.string(), ...UpdateFeatureRequest.shape }, (a) => {
+    const { featureId, ...patch } = a;
+    return operations.updateFeature(ws, featureId, patch);
+  });
+  tool("create_milestone", "author", "Create a milestone (a dated roadmap checkpoint) in a project.", { projectId: z.string(), ...CreateMilestoneRequest.shape }, (a) => {
+    const { projectId, ...body } = a;
+    return operations.createMilestone(ws, projectId, body);
   });
   tool("assign_task", "author", "Assign a task to a fresh agent on an idle runner. Idempotent: re-assigning an already-assigned task returns the existing agent.", { projectId: z.string(), taskId: z.string() }, (a) => operations.assignTask(ws, a.projectId, a.taskId));
   tool("message_agent", "author", "Send a chat message to an agent and get its reply.", { runId: z.string(), ...ChatRequest.shape }, async (a) => ({ reply: await operations.chatAgent(ws, a.runId, a.text) }));
@@ -201,7 +281,23 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     return { stopped: a.runId };
   });
   tool("archive_agent", "author", "Archive (or restore) an agent — hides it from the board without deleting it.", { runId: z.string(), archived: z.boolean().optional() }, (a) => operations.archiveAgent(ws, a.runId, a.archived ?? true));
-  tool("configure_runner", "author", "Add a fleet runner (a provider + model slot that can execute one agent).", ConfigureRunnerRequest.shape, (a) => operations.configureRunner(ws, a));
+  tool(
+    "configure_runner",
+    "author",
+    "Add a fleet runner (a provider + model slot that can execute one agent). A project-scoped token may add capacity, but only on a provider key enabled for one of its projects.",
+    ConfigureRunnerRequest.shape,
+    async (a) => {
+      // A project-scoped token CAN add fleet capacity (so it never starves) — but
+      // only on a key its project(s) are allowed to run on. Enforced here rather
+      // than via the generic gate (which would blanket-deny a keyless mutation).
+      if (projectAccess.restricted) {
+        const denied = await projectAccess.gateRunnerConfig(a.provider, a.credentialId ?? null);
+        if (denied) throw new Error(denied);
+      }
+      return operations.configureRunner(ws, a);
+    },
+    { selfGuarded: true },
+  );
   tool("update_runner", "author", "Update a fleet runner's model or name.", { runnerId: z.string(), ...UpdateRunnerRequest.shape }, (a) => {
     const { runnerId, ...patch } = a;
     return operations.updateAgent(ws, runnerId, patch);
@@ -224,7 +320,14 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     "Block until a HITL item is raised (optionally for a specific agent), or until timeoutMs elapses. Returns an already-open item immediately if one matches.",
     { runId: z.string().optional(), timeoutMs: z.number().int().positive().optional() },
     async (a) => {
-      const open = (await operations.listHitl(ws)).filter((h) => !h.resolution && (!a.runId || h.runId === a.runId));
+      // Confinement: a scoped token waiting on a specific run must be allowed it;
+      // a broad wait only ever surfaces gates from its allowed projects.
+      if (projectAccess.restricted && a.runId) {
+        const denied = await projectAccess.gate({ runId: a.runId });
+        if (denied) throw new Error(denied);
+      }
+      let open = (await operations.listHitl(ws)).filter((h) => !h.resolution && (!a.runId || h.runId === a.runId));
+      open = await projectAccess.filterByRun(open);
       if (open.length > 0) return { hitl: open[0], waited: false };
       const event = await waitForEvent(
         bus,
@@ -233,9 +336,12 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
         clampWait(a.timeoutMs),
       );
       if (!event) return { timedOut: true };
-      return { hitl: (event as Extract<ServerEvent, { type: "hitl.raised" }>).item, waited: true };
+      const item = (event as Extract<ServerEvent, { type: "hitl.raised" }>).item;
+      // A gate raised on a project outside the allowlist isn't this token's to see.
+      if (projectAccess.restricted && (await projectAccess.filterByRun([item])).length === 0) return { timedOut: true };
+      return { hitl: item, waited: true };
     },
-    true,
+    { readOnly: true, selfGuarded: true },
   );
   tool(
     "wait_for_agent",
@@ -258,7 +364,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
       const current = await operations.getRun(ws, a.runId);
       return event ? { agent: current, waited: true } : { timedOut: true, agent: current };
     },
-    true,
+    { readOnly: true },
   );
 
   // ── resource: the live workspace snapshot ────────────────────────────────
@@ -270,7 +376,9 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     { title: "Workspace snapshot", description: "Live projects, runs, fleet runners, HITL queue, and providers.", mimeType: "application/json" },
     async (uri) => {
       if (!hasScope(principal, "observe")) throw new Error(`Forbidden: reading ${uri.href} requires the "observe" scope.`);
-      const snapshot = await operations.snapshot(ws);
+      // Same confinement as get_snapshot — a project-scoped token reads only its
+      // own projects' slice of the workspace.
+      const snapshot = await projectAccess.filterSnapshot(await operations.snapshot(ws));
       return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(snapshot, null, 2) }] };
     },
   );

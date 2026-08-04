@@ -636,6 +636,10 @@ button.lg-arow:hover { background: var(--raised); }
 .swb-seg-pending { background: none; border-top: 2px dashed color-mix(in oklch, var(--faint), transparent 45%); height: 0; }
 .swb-st.sw-queued { width: 10px; height: 10px; background: var(--panel); border: 2px dashed color-mix(in oklch, var(--faint), transparent 25%); cursor: default; }
 .sw-label-queued { color: color-mix(in oklch, var(--faint), transparent 15%); font-style: italic; }
+/* "+N more" overflow chip — collapses a long backlog into one marker so the
+   diagram stays readable; solid dot, small pill label. */
+.swb-st.sw-more { width: 8px; height: 8px; background: color-mix(in oklch, var(--faint), transparent 40%); border: none; border-radius: 50%; cursor: default; }
+.sw-label-more { color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
 /* an idle agent (a track with only a queue) / the shared lane's marker */
 .sw-dot-idle { width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--faint); background: none; display: inline-block; flex: none; }
 .swb-name-lane { opacity: 0.85; }
@@ -1033,6 +1037,18 @@ button.kb-done:hover { opacity: 1; }
 .proj-approval { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-right: 4px; }
 .proj-approval-label { font-size: 11px; color: var(--faint); letter-spacing: 0.03em; }
 .proj-approval-select { font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; }
+/* Project runner-key confinement — a compact <details> popover in the header. */
+.proj-keys { position: relative; }
+.proj-keys-summary { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; list-style: none; }
+.proj-keys-summary::-webkit-details-marker { display: none; }
+.proj-keys-value { color: var(--muted); }
+.proj-keys[open] .proj-keys-summary { border-color: var(--accent); }
+.proj-keys-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 220px; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 10px 30px rgb(0 0 0 / 0.35); }
+.proj-keys-hint { font-size: 11px; color: var(--faint); margin-bottom: 4px; line-height: 1.4; }
+.proj-keys-item { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink); cursor: pointer; padding: 2px 0; }
+.proj-keys-item input { flex: none; }
+.proj-keys-name { flex: 1; }
+.proj-keys-fp { font-size: 10.5px; color: var(--faint); }
 .proj-approval-rules { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0; }
 .proj-approval-rules-label { font-size: 11px; color: var(--faint); letter-spacing: 0.03em; margin-right: 2px; }
 .approval-rule-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; font-size: 11.5px; padding: 2px 4px 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--raised); color: var(--muted); }
@@ -1164,6 +1180,10 @@ button.kb-done:hover { opacity: 1; }
 .settings-cred-add { align-self: flex-start; color: var(--muted); }
 .settings-cred-new { gap: 8px; }
 .settings-cred-nameinput { max-width: 260px; }
+/* Imported-task source link + sync note */
+.kb-source { font-size: 10.5px; color: var(--faint); text-decoration: none; white-space: nowrap; flex: none; }
+.kb-source:hover { color: var(--accent); }
+.proj-sync-note { font-size: 11px; color: var(--faint); align-self: center; }
 /* GitHub additional-accounts (Integrations) */
 .gh-acct-list { margin: 8px 0; }
 .gh-acct-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
@@ -1284,12 +1304,29 @@ button.kb-done:hover { opacity: 1; }
 .mcp-access > .settings-setup-sub { margin-bottom: var(--sp); max-width: none; }
 .mcp-mint { gap: 13px; }
 .mcp-mint-line { display: flex; align-items: center; gap: 8px; }
+/* Fleet auto-scale controls (Settings). */
+.fleet-auto { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; margin-top: 12px; }
+.fleet-auto-max { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.fleet-auto-max-label { font-size: 11px; color: var(--faint); letter-spacing: 0.03em; }
+.fleet-auto-max-input { width: 78px; }
+.fleet-auto-max-hint { font-size: 10.5px; color: var(--faint); }
 .mcp-scopes { display: flex; flex-direction: column; gap: 7px; }
 .mcp-scope { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); cursor: pointer; }
 .mcp-scope input { flex: none; }
 .mcp-scope-name { font-weight: 600; min-width: 68px; }
 .mcp-scope-hint { color: var(--faint); }
 .mcp-scope-warn .mcp-scope-name, .mcp-scope-warn .mcp-scope-hint { color: var(--warn); }
+.mcp-projects { margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 8px; }
+.mcp-projects-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.mcp-projects-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.mcp-projects-hint { font-size: 11px; color: var(--faint); }
+.mcp-project-list { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.mcp-project { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
+.mcp-project input { flex: none; }
+.mcp-project-on .mcp-project-name { font-weight: 600; color: var(--accent); }
+.mcp-tok-projects { display: flex; gap: 5px; flex-wrap: wrap; }
+.mcp-badge-ws { color: var(--faint); background: var(--panel); border-color: var(--line); }
+.mcp-badge-proj { color: var(--text); background: color-mix(in oklch, var(--text), transparent 90%); border-color: var(--line); }
 .mcp-reveal { margin-top: 12px; background: var(--panel); border: 1px solid color-mix(in oklch, var(--ok), transparent 55%); border-left: 3px solid var(--ok); border-radius: 10px; padding: 13px 15px; display: flex; flex-direction: column; gap: 11px; }
 .mcp-reveal-head { display: flex; align-items: center; justify-content: space-between; }
 .mcp-token-line { display: flex; align-items: center; gap: 8px; }
@@ -2351,4 +2388,44 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* ─── Project-level instructions ─────────────────────────────────────── */
+.projview-instructions-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.projview-instructions-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: normal;
+  color: var(--muted);
+  opacity: 0.75;
+}
+.projview-instructions {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.proj-instructions-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--accent, #6b5bff);
+  background: var(--bg-soft, rgba(107,91,255,0.08));
+  padding: 2px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-line, rgba(107,91,255,0.28));
+  cursor: pointer;
+  margin-top: 2px;
+  text-align: left;
+  max-width: 100%;
+}
+.proj-instructions-chip:hover {
+  background: var(--bg-soft, rgba(107,91,255,0.14));
 }

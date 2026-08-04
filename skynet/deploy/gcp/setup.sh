@@ -47,6 +47,15 @@ if [ ! -f terraform.tfvars ]; then
   read -r -p "  Machine type [e2-small] (e2-medium for heavier builds): " MT_IN; MT_IN=${MT_IN:-e2-small}
   read -r -p "  Allow control (approve/create/etc.) over Telegram? [Y/n]: " TC_IN
   TC=true; [[ "${TC_IN:-y}" =~ ^[Nn] ]] && TC=false
+  # Public UI over HTTPS (drop the IAP tunnel for humans). Needs a real domain
+  # (Let's Encrypt won't issue for a bare IP) whose A-record points at the VM's
+  # static IP, and adds a Telegram-OTP second factor to the login.
+  read -r -p "  Serve the UI publicly over HTTPS at a domain (public_ui)? [Y/n]: " PUI_IN
+  PUI=true; [[ "${PUI_IN:-y}" =~ ^[Nn] ]] && PUI=false
+  if $PUI; then
+    read -r -p "  Public domain (A-record → the VM's static IP) [skynet.zubi.ai]: " DOMAIN_IN; DOMAIN_IN=${DOMAIN_IN:-skynet.zubi.ai}
+    read -r -p "  Let's Encrypt (ACME) email [${EMAIL_IN}]: " ACME_IN; ACME_IN=${ACME_IN:-$EMAIL_IN}
+  fi
   cat > terraform.tfvars <<TFV
 project_id       = "${PROJECT_IN}"
 region           = "${REGION_IN}"
@@ -57,6 +66,13 @@ admin_email      = "${EMAIL_IN}"
 admin_workspace  = "skynet"
 telegram_control = ${TC}
 TFV
+  if $PUI; then
+    cat >> terraform.tfvars <<TFV
+public_ui        = true
+mcp_domain       = "${DOMAIN_IN}"
+acme_email       = "${ACME_IN}"
+TFV
+  fi
   echo "  ✓ wrote terraform.tfvars (edit it anytime; re-run to reuse)"
 fi
 
@@ -147,31 +163,63 @@ say "▸ Rolling the VM onto the new image, then waiting for it to serve…"
 APP_PORT=$(echo 'var.app_port' | terraform console)
 ZONE=$(echo 'var.zone' | terraform console | tr -d '"')
 VM=$(terraform output -raw vm_name)
+PUBLIC_UI=$(echo 'var.public_ui' | terraform console)
+DOMAIN=$(echo 'var.mcp_domain' | terraform console | tr -d '"')
 ssh_vm() { gcloud compute ssh "$VM" --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap --quiet --command="$1" 2>/dev/null; }
 # terraform apply updates the VM's startup-script metadata but does NOT re-pull
-# on a RUNNING instance: the image tag is always :latest, so there's no diff for
-# it to act on, and an updated deploy would silently keep serving the old image.
-# Re-run the startup script in place — it re-logins to the registry with a fresh
-# token, pulls :latest, and recreates the container. (A brand-new VM already did
-# this on first boot; re-running is idempotent.)
+# on a RUNNING instance (the image tag is always :latest — no diff to act on).
+# Re-run the startup script in place: fresh registry login + pull + recreate.
 echo "  re-running startup on the VM (fresh registry login + pull + restart)…"
 ssh_vm "sudo google_metadata_script_runner startup" >/dev/null 2>&1 \
-  || echo "  (couldn't re-run startup over IAP SSH — the VM keeps serving the previous image until it's rebooted)"
+  || echo "  (couldn't re-run startup over IAP SSH — reboot the VM to pick up the new image)"
+
+# Health gate. public_ui: check the PUBLIC url — no tunnel, and it proves Caddy +
+# Let's Encrypt actually serve (the app being up on :8080 is NOT enough — Caddy
+# can be wedged with no cert). Otherwise check the app over the IAP tunnel.
+poll_public() {
+  for _ in $(seq 1 30); do
+    [ "$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' "https://${DOMAIN}/" 2>/dev/null)" = "200" ] && return 0
+    sleep 10
+  done
+  return 1
+}
 HEALTHY=""
-for _ in $(seq 1 30); do
-  if ssh_vm "curl -fsS -o /dev/null http://localhost:${APP_PORT}"; then HEALTHY=1; break; fi
-  sleep 12
-done
-if [ -n "$HEALTHY" ]; then
-  echo "  ✓ app is serving on :${APP_PORT}"
+if [ "$PUBLIC_UI" = "true" ]; then
+  say "▸ Waiting for https://${DOMAIN} to serve (Caddy obtains the Let's Encrypt cert)…"
+  if poll_public; then
+    HEALTHY=1
+  else
+    # Caddy can come up wedged after an in-place startup re-run; a reboot clears
+    # it reliably. Reset once and re-check before giving up.
+    echo "  ✗ not serving yet — rebooting once to clear a wedged Caddy…"
+    gcloud compute instances reset "$VM" --zone="$ZONE" --project="$PROJECT" >/dev/null 2>&1 || true
+    poll_public && HEALTHY=1
+  fi
 else
-  echo "  ✗ app is not answering on :${APP_PORT}. Container state + recent logs:"
-  ssh_vm "sudo docker ps -a --format '{{.Names}} | {{.Status}}'; echo '--- logs ---'; sudo docker logs --tail=40 skynet 2>&1" \
-    || echo "    (couldn't reach the VM over IAP SSH — check 'gcloud auth list' and your IAP access)"
-  echo "  Fix the cause (usually a missing secret/env), then re-run this script — the VM keeps retrying the container meanwhile."
+  for _ in $(seq 1 30); do
+    if ssh_vm "curl -fsS -o /dev/null http://localhost:${APP_PORT}"; then HEALTHY=1; break; fi
+    sleep 12
+  done
+fi
+if [ -n "$HEALTHY" ]; then
+  [ "$PUBLIC_UI" = "true" ] && echo "  ✓ serving at https://${DOMAIN}" || echo "  ✓ app is serving on :${APP_PORT}"
+else
+  echo "  ✗ not serving yet. Container state + recent logs:"
+  ssh_vm "sudo docker ps -a --format '{{.Names}} | {{.Status}}'; echo '--- app ---'; sudo docker logs --tail=30 skynet 2>&1; echo '--- caddy ---'; sudo docker logs --tail=30 caddy 2>&1" \
+    || echo "    (couldn't reach the VM over IAP SSH — run 'gcloud auth login', then: gcloud compute ssh ${VM} --zone=${ZONE} --project=${PROJECT} --tunnel-through-iap --command='sudo docker logs --tail=30 caddy')"
+  echo "  Fix the cause, then re-run this script."
 fi
 
-# ── 7. Reach the board + optionally open the tunnel now ──────────────────────
+# ── 7. Reach the board ───────────────────────────────────────────────────────
+if [ "$PUBLIC_UI" = "true" ]; then
+  if [ -n "$HEALTHY" ]; then say "✅ Done — the board is live at https://${DOMAIN}"; else say "⚠️  Provisioned, but https://${DOMAIN} isn't serving yet (see the logs above)."; fi
+  echo "  Open https://${DOMAIN} and log in — password, then a one-time code arrives on Telegram (MFA)."
+  echo "  Recovery codes: /data/mfa-recovery-codes.txt on the VM (SSH in, save them safely, then delete the file)."
+  echo "  For an agent: mint a token in Settings → API tokens and call https://${DOMAIN}/mcp with 'Authorization: Bearer <token>'."
+  echo "  Control it anytime from Telegram: /status, /task, approve gates, /stop."
+  exit 0
+fi
+# IAP-only mode: offer the private SSH-forward tunnel.
 if [ -n "$HEALTHY" ]; then say "✅ Done — the app is live."; else say "⚠️  Provisioned, but the app isn't healthy yet (see the logs above)."; fi
 TUNNEL=$(terraform output -raw iap_tunnel_command)
 PORT=$(echo 'var.local_port' | terraform console)

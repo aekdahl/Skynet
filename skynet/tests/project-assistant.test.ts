@@ -22,6 +22,8 @@ const ctx: ProjectActionContext = {
     { id: "a-1", name: "Ada" },
     { id: "a-2", name: "Babbage" },
   ],
+  features: [{ id: "f-1", name: "Checkout" }],
+  milestones: [{ id: "m-1", name: "Public beta" }],
 };
 
 describe("validateProjectAction — whitelist + project-scoped id resolution", () => {
@@ -106,6 +108,37 @@ describe("validateProjectAction — whitelist + project-scoped id resolution", (
     expect(validateProjectAction({ kind: "set_assignment", taskId: "t-2", mode: "unassigned" }, ctx)).toMatchObject({ kind: "set_assignment", mode: "unassigned", agentIds: [] });
     expect(validateProjectAction({ kind: "set_assignment", taskId: "t-2", mode: "everyone" }, ctx)).toBeNull();
     expect(validateProjectAction({ kind: "set_assignment", taskId: "ghost", mode: "any" }, ctx)).toBeNull();
+  });
+
+  it("add_feature — name required; optional milestone must be known", () => {
+    expect(validateProjectAction({ kind: "add_feature", name: "Onboarding" }, ctx)).toMatchObject({ kind: "add_feature", name: "Onboarding" });
+    expect(validateProjectAction({ kind: "add_feature", name: "  " }, ctx)).toBeNull();
+    // Link to a known milestone at creation:
+    expect(validateProjectAction({ kind: "add_feature", name: "Onboarding", milestoneId: "m-1" }, ctx)).toMatchObject({ kind: "add_feature", milestoneId: "m-1" });
+    // An unknown milestone id is refused, not guessed.
+    expect(validateProjectAction({ kind: "add_feature", name: "Onboarding", milestoneId: "m-999" }, ctx)).toBeNull();
+  });
+
+  it("add_milestone — name required; targetAt must be a number when given", () => {
+    expect(validateProjectAction({ kind: "add_milestone", name: "GA" }, ctx)).toMatchObject({ kind: "add_milestone", name: "GA" });
+    const dated = validateProjectAction({ kind: "add_milestone", name: "GA", targetAt: 1893456000000 }, ctx);
+    expect(dated).toMatchObject({ kind: "add_milestone", targetAt: 1893456000000 });
+    expect(validateProjectAction({ kind: "add_milestone", name: "GA", targetAt: "soon" }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "add_milestone", name: "" }, ctx)).toBeNull();
+  });
+
+  it("set_task_feature — links a task to a KNOWN feature (or null to unlink)", () => {
+    expect(validateProjectAction({ kind: "set_task_feature", taskId: "t-1", featureId: "f-1" }, ctx)).toMatchObject({ kind: "set_task_feature", taskId: "t-1", featureId: "f-1" });
+    expect(validateProjectAction({ kind: "set_task_feature", taskId: "t-1", featureId: null }, ctx)).toMatchObject({ featureId: null });
+    expect(validateProjectAction({ kind: "set_task_feature", taskId: "t-1", featureId: "f-999" }, ctx)).toBeNull(); // unknown feature
+    expect(validateProjectAction({ kind: "set_task_feature", taskId: "ghost", featureId: "f-1" }, ctx)).toBeNull(); // unknown task
+  });
+
+  it("set_feature_milestone — rolls a KNOWN feature into a KNOWN milestone (or null)", () => {
+    expect(validateProjectAction({ kind: "set_feature_milestone", featureId: "f-1", milestoneId: "m-1" }, ctx)).toMatchObject({ kind: "set_feature_milestone", featureId: "f-1", milestoneId: "m-1" });
+    expect(validateProjectAction({ kind: "set_feature_milestone", featureId: "f-1", milestoneId: null }, ctx)).toMatchObject({ milestoneId: null });
+    expect(validateProjectAction({ kind: "set_feature_milestone", featureId: "f-999", milestoneId: "m-1" }, ctx)).toBeNull(); // unknown feature
+    expect(validateProjectAction({ kind: "set_feature_milestone", featureId: "f-1", milestoneId: "m-999" }, ctx)).toBeNull(); // unknown milestone
   });
 
   it("every validated action carries a human summary for the confirm chip", () => {

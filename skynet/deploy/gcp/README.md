@@ -101,6 +101,38 @@ curl -s https://mcp.example.com/mcp -H "Authorization: Bearer <MCP_TOKEN>" \
 > private cross-project client instead of a public allowlist, see
 > `../gcp-mcp-https` (its "Fully private alternative").
 
+## Serve the whole app publicly (`public_ui`) — no IAP, just a login
+
+If the IAP tunnel is more friction than it's worth (it needs `gcloud`, and the
+login drops on your org's reauth interval), serve the **whole app** over HTTPS at
+a real domain instead — like normal SaaS. The **UI** is gated by the app login
+(+ Telegram MFA); **`/mcp`** by a Bearer **service token** you mint in Settings.
+IAP stays only for **SSH** (break-glass — you can always get in to disable MFA).
+
+```bash
+# 1. Reserve the static IP and point your A-record at it BEFORE applying:
+gcloud compute addresses create skynet-public-ip --region=europe-west1 --project=YOUR_PROJECT
+gcloud compute addresses describe skynet-public-ip --region=europe-west1 --project=YOUR_PROJECT --format='value(address)'
+#    → create  skynet.example.com  A  <that IP>  at your DNS host
+```
+```hcl
+# terraform.tfvars   (mutually exclusive with enable_mcp_https)
+public_ui  = true
+mcp_domain = "skynet.example.com"
+acme_email = "you@example.com"
+```
+
+Then `./setup.sh` (or `terraform apply`). Caddy gets a Let's Encrypt cert and
+serves the app on `:443`; open `https://skynet.example.com`, log in, done — no
+tunnel, no reauth. WebSocket runs cleanly through Caddy (no more "loading your
+workspace…"). For `/mcp`, mint a scoped token in **Settings → API tokens** and
+send it as `Authorization: Bearer …`.
+
+> **Posture shift:** this trades Google IAP's identity gate for the app's own
+> login as the only human gate — acceptable for a single-user box **with MFA on**
+> and the existing rate-limiting. Only `:443` (+ `:80` for ACME) are public; SSH
+> stays IAP-gated. Recovery codes + SSH break-glass mean you can't get locked out.
+
 ## Control from your phone
 Set the Telegram secrets and message your bot (`/status`, `/task …`, approve gates, `/stop`, `/quit`). Outbound-only, so it works with the VM fully locked down. See `../../docs/…` / the in-app Settings → "Remote control · Telegram" for bot setup.
 

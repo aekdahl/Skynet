@@ -18,15 +18,20 @@ output "set_secrets_hint" {
   description = "How to load the Secret Manager values (never stored in Terraform)."
 }
 
-# ── Public /mcp door (only meaningful when enable_mcp_https) ─────────────────
+# ── Public endpoints (enable_mcp_https = narrow /mcp door; public_ui = whole app)
+output "board_url" {
+  value       = var.public_ui ? "https://${var.mcp_domain}" : "(public_ui=false — reach the board over the IAP tunnel; see iap_tunnel_command)"
+  description = "Public web board URL (public_ui). Log in with admin_email + the admin-password secret (+ MFA)."
+}
+
 output "mcp_url" {
-  value       = var.enable_mcp_https ? "https://${var.mcp_domain}/mcp" : "(enable_mcp_https=false — the box is IAP-only; no public MCP endpoint)"
-  description = "The public MCP endpoint for agents that can't use the IAP tunnel. Bearer-gated + source-IP allowlisted. Empty-ish unless enable_mcp_https."
+  value       = (var.enable_mcp_https || var.public_ui) ? "https://${var.mcp_domain}/mcp" : "(no public endpoint — the box is IAP-only)"
+  description = "The public MCP endpoint. Bearer-gated (Settings service token under public_ui; the mcp-token secret under enable_mcp_https)."
 }
 
 output "mcp_vm_ip" {
-  value       = var.enable_mcp_https ? one(google_compute_address.mcp[*].address) : "(no static IP — enable_mcp_https is off)"
-  description = "Static external IP to point the mcp_domain A-record at, BEFORE apply/first boot, so Caddy can complete the ACME challenge. Only reserved when enable_mcp_https."
+  value       = var.public_ui ? one(data.google_compute_address.public[*].address) : (var.enable_mcp_https ? one(google_compute_address.mcp[*].address) : "(no static IP — IAP-only)")
+  description = "Static external IP for the mcp_domain A-record (set it BEFORE apply so Caddy can complete ACME). public_ui uses the pre-reserved <name_prefix>-public-ip."
 }
 
 output "mcp_auth_header" {

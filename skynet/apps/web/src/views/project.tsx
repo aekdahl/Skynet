@@ -279,6 +279,18 @@ function TaskCard({
       <div className="kb-card-top">
         {run && <StatusDot status={run.status} />}
         <span className="kb-task" title={task.description ?? undefined}>{task.text}</span>
+        {task.source?.kind === "github_issue" && (
+          <a
+            className="kb-source mono"
+            href={task.source.url || undefined}
+            target="_blank"
+            rel="noreferrer"
+            onClick={stop}
+            title={`Imported from GitHub issue ${task.source.repo}#${task.source.number} — status syncs back when enabled`}
+          >
+            #{task.source.number} ↗
+          </a>
+        )}
         {locked && (
           <span
             className="kb-lock"
@@ -661,30 +673,84 @@ function ProjectGithubAccount({ project, onChange }: { project: Project; onChang
   );
 }
 
-// Which stored LLM provider credential this project's agent runs bill to. Only
-// meaningful once NAMED provider keys exist (a second account, added in Settings);
-// applied only when the credential matches the run's provider. "Default (per
-// agent)" → the agent's own credential / the provider default.
-function ProjectLlmAccount({ project, onChange }: { project: Project; onChange: (id: string | null) => void }) {
-  const [creds, setCreds] = useState<SecretMeta[]>([]);
+// Which provider keys this project may run agents on. Empty = any workspace key
+// (the default). Narrowing it confines BOTH what the fleet assigns here and what
+// a project-scoped MCP token may spin up. Hidden until there's a real choice
+// (at least one usable key), to keep the header clean.
+function ProjectRunnerKeys({ project, onChange }: { project: Project; onChange: (ids: string[]) => void }) {
+  const { providers } = useStore();
+  const [secrets, setSecrets] = useState<SecretMeta[]>([]);
   useEffect(() => {
-    api.fetchSecrets().then(({ secrets }) => setCreds(secrets.filter((s) => s.provider !== "github" && !s.isDefault))).catch(() => setCreds([]));
+    api.fetchSecrets().then(({ secrets }) => setSecrets(secrets.filter((s) => s.provider !== "github"))).catch(() => setSecrets([]));
   }, []);
-  if (creds.length === 0) return null; // only the default keys exist — nothing to pin
+  const provName = (id: string) => providers.find((p) => p.id === id)?.name ?? id;
+  // Candidates = every stored runner key, plus each available provider's DEFAULT
+  // key (id === provider) that isn't already a stored row (covers env-only keys).
+  const seen = new Set(secrets.map((s) => s.id));
+  const candidates = [
+    ...secrets.map((s) => ({ id: s.id, label: s.name || `${provName(s.provider)}${s.isDefault ? " default" : " key"}`, last4: s.last4 as string | undefined })),
+    ...providers.filter((p) => p.available && !seen.has(p.id)).map((p) => ({ id: p.id, label: `${p.name} default`, last4: undefined })),
+  ];
+  if (candidates.length === 0) return null; // nothing to confine to yet
+
+  const enabled = project.enabledRunnerCredentialIds;
+  const toggle = (id: string) => onChange(enabled.includes(id) ? enabled.filter((x) => x !== id) : [...enabled, id]);
+  const summary = enabled.length === 0 ? "All keys" : `${enabled.length} key${enabled.length === 1 ? "" : "s"}`;
   return (
-    <label className="proj-approval" title="Which provider credential this project's agent runs bill to — applied when it matches the run's provider. Manage keys in Settings.">
-      <span className="proj-approval-label mono">LLM key</span>
-      <select
-        className="proj-approval-select"
-        value={project.llmCredentialId ?? ""}
-        onChange={(e) => onChange(e.target.value || null)}
-      >
-        <option value="">Default (per agent)</option>
-        {creds.map((c) => (
-          <option key={c.id} value={c.id}>{c.provider} · {c.name || "key"} · ····{c.last4}</option>
+    <details className="proj-keys">
+      <summary className="proj-keys-summary" title="Which provider keys this project may run agents on. All keys = any key in the workspace; narrowing confines assignment (and project-scoped MCP tokens) to the chosen keys.">
+        <span className="proj-approval-label mono">Keys</span>
+        <span className="proj-keys-value">{summary}</span>
+      </summary>
+      <div className="proj-keys-menu">
+        <div className="proj-keys-hint">
+          {enabled.length === 0
+            ? "Runs on any workspace key. Pick keys to confine this project."
+            : "Only runners on these keys are assignable here."}
+        </div>
+        {candidates.map((c) => (
+          <label key={c.id} className="proj-keys-item">
+            <input type="checkbox" checked={enabled.includes(c.id)} onChange={() => toggle(c.id)} />
+            <span className="proj-keys-name">{c.label}</span>
+            {c.last4 && <span className="proj-keys-fp mono">····{c.last4}</span>}
+          </label>
         ))}
-      </select>
-    </label>
+      </div>
+    </details>
+  );
+}
+
+// Import a GitHub-connected project's issues as tasks + toggle write-back of task
+// status to those issues. Only shown when the project is bound to a GitHub repo.
+function ProjectSourceSync({ project, onToggle }: { project: Project; onToggle: (on: boolean) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  if (!project.repo) return null;
+  const importIssues = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await api.importGithubIssues(project.id);
+      setNote(r.imported ? `Imported ${r.imported} issue${r.imported === 1 ? "" : "s"}${r.skipped ? ` · ${r.skipped} already here` : ""}` : "No new issues");
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setBusy(false);
+      setTimeout(() => setNote(null), 4000);
+    }
+  };
+  return (
+    <>
+      <button className="btn" disabled={busy} onClick={() => void importIssues()} title="Import this repo's open GitHub issues as tasks — each links back to its issue.">
+        {busy ? "Importing…" : "⤒ Import issues"}
+      </button>
+      <label className="proj-autonomy" title="When on, moving a task to review/done comments + closes its linked GitHub issue (reopens if it moves back out of done).">
+        <input type="checkbox" className="proj-autonomy-cb" checked={project.syncSourceStatus} onChange={(e) => onToggle(e.target.checked)} />
+        <span className="proj-autonomy-switch" aria-hidden="true" />
+        <span className="proj-autonomy-label">Sync to source</span>
+      </label>
+      {note && <span className="proj-sync-note mono">{note}</span>}
+    </>
   );
 }
 
@@ -804,12 +870,17 @@ export function ProjectView({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [name, setName] = useState(project.name);
   const [goal, setGoal] = useState(project.goal);
+  // The "house rules" — rides every agent prompt on this project (and Steward's
+  // grounding). Kept as its own local state so Cancel restores the pristine
+  // value if the operator opened the editor and changed their mind.
+  const [instructions, setInstructions] = useState(project.instructions ?? "");
 
   useEffect(() => {
     setName(project.name);
     setGoal(project.goal);
+    setInstructions(project.instructions ?? "");
     setFolded(false);
-  }, [project.id, project.name, project.goal]);
+  }, [project.id, project.name, project.goal, project.instructions]);
 
   return (
     <section className="projview">
@@ -819,18 +890,48 @@ export function ProjectView({
       {editing ? (
         <div className="projview-edit">
           <input className="qx-input" value={name} onChange={(e) => setName(e.target.value)} />
-          <textarea className="qx-input" rows={2} value={goal} onChange={(e) => setGoal(e.target.value)} />
+          <textarea
+            className="qx-input"
+            rows={2}
+            placeholder="Goal — what does done look like?"
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+          />
+          <label className="projview-instructions-label mono">
+            Instructions <span className="projview-instructions-hint">— house rules every agent on this project sees. Packages to use, code structure, conventions. Markdown OK.</span>
+          </label>
+          <textarea
+            className="qx-input projview-instructions"
+            rows={8}
+            placeholder={"e.g.\n- Use the @acme/agents SDK for all agent scaffolding.\n- Follow src/agents/<name>/{index.ts,tools.ts,prompt.md}.\n- Reuse buildTool() from lib/tools; don't hand-roll tool schemas."}
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+          />
           <div className="qx-row">
             <button
               className="btn btn-primary"
               onClick={() => {
-                updateProject(project.id, { name: name.trim() || project.name, goal: goal.trim() });
+                // Trim to detect real content; blank clears the field on the server.
+                const nextInstructions = instructions.trim() ? instructions.trim() : null;
+                updateProject(project.id, {
+                  name: name.trim() || project.name,
+                  goal: goal.trim(),
+                  instructions: nextInstructions,
+                });
                 setEditing(false);
               }}
             >
               Save
             </button>
-            <button className="btn btn-ghost" onClick={() => { setName(project.name); setGoal(project.goal); setEditing(false); }}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setName(project.name);
+                setGoal(project.goal);
+                setInstructions(project.instructions ?? "");
+                setEditing(false);
+              }}
+            >
               Cancel
             </button>
           </div>
@@ -840,6 +941,15 @@ export function ProjectView({
           <div className="projview-head-main">
             <h2>{project.name}</h2>
             <p>{project.goal}</p>
+            {project.instructions && (
+              <button
+                className="proj-instructions-chip mono"
+                title={project.instructions}
+                onClick={() => setEditing(true)}
+              >
+                ⓘ Instructions active — click to view/edit
+              </button>
+            )}
             {project.repoPath && (
               <div className="mono proj-repo-line" title={project.repoPath}>
                 {project.gitBacked ? "◈ git" : "📁"} {project.repoPath}
@@ -888,7 +998,8 @@ export function ProjectView({
               <span className="proj-autonomy-label">Autonomy</span>
             </label>
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
-            <ProjectLlmAccount project={project} onChange={(id) => updateProject(project.id, { llmCredentialId: id })} />
+            <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
+            <ProjectSourceSync project={project} onToggle={(on) => updateProject(project.id, { syncSourceStatus: on })} />
             {project.repoPath && (
               <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
                 ▶ Preview app

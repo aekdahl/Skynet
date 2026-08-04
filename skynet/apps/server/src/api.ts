@@ -19,6 +19,7 @@ import {
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
+  UpdateWorkspaceSettingsRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
   MoveTaskRequest,
@@ -149,6 +150,19 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return { markdown };
     } catch {
       return { markdown: "# Roadmap\n\nROADMAP.md isn't bundled with this build — see the repository." };
+    }
+  });
+
+  // Live workspace fleet policy (auto-scale + cap). Per-workspace, applied at
+  // runtime (no restart) — unlike the env knobs below.
+  app.get("/api/settings/fleet", (req) => ops.getWorkspaceSettings(ws(req)));
+  app.patch("/api/settings/fleet", async (req, reply) => {
+    const body = UpdateWorkspaceSettingsRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateWorkspaceSettings(ws(req), body.data);
+    } catch (err) {
+      return fail(reply, err);
     }
   });
 
@@ -507,6 +521,16 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.createTask(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Import a GitHub-connected project's open issues as tasks (linked back to the
+  // issue via Task.source, so status changes can be written back).
+  app.post<{ Params: { id: string } }>("/api/projects/:id/import/github-issues", async (req, reply) => {
+    try {
+      return await ops.importGithubIssues(ws(req), req.params.id);
     } catch (err) {
       return fail(reply, err);
     }
