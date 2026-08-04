@@ -3,6 +3,7 @@ import type { ProviderId, ProviderInfo, Agent, SecretMeta } from "@skynet/shared
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy } from "../lib/derive";
+import { PrimaryButton } from "../components/empty";
 
 export function ConfigForm({
   initial,
@@ -181,13 +182,13 @@ export function ConfigForm({
         </div>
       )}
       <div className="qx-row">
-        <button
-          className="btn btn-primary"
+        <PrimaryButton
           disabled={!model.trim()}
+          reason={custom ? "Enter a model id to continue." : "Pick a model to continue."}
           onClick={() => onSave({ name: name.trim(), provider, model: model.trim(), credentialId })}
         >
           {submitLabel ?? (initial ? "Save changes" : "Add to fleet")}
-        </button>
+        </PrimaryButton>
         <button className="btn btn-ghost" onClick={onCancel}>
           Cancel
         </button>

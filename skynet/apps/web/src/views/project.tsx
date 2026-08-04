@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
+import { PrimaryButton } from "../components/empty";
 import {
   agentsForProject,
   curStep,
@@ -568,9 +569,9 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
         onChange={(e) => setDesc(e.target.value)}
       />
       <div className="qx-row kb-addcard-actions">
-        <button className="btn btn-primary btn-sm" disabled={!draft.trim()} onClick={submit}>
+        <PrimaryButton className="btn-sm" disabled={!draft.trim()} reason="Name the task to add it." onClick={submit}>
           Add task
-        </button>
+        </PrimaryButton>
         <button className="btn btn-ghost btn-sm" onClick={() => { setDraft(""); setDesc(""); setOpen(false); }}>
           Cancel
         </button>
