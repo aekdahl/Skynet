@@ -24,7 +24,7 @@
 
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import type { Agent, HitlItem, Project, ProviderInfo, ServerEvent, Task, TaskRun } from "@skynet/shared";
-import type { ConfigureRunnerRequest, CreateProjectRequest, CreateTaskRequest, ResolveRequest } from "@skynet/shared";
+import type { ConfigureRunnerRequest, CreateProjectRequest, CreateTaskRequest, ResolveRequest, UpdateProjectRequest, UpdateTaskRequest } from "@skynet/shared";
 import type { config as Config } from "../config.js";
 import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
@@ -33,7 +33,20 @@ import type { Orchestrator } from "../orchestrator.js";
 import { prefetchProjectDocs } from "../project-assistant.js";
 import { TelegramClient } from "./client.js";
 import { decide } from "./commands.js";
-import { decisionCardHtml, gateKeyboard, reviewNotice, completedNotice, runLink, esc, type Names } from "./notices.js";
+import {
+  decisionCardHtml,
+  gateKeyboard,
+  gateHead,
+  digestText,
+  shippedCardHtml,
+  reviewNotice,
+  completedNotice,
+  inQuietHours,
+  parseQuietHours,
+  runLink,
+  esc,
+  type Names,
+} from "./notices.js";
 import {
   buildContext,
   INTENT_SYSTEM_PROMPT,
@@ -81,6 +94,7 @@ const ERROR_BACKOFF_MS = 5_000;
 const HELP =
   [
     "Skynet remote control:",
+    "/inbox — what needs you: open decisions + run counts",
     "/status — running/waiting runs, open gates, pause state",
     "/gates — list open gates",
     "/approve <id> — approve a gate (needs SKYNET_TELEGRAM_CONTROL=true)",
@@ -125,6 +139,11 @@ export interface ControlOps {
   assignTask(ws: string, projectId: string, taskId: string): Promise<TaskRun>;
   archiveTask(ws: string, projectId: string, taskId: string, archived: boolean): Promise<Task>;
   configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent>;
+  // Project-management parity with the in-app Steward assistant (all guarded +
+  // confirmed before they run). Optional so minimal test fakes needn't stub them.
+  transitionTask?(ws: string, taskId: string, to: Task["state"], operatorId: string): Promise<Task>;
+  updateTask?(ws: string, taskId: string, patch: UpdateTaskRequest): Promise<Task>;
+  updateProject?(ws: string, id: string, patch: UpdateProjectRequest): Promise<Project>;
   /** Spin up (or restart) the project's live preview; resolves when it's live or
    *  failed, with the URL in the returned state. */
   previewStart(ws: string, projectId: string): Promise<PreviewState>;
@@ -287,6 +306,20 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     }.`;
   };
 
+  /** The glanceable /inbox digest — decisions first, then run counts. Resolves
+   *  each gate's run name from the run list (no id soup), same as the pushes. */
+  const digest = async (): Promise<{ text: string }> => {
+    const [gates, runs] = await Promise.all([openGates(), operations.listRuns(ws)]);
+    const runName = new Map(runs.map((r) => [r.id, r.name || r.id]));
+    return {
+      text: digestText({
+        gates: gates.map((g) => ({ head: gateHead(g.kind), run: runName.get(g.runId) ?? g.title })),
+        running: runs.filter((r) => r.status === "running" || r.status === "waiting").length,
+        done: runs.filter((r) => r.status === "done").length,
+      }),
+    };
+  };
+
   /** Turn a validated Action into a human-readable summary + a deferred executor
    *  (run on confirm). Never executes here — only describes. The `id` and
    *  `messageId` are stamped at the call site where we mint the nonce and know
@@ -371,6 +404,98 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           run: async () => {
             await operations.archiveTask(ws, action.projectId!, action.taskId!, true);
             return `🗃 Archived task ${action.taskId}${task?.text ? ` — "${task.text}"` : ""}. Recoverable in the app (un-archive to restore).`;
+          },
+        };
+      }
+      case "move_task": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        const summary = `Move task ${action.taskId} — "${task?.text ?? "?"}" to ${action.state}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.transitionTask) throw new Error("moving tasks isn't available here");
+            await operations.transitionTask(ws, action.taskId!, action.state as Task["state"], operatorId);
+            return `↦ Moved task ${action.taskId} to ${action.state}.`;
+          },
+        };
+      }
+      case "rename_task": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        const summary = `Rename task ${action.taskId} — "${task?.text ?? "?"}" → "${action.newText}"?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateTask) throw new Error("editing tasks isn't available here");
+            await operations.updateTask(ws, action.taskId!, { text: action.newText! });
+            return `✏️ Renamed task ${action.taskId} to "${action.newText}".`;
+          },
+        };
+      }
+      case "set_task_desc": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        const cleared = !action.description;
+        const summary = `${cleared ? "Clear the description of" : "Set the description of"} task ${action.taskId} — "${task?.text ?? "?"}"?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateTask) throw new Error("editing tasks isn't available here");
+            await operations.updateTask(ws, action.taskId!, { description: action.description! || null });
+            return `📝 ${cleared ? "Cleared" : "Updated"} the description of task ${action.taskId}.`;
+          },
+        };
+      }
+      case "rename_project": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const summary = `Rename project ${project?.name ?? action.projectId} → "${action.projectName}"?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateProject) throw new Error("editing projects isn't available here");
+            await operations.updateProject(ws, action.projectId!, { name: action.projectName! });
+            return `✏️ Renamed project to "${action.projectName}".`;
+          },
+        };
+      }
+      case "set_goal": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const summary = `Set ${project?.name ?? action.projectId}'s goal to "${action.projectGoal}"?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateProject) throw new Error("editing projects isn't available here");
+            await operations.updateProject(ws, action.projectId!, { goal: action.projectGoal ?? "" });
+            return `🎯 Updated ${project?.name ?? action.projectId}'s goal.`;
+          },
+        };
+      }
+      case "set_autonomy": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const summary = `Turn autonomy ${action.autonomy ? "ON" : "OFF"} for ${project?.name ?? action.projectId}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateProject) throw new Error("editing projects isn't available here");
+            await operations.updateProject(ws, action.projectId!, { autonomy: action.autonomy! });
+            return `⚙️ Autonomy ${action.autonomy ? "on" : "off"} for ${project?.name ?? action.projectId}.`;
+          },
+        };
+      }
+      case "set_status": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const summary = `Set ${project?.name ?? action.projectId} status to ${action.projectStatus}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateProject) throw new Error("editing projects isn't available here");
+            await operations.updateProject(ws, action.projectId!, { status: action.projectStatus as UpdateProjectRequest["status"] });
+            return `🏷 ${project?.name ?? action.projectId} is now ${action.projectStatus}.`;
           },
         };
       }
@@ -540,6 +665,12 @@ export function createOwnerControl(deps: OwnerControlDeps): {
       case "status":
         await notify(await statusText());
         return;
+
+      case "inbox": {
+        const { text: body } = await digest();
+        await notify(body, { parse_mode: "HTML" });
+        return;
+      }
 
       case "gates": {
         const gates = await openGates();
@@ -883,6 +1014,21 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
       log(`answerCallbackQuery failed: ${(err as Error).message}`);
     }
   };
+  /** Best-effort edit a message's text in place (live cards). Swallows errors. */
+  const editText = async (messageId: number, text: string): Promise<void> => {
+    try {
+      await client.editMessageText(ownerChatId, messageId, text, { parse_mode: "HTML", reply_markup: null });
+    } catch (err) {
+      log(`editMessageText failed: ${(err as Error).message}`);
+    }
+  };
+
+  // Quiet hours hold LOW-VALUE "shipped" pings overnight (decisions always go
+  // through). Parsed once; malformed/unset → never quiet.
+  const quiet = parseQuietHours(config.telegramQuietHours);
+  // A run's live decision card (message id), so completion edits it in place into
+  // "✅ Shipped" instead of stacking a separate line under it.
+  const runCard = new Map<string, number>();
 
   // ── Outbound: push workspace events to the owner ──────────────────────────
   // Notifications lead with human names — a run's task title + its project — not
@@ -907,8 +1053,11 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     const opts: NotifyOpts = { parse_mode: "HTML" };
     if (config.telegramControl) opts.reply_markup = gateKeyboard(it);
     const sent = await notify(decisionCardHtml(it, await nameOf(it.runId), config.telegramControl, linkFor(it.runId)), opts);
-    // Remember which gate this card is for, so a reply to it → "request changes".
-    if (config.telegramControl && sent.messageId) control.noteCard(sent.messageId, it.id, it.runId);
+    if (sent.messageId) {
+      // A reply to this card → "request changes"; completion edits it in place.
+      if (config.telegramControl) control.noteCard(sent.messageId, it.id, it.runId);
+      runCard.set(it.runId, sent.messageId);
+    }
   };
 
   const announceReview = (runId: string): void => {
@@ -936,7 +1085,19 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     } else if (event.type === "run.completed") {
       lastNotice.set(event.runId, "done");
       void (async () => {
-        await notify(completedNotice(await nameOf(event.runId), linkFor(event.runId)));
+        const names = await nameOf(event.runId);
+        const cardId = runCard.get(event.runId);
+        if (cardId) {
+          // Live card: turn the decision card you acted on INTO its result, in
+          // place — no separate ping, so it's fine even during quiet hours.
+          runCard.delete(event.runId);
+          await editText(cardId, shippedCardHtml(names));
+          return;
+        }
+        // No card to edit → a fresh "shipped" line. Low value, so hold it during
+        // quiet hours (the /inbox digest still reflects it whenever you look).
+        if (inQuietHours(new Date(), quiet)) return;
+        await notify(completedNotice(names, linkFor(event.runId)));
       })();
     }
   };

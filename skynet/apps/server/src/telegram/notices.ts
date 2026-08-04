@@ -134,3 +134,57 @@ export function completedNotice(names: Names, link?: string): string {
   const head = `✅ Shipped${names.project ? ` · ${names.project}` : ""}\n${names.run}`;
   return link ? `${head}\nView → ${link}` : head;
 }
+
+/** HTML "done" state a live decision card is edited into once its run ships —
+ *  so the card you decided on becomes the result, in place. */
+export function shippedCardHtml(names: Names): string {
+  return `✅ <b>Shipped</b>${names.project ? ` · ${esc(names.project)}` : ""}\n${esc(names.run)}`;
+}
+
+/**
+ * The on-demand digest (/inbox) — one glanceable summary, decisions first. Pure:
+ * the caller resolves names + counts. HTML; all dynamic text escaped. `gates`
+ * are the open decisions, most-urgent first; `running`/`done` are run counts.
+ */
+export function digestText(d: {
+  gates: { head: string; run: string }[];
+  running: number;
+  done: number;
+}): string {
+  const head = `◆ <b>${d.gates.length} waiting on you</b> · ${d.running} running · ${d.done} done`;
+  if (d.gates.length === 0) {
+    return `${head}\n\nNothing needs a decision right now.`;
+  }
+  const MAX = 6;
+  const rows = d.gates.slice(0, MAX).map((g) => `🔔 ${esc(g.head)} — ${esc(g.run)}`);
+  if (d.gates.length > MAX) rows.push(`…and ${d.gates.length - MAX} more`);
+  return `${head}\n\n${rows.join("\n")}`;
+}
+
+/** The head phrase for a gate kind (shared by the card + the digest). */
+export function gateHead(kind: HitlItem["kind"]): string {
+  return GATE_HEAD[kind] ?? "Needs your review";
+}
+
+/**
+ * Is `date`'s local hour inside a quiet-hours window? `range` is inclusive-start,
+ * exclusive-end in whole hours (e.g. {start:22,end:7} = 22:00–06:59), wrapping
+ * midnight when start > end. Used to hold low-value pings (ships) overnight —
+ * decisions always go through regardless. `null` range = never quiet.
+ */
+export function inQuietHours(date: Date, range: { start: number; end: number } | null): boolean {
+  if (!range) return false;
+  const h = date.getHours();
+  return range.start <= range.end ? h >= range.start && h < range.end : h >= range.start || h < range.end;
+}
+
+/** Parse "22-7" → {start:22,end:7}. Returns null for empty/invalid input. */
+export function parseQuietHours(raw: string | undefined): { start: number; end: number } | null {
+  if (!raw) return null;
+  const m = raw.trim().match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+  if (!m) return null;
+  const start = Number(m[1]);
+  const end = Number(m[2]);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start > 23 || end > 23) return null;
+  return { start, end };
+}

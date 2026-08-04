@@ -8,6 +8,7 @@ const KNOWN_COMMANDS = [
   "start",
   "help",
   "status",
+  "inbox",
   "gates",
   "approve",
   "reject",
@@ -47,6 +48,8 @@ export type BridgeAction = {
   kind:
     | "help"
     | "status"
+    // Read-only glanceable digest (decisions first) — like /status but richer.
+    | "inbox"
     | "gates"
     | "approve"
     | "reject"
@@ -110,6 +113,8 @@ export function decide(input: DecideInput): BridgeAction {
       return { kind: "help" };
     case "status":
       return { kind: "status" };
+    case "inbox":
+      return { kind: "inbox" };
     case "gates":
       return { kind: "gates" };
     case "stop":

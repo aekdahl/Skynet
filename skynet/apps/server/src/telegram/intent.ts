@@ -56,6 +56,16 @@ export interface Action {
     | "add_agent"
     | "create_project"
     | "remove_task"
+    // Project-management actions — parity with the in-app Steward assistant, so a
+    // request works the same on the phone and in the app (executed through the
+    // same Operations methods the board uses).
+    | "move_task"
+    | "rename_task"
+    | "set_task_desc"
+    | "rename_project"
+    | "set_goal"
+    | "set_autonomy"
+    | "set_status"
     | "preview"
     | "status"
     | "none";
@@ -69,8 +79,23 @@ export interface Action {
   agentName?: string;
   projectName?: string;
   projectGoal?: string;
+  /** move_task target lane. */
+  state?: string;
+  /** rename_task new title. */
+  newText?: string;
+  /** set_task_desc new description (empty string clears it). */
+  description?: string;
+  /** set_autonomy value. */
+  autonomy?: boolean;
+  /** set_status project status. */
+  projectStatus?: string;
   reason?: string;
 }
+
+/** Task lanes + project statuses a phone action may target (server still enforces
+ *  legal transitions; this only rejects an outright-unknown target). */
+const TASK_STATES = ["backlog", "triage", "todo", "ongoing", "review", "done"];
+const PROJECT_STATUSES = ["active", "paused", "done"];
 
 /** The assistant instruction. The operator message is passed SEPARATELY as data
  *  (never spliced into this prompt), and this prompt tells the model to treat it
@@ -89,7 +114,8 @@ export const INTENT_SYSTEM_PROMPT = [
   "code works — quote the relevant doc/section, and never invent repo content.",
   "",
   "You may ALSO perform ONE action, but ONLY when the owner is clearly asking to do it.",
-  "Allowed actions: approve | reject | add_task | assign | add_agent | create_project | remove_task | preview | status.",
+  "Allowed actions: approve | reject | add_task | assign | add_agent | create_project | remove_task |",
+  "  move_task | rename_task | set_task_desc | rename_project | set_goal | set_autonomy | set_status | preview | status.",
   "Action object shapes (used as the `action` field below):",
   '  approve/reject: {"action":"approve","gateId":"<gate id from context>"}',
   '  add_task:       {"action":"add_task","projectId":"<project id>","taskText":"<the task>"}',
@@ -97,6 +123,13 @@ export const INTENT_SYSTEM_PROMPT = [
   '  add_agent:      {"action":"add_agent","provider":"<provider id>","model":"<model>","agentName":"<optional>"}',
   '  create_project: {"action":"create_project","projectName":"<name>","projectGoal":"<optional>"}',
   '  remove_task:    {"action":"remove_task","taskId":"<task id from context>"}',
+  '  move_task:      {"action":"move_task","taskId":"<task id>","state":"backlog|triage|todo|ongoing|review|done"}',
+  '  rename_task:    {"action":"rename_task","taskId":"<task id>","newText":"<new title>"}',
+  '  set_task_desc:  {"action":"set_task_desc","taskId":"<task id>","description":"<new description, empty to clear>"}',
+  '  rename_project: {"action":"rename_project","projectId":"<project id>","projectName":"<new name>"}',
+  '  set_goal:       {"action":"set_goal","projectId":"<project id>","projectGoal":"<new goal>"}',
+  '  set_autonomy:   {"action":"set_autonomy","projectId":"<project id>","autonomy":true|false}',
+  '  set_status:     {"action":"set_status","projectId":"<project id>","projectStatus":"active|paused|done"}',
   '  preview:        {"action":"preview","projectId":"<project id from context>"}',
   '  status:         {"action":"status"}',
   "remove_task archives a task (a reversible soft-hide, recoverable in the app) — it is",
@@ -320,6 +353,67 @@ export function validateAction(obj: unknown, ctx: IntentContext): Action | null 
       const task = ctx.tasks.find((t) => t.id === taskId);
       if (!task) return none(`unknown task "${taskId}"`);
       return { kind: "remove_task", taskId, projectId: task.projectId };
+    }
+
+    case "move_task": {
+      const taskId = isStr(o.taskId) ? o.taskId : "";
+      const task = ctx.tasks.find((t) => t.id === taskId);
+      if (!task) return none(`unknown task "${taskId}"`);
+      const state = isStr(o.state) ? o.state : "";
+      if (!TASK_STATES.includes(state)) return none(`unknown lane "${state}"`);
+      return { kind: "move_task", taskId, projectId: task.projectId, state };
+    }
+
+    case "rename_task": {
+      const taskId = isStr(o.taskId) ? o.taskId : "";
+      const task = ctx.tasks.find((t) => t.id === taskId);
+      if (!task) return none(`unknown task "${taskId}"`);
+      const newText = isStr(o.newText) ? o.newText.trim() : "";
+      if (!newText) return none("empty task title");
+      return { kind: "rename_task", taskId, projectId: task.projectId, newText };
+    }
+
+    case "set_task_desc": {
+      const taskId = isStr(o.taskId) ? o.taskId : "";
+      const task = ctx.tasks.find((t) => t.id === taskId);
+      if (!task) return none(`unknown task "${taskId}"`);
+      // A string (possibly empty → clears the description) is required.
+      const description = typeof o.description === "string" ? o.description : "";
+      return { kind: "set_task_desc", taskId, projectId: task.projectId, description };
+    }
+
+    case "rename_project": {
+      const projectId = isStr(o.projectId) ? o.projectId : "";
+      const project = ctx.projects.find((p) => p.id === projectId);
+      if (!project) return none(`unknown project "${projectId}"`);
+      const projectName = isStr(o.projectName) ? o.projectName.trim() : "";
+      if (!projectName) return none("empty project name");
+      return { kind: "rename_project", projectId, projectName };
+    }
+
+    case "set_goal": {
+      const projectId = isStr(o.projectId) ? o.projectId : "";
+      const project = ctx.projects.find((p) => p.id === projectId);
+      if (!project) return none(`unknown project "${projectId}"`);
+      const projectGoal = typeof o.projectGoal === "string" ? o.projectGoal.trim() : "";
+      return { kind: "set_goal", projectId, projectGoal };
+    }
+
+    case "set_autonomy": {
+      const projectId = isStr(o.projectId) ? o.projectId : "";
+      const project = ctx.projects.find((p) => p.id === projectId);
+      if (!project) return none(`unknown project "${projectId}"`);
+      if (typeof o.autonomy !== "boolean") return none("autonomy must be true or false");
+      return { kind: "set_autonomy", projectId, autonomy: o.autonomy };
+    }
+
+    case "set_status": {
+      const projectId = isStr(o.projectId) ? o.projectId : "";
+      const project = ctx.projects.find((p) => p.id === projectId);
+      if (!project) return none(`unknown project "${projectId}"`);
+      const projectStatus = isStr(o.projectStatus) ? o.projectStatus : "";
+      if (!PROJECT_STATUSES.includes(projectStatus)) return none(`unknown status "${projectStatus}"`);
+      return { kind: "set_status", projectId, projectStatus };
     }
 
     case "preview": {
