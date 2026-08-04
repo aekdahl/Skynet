@@ -4,7 +4,7 @@
 // set/list/delete but never read a key back — list returns metadata only.
 
 import { randomUUID } from "node:crypto";
-import { ProviderId, type SecretMeta } from "@skynet/shared";
+import { ProviderId, type CredentialProvider, type SecretMeta } from "@skynet/shared";
 import { config } from "../config.js";
 import { PROVIDER_ENV_VAR, providerEnvCredential } from "../provider-env.js";
 import { fingerprint, masterKey, open, seal } from "./crypto.js";
@@ -17,7 +17,7 @@ export { PROVIDER_ENV_VAR };
 
 /** A provider's DEFAULT credential id is the provider string itself — the
  *  historical single-key path, so old keys + agents keep resolving. */
-export const isDefaultCredential = (id: string, provider: ProviderId) => id === provider;
+export const isDefaultCredential = (id: string, provider: CredentialProvider) => id === provider;
 
 export class SecretsDisabledError extends Error {
   constructor() {
@@ -59,7 +59,7 @@ export class SecretService {
     return masterKey() !== null;
   }
 
-  private sealRecord(workspaceId: string, id: string, name: string, provider: ProviderId, apiKey: string, operatorId: string, at: number): SecretRecord {
+  private sealRecord(workspaceId: string, id: string, name: string, provider: CredentialProvider, apiKey: string, operatorId: string, at: number): SecretRecord {
     const key = masterKey();
     if (!key) throw new SecretsDisabledError();
     return {
@@ -98,7 +98,7 @@ export class SecretService {
   /** Create a NAMED credential (a "duplicate" of a provider) with its own key. */
   async createCredential(
     workspaceId: string,
-    provider: ProviderId,
+    provider: CredentialProvider,
     name: string,
     apiKey: string,
     operatorId: string,

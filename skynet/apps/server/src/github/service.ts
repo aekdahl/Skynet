@@ -7,12 +7,13 @@
 import { SAFETY_DEFAULTS, type GithubConnection, type GithubInstallation, type GithubOwner, type GithubRepo, type SafetyPolicy } from "@skynet/shared";
 import { config } from "../config.js";
 import { masterKey, open, seal } from "../secrets/crypto.js";
+import { secretService } from "../secrets/index.js";
 import { mintViaBroker } from "./broker.js";
 import type { Store } from "../store/store.js";
 import { MemoryGithubStore } from "./memory.js";
 import { GitHubProvider } from "./provider.js";
 import { evaluateSafety } from "./safety.js";
-import type { GitProvider, GithubConnectionStore, MergeResult, PushRequest, PushResult } from "./types.js";
+import type { GitProvider, GithubConnectionStore, GithubIssue, MergeResult, PushRequest, PushResult } from "./types.js";
 
 export class GithubService {
   constructor(
@@ -80,6 +81,27 @@ export class GithubService {
     return connection;
   }
 
+  /**
+   * The repos a project can currently bind to — fetched LIVE, not from the
+   * connect-time snapshot. A PAT connection can reach every repo its token sees,
+   * so we re-list them (paginated) and refresh the stored snapshot: a connection
+   * made before the repo list was paginated (or before newer repos existed)
+   * otherwise shows a stale subset. For an App installation the SELECTED set is
+   * authoritative (changing it is a GitHub-side action), so return what's stored.
+   * Falls back to the stored snapshot if the token is unavailable.
+   */
+  async availableRepos(workspaceId: string): Promise<GithubRepo[]> {
+    const conn = await this.store.get(workspaceId);
+    if (!conn?.connected) return [];
+    if (conn.auth !== "pat") return conn.repos;
+    const key = masterKey();
+    const ct = await this.store.getToken(workspaceId);
+    if (!key || !ct) return conn.repos;
+    const repos = (await this.provider.listRepos(open(ct, key))).map((r) => ({ ...r, selected: true }));
+    await this.store.put({ ...conn, repos });
+    return repos;
+  }
+
   /** The git token for a connection: the stored PAT, or a freshly-minted App
    *  installation token. */
   private async resolveToken(conn: GithubConnection): Promise<string> {
@@ -100,6 +122,49 @@ export class GithubService {
       return token;
     }
     return this.provider.installationToken(conn.installation.id);
+  }
+
+  /**
+   * The git token a PROJECT's operations authenticate with. When the project
+   * pinned a specific GitHub account (`githubCredentialId` — a stored `github`
+   * PAT credential), open that PAT so its repos push to / clone from / bill under
+   * THAT account (business vs personal). Otherwise the workspace's default
+   * connection token. Central so clone/push/PR/repo-list all agree.
+   */
+  private async projectToken(workspaceId: string, githubCredentialId: string | null | undefined): Promise<string> {
+    if (githubCredentialId) {
+      const pat = await secretService.resolve(workspaceId, githubCredentialId);
+      if (!pat) throw new Error("The project's GitHub account has no stored token — reconnect it in Integrations.");
+      return pat;
+    }
+    const conn = await this.store.get(workspaceId);
+    if (!conn?.connected) throw new Error("GitHub is not connected for this workspace");
+    return this.resolveToken(conn);
+  }
+
+  // ── Issues (task import + status write-back — see docs/task-source-sync.md) ──
+  /** Open issues on a repo, for importing them as tasks. Authenticates with the
+   *  project's pinned GitHub account (else the default connection). */
+  async listIssues(workspaceId: string, repo: string, githubCredentialId?: string | null): Promise<GithubIssue[]> {
+    return this.provider.listIssues(await this.projectToken(workspaceId, githubCredentialId), repo);
+  }
+  /** Comment on an issue (write-back — e.g. "Skynet opened PR #123"). */
+  async commentIssue(workspaceId: string, repo: string, number: number, body: string, githubCredentialId?: string | null): Promise<void> {
+    await this.provider.commentIssue(await this.projectToken(workspaceId, githubCredentialId), repo, number, body);
+  }
+  /** Open/close an issue (write-back — close on done, reopen on regress). */
+  async setIssueState(workspaceId: string, repo: string, number: number, state: "open" | "closed", githubCredentialId?: string | null): Promise<void> {
+    await this.provider.setIssueState(await this.projectToken(workspaceId, githubCredentialId), repo, number, state);
+  }
+
+  /** Repos a given GitHub account can bind to — a pinned credential's PAT lists
+   *  ITS repos (the create-project picker for a business/personal account); no
+   *  credentialId falls back to the workspace default connection's repos. */
+  async reposForCredential(workspaceId: string, githubCredentialId?: string | null): Promise<GithubRepo[]> {
+    if (!githubCredentialId) return this.availableRepos(workspaceId);
+    const pat = await secretService.resolve(workspaceId, githubCredentialId);
+    if (!pat) return [];
+    return (await this.provider.listRepos(pat)).map((r) => ({ ...r, selected: true }));
   }
 
   /** Seal + store a Device-Flow user token (broker mode). The plaintext is never
@@ -230,19 +295,24 @@ export class GithubService {
    */
   async pushAndOpenPr(req: PushRequest): Promise<PushResult> {
     const conn = await this.store.get(req.workspaceId);
-    const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
-    if (!conn || !ready) {
-      return { ok: false, pushed: false, violations: [{ rule: "general", message: "GitHub is not connected for this workspace" }] };
+    const pinned = !!req.githubCredentialId; // project pinned a specific GitHub account
+    if (!pinned) {
+      const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
+      if (!conn || !ready) {
+        return { ok: false, pushed: false, violations: [{ rule: "general", message: "GitHub is not connected for this workspace" }] };
+      }
     }
 
-    const violations = evaluateSafety(conn.safety, req);
+    // Safety policy comes from the workspace's default connection (or defaults);
+    // it gates every push regardless of which account the token belongs to.
+    const violations = evaluateSafety(conn?.safety ?? SAFETY_DEFAULTS, req);
     if (violations.length > 0) return { ok: false, pushed: false, violations };
 
-    if (conn.auth === "app" && !this.appHasCreds) {
+    if (!pinned && conn!.auth === "app" && !this.appHasCreds) {
       return { ok: false, pushed: false, violations: [{ rule: "general", message: "GitHub App is not configured on the server" }] };
     }
 
-    const token = await this.resolveToken(conn);
+    const token = await this.projectToken(req.workspaceId, req.githubCredentialId);
     await this.provider.pushBranch(token, req.repo, req.worktreePath, req.branch, req.force);
     const pr = await this.provider.openPr(token, req.repo, req.branch, req.baseBranch, req.title, req.body);
     return { ok: true, pushed: true, violations: [], pr };
@@ -267,12 +337,15 @@ export class GithubService {
    *  token — the token stays inside the service, never returned. This is what
    *  lets a project bound to a GitHub repo get a local checkout on a headless
    *  server (e.g. GCP), so the orchestrator can cut worktrees from it. */
-  async cloneRepo(workspaceId: string, repo: string, dest: string): Promise<void> {
-    const conn = await this.store.get(workspaceId);
-    const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
-    if (!conn || !ready) throw new Error("GitHub is not connected for this workspace");
-    if (conn.auth === "app" && !this.appHasCreds) throw new Error("GitHub App is not configured on the server");
-    const token = await this.resolveToken(conn);
+  async cloneRepo(workspaceId: string, repo: string, dest: string, githubCredentialId?: string | null): Promise<void> {
+    // A pinned account clones with ITS PAT; otherwise the workspace default.
+    if (!githubCredentialId) {
+      const conn = await this.store.get(workspaceId);
+      const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
+      if (!conn || !ready) throw new Error("GitHub is not connected for this workspace");
+      if (conn.auth === "app" && !this.appHasCreds) throw new Error("GitHub App is not configured on the server");
+    }
+    const token = await this.projectToken(workspaceId, githubCredentialId);
     await this.provider.cloneRepo(token, repo, dest);
   }
 }

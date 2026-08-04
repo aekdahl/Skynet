@@ -636,6 +636,10 @@ button.lg-arow:hover { background: var(--raised); }
 .swb-seg-pending { background: none; border-top: 2px dashed color-mix(in oklch, var(--faint), transparent 45%); height: 0; }
 .swb-st.sw-queued { width: 10px; height: 10px; background: var(--panel); border: 2px dashed color-mix(in oklch, var(--faint), transparent 25%); cursor: default; }
 .sw-label-queued { color: color-mix(in oklch, var(--faint), transparent 15%); font-style: italic; }
+/* "+N more" overflow chip — collapses a long backlog into one marker so the
+   diagram stays readable; solid dot, small pill label. */
+.swb-st.sw-more { width: 8px; height: 8px; background: color-mix(in oklch, var(--faint), transparent 40%); border: none; border-radius: 50%; cursor: default; }
+.sw-label-more { color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
 /* an idle agent (a track with only a queue) / the shared lane's marker */
 .sw-dot-idle { width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--faint); background: none; display: inline-block; flex: none; }
 .swb-name-lane { opacity: 0.85; }
@@ -969,6 +973,16 @@ button.kb-done:hover { opacity: 1; }
 .kb-card-ongoing { border-top: 2px solid var(--ok); }
 .kb-card-review { border-top: 2px solid var(--warn); }
 .kb-card-done { border-top: 2px solid var(--line); }
+/* An agent has actively taken this task (ongoing) — lock it on the board: not
+   draggable (draggable=false drops the grab cursor), not editable, not
+   reassignable. Only the run's emergency controls remain (open the card →
+   pause/stop/resume). The green ring reinforces the "an agent owns this"
+   vocabulary already used by .kb-assigned. */
+.kb-card-locked {
+  border-color: color-mix(in oklch, var(--ok), transparent 50%);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--ok), transparent 65%);
+}
+.kb-lock { flex: none; font-size: 11px; line-height: 1.5; cursor: help; }
 .kb-card-top { display: flex; align-items: flex-start; gap: 8px; }
 .kb-card-top .kb-task { flex: 1; min-width: 0; }
 .kb-card[role="button"] { cursor: pointer; }
@@ -992,8 +1006,16 @@ button.kb-done:hover { opacity: 1; }
 .kb-elig-ro { margin: 2px 0; }
 .kb-elig-chip { font-size: 11px; color: var(--muted); }
 .kb-elig-chip.kb-elig-unset { color: var(--warn); }
+/* Once a run exists we show the agent doing the work (not the eligibility) —
+   give it the full text colour so it reads as a real assignment, not a filter. */
+.kb-elig-chip.kb-elig-agent { color: var(--text); }
+.kb-elig-glyph { font-family: var(--font-ui); }
 .kb-assessment { font-size: 11px; color: var(--muted); line-height: 1.4; border-left: 2px solid var(--line); padding-left: 8px; }
 .kb-flag { font-size: 11px; color: var(--warn); line-height: 1.4; }
+.kb-review-ok { font-size: 11px; color: var(--ok, var(--muted)); line-height: 1.4; }
+.kb-verdict-flag { color: var(--warn); }
+.kb-verdict-approve { color: var(--ok, var(--muted)); }
+.kb-detail-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
 /* Scheduling chips on a task card — ⏱ duration and/or 📅 planned start. */
 .kb-sched { display: flex; flex-wrap: wrap; gap: 4px; }
 .kb-sched-chip {
@@ -1015,6 +1037,18 @@ button.kb-done:hover { opacity: 1; }
 .proj-approval { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-right: 4px; }
 .proj-approval-label { font-size: 11px; color: var(--faint); letter-spacing: 0.03em; }
 .proj-approval-select { font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; }
+/* Project runner-key confinement — a compact <details> popover in the header. */
+.proj-keys { position: relative; }
+.proj-keys-summary { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; list-style: none; }
+.proj-keys-summary::-webkit-details-marker { display: none; }
+.proj-keys-value { color: var(--muted); }
+.proj-keys[open] .proj-keys-summary { border-color: var(--accent); }
+.proj-keys-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 220px; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 10px 30px rgb(0 0 0 / 0.35); }
+.proj-keys-hint { font-size: 11px; color: var(--faint); margin-bottom: 4px; line-height: 1.4; }
+.proj-keys-item { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink); cursor: pointer; padding: 2px 0; }
+.proj-keys-item input { flex: none; }
+.proj-keys-name { flex: 1; }
+.proj-keys-fp { font-size: 10.5px; color: var(--faint); }
 .proj-approval-rules { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0; }
 .proj-approval-rules-label { font-size: 11px; color: var(--faint); letter-spacing: 0.03em; margin-right: 2px; }
 .approval-rule-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; font-size: 11.5px; padding: 2px 4px 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--raised); color: var(--muted); }
@@ -1139,6 +1173,23 @@ button.kb-done:hover { opacity: 1; }
 .settings-install-actions { display: flex; gap: 6px; }
 .cfg-prov-req { margin: 8px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
 .settings-key { display: flex; align-items: center; gap: 8px; }
+/* Extra named credentials (a second key for a provider) */
+.settings-cred { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px dashed var(--line-soft); }
+.settings-cred-name { font-size: 13px; color: var(--ink); }
+.settings-cred-last4 { color: var(--faint); font-size: 11px; }
+.settings-cred-add { align-self: flex-start; color: var(--muted); }
+.settings-cred-new { gap: 8px; }
+.settings-cred-nameinput { max-width: 260px; }
+/* Imported-task source link + sync note */
+.kb-source { font-size: 10.5px; color: var(--faint); text-decoration: none; white-space: nowrap; flex: none; }
+.kb-source:hover { color: var(--accent); }
+.proj-sync-note { font-size: 11px; color: var(--faint); align-self: center; }
+/* GitHub additional-accounts (Integrations) */
+.gh-acct-list { margin: 8px 0; }
+.gh-acct-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.gh-acct-add .settings-input { flex: 1; min-width: 160px; }
+.gh-acct-name { max-width: 220px; flex: 0 1 220px; }
+.cfg-cred-select { appearance: auto; }
 .settings-input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; color: var(--text); font-family: var(--font-mono); font-size: 12px; }
 .settings-input:focus { outline: none; border-color: var(--accent); }
 .settings-setup { display: flex; align-items: center; gap: 16px; max-width: 720px; margin-top: var(--sp); padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
@@ -1253,12 +1304,29 @@ button.kb-done:hover { opacity: 1; }
 .mcp-access > .settings-setup-sub { margin-bottom: var(--sp); max-width: none; }
 .mcp-mint { gap: 13px; }
 .mcp-mint-line { display: flex; align-items: center; gap: 8px; }
+/* Fleet auto-scale controls (Settings). */
+.fleet-auto { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; margin-top: 12px; }
+.fleet-auto-max { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.fleet-auto-max-label { font-size: 11px; color: var(--faint); letter-spacing: 0.03em; }
+.fleet-auto-max-input { width: 78px; }
+.fleet-auto-max-hint { font-size: 10.5px; color: var(--faint); }
 .mcp-scopes { display: flex; flex-direction: column; gap: 7px; }
 .mcp-scope { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); cursor: pointer; }
 .mcp-scope input { flex: none; }
 .mcp-scope-name { font-weight: 600; min-width: 68px; }
 .mcp-scope-hint { color: var(--faint); }
 .mcp-scope-warn .mcp-scope-name, .mcp-scope-warn .mcp-scope-hint { color: var(--warn); }
+.mcp-projects { margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 8px; }
+.mcp-projects-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.mcp-projects-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.mcp-projects-hint { font-size: 11px; color: var(--faint); }
+.mcp-project-list { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.mcp-project { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
+.mcp-project input { flex: none; }
+.mcp-project-on .mcp-project-name { font-weight: 600; color: var(--accent); }
+.mcp-tok-projects { display: flex; gap: 5px; flex-wrap: wrap; }
+.mcp-badge-ws { color: var(--faint); background: var(--panel); border-color: var(--line); }
+.mcp-badge-proj { color: var(--text); background: color-mix(in oklch, var(--text), transparent 90%); border-color: var(--line); }
 .mcp-reveal { margin-top: 12px; background: var(--panel); border: 1px solid color-mix(in oklch, var(--ok), transparent 55%); border-left: 3px solid var(--ok); border-radius: 10px; padding: 13px 15px; display: flex; flex-direction: column; gap: 11px; }
 .mcp-reveal-head { display: flex; align-items: center; justify-content: space-between; }
 .mcp-token-line { display: flex; align-items: center; gap: 8px; }
@@ -1267,11 +1335,23 @@ button.kb-done:hover { opacity: 1; }
 .mcp-snippet-head { display: flex; align-items: center; justify-content: space-between; }
 .mcp-snippet-title { font-size: 11px; color: var(--faint); }
 .mcp-snippet-body { margin: 0; background: var(--bg); border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px 12px; font-size: 11.5px; line-height: 1.5; color: var(--text); overflow-x: auto; white-space: pre; }
-.mcp-tok-list { margin-top: var(--sp); }
-.mcp-tok-row { display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 11px 14px; }
+.mcp-tok-index { margin-top: var(--sp); }
+.mcp-tok-index-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.mcp-tok-count { font-size: 11px; color: var(--faint); background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 0 8px; }
+.mcp-tok-list { display: flex; flex-direction: column; gap: 8px; }
+.mcp-tok-row { display: flex; align-items: center; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 11px 14px; }
+.mcp-tok-new { border-color: color-mix(in oklch, var(--accent), transparent 45%); box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent), transparent 60%) inset; }
+.mcp-tok-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.mcp-tok-actions { flex: none; display: flex; gap: 6px; }
+.mcp-tok-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mcp-tok-tag { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
 .mcp-tok-scopes { display: flex; gap: 5px; flex-wrap: wrap; }
 .mcp-badge { font-size: 10px; color: var(--accent); background: color-mix(in oklch, var(--accent), transparent 86%); border: 1px solid color-mix(in oklch, var(--accent), transparent 70%); border-radius: 5px; padding: 1px 6px; }
-.mcp-tok-meta { font-size: 11px; color: var(--faint); margin-left: auto; }
+.mcp-tok-meta { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--faint); }
+.mcp-tok-meta > span { white-space: nowrap; }
+.mcp-tok-fp { color: var(--text); }
+.mcp-tok-expired { color: var(--danger); }
+.mcp-reveal-note { font-size: 11.5px; line-height: 1.5; color: var(--faint); }
 
 /* ===== agent result / answer ===== */
 /* Task description — the longer brief behind a short task name */
@@ -1562,6 +1642,12 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .lens-btn { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 13px; font-weight: 500; color: var(--muted); padding: 7px 16px; border-radius: 6px; }
 .lens-btn:hover { color: var(--text); }
 .lens-btn.on { background: var(--raised); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
+/* Count chip inside a lens button (e.g. "Archived 3") — same shape as an
+   inbox/queue badge, muted so it doesn't compete with the active-tab pill. */
+.lens-btn-count { display: inline-block; margin-left: 6px; font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--faint); background: var(--line-soft); border-radius: 8px; padding: 1px 6px; }
+.lens-btn.on .lens-btn-count { color: var(--muted); background: var(--line); }
+/* Archived lens body — same width band as the kanban / timeline slots. */
+.projview-archived { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 10px 12px; }
 
 /* gear (fleet) */
 .gear { display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; margin-left: 8px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--muted); cursor: pointer; }
@@ -1815,6 +1901,8 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .np-reponame { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono); }
 .np-private { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; align-self: flex-start; }
 .np-private-label { font-size: 12.5px; color: var(--muted); }
+/* Governance row in the create-project form — Approvals + Autonomy up front. */
+.np-governance { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
 /* Confirm gate before creating a real repo */
 .np-confirm { display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--warn); border-radius: 10px; padding: 12px; background: color-mix(in oklch, var(--warn), transparent 92%); }
 .np-confirm-text { font-size: 13px; line-height: 1.5; color: var(--text); margin: 0; }
@@ -1928,6 +2016,10 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
   margin-top: 6px; padding: 8px 10px;
   background: var(--raised); border: 1px solid var(--line); border-radius: 7px;
 }
+/* A batch of proposed actions (Steward can propose several from one input). */
+.asst-propose-group { display: flex; flex-direction: column; gap: 4px; }
+.asst-propose-all { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.asst-propose-all-label { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); flex: 1; }
 .asst-propose-label { font-size: 12.5px; color: var(--ink); flex: 1; min-width: 0; }
 .asst-propose-actions { display: flex; gap: 6px; }
 .asst-propose-done { font-size: 12.5px; color: var(--ok); }
@@ -2035,4 +2127,305 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
   border-top: 1px solid var(--line-soft);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ─── Feature + milestone chips on task cards ─────────────────────────── */
+.kb-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.kb-feat-chip {
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--bg-soft, rgba(0,0,0,0.03));
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--line-soft);
+}
+.kb-ms-chip {
+  font-size: 10px;
+  color: var(--accent, #6b5bff);
+  background: var(--bg-soft, rgba(107,91,255,0.06));
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-line, rgba(107,91,255,0.25));
+}
+
+/* Detail-modal grouping section (task detail) */
+.kb-detail-grouping { display: flex; flex-direction: column; gap: 6px; }
+.kb-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.kb-detail-row-lbl {
+  min-width: 76px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.kb-detail-select {
+  flex: 1;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: inherit;
+  font-size: 12px;
+}
+
+/* ─── Features + Roadmap lenses ───────────────────────────────────────── */
+.projview-features,
+.projview-roadmap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+.pf-title { margin: 0; font-size: 14px; font-weight: 600; }
+.pf-addcard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: var(--bg-soft, rgba(0,0,0,0.02));
+}
+.pf-addcard-desc { font-family: inherit; font-size: 13px; }
+.pf-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+.pf-empty-inner {
+  padding: 12px;
+  border: none;
+  font-size: 12px;
+}
+
+/* Feature row */
+.pf-row {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.pf-row-shipped { opacity: 0.7; }
+.pf-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.pf-row-head:hover { background: var(--bg-soft, rgba(0,0,0,0.02)); }
+.pf-fold {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  color: var(--muted);
+  font-size: 11px;
+  width: 12px;
+}
+.pf-row-name { flex: 1; display: flex; align-items: center; gap: 6px; }
+.pf-name { font-weight: 500; }
+.pf-shipped-tag,
+.pf-paused-tag,
+.pm-inprog-tag {
+  font-size: 10px;
+  color: var(--muted);
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--line-soft);
+}
+.pf-shipped-tag { color: var(--ok, #2ea043); border-color: var(--ok-line, rgba(46,160,67,0.3)); }
+.pf-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.pf-count { white-space: nowrap; }
+.pf-progress {
+  width: 80px;
+  height: 4px;
+  background: var(--bg-soft, rgba(0,0,0,0.06));
+  border-radius: 2px;
+  overflow: hidden;
+}
+.pf-progress-fill {
+  height: 100%;
+  background: var(--ok, #2ea043);
+  transition: width 0.2s ease;
+}
+.pf-progress-lbl {
+  min-width: 32px;
+  text-align: right;
+}
+.pf-row-body {
+  padding: 8px 12px 12px 30px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pf-desc { margin: 0; font-size: 13px; color: var(--fg); line-height: 1.5; }
+.pf-desc-empty { color: var(--muted); font-style: italic; }
+.pf-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.pf-ms-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pf-select {
+  padding: 3px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: inherit;
+  font-size: 12px;
+}
+.pf-edit { display: flex; flex-direction: column; gap: 6px; }
+.pf-del { color: var(--warn); }
+.pf-counts { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; }
+.pf-count-chip { text-transform: uppercase; letter-spacing: 0.03em; }
+.pf-tasklist { display: flex; flex-direction: column; gap: 4px; }
+.pf-task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  background: var(--bg);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  color: inherit;
+}
+.pf-task:hover:not(:disabled) { background: var(--bg-soft, rgba(0,0,0,0.03)); }
+.pf-task:disabled { cursor: default; opacity: 0.75; }
+.pf-task-state {
+  min-width: 56px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.pf-task-text { flex: 1; }
+.pf-orphan {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+.pf-orphan-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.pf-ms-feats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 0;
+}
+.pf-ms-feats-lbl {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+/* Milestone row (extends feature row styles) */
+.pm-row {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.pm-row-shipped { opacity: 0.7; }
+.pm-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+  background: var(--bg-soft, rgba(0,0,0,0.02));
+}
+.pm-row-head:hover { background: var(--bg-soft, rgba(0,0,0,0.04)); }
+.pm-row-name { flex: 1; display: flex; align-items: center; gap: 6px; }
+.pm-name { font-weight: 600; }
+.pm-inprog-tag { color: var(--accent, #6b5bff); border-color: var(--accent-line, rgba(107,91,255,0.3)); }
+.pm-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.pm-target { white-space: nowrap; }
+.pm-target-late { color: var(--warn); }
+.pm-row-body {
+  padding: 8px 12px 12px 30px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ─── Project-level instructions ─────────────────────────────────────── */
+.projview-instructions-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.projview-instructions-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: normal;
+  color: var(--muted);
+  opacity: 0.75;
+}
+.projview-instructions {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.proj-instructions-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--accent, #6b5bff);
+  background: var(--bg-soft, rgba(107,91,255,0.08));
+  padding: 2px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-line, rgba(107,91,255,0.28));
+  cursor: pointer;
+  margin-top: 2px;
+  text-align: left;
+  max-width: 100%;
+}
+.proj-instructions-chip:hover {
+  background: var(--bg-soft, rgba(107,91,255,0.14));
 }

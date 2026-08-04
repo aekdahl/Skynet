@@ -31,6 +31,9 @@ export interface ServiceTokenMeta {
   workspaceId: string;
   operatorId: string;
   scopes: Scope[];
+  // Empty = every project in the workspace; a non-empty list = the projects this
+  // token is confined to (see Principal.projectIds).
+  projectIds: string[];
   createdAt: number;
   expiresAt: number | null;
   lastUsedAt: number | null;
@@ -42,6 +45,9 @@ export interface CreateServiceTokenOptions {
   operatorId: string; // attribution in the audit trail, e.g. "mcp:research-agent"
   scopes: Scope[];
   label: string;
+  // Confine the token to these projects. Omit / empty → workspace-wide (all
+  // projects), the historical behavior.
+  projectIds?: string[];
   ttlMs?: number | null; // omit / null → no expiry
   // Register a caller-provided secret instead of generating one. Only used for
   // the headless bootstrap token (the agent injects the secret via env); the
@@ -68,7 +74,14 @@ export function newServiceToken(opts: CreateServiceTokenOptions): ServiceToken {
     // `skynet_pat_` prefix distinguishes these from `sess_` login tokens on sight.
     // A caller-provided token (bootstrap) is used verbatim; otherwise generate.
     token: opts.token ?? `skynet_pat_${randomBytes(32).toString("base64url")}`,
-    principal: { workspaceId: opts.workspaceId, operatorId: opts.operatorId, scopes: opts.scopes },
+    principal: {
+      workspaceId: opts.workspaceId,
+      operatorId: opts.operatorId,
+      scopes: opts.scopes,
+      // Store the allowlist only when it actually narrows — an empty list means
+      // "all projects", which is the unrestricted default (projectIds undefined).
+      ...(opts.projectIds && opts.projectIds.length > 0 ? { projectIds: opts.projectIds } : {}),
+    },
     label: opts.label,
     createdAt,
     expiresAt: opts.ttlMs != null ? createdAt + opts.ttlMs : null,
@@ -84,6 +97,7 @@ export function toMeta(t: ServiceToken): ServiceTokenMeta {
     workspaceId: t.principal.workspaceId,
     operatorId: t.principal.operatorId,
     scopes: t.principal.scopes ?? [],
+    projectIds: t.principal.projectIds ?? [],
     createdAt: t.createdAt,
     expiresAt: t.expiresAt,
     lastUsedAt: t.lastUsedAt,
@@ -170,6 +184,7 @@ function storedToMeta(t: StoredServiceToken): ServiceTokenMeta {
     workspaceId: t.principal.workspaceId,
     operatorId: t.principal.operatorId,
     scopes: t.principal.scopes ?? [],
+    projectIds: t.principal.projectIds ?? [],
     createdAt: t.createdAt,
     expiresAt: t.expiresAt,
     lastUsedAt: t.lastUsedAt,

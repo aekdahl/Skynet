@@ -15,11 +15,17 @@ export function isGuardedPath(url: string): boolean {
   return path.startsWith("/api") || path.startsWith("/mcp");
 }
 
-/** The one public /api route: login issues the token, so it can't require one. */
+/** The public /api auth routes: login + the MFA second-factor exchange both
+ *  issue the token, so they can't require one. */
 export function isPublicLogin(url: string): boolean {
   const path = url.toLowerCase();
   // The path may carry a query string (e.g. ?next=/); match the prefix.
-  return path === "/api/auth/login" || path.startsWith("/api/auth/login?");
+  return (
+    path === "/api/auth/login" ||
+    path.startsWith("/api/auth/login?") ||
+    path === "/api/auth/mfa" ||
+    path.startsWith("/api/auth/mfa?")
+  );
 }
 
 /** True when a request must resolve a principal before it may proceed. */

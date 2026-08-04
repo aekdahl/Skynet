@@ -260,8 +260,14 @@ export interface ProviderReadiness {
   credentialSet: boolean;
 }
 
-export function providerReadiness(p: ProviderInfo): ProviderReadiness {
-  const credentialSet = p.available !== false;
+// `credentialOverride` lets a caller that has a FRESHER credential signal than
+// the snapshot (the Settings view re-fetches the secret store on mount) drive the
+// badge from that instead of the snapshot's `available`. Without it, the snapshot
+// and a just-set key can disagree — the card would show the stored key in its
+// pill while the badge still claimed "needs a credential". Omit it to keep the
+// snapshot-driven behavior (Fleet / Home have no fresher source).
+export function providerReadiness(p: ProviderInfo, credentialOverride?: boolean): ProviderReadiness {
+  const credentialSet = credentialOverride ?? p.available !== false;
   const req = p.requirements;
   if (!req) return { ready: credentialSet, missing: credentialSet ? [] : ["setup"], credentialSet };
 

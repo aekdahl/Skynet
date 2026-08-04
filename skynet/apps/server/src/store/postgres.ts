@@ -9,14 +9,17 @@ import type {
   TaskRun,
   AuditRecord,
   Dependency,
+  Feature,
   GithubConnection,
   HitlItem,
+  Milestone,
   Module,
   Project,
   ProviderInfo,
   Agent,
   Snapshot,
   Task,
+  WorkspaceSettings,
 } from "@skynet/shared";
 import { now } from "../config.js";
 import type { Store } from "./store.js";
@@ -28,6 +31,8 @@ CREATE TABLE IF NOT EXISTS runs     (id text PRIMARY KEY, workspace_id text NOT 
 CREATE TABLE IF NOT EXISTS hitl_queue (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS projects   (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS tasks      (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS features   (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS milestones (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS agents    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS modules    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS deps       (id bigserial PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
@@ -38,6 +43,7 @@ CREATE TABLE IF NOT EXISTS hitl_audit (id bigserial PRIMARY KEY, workspace_id te
                                        at bigint NOT NULL, payload jsonb);
 ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS github_connections (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS workspace_settings (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS github_tokens      (workspace_id text PRIMARY KEY, ciphertext text NOT NULL);
 CREATE TABLE IF NOT EXISTS service_tokens     (id text PRIMARY KEY, token_hash text NOT NULL, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE INDEX IF NOT EXISTS service_tokens_hash ON service_tokens(token_hash);
@@ -46,6 +52,8 @@ CREATE INDEX IF NOT EXISTS runs_ws   ON runs(workspace_id);
 CREATE INDEX IF NOT EXISTS hitl_ws     ON hitl_queue(workspace_id);
 CREATE INDEX IF NOT EXISTS projects_ws ON projects(workspace_id);
 CREATE INDEX IF NOT EXISTS tasks_ws    ON tasks(workspace_id);
+CREATE INDEX IF NOT EXISTS features_ws   ON features(workspace_id);
+CREATE INDEX IF NOT EXISTS milestones_ws ON milestones(workspace_id);
 CREATE INDEX IF NOT EXISTS agents_ws  ON agents(workspace_id);
 CREATE INDEX IF NOT EXISTS log_run   ON run_log(run_id);
 `;
@@ -146,6 +154,16 @@ export class PostgresStore implements Store {
   async putTask(t: Task) { await this.put("tasks", t.id, t.workspaceId, t); return t; }
   deleteTask(id: string) { return this.del("tasks", id); }
 
+  listFeatures(ws: string) { return this.list<Feature>("features", ws); }
+  getFeature(id: string) { return this.get<Feature>("features", id); }
+  async putFeature(f: Feature) { await this.put("features", f.id, f.workspaceId, f); return f; }
+  deleteFeature(id: string) { return this.del("features", id); }
+
+  listMilestones(ws: string) { return this.list<Milestone>("milestones", ws); }
+  getMilestone(id: string) { return this.get<Milestone>("milestones", id); }
+  async putMilestone(m: Milestone) { await this.put("milestones", m.id, m.workspaceId, m); return m; }
+  deleteMilestone(id: string) { return this.del("milestones", id); }
+
   listAgents(ws: string) { return this.list<Agent>("agents", ws); }
   async listAllAgents(): Promise<Agent[]> {
     const { rows } = await this.pool.query<{ data: Agent }>("SELECT data FROM agents");
@@ -209,6 +227,20 @@ export class PostgresStore implements Store {
     await this.pool.query("DELETE FROM github_connections WHERE workspace_id=$1", [ws]);
   }
 
+  async getWorkspaceSettings(ws: string): Promise<WorkspaceSettings | undefined> {
+    const { rows } = await this.pool.query<{ data: WorkspaceSettings }>(
+      "SELECT data FROM workspace_settings WHERE workspace_id=$1",
+      [ws],
+    );
+    return rows[0]?.data;
+  }
+  async putWorkspaceSettings(settings: WorkspaceSettings): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO workspace_settings(workspace_id,data) VALUES($1,$2::jsonb) ON CONFLICT(workspace_id) DO UPDATE SET data=$2::jsonb",
+      [settings.workspaceId, J(settings)],
+    );
+  }
+
   async getGithubToken(ws: string): Promise<string | undefined> {
     const { rows } = await this.pool.query<{ ciphertext: string }>(
       "SELECT ciphertext FROM github_tokens WHERE workspace_id=$1",
@@ -252,15 +284,17 @@ export class PostgresStore implements Store {
   }
 
   async snapshot(ws: string): Promise<Snapshot> {
-    const [runs, queue, projects, tasks, fleet, modules, deps] = await Promise.all([
+    const [runs, queue, projects, tasks, features, milestones, fleet, modules, deps] = await Promise.all([
       this.listRuns(ws),
       this.listQueue(ws),
       this.listProjects(ws),
       this.listTasks(ws),
+      this.listFeatures(ws),
+      this.listMilestones(ws),
       this.listAgents(ws),
       this.listModules(ws),
       this.listDeps(ws),
     ]);
-    return { runs, queue, projects, tasks, fleet, modules, deps, providers: PROVIDERS, serverTime: now() };
+    return { runs, queue, projects, tasks, features, milestones, fleet, modules, deps, providers: PROVIDERS, serverTime: now() };
   }
 }

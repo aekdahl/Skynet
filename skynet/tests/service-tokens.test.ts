@@ -67,6 +67,42 @@ describe("service-token store", () => {
   });
 });
 
+describe("project-scoped tokens", () => {
+  it("carries a project allowlist onto the principal and the metadata", async () => {
+    const store = new MemoryServiceTokenStore();
+    const created = await store.create({
+      workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:proj", scopes: ["observe", "author"],
+      label: "proj", projectIds: ["p-1", "p-2"],
+    });
+    // The confinement rides the principal, so every scope-check site sees it.
+    expect(await store.resolve(created.token)).toEqual({
+      workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:proj", scopes: ["observe", "author"], projectIds: ["p-1", "p-2"],
+    });
+    // And surfaces in the non-secret listing for the UI.
+    expect((await store.list(DEFAULT_WORKSPACE))[0]).toMatchObject({ projectIds: ["p-1", "p-2"] });
+  });
+
+  it("an empty / omitted allowlist means workspace-wide (no projectIds on the principal)", async () => {
+    const store = new MemoryServiceTokenStore();
+    const wide = await store.create({ workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:wide", scopes: ["observe"], label: "wide", projectIds: [] });
+    const principal = await store.resolve(wide.token);
+    expect(principal).not.toHaveProperty("projectIds"); // undefined = all projects
+    expect((await store.list(DEFAULT_WORKSPACE))[0]).toMatchObject({ projectIds: [] });
+  });
+
+  it("survives the durable round-trip (hash-only store)", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "skynet-tok-")), "db.json");
+    const fs = FileStore.create(path);
+    const minted = await new StoreServiceTokenStore(fs).create({
+      workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:proj", scopes: ["author"], label: "proj", projectIds: ["p-9"],
+    });
+    fs.flush();
+    const reopened = new StoreServiceTokenStore(FileStore.create(path));
+    expect(await reopened.resolve(minted.token)).toMatchObject({ projectIds: ["p-9"] });
+    expect((await reopened.list(DEFAULT_WORKSPACE))[0]).toMatchObject({ projectIds: ["p-9"] });
+  });
+});
+
 describe("durable service-token store (Store-backed, hash-only)", () => {
   const tmpDb = () => join(mkdtempSync(join(tmpdir(), "skynet-tok-")), "db.json");
   const base = { workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:research", scopes: ["observe", "author"] as const, label: "research" };

@@ -1,0 +1,42 @@
+# Caddy — the public /mcp door on the IAP box (only rendered when
+# enable_mcp_https). Terminates TLS on :443 and publishes ONLY /mcp; the human
+# UI/api/ws are NOT served here (they stay IAP-only on app_port). Caddy runs on
+# the host network and reaches the app at 127.0.0.1:app_port (the skynet
+# container publishes that port to the host).
+#
+# Rendered by startup.sh.tftpl (Terraform substitutes the placeholders).
+
+${mcp_domain} {
+	tls {
+		issuer acme {
+			email ${acme_email}
+			disable_tlsalpn_challenge
+		}
+	}
+
+	# Edge IP allowlist: only the MCP client ranges may reach this door at all.
+	@blocked not remote_ip ${mcp_ranges}
+	respond @blocked 403
+
+	@mcp path /mcp /mcp/*
+	@noauth not header Authorization "Bearer *"
+
+	# Only /mcp is published — everything else 404s (the UI is not here).
+	handle @mcp {
+		# Edge gate: reject tokenless requests before they reach the app. The app
+		# still validates the token value + scopes (AUTH_REQUIRED=true).
+		handle @noauth {
+			header Content-Type application/json
+			respond `{"jsonrpc":"2.0","error":{"code":-32001,"message":"Unauthorized: Authorization: Bearer <MCP_TOKEN> required"},"id":null}` 401
+		}
+		reverse_proxy 127.0.0.1:${app_port}
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+
+	log {
+		output file /data/access.log
+	}
+}

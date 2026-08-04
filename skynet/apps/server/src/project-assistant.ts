@@ -15,6 +15,7 @@ export {
   prefetchProjectDocs,
   validateProjectAction,
   splitProposedAction,
+  MAX_STEWARD_ACTIONS,
   prepareStewardCall,
   askSteward,
   askStewardStream,

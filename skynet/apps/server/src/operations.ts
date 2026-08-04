@@ -14,9 +14,13 @@ import type {
   TaskRun,
   AuditRecord,
   ConfigureRunnerRequest,
+  CreateFeatureRequest,
+  CreateMilestoneRequest,
   CreateProjectRequest,
   CreateTaskRequest,
+  Feature,
   HitlItem,
+  Milestone,
   Project,
   ProviderInfo,
   ResolveRequest,
@@ -24,11 +28,14 @@ import type {
   Agent,
   Snapshot,
   Task,
+  UpdateFeatureRequest,
+  UpdateMilestoneRequest,
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
+  UpdateWorkspaceSettingsRequest,
 } from "@skynet/shared";
-import { modelValidForProvider } from "@skynet/shared";
+import { modelValidForProvider, WorkspaceSettings } from "@skynet/shared";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
@@ -37,13 +44,13 @@ import { config, now } from "./config.js";
 import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { projectPreview, type PreviewState } from "./preview/project-preview.js";
-import { githubService } from "./github/index.js";
+import { githubService, parseRepoRef } from "./github/index.js";
 import {
   answerProjectQuestion,
   type AssistantAction,
   type ChatTurn,
 } from "./project-assistant.js";
-import { askStewardWorkspace, resolveFocusProject } from "./steward/assistant.js";
+import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -130,7 +137,7 @@ export class Operations {
     question: string,
     history?: ChatTurn[],
     focusProjectId?: string,
-  ): Promise<{ reply: string; action: AssistantAction | null; projectId: string | null }> {
+  ): Promise<{ reply: string; actions: AssistantAction[]; projectId: string | null }> {
     // An explicit page focus wins; otherwise resolve the project from the
     // conversation so the workspace dock can act on it, not just report on it.
     let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
@@ -141,18 +148,56 @@ export class Operations {
       project = id ? projects.find((p) => p.id === id) ?? null : null;
     }
     if (project) {
-      const { reply, action } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
-      return { reply, action, projectId: project.id };
+      const { reply, actions } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id };
     }
-    const { reply, action } = await askStewardWorkspace(this.store, { workspaceId, question, history });
-    return { reply, action, projectId: null };
+    const { reply, actions } = await askStewardWorkspace(this.store, { workspaceId, question, history });
+    return { reply, actions, projectId: null };
+  }
+
+  /** Streaming form of {@link stewardChat} — yields the reply as text deltas, then
+   *  RETURNS the clean reply + any proposed action + the resolved project. Same
+   *  focus resolution as stewardChat, so streaming and non-streaming agree. */
+  async *stewardChatStream(
+    workspaceId: string,
+    question: string,
+    history?: ChatTurn[],
+    focusProjectId?: string,
+  ): AsyncGenerator<string, { reply: string; actions: AssistantAction[]; projectId: string | null }> {
+    let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
+    if (project && project.workspaceId !== workspaceId) project = null;
+    if (!project) {
+      const projects = await this.store.listProjects(workspaceId);
+      const id = resolveFocusProject(projects.map((p) => ({ id: p.id, name: p.name })), question, history);
+      project = id ? projects.find((p) => p.id === id) ?? null : null;
+    }
+    if (project) {
+      const { reply, actions } = yield* askStewardStream(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id };
+    }
+    const { reply, actions } = yield* askStewardWorkspaceStream(this.store, { workspaceId, question, history });
+    return { reply, actions, projectId: null };
   }
 
   // ── reads (workspace-scoped) ──────────────────────────────────────────────
   async snapshot(ws: string): Promise<Snapshot> {
     const snap = await this.store.snapshot(ws);
     snap.providers = await withSecretAvailability(snap.providers, ws);
+    snap.defaultApprovalLevel = config.defaultApprovalLevel;
+    snap.workspaceSettings = await this.getWorkspaceSettings(ws);
     return snap;
+  }
+
+  /** The live workspace fleet policy, defaulted when never set. */
+  async getWorkspaceSettings(ws: string): Promise<WorkspaceSettings> {
+    return (await this.store.getWorkspaceSettings(ws)) ?? WorkspaceSettings.parse({ workspaceId: ws });
+  }
+
+  /** Patch the workspace fleet policy (auto-scale + cap). */
+  async updateWorkspaceSettings(ws: string, patch: UpdateWorkspaceSettingsRequest): Promise<WorkspaceSettings> {
+    const next = WorkspaceSettings.parse({ ...(await this.getWorkspaceSettings(ws)), ...patch, workspaceId: ws });
+    await this.store.putWorkspaceSettings(next);
+    return next;
   }
   listProviders(ws: string): Promise<ProviderInfo[]> {
     return this.store.listProviders().then((p) => withSecretAvailability(p, ws));
@@ -162,6 +207,12 @@ export class Operations {
   }
   listTasks(ws: string): Promise<Task[]> {
     return this.store.listTasks(ws);
+  }
+  listFeatures(ws: string): Promise<Feature[]> {
+    return this.store.listFeatures(ws);
+  }
+  listMilestones(ws: string): Promise<Milestone[]> {
+    return this.store.listMilestones(ws);
   }
   listRuns(ws: string): Promise<TaskRun[]> {
     return this.store.listRuns(ws);
@@ -348,6 +399,16 @@ export class Operations {
     // repo supersedes any local folder; the fresh repo is auto-cloned below.
     let repo = input.repo;
     let repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
+    // Cloning an EXISTING repo: the operator pastes its git URL (HTTPS/SSH) — we
+    // normalize it to the "owner/repo" slug and bind to it, so the existing
+    // repo-bound path takes over (auto-clone below via the workspace's GitHub
+    // token). A repo URL supersedes any local folder; the fresh checkout wins.
+    if (input.repoUrl) {
+      const slug = parseRepoRef(input.repoUrl);
+      if (!slug) throw new Error(`Not a recognizable GitHub repo URL: ${input.repoUrl}`);
+      repo = slug;
+      repoPath = null;
+    }
     if (input.createRepo) {
       const created = await githubService.createRepo(ws, input.createRepo, { description: input.goal });
       repo = created.name; // "owner/repo"
@@ -362,12 +423,25 @@ export class Operations {
       goal: input.goal,
       runIds: [],
       status: "active",
-      autonomy: true,
-      approvalLevel: config.defaultApprovalLevel,
+      // Governance is chosen at creation when the form sends it, else the
+      // server defaults (autonomy on; approvalLevel from SKYNET_APPROVAL_LEVEL).
+      autonomy: input.autonomy ?? true,
+      approvalLevel: input.approvalLevel ?? config.defaultApprovalLevel,
       approvalRules: [],
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo,
+      // Project-scoped agent guidance is optional at creation. Trimmed to null
+      // when blank so the "no rules" grounding path is unambiguous downstream.
+      instructions: input.instructions?.trim() || null,
+      // Optional: pin to a specific GitHub account at creation, else the default
+      // connection (chosen later in project settings).
+      githubCredentialId: input.githubCredentialId ?? null,
+      // Runner-key confinement is opt-in and set later in project settings —
+      // a fresh project runs on any workspace key until narrowed.
+      enabledRunnerCredentialIds: [],
+      // Source-of-truth write-back is opt-in (outward-facing) — enabled in settings.
+      syncSourceStatus: false,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
@@ -384,7 +458,14 @@ export class Operations {
             return { repoPath: rp, gitBacked: rp ? isGitRepo(rp) : false };
           })()
         : {};
-    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind });
+    // Normalize instructions: empty / whitespace-only clears back to null so
+    // downstream "no rules" branches don't have to distinguish "" from null.
+    // `patch.instructions === undefined` means the field is untouched.
+    const instructions =
+      patch.instructions === undefined
+        ? {}
+        : { instructions: patch.instructions?.trim() ? patch.instructions.trim() : null };
+    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     return updated;
   }
@@ -430,7 +511,7 @@ export class Operations {
     const base = config.reposDir ? resolvePath(config.reposDir) : resolvePath(dirname(config.dbPath), "repos");
     const dest = join(base, project.id);
     if (!existsSync(join(dest, ".git"))) {
-      await githubService.cloneRepo(ws, project.repo, dest);
+      await githubService.cloneRepo(ws, project.repo, dest, project.githubCredentialId);
     }
     return this.hub.upsertProject({ ...project, repoPath: dest, gitBacked: true });
   }
@@ -460,7 +541,7 @@ export class Operations {
       runId: null,
       autoPick: false,
       assessment: null,
-      reviewFlaggedReason: null,
+      reviewVerdict: null,
       assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,
       archived: false,
@@ -468,12 +549,57 @@ export class Operations {
       // `estimatedDurationMs`; `plannedStartAt` is operator-set via Steward/UI.
       estimatedDurationMs: null,
       plannedStartAt: null,
+      // Grouping / roadmap linkage starts unassigned — set later via
+      // updateTask (Steward or the task detail modal).
+      featureId: null,
+      milestoneId: null,
+      // Provenance — set when importing from a source of truth (GitHub issue, …).
+      source: input.source ?? null,
     };
     return this.hub.upsertTask(task);
+  }
+
+  /** Import a GitHub-connected project's OPEN issues as backlog tasks, each linked
+   *  back to its issue (Task.source) so status changes can be written back. Skips
+   *  issues already imported (deduped by repo#number). Uses the project's GitHub
+   *  account. See docs/task-source-sync.md. */
+  async importGithubIssues(ws: string, projectId: string): Promise<{ imported: number; skipped: number }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repo) throw new Error("Project isn't bound to a GitHub repo — set its repo first.");
+    const issues = await githubService.listIssues(ws, project.repo, project.githubCredentialId);
+    const existing = await this.store.listTasks(ws);
+    const seen = new Set(
+      existing.flatMap((t) =>
+        t.projectId === projectId && t.source?.kind === "github_issue" ? [`${t.source.repo}#${t.source.number}`] : [],
+      ),
+    );
+    let imported = 0;
+    for (const iss of issues) {
+      if (seen.has(`${project.repo}#${iss.number}`)) continue;
+      await this.createTask(ws, projectId, {
+        text: iss.title,
+        description: iss.body || undefined,
+        source: { kind: "github_issue", repo: project.repo, number: iss.number, url: iss.url },
+      });
+      imported++;
+    }
+    return { imported, skipped: issues.length - imported };
   }
   async updateTask(ws: string, tid: string, patch: UpdateTaskRequest): Promise<Task> {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    // Enforce that a referenced feature/milestone exists and belongs to the
+    // task's project — cross-project linkage would produce nonsensical roadmap
+    // rollups. `null` explicitly clears the assignment.
+    if (patch.featureId !== undefined && patch.featureId !== null) {
+      const f = await this.store.getFeature(patch.featureId);
+      if (!f || f.workspaceId !== ws || f.projectId !== task.projectId) throw new NotFoundError("Feature");
+    }
+    if (patch.milestoneId !== undefined && patch.milestoneId !== null) {
+      const m = await this.store.getMilestone(patch.milestoneId);
+      if (!m || m.workspaceId !== ws || m.projectId !== task.projectId) throw new NotFoundError("Milestone");
+    }
     if (patch.assignment) {
       // Clearing eligibility back to `unassigned` is only allowed while parked in
       // backlog — otherwise a running/queued task could lose the set it left
@@ -628,7 +754,7 @@ export class Operations {
       ...task,
       state: to,
       ...(abandonsRun ? { runId: null } : {}),
-      reviewFlaggedReason: null,
+      reviewVerdict: null,
     });
 
     // Sync the linked TaskRun's status to match — the "review → done" path with
@@ -658,12 +784,89 @@ export class Operations {
     const updated = await this.hub.upsertTask({
       ...task,
       state: "done",
-      reviewFlaggedReason: null,
+      reviewVerdict: null,
     });
     if (updated.runId) {
       await this.hub.runStatus(updated.runId, "done").catch(() => undefined);
     }
     return updated;
+  }
+
+  // ── features (task grouping) ───────────────────────────────────────────
+  async createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (input.milestoneId != null) {
+      const m = await this.store.getMilestone(input.milestoneId);
+      if (!m || m.workspaceId !== ws || m.projectId !== projectId) throw new NotFoundError("Milestone");
+    }
+    const inProject = (await this.store.listFeatures(ws)).filter((f) => f.projectId === projectId);
+    const feature: Feature = {
+      id: this.uid(`f-${this.slug(project.name)}`),
+      workspaceId: ws,
+      projectId,
+      name: input.name,
+      description: input.description?.trim() || null,
+      status: "active",
+      milestoneId: input.milestoneId ?? null,
+      order: inProject.length,
+      archived: false,
+      createdAt: now(),
+    };
+    return this.hub.upsertFeature(feature);
+  }
+  async updateFeature(ws: string, fid: string, patch: UpdateFeatureRequest): Promise<Feature> {
+    const feature = await this.store.getFeature(fid);
+    if (!feature || feature.workspaceId !== ws) throw new NotFoundError("Feature");
+    if (patch.milestoneId !== undefined && patch.milestoneId !== null) {
+      const m = await this.store.getMilestone(patch.milestoneId);
+      if (!m || m.workspaceId !== ws || m.projectId !== feature.projectId) throw new NotFoundError("Milestone");
+    }
+    return this.hub.upsertFeature({ ...feature, ...patch });
+  }
+  async deleteFeature(ws: string, fid: string): Promise<void> {
+    const feature = await this.store.getFeature(fid);
+    if (!feature || feature.workspaceId !== ws) throw new NotFoundError("Feature");
+    // Clear the featureId on any tasks that referenced it — leaving dangling
+    // pointers would render a "phantom feature" chip on the board.
+    const tasks = (await this.store.listTasks(ws)).filter((t) => t.featureId === fid);
+    for (const t of tasks) await this.hub.upsertTask({ ...t, featureId: null });
+    await this.hub.deleteFeature(fid);
+  }
+
+  // ── milestones (roadmap grouping) ──────────────────────────────────────
+  async createMilestone(ws: string, projectId: string, input: CreateMilestoneRequest): Promise<Milestone> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const inProject = (await this.store.listMilestones(ws)).filter((m) => m.projectId === projectId);
+    const milestone: Milestone = {
+      id: this.uid(`m-${this.slug(project.name)}`),
+      workspaceId: ws,
+      projectId,
+      name: input.name,
+      description: input.description?.trim() || null,
+      targetAt: input.targetAt ?? null,
+      status: "planned",
+      order: inProject.length,
+      archived: false,
+      createdAt: now(),
+    };
+    return this.hub.upsertMilestone(milestone);
+  }
+  async updateMilestone(ws: string, mid: string, patch: UpdateMilestoneRequest): Promise<Milestone> {
+    const milestone = await this.store.getMilestone(mid);
+    if (!milestone || milestone.workspaceId !== ws) throw new NotFoundError("Milestone");
+    return this.hub.upsertMilestone({ ...milestone, ...patch });
+  }
+  async deleteMilestone(ws: string, mid: string): Promise<void> {
+    const milestone = await this.store.getMilestone(mid);
+    if (!milestone || milestone.workspaceId !== ws) throw new NotFoundError("Milestone");
+    // Clear the milestoneId on features + tasks that referenced it.
+    const features = (await this.store.listFeatures(ws)).filter((f) => f.milestoneId === mid);
+    for (const f of features) await this.hub.upsertFeature({ ...f, milestoneId: null });
+    const tasks = (await this.store.listTasks(ws)).filter((t) => t.milestoneId === mid);
+    for (const t of tasks) await this.hub.upsertTask({ ...t, milestoneId: null });
+    await this.hub.deleteMilestone(mid);
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────
@@ -674,13 +877,19 @@ export class Operations {
     // an unknown provider or an empty model is a 400 (fail() maps Error → 400).
     const invalid = modelValidForProvider(await this.store.listProviders(), input.provider, input.model);
     if (invalid) throw new Error(invalid);
+    // Honor the workspace fleet cap — the safety valve against runaway creation
+    // (a project-scoped MCP token, an over-eager script). 0 = no cap.
+    const { maxRunners } = await this.getWorkspaceSettings(ws);
+    const fleet = await this.store.listAgents(ws);
+    if (maxRunners > 0 && fleet.length >= maxRunners) {
+      throw new Error(`Fleet is at its maximum of ${maxRunners} runner${maxRunners === 1 ? "" : "s"} — raise the limit in settings or retire an idle runner.`);
+    }
     // The id is a stable, opaque handle (runs reference it as agentId); the name
     // is the human-facing label shown on the board. Keeping them separate means
     // a rename never moves the id, and two agents can share a display name
     // without colliding. Auto-name to `<provider>-<name>` when none is given.
     const id = this.uid("runner");
-    const existing = await this.store.listAgents(ws);
-    const name = input.name?.trim() || generateAgentName(input.provider, existing.map((a) => a.name));
+    const name = input.name?.trim() || generateAgentName(input.provider, fleet.map((a) => a.name));
     const runner: Agent = {
       id,
       workspaceId: ws,
@@ -690,6 +899,7 @@ export class Operations {
       model: input.model,
       status: "idle",
       idleSince: now(),
+      autoProvisioned: false, // an operator added this — the idle reaper leaves it alone
     };
     return this.hub.upsertAgent(runner);
   }
