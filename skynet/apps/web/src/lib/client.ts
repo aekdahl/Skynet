@@ -376,6 +376,7 @@ export function updateProject(
     githubCredentialId?: string | null;
     // Which provider keys the project may run on (credential ids; empty = all).
     enabledRunnerCredentialIds?: string[];
+    syncSourceStatus?: boolean;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
@@ -391,6 +392,10 @@ export function deleteProject(id: string) {
  *  (headless/GCP), so agents can work on it. Sets repoPath + gitBacked. */
 export function cloneProjectRepo(id: string) {
   return req<unknown>("POST", `/api/projects/${id}/clone`);
+}
+// Import the project's open GitHub issues as tasks (linked back via Task.source).
+export function importGithubIssues(projectId: string) {
+  return req<{ imported: number; skipped: number }>("POST", `/api/projects/${projectId}/import/github-issues`);
 }
 
 // Tasks

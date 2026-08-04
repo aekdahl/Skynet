@@ -440,6 +440,8 @@ export class Operations {
       // Runner-key confinement is opt-in and set later in project settings —
       // a fresh project runs on any workspace key until narrowed.
       enabledRunnerCredentialIds: [],
+      // Source-of-truth write-back is opt-in (outward-facing) — enabled in settings.
+      syncSourceStatus: false,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
@@ -551,8 +553,38 @@ export class Operations {
       // updateTask (Steward or the task detail modal).
       featureId: null,
       milestoneId: null,
+      // Provenance — set when importing from a source of truth (GitHub issue, …).
+      source: input.source ?? null,
     };
     return this.hub.upsertTask(task);
+  }
+
+  /** Import a GitHub-connected project's OPEN issues as backlog tasks, each linked
+   *  back to its issue (Task.source) so status changes can be written back. Skips
+   *  issues already imported (deduped by repo#number). Uses the project's GitHub
+   *  account. See docs/task-source-sync.md. */
+  async importGithubIssues(ws: string, projectId: string): Promise<{ imported: number; skipped: number }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repo) throw new Error("Project isn't bound to a GitHub repo — set its repo first.");
+    const issues = await githubService.listIssues(ws, project.repo, project.githubCredentialId);
+    const existing = await this.store.listTasks(ws);
+    const seen = new Set(
+      existing.flatMap((t) =>
+        t.projectId === projectId && t.source?.kind === "github_issue" ? [`${t.source.repo}#${t.source.number}`] : [],
+      ),
+    );
+    let imported = 0;
+    for (const iss of issues) {
+      if (seen.has(`${project.repo}#${iss.number}`)) continue;
+      await this.createTask(ws, projectId, {
+        text: iss.title,
+        description: iss.body || undefined,
+        source: { kind: "github_issue", repo: project.repo, number: iss.number, url: iss.url },
+      });
+      imported++;
+    }
+    return { imported, skipped: issues.length - imported };
   }
   async updateTask(ws: string, tid: string, patch: UpdateTaskRequest): Promise<Task> {
     const task = await this.store.getTask(tid);

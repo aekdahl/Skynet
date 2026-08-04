@@ -238,6 +238,14 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     nested monorepo whose recipe embeds `install`, since the built-in root-level provisioning doesn't
     cover a sub-package). Cache/skip the reinstall when the reused worktree already has `node_modules`
     (and the lockfile is unchanged) so restarts are near-instant.
+- [~] **🔁 Task ↔ source-of-truth sync.** Tasks imported from an external source (GitHub issues, repo
+  files, a tracker) should update the source when their Skynet status changes. **Approach:** a
+  `Task.source` provenance link (set at import) + a `SyncSink` adapter seam (one per source kind),
+  triggered from the `task.upserted` bus event (single choke point). Opt-in per project
+  (`syncSourceStatus`) since writing back is outward-facing. **Phase 1 (done):** GitHub issues —
+  import open issues → tasks (deduped, `source` set), and on transition comment / close / reopen the
+  issue. **Phase 2:** repo files (`- [ ]`→`- [x]` / frontmatter via the push/PR flow). **Phase 3:**
+  external/webhook (Linear/Jira) + optional two-way. Full design: **[docs/task-source-sync.md](docs/task-source-sync.md)**.
 - [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign

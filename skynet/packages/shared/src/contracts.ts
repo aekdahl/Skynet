@@ -240,8 +240,22 @@ export const Project = z.object({
   // MCP token may only create runners with these keys. EMPTY = every key in the
   // workspace (the default — unchanged behavior); a non-empty list confines it.
   enabledRunnerCredentialIds: z.array(z.string()).default([]),
+  // Opt-in: write task status changes back to their imported source of truth
+  // (e.g. close/comment the GitHub issue on done). Outward-facing, so off by
+  // default. See docs/task-source-sync.md.
+  syncSourceStatus: z.boolean().default(false),
 });
 export type Project = z.infer<typeof Project>;
+
+// Provenance for a task imported from an external source of truth, so Skynet can
+// write status changes BACK to it (see docs/task-source-sync.md). Set at import;
+// carried for the task's life. `syncedAt`/`sourceRev` reserve a future two-way sync.
+export const TaskSource = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("github_issue"), repo: z.string(), number: z.number().int(), url: z.string().default("") }),
+  z.object({ kind: z.literal("repo_file"), path: z.string(), anchor: z.string().default("") }), // Phase 2
+  z.object({ kind: z.literal("external"), system: z.string(), id: z.string(), url: z.string().default("") }), // Phase 3
+]);
+export type TaskSource = z.infer<typeof TaskSource>;
 
 export const Task = z.object({
   id: z.string(),
@@ -303,6 +317,9 @@ export const Task = z.object({
   // the Feature (Feature.milestoneId); this field is for orphan tasks that
   // don't sit under a feature but still need to appear on the roadmap.
   milestoneId: z.string().nullable().default(null),
+  // Where this task was imported from (GitHub issue / repo file / tracker), so a
+  // status change can be written back to it. null → a native Skynet task.
+  source: TaskSource.nullable().default(null),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -580,12 +597,14 @@ export const UpdateProjectRequest = z.object({
   // Which provider keys the project may run on (secret-store credential ids;
   // empty = all keys). See Project.enabledRunnerCredentialIds.
   enabledRunnerCredentialIds: z.array(z.string()).optional(),
+  syncSourceStatus: z.boolean().optional(), // write status changes back to the source of truth
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 
 export const CreateTaskRequest = z.object({
   text: z.string().min(1),
   description: z.string().optional(),
+  source: TaskSource.optional(), // set when importing from a source of truth
 });
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequest>;
 

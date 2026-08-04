@@ -22,6 +22,7 @@ import { registerLivePreviewProxy } from "./preview/preview-proxy.js";
 import { recordPublicOrigin } from "./preview/public-origin.js";
 import { registerSecretsRoutes } from "./secrets/index.js";
 import { registerGithubRoutes, configureGithub, githubService } from "./github/index.js";
+import { startTaskSourceSync } from "./task-sync.js";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { registerEvalsRoutes } from "./evals/index.js";
 import { registerSimulationRoutes } from "./simulation/index.js";
@@ -68,6 +69,10 @@ async function main() {
   // Persist the GitHub connection in the same Store as the rest of the domain
   // (file for the desktop app, Postgres for hosted) — durable, no side-store.
   configureGithub(store);
+
+  // Write task status changes back to their imported source of truth (GitHub
+  // issues today). Off unless a project opts in (syncSourceStatus). Best-effort.
+  startTaskSourceSync(bus, { store, log: (m) => console.log(m) });
 
   // Deploy-time convenience: if a GITHUB_TOKEN is present (the GCP self-host
   // loads it from Secret Manager) and the workspace has no GitHub connection
