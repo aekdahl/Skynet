@@ -14,6 +14,7 @@ import {
   tasksInState,
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
+import { PrimaryButton } from "../components/empty";
 import { ProjectDelivery, visualLeadOf } from "../components/preview";
 import { Markdown } from "../components/markdown";
 import { SwDiagram } from "../components/subway-diagram";
@@ -538,11 +539,21 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
         + Add task
       </button>
     );
+  const canSubmit = !!draft.trim();
   const submit = () => {
+    if (!canSubmit) return;
     onAdd(draft.trim(), desc.trim() || undefined);
     setDraft("");
     setDesc("");
     setOpen(false);
+  };
+  // ⌘↵ / Ctrl↵ submits from anywhere in the composer; a bare Enter in the
+  // single-line name field also submits (it can't hold a newline anyway).
+  const cmdEnter = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && canSubmit) {
+      e.preventDefault();
+      submit();
+    }
   };
   return (
     <div className="kb-card kb-card-backlog kb-addcard">
@@ -554,7 +565,12 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
           placeholder="Task name — like a commit subject"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && draft.trim() && submit()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && canSubmit) {
+              e.preventDefault();
+              submit();
+            }
+          }}
         />
         <span className={"task-name-count mono" + (draft.length >= TASK_NAME_MAX ? " task-name-max" : "")}>
           {draft.length}/{TASK_NAME_MAX}
@@ -563,14 +579,20 @@ function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) =>
       <textarea
         className="qx-input kb-addcard-desc"
         rows={3}
-        placeholder="Description (optional) — context, constraints, what “done” looks like…"
+        placeholder="description (optional — the full brief the agent receives)"
         value={desc}
         onChange={(e) => setDesc(e.target.value)}
+        onKeyDown={cmdEnter}
       />
       <div className="qx-row kb-addcard-actions">
-        <button className="btn btn-primary btn-sm" disabled={!draft.trim()} onClick={submit}>
+        <PrimaryButton
+          className="btn-sm"
+          disabled={!canSubmit}
+          reason="Enter a task name to add it."
+          onClick={submit}
+        >
           Add task
-        </button>
+        </PrimaryButton>
         <button className="btn btn-ghost btn-sm" onClick={() => { setDraft(""); setDesc(""); setOpen(false); }}>
           Cancel
         </button>
