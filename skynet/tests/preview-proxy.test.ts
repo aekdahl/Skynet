@@ -1,79 +1,57 @@
-// The preview reverse proxy makes a running preview reachable through Skynet's
-// own URL (phone/remote) at `/p/<token>/…`. These drive the REAL route against a
-// fake upstream "dev server": token → forward, strip-prefix + <base> injection
-// for a root-served app, full-path passthrough for a vite (basePath) app, and a
-// 404 for an unknown/expired token (the path token is the only secret).
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import Fastify, { type FastifyInstance } from "fastify";
-import { createServer, type Server } from "node:http";
-import { registerPreviewProxy } from "../apps/server/src/preview/proxy.js";
-// NOTE: the WS/HMR proxy path needs @fastify/websocket (an apps/server dep, not
-// resolvable from tests/) so it's covered by the live check, not here.
+// The live-preview reverse proxy makes a loopback dev server reachable at
+// /p/<token>/ on Skynet's public origin — and, crucially, forwards with the Host
+// rewritten to loopback so Vite's allowedHosts accepts it. These pin the pure
+// bits: token extraction from the path, and public-origin learning (env wins;
+// loopback ignored).
+import { describe, it, expect, beforeEach } from "vitest";
+import { previewTokenOf } from "../apps/server/src/preview/preview-proxy.js";
+import { recordPublicOrigin, publicOrigin, __resetPublicOrigin } from "../apps/server/src/preview/public-origin.js";
 
-let upstream: Server;
-let upstreamPort: number;
-let app: FastifyInstance;
-let appUrl: string;
-
-// Fake resolver: "root" serves at / (strip + inject), "vite" serves under its
-// base (full-path passthrough), anything else is unknown.
-const resolver = {
-  proxyTarget(token: string) {
-    if (token === "root") return { port: upstreamPort };
-    if (token === "vite") return { port: upstreamPort, basePath: "/p/vite/" };
-    return null;
-  },
-};
-
-beforeAll(async () => {
-  // Upstream echoes the path it received; serves HTML at the root paths.
-  upstream = createServer((req, res) => {
-    if (req.url === "/" || req.url === "/p/vite/") {
-      res.writeHead(200, { "content-type": "text/html" });
-      res.end("<html><head><title>App</title></head><body>hello</body></html>");
-      return;
-    }
-    res.writeHead(200, { "content-type": "text/plain" });
-    res.end(`GOT ${req.url}`);
+describe("previewTokenOf", () => {
+  it("extracts the token from a /p/<token>/… path", () => {
+    expect(previewTokenOf("/p/abc123/")).toBe("abc123");
+    expect(previewTokenOf("/p/abc123/@vite/client")).toBe("abc123");
+    expect(previewTokenOf("/p/abc-_.9/index.html?x=1")).toBe("abc-_.9");
+    expect(previewTokenOf("/p/tok")).toBe("tok");
   });
-  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
-  upstreamPort = (upstream.address() as { port: number }).port;
-
-  app = Fastify();
-  registerPreviewProxy(app, resolver);
-  appUrl = await app.listen({ port: 0, host: "127.0.0.1" });
+  it("returns null for non-preview paths", () => {
+    expect(previewTokenOf("/api/snapshot")).toBeNull();
+    expect(previewTokenOf("/p/")).toBeNull();
+    expect(previewTokenOf("/")).toBeNull();
+  });
 });
 
-afterAll(async () => {
-  await app.close();
-  await new Promise<void>((r) => upstream.close(() => r()));
-});
-
-describe("preview reverse proxy (/p/:token)", () => {
-  it("forwards to the live preview and injects <base> for a root-served app", async () => {
-    const res = await fetch(`${appUrl}/p/root/`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain('<base href="/p/root/">'); // relative assets now resolve under the prefix
-    expect(html).toContain("hello");
+describe("public origin learning", () => {
+  beforeEach(() => {
+    delete process.env.SKYNET_PUBLIC_URL;
+    delete process.env.SKYNET_PREVIEW_BASE_URL;
+    __resetPublicOrigin();
   });
 
-  it("strips the /p/<token> prefix so the dev server sees a root path", async () => {
-    const res = await fetch(`${appUrl}/p/root/assets/app.js?v=1`);
-    expect(await res.text()).toBe("GOT /assets/app.js?v=1");
+  it("learns from forwarded proto+host, ignoring loopback", () => {
+    recordPublicOrigin("https", "skynet.example.com");
+    expect(publicOrigin()).toBe("https://skynet.example.com");
   });
 
-  it("passes the FULL path through for a vite (basePath) preview — no strip, no rewrite", async () => {
-    // index at the base is HTML but must NOT be rewritten (vite already has the base).
-    const idx = await fetch(`${appUrl}/p/vite/`);
-    expect(await idx.text()).not.toContain("<base");
-    const asset = await fetch(`${appUrl}/p/vite/assets/x.js`);
-    expect(await asset.text()).toBe("GOT /p/vite/assets/x.js");
+  it("ignores loopback/local hosts (desktop stays loopback-only)", () => {
+    recordPublicOrigin("http", "localhost:8080");
+    recordPublicOrigin("http", "127.0.0.1:8080");
+    expect(publicOrigin()).toBeUndefined();
   });
 
-  it("404s an unknown / expired token (the token is the only secret)", async () => {
-    const res = await fetch(`${appUrl}/p/nope/`);
-    expect(res.status).toBe(404);
-    expect(await res.text()).toMatch(/not running/i);
+  it("takes the first value from a comma-joined forwarded header", () => {
+    recordPublicOrigin("https,http", "skynet.example.com, internal", undefined);
+    expect(publicOrigin()).toBe("https://skynet.example.com");
+  });
+
+  it("an explicit env origin wins over the learned one", () => {
+    recordPublicOrigin("https", "learned.example.com");
+    process.env.SKYNET_PUBLIC_URL = "https://pinned.example.com/";
+    expect(publicOrigin()).toBe("https://pinned.example.com"); // trailing slash trimmed
+  });
+
+  it("falls back to Host when no forwarded host is present", () => {
+    recordPublicOrigin(undefined, undefined, "app.example.com");
+    expect(publicOrigin()).toBe("https://app.example.com"); // defaults to https
   });
 });

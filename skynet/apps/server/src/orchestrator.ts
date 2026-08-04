@@ -4,6 +4,7 @@
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
 import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo } from "@skynet/shared";
+import { WorkspaceSettings } from "@skynet/shared";
 import {
   type HitlRaise,
   type RunnerEvents,
@@ -13,6 +14,7 @@ import {
 import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
+import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
@@ -80,18 +82,25 @@ export class TaskAlreadyAssignedError extends Error {
 }
 
 /**
- * PURE: extract a trailing `{"estMinutes": N}` JSON tag off the triage LLM's
- * reply. Returns the body (with the tag stripped) and the parsed minutes when
- * present. Tolerates a code fence around the tag; ignores non-numeric or
- * malformed values (a bad tag stays a missing estimate — never fabricates a
- * duration). Exported for the unit tests.
+ * PURE: extract a trailing `{"estMinutes": N, "clarity": "clear"|"unclear"}`
+ * JSON tag off the triage LLM's reply. Returns the body (with the tag stripped)
+ * plus each parsed field. Tolerates a code fence around the tag; ignores
+ * non-numeric / malformed / missing values individually — a bad `estMinutes`
+ * doesn't strip a valid `clarity` and vice versa. A missing signal stays
+ * missing (never fabricated). Exported for the unit tests.
+ *
+ * `clarity` drives auto-promote triage→todo: only "clear" tasks auto-advance
+ * (and only when they also have an eligibility set). "unclear" and null both
+ * park the task in triage for a human to promote.
  */
-export function splitEstMinutesTag(raw: string): { body: string; estMinutes: number | null } {
+export function splitEstMinutesTag(
+  raw: string,
+): { body: string; estMinutes: number | null; clarity: "clear" | "unclear" | null } {
   const trimmed = (raw ?? "").trim();
   const noFence = trimmed.replace(/\n?```\s*$/, "").trimEnd();
   // Match the LAST balanced top-level {...} on the tail.
   const end = noFence.lastIndexOf("}");
-  if (end === -1) return { body: trimmed, estMinutes: null };
+  if (end === -1) return { body: trimmed, estMinutes: null, clarity: null };
   let depth = 0;
   let start = -1;
   for (let i = end; i >= 0; i--) {
@@ -102,17 +111,44 @@ export function splitEstMinutesTag(raw: string): { body: string; estMinutes: num
       if (depth === 0) { start = i; break; }
     }
   }
-  if (start < 0) return { body: trimmed, estMinutes: null };
+  if (start < 0) return { body: trimmed, estMinutes: null, clarity: null };
   try {
-    const obj = JSON.parse(noFence.slice(start, end + 1)) as { estMinutes?: unknown };
-    if (typeof obj.estMinutes === "number" && Number.isFinite(obj.estMinutes) && obj.estMinutes > 0) {
+    const obj = JSON.parse(noFence.slice(start, end + 1)) as { estMinutes?: unknown; clarity?: unknown };
+    // Parse each field independently — a malformed one shouldn't drop the tag.
+    const estMinutes =
+      typeof obj.estMinutes === "number" && Number.isFinite(obj.estMinutes) && obj.estMinutes > 0
+        ? Math.round(obj.estMinutes)
+        : null;
+    const clarity: "clear" | "unclear" | null =
+      obj.clarity === "clear" || obj.clarity === "unclear" ? obj.clarity : null;
+    // Only strip the tag from the body if AT LEAST ONE field parsed — if
+    // neither did the "JSON object" was probably a false positive in prose.
+    if (estMinutes != null || clarity != null) {
       const body = noFence.slice(0, start).replace(/```[a-zA-Z]*\s*$/, "").trim();
-      return { body, estMinutes: Math.round(obj.estMinutes) };
+      return { body, estMinutes, clarity };
     }
   } catch {
     /* not a JSON tail — whole reply is the body */
   }
-  return { body: trimmed, estMinutes: null };
+  return { body: trimmed, estMinutes: null, clarity: null };
+}
+
+// Appended to every run brief. Scope creep — an agent finishing the ask and then
+// wandering into unrequested adjacent work — is the #1 way a run burns its turn
+// budget and stalls. Keep the agent inside the requested scope so it finishes.
+const SCOPE_NOTE =
+  "\n\n---\nScope discipline: do exactly what's asked above, then stop. Don't expand into adjacent or unrequested work — extra features, UI, refactors, or speculative follow-ups. When the requested change is complete, report and finish rather than inventing more scope. If you're genuinely blocked, or the task is too big for one focused session, escalate (AskUserQuestion with header \"ESCALATE\") instead of grinding through your turn budget.";
+
+/** Prepend the project's `instructions` (the "house rules" for this codebase)
+ *  to any prompt an agent will see. When there are no instructions this is a
+ *  no-op — the prompt is returned unchanged, so runs on projects that never
+ *  set the field behave exactly as they did before. The banner is fenced with
+ *  a clear label so an agent that reads a stack of prompts knows what's
+ *  project-scoped guidance vs. task-scoped ask. Exported for tests + reuse. */
+export function withInstructions(instructions: string | null | undefined, body: string): string {
+  const trimmed = instructions?.trim();
+  if (!trimmed) return body;
+  return `=== PROJECT INSTRUCTIONS (apply to every task in this project) ===\n${trimmed}\n\n=== TASK ===\n${body}`;
 }
 
 export class Orchestrator {
@@ -161,6 +197,9 @@ export class Orchestrator {
   // Per-run failure counter (onFailed): past config.runMaxFailures the run is
   // escalated instead of parked in `review`. Cleared on success/resolution.
   private failCounts = new Map<string, number>();
+  // Runs already told "main moved" — so the periodic freshness sweep nudges once,
+  // not every tick. Cleared if the branch catches back up (e.g. after a resync).
+  private baseMovedFlagged = new Set<string>();
 
   // `providerOverride` is a test seam — inject a runner provider directly instead
   // of resolving the runner's own provider. Production always passes (store, hub) only.
@@ -487,6 +526,18 @@ export class Orchestrator {
    * task, or integrate a branch. A broken runner must not look like success.
    */
   private async fail(runId: string, reason: string): Promise<void> {
+    // "Ran out of turns" is a resumable checkpoint, not a crash — the worktree +
+    // committed work are intact and the runner already tried to continue on its
+    // own. Escalate straight to a human (Resume / Reassign / Stop) rather than
+    // counting it as a failure and parking in `review` for another doomed try.
+    if (/error_max_turns|out of turns/i.test(reason)) {
+      await this.escalate(
+        runId,
+        "The agent hit its turn budget before finishing. Its work so far is saved on the branch — resume to continue where it left off, reassign it, or stop.",
+        "turns",
+      );
+      return;
+    }
     // Count failures on this run; past the threshold, hand it to a human
     // (escalation) instead of quietly parking in `review` for another doomed try.
     const count = (this.failCounts.get(runId) ?? 0) + 1;
@@ -555,7 +606,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: stat.add, del: stat.del, modules },
+      diff: { add: stat.add, del: stat.del, modules, files: stat.files },
       flags: [],
     });
   }
@@ -605,6 +656,10 @@ export class Orchestrator {
   private acquireAgent(
     workspaceId: string,
     eligible?: TaskAssignment,
+    // The project's enabled-key allowlist (secret-store credential ids; empty =
+    // any key). A runner is assignable only if its key (credentialId ?? provider)
+    // is in this set — the project-level provider-key confinement.
+    allowedCredentialIds: string[] = [],
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
@@ -615,12 +670,35 @@ export class Orchestrator {
       // considers the whole fleet (historical behavior).
       const inPool = (id: string) =>
         eligible?.mode === "agents" ? eligible.agentIds.includes(id) : true;
-      const eligibleRunners = runners.filter((r) => inPool(r.id));
-      if (eligible?.mode === "agents" && eligibleRunners.length === 0) {
+      const keyAllowed = (r: Agent) =>
+        allowedCredentialIds.length === 0 || allowedCredentialIds.includes(r.credentialId ?? r.provider);
+      const pooled = runners.filter((r) => inPool(r.id));
+      if (eligible?.mode === "agents" && pooled.length === 0) {
         throw new NoCapacityError("None of this task's assigned agents exist in the fleet.");
+      }
+      // Confine to runners on a key this project is allowed to run on.
+      const eligibleRunners = pooled.filter(keyAllowed);
+      if (eligibleRunners.length === 0) {
+        throw new NoCapacityError(
+          "No fleet runner uses a provider key enabled for this project — enable one of its keys in the project's settings, or add a runner on an allowed key in Fleet.",
+        );
       }
       const idle = eligibleRunners.filter((r) => r.status === "idle");
       if (idle.length === 0) {
+        // Auto-scale: every eligible runner is busy. If the workspace policy
+        // allows it AND we're under the fleet cap, clone an eligible runner
+        // (already on an allowed key) and provision a fresh one instead of
+        // making the task wait. At the cap we fall through to NoCapacityError —
+        // the task queues until a runner frees up. Atomic under acquireExclusive.
+        const settings = await this.fleetPolicy(workspaceId);
+        const underCap = !settings.maxRunners || runners.length < settings.maxRunners;
+        const template = eligibleRunners[0]; // a busy runner on an allowed key
+        if (settings.autoProvisionRunners && underCap && template && (await this.providerUsable(workspaceId, template.provider, template.credentialId))) {
+          const id = `runner-auto-${++this.seq}`;
+          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null, autoProvisioned: true };
+          await this.hub.upsertAgent(runner);
+          return { id, provider: template.provider, model: template.model, credentialId: template.credentialId ?? null };
+        }
         throw new NoCapacityError(
           eligible?.mode === "agents"
             ? "This task's assigned agents are all busy — it waits until one frees up."
@@ -639,6 +717,17 @@ export class Orchestrator {
     });
   }
 
+  /** The workspace fleet policy, defaulted when never set (so maxRunners=100 and
+   *  the reaper TTL apply to unconfigured workspaces too). */
+  private async fleetPolicy(ws: string): Promise<WorkspaceSettings> {
+    return (await this.store.getWorkspaceSettings(ws)) ?? WorkspaceSettings.parse({ workspaceId: ws });
+  }
+
+  /** A project's enabled-runner-key allowlist (empty = any key). */
+  private async projectKeyAllowlist(projectId: string): Promise<string[]> {
+    return (await this.store.getProject(projectId))?.enabledRunnerCredentialIds ?? [];
+  }
+
   /**
    * Acquire an idle runner, or PROVISION a fresh one on demand when the fleet is
    * fully occupied — used by fork so a family can branch even when every runner
@@ -651,15 +740,28 @@ export class Orchestrator {
     provider: TaskRun["provider"],
     model: string,
     credentialId?: string | null,
+    // The owning project's enabled-key allowlist (empty = any). Confines which
+    // idle runner may be reused, so a fork/retry can't land on a key the project
+    // isn't allowed to run on. The provisioned fallback uses the requested
+    // credential, which the caller already resolved from an allowed run.
+    allowedCredentialIds: string[] = [],
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
-      // Prefer an idle agent whose provider/credential can actually execute.
-      for (const r of runners.filter((r) => r.status === "idle")) {
+      const keyAllowed = (r: Agent) =>
+        allowedCredentialIds.length === 0 || allowedCredentialIds.includes(r.credentialId ?? r.provider);
+      // Prefer an idle agent that's on an allowed key AND can actually execute.
+      for (const r of runners.filter((r) => r.status === "idle" && keyAllowed(r))) {
         if (await this.providerUsable(workspaceId, r.provider, r.credentialId)) {
           await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
           return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
         }
+      }
+      // Respect the workspace fleet cap — fork/retry provisioning is auto-creation
+      // too, so the ceiling applies here as well (0 = no cap).
+      const settings = await this.fleetPolicy(workspaceId);
+      if (settings.maxRunners && runners.length >= settings.maxRunners) {
+        throw new NoCapacityError(`Fleet is at its maximum of ${settings.maxRunners} runners — free a runner or raise the limit in settings.`);
       }
       // None idle+usable → provision one for the requested provider + credential,
       // but only if that credential is usable (else nothing can run).
@@ -669,7 +771,7 @@ export class Orchestrator {
         );
       }
       const id = `runner-auto-${++this.seq}`;
-      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null };
+      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null, autoProvisioned: true };
       await this.hub.upsertAgent(runner);
       return { id, provider, model, credentialId: credentialId ?? null };
     });
@@ -724,7 +826,7 @@ export class Orchestrator {
     const current: TaskAssignment = task.assignment ?? { mode: "unassigned", agentIds: [] };
     const assignment: TaskAssignment =
       current.mode === "unassigned" ? { mode: "any", agentIds: [] } : current;
-    const runner = await this.acquireAgent(project.workspaceId, assignment);
+    const runner = await this.acquireAgent(project.workspaceId, assignment, project.enabledRunnerCredentialIds);
     const runId = `${this.slug(task.text)}-${++this.seq}`;
     // runId is unique → unique branch & worktree path (two same-named tasks
     // never collide on the same branch).
@@ -778,13 +880,16 @@ export class Orchestrator {
     // the isolated worktree + which merge queue this agent integrates into.
     const git = this.gitContextFor(project);
     try {
-      // Isolated worktree cut from the project's integration tip (or base).
-      const { cwd, baseRef } = await this.provisionCwd(git, runId, branch, git?.merge.integrationBranch(projectId));
+      // Isolated worktree cut from LATEST main: provisionCwd fetches origin and
+      // branches from origin/<base> (no baseRef passed), so every run starts on
+      // the newest human-merged state — not a stale local integration branch.
+      const { cwd, baseRef } = await this.provisionCwd(git, runId, branch);
       // Inject this workspace's provider key (env fallback when none is stored).
       const apiKey = await secretService.resolve(project.workspaceId, runner.credentialId ?? runner.provider);
       // The agent gets the full brief: the short name plus the longer
       // description when one exists (the run's display name stays the short text).
-      const brief = task.description ? `${task.text}\n\n${task.description}` : task.text;
+      const taskBody = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
+      const brief = withInstructions(project.instructions, taskBody);
       const handle = await provider.start(
         { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey },
         this.events(),
@@ -804,7 +909,7 @@ export class Orchestrator {
 
     // Fork provisions capacity on demand: if no runner is idle, spin one up
     // (inheriting the parent's provider/model) rather than refusing the fork.
-    const runner = await this.acquireOrProvisionRunner(parent.workspaceId, parent.provider, parent.model, parent.credentialId);
+    const runner = await this.acquireOrProvisionRunner(parent.workspaceId, parent.provider, parent.model, parent.credentialId, await this.projectKeyAllowlist(parent.projectId));
     const runId = `${this.slug(parent.name)}-fork-${++this.seq}`;
     const stepIndex = Math.max(0, parent.plan.findIndex((s) => s.state === "now"));
     const forkBranch = `${parent.branch}-fork`;
@@ -851,7 +956,17 @@ export class Orchestrator {
       const { cwd, baseRef } = await this.provisionCwd(git, runId, agent.branch, parent.branch);
       const apiKey = await secretService.resolve(parent.workspaceId, runner.credentialId ?? runner.provider);
       const handle = await provider.start(
-        { runId, projectId: parent.projectId, task: parent.name, model: runner.model, branch: agent.branch, cwd, parentId, branchFromStep: stepIndex, apiKey },
+        {
+          runId,
+          projectId: parent.projectId,
+          task: withInstructions(project?.instructions, parent.name),
+          model: runner.model,
+          branch: agent.branch,
+          cwd,
+          parentId,
+          branchFromStep: stepIndex,
+          apiKey,
+        },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId: null, branch: agent.branch, baseRef, git });
@@ -939,7 +1054,7 @@ export class Orchestrator {
     }
     let acq: { id: string; provider: TaskRun["provider"]; model: string };
     try {
-      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId);
+      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId, await this.projectKeyAllowlist(run.projectId));
     } catch (err) {
       await this.hub.runLog(runId, `cannot revise — ${(err as Error).message}`);
       return;
@@ -947,10 +1062,13 @@ export class Orchestrator {
     const provider = await this.getProvider(acq.provider);
     const cwd = review.git.worktrees.pathFor(runId);
     const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
-    const revisePrompt =
+    const project = await this.store.getProject(run.projectId);
+    const revisePrompt = withInstructions(
+      project?.instructions,
       `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
       `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
-      `only the changes needed to address the request, then stop.`;
+      `only the changes needed to address the request, then stop.`,
+    );
     await this.hub.runStatus(runId, "running");
     if (review.taskId) {
       const task = await this.store.getTask(review.taskId);
@@ -976,7 +1094,7 @@ export class Orchestrator {
    *  frees the runner (but never retires the worktree), and raises an
    *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes through
    *  raise() instead (the live gate stays parked). */
-  private async escalate(runId: string, reason: string, source: "timeout" | "failures"): Promise<void> {
+  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict" | "turns"): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
     if (!run) return;
@@ -993,7 +1111,14 @@ export class Orchestrator {
       workspaceId: run.workspaceId,
       runId,
       kind: "escalation",
-      title: source === "timeout" ? "Run stuck — needs a human" : "Run keeps failing — needs a human",
+      title:
+        source === "timeout"
+          ? "Run stuck — needs a human"
+          : source === "conflict"
+            ? "Merge conflict with main — needs a rebase"
+            : source === "turns"
+              ? "Ran out of turns — resume to continue"
+              : "Run keeps failing — needs a human",
       why: reason,
       risk: "medium",
       rationale: null,
@@ -1066,7 +1191,7 @@ export class Orchestrator {
         await this.freeRunner(live.agentId);
         this.live.delete(runId);
       }
-      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model);
+      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, undefined, await this.projectKeyAllowlist(run.projectId));
       if (reassign && live) {
         await live.handle.stop().catch(() => undefined);
         await this.freeRunner(live.agentId);
@@ -1080,9 +1205,13 @@ export class Orchestrator {
     const provider = await this.getProvider(acq.provider);
     const cwd = git.worktrees.pathFor(runId);
     const apiKey = await secretService.resolve(run.workspaceId, run.provider);
-    const prompt = reassign
-      ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
-      : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`;
+    const project = await this.store.getProject(run.projectId);
+    const prompt = withInstructions(
+      project?.instructions,
+      reassign
+        ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+        : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
+    );
     await this.hub.runStatus(runId, "running");
     if (ctx?.taskId) {
       const task = await this.store.getTask(ctx.taskId);
@@ -1166,6 +1295,27 @@ export class Orchestrator {
   }
 
   private async pushToGithub(git: GitContext, agent: TaskRun, repo: string, project?: Project | null): Promise<void> {
+    // Bring the branch up to LATEST main before the PR opens, so it merges
+    // cleanly and the reviewer/GitHub never hits a stale-base conflict at merge
+    // time. On conflict, escalate for a human rebase instead of opening a broken PR.
+    const sync = await git.worktrees.mergeBase(agent.id);
+    if (!sync.ok) {
+      const files = sync.conflicts?.length ? `: ${sync.conflicts.join(", ")}` : "";
+      await this.hub.runLog(agent.id, `${config.baseBranch} moved and merges conflict${files} — not opening a PR until it's rebased.`);
+      await this.escalate(agent.id, `merge conflict with ${config.baseBranch}${files} — rebase the branch, then re-approve to open the PR.`, "conflict");
+      return;
+    }
+    // If folding in main changed a dependency manifest, reconcile the worktree's
+    // deps so a revise loop / checks / preview run against the right ones.
+    if (sync.depsChanged) {
+      const r = await git.worktrees.installDeps(agent.id);
+      await this.hub.runLog(
+        agent.id,
+        r.installed
+          ? `${config.baseBranch} changed dependencies — re-installed (${r.note}).`
+          : `${config.baseBranch} changed dependencies${r.note ? ` — ${r.note}` : " — no local node_modules to reconcile, skipped install"}.`,
+      );
+    }
     const worktreePath = git.worktrees.pathFor(agent.id);
     const stat = await git.worktrees.diffStat(agent.id, config.baseBranch);
     const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
@@ -1182,6 +1332,7 @@ export class Orchestrator {
         modules,
         allowedModules: agent.modules, // [] = unconstrained (no scope declared)
         force: false,
+        githubCredentialId: project?.githubCredentialId ?? null, // push to the project's pinned account
         title: agent.name,
         body: `Automated by Skynet agent \`${agent.id}\`.\n\n${stat.add}+/${stat.del}- across ${stat.files.length} file(s).`,
       });
@@ -1238,7 +1389,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: 0, del: 0, modules: agent.modules },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [] },
       flags: [reason],
     });
   }
@@ -1266,7 +1417,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: 0, del: 0, modules: agent.modules },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [] },
       flags: files, // the conflicting files — shown as chips
     });
   }
@@ -1437,7 +1588,15 @@ export class Orchestrator {
       return;
     }
     const apiKey = await secretService.resolve(agent.workspaceId, agent.credentialId ?? agent.provider);
-    const context = agent.log.slice(-40).map((l) => l.line).join("\n").slice(-4000);
+    const logText = agent.log.slice(-40).map((l) => l.line).join("\n").slice(-4000);
+    // A run that didn't finish cleanly (failed / escalated / needs-attention) is
+    // RESUMABLE from its own controls — so the consult must not dead-end the
+    // operator by telling them to relaunch or spin up a fresh agent themselves.
+    const note =
+      agent.status === "done"
+        ? ""
+        : "SITUATION: This run did not finish — it is paused / needs attention and can be RESUMED to keep working, from the run's own controls (its escalation card: Help & resume · Reassign · Stop). You are read-only in this chat: explain what happened or advise on the work, but never tell the operator to relaunch, retry, or start a fresh agent themselves, and don't imply you can edit files or resume from here.\n\n";
+    const context = note + logText;
     const spec = { task: agent.name, model: agent.model, cwd: config.runnerCwd, apiKey, context };
     try {
       if (provider.consultStream) {
@@ -1564,6 +1723,42 @@ export class Orchestrator {
     return stats;
   }
 
+  /**
+   * Keep the fleet on latest main: fetch each active project's base from origin
+   * (so a new run branches off fresh main), and flag any in-flight run whose
+   * branch has fallen behind — a one-time nudge; the actual sync happens when its
+   * PR opens (mergeBase in pushToGithub). Cheap + safe to run periodically and at
+   * startup: fetch only updates remote-tracking refs, never a checked-out branch.
+   */
+  async syncBaseAndFlagStale(): Promise<void> {
+    const runs = (await this.store.listAllRuns().catch(() => [] as TaskRun[])).filter(
+      (r) => r.status !== "done" && !r.archived && r.branch,
+    );
+    const gitByProject = new Map<string, GitContext | undefined>();
+    const fetched = new Set<GitContext>();
+    for (const r of runs) {
+      if (!gitByProject.has(r.projectId)) {
+        const project = await this.store.getProject(r.projectId).catch(() => null);
+        gitByProject.set(r.projectId, this.gitContextFor(project));
+      }
+      const git = gitByProject.get(r.projectId);
+      if (!git) continue;
+      if (!fetched.has(git)) {
+        await git.worktrees.fetchBase().catch(() => undefined);
+        fetched.add(git);
+      }
+      const behind = await git.worktrees.baseAheadOf(`refs/heads/${r.branch}`).catch(() => false);
+      if (behind && !this.baseMovedFlagged.has(r.id)) {
+        this.baseMovedFlagged.add(r.id);
+        await this.hub
+          .runLog(r.id, `${config.baseBranch} has moved since this run started — it'll be synced into the branch before its PR opens.`)
+          .catch(() => undefined);
+      } else if (!behind) {
+        this.baseMovedFlagged.delete(r.id); // caught up (e.g. after a resync) → re-arm
+      }
+    }
+  }
+
   async reapStaleAgents(): Promise<void> {
     await this.sweepStuckRuns().catch(() => undefined);
     const ms = config.agentReapMs;
@@ -1581,6 +1776,33 @@ export class Orchestrator {
       await this.hub.runStatus(a.id, "done").catch(() => undefined);
       await this.hub.runCompleted(a.id, a.branch).catch(() => undefined);
     }
+  }
+
+  /**
+   * Auto-decommission: retire SYSTEM-provisioned runners (auto-scale / fork
+   * created) that have sat idle past the workspace's TTL, so auto-scaled capacity
+   * doesn't accumulate. Only touches `autoProvisioned` idle runners — an operator's
+   * manually-added fleet is never auto-retired, and a busy runner is never touched.
+   * Per-workspace TTL (retireIdleRunnersAfterMinutes; 0 = off). Returns the count
+   * retired. Runs as a janitorial sweep, independent of the pause/kill switch.
+   */
+  async reapIdleRunners(): Promise<number> {
+    const allAgents = await this.store.listAllAgents().catch(() => [] as Agent[]);
+    const workspaces = [...new Set(allAgents.map((a) => a.workspaceId))];
+    let retired = 0;
+    for (const ws of workspaces) {
+      const ttlMin = (await this.fleetPolicy(ws)).retireIdleRunnersAfterMinutes;
+      if (!ttlMin || ttlMin <= 0) continue; // reaping disabled for this workspace
+      const cutoff = now() - ttlMin * 60_000;
+      for (const a of allAgents) {
+        if (a.workspaceId !== ws || !a.autoProvisioned) continue; // operator runners are off-limits
+        if (a.status !== "idle" || a.idleSince == null || a.idleSince > cutoff) continue; // busy or still fresh
+        if (this.isBusy(a.id)) continue; // a live run is mid-flight despite the status
+        await this.hub.deleteAgent(a.id).catch(() => undefined);
+        retired++;
+      }
+    }
+    return retired;
   }
 
   /** "Too long" guard: a run that has been actively `running` past config
@@ -1618,7 +1840,11 @@ export class Orchestrator {
       const allAgents = await this.store.listAllAgents().catch(() => [] as Agent[]);
       const workspaces = [...new Set(allAgents.map((a) => a.workspaceId))];
       for (const ws of workspaces) {
-        const projects = (await this.store.listProjects(ws)).filter((p) => p.autonomy);
+        // Iterate ALL projects — the TRIAGE step runs regardless of the project's
+        // `autonomy` toggle (it's just a fleet read, no work executed). The
+        // action steps (auto-pick, auto-review) still respect `autonomy` because
+        // those spend real time/tokens.
+        const projects = await this.store.listProjects(ws);
         if (projects.length === 0) continue;
         const tasks = await this.store.listTasks(ws);
         for (const p of projects) {
@@ -1627,42 +1853,64 @@ export class Orchestrator {
           if (idle.length === 0) break; // no capacity left in this workspace
           const mine = tasks.filter((t) => t.projectId === p.id);
           try {
-            // 1) Triage one backlog item → assessment, move to triage. Skip
-            //    `unassigned` tasks: leaving backlog requires an eligibility choice,
-            //    and autonomy never guesses one — those stay parked for a human.
+            // 1) Triage one backlog item → assessment + duration + clarity.
+            //    ALWAYS runs (no p.autonomy gate) — it's informative, not
+            //    action. Skip `unassigned` tasks: an eligibility choice is still
+            //    the operator's, and autonomy never guesses one.
+            //    If the LLM self-reports clarity=clear, auto-promote triage→todo
+            //    in the SAME write — that's the "reduce human dependence" step.
+            //    Unclear (or missing signal) parks in triage for a human read.
             const backlog = mine.find(
               (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") !== "unassigned",
             );
             if (backlog) {
-              const { assessment, estimatedDurationMs } = await this.assessTask(ws, idle[0]!, backlog);
+              const { assessment, estimatedDurationMs, clarity } = await this.assessTask(ws, idle[0]!, backlog);
               // Only OVERWRITE an existing estimate when triage produced a new
               // one — leaves an operator-set estimate intact if triage failed
               // to guess (or on retriage of a task that already had one).
               const nextEst = estimatedDurationMs != null
                 ? estimatedDurationMs
                 : backlog.estimatedDurationMs;
-              await this.hub.upsertTask({ ...backlog, state: "triage", assessment, estimatedDurationMs: nextEst });
+              // Auto-promote to todo when the LLM said "clear" — the eligibility
+              // check above already guarantees the task can leave backlog.
+              const nextState: Task["state"] = clarity === "clear" ? "todo" : "triage";
+              await this.hub.upsertTask({
+                ...backlog,
+                state: nextState,
+                assessment,
+                estimatedDurationMs: nextEst,
+              });
             }
             // 2) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
-            //    Each honors its own eligibility set via assignTask → acquireAgent, so
-            //    a task whose pinned agents are busy is skipped (continue) rather than
-            //    stalling pickups for tasks whose agents ARE free.
-            for (const t of mine.filter(
-              (t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned",
-            )) {
-              try {
-                await this.assignTask(p.id, t.id);
-              } catch {
-                continue; // this task's agents busy / no credential — try the next
+            //    Gated by `p.autonomy` — this is where money/time actually gets
+            //    spent, so it stays under the project autonomy toggle. Also
+            //    honors each task's eligibility set via assignTask → acquireAgent.
+            if (p.autonomy) {
+              for (const t of mine.filter(
+                (t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned",
+              )) {
+                try {
+                  await this.assignTask(p.id, t.id);
+                } catch {
+                  continue; // this task's agents busy / no credential — try the next
+                }
               }
             }
-            // 3) Review a finished run: approve → merge/done, else flag for a human.
-            const review = mine.find((t) => t.state === "review" && t.runId && !t.reviewFlaggedReason);
-            if (review?.runId) {
+            // 3) Review a finished run — runs REGARDLESS of `p.autonomy`.
+            //    Recording a verdict is diagnostic (an LLM consult), not a
+            //    spending action, so every review-state task deserves a
+            //    reviewer's opinion for the human's audit trail. The
+            //    APPROVE-and-merge step inside autoReview stays gated on
+            //    `p.autonomy` — verdict recorded either way; auto-resolve
+            //    only when the project has opted in to autonomous spending.
+            //    Skip tasks that already carry a verdict (idempotent) so we
+            //    don't rewrite the same LLM call every tick.
+            const review = mine.find((t) => t.state === "review" && t.runId && !t.reviewVerdict);
+            if (review?.runId && idle[0]) {
               const open = (await this.store.listQueue(ws)).find(
                 (h) => h.runId === review.runId && !h.resolvedAt,
               );
-              if (open) await this.autoReview(ws, idle[0]!, review, open);
+              if (open) await this.autoReview(ws, idle[0], review, open, p.autonomy);
             }
           } catch (err) {
             await this.hub.runLog(p.id, `autonomy skipped ${p.id}: ${(err as Error).message}`).catch(() => undefined);
@@ -1675,80 +1923,105 @@ export class Orchestrator {
   }
 
   /**
-   * A short agent-written assessment for autonomous triage — plus a rough
-   * duration estimate parsed from a trailing JSON tag on the model's reply.
-   * The model is asked to end with `{"estMinutes": N}` where N is its best
-   * guess of how long a competent coding agent would take. We convert to ms,
-   * cap at 24h (so a runaway estimate doesn't blow out the timeline), and
-   * fall back to null when the tag is missing or malformed — a missing
-   * estimate stays a missing estimate (never a fabricated 0).
-   *
-   * Falls back to a deterministic note when the provider has no stateless
-   * consult (e.g. mock) — no estimate in that case either.
+   * A short agent-written assessment for autonomous triage — plus a duration
+   * estimate AND a clarity self-report parsed from a trailing JSON tag on the
+   * model's reply. The model is asked to end with
+   * `{"estMinutes": N, "clarity": "clear"|"unclear"}`; we convert minutes to
+   * ms (cap 24h) and use clarity to gate auto-promote (triage→todo). A missing
+   * signal stays missing — never fabricated. Falls back to a deterministic
+   * note when the provider has no stateless consult (e.g. mock).
    */
   private async assessTask(
     ws: string,
     agent: Agent,
     task: Task,
-  ): Promise<{ assessment: string; estimatedDurationMs: number | null }> {
+  ): Promise<{ assessment: string; estimatedDurationMs: number | null; clarity: "clear" | "unclear" | null }> {
     try {
       const provider = await this.getProvider(agent.provider);
       if (!provider.consult) {
         return {
           assessment: `Auto-triaged — "${task.text}" looks actionable; no blockers noted.`,
           estimatedDurationMs: null,
+          clarity: null,
         };
       }
       const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
+      const project = await this.store.getProject(task.projectId);
+      // The estimate is for AGENT wall-clock time, not human developer time —
+      // these differ by an order of magnitude on typical coding tasks (an
+      // autonomous agent's 20-minute feature is a person's afternoon). Without
+      // this anchor the LLM defaults to its stronger "human developer time"
+      // prior and returns estimates 10–30× too high, so we spell it out AND
+      // give concrete agent-wall-clock anchors for S/M/L.
+      const taskBody = task.description ? `${task.text}\n\n${task.description}` : task.text;
       const reply = await provider.consult(
-        { task: task.description ? `${task.text}\n\n${task.description}` : task.text, model: agent.model, cwd: config.runnerCwd, apiKey },
+        { task: withInstructions(project?.instructions, taskBody), model: agent.model, cwd: config.runnerCwd, apiKey },
         [
           "You are triaging a backlog item for a coding project.",
           "In 2-3 short lines: is the ask clear, rough effort (S/M/L), and any risks? Be terse.",
-          'END your reply with a JSON tag on its OWN line estimating a competent coding agent\'s duration in minutes:',
-          '  {"estMinutes": 30}',
-          "Use a positive integer, roughly bounded by S≈15, M≈60, L≈240; omit the tag ONLY if the ask is too ambiguous to guess.",
+          "END your reply with a JSON tag on its OWN line:",
+          '  {"estMinutes": <int>, "clarity": "clear"|"unclear"}',
+          "estMinutes = the AGENT'S wall-clock time to complete this task — NOT a human developer's time.",
+          "An autonomous coding agent works fast: a task that would take a person hours typically takes an agent minutes.",
+          "Anchors (agent wall-clock): S ≈ 5m (rename, config tweak, single small edit), M ≈ 20m (a real feature — new endpoint, migration, small refactor), L ≈ 60m (multi-file change, cross-module work). Cap at 240m even for very large asks.",
+          "clarity = \"clear\" ONLY if the ask is well-scoped and actionable AS WRITTEN (an agent could start without more info).",
+          '"unclear" if it needs clarification, is missing acceptance criteria, or the scope is ambiguous. When in doubt, choose "unclear".',
+          "Omit any field you can't confidently supply; a missing signal is honest, a fabricated one is not.",
         ].join("\n"),
       );
       const raw = reply.trim();
-      // Peel the trailing {"estMinutes": N} JSON tag off the shown assessment,
-      // same shape as splitProposedAction — last balanced object on the tail.
       const parsed = splitEstMinutesTag(raw);
       const estimatedDurationMs =
         parsed.estMinutes != null && parsed.estMinutes > 0
           ? Math.min(parsed.estMinutes * 60_000, 24 * 60 * 60_000) // cap at 24h
           : null;
       const assessment = (parsed.body || raw).slice(0, 500) || `Auto-triaged — "${task.text}".`;
-      return { assessment, estimatedDurationMs };
+      return { assessment, estimatedDurationMs, clarity: parsed.clarity };
     } catch (err) {
       return {
         assessment: `Auto-triaged — "${task.text}" (assessment unavailable: ${(err as Error).message}).`,
         estimatedDurationMs: null,
+        clarity: null,
       };
     }
   }
 
-  /** Autonomous review of a finished run's open HITL: approve → resolve (merges →
-   *  done via the normal path), else flag the task for a human. */
-  private async autoReview(ws: string, agent: Agent, task: Task, hitl: HitlItem): Promise<void> {
+  /**
+   * Autonomous review of a finished run's open HITL. Always records a verdict
+   * on the task (approve OR flag) so the human has an audit trail of what the
+   * reviewer thought. Only when `canResolve` is true does an approve verdict
+   * also drive the HITL → merge/done path; with autonomy off, the verdict is
+   * recorded and the human retains the merge decision.
+   */
+  private async autoReview(
+    ws: string,
+    agent: Agent,
+    task: Task,
+    hitl: HitlItem,
+    canResolve: boolean,
+  ): Promise<void> {
     const run = task.runId ? await this.store.getRun(task.runId) : undefined;
-    let approve = true;
+    let decision: "approve" | "flag" = "approve";
     let reason = "auto-approved";
     try {
       const provider = await this.getProvider(agent.provider);
       if (provider.consult && run) {
         const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
         const context = run.log.slice(-30).map((l) => l.line).join("\n").slice(-3000);
+        const project = await this.store.getProject(task.projectId);
         const reply = await provider.consult(
-          { task: task.text, model: agent.model, cwd: config.runnerCwd, apiKey, context },
-          `Review whether this run satisfies the task "${task.text}". Reply on the FIRST line with exactly APPROVE or FLAG, then a one-line reason.`,
+          { task: withInstructions(project?.instructions, task.text), model: agent.model, cwd: config.runnerCwd, apiKey, context },
+          `Review whether this run satisfies the task "${task.text}". ${REVIEW_OUTPUT_INSTRUCTION}`,
         );
-        const head = reply.trim().split("\n")[0]?.toUpperCase() ?? "";
-        approve = !head.includes("FLAG");
-        reason = reply.trim().slice(0, 300) || reason;
+        // The verdict is the MODEL's, read from a structured field — we never
+        // classify its prose (a reason mentioning "flagged" once false-flagged an
+        // APPROVE). An unreadable verdict flags for a human, never auto-approves.
+        const verdict = parseReviewVerdict(reply);
+        decision = verdict.approve ? "approve" : "flag";
+        reason = verdict.reason;
       }
     } catch (err) {
-      approve = false;
+      decision = "flag";
       reason = `review consult failed: ${(err as Error).message}`;
     }
     // The consult above is slow (an LLM round-trip); meanwhile an operator — or
@@ -1761,25 +2034,46 @@ export class Orchestrator {
     if (!freshHitl || freshHitl.resolvedAt) return; // already handled — defer
     const freshTask = await this.store.getTask(task.id);
     if (!freshTask || freshTask.state !== "review" || freshTask.runId !== task.runId) return;
-    // Record the auto-review on the run's live log so the operator can see WHO
-    // reviewed it (another agent, autonomously) and WHY — a short verdict line
-    // that folds open to the reviewer's full reasoning. Mirrors how a human's
+    // If a verdict raced in ahead of us (parallel tick, unlikely but safe),
+    // don't clobber it with another consult's answer.
+    if (freshTask.reviewVerdict) return;
+    const reviewer = agent.name || agent.id;
+    const at = now();
+    // Record the auto-review on the run's live log — a short verdict line that
+    // folds open to the reviewer's full reasoning. Mirrors how a human's
     // decision is auditable; here the reviewer is a fleet agent, not a person.
     if (task.runId) {
-      const reviewer = agent.name || agent.id;
-      await this.hub.runLog(
-        task.runId,
-        `⟳ auto-reviewed by ${reviewer} — ${approve ? "approved (integrating)" : "flagged for a human"}`,
-        reason,
-      );
+      const suffix = decision === "approve"
+        ? canResolve ? "approved (integrating)" : "approved (awaiting human)"
+        : "flagged for a human";
+      await this.hub.runLog(task.runId, `⟳ auto-reviewed by ${reviewer} — ${suffix}`, reason);
     }
-    if (approve) {
-      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "autonomy", at: now() };
+    // ALWAYS persist the verdict on the task so the detail view can show it —
+    // approve OR flag, autonomy on OR off. This is the audit trail.
+    const verdict = { decision, reason, by: reviewer, at };
+    const withVerdict = await this.hub.upsertTask({ ...freshTask, reviewVerdict: verdict });
+    if (decision === "approve" && canResolve) {
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "autonomy", at };
       const resolved = await this.hub.resolveHitl(hitl.id, resolution);
       if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(hitl, resolution);
-    } else {
-      await this.hub.upsertTask({ ...freshTask, reviewFlaggedReason: reason });
+      // Once an agent has approved a review-state task, move it to `done` and
+      // sync the run's status — regardless of the downstream integration path.
+      // The local merge queue's completeMerged() ALSO writes this on merge
+      // (idempotent no-op), but for the GitHub-PR path pushToGithub deliberately
+      // leaves the run in `review` waiting for a human to merge the PR — that
+      // would strand the KANBAN task in `review` too. Advancing the card here
+      // reflects Skynet's view: the AGENT signed off; the PR is the follow-
+      // through on GitHub, not a Skynet blocker. Re-fetch to avoid a stale-
+      // snapshot clobber, and only advance if the task is still ours to move.
+      const afterDeliver = await this.store.getTask(task.id);
+      if (afterDeliver && afterDeliver.state === "review" && afterDeliver.runId === task.runId) {
+        await this.hub.upsertTask({ ...afterDeliver, state: "done" });
+        if (afterDeliver.runId) await this.hub.runStatus(afterDeliver.runId, "done").catch(() => undefined);
+      }
     }
+    // decision === "flag" OR (approve without autonomy) → verdict is recorded
+    // (`withVerdict`), HITL stays open for the human. Nothing else to do here.
+    void withVerdict;
   }
 
   /**
@@ -1845,7 +2139,7 @@ export class Orchestrator {
     const task = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === runId);
     if (task && (task.state === "ongoing" || task.state === "review")) {
       await this.hub.setRunArchived(runId, true).catch(() => undefined);
-      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewFlaggedReason: null });
+      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
     }
     return this.store.getRun(runId);
   }

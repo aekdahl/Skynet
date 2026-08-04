@@ -9,8 +9,11 @@ import {
 } from "react";
 import type {
   TaskRun,
+  ApprovalLevel,
   Dependency,
+  Feature,
   HitlItem,
+  Milestone,
   Module,
   Project,
   ProviderInfo,
@@ -45,6 +48,8 @@ export interface StoreState {
   queue: HitlItem[];
   projects: Project[];
   tasks: Task[];
+  features: Feature[];
+  milestones: Milestone[];
   fleet: Agent[];
   modules: Module[];
   deps: Dependency[];
@@ -58,6 +63,10 @@ export interface StoreState {
   // over HTTP by the Audit view), so this is the signal the view watches to
   // re-pull after an archive/delete/clear lands — from any operator or tab.
   auditRev: number;
+  // The server's default approval level, so the create-project form can
+  // pre-select what a new project would otherwise get. Undefined until the first
+  // snapshot lands (or an older server that doesn't send it).
+  defaultApprovalLevel?: ApprovalLevel;
 }
 
 export interface Store extends StoreState {
@@ -80,11 +89,31 @@ export interface Store extends StoreState {
   createProject: (
     name: string,
     goal: string,
-    opts?: { repo?: string; repoPath?: string; createRepo?: { name: string; private: boolean; owner?: string } },
+    opts?: {
+      repo?: string;
+      repoPath?: string;
+      createRepo?: { name: string; private: boolean; owner?: string };
+      autonomy?: boolean;
+      approvalLevel?: string;
+      instructions?: string;
+    },
   ) => Promise<void>;
   updateProject: (
     id: string,
-    patch: { name?: string; goal?: string; status?: string; autonomy?: boolean; approvalLevel?: string },
+    patch: {
+      name?: string;
+      goal?: string;
+      status?: string;
+      autonomy?: boolean;
+      approvalLevel?: string;
+      repoPath?: string | null;
+      // null clears the project's instructions back to "no rules".
+      instructions?: string | null;
+      githubCredentialId?: string | null;
+      // Which provider keys the project may run on (credential ids; empty = all).
+      enabledRunnerCredentialIds?: string[];
+      syncSourceStatus?: boolean;
+    },
   ) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
@@ -100,15 +129,42 @@ export interface Store extends StoreState {
       assignment?: TaskAssignment;
       estimatedDurationMs?: number | null;
       plannedStartAt?: number | null;
+      featureId?: string | null;
+      milestoneId?: string | null;
     },
   ) => Promise<void>;
+  createFeature: (projectId: string, name: string, description?: string, milestoneId?: string | null) => Promise<void>;
+  updateFeature: (
+    featureId: string,
+    patch: {
+      name?: string;
+      description?: string | null;
+      status?: "active" | "paused" | "shipped";
+      milestoneId?: string | null;
+      archived?: boolean;
+    },
+  ) => Promise<void>;
+  deleteFeature: (featureId: string) => Promise<void>;
+  createMilestone: (projectId: string, name: string, description?: string, targetAt?: number | null) => Promise<void>;
+  updateMilestone: (
+    milestoneId: string,
+    patch: {
+      name?: string;
+      description?: string | null;
+      targetAt?: number | null;
+      status?: "planned" | "in-progress" | "shipped";
+      archived?: boolean;
+    },
+  ) => Promise<void>;
+  deleteMilestone: (milestoneId: string) => Promise<void>;
   deleteTask: (projectId: string, taskId: string) => Promise<void>;
   archiveTask: (projectId: string, taskId: string, archived: boolean) => Promise<void>;
   moveTask: (projectId: string, taskId: string, direction: "up" | "down") => Promise<void>;
+  reorderTask: (projectId: string, taskId: string, beforeId: string | null) => Promise<void>;
   transitionTask: (projectId: string, taskId: string, to: string) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
-  createAgent: (provider: string, model: string, name?: string) => Promise<void>;
+  createAgent: (provider: string, model: string, name?: string, credentialId?: string) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
   // audit trail maintenance — mirror archive (agent) + delete (project/task/runner)
@@ -119,7 +175,8 @@ export interface Store extends StoreState {
   // Re-fetch the snapshot and force the socket to reconnect now (Retry button).
   retry: () => void;
   // Exchange operator credentials for a session token, then reconnect with it.
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<api.LoginResult>;
+  verifyMfa: (challengeId: string, code: string) => Promise<void>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -212,6 +269,14 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
       return { ...state, tasks: upsert(state.tasks, ev.task) };
     case "task.deleted":
       return { ...state, tasks: state.tasks.filter((t) => t.id !== ev.id) };
+    case "feature.upserted":
+      return { ...state, features: upsert(state.features, ev.feature) };
+    case "feature.deleted":
+      return { ...state, features: state.features.filter((f) => f.id !== ev.id) };
+    case "milestone.upserted":
+      return { ...state, milestones: upsert(state.milestones, ev.milestone) };
+    case "milestone.deleted":
+      return { ...state, milestones: state.milestones.filter((m) => m.id !== ev.id) };
     case "agent.upserted":
       return { ...state, fleet: upsert(state.fleet, ev.agent) };
     case "agent.deleted":
@@ -232,6 +297,8 @@ const EMPTY: StoreState = {
   queue: [],
   projects: [],
   tasks: [],
+  features: [],
+  milestones: [],
   fleet: [],
   modules: [],
   deps: [],
@@ -248,10 +315,13 @@ function fromSnapshot(snap: Snapshot): StoreState {
     queue: snap.queue,
     projects: snap.projects,
     tasks: snap.tasks,
+    features: snap.features,
+    milestones: snap.milestones,
     fleet: snap.fleet,
     modules: snap.modules,
     deps: snap.deps,
     providers: snap.providers,
+    defaultApprovalLevel: snap.defaultApprovalLevel,
     connected: true,
     loaded: true,
     // A snapshot in hand means we're effectively online; a later socket close
@@ -367,6 +437,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           repo: opts?.repo,
           repoPath: opts?.repoPath,
           createRepo: opts?.createRepo,
+          autonomy: opts?.autonomy,
+          approvalLevel: opts?.approvalLevel,
+          instructions: opts?.instructions,
         });
       },
       updateProject: async (id, patch) => {
@@ -392,6 +465,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       moveTask: async (projectId, taskId, direction) => {
         await api.moveTask(projectId, taskId, direction);
       },
+      reorderTask: async (projectId, taskId, beforeId) => {
+        await api.reorderTask(projectId, taskId, beforeId);
+      },
       transitionTask: async (projectId, taskId, to) => {
         try {
           await api.transitionTask(projectId, taskId, to);
@@ -412,6 +488,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       archiveTask: async (projectId, taskId, archived) => {
         await api.archiveTask(projectId, taskId, archived);
       },
+      createFeature: async (projectId, name, description, milestoneId) => {
+        await api.createFeature(projectId, { name, ...(description ? { description } : {}), ...(milestoneId !== undefined ? { milestoneId } : {}) });
+      },
+      updateFeature: async (featureId, patch) => {
+        try {
+          await api.updateFeature(featureId, patch);
+        } catch (e) {
+          if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't update the feature."));
+        }
+      },
+      deleteFeature: async (featureId) => {
+        await api.deleteFeature(featureId);
+      },
+      createMilestone: async (projectId, name, description, targetAt) => {
+        await api.createMilestone(projectId, { name, ...(description ? { description } : {}), ...(targetAt !== undefined ? { targetAt } : {}) });
+      },
+      updateMilestone: async (milestoneId, patch) => {
+        try {
+          await api.updateMilestone(milestoneId, patch);
+        } catch (e) {
+          if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't update the milestone."));
+        }
+      },
+      deleteMilestone: async (milestoneId) => {
+        await api.deleteMilestone(milestoneId);
+      },
       assignTask: async (projectId, taskId) => {
         try {
           return await api.assignTask(projectId, taskId);
@@ -423,8 +525,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           throw e;
         }
       },
-      createAgent: async (provider, model, name) => {
-        await api.createAgent({ provider, model, name });
+      createAgent: async (provider, model, name, credentialId) => {
+        await api.createAgent({ provider, model, name, credentialId });
       },
       updateAgent: async (id, patch) => {
         await api.updateAgent(id, patch);
@@ -458,9 +560,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         connRef.current?.reconnect();
       },
       login: async (email, password) => {
-        await api.login(email, password);
-        // Re-init the whole app with the new token — simplest + bulletproof:
-        // token() now returns the session, so REST + the WS reconnect authorized.
+        const result = await api.login(email, password);
+        // No MFA → session is set; re-init with the new token. MFA → the caller
+        // (LoginView) collects the code and calls verifyMfa.
+        if (!result.mfaRequired) location.reload();
+        return result;
+      },
+      verifyMfa: async (challengeId, code) => {
+        await api.verifyMfa(challengeId, code);
+        // Session set — re-init the whole app with the new token.
         location.reload();
       },
     };
