@@ -809,6 +809,14 @@ export class Orchestrator {
       throw new TaskAlreadyAssignedError("Task is already done");
     }
 
+    // An archived task is soft-hidden — never spawn a run on it (which would show
+    // the archived task "running"). Defense in depth: the autonomy loop already
+    // skips archived tasks; this also refuses any other caller (manual API / MCP /
+    // Steward). Un-archive it first to work on it again.
+    if (task.archived) {
+      throw new Error("Task is archived — unarchive it before assigning");
+    }
+
     // DEF-003: re-assigning a task that already owns a live agent must be
     // idempotent — return the existing agent instead of acquiring a second
     // runner and spawning a duplicate (which orphaned the first agent and left
@@ -1851,7 +1859,11 @@ export class Orchestrator {
           // Re-read idle capacity per project (an earlier project may have used it).
           const idle = (await this.store.listAgents(ws)).filter((a) => a.status === "idle");
           if (idle.length === 0) break; // no capacity left in this workspace
-          const mine = tasks.filter((t) => t.projectId === p.id);
+          // Archived tasks are a soft-hide: off the board and out of the
+          // assistant's grounding context — autonomy must ignore them too, or it
+          // re-triages / auto-picks / auto-reviews a task the operator hid,
+          // spawning a run that then shows the archived task "running".
+          const mine = tasks.filter((t) => t.projectId === p.id && !t.archived);
           try {
             // 1) Triage one backlog item → assessment + duration + clarity.
             //    ALWAYS runs (no p.autonomy gate) — it's informative, not
