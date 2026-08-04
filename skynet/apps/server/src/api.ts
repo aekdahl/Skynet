@@ -512,6 +512,16 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Import a GitHub-connected project's open issues as tasks (linked back to the
+  // issue via Task.source, so status changes can be written back).
+  app.post<{ Params: { id: string } }>("/api/projects/:id/import/github-issues", async (req, reply) => {
+    try {
+      return await ops.importGithubIssues(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.patch<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid", async (req, reply) => {
     const body = UpdateTaskRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });

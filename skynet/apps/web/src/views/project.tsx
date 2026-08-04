@@ -279,6 +279,18 @@ function TaskCard({
       <div className="kb-card-top">
         {run && <StatusDot status={run.status} />}
         <span className="kb-task" title={task.description ?? undefined}>{task.text}</span>
+        {task.source?.kind === "github_issue" && (
+          <a
+            className="kb-source mono"
+            href={task.source.url || undefined}
+            target="_blank"
+            rel="noreferrer"
+            onClick={stop}
+            title={`Imported from GitHub issue ${task.source.repo}#${task.source.number} — status syncs back when enabled`}
+          >
+            #{task.source.number} ↗
+          </a>
+        )}
         {locked && (
           <span
             className="kb-lock"
@@ -708,6 +720,40 @@ function ProjectRunnerKeys({ project, onChange }: { project: Project; onChange: 
   );
 }
 
+// Import a GitHub-connected project's issues as tasks + toggle write-back of task
+// status to those issues. Only shown when the project is bound to a GitHub repo.
+function ProjectSourceSync({ project, onToggle }: { project: Project; onToggle: (on: boolean) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  if (!project.repo) return null;
+  const importIssues = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await api.importGithubIssues(project.id);
+      setNote(r.imported ? `Imported ${r.imported} issue${r.imported === 1 ? "" : "s"}${r.skipped ? ` · ${r.skipped} already here` : ""}` : "No new issues");
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setBusy(false);
+      setTimeout(() => setNote(null), 4000);
+    }
+  };
+  return (
+    <>
+      <button className="btn" disabled={busy} onClick={() => void importIssues()} title="Import this repo's open GitHub issues as tasks — each links back to its issue.">
+        {busy ? "Importing…" : "⤒ Import issues"}
+      </button>
+      <label className="proj-autonomy" title="When on, moving a task to review/done comments + closes its linked GitHub issue (reopens if it moves back out of done).">
+        <input type="checkbox" className="proj-autonomy-cb" checked={project.syncSourceStatus} onChange={(e) => onToggle(e.target.checked)} />
+        <span className="proj-autonomy-switch" aria-hidden="true" />
+        <span className="proj-autonomy-label">Sync to source</span>
+      </label>
+      {note && <span className="proj-sync-note mono">{note}</span>}
+    </>
+  );
+}
+
 export function ProjectView({
   project,
   now,
@@ -953,6 +999,7 @@ export function ProjectView({
             </label>
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
+            <ProjectSourceSync project={project} onToggle={(on) => updateProject(project.id, { syncSourceStatus: on })} />
             {project.repoPath && (
               <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
                 ▶ Preview app

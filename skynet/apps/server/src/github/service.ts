@@ -13,7 +13,7 @@ import type { Store } from "../store/store.js";
 import { MemoryGithubStore } from "./memory.js";
 import { GitHubProvider } from "./provider.js";
 import { evaluateSafety } from "./safety.js";
-import type { GitProvider, GithubConnectionStore, MergeResult, PushRequest, PushResult } from "./types.js";
+import type { GitProvider, GithubConnectionStore, GithubIssue, MergeResult, PushRequest, PushResult } from "./types.js";
 
 export class GithubService {
   constructor(
@@ -140,6 +140,21 @@ export class GithubService {
     const conn = await this.store.get(workspaceId);
     if (!conn?.connected) throw new Error("GitHub is not connected for this workspace");
     return this.resolveToken(conn);
+  }
+
+  // ── Issues (task import + status write-back — see docs/task-source-sync.md) ──
+  /** Open issues on a repo, for importing them as tasks. Authenticates with the
+   *  project's pinned GitHub account (else the default connection). */
+  async listIssues(workspaceId: string, repo: string, githubCredentialId?: string | null): Promise<GithubIssue[]> {
+    return this.provider.listIssues(await this.projectToken(workspaceId, githubCredentialId), repo);
+  }
+  /** Comment on an issue (write-back — e.g. "Skynet opened PR #123"). */
+  async commentIssue(workspaceId: string, repo: string, number: number, body: string, githubCredentialId?: string | null): Promise<void> {
+    await this.provider.commentIssue(await this.projectToken(workspaceId, githubCredentialId), repo, number, body);
+  }
+  /** Open/close an issue (write-back — close on done, reopen on regress). */
+  async setIssueState(workspaceId: string, repo: string, number: number, state: "open" | "closed", githubCredentialId?: string | null): Promise<void> {
+    await this.provider.setIssueState(await this.projectToken(workspaceId, githubCredentialId), repo, number, state);
   }
 
   /** Repos a given GitHub account can bind to — a pinned credential's PAT lists

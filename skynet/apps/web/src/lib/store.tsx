@@ -112,6 +112,7 @@ export interface Store extends StoreState {
       githubCredentialId?: string | null;
       // Which provider keys the project may run on (credential ids; empty = all).
       enabledRunnerCredentialIds?: string[];
+      syncSourceStatus?: boolean;
     },
   ) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;

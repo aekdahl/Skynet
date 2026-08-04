@@ -85,6 +85,21 @@ export interface GitProvider {
   mergePr(token: string, repo: string, number: number, method: "merge" | "squash" | "rebase"): Promise<MergeResult>;
   /** Bring the base branch into the agent worktree (keep it current). */
   syncBase(token: string, repo: string, worktreePath: string, baseBranch: string): Promise<void>;
+  /** Open issues on a repo (for importing them as tasks). Excludes PRs. */
+  listIssues(token: string, repo: string): Promise<GithubIssue[]>;
+  /** Add a comment to an issue. */
+  commentIssue(token: string, repo: string, number: number, body: string): Promise<void>;
+  /** Open or close an issue (write-back on task status change). */
+  setIssueState(token: string, repo: string, number: number, state: "open" | "closed"): Promise<void>;
+}
+
+/** A GitHub issue, trimmed to what task import needs. */
+export interface GithubIssue {
+  number: number;
+  title: string;
+  body: string;
+  url: string; // html_url
+  state: "open" | "closed";
 }
 
 /** Persistence seam for the per-workspace GitHub connection (non-secret). */

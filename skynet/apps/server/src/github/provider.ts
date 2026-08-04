@@ -11,7 +11,7 @@ import { execFile } from "node:child_process";
 import { createSign } from "node:crypto";
 import { promisify } from "node:util";
 import type { GithubInstallation, GithubRepo } from "@skynet/shared";
-import type { GitProvider, MergeResult, PrRef, PrStatus } from "./types.js";
+import type { GitProvider, GithubIssue, MergeResult, PrRef, PrStatus } from "./types.js";
 import { gitBin } from "../git-bin.js";
 
 const exec = promisify(execFile);
@@ -161,6 +161,24 @@ export class GitHubProvider implements GitProvider {
       { name: spec.name, private: spec.private, description: spec.description, auto_init: true },
     );
     return { id: r.id, name: r.full_name, defaultBranch: r.default_branch, private: r.private, selected: true };
+  }
+
+  async listIssues(token: string, repo: string): Promise<GithubIssue[]> {
+    // GitHub's /issues returns PRs too — they carry a `pull_request` key. Drop
+    // them so import brings in real issues only. Paginated.
+    type Raw = { number: number; title: string; body: string | null; html_url: string; state: string; pull_request?: unknown };
+    const raw = await this.paginate<Raw>(token, `/repos/${repo}/issues?state=open&per_page=100`, (b) => b as Raw[]);
+    return raw
+      .filter((i) => !i.pull_request)
+      .map((i) => ({ number: i.number, title: i.title, body: i.body ?? "", url: i.html_url, state: i.state === "closed" ? "closed" : "open" }));
+  }
+
+  async commentIssue(token: string, repo: string, number: number, body: string): Promise<void> {
+    await this.api(token, "POST", `/repos/${repo}/issues/${number}/comments`, { body });
+  }
+
+  async setIssueState(token: string, repo: string, number: number, state: "open" | "closed"): Promise<void> {
+    await this.api(token, "PATCH", `/repos/${repo}/issues/${number}`, { state });
   }
 
   async listInstallations(token: string): Promise<GithubInstallation[]> {
