@@ -64,6 +64,20 @@ describe("task transition guard", () => {
     );
   });
 
+  it("ongoing → todo abandons the run (the 'Send to To-do' button); review/done are not human moves from ongoing", async () => {
+    // The board locks ongoing cards, so the only human exit is the explicit
+    // "Send to To-do" button → transitionTask(…, "todo"), which detaches the run.
+    await store.putTask({ ...mkTask("ongoing"), runId: "run-1" });
+    const t = await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "todo", "op-1");
+    expect(t.state).toBe("todo");
+    expect(t.runId).toBeNull(); // detached so the task returns clean
+
+    // ongoing → review / done are agent-driven, never a human kanban move.
+    await store.putTask({ ...mkTask("ongoing"), id: "t1", runId: "run-1" });
+    await expect(ops.transitionTask(DEFAULT_WORKSPACE, "t1", "review", "op-1")).rejects.toBeInstanceOf(InvalidTransitionError);
+    await expect(ops.transitionTask(DEFAULT_WORKSPACE, "t1", "done", "op-1")).rejects.toBeInstanceOf(InvalidTransitionError);
+  });
+
   it("blocks leaving backlog until an agent is assigned", async () => {
     await store.putTask(mkTask("backlog", { mode: "unassigned", agentIds: [] }));
     await expect(ops.transitionTask(DEFAULT_WORKSPACE, "t1", "triage", "op-1")).rejects.toBeInstanceOf(
