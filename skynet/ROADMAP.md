@@ -243,8 +243,9 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   triggered from the `task.upserted` bus event (single choke point). Opt-in per project
   (`syncSourceStatus`) since writing back is outward-facing. **Phase 1 (done):** GitHub issues —
   import open issues → tasks (deduped, `source` set), and on transition comment / close / reopen the
-  issue. **Phase 2:** repo files (`- [ ]`→`- [x]` / frontmatter via the push/PR flow). **Phase 3:**
-  external/webhook (Linear/Jira) + optional two-way. Full design: **[docs/task-source-sync.md](docs/task-source-sync.md)**.
+  issue. **Phase 2 (done):** repo files — a file's `- [ ]` checklist items import as tasks; completing
+  one checks its box (`- [x]`) / reopening unchecks it, committed via the GitHub Contents API.
+  **Phase 3:** external/webhook (Linear/Jira) + optional two-way. Full design: **[docs/task-source-sync.md](docs/task-source-sync.md)**.
 - [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign

@@ -387,6 +387,10 @@ export function cloneProjectRepo(id: string) {
 export function importGithubIssues(projectId: string) {
   return req<{ imported: number; skipped: number }>("POST", `/api/projects/${projectId}/import/github-issues`);
 }
+// Import a repo file's open checklist items as tasks (linked back to the file+item).
+export function importRepoFile(projectId: string, path: string) {
+  return req<{ imported: number; skipped: number }>("POST", `/api/projects/${projectId}/import/repo-file`, { path });
+}
 
 // Tasks
 export function createTask(projectId: string, text: string, description?: string) {
