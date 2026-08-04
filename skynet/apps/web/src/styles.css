@@ -636,6 +636,10 @@ button.lg-arow:hover { background: var(--raised); }
 .swb-seg-pending { background: none; border-top: 2px dashed color-mix(in oklch, var(--faint), transparent 45%); height: 0; }
 .swb-st.sw-queued { width: 10px; height: 10px; background: var(--panel); border: 2px dashed color-mix(in oklch, var(--faint), transparent 25%); cursor: default; }
 .sw-label-queued { color: color-mix(in oklch, var(--faint), transparent 15%); font-style: italic; }
+/* "+N more" overflow chip — collapses a long backlog into one marker so the
+   diagram stays readable; solid dot, small pill label. */
+.swb-st.sw-more { width: 8px; height: 8px; background: color-mix(in oklch, var(--faint), transparent 40%); border: none; border-radius: 50%; cursor: default; }
+.sw-label-more { color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
 /* an idle agent (a track with only a queue) / the shared lane's marker */
 .sw-dot-idle { width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--faint); background: none; display: inline-block; flex: none; }
 .swb-name-lane { opacity: 0.85; }
