@@ -1094,7 +1094,7 @@ export class Orchestrator {
    *  frees the runner (but never retires the worktree), and raises an
    *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes through
    *  raise() instead (the live gate stays parked). */
-  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict" | "turns"): Promise<void> {
+  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict" | "turns" | "stalled"): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
     if (!run) return;
@@ -1118,7 +1118,9 @@ export class Orchestrator {
             ? "Merge conflict with main — needs a rebase"
             : source === "turns"
               ? "Ran out of turns — resume to continue"
-              : "Run keeps failing — needs a human",
+              : source === "stalled"
+                ? "Runner went silent — resume to continue"
+                : "Run keeps failing — needs a human",
       why: reason,
       risk: "medium",
       rationale: null,
@@ -1768,11 +1770,22 @@ export class Orchestrator {
     for (const a of runs) {
       if (a.status !== "running" && a.status !== "waiting") continue;
       if (a.lastHeartbeatAt > cutoff) continue;
+      if (this.escalations.has(a.id)) continue; // already an open escalation card — don't re-raise or clobber it
       const silentSec = Math.round((now() - a.lastHeartbeatAt) / 1000);
-      // Detach the (presumed-dead) session + free its runner, then mark it
-      // terminal — a reaped agent isn't coming back, so it must not linger
-      // "running" and get reaped again on the next sweep.
-      await this.stopAgent(a.id, `reaped — no heartbeat for ${silentSec}s; runner freed`).catch(() => undefined);
+      const reason = `reaped — no heartbeat for ${silentSec}s; runner freed`;
+      // A `running` agent that went silent is presumed dead (crashed runner or a
+      // server restart that orphaned it). Rather than a dead-end `done` (which
+      // retires the worktree and drops any uncommitted work with no way back),
+      // route it into the SAME escalation → Resume path as an out-of-turns run:
+      // free the runner but KEEP the worktree, and surface a resumable card so
+      // one click relaunches a fresh session on its branch.
+      if (a.status === "running") {
+        await this.escalate(a.id, reason, "stalled").catch(() => undefined);
+        continue;
+      }
+      // A `waiting` run with a frozen heartbeat that ISN'T an escalation was
+      // parked on a gate whose session died — free its runner + mark it terminal.
+      await this.stopAgent(a.id, reason).catch(() => undefined);
       await this.hub.runStatus(a.id, "done").catch(() => undefined);
       await this.hub.runCompleted(a.id, a.branch).catch(() => undefined);
     }
