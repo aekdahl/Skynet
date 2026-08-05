@@ -97,7 +97,7 @@ export interface Store extends StoreState {
       approvalLevel?: string;
       instructions?: string;
     },
-  ) => Promise<void>;
+  ) => Promise<Project>;
   updateProject: (
     id: string,
     patch: {
@@ -431,7 +431,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }));
       },
       createProject: async (name, goal, opts) => {
-        await api.createProject({
+        // Return the created project so callers can navigate straight into it.
+        const created = await api.createProject({
           name,
           goal,
           repo: opts?.repo,
@@ -441,6 +442,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           approvalLevel: opts?.approvalLevel,
           instructions: opts?.instructions,
         });
+        // Optimistically land it in the store so navigating into it renders
+        // immediately (the WS project.upserted reconciles the same row shortly).
+        setState((s) => ({ ...s, projects: upsert(s.projects, created) }));
+        return created;
       },
       updateProject: async (id, patch) => {
         await api.updateProject(id, patch);

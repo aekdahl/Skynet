@@ -169,6 +169,77 @@ function GetStarted({
   );
 }
 
+// ─── First-run checklist (live until first merge) ───────────────────────────
+// A four-beat guide — create → task → assign → approve — pinned to Home while a
+// workspace is finding its feet. Each beat ticks itself off from live state as
+// the operator does it, and the whole strip retires for good once the first run
+// merges (see `merged`). The current beat is a button that jumps you to where
+// the next action happens.
+function FirstRunChecklist({
+  onOpenProject,
+  onGoInbox,
+}: {
+  onOpenProject: (id: string) => void;
+  onGoInbox: () => void;
+}) {
+  const { projects, tasks, runs } = useStore();
+  // "Merged" = a run reached done, OR a task reached done (a force-done task
+  // leaves no run). Once ANY work has merged the first run is over — hide it.
+  const merged =
+    runs.some((r) => r.status === "done") || tasks.some((t) => t.state === "done");
+  if (projects.length === 0 || merged) return null;
+
+  const hasTask = tasks.length > 0;
+  const assigned = runs.length > 0; // a task assigned to an agent spins up a run
+  // Actionable beats jump to a project that hasn't shipped yet (a fresh one with
+  // no tasks counts — projectShipped needs ≥1 task), else the first project.
+  const target = projects.find((p) => !projectShipped(tasks, p.id)) ?? projects[0]!;
+
+  const steps: { label: string; hint: string; done: boolean; onClick?: () => void }[] = [
+    { label: "Create a project", hint: "Name it and set the goal.", done: true },
+    { label: "Add a task", hint: "Break the goal into work an agent can pick up.", done: hasTask, onClick: () => onOpenProject(target.id) },
+    { label: "Assign it to an agent", hint: "Move a task to Ongoing to start a run.", done: assigned, onClick: () => onOpenProject(target.id) },
+    { label: "Approve the first merge", hint: "Review the finished work and merge it.", done: false, onClick: onGoInbox },
+  ];
+  const doneCount = steps.filter((s) => s.done).length;
+  const currentIdx = steps.findIndex((s) => !s.done); // first unfinished beat
+
+  return (
+    <div className="firstrun" role="status" aria-label="First-run checklist">
+      <div className="firstrun-head">
+        <span className="firstrun-title">GET TO YOUR FIRST MERGE</span>
+        <span className="firstrun-sub mono">{doneCount}/{steps.length}</span>
+      </div>
+      <div className="firstrun-steps">
+        {steps.map((s, i) => {
+          const current = i === currentIdx;
+          const cls =
+            "firstrun-step" + (s.done ? " done" : "") + (current ? " current" : "");
+          const inner = (
+            <>
+              <span className="firstrun-check" aria-hidden="true">{s.done ? "✓" : i + 1}</span>
+              <span className="firstrun-step-txt">
+                <b>{s.label}</b>
+                <span>{s.hint}</span>
+              </span>
+              {current && s.onClick && <span className="firstrun-go">Go →</span>}
+            </>
+          );
+          return current && s.onClick ? (
+            <button key={s.label} className={cls} onClick={s.onClick}>
+              {inner}
+            </button>
+          ) : (
+            <div key={s.label} className={cls}>
+              {inner}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── Home shell ──────────────────────────────────────────────────────────────
 
 const LENSES: Array<[Lens, string]> = [
@@ -226,6 +297,7 @@ export function HomeView({
 
   return (
     <div className="home">
+      <FirstRunChecklist onOpenProject={onOpenProject} onGoInbox={onGoInbox} />
       <div className="home-bar">
         <FleetReadinessBanner onOpenSettings={onOpenSettings} />
         {blockers.length === 0 ? (

@@ -528,8 +528,17 @@ function TaskCard({
 // brief goes in the optional description, which rides the agent's prompt.
 export const TASK_NAME_MAX = 80;
 
-function AddTaskCard({ onAdd }: { onAdd: (text: string, description?: string) => void }) {
-  const [open, setOpen] = useState(false);
+function AddTaskCard({
+  onAdd,
+  open,
+  setOpen,
+}: {
+  onAdd: (text: string, description?: string) => void;
+  // Controlled open state — lifted so landing on a freshly-created project can
+  // open + focus the composer (the input auto-focuses when it mounts).
+  open: boolean;
+  setOpen: (v: boolean) => void;
+}) {
   const [draft, setDraft] = useState("");
   const [desc, setDesc] = useState("");
   if (!open)
@@ -776,12 +785,17 @@ export function ProjectView({
   onOpenTask,
   onOpenAgent,
   onBack,
+  autoCompose = false,
+  onComposeConsumed,
 }: {
   project: Project;
   now: number;
   onOpenTask: (id: string) => void;
   onOpenAgent: (id: string) => void;
   onBack: () => void;
+  // Set right after Create project → open the task composer focused on land.
+  autoCompose?: boolean;
+  onComposeConsumed?: () => void;
 }) {
   const {
     runs,
@@ -852,6 +866,16 @@ export function ProjectView({
     if (typeof sessionStorage !== "undefined")
       sessionStorage.setItem(`skynet.proj.lens.${project.id}`, lens);
   }, [lens, project.id]);
+  // The backlog task composer's open state (lifted from AddTaskCard so a fresh
+  // "Create project" landing can pop it open + focused). Landing with autoCompose
+  // forces the Kanban lens (where the composer lives) and opens it once.
+  const [composeOpen, setComposeOpen] = useState(false);
+  useEffect(() => {
+    if (!autoCompose) return;
+    setLens("kanban");
+    setComposeOpen(true);
+    onComposeConsumed?.();
+  }, [autoCompose, project.id, onComposeConsumed]);
   const [cloning, setCloning] = useState(false);
   const [cloneErr, setCloneErr] = useState<string | null>(null);
   const cloneRepo = async () => {
@@ -1229,7 +1253,7 @@ export function ProjectView({
                   />
                 ))}
                 {st === "backlog" && drag?.from === "backlog" && dropBeforeId === null && <div className="kb-drop-line" aria-hidden="true" />}
-                {st === "backlog" && <AddTaskCard onAdd={(text, description) => createTask(project.id, text, description)} />}
+                {st === "backlog" && <AddTaskCard open={composeOpen} setOpen={setComposeOpen} onAdd={(text, description) => createTask(project.id, text, description)} />}
                 {colTasks.length === 0 && st !== "backlog" && <div className="kb-empty">{accepts ? "Drop here" : "No tasks"}</div>}
               </div>
             </div>

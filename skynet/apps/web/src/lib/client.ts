@@ -11,6 +11,7 @@ import {
   type ResolveAction,
   type SafetyPolicy,
   type SecretMeta,
+  type Project,
   type WorkspaceSettings,
   type UpdateWorkspaceSettingsRequest,
 } from "@skynet/shared";
@@ -360,7 +361,7 @@ export function createProject(body: {
   approvalLevel?: string;
   instructions?: string;
 }) {
-  return req<unknown>("POST", "/api/projects", body);
+  return req<Project>("POST", "/api/projects", body);
 }
 export function updateProject(
   id: string,
