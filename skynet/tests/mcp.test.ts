@@ -64,6 +64,38 @@ describe("MCP tool core", () => {
     expect(snapshot.runs.map((a: { id: string }) => a.id)).toContain(agent.id);
   });
 
+  it("exposes task-board + roadmap + lifecycle actions, and transition_task guards illegal jumps", async () => {
+    const { client } = await connect(author);
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    // The actions that were previously missing from the MCP surface.
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "transition_task", "force_task_done", "move_task", "reorder_task", "archive_task", "delete_task",
+        "update_milestone", "delete_milestone", "delete_feature",
+        "pause_agent", "resume_agent", "run_diff",
+        "import_github_issues", "import_repo_file",
+        "list_tasks", "list_features", "list_milestones",
+      ]),
+    );
+
+    const project = json(await client.callTool({ name: "create_project", arguments: { name: "P", goal: "g" } }));
+    const task = json(await client.callTool({ name: "create_task", arguments: { projectId: project.id, text: "t" } }));
+    expect(task.state).toBe("backlog");
+    // Leaving backlog needs an agent-eligibility choice — set it via update_task first.
+    await client.callTool({ name: "update_task", arguments: { taskId: task.id, assignment: { mode: "any", agentIds: [] } } });
+
+    // A legal human move applies; list_tasks reflects it.
+    const moved = json(await client.callTool({ name: "transition_task", arguments: { taskId: task.id, to: "triage" } }));
+    expect(moved.state).toBe("triage");
+    const tasks = json(await client.callTool({ name: "list_tasks", arguments: {} }));
+    expect(tasks.find((t: { id: string }) => t.id === task.id).state).toBe("triage");
+
+    // An illegal jump (triage → done) is refused, not applied.
+    const bad = await client.callTool({ name: "transition_task", arguments: { taskId: task.id, to: "done" } });
+    expect(bad.isError).toBe(true);
+    expect(text(bad)).toMatch(/can't move a task/i);
+  });
+
   it("enforces scopes: an author token cannot resolve_hitl, an approver can", async () => {
     const item: HitlItem = {
       id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "a1", kind: "approval",
