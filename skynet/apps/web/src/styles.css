@@ -362,6 +362,14 @@ kbd {
   border: 1px solid var(--ok); color: var(--ok); font-size: 24px;
   align-items: center; justify-content: center; margin-bottom: 16px;
 }
+.queue-empty-teach { margin-top: 28px; font-size: 13px; color: var(--muted); }
+.queue-empty-kinds {
+  list-style: none; margin: 14px auto 0; max-width: 420px;
+  display: flex; flex-direction: column; gap: 10px; text-align: left;
+}
+.queue-empty-kinds li { display: flex; align-items: center; gap: 12px; }
+.queue-empty-kinds .kind-chip { flex: none; min-width: 108px; text-align: center; }
+.queue-empty-blurb { font-size: 13px; color: var(--muted); line-height: 1.5; }
 
 /* ---------- agent detail ---------- */
 .detail { position: relative; z-index: 1; max-width: 980px; margin: 0 auto; padding: calc(var(--sp) * 1.4) calc(var(--sp) * 2) 60px; display: flex; flex-direction: column; gap: var(--sp); }

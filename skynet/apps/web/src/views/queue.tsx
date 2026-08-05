@@ -254,6 +254,17 @@ export function QueueCard({
   );
 }
 
+// The gate kinds that surface a run into the Inbox for a human decision. Shown
+// on the empty state so first-run users learn the gate vocabulary before the
+// first gate fires (question/escalation are omitted — they're rarer follow-ups,
+// not the four everyday sign-offs). Labels/colors come from KIND_META.
+const EMPTY_GATE_KINDS: { kind: HitlItem["kind"]; blurb: string }[] = [
+  { kind: "approval", blurb: "a command approval before it runs" },
+  { kind: "plan", blurb: "a plan sign-off before it writes code" },
+  { kind: "diff", blurb: "a diff review before it merges" },
+  { kind: "merge", blurb: "a merge conflict it can't resolve alone" },
+];
+
 export function QueueView({
   selectedIdx,
   onOpen,
@@ -333,6 +344,20 @@ export function QueueView({
         <div className="queue-empty">
           <span className="queue-empty-mark">✓</span>
           <p>Queue clear — no human override required.</p>
+          <p className="queue-empty-teach">When a run needs you, it arrives here as one of four gates:</p>
+          <ul className="queue-empty-kinds">
+            {EMPTY_GATE_KINDS.map(({ kind, blurb }) => {
+              const k = KIND_META[kind];
+              return (
+                <li key={kind}>
+                  <span className="kind-chip" style={{ color: k.color, borderColor: k.color }}>
+                    {k.label}
+                  </span>
+                  <span className="queue-empty-blurb">{blurb}</span>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       ) : (
         <div className="queue-list">
