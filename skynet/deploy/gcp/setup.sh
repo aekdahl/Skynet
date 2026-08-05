@@ -168,35 +168,30 @@ DOMAIN=$(echo 'var.mcp_domain' | terraform console | tr -d '"')
 ssh_vm() { gcloud compute ssh "$VM" --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap --quiet --command="$1" 2>/dev/null; }
 # terraform apply updates the VM's startup-script metadata but does NOT re-pull
 # on a RUNNING instance (the image tag is always :latest — no diff to act on).
-# Re-run the startup script in place: fresh registry login + pull + recreate.
-echo "  re-running startup on the VM (fresh registry login + pull + restart)…"
-ssh_vm "sudo google_metadata_script_runner startup" >/dev/null 2>&1 \
-  || echo "  (couldn't re-run startup over IAP SSH — reboot the VM to pick up the new image)"
+# Reboot to re-run startup: fresh registry login + pull + recreate, re-reading
+# the updated metadata. A reset is a plain API call — it avoids the IAP-tunnel/
+# reauth hang that an in-place SSH re-run hits when your gcloud session needs
+# reauth (the tunnel blocks silently instead of erroring).
+say "▸ Rebooting the VM to pull the new image + apply the startup script…"
+gcloud compute instances reset "$VM" --zone="$ZONE" --project="$PROJECT" >/dev/null 2>&1 \
+  || echo "  (reset failed — run 'gcloud auth login', then re-run this script)"
 
-# Health gate. public_ui: check the PUBLIC url — no tunnel, and it proves Caddy +
-# Let's Encrypt actually serve (the app being up on :8080 is NOT enough — Caddy
-# can be wedged with no cert). Otherwise check the app over the IAP tunnel.
+# Health gate. public_ui: poll the PUBLIC url — no tunnel (so reauth can't block
+# it), and it proves Caddy + Let's Encrypt actually serve (the app up on :8080 is
+# NOT enough — Caddy can be wedged with no cert). Otherwise check over the tunnel.
 poll_public() {
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 40); do
     [ "$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' "https://${DOMAIN}/" 2>/dev/null)" = "200" ] && return 0
-    sleep 10
+    sleep 12
   done
   return 1
 }
 HEALTHY=""
 if [ "$PUBLIC_UI" = "true" ]; then
-  say "▸ Waiting for https://${DOMAIN} to serve (Caddy obtains the Let's Encrypt cert)…"
-  if poll_public; then
-    HEALTHY=1
-  else
-    # Caddy can come up wedged after an in-place startup re-run; a reboot clears
-    # it reliably. Reset once and re-check before giving up.
-    echo "  ✗ not serving yet — rebooting once to clear a wedged Caddy…"
-    gcloud compute instances reset "$VM" --zone="$ZONE" --project="$PROJECT" >/dev/null 2>&1 || true
-    poll_public && HEALTHY=1
-  fi
+  say "▸ Waiting for https://${DOMAIN} to serve (reboot + Caddy + Let's Encrypt — a few minutes)…"
+  poll_public && HEALTHY=1
 else
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 40); do
     if ssh_vm "curl -fsS -o /dev/null http://localhost:${APP_PORT}"; then HEALTHY=1; break; fi
     sleep 12
   done
