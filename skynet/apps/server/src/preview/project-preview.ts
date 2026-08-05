@@ -93,6 +93,12 @@ interface Live {
   // order. The health check prefers these over the injected port. See start().
   strongPort?: number;
   detectedPorts?: number[];
+  // Did we start the dev server under `--base=/p/<token>/`? When true its assets
+  // already carry the proxy prefix, so the /p/<token>/ proxy forwards the full
+  // path. When false (the common `concurrently`/nested-Vite case, where --base
+  // can't reach the leaf process) the server serves at base `/`, and the proxy
+  // must strip the prefix + re-prefix the HTML. See preview-proxy.ts.
+  baseInjected?: boolean;
 }
 
 /** What to start — the parameterization shared by project + run previews. */
@@ -205,14 +211,16 @@ export class ProjectPreviewManager {
     };
   }
 
-  /** The live loopback port for a preview proxy token — used by the /p/<token>/
-   *  reverse proxy. undefined unless that preview is currently live. A poll here
-   *  also counts as "watching" (defers the idle stop). */
-  portForToken(token: string): number | undefined {
+  /** The live loopback port + path mode for a preview proxy token — used by the
+   *  /p/<token>/ reverse proxy. `stripPrefix` is true when the dev server serves
+   *  at base `/` (we didn't/couldn't inject `--base`), so the proxy must strip the
+   *  prefix and re-prefix the HTML. undefined unless the preview is live. Counts
+   *  as "watching" (defers the idle stop). */
+  proxyTargetForToken(token: string): { port: number; stripPrefix: boolean } | undefined {
     for (const p of this.previews.values()) {
       if (p.token === token && p.status === "live" && p.port) {
         p.lastTouched = Date.now();
-        return p.port;
+        return { port: p.port, stripPrefix: !p.baseInjected };
       }
     }
     return undefined;
@@ -603,6 +611,7 @@ export class ProjectPreviewManager {
       let cmd = recipe.cmd;
       if (publicOrigin() && /(^|\s|\/)vite(\s|$)/.test(cmd) && !/--base[=\s]/.test(cmd)) {
         cmd = `${cmd} --base=/p/${p.token}/`;
+        p.baseInjected = true;
         this.log(p, `serving behind Skynet's proxy — added --base=/p/${p.token}/ for Vite`);
       }
       this.log(p, `▸ ${cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
