@@ -167,6 +167,7 @@ function TaskCard({
     deleteTask,
     forceTaskDone,
     archiveTask,
+    transitionTask,
   } = useStore();
   // Features + milestones available to this task (same project, not archived).
   const projFeatures = features.filter((f) => f.projectId === task.projectId && !f.archived);
@@ -417,6 +418,24 @@ function TaskCard({
               />{" "}
               Auto-pick
             </label>
+          )}
+          {s === "ongoing" && (
+            // An ongoing card is locked (undraggable) so the running agent can't
+            // be yanked off it by a stray drag — but `ongoing → todo` is a legal,
+            // safe move (stops + detaches the run, task returns clean). Expose it
+            // as an explicit button since there's no lane to drag to. `ongoing →
+            // review/done` is agent-driven (it advances itself when finished), so
+            // there's no human control for those.
+            <button
+              className="kb-move"
+              title="Stop the agent working on this and send the task back to To-do. Its in-progress (uncommitted) work is discarded."
+              onClick={() => {
+                if (window.confirm(`Send “${task.text}” back to To-do? This stops the agent working on it; its in-progress work is discarded.`))
+                  void transitionTask(pid, task.id, "todo");
+              }}
+            >
+              ↩ Send to To-do
+            </button>
           )}
           {(s === "ongoing" || s === "review") && (
             <button
