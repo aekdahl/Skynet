@@ -910,8 +910,11 @@ export class Orchestrator {
       // description when one exists (the run's display name stays the short text).
       const taskBody = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
       const brief = withInstructions(project.instructions, taskBody);
+      // Opt-in browser tooling is a per-workspace setting, off by default; the
+      // runner decides how to expose it (Claude → a Playwright MCP server).
+      const { browserTools } = await this.fleetPolicy(project.workspaceId);
       const handle = await provider.start(
-        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey },
+        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, browser: browserTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId, branch, baseRef, git });

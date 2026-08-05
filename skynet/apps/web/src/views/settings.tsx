@@ -557,6 +557,20 @@ function FleetAutomationSection() {
               />
               <span className="fleet-auto-max-hint mono">min · 0 = never</span>
             </label>
+            <label
+              className="proj-autonomy"
+              title="Give Claude runners a real browser (a Playwright/Chrome MCP server) so an agent can reproduce a bug, verify a UI change, or read live docs. Browser actions still gate for approval. Off by default; Claude runners only for now."
+            >
+              <input
+                type="checkbox"
+                className="proj-autonomy-cb"
+                checked={settings.browserTools}
+                disabled={busy}
+                onChange={(e) => void save({ browserTools: e.target.checked })}
+              />
+              <span className="proj-autonomy-switch" aria-hidden="true" />
+              <span className="proj-autonomy-label">Give agents a browser (Playwright MCP)</span>
+            </label>
           </div>
         )}
       </div>
