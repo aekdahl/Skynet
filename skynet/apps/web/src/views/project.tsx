@@ -167,6 +167,7 @@ function TaskCard({
     deleteTask,
     forceTaskDone,
     archiveTask,
+    assignTask,
     transitionTask,
   } = useStore();
   // Features + milestones available to this task (same project, not archived).
@@ -403,12 +404,29 @@ function TaskCard({
         </div>
       )}
 
-      {/* Non-move controls only — stage changes happen by dragging the card to
-          another lane (todo→ongoing starts, review→done approves, backlog drags
-          reorder). The escape hatches (Force done / Sync), Auto-pick, and Archive
-          can't be expressed as a lane move, so they stay as buttons. */}
-      {(s === "todo" || s === "ongoing" || s === "review" || s === "done") && (
+      {/* Assign → is the primary affordance for starting work: an explicit button
+          on backlog/todo cards that acquires an idle agent and moves the task to
+          Ongoing (the same effect as dragging todo→ongoing, but discoverable up
+          front). Other stage changes still happen by dragging the card to another
+          lane (review→done approves, backlog drags reorder). The escape hatches
+          (Force done / Sync), Auto-pick, and Archive can't be expressed as a lane
+          move, so they stay as buttons. */}
+      {(s === "backlog" || s === "todo" || s === "ongoing" || s === "review" || s === "done") && (
         <div className="kb-actions" onClick={stop}>
+          {(s === "backlog" || s === "todo") && (
+            <button
+              className="kb-move kb-move-primary kb-assign"
+              disabled={noFleet}
+              title={
+                noFleet
+                  ? "No agents configured — add one in Fleet before assigning."
+                  : "Assign now — start an idle agent on this task (moves it to Ongoing)."
+              }
+              onClick={() => void assignTask(pid, task.id)}
+            >
+              Assign →
+            </button>
+          )}
           {s === "todo" && (
             <label className="kb-autopick" title="When on, an idle agent starts this task autonomously.">
               <input
