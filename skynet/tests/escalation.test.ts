@@ -69,6 +69,7 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
   let bus: RecordingBus;
   let hub: Hub;
   let ops: Operations;
+  let orchestrator: Orchestrator;
   let provider: ControllableProvider;
 
   const assignRun = async () => {
@@ -84,7 +85,7 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     bus = new RecordingBus();
     hub = new Hub(store, bus);
     provider = new ControllableProvider();
-    const orchestrator = new Orchestrator(store, hub, provider);
+    orchestrator = new Orchestrator(store, hub, provider);
     ops = new Operations({ store, hub, orchestrator });
   });
 
@@ -166,6 +167,32 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     expect(esc.title).toMatch(/ran out of turns/i);
     expect(esc.why).toMatch(/turn budget/i);
     expect((await store.getRun(run.id))?.status).toBe("waiting"); // escalated, not "review"
+  });
+
+  it("a reaped (heartbeat-silent) running agent escalates as resumable — not a dead-end 'done'", async () => {
+    const { run, handle } = await assignRun();
+    // Simulate a crashed/orphaned runner: still `running`, but its heartbeat went
+    // silent long ago (epoch is well past any reap cutoff).
+    const cur = (await store.getRun(run.id))!;
+    await store.putRun({ ...cur, status: "running", lastHeartbeatAt: 0 });
+
+    await orchestrator.reapStaleAgents();
+
+    // Instead of stopping + marking it done (which would retire the worktree and
+    // drop the work), the reaper routes it into the escalation → Resume path.
+    await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+    const esc = bus.raised().find((i) => i.kind === "escalation")!;
+    expect(esc.runId).toBe(run.id);
+    expect(esc.flags).toContain("stalled");
+    expect(esc.title).toMatch(/went silent/i);
+    expect((await store.getRun(run.id))?.status).toBe("waiting"); // resumable, not "done"
+    expect(handle.stopCalls).toBeGreaterThanOrEqual(1); // dead session torn down
+    expect((await store.getAgent("r1"))?.status).toBe("idle"); // runner freed
+
+    // Idempotent: a second sweep must not re-raise or clobber the open card.
+    await orchestrator.reapStaleAgents();
+    expect(bus.raised().filter((i) => i.kind === "escalation").length).toBe(1);
+    expect((await store.getRun(run.id))?.status).toBe("waiting");
   });
 
   it("Reassign with no worktree fails gracefully — the run stays escalated, no crash", async () => {

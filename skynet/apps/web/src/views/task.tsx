@@ -69,6 +69,14 @@ function fmtUsage(u: TaskRun["usage"]): string | null {
   return parts.join(" · ");
 }
 
+// Wall-clock HH:MM:SS for a log line's epoch-ms `at` — lets lead times between
+// lines be read at a glance.
+const logTime = (at: number): string => {
+  const d = new Date(at);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+
 export function TaskDetail({
   agent,
   now,
@@ -104,6 +112,20 @@ export function TaskDetail({
   const doneCount = planDone(agent);
   const [draft, setDraft] = useState("");
   const [showDiff, setShowDiff] = useState(false);
+  const [copied, setCopied] = useState(false);
+  // Copy the whole log as timestamped plain text (line + any folded detail).
+  const copyLog = () => {
+    const text = agent.log
+      .map((l) => `[${logTime(l.at)}] ${l.line}${l.detail ? "\n" + l.detail : ""}`)
+      .join("\n");
+    void navigator.clipboard
+      ?.writeText(text)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => undefined);
+  };
   // In-flight assistant reply for the chat path — streamed here so it types in
   // live, then dropped once the persisted `↳` line lands in the log (below).
   const [streaming, setStreaming] = useState<string | null>(null);
@@ -324,17 +346,24 @@ export function TaskDetail({
         <div className="detail-right">
           <div className="panel panel-log">
             <div className="panel-head">
-              LIVE LOG <span className="panel-sub">activity + conversation — reply below</span>
+              <span>LIVE LOG <span className="panel-sub">activity + conversation — reply below</span></span>
+              {agent.log.length > 0 && (
+                <button className="log-copy" onClick={copyLog} title="Copy the full log to the clipboard">
+                  {copied ? "✓ Copied" : "⧉ Copy"}
+                </button>
+              )}
             </div>
             <div className="log" ref={logRef}>
               {agent.log.map((l, i) => {
+                // Every entry is timestamped (HH:MM:SS) so lead times are visible.
+                const ts = <span className="log-time mono" title="line timestamp">{logTime(l.at)}</span>;
                 // Conversation turns render as chat bubbles; everything else is
                 // telemetry (with foldable tool detail).
                 const turn = chatTurn(l.line);
                 if (turn) {
                   return (
                     <div key={i} className={"log-turn log-turn-" + turn.who}>
-                      <span className="log-who mono">{turn.who === "you" ? "you" : agent.name}</span>
+                      <span className="log-who mono">{turn.who === "you" ? "you" : agent.name} {ts}</span>
                       {/* A conversation turn is always prose — render its markdown
                           unconditionally. The old looksMarkdown gate left plainer
                           replies showing raw markdown syntax instead of formatting. */}
@@ -352,18 +381,19 @@ export function TaskDetail({
                 // Entries with detail (tool input/output) fold open on click.
                 return l.detail ? (
                   <details key={i} className={cls + " log-foldable"}>
-                    <summary>{l.line}</summary>
+                    <summary>{ts} {l.line}</summary>
                     <pre className="log-detail">{l.detail}</pre>
                   </details>
                 ) : looksMarkdown(l.line) ? (
                   // Marker-less agent prose (e.g. the final answer) — render its
                   // markdown instead of showing raw **bold**/`code`/- bullets.
                   <div key={i} className="log-prose log-md">
+                    <span className="log-time-block mono">{ts}</span>
                     <Markdown text={l.line} />
                   </div>
                 ) : (
                   <div key={i} className={cls}>
-                    {l.line}
+                    {ts} {l.line}
                   </div>
                 );
               })}

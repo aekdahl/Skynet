@@ -17,7 +17,9 @@ import {
   CreateProjectRequest,
   CreateTaskRequest,
   ResolveRequest,
+  TaskState,
   UpdateFeatureRequest,
+  UpdateMilestoneRequest,
   UpdateProjectRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
@@ -40,8 +42,9 @@ const INSTRUCTIONS = `Skynet orchestrates a fleet of coding runs across projects
 1. get_snapshot to see projects, runs, fleet runners, and open human-in-the-loop (HITL) items.
 2. create_project, then create_task for each unit of work.
 3. assign_task to spin up an agent on an idle runner (idempotent — re-assigning returns the existing agent).
-4. wait_for_hitl to block until an agent needs a human decision; resolve_hitl to answer it (requires the "approver" scope).
+4. wait_for_hitl to block until an agent needs a human decision; read the change with run_diff, then resolve_hitl to answer it (requires the "approver" scope).
 5. wait_for_agent to block until an agent finishes or needs review.
+6. Move work across the board with transition_task (triage→todo, review→done, ongoing→todo to abandon); prioritize with move_task / reorder_task; group with features + milestones.
 Risky actions (approving diffs, pushing to GitHub) are gated behind HITL. A token without the "approver" scope can observe and drive runs but cannot resolve gates — a human must.`;
 
 type Shape = z.ZodRawShape;
@@ -218,6 +221,19 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     filter: (r) => projectAccess.filterByProjectId(r as { projectId: string }[]),
   });
   tool("get_agent", "observe", "Get one agent including its plan and recent activity log.", { runId: z.string() }, (a) => operations.getRun(ws, a.runId), { readOnly: true });
+  tool("run_diff", "observe", "Get a run's working diff: the unified patch plus added/deleted line counts and changed files. Read this to see what a run actually changed before resolving its review gate.", { runId: z.string() }, (a) => operations.runDiff(ws, a.runId), { readOnly: true });
+  tool("list_tasks", "observe", "List the workspace's tasks (name, state, roadmap links). A project-scoped token sees only its projects' tasks.", {}, () => operations.listTasks(ws), {
+    readOnly: true,
+    filter: (r) => projectAccess.filterByProjectId(r as { projectId: string }[]),
+  });
+  tool("list_features", "observe", "List the workspace's features (task groupings). Scoped tokens see only their projects'.", {}, () => operations.listFeatures(ws), {
+    readOnly: true,
+    filter: (r) => projectAccess.filterByProjectId(r as { projectId: string }[]),
+  });
+  tool("list_milestones", "observe", "List the workspace's milestones (dated roadmap checkpoints). Scoped tokens see only their projects'.", {}, () => operations.listMilestones(ws), {
+    readOnly: true,
+    filter: (r) => projectAccess.filterByProjectId(r as { projectId: string }[]),
+  });
   tool("list_hitl", "observe", "List the open human-in-the-loop queue (decisions awaiting an operator).", {}, () => operations.listHitl(ws), {
     readOnly: true,
     filter: (r) => projectAccess.filterByRun(r as { runId: string }[]),
@@ -257,10 +273,27 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     const { projectId, ...body } = a;
     return operations.createTask(ws, projectId, body);
   });
-  tool("update_task", "author", "Update a task's text, state (backlog | assigned | done), or roadmap link (featureId / milestoneId).", { taskId: z.string(), ...UpdateTaskRequest.shape }, (a) => {
+  tool("update_task", "author", "Update a task's editable fields: text, description, autoPick, agent eligibility (assignment), schedule (estimatedDurationMs / plannedStartAt), or roadmap link (featureId / milestoneId). To MOVE a task through the board (change its state) use transition_task — state transitions are guarded and can't be set here.", { taskId: z.string(), ...UpdateTaskRequest.shape }, (a) => {
     const { taskId, ...patch } = a;
     return operations.updateTask(ws, taskId, patch);
   });
+  tool(
+    "transition_task",
+    "author",
+    "Move a task through the kanban to a new state (backlog | triage | todo | ongoing | review | done). Only legal human transitions are allowed (e.g. triage→todo, review→done approves the diff gate, ongoing→todo abandons + detaches the run); an illegal jump is refused. `todo→ongoing` is not here — use assign_task to start a run.",
+    { taskId: z.string(), to: TaskState },
+    (a) => operations.transitionTask(ws, a.taskId, a.to, principal.operatorId),
+  );
+  tool("force_task_done", "author", "Escape hatch: force a task straight to done from any state and sync its run — use only when the normal review→done path is stuck (wedged gate, run finished out-of-band).", { taskId: z.string() }, (a) => operations.forceTaskDone(ws, a.taskId));
+  tool("move_task", "author", "Bump a task up or down within its column's priority order (also the auto-pick order when Autonomy is on).", { taskId: z.string(), direction: z.enum(["up", "down"]) }, (a) => operations.moveTask(ws, a.taskId, a.direction));
+  tool("reorder_task", "author", "Reorder a task to sit immediately before another task in the same column (beforeId = null moves it to the end).", { taskId: z.string(), beforeId: z.string().nullable() }, (a) => operations.reorderTask(ws, a.taskId, a.beforeId));
+  tool("archive_task", "author", "Archive (or restore) a task — hides it from the board without deleting it (still read by Steward).", { projectId: z.string(), taskId: z.string(), archived: z.boolean().optional() }, (a) => operations.archiveTask(ws, a.projectId, a.taskId, a.archived ?? true));
+  tool("delete_task", "author", "Permanently delete a task. Prefer archive_task unless you truly need it gone.", { taskId: z.string() }, async (a) => {
+    await operations.deleteTask(ws, a.taskId);
+    return { deleted: a.taskId };
+  });
+  tool("import_github_issues", "author", "Import a project's connected-repo open GitHub issues as tasks (deduped; sets each task's source so status changes can sync back). Needs the project bound to a GitHub repo.", { projectId: z.string() }, (a) => operations.importGithubIssues(ws, a.projectId));
+  tool("import_repo_file", "author", "Import a repo file's `- [ ]` checklist items as tasks (anchored by label; completing one later checks its box). Needs the project bound to a GitHub repo.", { projectId: z.string(), path: z.string() }, (a) => operations.importRepoFile(ws, a.projectId, a.path));
   tool("create_feature", "author", "Create a feature (a task grouping) in a project. Optionally roll it up into a milestone via `milestoneId`.", { projectId: z.string(), ...CreateFeatureRequest.shape }, (a) => {
     const { projectId, ...body } = a;
     return operations.createFeature(ws, projectId, body);
@@ -273,6 +306,18 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     const { projectId, ...body } = a;
     return operations.createMilestone(ws, projectId, body);
   });
+  tool("update_milestone", "author", "Update a milestone's name, target date, status (e.g. mark it shipped), or archived flag.", { milestoneId: z.string(), ...UpdateMilestoneRequest.shape }, (a) => {
+    const { milestoneId, ...patch } = a;
+    return operations.updateMilestone(ws, milestoneId, patch);
+  });
+  tool("delete_milestone", "author", "Delete a milestone. Features + tasks in it keep existing but lose the grouping.", { milestoneId: z.string() }, async (a) => {
+    await operations.deleteMilestone(ws, a.milestoneId);
+    return { deleted: a.milestoneId };
+  });
+  tool("delete_feature", "author", "Delete a feature (task grouping). Tasks in it keep existing but lose the grouping.", { featureId: z.string() }, async (a) => {
+    await operations.deleteFeature(ws, a.featureId);
+    return { deleted: a.featureId };
+  });
   tool("assign_task", "author", "Assign a task to a fresh agent on an idle runner. Idempotent: re-assigning an already-assigned task returns the existing agent.", { projectId: z.string(), taskId: z.string() }, (a) => operations.assignTask(ws, a.projectId, a.taskId));
   tool("message_agent", "author", "Send a chat message to an agent and get its reply.", { runId: z.string(), ...ChatRequest.shape }, async (a) => ({ reply: await operations.chatAgent(ws, a.runId, a.text) }));
   tool("fork_agent", "author", "Fork an agent to explore an alternative from its current step.", { runId: z.string() }, (a) => operations.forkAgent(ws, a.runId));
@@ -281,6 +326,8 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     return { stopped: a.runId };
   });
   tool("archive_agent", "author", "Archive (or restore) an agent — hides it from the board without deleting it.", { runId: z.string(), archived: z.boolean().optional() }, (a) => operations.archiveAgent(ws, a.runId, a.archived ?? true));
+  tool("pause_agent", "author", "Pause a live agent — it stops working but keeps its runner + worktree so resume_agent can continue it.", { runId: z.string() }, (a) => operations.pauseAgent(ws, a.runId));
+  tool("resume_agent", "author", "Resume a paused agent where it left off.", { runId: z.string() }, (a) => operations.resumeAgent(ws, a.runId));
   tool(
     "configure_runner",
     "author",

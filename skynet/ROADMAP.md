@@ -311,6 +311,18 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     so a reason mentioning "flagged" never false-flags an APPROVE.*
   - *Landed: **`error_max_turns` is resumable** — a run that hits the Claude turn cap parks with the current
     plan + guidance instead of dead-ending; the operator resolves it forward.*
+- [ ] **🔬⭐ Guided merge — understand-then-merge, to any branch.** Merging today is a single approve on the
+  diff HITL. Make it a **guided experience**: before anything merges, Skynet presents a plain-English **merge
+  brief** — what the change *does*, which files/modules it touches, the **risks** (blast radius: writes outside
+  the worktree, secrets, DB migrations, public-API/contract changes, new deps, history-destructive ops) and the
+  **mitigations already in place** (tests run + their results, verifier-gate status, the auto-review verdict) —
+  so the operator *understands* the merge rather than eyeballing a patch. On approval, Skynet **merges to a
+  target branch of the operator's choosing** — the integration branch / `main` by default, or any other branch
+  (a feature stack, a release branch) — owning the rebase/conflict path and reporting the outcome. **Wrap,
+  don't rebuild:** it *composes* the **agent-authored diff walkthrough**, the **verifier gate** (tests), and the
+  **auto-review verdict** above into one review→merge surface; records the whole brief + decision to the
+  tamper-evident audit (feeds the **compliance evidence pack**); and reuses the existing merge engine — only the
+  **target-branch selection** and the synthesized brief are new. Human-gated end to end; nothing self-merges.
 - [ ] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** content max-width /
   purposeful two-column layouts (views left-hug at 1440 today) · stop amber doing triple duty
   (brand + primary + "waiting" status — move caution to its own hue; never encode status by hue

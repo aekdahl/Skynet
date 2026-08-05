@@ -5,15 +5,21 @@
 // while a fast subprocess that exits first is NOT capped.
 import { describe, it, expect, afterEach, vi } from "vitest";
 import type { ProviderId } from "@skynet/shared";
-import { runtimeCapMs, fmtDuration } from "../packages/runner-sdk/src/caps.js";
+import { runtimeCapMs, idleCapMs, fmtDuration } from "../packages/runner-sdk/src/caps.js";
 import { CliRunnerProvider, type CliVendor } from "../packages/runner-sdk/src/cli-runner.js";
 import type { RunnerEvents, StartSpec } from "../packages/runner-sdk/src/types.js";
 
 const KEY = "SKYNET_RUNNER_MAX_RUNTIME_MS";
+const IDLE_KEY = "SKYNET_RUNNER_IDLE_MS";
 const original = process.env[KEY];
+const originalIdle = process.env[IDLE_KEY];
+const restore = (k: string, v: string | undefined) => {
+  if (v === undefined) delete process.env[k];
+  else process.env[k] = v;
+};
 afterEach(() => {
-  if (original === undefined) delete process.env[KEY];
-  else process.env[KEY] = original;
+  restore(KEY, original);
+  restore(IDLE_KEY, originalIdle);
   vi.restoreAllMocks();
 });
 
@@ -35,6 +41,23 @@ describe("runtimeCapMs", () => {
   it("formats durations for the failure message", () => {
     expect(fmtDuration(120000)).toBe("2m");
     expect(fmtDuration(4000)).toBe("4s");
+  });
+});
+
+describe("idleCapMs", () => {
+  it("defaults to 8 minutes when unset", () => {
+    delete process.env[IDLE_KEY];
+    expect(idleCapMs()).toBe(8 * 60 * 1000);
+  });
+  it("honors a positive override", () => {
+    process.env[IDLE_KEY] = "1500";
+    expect(idleCapMs()).toBe(1500);
+  });
+  it("treats 0 / negative / garbage as disabled", () => {
+    for (const v of ["0", "-1", "nope"]) {
+      process.env[IDLE_KEY] = v;
+      expect(idleCapMs()).toBe(0);
+    }
   });
 });
 
@@ -96,5 +119,16 @@ describe("CLI runner wall-clock cap", () => {
     await wait;
     expect(events.completed).toBe(true);
     expect(events.failed).toBeUndefined();
+  }, 10_000);
+
+  it("force-fails a run that goes idle (no output past the idle window)", async () => {
+    process.env[KEY] = "0"; // disable the total cap so the IDLE watchdog is what fires
+    process.env[IDLE_KEY] = "250"; // 250ms of no output → presumed stalled
+    const { events, ev, wait } = collect();
+    await new SleepProvider("30").start(spec(), ev); // never prints a line → goes idle
+    await wait;
+    expect(events.failed).toMatch(/no progress/);
+    expect(events.failed).toMatch(/stalled/);
+    expect(events.completed).toBeUndefined();
   }, 10_000);
 });

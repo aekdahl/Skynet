@@ -78,6 +78,12 @@ export class WorktreeProvisioner {
     return isAbsolute(this.root) ? join(this.root, safe) : resolve(this.repo, this.root, safe);
   }
 
+  /** True while this run's worktree is still checked out on disk (not yet
+   *  retired) — i.e. there's a working directory to resume the run into. */
+  exists(runId: string): boolean {
+    return existsSync(this.pathFor(runId));
+  }
+
   private async refExists(ref: string): Promise<boolean> {
     try {
       await this.git(this.repo, "rev-parse", "--verify", "--quiet", ref);

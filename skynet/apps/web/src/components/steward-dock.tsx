@@ -40,7 +40,7 @@ export function StewardDock({
   focusProjectName: string | null;
   onClose: () => void;
 }) {
-  const { projects, createTask, transitionTask, updateTask, deleteTask, moveTask, updateProject, createFeature, createMilestone, updateFeature } = useStore();
+  const { projects, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, updateProject, createFeature, createMilestone, updateFeature } = useStore();
   const [msgs, setMsgs] = useState<Msg[]>(thread);
   const [input, setInput] = useState(draftCache);
   const [busy, setBusy] = useState(false);
@@ -66,6 +66,7 @@ export function StewardDock({
       case "rename_task": return updateTask(projectId, a.taskId!, { text: a.text });
       case "set_task_desc": return updateTask(projectId, a.taskId!, { description: a.description });
       case "remove_task": return deleteTask(projectId, a.taskId!);
+      case "archive_task": return archiveTask(projectId, a.taskId!, true);
       case "reorder_task": return moveTask(projectId, a.taskId!, a.direction!);
       case "rename_project": return updateProject(projectId, { name: a.name });
       case "set_goal": return updateProject(projectId, { goal: a.goal });
@@ -87,6 +88,14 @@ export function StewardDock({
       case "add_milestone": return createMilestone(projectId, a.name ?? "", a.description, a.targetAt ?? undefined);
       case "set_task_feature": return updateTask(projectId, a.taskId!, { featureId: a.featureId ?? null });
       case "set_feature_milestone": return updateFeature(a.featureId!, { milestoneId: a.milestoneId ?? null });
+      default: {
+        // Exhaustiveness guard: every ProjectActionKind Steward can propose MUST
+        // have a case here. Without it a confirmed action silently no-ops (the
+        // dock marks the chip "done" but nothing runs) — which is exactly how
+        // archive_task slipped through. A new kind now fails to compile instead.
+        const unhandled: never = a.kind;
+        throw new Error(`Steward action not wired in the dock: ${String(unhandled)}`);
+      }
     }
   };
 
