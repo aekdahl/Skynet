@@ -790,6 +790,10 @@ button.ct-seg { cursor: pointer; }
 
 /* ===== inbox modify/chat ===== */
 .btn-lit { border-color: var(--accent); color: var(--accent); }
+/* On a PRIMARY (accent-filled) button, `.btn-lit`'s accent text would vanish into
+   the accent background — keep the dark label and show the toggled-on state with an
+   inset ring instead. */
+.btn-primary.btn-lit { color: #0B0D11; box-shadow: inset 0 0 0 2px rgba(11, 13, 17, 0.4); }
 .qx { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line-soft); padding-top: 14px; }
 .qx-input {
   width: 100%; box-sizing: border-box; background: var(--raised); border: 1px solid var(--line);
