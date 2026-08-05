@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
+import { PrimaryButton } from "../components/empty";
 import {
   agentsForProject,
   curStep,
@@ -14,7 +15,6 @@ import {
   tasksInState,
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
-import { PrimaryButton } from "../components/empty";
 import { ProjectDelivery, visualLeadOf } from "../components/preview";
 import { Markdown } from "../components/markdown";
 import { SwDiagram } from "../components/subway-diagram";
@@ -167,6 +167,7 @@ function TaskCard({
     deleteTask,
     forceTaskDone,
     archiveTask,
+    transitionTask,
   } = useStore();
   // Features + milestones available to this task (same project, not archived).
   const projFeatures = features.filter((f) => f.projectId === task.projectId && !f.archived);
@@ -417,6 +418,24 @@ function TaskCard({
               />{" "}
               Auto-pick
             </label>
+          )}
+          {s === "ongoing" && (
+            // An ongoing card is locked (undraggable) so the running agent can't
+            // be yanked off it by a stray drag — but `ongoing → todo` is a legal,
+            // safe move (stops + detaches the run, task returns clean). Expose it
+            // as an explicit button since there's no lane to drag to. `ongoing →
+            // review/done` is agent-driven (it advances itself when finished), so
+            // there's no human control for those.
+            <button
+              className="kb-move"
+              title="Stop the agent working on this and send the task back to To-do. Its in-progress (uncommitted) work is discarded."
+              onClick={() => {
+                if (window.confirm(`Send “${task.text}” back to To-do? This stops the agent working on it; its in-progress work is discarded.`))
+                  void transitionTask(pid, task.id, "todo");
+              }}
+            >
+              ↩ Send to To-do
+            </button>
           )}
           {(s === "ongoing" || s === "review") && (
             <button
@@ -750,45 +769,18 @@ function ProjectRunnerKeys({ project, onChange }: { project: Project; onChange: 
   );
 }
 
-// Import a GitHub-connected project's issues as tasks + toggle write-back of task
-// status to those issues. Only shown when the project is bound to a GitHub repo.
+// Write-back of task status to the project's GitHub issues. Only shown when the
+// project is bound to a GitHub repo. Pulling tasks IN (from GitHub issues or a
+// repo checklist file) is not a header button — ask Steward, which is repo-aware
+// and can read those sources directly.
 function ProjectSourceSync({ project, onToggle }: { project: Project; onToggle: (on: boolean) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
   if (!project.repo) return null;
-  const runImport = async (fn: () => Promise<{ imported: number; skipped: number }>, unit: string) => {
-    setBusy(true);
-    setNote(null);
-    try {
-      const r = await fn();
-      setNote(r.imported ? `Imported ${r.imported} ${unit}${r.imported === 1 ? "" : "s"}${r.skipped ? ` · ${r.skipped} already here` : ""}` : `No new ${unit}s`);
-    } catch (e) {
-      setNote(e instanceof Error ? e.message : "Import failed");
-    } finally {
-      setBusy(false);
-      setTimeout(() => setNote(null), 4000);
-    }
-  };
-  const importIssues = () => runImport(() => api.importGithubIssues(project.id), "issue");
-  const importFile = () => {
-    const path = window.prompt("Import a repo file's checklist (`- [ ] …`) as tasks. File path:", "TODO.md");
-    if (path && path.trim()) void runImport(() => api.importRepoFile(project.id, path.trim()), "task");
-  };
   return (
-    <>
-      <button className="btn" disabled={busy} onClick={() => void importIssues()} title="Import this repo's open GitHub issues as tasks — each links back to its issue.">
-        {busy ? "Importing…" : "⤒ Import issues"}
-      </button>
-      <button className="btn" disabled={busy} onClick={importFile} title="Import a repo file's open checklist items (- [ ] …) as tasks — completing one checks its box.">
-        ⤒ Import file
-      </button>
-      <label className="proj-autonomy" title="When on, moving a task to review/done comments + closes its linked GitHub issue (reopens if it moves back out of done).">
-        <input type="checkbox" className="proj-autonomy-cb" checked={project.syncSourceStatus} onChange={(e) => onToggle(e.target.checked)} />
-        <span className="proj-autonomy-switch" aria-hidden="true" />
-        <span className="proj-autonomy-label">Sync to source</span>
-      </label>
-      {note && <span className="proj-sync-note mono">{note}</span>}
-    </>
+    <label className="proj-autonomy" title="When on, moving a task to review/done comments + closes its linked GitHub issue (reopens if it moves back out of done).">
+      <input type="checkbox" className="proj-autonomy-cb" checked={project.syncSourceStatus} onChange={(e) => onToggle(e.target.checked)} />
+      <span className="proj-autonomy-switch" aria-hidden="true" />
+      <span className="proj-autonomy-label">Sync to source</span>
+    </label>
   );
 }
 
@@ -912,13 +904,18 @@ export function ProjectView({
   // grounding). Kept as its own local state so Cancel restores the pristine
   // value if the operator opened the editor and changed their mind.
   const [instructions, setInstructions] = useState(project.instructions ?? "");
+  // Which branch this project stacks its runs/PRs onto. Blank = the global default
+  // (usually main). Only meaningful for a git-backed / repo-bound project.
+  const [baseBranch, setBaseBranch] = useState(project.baseBranch ?? "");
+  const hasRepo = !!(project.gitBacked || project.repo);
 
   useEffect(() => {
     setName(project.name);
     setGoal(project.goal);
     setInstructions(project.instructions ?? "");
+    setBaseBranch(project.baseBranch ?? "");
     setFolded(false);
-  }, [project.id, project.name, project.goal, project.instructions]);
+  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch]);
 
   return (
     <section className="projview">
@@ -945,6 +942,17 @@ export function ProjectView({
             value={instructions}
             onChange={(e) => setInstructions(e.target.value)}
           />
+          {hasRepo && (
+            <label className="projview-instructions-label mono">
+              Base branch <span className="projview-instructions-hint">— the branch runs cut from and open PRs against. Blank = the default (main). Set a feature branch to stack this project's work onto it.</span>
+              <input
+                className="qx-input"
+                placeholder="main (default)"
+                value={baseBranch}
+                onChange={(e) => setBaseBranch(e.target.value)}
+              />
+            </label>
+          )}
           <div className="qx-row">
             <button
               className="btn btn-primary"
@@ -955,6 +963,7 @@ export function ProjectView({
                   name: name.trim() || project.name,
                   goal: goal.trim(),
                   instructions: nextInstructions,
+                  baseBranch: baseBranch.trim() || null,
                 });
                 setEditing(false);
               }}
@@ -967,6 +976,7 @@ export function ProjectView({
                 setName(project.name);
                 setGoal(project.goal);
                 setInstructions(project.instructions ?? "");
+                setBaseBranch(project.baseBranch ?? "");
                 setEditing(false);
               }}
             >
@@ -996,6 +1006,11 @@ export function ProjectView({
             )}
             {project.repo && (
               <div className="mono proj-repo-line">⑂ {project.repo} · runs branch &amp; PR here</div>
+            )}
+            {project.baseBranch && (
+              <div className="mono proj-repo-line" title="Runs cut from and open PRs against this branch instead of the default.">
+                ⎇ stacks onto <b>{project.baseBranch}</b> · runs branch from it &amp; PR into it
+              </div>
             )}
             {/* Repo bound but no local checkout → offer a server-side clone so
                 agents have code to work on (needed on a headless/GCP instance;

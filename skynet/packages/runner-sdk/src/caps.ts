@@ -23,6 +23,26 @@ export function runtimeCapMs(): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+const DEFAULT_IDLE_CAP_MS = 8 * 60 * 1000; // 8 min of NO activity → presumed stalled
+
+/**
+ * The idle-stall ceiling in ms — how long a run may make NO progress (no SDK
+ * message / stream event) before it's force-failed as stalled — or 0 when
+ * disabled. Distinct from {@link runtimeCapMs}: the total cap is armed once and
+ * bounds overall wall-clock; this one RESETS on every activity event, so it fires
+ * only when the agent has genuinely gone silent (a wedged CLI, a dead stream, a
+ * retry loop that never progresses) rather than while it's actively working — the
+ * heartbeat is a fixed timer that keeps ticking even for a hung run, so the
+ * server-side reaper can't catch this on its own.
+ * `SKYNET_RUNNER_IDLE_MS` overrides; `0`/non-positive/non-numeric disables.
+ */
+export function idleCapMs(): number {
+  const raw = process.env.SKYNET_RUNNER_IDLE_MS;
+  if (raw == null || raw === "") return DEFAULT_IDLE_CAP_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 /** A human-readable duration for the cap-exceeded failure message. */
 export function fmtDuration(ms: number): string {
   if (ms % 60000 === 0) return `${ms / 60000}m`;

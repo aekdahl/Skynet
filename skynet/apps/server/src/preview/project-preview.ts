@@ -87,6 +87,12 @@ interface Live {
   startedAt: number | null;
   lastTouched: number;
   idleTimer?: ReturnType<typeof setTimeout>;
+  // Ports announced on stdout (many dev servers ignore an injected PORT and pick
+  // their own — Vite always does). `strongPort` is a "Local:"-style URL (the
+  // user-facing dev client); `detectedPorts` is every announced port in arrival
+  // order. The health check prefers these over the injected port. See start().
+  strongPort?: number;
+  detectedPorts?: number[];
 }
 
 /** What to start — the parameterization shared by project + run previews. */
@@ -107,6 +113,10 @@ const DEP_MANIFESTS = new Set(["package.json", "package-lock.json", "pnpm-lock.y
 const LOG_CAP = 200;
 const IDLE_MS = 15 * 60 * 1000; // auto-stop a preview no one is watching
 const HEALTH_TIMEOUT_MS = 45_000;
+// Window during which the health check accepts ONLY the dev-client / injected
+// port — long enough for a `concurrently` client to print its "Local:" line
+// after its API sibling, so the API's port doesn't win the boot race.
+const PREVIEW_STRONG_GRACE_MS = 6_000;
 
 /** The tail of the dev server's own output, as a " — …" suffix for a failure
  *  message. So a failed preview says WHY (e.g. "sh: vite: command not found")
@@ -121,6 +131,31 @@ export function previewLogTail(logs: string[]): string {
 /** A non-zero exit turned into an operator-readable reason (code + output tail). */
 export function previewExitReason(code: number | null, logs: string[]): string {
   return `preview process exited (code ${code ?? "?"})${previewLogTail(logs)}`;
+}
+
+/**
+ * Scan a chunk of a dev server's stdout for the port(s) it announced. Most dev
+ * servers ignore an injected `PORT` and pick their own — Vite always does (it
+ * reads `--port`/config, not the env var), and scripts that hardcode a port via
+ * `concurrently` never see it either. So rather than trust the port we injected,
+ * we learn the real one from the "listening on http://…:PORT" / "➜ Local:
+ * http://…:PORT/" lines every dev server prints.
+ *
+ * A line mentioning `local`/`ready`/`preview` near the URL is a STRONG signal —
+ * it's the user-facing dev client (Vite/Nuxt/Astro/CRA all print "Local:"), to
+ * be preferred over a bare URL from e.g. an API server started alongside it.
+ * PURE — unit-tested.
+ */
+export function parsePreviewPorts(text: string): Array<{ port: number; strong: boolean }> {
+  const out: Array<{ port: number; strong: boolean }> = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d{2,5})\b/i.exec(line);
+    if (!m) continue;
+    const port = Number(m[1]);
+    if (port < 1 || port > 65535) continue;
+    out.push({ port, strong: /\b(local|ready|preview)\b/i.test(line) });
+  }
+  return out;
 }
 
 export class ProjectPreviewManager {
@@ -313,20 +348,53 @@ export class ProjectPreviewManager {
     });
   }
 
-  /** Poll the port until the app answers (any HTTP response) or we give up. */
-  private waitForPort(port: number, until: number, alive: () => boolean = () => true): Promise<boolean> {
+  /** Record the port(s) a running dev server announced on stdout, so the health
+   *  check can target the real one even when our injected PORT was ignored.
+   *  `strongPort` (a "Local:"-style dev-client URL) wins over a bare match. */
+  private noteDetectedPorts(p: Live, chunk: string): void {
+    for (const { port, strong } of parsePreviewPorts(chunk)) {
+      p.detectedPorts ??= [];
+      if (!p.detectedPorts.includes(port)) p.detectedPorts.push(port);
+      if (strong) p.strongPort = port;
+    }
+  }
+
+  /** Single HTTP probe: true if something answers on `port`, false otherwise. */
+  private probe(port: number, timeoutMs = 1200): Promise<boolean> {
     return new Promise((res) => {
-      const tick = () => {
-        if (!alive()) return res(false); // the process died — stop polling a dead port
-        const req = httpGet({ host: "127.0.0.1", port, path: "/", timeout: 1500 }, (r) => {
-          r.resume();
-          res(true);
-        });
-        req.on("error", () => (Date.now() > until || !alive() ? res(false) : setTimeout(tick, 400)));
-        req.on("timeout", () => req.destroy());
-      };
-      tick();
+      const req = httpGet({ host: "127.0.0.1", port, path: "/", timeout: timeoutMs }, (r) => {
+        r.resume();
+        res(true);
+      });
+      req.on("error", () => res(false));
+      req.on("timeout", () => req.destroy());
     });
+  }
+
+  /** Poll until the app answers, then return the port it answered on — or null on
+   *  timeout / death. Preference order: the dev-client "Local:" port, then the
+   *  injected port (if the app actually honored it). For an initial GRACE window
+   *  we accept ONLY those two — otherwise, in a `concurrently` server+client run,
+   *  the API server (which announces its port a beat before the client is ready)
+   *  would win the race and we'd preview the API instead of the app. After the
+   *  grace we also accept any other announced port (most-recent first), so a
+   *  server-only project with no "Local:" line still resolves. */
+  private async waitForAppPort(p: Live, injected: number, until: number, alive: () => boolean): Promise<number | null> {
+    const start = Date.now();
+    while (alive() && Date.now() <= until) {
+      const graceOver = Date.now() - start >= PREVIEW_STRONG_GRACE_MS;
+      const candidates = [
+        p.strongPort,
+        injected,
+        ...(graceOver ? [...(p.detectedPorts ?? [])].reverse() : []),
+      ].filter((x): x is number => typeof x === "number");
+      for (const port of new Set(candidates)) {
+        if (!alive()) return null;
+        if (await this.probe(port)) return port;
+      }
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    return null;
   }
 
   /** Prepare (or refresh) a detached worktree at `ref`. Detached so it never
@@ -549,8 +617,13 @@ export class ProjectPreviewManager {
         env: previewEnv({ PORT: String(recipe.port), VITE_PORT: String(recipe.port), BROWSER: "none" }),
       });
       p.child = child;
-      child.stdout?.on("data", (b) => this.log(p, b.toString()));
-      child.stderr?.on("data", (b) => this.log(p, b.toString()));
+      const onOutput = (b: Buffer) => {
+        const s = b.toString();
+        this.log(p, s);
+        this.noteDetectedPorts(p, s);
+      };
+      child.stdout?.on("data", onOutput);
+      child.stderr?.on("data", onOutput);
       // Finalize a failure on "close" (not "exit"): it fires AFTER stdout/stderr
       // have drained, so the captured logs — and thus the surfaced reason — are
       // complete. `closed` also lets the health wait bail the instant it dies.
@@ -570,20 +643,27 @@ export class ProjectPreviewManager {
         p.error = err.message;
       });
 
-      // Bail the health wait the moment the child dies (else a dev server that
-      // exits code 1 in a second still made us wait the full timeout).
-      const ok = await this.waitForPort(
+      // Health-check the port the app ACTUALLY listens on, not just the one we
+      // injected: dev servers routinely ignore `PORT` (Vite always does; a
+      // `concurrently` script hardcodes its own), announcing the real port on
+      // stdout instead. waitForAppPort races the injected port against the ports
+      // parsed from output (preferring a "Local:"-style dev-client URL) and
+      // returns whichever answers first. Bails the moment the child dies.
+      const live = await this.waitForAppPort(
+        p,
         recipe.port,
         Date.now() + HEALTH_TIMEOUT_MS,
         () => this.previews.get(spec.key) === p && !closed && p.status === "starting",
       );
       if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded mid-wait
-      if (ok && p.status === "starting") {
+      if (live && p.status === "starting") {
+        if (live !== recipe.port) this.log(p, `detected dev server on port ${live} (injected PORT=${recipe.port} not honored) — previewing that`);
+        p.port = live; // the URL + /p/<token>/ proxy target follow the real port
         p.status = "live";
         this.armIdle(spec.key, p);
       } else if (p.status === "starting") {
         p.status = "failed";
-        p.error = p.error ?? `the app didn't start listening on port ${recipe.port} within ${HEALTH_TIMEOUT_MS / 1000}s${previewLogTail(p.logs)}`;
+        p.error = p.error ?? `the app didn't start listening within ${HEALTH_TIMEOUT_MS / 1000}s (tried port ${recipe.port}${p.detectedPorts?.length ? ` + detected ${p.detectedPorts.join(", ")}` : ""})${previewLogTail(p.logs)}`;
       }
     } catch (err) {
       p.status = "failed";

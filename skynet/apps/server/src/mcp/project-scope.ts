@@ -22,7 +22,7 @@ import { allowsProject, type Principal } from "../auth.js";
 import type { Operations } from "../operations.js";
 
 /** Well-known id argument keys, in the priority we resolve a target project. */
-const PROJECT_ID_KEYS = ["projectId", "runId", "taskId", "featureId", "hitlId"] as const;
+const PROJECT_ID_KEYS = ["projectId", "runId", "taskId", "featureId", "milestoneId", "hitlId"] as const;
 
 export interface ProjectScope {
   /** True when this principal is confined to a project allowlist. */
@@ -75,6 +75,8 @@ export function projectScope(principal: Principal, operations: Operations, ws: s
         return (await operations.listTasks(ws)).find((t) => t.id === id)?.projectId;
       case "featureId":
         return (await operations.listFeatures(ws)).find((f) => f.id === id)?.projectId;
+      case "milestoneId":
+        return (await operations.listMilestones(ws)).find((m) => m.id === id)?.projectId;
       case "hitlId": {
         const item = (await operations.listHitl(ws)).find((h) => h.id === id);
         return item ? (await runsById()).get(item.runId) : undefined;
