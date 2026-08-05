@@ -414,6 +414,10 @@ kbd {
 .panel-log { position: sticky; top: calc(var(--sp) * 1.4); }
 .log { font-family: var(--font-mono); font-size: 12px; line-height: 1.7; display: flex; flex-direction: column; gap: 2px; max-height: 420px; overflow-y: auto; }
 .log-line { color: var(--muted); white-space: pre-wrap; }
+.log-time { color: var(--faint); font-size: 10.5px; user-select: none; }
+.log-time-block { display: block; margin-bottom: 2px; }
+.log-copy { flex: none; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; cursor: pointer; transition: color 0.14s ease, border-color 0.14s ease; }
+.log-copy:hover { color: var(--text); border-color: var(--faint); }
 .log-hitl { color: var(--warn); }
 .log-warn { color: var(--danger); }
 .log-cursor { color: var(--ok); }
