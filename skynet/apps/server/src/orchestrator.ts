@@ -15,6 +15,7 @@ import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
 import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
+import { decisionResumePrompt } from "./decision-resume.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
@@ -1031,12 +1032,70 @@ export class Orchestrator {
     const live = this.live.get(runId);
     if (live) {
       await live.handle.resume(resolution);
-    } else {
-      // No live runner to receive the decision (e.g. a seeded/demo agent or one
-      // whose runner already exited). Be honest: record that it couldn't be
-      // delivered — don't fake a resume by flipping the agent back to "running".
-      await this.hub.runLog(runId, `decision "${resolution.action}" recorded, but no live runner is attached — not delivered to an agent`);
+      return;
     }
+    // No live runner to receive the decision — the parked session is gone (a
+    // crash, or a server restart dropped the in-memory handle). Recover the way
+    // an escalation/revise does: re-acquire compute and resume the run in its
+    // worktree carrying the decision, so an approval/answer isn't silently lost.
+    if (await this.resumeDecisionOnFreshRunner(item, resolution)) return;
+    // Nothing to resume into (no worktree — e.g. a seeded/demo agent or a
+    // non-git run) or an unsupported kind. Be honest: record that it couldn't be
+    // delivered — don't fake a resume by flipping the agent back to "running".
+    await this.hub.runLog(runId, `decision "${resolution.action}" recorded, but no live runner is attached — not delivered to an agent`);
+  }
+
+  /** A parked decision (approval / question / plan) whose runner already exited.
+   *  Re-acquire compute and start a FRESH turn in the run's worktree carrying the
+   *  operator's decision — the same recovery as {@link relaunchEscalated}, but for
+   *  the resolve path. Returns true when it took over (resumed, or surfaced a
+   *  no-compute failure); false when there's nothing to resume into (no worktree)
+   *  or the kind isn't a mid-run gate, so the caller logs it as undelivered. */
+  private async resumeDecisionOnFreshRunner(item: HitlItem, resolution: Resolution): Promise<boolean> {
+    const runId = item.runId;
+    // Only the mid-run "agent is parked, waiting on the operator" kinds resume by
+    // re-prompting. diff/merge are review-stage (approve merges, modify revises —
+    // both handled above) with different lifecycle semantics.
+    if (item.kind !== "approval" && item.kind !== "question" && item.kind !== "plan") return false;
+    const run = await this.store.getRun(runId);
+    if (!run) return false;
+    const git = await this.gitContextForAgent(runId).catch(() => undefined);
+    // No worktree on disk → nothing committed to continue in. Fall back to the
+    // honest "not delivered" log rather than launching an agent with no context.
+    if (!git || !git.worktrees.exists(runId)) return false;
+
+    let acq: { id: string; provider: TaskRun["provider"]; model: string };
+    try {
+      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId, await this.projectKeyAllowlist(run.projectId));
+    } catch (err) {
+      // Couldn't get compute right now — surface it (and park as waiting for a
+      // retry) instead of the misleading "no runner attached" line.
+      await this.hub.runLog(runId, `decision "${resolution.action}" recorded, but no compute is free to deliver it — ${(err as Error).message}`);
+      await this.hub.runStatus(runId, "waiting");
+      return true;
+    }
+    const provider = await this.getProvider(acq.provider);
+    const cwd = git.worktrees.pathFor(runId);
+    const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+    const project = await this.store.getProject(run.projectId);
+    const prompt = withInstructions(project?.instructions, decisionResumePrompt(item, resolution, run.branch));
+    const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
+    await this.hub.runStatus(runId, "running");
+    if (taskId) {
+      const task = await this.store.getTask(taskId);
+      if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
+    }
+    await this.hub.runLog(runId, `re-acquired compute to deliver "${resolution.action}" — resuming in the run's worktree`);
+    try {
+      const handle = await provider.start(
+        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey },
+        this.events(),
+      );
+      this.live.set(runId, { handle, agentId: acq.id, taskId, branch: run.branch, baseRef: config.baseBranch, git });
+    } catch (err) {
+      await this.failStartup(runId, acq.id, (err as Error).message);
+    }
+    return true;
   }
 
   /** A `modify` on a finished run's diff review: re-acquire compute and resume the
