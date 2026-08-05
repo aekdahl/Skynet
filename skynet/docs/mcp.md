@@ -98,10 +98,13 @@ so an over-broad or leaked token still can't exceed its granted capabilities.
 
 **Tools** (grouped by required scope):
 
-- *observe* — `get_snapshot`, `list_projects`, `list_agents`, `get_agent`, `list_hitl`, `list_audit`
-- *author* — `create_project`, `update_project`, `create_task`, `update_task`, `assign_task`, `message_agent`, `fork_agent`, `stop_agent`, `archive_agent`, `configure_runner`, `update_runner`, `retire_runner`
-- *approver* — `resolve_hitl`
+- *observe (read)* — `get_snapshot`, `get_settings`, `list_projects`, `list_agents`, `get_agent`, `run_diff`, `list_tasks`, `list_features`, `list_milestones`, `list_hitl`, `list_audit`
 - *observe (blocking)* — `wait_for_hitl`, `wait_for_agent`
+- *author — workspace & projects* — `update_settings`, `create_project`, `update_project`
+- *author — backlog & board* — `create_task`, `update_task`, `transition_task` (move through the kanban), `force_task_done`, `move_task`, `reorder_task`, `archive_task`, `delete_task`, `import_github_issues`, `import_repo_file`
+- *author — roadmap* — `create_feature`, `update_feature`, `delete_feature`, `create_milestone`, `update_milestone`, `delete_milestone`
+- *author — agents & fleet* — `assign_task`, `message_agent`, `fork_agent`, `stop_agent`, `pause_agent`, `resume_agent`, `archive_agent`, `configure_runner`, `update_runner`, `retire_runner`
+- *approver* — `resolve_hitl`
 
 **`wait_for_*`** are the event-driven primitives: instead of hot-polling, the
 agent calls one and the request parks (backed by the workspace's event bus) until

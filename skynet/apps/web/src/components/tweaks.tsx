@@ -120,11 +120,11 @@ export function TweakSection({ label }: { label: string }) {
   return (
     <div
       style={{
-        fontSize: 10,
+        fontSize: 11,
         fontWeight: 600,
         letterSpacing: "0.08em",
         textTransform: "uppercase",
-        color: "var(--faint)",
+        color: "var(--muted)",
       }}
     >
       {label}

@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
+import { PrimaryButton } from "../components/empty";
 import {
   agentsForProject,
   curStep,
@@ -166,6 +167,8 @@ function TaskCard({
     deleteTask,
     forceTaskDone,
     archiveTask,
+    assignTask,
+    transitionTask,
   } = useStore();
   // Features + milestones available to this task (same project, not archived).
   const projFeatures = features.filter((f) => f.projectId === task.projectId && !f.archived);
@@ -401,12 +404,29 @@ function TaskCard({
         </div>
       )}
 
-      {/* Non-move controls only — stage changes happen by dragging the card to
-          another lane (todo→ongoing starts, review→done approves, backlog drags
-          reorder). The escape hatches (Force done / Sync), Auto-pick, and Archive
-          can't be expressed as a lane move, so they stay as buttons. */}
-      {(s === "todo" || s === "ongoing" || s === "review" || s === "done") && (
+      {/* Assign → is the primary affordance for starting work: an explicit button
+          on backlog/todo cards that acquires an idle agent and moves the task to
+          Ongoing (the same effect as dragging todo→ongoing, but discoverable up
+          front). Other stage changes still happen by dragging the card to another
+          lane (review→done approves, backlog drags reorder). The escape hatches
+          (Force done / Sync), Auto-pick, and Archive can't be expressed as a lane
+          move, so they stay as buttons. */}
+      {(s === "backlog" || s === "todo" || s === "ongoing" || s === "review" || s === "done") && (
         <div className="kb-actions" onClick={stop}>
+          {(s === "backlog" || s === "todo") && (
+            <button
+              className="kb-move kb-move-primary kb-assign"
+              disabled={noFleet}
+              title={
+                noFleet
+                  ? "No agents configured — add one in Fleet before assigning."
+                  : "Assign now — start an idle agent on this task (moves it to Ongoing)."
+              }
+              onClick={() => void assignTask(pid, task.id)}
+            >
+              Assign →
+            </button>
+          )}
           {s === "todo" && (
             <label className="kb-autopick" title="When on, an idle agent starts this task autonomously.">
               <input
@@ -416,6 +436,24 @@ function TaskCard({
               />{" "}
               Auto-pick
             </label>
+          )}
+          {s === "ongoing" && (
+            // An ongoing card is locked (undraggable) so the running agent can't
+            // be yanked off it by a stray drag — but `ongoing → todo` is a legal,
+            // safe move (stops + detaches the run, task returns clean). Expose it
+            // as an explicit button since there's no lane to drag to. `ongoing →
+            // review/done` is agent-driven (it advances itself when finished), so
+            // there's no human control for those.
+            <button
+              className="kb-move"
+              title="Stop the agent working on this and send the task back to To-do. Its in-progress (uncommitted) work is discarded."
+              onClick={() => {
+                if (window.confirm(`Send “${task.text}” back to To-do? This stops the agent working on it; its in-progress work is discarded.`))
+                  void transitionTask(pid, task.id, "todo");
+              }}
+            >
+              ↩ Send to To-do
+            </button>
           )}
           {(s === "ongoing" || s === "review") && (
             <button
@@ -547,11 +585,21 @@ function AddTaskCard({
         + Add task
       </button>
     );
+  const canSubmit = !!draft.trim();
   const submit = () => {
+    if (!canSubmit) return;
     onAdd(draft.trim(), desc.trim() || undefined);
     setDraft("");
     setDesc("");
     setOpen(false);
+  };
+  // ⌘↵ / Ctrl↵ submits from anywhere in the composer; a bare Enter in the
+  // single-line name field also submits (it can't hold a newline anyway).
+  const cmdEnter = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && canSubmit) {
+      e.preventDefault();
+      submit();
+    }
   };
   return (
     <div className="kb-card kb-card-backlog kb-addcard">
@@ -563,7 +611,12 @@ function AddTaskCard({
           placeholder="Task name — like a commit subject"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && draft.trim() && submit()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && canSubmit) {
+              e.preventDefault();
+              submit();
+            }
+          }}
         />
         <span className={"task-name-count mono" + (draft.length >= TASK_NAME_MAX ? " task-name-max" : "")}>
           {draft.length}/{TASK_NAME_MAX}
@@ -572,14 +625,20 @@ function AddTaskCard({
       <textarea
         className="qx-input kb-addcard-desc"
         rows={3}
-        placeholder="Description (optional) — context, constraints, what “done” looks like…"
+        placeholder="description (optional — the full brief the agent receives)"
         value={desc}
         onChange={(e) => setDesc(e.target.value)}
+        onKeyDown={cmdEnter}
       />
       <div className="qx-row kb-addcard-actions">
-        <button className="btn btn-primary btn-sm" disabled={!draft.trim()} onClick={submit}>
+        <PrimaryButton
+          className="btn-sm"
+          disabled={!canSubmit}
+          reason="Enter a task name to add it."
+          onClick={submit}
+        >
           Add task
-        </button>
+        </PrimaryButton>
         <button className="btn btn-ghost btn-sm" onClick={() => { setDraft(""); setDesc(""); setOpen(false); }}>
           Cancel
         </button>
@@ -737,45 +796,18 @@ function ProjectRunnerKeys({ project, onChange }: { project: Project; onChange: 
   );
 }
 
-// Import a GitHub-connected project's issues as tasks + toggle write-back of task
-// status to those issues. Only shown when the project is bound to a GitHub repo.
+// Write-back of task status to the project's GitHub issues. Only shown when the
+// project is bound to a GitHub repo. Pulling tasks IN (from GitHub issues or a
+// repo checklist file) is not a header button — ask Steward, which is repo-aware
+// and can read those sources directly.
 function ProjectSourceSync({ project, onToggle }: { project: Project; onToggle: (on: boolean) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
   if (!project.repo) return null;
-  const runImport = async (fn: () => Promise<{ imported: number; skipped: number }>, unit: string) => {
-    setBusy(true);
-    setNote(null);
-    try {
-      const r = await fn();
-      setNote(r.imported ? `Imported ${r.imported} ${unit}${r.imported === 1 ? "" : "s"}${r.skipped ? ` · ${r.skipped} already here` : ""}` : `No new ${unit}s`);
-    } catch (e) {
-      setNote(e instanceof Error ? e.message : "Import failed");
-    } finally {
-      setBusy(false);
-      setTimeout(() => setNote(null), 4000);
-    }
-  };
-  const importIssues = () => runImport(() => api.importGithubIssues(project.id), "issue");
-  const importFile = () => {
-    const path = window.prompt("Import a repo file's checklist (`- [ ] …`) as tasks. File path:", "TODO.md");
-    if (path && path.trim()) void runImport(() => api.importRepoFile(project.id, path.trim()), "task");
-  };
   return (
-    <>
-      <button className="btn" disabled={busy} onClick={() => void importIssues()} title="Import this repo's open GitHub issues as tasks — each links back to its issue.">
-        {busy ? "Importing…" : "⤒ Import issues"}
-      </button>
-      <button className="btn" disabled={busy} onClick={importFile} title="Import a repo file's open checklist items (- [ ] …) as tasks — completing one checks its box.">
-        ⤒ Import file
-      </button>
-      <label className="proj-autonomy" title="When on, moving a task to review/done comments + closes its linked GitHub issue (reopens if it moves back out of done).">
-        <input type="checkbox" className="proj-autonomy-cb" checked={project.syncSourceStatus} onChange={(e) => onToggle(e.target.checked)} />
-        <span className="proj-autonomy-switch" aria-hidden="true" />
-        <span className="proj-autonomy-label">Sync to source</span>
-      </label>
-      {note && <span className="proj-sync-note mono">{note}</span>}
-    </>
+    <label className="proj-autonomy" title="When on, moving a task to review/done comments + closes its linked GitHub issue (reopens if it moves back out of done).">
+      <input type="checkbox" className="proj-autonomy-cb" checked={project.syncSourceStatus} onChange={(e) => onToggle(e.target.checked)} />
+      <span className="proj-autonomy-switch" aria-hidden="true" />
+      <span className="proj-autonomy-label">Sync to source</span>
+    </label>
   );
 }
 
@@ -914,13 +946,18 @@ export function ProjectView({
   // grounding). Kept as its own local state so Cancel restores the pristine
   // value if the operator opened the editor and changed their mind.
   const [instructions, setInstructions] = useState(project.instructions ?? "");
+  // Which branch this project stacks its runs/PRs onto. Blank = the global default
+  // (usually main). Only meaningful for a git-backed / repo-bound project.
+  const [baseBranch, setBaseBranch] = useState(project.baseBranch ?? "");
+  const hasRepo = !!(project.gitBacked || project.repo);
 
   useEffect(() => {
     setName(project.name);
     setGoal(project.goal);
     setInstructions(project.instructions ?? "");
+    setBaseBranch(project.baseBranch ?? "");
     setFolded(false);
-  }, [project.id, project.name, project.goal, project.instructions]);
+  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch]);
 
   return (
     <section className="projview">
@@ -947,6 +984,17 @@ export function ProjectView({
             value={instructions}
             onChange={(e) => setInstructions(e.target.value)}
           />
+          {hasRepo && (
+            <label className="projview-instructions-label mono">
+              Base branch <span className="projview-instructions-hint">— the branch runs cut from and open PRs against. Blank = the default (main). Set a feature branch to stack this project's work onto it.</span>
+              <input
+                className="qx-input"
+                placeholder="main (default)"
+                value={baseBranch}
+                onChange={(e) => setBaseBranch(e.target.value)}
+              />
+            </label>
+          )}
           <div className="qx-row">
             <button
               className="btn btn-primary"
@@ -957,6 +1005,7 @@ export function ProjectView({
                   name: name.trim() || project.name,
                   goal: goal.trim(),
                   instructions: nextInstructions,
+                  baseBranch: baseBranch.trim() || null,
                 });
                 setEditing(false);
               }}
@@ -969,6 +1018,7 @@ export function ProjectView({
                 setName(project.name);
                 setGoal(project.goal);
                 setInstructions(project.instructions ?? "");
+                setBaseBranch(project.baseBranch ?? "");
                 setEditing(false);
               }}
             >
@@ -998,6 +1048,11 @@ export function ProjectView({
             )}
             {project.repo && (
               <div className="mono proj-repo-line">⑂ {project.repo} · runs branch &amp; PR here</div>
+            )}
+            {project.baseBranch && (
+              <div className="mono proj-repo-line" title="Runs cut from and open PRs against this branch instead of the default.">
+                ⎇ stacks onto <b>{project.baseBranch}</b> · runs branch from it &amp; PR into it
+              </div>
             )}
             {/* Repo bound but no local checkout → offer a server-side clone so
                 agents have code to work on (needed on a headless/GCP instance;

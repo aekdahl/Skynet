@@ -443,6 +443,8 @@ export class Operations {
       enabledRunnerCredentialIds: [],
       // Source-of-truth write-back is opt-in (outward-facing) — enabled in settings.
       syncSourceStatus: false,
+      // Optional: stack this project's runs/PRs onto a branch; else the global default.
+      baseBranch: input.baseBranch?.trim() || null,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
@@ -466,7 +468,13 @@ export class Operations {
       patch.instructions === undefined
         ? {}
         : { instructions: patch.instructions?.trim() ? patch.instructions.trim() : null };
-    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions });
+    // Same normalization for the base branch: empty/whitespace clears back to null
+    // (= the global default), so `project.baseBranch ?? config.baseBranch` is never "".
+    const baseBranch =
+      patch.baseBranch === undefined
+        ? {}
+        : { baseBranch: patch.baseBranch?.trim() ? patch.baseBranch.trim() : null };
+    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions, ...baseBranch });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     return updated;
   }

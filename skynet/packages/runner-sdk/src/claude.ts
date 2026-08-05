@@ -16,7 +16,7 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
-import { fmtDuration, runtimeCapMs } from "./caps.js";
+import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
 import type {
   ConsultSpec,
   HitlRaise,
@@ -581,6 +581,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
   private finished = false;
   private hb?: ReturnType<typeof setInterval>;
   private cap?: ReturnType<typeof setTimeout>;
+  private idle?: ReturnType<typeof setTimeout>; // idle-stall watchdog (resets on activity)
   // Retry state (transient API overload → resume the session, bounded).
   private sessionId?: string; // this run's own SDK session, for resume-on-retry
   private baseOptions?: Options; // query options minus resume, reused per relaunch
@@ -701,7 +702,26 @@ class ClaudeRunnerHandle implements RunnerHandle {
         void this.q?.interrupt().catch(() => undefined);
       }, capMs);
     }
+    this.bumpIdle(); // start the idle-stall watchdog (reset on every activity below)
     void this.consume();
+  }
+
+  /** (Re)arm the idle-stall watchdog. Unlike the total-runtime {@link cap} (armed
+   *  once), this resets on every activity event, so it fires only after the agent
+   *  has made NO progress for idleCapMs — catching a wedged/hung run fast while
+   *  never interrupting one that's actively working. The 5s heartbeat is a fixed
+   *  timer that keeps ticking for a hung run, so the server reaper can't catch
+   *  this; this closes that gap. Force-fail → onFailed → needs-attention (review),
+   *  never a silent "running" forever or a false "done". */
+  private bumpIdle() {
+    if (this.finished) return;
+    const ms = idleCapMs();
+    if (ms <= 0) return; // disabled
+    if (this.idle) clearTimeout(this.idle);
+    this.idle = setTimeout(() => {
+      this.fail(`no progress for ${fmtDuration(ms)} — stalled, force-stopped`);
+      void this.q?.interrupt().catch(() => undefined);
+    }, ms);
   }
 
   private buildRaise(toolName: string, input: Record<string, unknown>): HitlRaise {
@@ -853,6 +873,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     try {
       for await (const msg of this.q as AsyncIterable<SDKMessage>) {
         if (this.finished) return { done: true };
+        this.bumpIdle(); // any SDK message (incl. stream events) = progress → reset the stall watchdog
         if (msg.type === "system" && "session_id" in msg && typeof msg.session_id === "string") {
           this.sessionId = msg.session_id; // captured for resume-on-retry
           this.onSession(this.runId, msg.session_id);
@@ -931,6 +952,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     if (this.cap) clearTimeout(this.cap);
+    if (this.idle) clearTimeout(this.idle);
     this.events.onFailed(this.runId, reason);
     this.input.close();
   }
@@ -940,6 +962,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     if (this.cap) clearTimeout(this.cap);
+    if (this.idle) clearTimeout(this.idle);
     // Keep the real plan visible on completion (all steps done), rather than
     // blanking it — the PLAN panel stays meaningful for a finished agent.
     const donePlan = this.plan.map((p) => ({ ...p, state: "done" as const }));
@@ -1078,6 +1101,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     if (this.cap) clearTimeout(this.cap);
+    if (this.idle) clearTimeout(this.idle);
     // Release a parked permission/escalation gate so its canUseTool promise
     // never dangles when we tear the session down (e.g. operator stops an
     // escalated run while it's blocked in the gate).

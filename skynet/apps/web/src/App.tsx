@@ -111,15 +111,26 @@ export function App() {
   }, [view, lens, projectId, runId, agentId]);
 
   // [w7] Apply hash changes (back/forward, manual edits, shared links).
+  //
+  // ADDITIVE only: apply the fields the parsed hash actually specifies. An
+  // omitted id (`r.runId === undefined` for a `#/project/...` URL, or
+  // `r.projectId === undefined` for a `#/agent/...` URL) must NOT null out
+  // the corresponding state — the hash form for one view only names its own
+  // identity, and the browser also fires hashchange for our OWN writes, so a
+  // blanket `setProjectId(r.projectId ?? null)` would clear projectId every
+  // time we open a task from a project. That broke the task→back navigation
+  // (Back set view="project" but projectId was already null, so the project
+  // view rendered the "This project was removed" fallback / bounced back to
+  // the projects overview).
   useEffect(() => {
     const onHash = () => {
       const r = parseHash();
       if (!r) return;
       if (r.view) setView(r.view);
       if (r.lens) setLens(r.lens);
-      setProjectId(r.projectId ?? null);
-      setRunId(r.runId ?? null);
-      setAgentId(r.agentId ?? null);
+      if (r.projectId !== undefined) setProjectId(r.projectId);
+      if (r.runId !== undefined) setRunId(r.runId);
+      if (r.agentId !== undefined) setAgentId(r.agentId);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -162,6 +173,19 @@ export function App() {
 
   const agent = store.runs.find((a) => a.id === runId);
   const project = store.projects.find((p) => p.id === projectId);
+
+  // [w7] Reflect the current view (and its project / agent / run context) in the
+  // window title so browser tabs, history, and bookmarks are legible. Declared
+  // after agent/project so it can read their resolved names.
+  useEffect(() => {
+    const label = VIEW_LABEL[view] ?? "Home";
+    let ctx: string | null = null;
+    if (view === "project") ctx = project?.name ?? null;
+    else if (view === "task") ctx = agent?.name ?? null;
+    else if (view === "agentDetail")
+      ctx = store.fleet.find((f) => f.id === agentId)?.name ?? null;
+    document.title = ctx ? `${ctx} · ${label} — Skynet` : `${label} — Skynet`;
+  }, [view, project, agent, agentId, store.fleet]);
 
   // Before the first snapshot lands, render a skeleton of the shell with a real
   // connect→connected lifecycle and a retry affordance — never a dead-end

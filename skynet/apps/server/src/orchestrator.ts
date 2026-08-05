@@ -15,6 +15,7 @@ import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
 import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
+import { decisionResumePrompt } from "./decision-resume.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
@@ -205,15 +206,19 @@ export class Orchestrator {
   // of resolving the runner's own provider. Production always passes (store, hub) only.
   constructor(private store: Store, private hub: Hub, private providerOverride?: RunnerProvider) {}
 
-  /** Build (or reuse) the git backend for a repo path. Cached so each repo keeps
-   *  exactly one worktree provisioner and one serialized merge queue (§2). */
-  private gitContextForRepo(repo: string): GitContext {
-    let ctx = this.gitCtx.get(repo);
+  /** Build (or reuse) the git backend for a repo path + base branch. Cached so
+   *  each (repo, base) keeps exactly one worktree provisioner and one serialized
+   *  merge queue (§2). The base is part of the key: a project can point its runs
+   *  at a feature branch instead of `main` (they cut from it, sync to it, and PR
+   *  against it), so the same repo may back two contexts on different bases. */
+  private gitContextForRepo(repo: string, baseBranch: string = config.baseBranch): GitContext {
+    const key = `${repo} ${baseBranch}`;
+    let ctx = this.gitCtx.get(key);
     if (!ctx) {
-      const worktrees = new WorktreeProvisioner(repo, config.baseBranch, config.worktreesDir);
+      const worktrees = new WorktreeProvisioner(repo, baseBranch, config.worktreesDir);
       const merge = new MergeEngine(
         repo,
-        config.baseBranch,
+        baseBranch,
         {
           onMerged: (req) => this.completeMerged(req.runId, req.agentBranch),
           onConflict: (req, files) => this.raiseMergeHitl(req, files),
@@ -228,16 +233,23 @@ export class Orchestrator {
         worktrees.root, // scratch integration worktrees live beside the agent worktrees
       );
       ctx = { repo, worktrees, merge };
-      this.gitCtx.set(repo, ctx);
+      this.gitCtx.set(key, ctx);
     }
     return ctx;
   }
 
+  /** The effective base branch for a project: its own `baseBranch` when set, else
+   *  the server-global default (SKYNET_BASE_BRANCH || "main"). */
+  private baseBranchFor(project?: Project | null): string {
+    return project?.baseBranch ?? config.baseBranch;
+  }
+
   /** Resolve the git backend for a project: its own local repo when git-backed,
-   *  else the server-global integration repo, else none (Phase 0 → runnerCwd). */
+   *  else the server-global integration repo, else none (Phase 0 → runnerCwd).
+   *  Built on the project's effective base branch. */
   private gitContextFor(project?: Project | null): GitContext | undefined {
     const repo = project?.gitBacked && project.repoPath ? project.repoPath : config.integrationRepo;
-    return repo ? this.gitContextForRepo(repo) : undefined;
+    return repo ? this.gitContextForRepo(repo, this.baseBranchFor(project)) : undefined;
   }
 
   /** Resolve (and cache) the module map for a project: its own repo when
@@ -809,6 +821,14 @@ export class Orchestrator {
       throw new TaskAlreadyAssignedError("Task is already done");
     }
 
+    // An archived task is soft-hidden — never spawn a run on it (which would show
+    // the archived task "running"). Defense in depth: the autonomy loop already
+    // skips archived tasks; this also refuses any other caller (manual API / MCP /
+    // Steward). Un-archive it first to work on it again.
+    if (task.archived) {
+      throw new Error("Task is archived — unarchive it before assigning");
+    }
+
     // DEF-003: re-assigning a task that already owns a live agent must be
     // idempotent — return the existing agent instead of acquiring a second
     // runner and spawning a duplicate (which orphaned the first agent and left
@@ -1031,12 +1051,70 @@ export class Orchestrator {
     const live = this.live.get(runId);
     if (live) {
       await live.handle.resume(resolution);
-    } else {
-      // No live runner to receive the decision (e.g. a seeded/demo agent or one
-      // whose runner already exited). Be honest: record that it couldn't be
-      // delivered — don't fake a resume by flipping the agent back to "running".
-      await this.hub.runLog(runId, `decision "${resolution.action}" recorded, but no live runner is attached — not delivered to an agent`);
+      return;
     }
+    // No live runner to receive the decision — the parked session is gone (a
+    // crash, or a server restart dropped the in-memory handle). Recover the way
+    // an escalation/revise does: re-acquire compute and resume the run in its
+    // worktree carrying the decision, so an approval/answer isn't silently lost.
+    if (await this.resumeDecisionOnFreshRunner(item, resolution)) return;
+    // Nothing to resume into (no worktree — e.g. a seeded/demo agent or a
+    // non-git run) or an unsupported kind. Be honest: record that it couldn't be
+    // delivered — don't fake a resume by flipping the agent back to "running".
+    await this.hub.runLog(runId, `decision "${resolution.action}" recorded, but no live runner is attached — not delivered to an agent`);
+  }
+
+  /** A parked decision (approval / question / plan) whose runner already exited.
+   *  Re-acquire compute and start a FRESH turn in the run's worktree carrying the
+   *  operator's decision — the same recovery as {@link relaunchEscalated}, but for
+   *  the resolve path. Returns true when it took over (resumed, or surfaced a
+   *  no-compute failure); false when there's nothing to resume into (no worktree)
+   *  or the kind isn't a mid-run gate, so the caller logs it as undelivered. */
+  private async resumeDecisionOnFreshRunner(item: HitlItem, resolution: Resolution): Promise<boolean> {
+    const runId = item.runId;
+    // Only the mid-run "agent is parked, waiting on the operator" kinds resume by
+    // re-prompting. diff/merge are review-stage (approve merges, modify revises —
+    // both handled above) with different lifecycle semantics.
+    if (item.kind !== "approval" && item.kind !== "question" && item.kind !== "plan") return false;
+    const run = await this.store.getRun(runId);
+    if (!run) return false;
+    const git = await this.gitContextForAgent(runId).catch(() => undefined);
+    // No worktree on disk → nothing committed to continue in. Fall back to the
+    // honest "not delivered" log rather than launching an agent with no context.
+    if (!git || !git.worktrees.exists(runId)) return false;
+
+    let acq: { id: string; provider: TaskRun["provider"]; model: string };
+    try {
+      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId, await this.projectKeyAllowlist(run.projectId));
+    } catch (err) {
+      // Couldn't get compute right now — surface it (and park as waiting for a
+      // retry) instead of the misleading "no runner attached" line.
+      await this.hub.runLog(runId, `decision "${resolution.action}" recorded, but no compute is free to deliver it — ${(err as Error).message}`);
+      await this.hub.runStatus(runId, "waiting");
+      return true;
+    }
+    const provider = await this.getProvider(acq.provider);
+    const cwd = git.worktrees.pathFor(runId);
+    const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+    const project = await this.store.getProject(run.projectId);
+    const prompt = withInstructions(project?.instructions, decisionResumePrompt(item, resolution, run.branch));
+    const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
+    await this.hub.runStatus(runId, "running");
+    if (taskId) {
+      const task = await this.store.getTask(taskId);
+      if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
+    }
+    await this.hub.runLog(runId, `re-acquired compute to deliver "${resolution.action}" — resuming in the run's worktree`);
+    try {
+      const handle = await provider.start(
+        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey },
+        this.events(),
+      );
+      this.live.set(runId, { handle, agentId: acq.id, taskId, branch: run.branch, baseRef: config.baseBranch, git });
+    } catch (err) {
+      await this.failStartup(runId, acq.id, (err as Error).message);
+    }
+    return true;
   }
 
   /** A `modify` on a finished run's diff review: re-acquire compute and resume the
@@ -1094,7 +1172,7 @@ export class Orchestrator {
    *  frees the runner (but never retires the worktree), and raises an
    *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes through
    *  raise() instead (the live gate stays parked). */
-  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict" | "turns"): Promise<void> {
+  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict" | "turns" | "stalled"): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
     if (!run) return;
@@ -1118,7 +1196,9 @@ export class Orchestrator {
             ? "Merge conflict with main — needs a rebase"
             : source === "turns"
               ? "Ran out of turns — resume to continue"
-              : "Run keeps failing — needs a human",
+              : source === "stalled"
+                ? "Runner went silent — resume to continue"
+                : "Run keeps failing — needs a human",
       why: reason,
       risk: "medium",
       rationale: null,
@@ -1223,7 +1303,7 @@ export class Orchestrator {
         { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey },
         this.events(),
       );
-      this.live.set(runId, { handle, agentId: acq.id, taskId: ctx?.taskId ?? null, branch: run.branch, baseRef: ctx?.baseRef ?? config.baseBranch, git });
+      this.live.set(runId, { handle, agentId: acq.id, taskId: ctx?.taskId ?? null, branch: run.branch, baseRef: ctx?.baseRef ?? this.baseBranchFor(project), git });
       this.escalations.delete(runId);
       this.failCounts.delete(runId);
     } catch (err) {
@@ -1295,29 +1375,33 @@ export class Orchestrator {
   }
 
   private async pushToGithub(git: GitContext, agent: TaskRun, repo: string, project?: Project | null): Promise<void> {
-    // Bring the branch up to LATEST main before the PR opens, so it merges
+    // The project's effective base branch — its own `baseBranch` when set (e.g. a
+    // feature branch this project stacks onto), else the global default. This is
+    // what the branch syncs to, is diffed against, and PRs into.
+    const base = this.baseBranchFor(project);
+    // Bring the branch up to the LATEST base before the PR opens, so it merges
     // cleanly and the reviewer/GitHub never hits a stale-base conflict at merge
     // time. On conflict, escalate for a human rebase instead of opening a broken PR.
     const sync = await git.worktrees.mergeBase(agent.id);
     if (!sync.ok) {
       const files = sync.conflicts?.length ? `: ${sync.conflicts.join(", ")}` : "";
-      await this.hub.runLog(agent.id, `${config.baseBranch} moved and merges conflict${files} — not opening a PR until it's rebased.`);
-      await this.escalate(agent.id, `merge conflict with ${config.baseBranch}${files} — rebase the branch, then re-approve to open the PR.`, "conflict");
+      await this.hub.runLog(agent.id, `${base} moved and merges conflict${files} — not opening a PR until it's rebased.`);
+      await this.escalate(agent.id, `merge conflict with ${base}${files} — rebase the branch, then re-approve to open the PR.`, "conflict");
       return;
     }
-    // If folding in main changed a dependency manifest, reconcile the worktree's
+    // If folding in the base changed a dependency manifest, reconcile the worktree's
     // deps so a revise loop / checks / preview run against the right ones.
     if (sync.depsChanged) {
       const r = await git.worktrees.installDeps(agent.id);
       await this.hub.runLog(
         agent.id,
         r.installed
-          ? `${config.baseBranch} changed dependencies — re-installed (${r.note}).`
-          : `${config.baseBranch} changed dependencies${r.note ? ` — ${r.note}` : " — no local node_modules to reconcile, skipped install"}.`,
+          ? `${base} changed dependencies — re-installed (${r.note}).`
+          : `${base} changed dependencies${r.note ? ` — ${r.note}` : " — no local node_modules to reconcile, skipped install"}.`,
       );
     }
     const worktreePath = git.worktrees.pathFor(agent.id);
-    const stat = await git.worktrees.diffStat(agent.id, config.baseBranch);
+    const stat = await git.worktrees.diffStat(agent.id, base);
     const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
     await this.hub.runStatus(agent.id, "review");
     try {
@@ -1326,7 +1410,7 @@ export class Orchestrator {
         runId: agent.id,
         repo,
         branch: agent.branch,
-        baseBranch: config.baseBranch,
+        baseBranch: base,
         worktreePath,
         changedFiles: stat.files,
         modules,
@@ -1734,14 +1818,16 @@ export class Orchestrator {
     const runs = (await this.store.listAllRuns().catch(() => [] as TaskRun[])).filter(
       (r) => r.status !== "done" && !r.archived && r.branch,
     );
-    const gitByProject = new Map<string, GitContext | undefined>();
+    const byProject = new Map<string, { git: GitContext | undefined; base: string }>();
     const fetched = new Set<GitContext>();
     for (const r of runs) {
-      if (!gitByProject.has(r.projectId)) {
+      let entry = byProject.get(r.projectId);
+      if (!entry) {
         const project = await this.store.getProject(r.projectId).catch(() => null);
-        gitByProject.set(r.projectId, this.gitContextFor(project));
+        entry = { git: this.gitContextFor(project), base: this.baseBranchFor(project) };
+        byProject.set(r.projectId, entry);
       }
-      const git = gitByProject.get(r.projectId);
+      const git = entry.git;
       if (!git) continue;
       if (!fetched.has(git)) {
         await git.worktrees.fetchBase().catch(() => undefined);
@@ -1751,7 +1837,7 @@ export class Orchestrator {
       if (behind && !this.baseMovedFlagged.has(r.id)) {
         this.baseMovedFlagged.add(r.id);
         await this.hub
-          .runLog(r.id, `${config.baseBranch} has moved since this run started — it'll be synced into the branch before its PR opens.`)
+          .runLog(r.id, `${entry.base} has moved since this run started — it'll be synced into the branch before its PR opens.`)
           .catch(() => undefined);
       } else if (!behind) {
         this.baseMovedFlagged.delete(r.id); // caught up (e.g. after a resync) → re-arm
@@ -1768,11 +1854,22 @@ export class Orchestrator {
     for (const a of runs) {
       if (a.status !== "running" && a.status !== "waiting") continue;
       if (a.lastHeartbeatAt > cutoff) continue;
+      if (this.escalations.has(a.id)) continue; // already an open escalation card — don't re-raise or clobber it
       const silentSec = Math.round((now() - a.lastHeartbeatAt) / 1000);
-      // Detach the (presumed-dead) session + free its runner, then mark it
-      // terminal — a reaped agent isn't coming back, so it must not linger
-      // "running" and get reaped again on the next sweep.
-      await this.stopAgent(a.id, `reaped — no heartbeat for ${silentSec}s; runner freed`).catch(() => undefined);
+      const reason = `reaped — no heartbeat for ${silentSec}s; runner freed`;
+      // A `running` agent that went silent is presumed dead (crashed runner or a
+      // server restart that orphaned it). Rather than a dead-end `done` (which
+      // retires the worktree and drops any uncommitted work with no way back),
+      // route it into the SAME escalation → Resume path as an out-of-turns run:
+      // free the runner but KEEP the worktree, and surface a resumable card so
+      // one click relaunches a fresh session on its branch.
+      if (a.status === "running") {
+        await this.escalate(a.id, reason, "stalled").catch(() => undefined);
+        continue;
+      }
+      // A `waiting` run with a frozen heartbeat that ISN'T an escalation was
+      // parked on a gate whose session died — free its runner + mark it terminal.
+      await this.stopAgent(a.id, reason).catch(() => undefined);
       await this.hub.runStatus(a.id, "done").catch(() => undefined);
       await this.hub.runCompleted(a.id, a.branch).catch(() => undefined);
     }
@@ -1851,7 +1948,11 @@ export class Orchestrator {
           // Re-read idle capacity per project (an earlier project may have used it).
           const idle = (await this.store.listAgents(ws)).filter((a) => a.status === "idle");
           if (idle.length === 0) break; // no capacity left in this workspace
-          const mine = tasks.filter((t) => t.projectId === p.id);
+          // Archived tasks are a soft-hide: off the board and out of the
+          // assistant's grounding context — autonomy must ignore them too, or it
+          // re-triages / auto-picks / auto-reviews a task the operator hid,
+          // spawning a run that then shows the archived task "running".
+          const mine = tasks.filter((t) => t.projectId === p.id && !t.archived);
           try {
             // 1) Triage one backlog item → assessment + duration + clarity.
             //    ALWAYS runs (no p.autonomy gate) — it's informative, not

@@ -14,7 +14,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution, Usage } from "@skynet/shared";
-import { fmtDuration, runtimeCapMs } from "./caps.js";
+import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
 import { wrapForSandbox } from "./sandbox.js";
 import type {
   HitlRaise,
@@ -106,6 +106,7 @@ class CliRunnerHandle implements RunnerHandle {
   private finished = false;
   private hb?: ReturnType<typeof setInterval>;
   private cap?: ReturnType<typeof setTimeout>;
+  private idle?: ReturnType<typeof setTimeout>; // idle-stall watchdog (resets on each stdout line)
   private stderrTail: string[] = [];
   private ctx: ParseCtx = {};
 
@@ -150,6 +151,7 @@ class CliRunnerHandle implements RunnerHandle {
         capMs,
       );
     }
+    this.bumpIdle(); // idle-stall watchdog: reset on each stdout line (see onLine)
 
     // ENOENT (binary not installed / not on PATH) surfaces here, not as a throw.
     child.on("error", (err) =>
@@ -178,6 +180,7 @@ class CliRunnerHandle implements RunnerHandle {
 
   private onLine(raw: string) {
     if (this.finished) return;
+    this.bumpIdle(); // stdout activity = progress → reset the stall watchdog
     const line = raw.trimEnd();
     if (!line) return;
     let ev: CliEvent;
@@ -220,6 +223,20 @@ class CliRunnerHandle implements RunnerHandle {
     this.events.onProgress(this.runId, this.progress, [] as PlanStep[]);
   }
 
+  /** (Re)arm the idle-stall watchdog. Resets on each stdout line, so it fires
+   *  only after the CLI has produced NO output for idleCapMs — catching a wedged
+   *  vendor process (hung mid-turn, dead stream) fast, while a process that keeps
+   *  streaming is never interrupted. The heartbeat is a fixed timer that keeps
+   *  ticking for a hung run, so the server reaper can't catch this. Force-fail →
+   *  onFailed → needs-attention, never a silent "running" forever. */
+  private bumpIdle() {
+    if (this.finished) return;
+    const ms = idleCapMs();
+    if (ms <= 0) return; // disabled
+    if (this.idle) clearTimeout(this.idle);
+    this.idle = setTimeout(() => this.fallback(`no progress for ${fmtDuration(ms)} — stalled, force-stopped`), ms);
+  }
+
   // Binary missing, process died, or auth failed — this is a FAILURE, not a
   // completion. Surface it (orchestrator marks the agent needs-attention) and
   // never report success: a broken runner must not look like a done agent.
@@ -228,6 +245,7 @@ class CliRunnerHandle implements RunnerHandle {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     if (this.cap) clearTimeout(this.cap);
+    if (this.idle) clearTimeout(this.idle);
     this.events.onFailed(this.runId, message);
     this.kill();
   }
@@ -237,6 +255,7 @@ class CliRunnerHandle implements RunnerHandle {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     if (this.cap) clearTimeout(this.cap);
+    if (this.idle) clearTimeout(this.idle);
     this.events.onProgress(this.runId, 1, [] as PlanStep[]);
     // Compute finished, but the orchestrator owns the terminal "done" (after it
     // commits the worktree → review → merge). Emitting "done" here would race
@@ -292,6 +311,7 @@ class CliRunnerHandle implements RunnerHandle {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     if (this.cap) clearTimeout(this.cap);
+    if (this.idle) clearTimeout(this.idle);
     this.kill();
   }
 

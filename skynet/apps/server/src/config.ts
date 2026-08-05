@@ -211,6 +211,13 @@ export const config = {
   // the phone stays quiet. Decisions and "needs a look" always go through. Unset
   // or malformed → never quiet.
   telegramQuietHours: process.env.SKYNET_TELEGRAM_QUIET_HOURS || undefined,
+  // How long the Telegram bridge waits before sending a diff/merge gate on an
+  // autonomy-on project, so an auto-review that would approve it silences the
+  // phone ping. The autonomy loop is ~15s + an LLM call, so ~20s is the shape
+  // that catches the common case without meaningfully delaying real
+  // human-facing gates. `0` disables the wait entirely (all gates ping
+  // immediately — old behavior).
+  telegramGateAutoReviewDebounceMs: Number(process.env.SKYNET_TELEGRAM_GATE_DEBOUNCE_MS ?? 20_000),
 
   // ── MFA (second factor on the public login) ────────────────────────────────
   // Opt-in Telegram OTP after the password. SKYNET_MFA_DISABLE is the SSH
