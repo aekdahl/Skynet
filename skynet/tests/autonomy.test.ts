@@ -150,6 +150,56 @@ describe("autonomy loop", () => {
     expect(provider.started).toBe(0);
   });
 
+  // Archived is a soft-hide: autonomy must ignore archived tasks entirely, or it
+  // re-picks one the operator hid and spawns a run — the "archived task still
+  // marked as running" bug.
+  it("does NOT auto-pick an ARCHIVED todo task (no run spawned)", async () => {
+    const { store, orch, provider } = await setup();
+    await store.putTask(mkTask({ state: "todo", autoPick: true, archived: true }));
+    await orch.tickAutonomy();
+    expect((await store.getTask("t1"))?.state).toBe("todo"); // untouched
+    expect(provider.started).toBe(0);                        // never started
+  });
+
+  it("does NOT triage an ARCHIVED backlog task", async () => {
+    const { store, orch } = await setup('Clear scope.\n{"clarity":"clear"}');
+    await store.putTask(mkTask({ state: "backlog", archived: true }));
+    await orch.tickAutonomy();
+    const t = await store.getTask("t1");
+    expect(t?.state).toBe("backlog"); // not promoted
+    expect(t?.assessment).toBeNull(); // never assessed
+  });
+
+  it("does NOT auto-review an ARCHIVED review task", async () => {
+    const { store, orch, provider } = await setup('{"verdict":"approve","reason":"looks good"}');
+    const run: TaskRun = {
+      id: "r1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "do X", status: "review",
+      runnerId: null, agentId: "a1", model: "opus-4.8", branch: "agent/r1", modules: [], progress: 1,
+      plan: [], modifiedFiles: [], log: [], startedAt: 0, lastHeartbeatAt: 0, visual: false,
+      previewUrl: null, dependsOn: [], parentId: null, branchFromStep: null, archived: false,
+    };
+    const hitl: HitlItem = {
+      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "r1", kind: "diff", title: "Review",
+      why: "", risk: "medium", raisedAt: 0, expiresAt: null, resolvedAt: null, resolution: null,
+      command: null, options: null, recommended: null, steps: null, diff: null,
+    };
+    await store.putRun(run);
+    await store.putHitl(hitl);
+    await store.putTask(mkTask({ state: "review", runId: "r1", archived: true }));
+    const consultsBefore = provider.consults;
+    await orch.tickAutonomy();
+    expect(provider.consults).toBe(consultsBefore);           // no review consult
+    expect((await store.getTask("t1"))?.reviewVerdict).toBeNull();
+    expect((await store.getHitl("q1"))?.resolvedAt).toBeNull(); // not merged
+  });
+
+  it("assignTask refuses an archived task (defense in depth for any caller)", async () => {
+    const { store, orch, provider } = await setup();
+    await store.putTask(mkTask({ state: "todo", archived: true }));
+    await expect(orch.assignTask("p1", "t1")).rejects.toThrow(/archived/i);
+    expect(provider.started).toBe(0);
+  });
+
   it("auto-review that FLAGs records the verdict on the task and leaves the HITL open", async () => {
     const { store, orch } = await setup('{"verdict":"flag","reason":"missing tests"}');
     const run: TaskRun = {

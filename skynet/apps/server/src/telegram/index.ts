@@ -1117,6 +1117,56 @@ export interface TelegramBridgeDeps {
   orchestrator: Orchestrator;
 }
 
+/**
+ * PURE: decide whether to send a Telegram card for a raised gate, given the
+ * suppression rule that an auto-approved gate should NOT ping the operator's
+ * phone.
+ *
+ *   • Approval-policy auto-approval (reversible in-sandbox commands, per
+ *     `approval-policy.ts`) goes through the SILENT hub path
+ *     (`raiseAndAutoResolveHitl`) — `hitl.raised` never fires for it, so
+ *     those gates never reach this function.
+ *
+ *   • Auto-REVIEW (a fleet agent judging a completed run's diff/merge)
+ *     runs through the normal path: `hitl.raised` fires immediately, then
+ *     the autonomy tick (~15s + LLM) picks the gate up and resolves it. A
+ *     naive notify pings the phone at t=0 about a decision that's about
+ *     to auto-approve — the reported bug.
+ *
+ * Fix: for diff/merge gates on projects with autonomy on, wait through
+ * the auto-review window (`debounceMs`), then re-check the gate. If it
+ * resolved during the buffer, skip the notification entirely. Other gate
+ * kinds (question, plan, escalation) aren't auto-reviewed, so their
+ * `delay=0`. The re-check runs unconditionally as a race-guard — a
+ * same-tick resolve is caught even without a delay.
+ */
+export interface GateAnnounceDeps {
+  getRun(runId: string): Promise<{ projectId: string } | null>;
+  getProject(projectId: string): Promise<{ autonomy: boolean } | null>;
+  listOpenHitl(): Promise<HitlItem[]>;
+  debounceMs: number;
+  sleep(ms: number): Promise<void>;
+}
+
+export async function shouldAnnounceGate(
+  item: HitlItem,
+  deps: GateAnnounceDeps,
+): Promise<{ send: boolean; delayedMs: number }> {
+  const isReviewy = item.kind === "diff" || item.kind === "merge";
+  let delayMs = 0;
+  if (isReviewy && deps.debounceMs > 0) {
+    const run = await deps.getRun(item.runId);
+    const project = run ? await deps.getProject(run.projectId) : null;
+    if (project?.autonomy) delayMs = deps.debounceMs;
+  }
+  if (delayMs > 0) await deps.sleep(delayMs);
+  // Re-check under BOTH branches. A same-tick auto-resolve races the event
+  // even with no delay, so the belt-and-suspenders re-read matters.
+  const current = (await deps.listOpenHitl()).find((g) => g.id === item.id);
+  const send = !!current && !current.resolvedAt;
+  return { send, delayedMs: delayMs };
+}
+
 export function startTelegramBridge(deps: TelegramBridgeDeps): void {
   const { config, bus, operations, orchestrator } = deps;
   const token = config.telegramBotToken;
@@ -1195,6 +1245,25 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
 
   const announceGate = async (it: HitlItem): Promise<void> => {
     lastNotice.set(it.runId, "review"); // the gate IS the review heads-up
+
+    // Suppress auto-approved gates. See `shouldAnnounceGate` for the full
+    // rationale — briefly:
+    //   • Approval-policy auto-approval (reversible in-sandbox commands) uses
+    //     the SILENT hub path (`raiseAndAutoResolveHitl`), so `hitl.raised`
+    //     never fires for those — they don't reach this handler.
+    //   • Auto-REVIEW (a fleet agent judging a completed run's diff/merge)
+    //     DOES emit `hitl.raised` first; the autonomy tick approves later.
+    //     The debounce below waits through that window and skips the
+    //     notification if the gate resolved in the meantime.
+    const decision = await shouldAnnounceGate(it, {
+      getRun: (id) => operations.getRun(ws, id).catch(() => null),
+      getProject: (id) => operations.getProject(ws, id).catch(() => null),
+      listOpenHitl: () => operations.listHitl(ws).catch(() => []),
+      debounceMs: config.telegramGateAutoReviewDebounceMs,
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    });
+    if (!decision.send) return;
+
     const opts: NotifyOpts = { parse_mode: "HTML" };
     if (config.telegramControl) opts.reply_markup = gateKeyboard(it);
     const sent = await notify(decisionCardHtml(it, await nameOf(it.runId), config.telegramControl, linkFor(it.runId)), opts);
