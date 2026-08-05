@@ -728,45 +728,18 @@ function ProjectRunnerKeys({ project, onChange }: { project: Project; onChange: 
   );
 }
 
-// Import a GitHub-connected project's issues as tasks + toggle write-back of task
-// status to those issues. Only shown when the project is bound to a GitHub repo.
+// Write-back of task status to the project's GitHub issues. Only shown when the
+// project is bound to a GitHub repo. Pulling tasks IN (from GitHub issues or a
+// repo checklist file) is not a header button — ask Steward, which is repo-aware
+// and can read those sources directly.
 function ProjectSourceSync({ project, onToggle }: { project: Project; onToggle: (on: boolean) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
   if (!project.repo) return null;
-  const runImport = async (fn: () => Promise<{ imported: number; skipped: number }>, unit: string) => {
-    setBusy(true);
-    setNote(null);
-    try {
-      const r = await fn();
-      setNote(r.imported ? `Imported ${r.imported} ${unit}${r.imported === 1 ? "" : "s"}${r.skipped ? ` · ${r.skipped} already here` : ""}` : `No new ${unit}s`);
-    } catch (e) {
-      setNote(e instanceof Error ? e.message : "Import failed");
-    } finally {
-      setBusy(false);
-      setTimeout(() => setNote(null), 4000);
-    }
-  };
-  const importIssues = () => runImport(() => api.importGithubIssues(project.id), "issue");
-  const importFile = () => {
-    const path = window.prompt("Import a repo file's checklist (`- [ ] …`) as tasks. File path:", "TODO.md");
-    if (path && path.trim()) void runImport(() => api.importRepoFile(project.id, path.trim()), "task");
-  };
   return (
-    <>
-      <button className="btn" disabled={busy} onClick={() => void importIssues()} title="Import this repo's open GitHub issues as tasks — each links back to its issue.">
-        {busy ? "Importing…" : "⤒ Import issues"}
-      </button>
-      <button className="btn" disabled={busy} onClick={importFile} title="Import a repo file's open checklist items (- [ ] …) as tasks — completing one checks its box.">
-        ⤒ Import file
-      </button>
-      <label className="proj-autonomy" title="When on, moving a task to review/done comments + closes its linked GitHub issue (reopens if it moves back out of done).">
-        <input type="checkbox" className="proj-autonomy-cb" checked={project.syncSourceStatus} onChange={(e) => onToggle(e.target.checked)} />
-        <span className="proj-autonomy-switch" aria-hidden="true" />
-        <span className="proj-autonomy-label">Sync to source</span>
-      </label>
-      {note && <span className="proj-sync-note mono">{note}</span>}
-    </>
+    <label className="proj-autonomy" title="When on, moving a task to review/done comments + closes its linked GitHub issue (reopens if it moves back out of done).">
+      <input type="checkbox" className="proj-autonomy-cb" checked={project.syncSourceStatus} onChange={(e) => onToggle(e.target.checked)} />
+      <span className="proj-autonomy-switch" aria-hidden="true" />
+      <span className="proj-autonomy-label">Sync to source</span>
+    </label>
   );
 }
 
