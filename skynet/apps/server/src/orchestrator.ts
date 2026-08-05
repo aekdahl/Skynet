@@ -205,15 +205,19 @@ export class Orchestrator {
   // of resolving the runner's own provider. Production always passes (store, hub) only.
   constructor(private store: Store, private hub: Hub, private providerOverride?: RunnerProvider) {}
 
-  /** Build (or reuse) the git backend for a repo path. Cached so each repo keeps
-   *  exactly one worktree provisioner and one serialized merge queue (§2). */
-  private gitContextForRepo(repo: string): GitContext {
-    let ctx = this.gitCtx.get(repo);
+  /** Build (or reuse) the git backend for a repo path + base branch. Cached so
+   *  each (repo, base) keeps exactly one worktree provisioner and one serialized
+   *  merge queue (§2). The base is part of the key: a project can point its runs
+   *  at a feature branch instead of `main` (they cut from it, sync to it, and PR
+   *  against it), so the same repo may back two contexts on different bases. */
+  private gitContextForRepo(repo: string, baseBranch: string = config.baseBranch): GitContext {
+    const key = `${repo} ${baseBranch}`;
+    let ctx = this.gitCtx.get(key);
     if (!ctx) {
-      const worktrees = new WorktreeProvisioner(repo, config.baseBranch, config.worktreesDir);
+      const worktrees = new WorktreeProvisioner(repo, baseBranch, config.worktreesDir);
       const merge = new MergeEngine(
         repo,
-        config.baseBranch,
+        baseBranch,
         {
           onMerged: (req) => this.completeMerged(req.runId, req.agentBranch),
           onConflict: (req, files) => this.raiseMergeHitl(req, files),
@@ -228,16 +232,23 @@ export class Orchestrator {
         worktrees.root, // scratch integration worktrees live beside the agent worktrees
       );
       ctx = { repo, worktrees, merge };
-      this.gitCtx.set(repo, ctx);
+      this.gitCtx.set(key, ctx);
     }
     return ctx;
   }
 
+  /** The effective base branch for a project: its own `baseBranch` when set, else
+   *  the server-global default (SKYNET_BASE_BRANCH || "main"). */
+  private baseBranchFor(project?: Project | null): string {
+    return project?.baseBranch ?? config.baseBranch;
+  }
+
   /** Resolve the git backend for a project: its own local repo when git-backed,
-   *  else the server-global integration repo, else none (Phase 0 → runnerCwd). */
+   *  else the server-global integration repo, else none (Phase 0 → runnerCwd).
+   *  Built on the project's effective base branch. */
   private gitContextFor(project?: Project | null): GitContext | undefined {
     const repo = project?.gitBacked && project.repoPath ? project.repoPath : config.integrationRepo;
-    return repo ? this.gitContextForRepo(repo) : undefined;
+    return repo ? this.gitContextForRepo(repo, this.baseBranchFor(project)) : undefined;
   }
 
   /** Resolve (and cache) the module map for a project: its own repo when
@@ -1223,7 +1234,7 @@ export class Orchestrator {
         { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey },
         this.events(),
       );
-      this.live.set(runId, { handle, agentId: acq.id, taskId: ctx?.taskId ?? null, branch: run.branch, baseRef: ctx?.baseRef ?? config.baseBranch, git });
+      this.live.set(runId, { handle, agentId: acq.id, taskId: ctx?.taskId ?? null, branch: run.branch, baseRef: ctx?.baseRef ?? this.baseBranchFor(project), git });
       this.escalations.delete(runId);
       this.failCounts.delete(runId);
     } catch (err) {
@@ -1295,29 +1306,33 @@ export class Orchestrator {
   }
 
   private async pushToGithub(git: GitContext, agent: TaskRun, repo: string, project?: Project | null): Promise<void> {
-    // Bring the branch up to LATEST main before the PR opens, so it merges
+    // The project's effective base branch — its own `baseBranch` when set (e.g. a
+    // feature branch this project stacks onto), else the global default. This is
+    // what the branch syncs to, is diffed against, and PRs into.
+    const base = this.baseBranchFor(project);
+    // Bring the branch up to the LATEST base before the PR opens, so it merges
     // cleanly and the reviewer/GitHub never hits a stale-base conflict at merge
     // time. On conflict, escalate for a human rebase instead of opening a broken PR.
     const sync = await git.worktrees.mergeBase(agent.id);
     if (!sync.ok) {
       const files = sync.conflicts?.length ? `: ${sync.conflicts.join(", ")}` : "";
-      await this.hub.runLog(agent.id, `${config.baseBranch} moved and merges conflict${files} — not opening a PR until it's rebased.`);
-      await this.escalate(agent.id, `merge conflict with ${config.baseBranch}${files} — rebase the branch, then re-approve to open the PR.`, "conflict");
+      await this.hub.runLog(agent.id, `${base} moved and merges conflict${files} — not opening a PR until it's rebased.`);
+      await this.escalate(agent.id, `merge conflict with ${base}${files} — rebase the branch, then re-approve to open the PR.`, "conflict");
       return;
     }
-    // If folding in main changed a dependency manifest, reconcile the worktree's
+    // If folding in the base changed a dependency manifest, reconcile the worktree's
     // deps so a revise loop / checks / preview run against the right ones.
     if (sync.depsChanged) {
       const r = await git.worktrees.installDeps(agent.id);
       await this.hub.runLog(
         agent.id,
         r.installed
-          ? `${config.baseBranch} changed dependencies — re-installed (${r.note}).`
-          : `${config.baseBranch} changed dependencies${r.note ? ` — ${r.note}` : " — no local node_modules to reconcile, skipped install"}.`,
+          ? `${base} changed dependencies — re-installed (${r.note}).`
+          : `${base} changed dependencies${r.note ? ` — ${r.note}` : " — no local node_modules to reconcile, skipped install"}.`,
       );
     }
     const worktreePath = git.worktrees.pathFor(agent.id);
-    const stat = await git.worktrees.diffStat(agent.id, config.baseBranch);
+    const stat = await git.worktrees.diffStat(agent.id, base);
     const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
     await this.hub.runStatus(agent.id, "review");
     try {
@@ -1326,7 +1341,7 @@ export class Orchestrator {
         runId: agent.id,
         repo,
         branch: agent.branch,
-        baseBranch: config.baseBranch,
+        baseBranch: base,
         worktreePath,
         changedFiles: stat.files,
         modules,
@@ -1734,14 +1749,16 @@ export class Orchestrator {
     const runs = (await this.store.listAllRuns().catch(() => [] as TaskRun[])).filter(
       (r) => r.status !== "done" && !r.archived && r.branch,
     );
-    const gitByProject = new Map<string, GitContext | undefined>();
+    const byProject = new Map<string, { git: GitContext | undefined; base: string }>();
     const fetched = new Set<GitContext>();
     for (const r of runs) {
-      if (!gitByProject.has(r.projectId)) {
+      let entry = byProject.get(r.projectId);
+      if (!entry) {
         const project = await this.store.getProject(r.projectId).catch(() => null);
-        gitByProject.set(r.projectId, this.gitContextFor(project));
+        entry = { git: this.gitContextFor(project), base: this.baseBranchFor(project) };
+        byProject.set(r.projectId, entry);
       }
-      const git = gitByProject.get(r.projectId);
+      const git = entry.git;
       if (!git) continue;
       if (!fetched.has(git)) {
         await git.worktrees.fetchBase().catch(() => undefined);
@@ -1751,7 +1768,7 @@ export class Orchestrator {
       if (behind && !this.baseMovedFlagged.has(r.id)) {
         this.baseMovedFlagged.add(r.id);
         await this.hub
-          .runLog(r.id, `${config.baseBranch} has moved since this run started — it'll be synced into the branch before its PR opens.`)
+          .runLog(r.id, `${entry.base} has moved since this run started — it'll be synced into the branch before its PR opens.`)
           .catch(() => undefined);
       } else if (!behind) {
         this.baseMovedFlagged.delete(r.id); // caught up (e.g. after a resync) → re-arm

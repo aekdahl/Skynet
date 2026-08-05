@@ -890,13 +890,18 @@ export function ProjectView({
   // grounding). Kept as its own local state so Cancel restores the pristine
   // value if the operator opened the editor and changed their mind.
   const [instructions, setInstructions] = useState(project.instructions ?? "");
+  // Which branch this project stacks its runs/PRs onto. Blank = the global default
+  // (usually main). Only meaningful for a git-backed / repo-bound project.
+  const [baseBranch, setBaseBranch] = useState(project.baseBranch ?? "");
+  const hasRepo = !!(project.gitBacked || project.repo);
 
   useEffect(() => {
     setName(project.name);
     setGoal(project.goal);
     setInstructions(project.instructions ?? "");
+    setBaseBranch(project.baseBranch ?? "");
     setFolded(false);
-  }, [project.id, project.name, project.goal, project.instructions]);
+  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch]);
 
   return (
     <section className="projview">
@@ -923,6 +928,17 @@ export function ProjectView({
             value={instructions}
             onChange={(e) => setInstructions(e.target.value)}
           />
+          {hasRepo && (
+            <label className="projview-instructions-label mono">
+              Base branch <span className="projview-instructions-hint">— the branch runs cut from and open PRs against. Blank = the default (main). Set a feature branch to stack this project's work onto it.</span>
+              <input
+                className="qx-input"
+                placeholder="main (default)"
+                value={baseBranch}
+                onChange={(e) => setBaseBranch(e.target.value)}
+              />
+            </label>
+          )}
           <div className="qx-row">
             <button
               className="btn btn-primary"
@@ -933,6 +949,7 @@ export function ProjectView({
                   name: name.trim() || project.name,
                   goal: goal.trim(),
                   instructions: nextInstructions,
+                  baseBranch: baseBranch.trim() || null,
                 });
                 setEditing(false);
               }}
@@ -945,6 +962,7 @@ export function ProjectView({
                 setName(project.name);
                 setGoal(project.goal);
                 setInstructions(project.instructions ?? "");
+                setBaseBranch(project.baseBranch ?? "");
                 setEditing(false);
               }}
             >
@@ -974,6 +992,11 @@ export function ProjectView({
             )}
             {project.repo && (
               <div className="mono proj-repo-line">⑂ {project.repo} · runs branch &amp; PR here</div>
+            )}
+            {project.baseBranch && (
+              <div className="mono proj-repo-line" title="Runs cut from and open PRs against this branch instead of the default.">
+                ⎇ stacks onto <b>{project.baseBranch}</b> · runs branch from it &amp; PR into it
+              </div>
             )}
             {/* Repo bound but no local checkout → offer a server-side clone so
                 agents have code to work on (needed on a headless/GCP instance;

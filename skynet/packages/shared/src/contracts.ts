@@ -216,6 +216,11 @@ export const Project = z.object({
   repoPath: z.string().nullable().default(null),
   gitBacked: z.boolean().default(false),
   repo: z.string().optional(),
+  // The branch this project's runs cut from, sync to, and open PRs against. null
+  // → the server-global default (SKYNET_BASE_BRANCH, usually "main"). Set it to a
+  // feature branch to STACK a project's work onto that branch instead of main —
+  // every run branches off it and its PRs target it.
+  baseBranch: z.string().nullable().default(null),
   // Free-form markdown that rides EVERY agent prompt on this project — the
   // "house rules" for this codebase (which packages to use, code structure,
   // conventions the agent should follow). Steward also sees it in its
@@ -572,6 +577,7 @@ export const CreateProjectRequest = z.object({
   approvalLevel: ApprovalLevel.optional(),
   // Project-scoped agent guidance that rides every prompt (see Project.instructions).
   instructions: z.string().optional(),
+  baseBranch: z.string().optional(), // branch to stack runs/PRs onto (omit → global default)
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 
@@ -594,6 +600,8 @@ export const UpdateProjectRequest = z.object({
   // Project-scoped agent guidance. `null` clears the field back to "no rules".
   instructions: z.string().nullable().optional(),
   githubCredentialId: z.string().nullable().optional(), // pick the GitHub account (null clears → default)
+  baseBranch: z.string().nullable().optional(), // stack onto a branch; null clears → global default
+
   // Which provider keys the project may run on (secret-store credential ids;
   // empty = all keys). See Project.enabledRunnerCredentialIds.
   enabledRunnerCredentialIds: z.array(z.string()).optional(),
