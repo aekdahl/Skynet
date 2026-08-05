@@ -113,6 +113,8 @@ export interface Store extends StoreState {
       // Which provider keys the project may run on (credential ids; empty = all).
       enabledRunnerCredentialIds?: string[];
       syncSourceStatus?: boolean;
+      // Branch to stack runs/PRs onto; null clears back to the global default.
+      baseBranch?: string | null;
     },
   ) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;

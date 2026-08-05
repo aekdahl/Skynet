@@ -359,6 +359,7 @@ export function createProject(body: {
   autonomy?: boolean;
   approvalLevel?: string;
   instructions?: string;
+  baseBranch?: string;
 }) {
   return req<unknown>("POST", "/api/projects", body);
 }
@@ -377,6 +378,8 @@ export function updateProject(
     // Which provider keys the project may run on (credential ids; empty = all).
     enabledRunnerCredentialIds?: string[];
     syncSourceStatus?: boolean;
+    // Branch to stack runs/PRs onto; null clears back to the global default.
+    baseBranch?: string | null;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
