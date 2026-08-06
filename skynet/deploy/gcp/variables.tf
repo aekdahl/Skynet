@@ -17,8 +17,8 @@ variable "zone" {
 
 variable "machine_type" {
   type        = string
-  default     = "e2-small"
-  description = "VM size. e2-small (2GB) is fine for orchestration + a light Claude agent; bump to e2-medium/standard for heavier builds."
+  default     = "e2-standard-2"
+  description = "VM size. e2-standard-2 (2 DEDICATED vCPUs / 8GB) handles agents + live-preview builds without the shared-core throttling that makes a busy e2-small drop connections (~$50/mo). Cheaper options for lighter use: e2-medium (2 shared vCPU / 4GB, ~$25/mo) or e2-small (2GB, ~$13/mo) for pure orchestration."
 }
 
 variable "app_port" {

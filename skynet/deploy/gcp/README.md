@@ -159,14 +159,20 @@ A single small VM runs the orchestrator **plus** agents and live-preview builds,
 - **Container memory + CPU caps + swap.** `skynet` runs with `--memory` (reserving ~512 MB for the OS/Docker/Caddy) and a 2 GB swapfile, so a memory blowup OOM-kills the **container** — which `--restart=always` brings straight back — instead of the **host**, which would go unreachable with no auto-recovery. It also runs with `--cpus` set to leave ~half a core for the host: on a shared-core `e2-small`, an agent or build that pegs the CPU otherwise starves the OS and the VM stops answering connections (looks "down"). Both caps auto-scale from the VM's actual RAM/vCPUs, so bumping `machine_type` widens them.
 - **Docker log rotation** (`max-size=10m`), so container logs can't grow unbounded and fill the disk.
 
-**If the site is unreachable** (a TCP connection *timeout* — not "refused"/502 — means the host itself is wedged): reset the VM from the control plane (works even when the VM's network is dead), which reboots it into the current startup script:
-```
-gcloud compute instances reset "$(terraform -chdir=deploy/gcp output -raw vm_name)" --zone=<ZONE> --project=<PROJECT>
-```
-Then redeploy (`./setup.sh`) to apply the latest image + these guardrails. To diagnose a repeat, SSH in and check `df -h /` (boot-disk full?), `free -m` + `sudo dmesg | grep -i oom` (OOM?).
+**If the site is unreachable** (a TCP connection *timeout* — not "refused"/502 — means the host itself is wedged):
+
+- **Re-running `./setup.sh` is enough** when the `machine_type` changed since last apply (e.g. adopting the new `e2-standard-2` default): `allow_stopping_for_update` lets Terraform **stop→resize→start** the VM, and that stop/start is a control-plane op (works even when the VM's network is dead) that reboots it into the current startup script. No separate reset needed.
+- **If nothing in the VM config changed**, `terraform apply` won't reboot a running VM, so force it once:
+  ```
+  gcloud compute instances reset "$(terraform -chdir=deploy/gcp output -raw vm_name)" --zone=<ZONE> --project=<PROJECT>
+  ```
+
+To diagnose a repeat, SSH in and check `df -h /` (boot-disk full?), `free -m` + `sudo dmesg | grep -i oom` (OOM?), and `top` (CPU pegged?).
 
 ## Cost (rough)
-`e2-small` ≈ **$13–15/mo** + a 30 GB disk (~$3) + egress + **your LLM tokens**. Autonomy can spend while you sleep — the spend cap + human-approved gates are your throttle. Drop to `e2-micro` for pure orchestration; **bump to `e2-medium`/`e2-standard-2` for heavier agent + preview builds** (the #1 fix if the VM runs out of memory).
+`e2-standard-2` (the default — 2 dedicated vCPUs / 8 GB) ≈ **~$50/mo** + a 30 GB `pd-balanced` disk + egress + **your LLM tokens**. Dial down in `terraform.tfvars` for lighter use: `e2-medium` (~$25/mo) or `e2-small` (~$13/mo, pure orchestration). Autonomy can spend while you sleep — the spend cap + human-approved gates are your throttle.
+
+> **Disk cost is fixed, not usage-based.** You're billed for the **provisioned** size (30 GB × ~$0.10/GB ≈ **$3/mo** for `pd-balanced`), regardless of how much is used. "Auto-grows" means the *filesystem* expands to fill the disk you provisioned via `data_disk_gb` — it does **not** silently grow the disk or your bill. It only gets bigger (and costlier) if you raise `data_disk_gb` and redeploy. Bumping the default 20→30 GB adds ~$1/mo.
 
 ## Optional upgrades
 - **No external IP at all:** add **Cloud NAT** (a router + NAT config) so the VM has no external address; egress still works. The current setup uses an ephemeral external IP for egress with all inbound denied — nothing is publicly reachable, but this makes it explicit.
