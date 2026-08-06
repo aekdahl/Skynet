@@ -545,6 +545,21 @@ export function isTransientApiError(text: string): boolean {
   );
 }
 
+/**
+ * True when an API error means the key is out of money/quota — a BILLING wall,
+ * not a transient rate-limit. These never recover on retry; the operator must
+ * top up. Anthropic: 400 "Your credit balance is too low…"; OpenAI: 429
+ * "You exceeded your current quota" / "insufficient_quota"; generic: 402 /
+ * payment required. Checked BEFORE `isTransientApiError` so a quota error that
+ * arrives as a 429 isn't mistaken for a recoverable rate-limit and retried in
+ * vain. PURE — unit-tested.
+ */
+export function isCreditExhaustionError(text: string): boolean {
+  return /credit balance|balance is too low|insufficient[\s_-]?quota|exceeded your current quota|out of (?:credits?|quota)|quota (?:exceeded|exhausted)|payment required|\b402\b|billing (?:hard )?limit/i.test(
+    text ?? "",
+  );
+}
+
 const MAX_API_RETRIES = 3;
 // `error_max_turns` is NOT a failure — the SDK session is intact and the work is
 // resumable; the agent just hit its per-session turn budget. Continue it (resume,
@@ -563,8 +578,16 @@ function classifyResult(msg: Record<string, unknown>, context: string): { reason
   const subtype = typeof msg.subtype === "string" ? msg.subtype : "";
   const isError = msg.is_error === true || (subtype !== "" && subtype !== "success");
   if (!isError) return null;
-  const detail = [subtype, typeof msg.result === "string" ? msg.result : "", context].join(" ");
-  return { reason: subtype || "error", transient: isTransientApiError(detail) };
+  const resultText = typeof msg.result === "string" ? msg.result : "";
+  const detail = [subtype, resultText, context].join(" ");
+  // A billing wall is NOT transient — never retry it. Surface the provider's
+  // own message as the reason so the orchestrator can recognize it (and the
+  // operator sees "credit balance is too low", not a bare subtype).
+  const exhausted = isCreditExhaustionError(detail);
+  return {
+    reason: exhausted ? resultText || subtype || "credit/quota exhausted" : subtype || "error",
+    transient: !exhausted && isTransientApiError(detail),
+  };
 }
 
 // Test seams (mirror the orchestrator's providerOverride): let tests drive the
@@ -949,9 +972,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
         }
       }
     } catch (err) {
-      // Thrown mid-stream (network/SDK). Retryable only if it reads as overload.
+      // Thrown mid-stream (network/SDK). Retryable only if it reads as overload —
+      // but a billing wall (credit/quota) never recovers, so it's not transient.
       const reason = (err as Error).message || String(err);
-      return { done: false, reason, transient: isTransientApiError(reason) };
+      return { done: false, reason, transient: !isCreditExhaustionError(reason) && isTransientApiError(reason) };
     }
     // Stream ended with no explicit result message → treat as clean completion.
     return { done: true };

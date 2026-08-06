@@ -195,6 +195,36 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     expect((await store.getRun(run.id))?.status).toBe("waiting");
   });
 
+  it("out of credits trips the key breaker: escalates once, pauses new runs on the key, resume clears it", async () => {
+    const { run, events } = await assignRun();
+    // The runner hits a billing wall (surfaced as the provider's own message).
+    events.onFailed(run.id, "Your credit balance is too low to access the Anthropic API");
+    await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+
+    const esc = bus.raised().find((i) => i.kind === "escalation")!;
+    expect(esc.flags).toContain("billing");
+    expect(esc.title).toMatch(/out of credits/i);
+    expect(esc.runId).toBe(run.id);
+    expect((await store.getRun(run.id))?.status).toBe("waiting"); // resumable, not a dead "review"
+
+    // The key is now paused: a NEW task on the same provider/key can't be
+    // assigned to the (now-idle) runner — no doomed run, a clear billing message.
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P2", goal: "", repo: undefined });
+    const t2 = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "next" });
+    await expect(ops.assignTask(DEFAULT_WORKSPACE, project.id, t2.id)).rejects.toThrow(/out of credits\/quota/i);
+
+    // Resuming the escalation (operator topped up) clears the breaker → assignable again.
+    await ops.resolveHitl(DEFAULT_WORKSPACE, esc.id, { action: "reassign" }, "op-1");
+    await waitFor(async () => {
+      try {
+        await ops.assignTask(DEFAULT_WORKSPACE, project.id, t2.id);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  });
+
   it("Reassign with no worktree fails gracefully — the run stays escalated, no crash", async () => {
     const { run, events } = await assignRun(); // non-git project → no worktree to relaunch in
     events.onHitl(run.id, {
