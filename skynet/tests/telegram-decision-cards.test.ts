@@ -71,6 +71,19 @@ describe("decisionCardHtml", () => {
     const html = decisionCardHtml(gate(), { run: "r", project: "" }, false);
     expect(html).toContain("/approve q-42");
   });
+
+  it("frames a decision (question with options) as a numbered selection, showing the question", () => {
+    const html = decisionCardHtml(
+      gate({ kind: "question", diff: null, command: null, title: "Which formats to support?", options: ["DXF now", "DWG via convert"] } as Partial<HitlItem>),
+      { run: "r", project: "" },
+      true,
+    );
+    expect(html).toContain("Which formats to support?"); // the question itself is shown
+    expect(html).toContain("Choose one:");
+    expect(html).toContain("1. DXF now");
+    expect(html).toContain("2. DWG via convert");
+    expect(html).toMatch(/tap your choice/i); // clearly a selection, not approve/reject
+  });
 });
 
 describe("gateKeyboard", () => {
@@ -90,6 +103,17 @@ describe("gateKeyboard", () => {
     expect(datas).not.toContain("hitl:diff:q-42");
     expect(datas).toContain("hitl:modify:q-42");
   });
+
+  it("renders a button PER option for a decision (question), not an approve/reject gate", () => {
+    const kb = gateKeyboard(gate({ kind: "question", diff: null, command: null, options: ["DXF now", "DWG via convert", "All three"] } as Partial<HitlItem>));
+    const byData = Object.fromEntries(kb.inline_keyboard.flat().map((b) => [b.callback_data, b.text]));
+    expect(byData["hitl:option:0:q-42"]).toContain("DXF now");
+    expect(byData["hitl:option:1:q-42"]).toContain("DWG via convert");
+    expect(byData["hitl:option:2:q-42"]).toContain("All three");
+    expect(byData["hitl:modify:q-42"]).toMatch(/other/i); // free-text answer
+    expect(byData["hitl:reject:q-42"]).toMatch(/reject/i);
+    expect(Object.keys(byData)).not.toContain("hitl:approve:q-42"); // a choice, not approve/reject
+  });
 });
 
 describe("esc", () => {
@@ -99,8 +123,8 @@ describe("esc", () => {
 });
 
 // ── The interactive flow (createOwnerControl) ────────────────────────────────
-function makeControl(controlEnabled = true) {
-  const g = gate();
+function makeControl(controlEnabled = true, gateItem?: HitlItem) {
+  const g = gateItem ?? gate();
   const resolveHitl = vi.fn(async () => g as never);
   const runDiff = vi.fn(async () => ({ patch: "diff --git a/x b/x\n+added\n-removed", add: 1, del: 1, files: ["x.ts"] }));
   const notes: string[] = [];
@@ -173,6 +197,26 @@ describe("Request changes → resume the same agent", () => {
     const c = makeControl(false);
     c.noteCard(700, "q-42", "run-1");
     await c.handle(OWNER, "change this", 700);
+    expect(c.resolveHitl).not.toHaveBeenCalled();
+  });
+});
+
+describe("Choose a decision option", () => {
+  const question = gate({ kind: "question", diff: null, command: null, title: "Which?", options: ["DXF now", "DWG via convert"] } as Partial<HitlItem>);
+
+  it("tapping an option resolves that gate with the chosen index (agent resumes on the choice)", async () => {
+    const c = makeControl(true, question);
+    await c.handleCallback(OWNER, "hitl:option:1:q-42", "cb-1", 500);
+    expect(c.resolveHitl).toHaveBeenCalledTimes(1);
+    expect(c.resolveHitl.mock.calls[0]?.[1]).toBe("q-42");
+    expect(c.resolveHitl.mock.calls[0]?.[2]).toEqual({ action: "option", optionIndex: 1 });
+    expect(c.notes.at(-1)).toMatch(/DWG via convert|resuming/i); // confirms the chosen answer
+    expect(c.edits).toContain(500); // buttons stripped after deciding
+  });
+
+  it("does nothing with control OFF", async () => {
+    const c = makeControl(false, question);
+    await c.handleCallback(OWNER, "hitl:option:0:q-42", "cb-1", 500);
     expect(c.resolveHitl).not.toHaveBeenCalled();
   });
 });
