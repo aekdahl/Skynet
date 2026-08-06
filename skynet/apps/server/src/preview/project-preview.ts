@@ -140,6 +140,31 @@ export function previewExitReason(code: number | null, logs: string[]): string {
 }
 
 /**
+ * Kill a preview's whole process TREE, not just the shell we spawned. A dev
+ * command is `sh → concurrently → node + vite`; the child is spawned `detached`
+ * so its pid leads a process GROUP, and signalling the negative pid reaches every
+ * descendant. Without this, killing only the shell orphans the dev servers and
+ * they keep holding their ports — the next preview start then dies with
+ * EADDRINUSE (its server crashes → a blank page with no working backend).
+ * SIGTERM first (clean shutdown), then SIGKILL any straggler after a grace period
+ * (`node --watch` stays alive after a crash and can ignore a gentle term). `pid`
+ * is captured so the delayed SIGKILL only ever targets THIS tree.
+ */
+export function killTree(child: ChildProcess | undefined): void {
+  if (!child || child.killed || child.pid == null) return;
+  const pid = child.pid;
+  const killGroup = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(-pid, sig);
+    } catch {
+      /* group already gone (ESRCH) */
+    }
+  };
+  killGroup("SIGTERM");
+  setTimeout(() => killGroup("SIGKILL"), 3000).unref?.();
+}
+
+/**
  * Scan a chunk of a dev server's stdout for the port(s) it announced. Most dev
  * servers ignore an injected `PORT` and pick their own — Vite always does (it
  * reads `--port`/config, not the env var), and scripts that hardcode a port via
@@ -508,7 +533,7 @@ export class ProjectPreviewManager {
    *  worktree (so a restart keeps node_modules warm). Full teardown is stop(). */
   private killChild(p: Live) {
     if (p.idleTimer) clearTimeout(p.idleTimer);
-    if (p.child && !p.child.killed) p.child.kill("SIGTERM");
+    killTree(p.child);
   }
 
   /** Start the PROJECT preview — the integration branch (cumulative merged fleet
@@ -624,6 +649,12 @@ export class ProjectPreviewManager {
       const child = spawn(wrapped.bin, wrapped.args, {
         cwd: p.dir,
         env: previewEnv({ PORT: String(recipe.port), VITE_PORT: String(recipe.port), BROWSER: "none" }),
+        // Detached → the child leads its own process GROUP, so killChild can
+        // signal the whole tree (sh → concurrently → node + vite). Without this,
+        // killing the shell orphans the dev servers and they keep holding their
+        // ports — the next start then dies with EADDRINUSE (server crashes → the
+        // preview shows a blank page with no working backend).
+        detached: true,
       });
       p.child = child;
       const onOutput = (b: Buffer) => {
