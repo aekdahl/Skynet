@@ -1400,6 +1400,17 @@ button.kb-done:hover { opacity: 1; }
 @keyframes confirm-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes confirm-pop { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .confirm-overlay, .confirm-card { animation: none; } }
+/* Global toasts (themed replacement for native alert()). */
+.toast-stack { position: fixed; right: 20px; bottom: 20px; z-index: 90; display: flex; flex-direction: column; gap: 10px; max-width: min(400px, calc(100vw - 40px)); }
+.toast { display: flex; align-items: flex-start; gap: 10px; padding: 12px 12px 12px 14px; background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--muted); border-radius: 10px; box-shadow: 0 14px 40px rgb(0 0 0 / 0.4); animation: toast-in 0.16s ease; }
+.toast-error { border-left-color: var(--danger); }
+.toast-success { border-left-color: var(--ok); }
+.toast-info { border-left-color: var(--info); }
+.toast-msg { flex: 1; font-size: 13px; line-height: 1.5; color: var(--text); text-wrap: pretty; }
+.toast-x { flex: none; background: none; border: none; color: var(--muted); font-size: 17px; line-height: 1; cursor: pointer; padding: 0 2px; }
+.toast-x:hover { color: var(--text); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
 .kb-detail-overlay { position: fixed; inset: 0; z-index: 60; background: color-mix(in oklch, #000, transparent 40%); display: flex; align-items: center; justify-content: center; padding: 24px; }
 .kb-detail { width: min(640px, 100%); max-height: 80vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px 22px; cursor: default; }
 .kb-detail-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }

@@ -25,6 +25,7 @@ import type {
   TaskAssignment,
 } from "@skynet/shared";
 import * as api from "./client";
+import { toast } from "../components/toast";
 import { notifyInbox } from "../pwa/pwa";
 
 /** Pull the server's `{ error }` message out of an ApiError body, else fallback. */
@@ -414,7 +415,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await api.forkAgent(id);
         } catch (e) {
           if (e instanceof api.ApiError && e.status === 409) {
-            alert(serverMessage(e, "Can't fork — no agent available. Configure one in Fleet."));
+            toast(serverMessage(e, "Can't fork — no agent available. Configure one in Fleet."));
             return;
           }
           throw e;
@@ -493,14 +494,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         try {
           await api.transitionTask(projectId, taskId, to);
         } catch (e) {
-          if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't move the task."));
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't move the task."));
         }
       },
       forceTaskDone: async (projectId, taskId) => {
         try {
           await api.forceTaskDone(projectId, taskId);
         } catch (e) {
-          if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't force the task done."));
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't force the task done."));
         }
       },
       deleteTask: async (projectId, taskId) => {
@@ -516,7 +517,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         try {
           await api.updateFeature(featureId, patch);
         } catch (e) {
-          if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't update the feature."));
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't update the feature."));
         }
       },
       deleteFeature: async (featureId) => {
@@ -529,7 +530,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         try {
           await api.updateMilestone(milestoneId, patch);
         } catch (e) {
-          if (e instanceof api.ApiError) alert(serverMessage(e, "Couldn't update the milestone."));
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't update the milestone."));
         }
       },
       deleteMilestone: async (milestoneId) => {
@@ -540,7 +541,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           return await api.assignTask(projectId, taskId);
         } catch (e) {
           if (e instanceof api.ApiError && e.status === 409) {
-            alert(serverMessage(e, "No idle agent available — configure or free one in Fleet."));
+            toast(serverMessage(e, "No idle agent available — configure or free one in Fleet."));
             return null;
           }
           throw e;
@@ -557,7 +558,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await api.deleteAgent(id);
         } catch (e) {
           if (e instanceof api.ApiError && e.status === 409) {
-            alert("Agent is busy — finish or reassign its task before retiring.");
+            toast("Agent is busy — finish or reassign its task before retiring.");
             return;
           }
           throw e;
