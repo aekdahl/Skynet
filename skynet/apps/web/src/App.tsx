@@ -72,6 +72,10 @@ export function App() {
   const [agentId, setAgentId] = useState<string | null>(() => route0?.agentId ?? null);
   const [from, setFrom] = useState<ViewName>("home");
   const [fromP, setFromP] = useState<ViewName>("home");
+  // The project we just created and landed in — signals its view to open the
+  // task composer focused, so the operator's next move (add a task) is one keystroke
+  // away. Cleared once consumed so re-visiting the project doesn't re-open it.
+  const [composeProjectId, setComposeProjectId] = useState<string | null>(null);
   const [selIdx] = useState(0);
   const [onboarded, setOnboarded] = useState(isOnboarded);
   // Re-run setup on demand (from Settings), even after it's been completed/skipped.
@@ -158,9 +162,13 @@ export function App() {
       approvalLevel?: string;
     },
   ) => {
-    await store.createProject(name, goal, opts);
+    const created = await store.createProject(name, goal, opts);
+    // Land straight in the new project with its task composer focused — the
+    // operator's next step is to fill the backlog. Back goes to the projects list.
     setFromP("projects");
-    setView("projects");
+    setComposeProjectId(created.id);
+    setProjectId(created.id);
+    setView("project");
   };
 
   const agent = store.runs.find((a) => a.id === runId);
@@ -282,6 +290,8 @@ export function App() {
                 onOpenTask={openTask}
                 onOpenAgent={openAgent}
                 onBack={() => setView(fromP)}
+                autoCompose={composeProjectId === project.id}
+                onComposeConsumed={() => setComposeProjectId(null)}
               />
             )}
             {store.loaded && view === "project" && !project && (
