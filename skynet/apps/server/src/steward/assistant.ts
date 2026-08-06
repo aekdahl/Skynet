@@ -42,8 +42,9 @@ const MAX_DOC_CHARS = 8000;
 const MAX_HISTORY = 8;
 /** Steward's per-input action budget ("loops"). It can propose up to this many
  *  changes from one message; asked for more, it proposes the first N and reports
- *  that it ran out so the operator can ask it to continue. */
-export const MAX_STEWARD_ACTIONS = 10;
+ *  that it ran out so the operator can ask it to continue. Still operator-gated —
+ *  nothing runs until the operator confirms the proposed batch. */
+export const MAX_STEWARD_ACTIONS = 50;
 
 const SYSTEM =
   "You are Steward, the repo-aware project assistant for a Skynet workspace — you help the operator understand the CURRENT STATUS and CONTENT of one project, and you can perform project & task actions on request. " +
