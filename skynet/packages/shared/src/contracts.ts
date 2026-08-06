@@ -449,6 +449,12 @@ export const Agent = z.object({
   // provisioning) rather than an operator adding it. Such runners are the only
   // ones the idle reaper auto-retires (see retireIdleRunnersAfterMinutes).
   autoProvisioned: z.boolean().default(false),
+  // May this agent perform autonomous reviews of OTHER agents' finished runs?
+  // Default true = every agent is an eligible reviewer. An agent NEVER reviews
+  // its own work regardless of this flag (the autonomy loop excludes the run's
+  // own agent) — this only narrows the reviewer pool further. Off = never picked
+  // as a reviewer (it still does its own tasks).
+  canReview: z.boolean().default(true),
 });
 export type Agent = z.infer<typeof Agent>;
 
@@ -692,6 +698,7 @@ export type ConfigureRunnerRequest = z.infer<typeof ConfigureRunnerRequest>;
 export const UpdateRunnerRequest = z.object({
   model: z.string().min(1).optional(),
   name: z.string().optional(),
+  canReview: z.boolean().optional(), // toggle reviewer-eligibility (see Agent.canReview)
 });
 export type UpdateRunnerRequest = z.infer<typeof UpdateRunnerRequest>;
 

@@ -61,6 +61,25 @@ class PrematureDoneProvider implements RunnerProvider {
   }
 }
 
+// A runner that fails outright (binary missing, auth error, crash) — it reports
+// onFailed instead of doing work. The orchestrator parks the run in "review" as
+// needs-attention; its task must follow into the review column, not strand in
+// "ongoing" (where the card is locked and undraggable).
+class FailingProvider implements RunnerProvider {
+  readonly id: ProviderId = "claude";
+  async start(spec: StartSpec, events: RunnerEvents): Promise<RunnerHandle> {
+    setTimeout(() => events.onFailed(spec.runId, "boom — runner crashed"), 0);
+    return {
+      runId: spec.runId,
+      provider: this.id,
+      async pause() {},
+      async resume() {},
+      async message() {},
+      async stop() {},
+    };
+  }
+}
+
 // Loaded via dynamic import in beforeAll, AFTER env is set — config captures the
 // integration repo / worktrees dir at import time (see evals/executor.ts).
 let Hub: typeof import("../apps/server/src/hub.js").Hub;
@@ -191,5 +210,23 @@ describe("agent completion integrity: successful work is never silently dropped"
     expect(bus.events.some((e) => e.type === "hitl.raised" && e.item.kind === "diff")).toBe(false);
     // And a completion event was published.
     expect(bus.events.some((e) => e.type === "run.completed")).toBe(true);
+  });
+
+  it("a runner FAILURE parks the run in 'review' AND moves its task there — never stranded in 'ongoing'", async () => {
+    // The board places cards by task.state, and 'ongoing' cards are locked. A
+    // needs-attention exit (here: a runner crash → onFailed) used to flip only the
+    // RUN to 'review', leaving the task in 'ongoing' — a "review" chip on a locked
+    // Ongoing card that a human couldn't move. The task must follow the run.
+    const provider = new FailingProvider();
+    const { hub } = await seed();
+    const orchestrator = new Orchestrator(store, hub, provider);
+
+    const agent = await orchestrator.assignTask("p1", "t1");
+    await waitFor(async () => (await store.getRun(agent.id))?.status === "review");
+
+    expect((await store.getRun(agent.id))?.status).toBe("review"); // needs-attention
+    // The fix: the linked task is in 'review' too, so the card is in the Review
+    // lane and movable (review → todo to retry, review → done to accept).
+    expect((await store.getTask("t1"))?.state).toBe("review");
   });
 });

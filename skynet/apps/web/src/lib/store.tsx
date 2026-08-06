@@ -167,7 +167,7 @@ export interface Store extends StoreState {
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   createAgent: (provider: string, model: string, name?: string, credentialId?: string) => Promise<void>;
-  updateAgent: (id: string, patch: { model?: string; name?: string }) => Promise<void>;
+  updateAgent: (id: string, patch: { model?: string; name?: string; canReview?: boolean }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
   // audit trail maintenance — mirror archive (agent) + delete (project/task/runner)
   archiveAudit: (hitlId: string, archived: boolean) => Promise<void>;

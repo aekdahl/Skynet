@@ -348,6 +348,18 @@ export function FleetView({
                   })()}
                   <div className="fleet-actions">
                     <button
+                      className={"btn btn-ghost fleet-reviewer" + (r.canReview === false ? " off" : "")}
+                      title={
+                        r.canReview === false
+                          ? "Reviewer off — this agent is never picked to review other agents' finished runs. Click to allow."
+                          : "Reviewer on — this agent may auto-review other agents' finished runs (never its own). Click to disable."
+                      }
+                      aria-pressed={r.canReview !== false}
+                      onClick={() => updateAgent(r.id, { canReview: r.canReview === false })}
+                    >
+                      {r.canReview === false ? "Reviewer: off" : "Reviewer: on"}
+                    </button>
+                    <button
                       className="btn btn-ghost"
                       onClick={() => {
                         setEditing(r.id);

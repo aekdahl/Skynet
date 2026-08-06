@@ -658,7 +658,7 @@ export function reorderTask(projectId: string, taskId: string, beforeId: string 
 export function createAgent(body: { provider: string; model: string; name?: string; credentialId?: string }) {
   return req<unknown>("POST", "/api/fleet/runners", body);
 }
-export function updateAgent(id: string, body: { model?: string; name?: string }) {
+export function updateAgent(id: string, body: { model?: string; name?: string; canReview?: boolean }) {
   return req<unknown>("PATCH", `/api/fleet/runners/${id}`, body);
 }
 export function deleteAgent(id: string) {

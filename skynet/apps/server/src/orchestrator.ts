@@ -496,6 +496,7 @@ export class Orchestrator {
         // silent "done" that would lose the (possibly real) uncommitted work.
         await this.freeRunner(live.agentId);
         await this.hub.runStatus(runId, "review");
+        await this.moveTaskToReview(live.taskId); // don't strand the card in Ongoing
         this.live.delete(runId);
         return;
       }
@@ -513,6 +514,7 @@ export class Orchestrator {
     if (live?.blockedUnanswered) {
       await this.freeRunner(live.agentId);
       await this.hub.runStatus(runId, "review");
+      await this.moveTaskToReview(live.taskId); // don't strand the card in Ongoing
       await this.hub.runLog(runId, "concluded without an answer to its question — needs attention (no change made)");
       this.live.delete(runId);
       return;
@@ -562,6 +564,7 @@ export class Orchestrator {
     await this.freeRunner(live?.agentId ?? null);
     await this.hub.runLog(runId, `runner failed — ${reason}. Not completed; needs attention.`);
     await this.hub.runStatus(runId, "review"); // visible needs-attention, NOT "done"
+    await this.moveTaskToReview(live?.taskId); // don't strand the card in Ongoing
     if (live?.git) await live.git.worktrees.retire(runId).catch(() => undefined);
     this.live.delete(runId);
   }
@@ -573,6 +576,7 @@ export class Orchestrator {
     await this.freeRunner(agentId);
     await this.hub.runLog(runId, `failed to start — ${reason}. Needs attention.`);
     await this.hub.runStatus(runId, "review");
+    await this.moveTaskToReview(this.live.get(runId)?.taskId); // don't strand the card in Ongoing
     // A worktree may have been provisioned before start threw — retire it.
     const ctx = await this.gitContextForAgent(runId).catch(() => undefined);
     if (ctx) await ctx.worktrees.retire(runId).catch(() => undefined);
@@ -584,6 +588,19 @@ export class Orchestrator {
     if (!agentId) return;
     const runner = await this.store.getAgent(agentId);
     if (runner) await this.hub.upsertAgent({ ...runner, status: "idle", idleSince: now() });
+  }
+
+  /** Move a run's linked task into the `review` column. Called wherever a run
+   *  enters `review` — including the needs-attention exits (commit/runner/startup
+   *  failure, unanswered question), which previously flipped only the RUN to
+   *  review and stranded its task in `ongoing`. The board places cards by
+   *  task.state, so such a task showed a "review" chip while sitting in the
+   *  Ongoing lane — locked and undraggable. Idempotent; only advances an in-flight
+   *  task, never knocks a done / re-opened task back into review. */
+  private async moveTaskToReview(taskId: string | null | undefined): Promise<void> {
+    if (!taskId) return;
+    const task = await this.store.getTask(taskId);
+    if (task && task.state === "ongoing") await this.hub.upsertTask({ ...task, state: "review" });
   }
 
   /** Raise the `diff` review that gates a finished agent's branch into the queue. */
@@ -707,7 +724,7 @@ export class Orchestrator {
         const template = eligibleRunners[0]; // a busy runner on an allowed key
         if (settings.autoProvisionRunners && underCap && template && (await this.providerUsable(workspaceId, template.provider, template.credentialId))) {
           const id = `runner-auto-${++this.seq}`;
-          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null, autoProvisioned: true };
+          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true };
           await this.hub.upsertAgent(runner);
           return { id, provider: template.provider, model: template.model, credentialId: template.credentialId ?? null };
         }
@@ -783,7 +800,7 @@ export class Orchestrator {
         );
       }
       const id = `runner-auto-${++this.seq}`;
-      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null, autoProvisioned: true };
+      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true };
       await this.hub.upsertAgent(runner);
       return { id, provider, model, credentialId: credentialId ?? null };
     });
@@ -2010,11 +2027,21 @@ export class Orchestrator {
             //    Skip tasks that already carry a verdict (idempotent) so we
             //    don't rewrite the same LLM call every tick.
             const review = mine.find((t) => t.state === "review" && t.runId && !t.reviewVerdict);
-            if (review?.runId && idle[0]) {
-              const open = (await this.store.listQueue(ws)).find(
-                (h) => h.runId === review.runId && !h.resolvedAt,
-              );
-              if (open) await this.autoReview(ws, idle[0], review, open, p.autonomy);
+            if (review?.runId) {
+              // The reviewer must NOT be the agent that did the work — a run
+              // reviewing itself is a rubber-stamp that opens a PR without a real
+              // second look. Pick the first idle agent that (a) isn't the run's
+              // own agent and (b) is reviewer-eligible (Agent.canReview, default
+              // true). If none is free, leave it for a human this tick rather than
+              // self-approve — a later tick retries when another agent frees up.
+              const doerId = (await this.store.getRun(review.runId))?.agentId;
+              const reviewer = idle.find((a) => a.id !== doerId && a.canReview !== false);
+              if (reviewer) {
+                const open = (await this.store.listQueue(ws)).find(
+                  (h) => h.runId === review.runId && !h.resolvedAt,
+                );
+                if (open) await this.autoReview(ws, reviewer, review, open, p.autonomy);
+              }
             }
           } catch (err) {
             await this.hub.runLog(p.id, `autonomy skipped ${p.id}: ${(err as Error).message}`).catch(() => undefined);
