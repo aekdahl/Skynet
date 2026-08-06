@@ -14,6 +14,7 @@ import { QueueView } from "./views/queue";
 import { AuditView } from "./views/audit";
 import { TaskDetail } from "./views/task";
 import { IntegrationsView } from "./views/integrations";
+import { MergesView } from "./views/merges";
 import { Onboarding } from "./views/onboarding";
 import { isOnboarded } from "./lib/firstrun";
 import { SettingsView } from "./views/settings";
@@ -30,6 +31,7 @@ export type ViewName =
   | "projects"
   | "fleet"
   | "integrations"
+  | "merges"
   | "project"
   | "task"
   | "settings"
@@ -46,6 +48,7 @@ const VIEW_LABEL: Record<string, string> = {
   queue: "Inbox",
   audit: "Audit",
   integrations: "Integrations",
+  merges: "Ready to merge",
   project: "Project",
   settings: "Settings",
   acceptance: "Acceptance",
@@ -283,6 +286,7 @@ export function App() {
               />
             )}
             {store.loaded && view === "integrations" && <IntegrationsView />}
+            {store.loaded && view === "merges" && <MergesView onOpenTask={openTask} />}
             {store.loaded && view === "project" && project && (
               <ProjectView
                 project={project}

@@ -6,6 +6,7 @@ import {
   fmtWait,
   idleRunners,
   openQueue,
+  readyMerges,
   runnerName,
   waitedSecs,
 } from "../lib/derive";
@@ -26,6 +27,7 @@ type NavKey =
   | "projects"
   | "fleet"
   | "integrations"
+  | "merges"
   | "roadmap"
   | "settings"
   | "acceptance"
@@ -48,6 +50,8 @@ function activeNav(view: ViewName, lens: Lens): NavKey | null {
       return "fleet";
     case "integrations":
       return "integrations";
+    case "merges":
+      return "merges";
     case "roadmap":
       return "roadmap";
     case "settings":
@@ -188,6 +192,7 @@ export function OpSidebar({
 }) {
   const { projects, runs, queue } = useStore();
   const queueCount = openQueue(queue).length;
+  const mergeCount = readyMerges(runs).length;
   // Single source of truth for the highlight — see activeNav above.
   const active = activeNav(view, lens);
   // QA & testing surfaces (Acceptance / Simulation) are internal tooling — they
@@ -244,6 +249,7 @@ export function OpSidebar({
         {item("Projects", "▤", () => setView("projects"), active === "projects")}
         {item("Fleet", "◇", () => setView("fleet"), active === "fleet")}
         {item("Integrations", "⑂", () => setView("integrations"), active === "integrations")}
+        {item("Ready to merge", "⇲", () => setView("merges"), active === "merges", mergeCount)}
         {/* Roadmap is dev-only (see lib/dev) — hidden from release builds. */}
         {devTools && item("Roadmap", "◈", () => setView("roadmap"), active === "roadmap")}
         {item("Settings", "⚙", () => setView("settings"), active === "settings")}

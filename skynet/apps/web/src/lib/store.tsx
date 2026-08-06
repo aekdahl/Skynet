@@ -83,6 +83,10 @@ export interface Store extends StoreState {
   pauseAgent: (id: string) => Promise<void>;
   resumeAgent: (id: string) => Promise<void>;
   stopAgent: (id: string) => Promise<void>;
+  mergePr: (runId: string, method?: "merge" | "squash" | "rebase") => Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }>;
+  updatePrBranch: (runId: string) => Promise<{ updated: boolean; conflicts?: string[] }>;
+  reworkPr: (runId: string, guidance: string, comment?: string) => Promise<void>;
+  dismissPr: (runId: string) => Promise<void>;
   // Local optimistic flip after a key is set/cleared in Settings (the snapshot
   // recomputes availability from the secret store on next load).
   setProviderAvailable: (id: string, available: boolean) => void;
@@ -250,6 +254,8 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
           a.id === ev.runId ? { ...a, archived: ev.archived } : a,
         ),
       };
+    case "run.updated":
+      return { ...state, runs: upsert(state.runs, ev.run) };
     case "hitl.raised":
       return { ...state, queue: upsert(state.queue, ev.item) };
     case "hitl.resolved":
@@ -425,6 +431,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       resumeAgent: async (id) => {
         await api.resumeAgent(id);
+      },
+      mergePr: (runId, method) => api.mergePr(runId, method),
+      updatePrBranch: (runId) => api.updatePrBranch(runId),
+      reworkPr: async (runId, guidance, comment) => {
+        await api.reworkPr(runId, guidance, comment);
+      },
+      dismissPr: async (runId) => {
+        await api.dismissPr(runId);
       },
       setProviderAvailable: (id, available) => {
         setState((s) => ({

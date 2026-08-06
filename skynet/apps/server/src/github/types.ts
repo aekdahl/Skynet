@@ -39,6 +39,10 @@ export interface PrRef {
 export interface PrStatus {
   state: "open" | "closed" | "merged";
   checks: "pending" | "passing" | "failing" | "none";
+  // GitHub's mergeability verdict for the head against its base. `false` = a
+  // textual conflict (base moved under the PR); `null` = GitHub is still
+  // computing it (retry shortly). Distinguishes a conflict from a policy block.
+  mergeable: boolean | null;
 }
 
 export interface MergeResult {

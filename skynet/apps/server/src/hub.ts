@@ -119,6 +119,14 @@ export class Hub {
     if (ws) this.bus.publish(ws, { type: "run.completed", runId, branch });
   }
 
+  /** Persist a full run and broadcast a whole-run replace. For fields without a
+   *  dedicated event (e.g. `pr`, the ready-to-merge record). */
+  async upsertRun(run: TaskRun): Promise<TaskRun> {
+    await this.store.putRun(run);
+    this.bus.publish(run.workspaceId, { type: "run.updated", run });
+    return run;
+  }
+
   async setRunArchived(runId: string, archived: boolean): Promise<TaskRun | undefined> {
     const a = await this.store.getRun(runId);
     if (!a) return undefined;

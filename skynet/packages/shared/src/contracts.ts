@@ -126,6 +126,40 @@ export const LogLine = z.object({
 });
 export type LogLine = z.infer<typeof LogLine>;
 
+// ─── Pull request (ready-to-merge) ───────────────────────────────────────────
+// When a run's diff is approved and pushed, Skynet opens a PR and the task
+// completes (→ done). The PR is then listed as "ready to merge": a human makes
+// the final merge call from that list, informed by the AI reviewer's briefing.
+// Skynet never auto-merges to the real base branch — the merge is a human's.
+
+/** The decision aid shown on the ready-to-merge card. `impact`/`risk` are
+ *  system-derived (diff size + modules touched); `recommendation` + `rationale`
+ *  carry the AI reviewer's verdict (or a deterministic heuristic when none ran). */
+export const MergeBriefing = z.object({
+  summary: z.string(), // what changed, one line
+  impact: z.string(), // what it touches / who's affected
+  risk: Risk, // low | medium | high
+  recommendation: z.enum(["merge", "rework", "hold"]), // the suggested action
+  rationale: z.string(), // WHY — the reviewer's words (or the heuristic's reason)
+  by: z.string(), // reviewer agent name, or "heuristic"
+});
+export type MergeBriefing = z.infer<typeof MergeBriefing>;
+
+export const PullRequest = z.object({
+  number: z.number().int(),
+  url: z.string(),
+  repo: z.string(), // "owner/name"
+  branch: z.string(), // head (the agent branch)
+  base: z.string(), // base branch it targets
+  state: z.enum(["open", "merged", "closed"]).default("open"),
+  openedAt: Timestamp,
+  briefing: MergeBriefing.nullable().default(null),
+  // Human chose "no-op" on the ready list — hide it from the default view without
+  // touching the PR on GitHub (recoverable). Merge/rework clear it implicitly.
+  dismissed: z.boolean().default(false),
+});
+export type PullRequest = z.infer<typeof PullRequest>;
+
 // ─── TaskRun ──────────────────────────────────────────────────────────────────
 
 export const TaskRun = z.object({
@@ -158,6 +192,11 @@ export const TaskRun = z.object({
   // Archived runs are hidden from the project board but kept in the store and
   // reachable via the project's Archive section.
   archived: z.boolean().default(false),
+  // The GitHub PR opened for this run's approved diff, if any. Present → the run
+  // reached "ready to merge"; a human merges (or reworks) it from that list. The
+  // task itself is already `done` — merging is decoupled so the pipeline never
+  // stalls on a human. Null → no PR (a local-merge project, or not pushed yet).
+  pr: PullRequest.nullable().default(null),
 });
 export type TaskRun = z.infer<typeof TaskRun>;
 
@@ -556,6 +595,21 @@ export const ResolveRequest = z.object({
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
 
 export const ChatRequest = z.object({ text: z.string().min(1) });
+
+// ─── Ready-to-merge actions ──────────────────────────────────────────────────
+/** Merge an open PR from the ready list. `method` = the GitHub merge strategy. */
+export const MergePrRequest = z.object({
+  method: z.enum(["merge", "squash", "rebase"]).default("squash"),
+});
+export type MergePrRequest = z.infer<typeof MergePrRequest>;
+
+/** Send a ready PR back for changes: optionally comment on the PR, and resume
+ *  the agent with `guidance` to revise (new commits push to the same branch). */
+export const ReworkPrRequest = z.object({
+  guidance: z.string().min(1),
+  comment: z.string().optional(), // also posted on the PR (audit trail) when set
+});
+export type ReworkPrRequest = z.infer<typeof ReworkPrRequest>;
 export type ChatRequest = z.infer<typeof ChatRequest>;
 
 // Ask Skynet to create a brand-new GitHub repo at project-creation time, then

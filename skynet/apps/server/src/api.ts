@@ -24,6 +24,8 @@ import {
   UpdateTaskRequest,
   MoveTaskRequest,
   ReorderTaskRequest,
+  MergePrRequest,
+  ReworkPrRequest,
 } from "@skynet/shared";
 import { installProviderCli } from "./provider-install.js";
 import { installCommandFor } from "./provider-requirements.js";
@@ -333,6 +335,44 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.get<{ Params: { id: string } }>("/api/runs/:id/diff", async (req, reply) => {
     try {
       return await ops.runDiff(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── Ready-to-merge (human PR merge decisions) ──────────────────────────────
+  // Runs whose PR is open and awaiting a human's merge/rework/no-op call.
+  app.get("/api/merges", (req) => ops.listReadyPrs(ws(req)));
+  app.post<{ Params: { id: string } }>("/api/merges/:id/merge", async (req, reply) => {
+    const body = MergePrRequest.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.mergeReadyPr(ws(req), req.params.id, body.data.method);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/merges/:id/rework", async (req, reply) => {
+    const body = ReworkPrRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      await ops.reworkReadyPr(ws(req), req.params.id, body.data.guidance, body.data.comment);
+      return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/merges/:id/update-branch", async (req, reply) => {
+    try {
+      return await ops.updateReadyPrBranch(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/merges/:id/dismiss", async (req, reply) => {
+    try {
+      await ops.dismissReadyPr(ws(req), req.params.id);
+      return { ok: true };
     } catch (err) {
       return fail(reply, err);
     }

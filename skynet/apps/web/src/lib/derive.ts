@@ -144,6 +144,13 @@ export const hitlFor = (queue: HitlItem[], runId: string) =>
 export const openQueue = (queue: HitlItem[]) =>
   queue.filter((q) => q.resolvedAt == null);
 
+// Runs whose PR is open and awaiting a human merge decision (not set aside) —
+// the ready-to-merge list. Newest PR first.
+export const readyMerges = (runs: TaskRun[]) =>
+  runs
+    .filter((r) => r.pr?.state === "open" && !r.pr.dismissed)
+    .sort((a, b) => (b.pr!.openedAt ?? 0) - (a.pr!.openedAt ?? 0));
+
 // ─── runner / fleet derivations ──────────────────────────────────────────────
 
 export const runnerIsBusy = (runner: Agent, runs: TaskRun[]) =>

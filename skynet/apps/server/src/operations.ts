@@ -359,6 +359,28 @@ export class Operations {
     await this.getRun(ws, runId); // 404 unless it's in this workspace
     return this.orchestrator.runDiff(runId);
   }
+
+  // ── Ready-to-merge (human PR merge decisions) ──────────────────────────────
+  /** Runs whose PR is open and awaiting a human merge decision. */
+  listReadyPrs(ws: string): Promise<TaskRun[]> {
+    return this.orchestrator.listReadyPrs(ws);
+  }
+  async mergeReadyPr(ws: string, runId: string, method: "merge" | "squash" | "rebase"): Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }> {
+    await this.getRun(ws, runId); // 404 unless it's in this workspace
+    return this.orchestrator.mergeReadyPr(ws, runId, method);
+  }
+  async updateReadyPrBranch(ws: string, runId: string): Promise<{ updated: boolean; conflicts?: string[] }> {
+    await this.getRun(ws, runId);
+    return this.orchestrator.updateReadyPrBranch(ws, runId);
+  }
+  async reworkReadyPr(ws: string, runId: string, guidance: string, comment?: string): Promise<void> {
+    await this.getRun(ws, runId);
+    return this.orchestrator.reworkReadyPr(ws, runId, guidance, comment);
+  }
+  async dismissReadyPr(ws: string, runId: string): Promise<void> {
+    await this.getRun(ws, runId);
+    return this.orchestrator.dismissReadyPr(ws, runId);
+  }
   async archiveAgent(ws: string, runId: string, archived: boolean): Promise<TaskRun> {
     await this.getRun(ws, runId);
     const updated = await this.hub.setRunArchived(runId, archived);
