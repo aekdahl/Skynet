@@ -35,6 +35,13 @@ const idleAgent: Agent = {
   id: "a1", workspaceId: DEFAULT_WORKSPACE, name: "a1", provider: "claude",
   model: "opus-4.8", status: "idle", idleSince: 0,
 };
+// A SECOND idle agent. An agent never reviews its own run, so auto-review tests
+// (whose run was done by a1) seed this one as the eligible reviewer — the loop
+// picks the first idle agent that isn't the run's own agent and has canReview on.
+const reviewerAgent: Agent = {
+  id: "a2", workspaceId: DEFAULT_WORKSPACE, name: "a2", provider: "claude",
+  model: "opus-4.8", status: "idle", idleSince: 0, canReview: true,
+};
 // Default eligibility "any" so autonomy will act on these; the parking behavior
 // for `unassigned` tasks is covered explicitly below.
 const mkTask = (over: Partial<Task>): Task => ({
@@ -213,6 +220,7 @@ describe("autonomy loop", () => {
       why: "", risk: "medium", raisedAt: 0, expiresAt: null, resolvedAt: null, resolution: null,
       command: null, options: null, recommended: null, steps: null, diff: null,
     };
+    await store.putAgent(reviewerAgent); // a different agent reviews a1's run
     await store.putRun(run);
     await store.putHitl(hitl);
     await store.putTask(mkTask({ state: "review", runId: "r1" }));
@@ -220,11 +228,11 @@ describe("autonomy loop", () => {
     const flagged = await store.getTask("t1");
     expect(flagged?.reviewVerdict?.decision).toBe("flag");
     expect(flagged?.reviewVerdict?.reason).toContain("missing tests");
-    expect(flagged?.reviewVerdict?.by).toBe("a1");
+    expect(flagged?.reviewVerdict?.by).toBe("a2");
     expect((await store.getHitl("q1"))?.resolvedAt).toBeNull();
     // The review is recorded on the run's live log: WHO reviewed + the verdict,
     // with the reviewer's full reasoning foldable in `detail`.
-    const flog = (await store.getRun("r1"))?.log.find((l) => /auto-reviewed by a1/i.test(l.line));
+    const flog = (await store.getRun("r1"))?.log.find((l) => /auto-reviewed by a2/i.test(l.line));
     expect(flog?.line).toMatch(/flagged for a human/i);
     expect(flog?.detail).toContain("missing tests");
   });
@@ -247,6 +255,7 @@ describe("autonomy loop", () => {
       why: "", risk: "medium", raisedAt: 0, expiresAt: null, resolvedAt: null, resolution: null,
       command: null, options: null, recommended: null, steps: null, diff: null,
     };
+    await store.putAgent(reviewerAgent); // a different agent reviews a1's run
     await store.putRun(run);
     await store.putHitl(hitl);
     await store.putTask(mkTask({ state: "review", runId: "r1" }));
@@ -255,7 +264,7 @@ describe("autonomy loop", () => {
     // Task advanced to done + run.status synced.
     expect((await store.getTask("t1"))?.state).toBe("done");
     expect((await store.getRun("r1"))?.status).toBe("done");
-    const alog = (await store.getRun("r1"))?.log.find((l) => /auto-reviewed by a1/i.test(l.line));
+    const alog = (await store.getRun("r1"))?.log.find((l) => /auto-reviewed by a2/i.test(l.line));
     expect(alog?.line).toMatch(/approved/i);
     expect(alog?.detail).toContain("looks good");
   });
@@ -293,6 +302,7 @@ describe("autonomy loop", () => {
     const orch = new Orchestrator(store, hub, racing);
     await store.putProject(project);
     await store.putAgent(idleAgent);
+    await store.putAgent(reviewerAgent); // a different agent reviews a1's run
     await store.putRun(run);
     await store.putHitl(hitl);
     await store.putTask(mkTask({ state: "review", runId: "r1" }));
@@ -312,6 +322,7 @@ describe("autonomy loop", () => {
     const orch = new Orchestrator(store, hub, provider);
     await store.putProject({ ...project, autonomy: false });
     await store.putAgent(idleAgent);
+    await store.putAgent(reviewerAgent); // a different agent reviews a1's run
     const run: TaskRun = {
       id: "r1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "do X", status: "review",
       runnerId: null, agentId: "a1", model: "opus-4.8", branch: "agent/r1", modules: [], progress: 1,
@@ -333,8 +344,35 @@ describe("autonomy loop", () => {
     expect(t?.reviewVerdict?.reason).toContain("looks good");
     expect((await store.getHitl("q1"))?.resolvedAt).toBeNull();
     // Log line notes the "awaiting human" flavor of the approve verdict.
-    const alog = (await store.getRun("r1"))?.log.find((l) => /auto-reviewed by a1/i.test(l.line));
+    const alog = (await store.getRun("r1"))?.log.find((l) => /auto-reviewed by a2/i.test(l.line));
     expect(alog?.line).toMatch(/awaiting human/i);
+  });
+
+  it("never lets an agent review its OWN run — with no other agent, it waits for a human", async () => {
+    // The reviewer must differ from the run's own agent. When a1 did the run and
+    // a1 is the ONLY agent, there's no eligible reviewer: no verdict is written,
+    // no consult fires, and the diff gate stays open for a human — the run is
+    // never rubber-stamped into a PR by the agent that produced it.
+    const { store, orch, provider } = await setup('{"verdict":"approve","reason":"looks good"}');
+    const run: TaskRun = {
+      id: "r1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "do X", status: "review",
+      runnerId: null, agentId: "a1", model: "opus-4.8", branch: "agent/r1", modules: [], progress: 1,
+      plan: [], modifiedFiles: [], log: [], startedAt: 0, lastHeartbeatAt: 0, visual: false,
+      previewUrl: null, dependsOn: [], parentId: null, branchFromStep: null, archived: false,
+    };
+    const hitl: HitlItem = {
+      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "r1", kind: "diff", title: "Review",
+      why: "", risk: "medium", raisedAt: 0, expiresAt: null, resolvedAt: null, resolution: null,
+      command: null, options: null, recommended: null, steps: null, diff: null,
+    };
+    await store.putRun(run);
+    await store.putHitl(hitl);
+    await store.putTask(mkTask({ state: "review", runId: "r1" }));
+    await orch.tickAutonomy();
+    expect((await store.getTask("t1"))?.reviewVerdict).toBeNull(); // not self-reviewed
+    expect(provider.consults).toBe(0); // no review consult fired
+    expect((await store.getHitl("q1"))?.resolvedAt).toBeNull(); // gate still open for a human
+    expect((await store.getTask("t1"))?.state).toBe("review");
   });
 
   it("does not re-review a task that already has a verdict (idempotent)", async () => {

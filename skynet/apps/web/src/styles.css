@@ -1538,6 +1538,8 @@ button.fleet-task-link:hover { background: var(--hover, var(--raised)); border-c
 .fleet-task-link .fleet-task-cta { flex: none; font-size: 11px; color: var(--muted, var(--faint)); opacity: 0; transition: opacity 0.12s; }
 button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
 .fleet-actions { display: flex; gap: 8px; border-top: 1px solid var(--line-soft); padding-top: 11px; }
+/* Reviewer-eligibility toggle: lit when on, dimmed/struck when off. */
+.fleet-reviewer.off { opacity: 0.55; text-decoration: line-through; }
 /* Clickable card header → opens the agent detail view. */
 button.fleet-cardhead { display: flex; flex-direction: column; gap: 11px; width: 100%; padding: 0; margin: 0; border: none; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 button.fleet-cardhead:hover .fleet-rn { color: var(--accent); }

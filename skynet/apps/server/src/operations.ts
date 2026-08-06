@@ -936,6 +936,7 @@ export class Operations {
       status: "idle",
       idleSince: now(),
       autoProvisioned: false, // an operator added this — the idle reaper leaves it alone
+      canReview: true, // reviewer-eligible by default (never reviews its own runs)
     };
     return this.hub.upsertAgent(runner);
   }
