@@ -6,6 +6,7 @@
 import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk } from "@skynet/shared";
 import { WorkspaceSettings } from "@skynet/shared";
 import {
+  isCreditExhaustionError,
   type HitlRaise,
   type RunnerEvents,
   type RunnerHandle,
@@ -198,6 +199,13 @@ export class Orchestrator {
   // Per-run failure counter (onFailed): past config.runMaxFailures the run is
   // escalated instead of parked in `review`. Cleared on success/resolution.
   private failCounts = new Map<string, number>();
+  // Key-health circuit breaker: credentials (`${ws}:${credentialId ?? provider}`)
+  // known to be out of credits/quota. `providerUsable` refuses a depleted key so
+  // NO new run is assigned to it (and auto-provision skips it) — stopping the
+  // cascade of per-run billing failures. Cleared when a run on the key succeeds,
+  // or when its escalation is resumed (operator topped up). In-memory: a restart
+  // re-learns it on the next failed call, which is correct (the key may be fixed).
+  private depletedKeys = new Map<string, { reason: string; at: number }>();
   // Runs already told "main moved" — so the periodic freshness sweep nudges once,
   // not every tick. Cleared if the branch catches back up (e.g. after a resync).
   private baseMovedFlagged = new Set<string>();
@@ -456,6 +464,8 @@ export class Orchestrator {
     // The agent finished a turn → it's no longer failing/stuck; reset the guards.
     this.failCounts.delete(runId);
     this.escalations.delete(runId);
+    // A successful turn proves the run's key works — clear any breaker on it.
+    this.clearDepletedKey(await this.store.getRun(runId).catch(() => undefined));
 
     // Real loop: the agent ran in an isolated worktree → commit its diff onto
     // its branch and raise a review. Approving it enqueues the branch onto the
@@ -540,6 +550,14 @@ export class Orchestrator {
    * task, or integrate a branch. A broken runner must not look like success.
    */
   private async fail(runId: string, reason: string): Promise<void> {
+    // Out of credits/quota (a billing wall, not a bug): trip the key breaker so
+    // the fleet stops feeding runs to a dead key, and escalate this run as
+    // resumable. Checked first — it's a distinct, key-level condition, not one of
+    // the N generic failures that trip the failure-count guard.
+    if (isCreditExhaustionError(reason)) {
+      await this.tripKeyBreaker(runId, reason);
+      return;
+    }
     // "Ran out of turns" is a resumable checkpoint, not a crash — the worktree +
     // committed work are intact and the runner already tried to continue on its
     // own. Escalate straight to a human (Resume / Reassign / Stop) rather than
@@ -650,6 +668,10 @@ export class Orchestrator {
     provider: Agent["provider"],
     credentialId?: string | null,
   ): Promise<boolean> {
+    // Circuit breaker: a key known to be out of credits/quota is refused for new
+    // work — regardless of the provider seam — until it's topped up. Checked
+    // FIRST so a depleted key can't slip through the injected-provider path.
+    if (this.depletedKeys.has(this.keyId(workspaceId, provider, credentialId))) return false;
     // An injected provider (test seam / a deliberately-supplied backend, see
     // getProvider) is a working provider — credentialing is the injector's
     // responsibility, so it's usable regardless of env/secret.
@@ -663,6 +685,43 @@ export class Orchestrator {
     }
     // Named credential: no ambient-env fallback — it must carry its own stored key.
     return (await secretService.resolve(workspaceId, credId)) !== undefined;
+  }
+
+  /** Breaker key for a run's effective credential (`credentialId ?? provider`). */
+  private keyId(workspaceId: string, provider: Agent["provider"], credentialId?: string | null): string {
+    return `${workspaceId}:${credentialId ?? provider}`;
+  }
+
+  /**
+   * Trip the key-health breaker for a run that failed on a billing wall (out of
+   * credits/quota). Marks the credential depleted — so `providerUsable` refuses
+   * it and NO new run is assigned to it (nor auto-provisioned onto it) until it's
+   * topped up — logs ONE key-level notice (the first hit), then escalates THIS
+   * run so it's resumable once the operator tops up. Returns without counting a
+   * generic failure.
+   */
+  private async tripKeyBreaker(runId: string, reason: string): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (run) {
+      const key = this.keyId(run.workspaceId, run.provider, run.credentialId);
+      if (!this.depletedKeys.has(key)) {
+        this.depletedKeys.set(key, { reason, at: now() });
+        await this.hub
+          .runLog(runId, `provider key out of credits/quota — new runs on it are paused until it's topped up (${reason})`)
+          .catch(() => undefined);
+      }
+    }
+    await this.escalate(
+      runId,
+      `The provider key is out of credits or quota — ${reason}. Top up the key, then resume this run; other work on the same key is paused until then.`,
+      "billing",
+    );
+  }
+
+  /** Clear the breaker for a run's key — its credential is working again (a run on
+   *  it succeeded, or the operator resumed an escalation after topping up). */
+  private clearDepletedKey(run: TaskRun | undefined): void {
+    if (run) this.depletedKeys.delete(this.keyId(run.workspaceId, run.provider, run.credentialId));
   }
 
   /**
@@ -739,6 +798,15 @@ export class Orchestrator {
           await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
           return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
         }
+      }
+      // All idle runners exist but none has a usable key. If that's because the
+      // key is out of credits (breaker tripped), say so — don't send the operator
+      // hunting for a "missing" key that's actually just empty.
+      const drained = idle
+        .map((r) => this.depletedKeys.get(this.keyId(workspaceId, r.provider, r.credentialId)))
+        .find((d): d is { reason: string; at: number } => d !== undefined);
+      if (drained) {
+        throw new RunnerNotConfiguredError(`Provider key is out of credits/quota — top it up to resume (${drained.reason}).`);
       }
       throw new RunnerNotConfiguredError(
         "No credential for any available agent — add a key for its provider/credential in Settings (or sign in a CLI-login provider). Nothing runs without one.",
@@ -1193,7 +1261,7 @@ export class Orchestrator {
    *  frees the runner (but never retires the worktree), and raises an
    *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes through
    *  raise() instead (the live gate stays parked). */
-  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict" | "turns" | "stalled"): Promise<void> {
+  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing"): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
     if (!run) return;
@@ -1219,7 +1287,9 @@ export class Orchestrator {
               ? "Ran out of turns — resume to continue"
               : source === "stalled"
                 ? "Runner went silent — resume to continue"
-                : "Run keeps failing — needs a human",
+                : source === "billing"
+                  ? "Provider key out of credits — top up to resume"
+                  : "Run keeps failing — needs a human",
       why: reason,
       risk: "medium",
       rationale: null,
@@ -1279,6 +1349,11 @@ export class Orchestrator {
     const run = await this.store.getRun(runId);
     const ctx = this.escalations.get(runId);
     if (!run) return;
+    // Resuming a run implies the operator addressed whatever blocked it — if it
+    // was a billing wall, clear the breaker so this run (and others on the key)
+    // can acquire a runner again. Done before the worktree check so the key is
+    // freed even when this particular run can't be relaunched.
+    this.clearDepletedKey(run);
     const live = this.live.get(runId);
     const git = ctx?.git ?? live?.git ?? (await this.gitContextForAgent(runId).catch(() => undefined));
     if (!git) {

@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   ClaudeRunnerProvider,
   isTransientApiError,
+  isCreditExhaustionError,
   retryBackoffMs,
   __setClaudeTestHooks,
 } from "../packages/runner-sdk/src/claude.js";
@@ -66,6 +67,25 @@ describe("classifier", () => {
     expect(retryBackoffMs(1)).toBe(2_000);
     expect(retryBackoffMs(2)).toBe(4_000);
     expect(retryBackoffMs(10)).toBe(30_000);
+  });
+  it("flags credit/quota exhaustion (billing walls) — Anthropic + OpenAI phrasings", () => {
+    for (const s of [
+      "Your credit balance is too low to access the Anthropic API",
+      "429 You exceeded your current quota, please check your plan and billing details",
+      "insufficient_quota",
+      "Error 402: Payment Required",
+      "the account is out of credits",
+    ])
+      expect(isCreditExhaustionError(s)).toBe(true);
+  });
+  it("does NOT flag a plain rate-limit as exhaustion (so it stays retryable)", () => {
+    for (const s of ["429 Too Many Requests", "rate limit exceeded", "Overloaded", "syntax error", ""])
+      expect(isCreditExhaustionError(s)).toBe(false);
+  });
+  it("exhaustion wins over transient — a quota-429 is not retried in vain", () => {
+    const quota429 = "429 You exceeded your current quota";
+    expect(isTransientApiError(quota429)).toBe(true); // it looks transient (429)…
+    expect(isCreditExhaustionError(quota429)).toBe(true); // …but it's really a billing wall
   });
 });
 
