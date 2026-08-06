@@ -15,6 +15,7 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { StatusDot } from "../components/common";
+import { useConfirm } from "../components/confirm";
 import { Markdown } from "../components/markdown";
 import { HitlContext, RiskChip } from "../components/hitl-context";
 
@@ -102,6 +103,7 @@ export function TaskDetail({
     stopAgent,
     archiveAgent,
   } = useStore();
+  const confirm = useConfirm();
   const q = openQueue(queue).find((it) => it.runId === agent.id);
   // The backing task carries the operator's brief AND the autonomous triage
   // metadata (assessment note + duration estimate) — surface both here so
@@ -228,8 +230,15 @@ export function TaskDetail({
               <button
                 className="btn btn-ghost btn-icon btn-stop"
                 title="Stop this run — halts execution and frees its agent"
-                onClick={() => {
-                  if (confirm(`Stop “${agent.name}”? This frees its agent; the run won't resume.`))
+                onClick={async () => {
+                  if (
+                    await confirm({
+                      title: "Stop this run?",
+                      body: `Stop “${agent.name}”? This frees its agent; the run won't resume.`,
+                      confirmLabel: "Stop",
+                      danger: true,
+                    })
+                  )
                     void stopAgent(agent.id);
                 }}
               >

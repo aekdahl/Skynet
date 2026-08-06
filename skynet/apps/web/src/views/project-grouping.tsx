@@ -7,6 +7,7 @@
 import { useState } from "react";
 import type { Feature, Milestone, Project, Task, TaskRun, TaskState } from "@skynet/shared";
 import { useStore } from "../lib/store";
+import { useConfirm } from "../components/confirm";
 import { TASK_STATES, TASK_STATE_META } from "../lib/derive";
 
 function fmtDate(at: number): string {
@@ -156,6 +157,7 @@ function FeatureRow({
   onUpdate: (patch: { name?: string; description?: string | null; status?: "active" | "paused" | "shipped"; milestoneId?: string | null; archived?: boolean }) => void;
   onDelete: () => void;
 }) {
+  const confirm = useConfirm();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(feature.name);
@@ -240,8 +242,13 @@ function FeatureRow({
                   </select>
                 </label>
                 <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>Edit</button>
-                <button className="btn btn-ghost btn-sm pf-del" onClick={() => {
-                  if (confirm(`Delete feature "${feature.name}"? Tasks in it will keep existing but lose the grouping.`)) onDelete();
+                <button className="btn btn-ghost btn-sm pf-del" onClick={async () => {
+                  if (await confirm({
+                    title: "Delete feature?",
+                    body: `Delete “${feature.name}”? Tasks in it keep existing but lose the grouping.`,
+                    confirmLabel: "Delete",
+                    danger: true,
+                  })) onDelete();
                 }}>Delete</button>
               </div>
               <div className="pf-counts">
@@ -430,6 +437,7 @@ function MilestoneRow({
   onUpdate: (patch: { name?: string; description?: string | null; targetAt?: number | null; status?: "planned" | "in-progress" | "shipped"; archived?: boolean }) => void;
   onDelete: () => void;
 }) {
+  const confirm = useConfirm();
   const [open, setOpen] = useState(true);
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(milestone.name);
@@ -513,8 +521,13 @@ function MilestoneRow({
                   </select>
                 </label>
                 <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>Edit</button>
-                <button className="btn btn-ghost btn-sm pf-del" onClick={() => {
-                  if (confirm(`Delete milestone "${milestone.name}"? Features + tasks in it keep existing but lose the grouping.`)) onDelete();
+                <button className="btn btn-ghost btn-sm pf-del" onClick={async () => {
+                  if (await confirm({
+                    title: "Delete milestone?",
+                    body: `Delete “${milestone.name}”? Features + tasks in it keep existing but lose the grouping.`,
+                    confirmLabel: "Delete",
+                    danger: true,
+                  })) onDelete();
                 }}>Delete</button>
               </div>
               <div className="pf-counts">

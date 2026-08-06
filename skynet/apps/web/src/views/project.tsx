@@ -15,6 +15,7 @@ import {
   tasksInState,
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
+import { useConfirm } from "../components/confirm";
 import { ProjectDelivery, visualLeadOf } from "../components/preview";
 import { Markdown } from "../components/markdown";
 import { SwDiagram } from "../components/subway-diagram";
@@ -170,6 +171,7 @@ function TaskCard({
     assignTask,
     transitionTask,
   } = useStore();
+  const confirm = useConfirm();
   // Features + milestones available to this task (same project, not archived).
   const projFeatures = features.filter((f) => f.projectId === task.projectId && !f.archived);
   const projMilestones = milestones.filter((m) => m.projectId === task.projectId && !m.archived);
@@ -447,8 +449,15 @@ function TaskCard({
             <button
               className="kb-move"
               title="Stop the agent working on this and send the task back to To-do. Its in-progress (uncommitted) work is discarded."
-              onClick={() => {
-                if (window.confirm(`Send “${task.text}” back to To-do? This stops the agent working on it; its in-progress work is discarded.`))
+              onClick={async () => {
+                if (
+                  await confirm({
+                    title: "Send back to To-do?",
+                    body: `“${task.text}” stops the agent working on it — its in-progress (uncommitted) work is discarded.`,
+                    confirmLabel: "Send to To-do",
+                    danger: true,
+                  })
+                )
                   void transitionTask(pid, task.id, "todo");
               }}
             >

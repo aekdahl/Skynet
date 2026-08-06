@@ -1389,6 +1389,17 @@ button.kb-done:hover { opacity: 1; }
 .detail-desc-body { margin: 0; font-size: 13px; line-height: 1.55; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
 .kb-desc { margin: 2px 0 0; font-size: 11.5px; line-height: 1.45; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 /* Full-detail modal — a clamped card opens this to show the whole title + brief. */
+/* In-app confirm dialog (replaces the native window.confirm). */
+.confirm-overlay { position: fixed; inset: 0; z-index: 80; background: color-mix(in oklch, #000, transparent 35%); display: flex; align-items: center; justify-content: center; padding: 24px; animation: confirm-fade 0.12s ease; }
+.confirm-card { width: min(440px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; box-shadow: 0 24px 60px rgb(0 0 0 / 0.45); animation: confirm-pop 0.14s ease; }
+.confirm-title { margin: 0 0 8px; font-size: calc(var(--fs) + 3px); font-weight: 650; letter-spacing: -0.01em; }
+.confirm-body { font-size: var(--fs); color: var(--muted); line-height: 1.55; text-wrap: pretty; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.btn.confirm-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.confirm-danger:hover { filter: brightness(1.08); border-color: var(--danger); }
+@keyframes confirm-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes confirm-pop { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .confirm-overlay, .confirm-card { animation: none; } }
 .kb-detail-overlay { position: fixed; inset: 0; z-index: 60; background: color-mix(in oklch, #000, transparent 40%); display: flex; align-items: center; justify-content: center; padding: 24px; }
 .kb-detail { width: min(640px, 100%); max-height: 80vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px 22px; cursor: default; }
 .kb-detail-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
