@@ -1504,6 +1504,10 @@ button.kb-done:hover { opacity: 1; }
 .projview-head-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .projview-edit { display: flex; flex-direction: column; gap: 10px; }
 .projview-edit .qx-input:first-of-type { font-size: 18px; font-weight: 600; }
+/* A single setting inside the project settings panel: label above its control. */
+.projview-setting { display: flex; flex-direction: column; gap: 6px; }
+/* The header's gear button opens the settings panel (was a text "Edit"). */
+.proj-config-btn { font-size: 15px; line-height: 1; padding: 5px 10px; }
 .del-confirm { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--danger); }
 
 /* ===== backlog CRUD ===== */

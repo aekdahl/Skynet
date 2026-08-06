@@ -796,21 +796,6 @@ function ProjectRunnerKeys({ project, onChange }: { project: Project; onChange: 
   );
 }
 
-// Write-back of task status to the project's GitHub issues. Only shown when the
-// project is bound to a GitHub repo. Pulling tasks IN (from GitHub issues or a
-// repo checklist file) is not a header button — ask Steward, which is repo-aware
-// and can read those sources directly.
-function ProjectSourceSync({ project, onToggle }: { project: Project; onToggle: (on: boolean) => void }) {
-  if (!project.repo) return null;
-  return (
-    <label className="proj-autonomy" title="When on, moving a task to review/done comments + closes its linked GitHub issue (reopens if it moves back out of done).">
-      <input type="checkbox" className="proj-autonomy-cb" checked={project.syncSourceStatus} onChange={(e) => onToggle(e.target.checked)} />
-      <span className="proj-autonomy-switch" aria-hidden="true" />
-      <span className="proj-autonomy-label">Sync to source</span>
-    </label>
-  );
-}
-
 export function ProjectView({
   project,
   now,
@@ -949,6 +934,9 @@ export function ProjectView({
   // Which branch this project stacks its runs/PRs onto. Blank = the global default
   // (usually main). Only meaningful for a git-backed / repo-bound project.
   const [baseBranch, setBaseBranch] = useState(project.baseBranch ?? "");
+  // Write task status back to the source (e.g. close/comment the linked GitHub
+  // issue on done). Lives in this settings panel now; only meaningful with a repo.
+  const [syncToSource, setSyncToSource] = useState(project.syncSourceStatus);
   const hasRepo = !!(project.gitBacked || project.repo);
 
   useEffect(() => {
@@ -956,8 +944,9 @@ export function ProjectView({
     setGoal(project.goal);
     setInstructions(project.instructions ?? "");
     setBaseBranch(project.baseBranch ?? "");
+    setSyncToSource(project.syncSourceStatus);
     setFolded(false);
-  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch]);
+  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch, project.syncSourceStatus]);
 
   return (
     <section className="projview">
@@ -995,6 +984,18 @@ export function ProjectView({
               />
             </label>
           )}
+          {project.repo && (
+            <div className="projview-setting">
+              <div className="projview-instructions-label mono">
+                Sync to source <span className="projview-instructions-hint">— write task status back to its GitHub issue: comment + close on done, reopen if it moves back out.</span>
+              </div>
+              <label className="proj-autonomy" title="Write task status changes back to the source of truth.">
+                <input type="checkbox" className="proj-autonomy-cb" checked={syncToSource} onChange={(e) => setSyncToSource(e.target.checked)} />
+                <span className="proj-autonomy-switch" aria-hidden="true" />
+                <span className="proj-autonomy-label">{syncToSource ? "On — status flows back to GitHub" : "Off"}</span>
+              </label>
+            </div>
+          )}
           <div className="qx-row">
             <button
               className="btn btn-primary"
@@ -1006,6 +1007,7 @@ export function ProjectView({
                   goal: goal.trim(),
                   instructions: nextInstructions,
                   baseBranch: baseBranch.trim() || null,
+                  syncSourceStatus: syncToSource,
                 });
                 setEditing(false);
               }}
@@ -1019,6 +1021,7 @@ export function ProjectView({
                 setGoal(project.goal);
                 setInstructions(project.instructions ?? "");
                 setBaseBranch(project.baseBranch ?? "");
+                setSyncToSource(project.syncSourceStatus);
                 setEditing(false);
               }}
             >
@@ -1094,13 +1097,12 @@ export function ProjectView({
             </label>
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
-            <ProjectSourceSync project={project} onToggle={(on) => updateProject(project.id, { syncSourceStatus: on })} />
             {project.repoPath && (
               <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
                 ▶ Preview app
               </button>
             )}
-            <button className="btn btn-ghost" onClick={() => setEditing(true)}>Edit</button>
+            <button className="btn btn-ghost proj-config-btn" onClick={() => setEditing(true)} title="Project settings" aria-label="Project settings">⚙</button>
             {confirmDel ? (
               <span className="del-confirm">
                 Delete project?{" "}
