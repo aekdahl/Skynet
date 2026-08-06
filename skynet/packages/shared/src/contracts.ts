@@ -813,6 +813,12 @@ export const WorkspaceSettings = z.object({
   // reclaimed instead of accumulating. Operator-added runners are never touched.
   // 0 = never auto-retire. Default 30.
   retireIdleRunnersAfterMinutes: z.number().int().min(0).default(30),
+  // Opt-in: equip Claude runners with a real browser (a Playwright/Chrome MCP
+  // server) so an agent can drive a browser inside a coding task — reproduce a
+  // bug, verify a UI change end-to-end, read live docs. Off by default; when on,
+  // every browser action (navigate/click/…) still rides the normal HITL approval
+  // gate like any other non-read tool. Claude runners only for now.
+  browserTools: z.boolean().default(false),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 
@@ -821,6 +827,7 @@ export const UpdateWorkspaceSettingsRequest = z.object({
   autoProvisionRunners: z.boolean().optional(),
   maxRunners: z.number().int().min(0).optional(),
   retireIdleRunnersAfterMinutes: z.number().int().min(0).optional(),
+  browserTools: z.boolean().optional(),
 });
 export type UpdateWorkspaceSettingsRequest = z.infer<typeof UpdateWorkspaceSettingsRequest>;
 

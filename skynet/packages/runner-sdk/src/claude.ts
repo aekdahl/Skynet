@@ -83,6 +83,27 @@ export function isAutoAllowed(toolName: string): boolean {
   return AUTO_ALLOW.has(toolName);
 }
 
+// Opt-in browser tooling. When a run has `browser` set (from the per-workspace
+// `browserTools` setting), we hand the SDK a Playwright/Chrome MCP server so the
+// agent can drive a real browser — reproduce a bug, verify a UI change, read live
+// docs. We WRAP an existing server (Microsoft's @playwright/mcp) rather than build
+// our own automation; the SDK spawns it over stdio and surfaces its tools as
+// `mcp__browser__…`, which — being outside AUTO_ALLOW — gate through the normal
+// HITL approval like any other non-read action. Runs headless + isolated so it
+// works on a server with no display and leaves no persistent profile behind.
+// `SKYNET_BROWSER_MCP_COMMAND` overrides the launch command (space-separated) for
+// pinning a version, a private mirror, or a Chrome-channel flavour.
+const BROWSER_MCP_NAME = "browser";
+export function browserMcpServers(enabled: boolean): NonNullable<Options["mcpServers"]> | undefined {
+  if (!enabled) return undefined;
+  const override = process.env.SKYNET_BROWSER_MCP_COMMAND?.trim();
+  const parts = override
+    ? override.split(/\s+/).filter(Boolean)
+    : ["npx", "-y", "@playwright/mcp@latest", "--headless", "--isolated"];
+  const command = parts[0] ?? "npx";
+  return { [BROWSER_MCP_NAME]: { command, args: parts.slice(1) } };
+}
+
 // Map a Fleet model slug to what the Claude Code SDK expects. The friendly
 // catalog slugs (opus-*/sonnet-*/haiku-*/fable-*) map to the CLI aliases; ANY
 // other non-empty value passes through verbatim, so a model released after our
@@ -680,8 +701,12 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // Scrubbed env (drops the nested-session OAuth path); a per-workspace key
       // (orchestrator-injected) overrides ANTHROPIC_API_KEY for this session only.
       env: this.sdkEnv,
+      // Opt-in real browser (Playwright/Chrome MCP). Omitted unless the workspace
+      // enabled it; its tools gate through canUseTool like any other non-read tool.
+      ...(spec.browser ? { mcpServers: browserMcpServers(true) } : {}),
     };
     this.baseOptions = baseOptions;
+    if (spec.browser) this.events.onLog(this.runId, "browser tools enabled (Playwright MCP) — browser actions gate for approval");
 
     // A fork inherits its parent's context via resume; a fresh run doesn't.
     const firstOptions: Options = resumeSessionId

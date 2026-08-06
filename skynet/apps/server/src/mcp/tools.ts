@@ -260,7 +260,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   tool(
     "update_settings",
     "author",
-    "Update the workspace fleet policy: autoProvisionRunners (auto-add a runner, cloned from a busy one on an allowed key, when a task has none free) and maxRunners (hard cap on fleet size; 0 = no cap). Workspace-level — a project-scoped token cannot change it.",
+    "Update the workspace fleet policy: autoProvisionRunners (auto-add a runner, cloned from a busy one on an allowed key, when a task has none free), maxRunners (hard cap on fleet size; 0 = no cap), and browserTools (give Claude runners a real browser via a Playwright MCP server; off by default). Workspace-level — a project-scoped token cannot change it.",
     UpdateWorkspaceSettingsRequest.shape,
     (a) => operations.updateWorkspaceSettings(ws, a),
   );

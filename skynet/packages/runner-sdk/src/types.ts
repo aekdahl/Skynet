@@ -26,6 +26,14 @@ export interface StartSpec {
    * environment (the local-dev default). Never logged.
    */
   apiKey?: string | null;
+  /**
+   * Opt-in: give the agent a real browser for this run (a Playwright/Chrome MCP
+   * server exposed to the runner). Resolved by the orchestrator from the
+   * per-workspace `browserTools` setting; off by default. Only the Claude runner
+   * acts on it today — CLI runners ignore it until they grow MCP support. Browser
+   * actions still gate through the normal HITL approval flow.
+   */
+  browser?: boolean;
 }
 
 /**
