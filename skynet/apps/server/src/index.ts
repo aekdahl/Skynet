@@ -210,7 +210,7 @@ async function main() {
       );
       done();
     });
-    registerLivePreviewProxy(app, (t) => projectPreview.portForToken(t));
+    registerLivePreviewProxy(app, (t) => projectPreview.proxyTargetForToken(t));
     const stamped = await backfillPreviews(store);
     if (stamped) app.log.info(`preview: stamped ${stamped} agent(s) with a live preview URL`);
     const queued = await kickoffPreviewBuilds(store);

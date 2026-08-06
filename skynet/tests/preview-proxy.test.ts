@@ -4,7 +4,7 @@
 // bits: token extraction from the path, and public-origin learning (env wins;
 // loopback ignored).
 import { describe, it, expect, beforeEach } from "vitest";
-import { previewTokenOf } from "../apps/server/src/preview/preview-proxy.js";
+import { previewTokenOf, stripPreviewPrefix, rewritePreviewHtml } from "../apps/server/src/preview/preview-proxy.js";
 import { recordPublicOrigin, publicOrigin, __resetPublicOrigin } from "../apps/server/src/preview/public-origin.js";
 
 describe("previewTokenOf", () => {
@@ -18,6 +18,48 @@ describe("previewTokenOf", () => {
     expect(previewTokenOf("/api/snapshot")).toBeNull();
     expect(previewTokenOf("/p/")).toBeNull();
     expect(previewTokenOf("/")).toBeNull();
+  });
+});
+
+describe("stripPreviewPrefix", () => {
+  it("drops the /p/<token> prefix, keeping a leading slash", () => {
+    expect(stripPreviewPrefix("/p/abc/main.jsx", "abc")).toBe("/main.jsx");
+    expect(stripPreviewPrefix("/p/abc/@vite/client", "abc")).toBe("/@vite/client");
+    expect(stripPreviewPrefix("/p/abc/src/App.tsx?t=1", "abc")).toBe("/src/App.tsx?t=1");
+  });
+  it("maps the bare prefix (with or without trailing slash) to /", () => {
+    expect(stripPreviewPrefix("/p/abc", "abc")).toBe("/");
+    expect(stripPreviewPrefix("/p/abc/", "abc")).toBe("/");
+  });
+  it("keeps a query on the bare prefix", () => {
+    expect(stripPreviewPrefix("/p/abc?x=1", "abc")).toBe("/?x=1");
+  });
+  it("leaves an unrelated path untouched", () => {
+    expect(stripPreviewPrefix("/other", "abc")).toBe("/other");
+  });
+});
+
+describe("rewritePreviewHtml", () => {
+  const P = "/p/abc123";
+  it("re-prefixes root-absolute src/href attributes", () => {
+    const html = `<link rel="stylesheet" href="/style.css"><script type="module" src="/main.jsx"></script>`;
+    const out = rewritePreviewHtml(html, P);
+    expect(out).toContain(`href="/p/abc123/style.css"`);
+    expect(out).toContain(`src="/p/abc123/main.jsx"`);
+  });
+  it("re-prefixes absolute module imports inside inline scripts (react-refresh preamble)", () => {
+    const html = `<script type="module">\nimport RefreshRuntime from "/@react-refresh"\nimport("/lazy.js")\n</script>`;
+    const out = rewritePreviewHtml(html, P);
+    expect(out).toContain(`from "/p/abc123/@react-refresh"`);
+    expect(out).toContain(`import("/p/abc123/lazy.js"`);
+  });
+  it("leaves protocol-relative, absolute-URL, and already-prefixed values alone", () => {
+    const html = `<script src="//cdn.example.com/x.js"></script><img src="https://ex.com/a.png"><script src="/p/abc123/already.js"></script>`;
+    expect(rewritePreviewHtml(html, P)).toBe(html);
+  });
+  it("does not touch relative paths", () => {
+    const html = `<script src="./rel.js"></script><img src="rel.png">`;
+    expect(rewritePreviewHtml(html, P)).toBe(html);
   });
 });
 

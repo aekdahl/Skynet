@@ -7,9 +7,26 @@
 // The key move: forward with the upstream `Host` rewritten to the loopback
 // origin. Vite 6+ dev servers reject a foreign Host ("Blocked request. This host
 // is not allowed", server.allowedHosts); rewriting Host makes them accept it,
-// framework-agnostically, with no per-recipe flags. The FULL path (incl. the
-// `/p/<token>` prefix) is forwarded — Vite is started with `--base=/p/<token>/`
-// so its asset/HMR URLs already carry the prefix.
+// framework-agnostically, with no per-recipe flags.
+//
+// Two path modes, chosen per preview by whether the dev server serves its assets
+// under the `/p/<token>/` prefix (see PreviewTarget.stripPrefix):
+//
+//   • base-prefixed (stripPrefix=false) — Vite was started with
+//     `--base=/p/<token>/`, so its asset/HMR URLs already carry the prefix. We
+//     forward the FULL path unchanged; HMR works end to end over the proxy.
+//
+//   • root-served (stripPrefix=true) — the dev server serves at base `/` and
+//     emits root-absolute asset URLs (`/main.jsx`, `/@vite/client`). This is the
+//     common case when Vite runs INDIRECTLY (via `concurrently`/npm scripts), so
+//     the `--base` flag can't reach the leaf `vite` process. Here we STRIP the
+//     `/p/<token>` prefix before forwarding (so `/p/<tok>/main.jsx` → `/main.jsx`
+//     reaches Vite), and REWRITE the returned HTML so its root-absolute `src`/
+//     `href` (and inline module imports like Vite's react-refresh preamble)
+//     re-gain the prefix — otherwise the browser, viewing the page at
+//     `/p/<tok>/`, would request `/main.jsx` at the top origin, miss this proxy,
+//     and get Skynet's SPA fallback HTML back (a `text/html` MIME error → blank
+//     page). HMR-over-proxy degrades to reload-on-refresh in this mode.
 //
 // HTTP is hijacked in an `onRequest` hook — that runs BEFORE Fastify parses the
 // body, so we stream the raw request straight through. HMR (and any app) WebSocket
@@ -25,29 +42,97 @@ export function previewTokenOf(url: string): string | null {
   return m ? m[1]! : null;
 }
 
-/** Resolve a preview token to its live loopback port (undefined if unknown/not live). */
-export type PortForToken = (token: string) => number | undefined;
+/** Turn `/p/<token>/rest?q` into `/rest?q` for forwarding to a dev server that
+ *  serves at base `/`. `/p/<token>` and `/p/<token>/` both become `/`. Anything
+ *  not under the prefix is returned unchanged. PURE — unit-tested. */
+export function stripPreviewPrefix(url: string, token: string): string {
+  const base = `/p/${token}`;
+  if (url === base || url === base + "/") return "/";
+  if (url.startsWith(base + "/")) return url.slice(base.length); // "/p/<t>/x" → "/x"
+  if (url.startsWith(base + "?")) return "/" + url.slice(base.length); // "/p/<t>?q" → "/?q"
+  return url;
+}
 
-export function registerLivePreviewProxy(app: FastifyInstance, portForToken: PortForToken): void {
+/** Re-prefix a root-served dev server's HTML so its root-absolute asset URLs are
+ *  reachable through the `/p/<token>/` proxy. Rewrites `src`/`href` attributes and
+ *  absolute ES-module specifiers inside inline `<script>` blocks (e.g. Vite's
+ *  react-refresh preamble: `import X from "/@react-refresh"`). Skips protocol-
+ *  relative (`//host`), absolute-URL (`http…`), and already-prefixed values.
+ *  `prefix` is the base with no trailing slash, e.g. `/p/abc123`. PURE — tested. */
+export function rewritePreviewHtml(html: string, prefix: string): string {
+  const reprefix = (path: string): string | null =>
+    path === prefix || path.startsWith(prefix + "/") ? null : prefix + path;
+  // 1) src="/…" / href="/…" attributes anywhere in the document.
+  let out = html.replace(/\b(src|href)=("|')(\/(?!\/)[^"']*)\2/gi, (m, attr, q, path) => {
+    const r = reprefix(path);
+    return r ? `${attr}=${q}${r}${q}` : m;
+  });
+  // 2) Absolute module specifiers inside inline <script> blocks (external scripts
+  //    have an empty body, so those are untouched here — their src was handled in 1).
+  out = out.replace(/(<script\b[^>]*>)([\s\S]*?)(<\/script>)/gi, (_m, open: string, body: string, close: string) => {
+    const b = body
+      .replace(/\bfrom\s*("|')(\/(?!\/)[^"']*)\1/g, (m, q, path) => {
+        const r = reprefix(path);
+        return r ? `from ${q}${r}${q}` : m;
+      })
+      .replace(/\bimport\s*\(\s*("|')(\/(?!\/)[^"']*)\1/g, (m, q, path) => {
+        const r = reprefix(path);
+        return r ? `import(${q}${r}${q}` : m;
+      });
+    return open + b + close;
+  });
+  return out;
+}
+
+/** Resolve a preview token to its live loopback port and path mode, or undefined
+ *  if unknown/not live. `stripPrefix` = the dev server serves at base `/`, so the
+ *  proxy must strip the `/p/<token>` prefix and re-prefix its HTML (see header). */
+export type PreviewTarget = (token: string) => { port: number; stripPrefix: boolean } | undefined;
+
+export function registerLivePreviewProxy(app: FastifyInstance, targetForToken: PreviewTarget): void {
   // ── HTTP ──────────────────────────────────────────────────────────────────
   app.addHook("onRequest", (req, reply, done) => {
     if (!req.url.startsWith("/p/")) return done();
     const token = previewTokenOf(req.url);
-    const port = token ? portForToken(token) : undefined;
-    if (!port) {
+    const target = token ? targetForToken(token) : undefined;
+    if (!target) {
       reply.code(404).type("text/plain").send("preview not found or not running");
       return;
     }
+    const { port, stripPrefix } = target;
     reply.hijack(); // take over the socket; skip Fastify's body parsing + serialization
     const raw = reply.raw;
+    const fwdPath = stripPrefix ? stripPreviewPrefix(req.url, token!) : req.url;
     const headers = { ...req.headers, host: `127.0.0.1:${port}` };
-    const upstream = httpRequest(
-      { host: "127.0.0.1", port, method: req.method, path: req.url, headers },
-      (up) => {
+    // In strip mode we may rewrite the HTML body, so ask the dev server to hand it
+    // back uncompressed (we can't rewrite gzipped bytes).
+    if (stripPrefix) delete (headers as Record<string, unknown>)["accept-encoding"];
+    const upstream = httpRequest({ host: "127.0.0.1", port, method: req.method, path: fwdPath, headers }, (up) => {
+      const ct = String(up.headers["content-type"] ?? "");
+      const rewritable = stripPrefix && ct.includes("text/html") && !up.headers["content-encoding"];
+      if (!rewritable) {
         raw.writeHead(up.statusCode ?? 502, up.headers);
         up.pipe(raw);
-      },
-    );
+        return;
+      }
+      // Buffer the (small) HTML entry document, re-prefix its asset URLs, and send
+      // with a corrected content-length.
+      const chunks: Buffer[] = [];
+      up.on("data", (c: Buffer) => chunks.push(c));
+      up.on("end", () => {
+        const body = Buffer.from(rewritePreviewHtml(Buffer.concat(chunks).toString("utf8"), `/p/${token}`), "utf8");
+        const outHeaders = { ...up.headers };
+        delete outHeaders["content-length"];
+        delete outHeaders["transfer-encoding"];
+        outHeaders["content-length"] = String(body.length);
+        raw.writeHead(up.statusCode ?? 200, outHeaders);
+        raw.end(body);
+      });
+      up.on("error", () => {
+        if (!raw.headersSent) raw.writeHead(502, { "content-type": "text/plain" });
+        raw.end("preview upstream error");
+      });
+    });
     upstream.on("error", () => {
       if (!raw.headersSent) raw.writeHead(502, { "content-type": "text/plain" });
       raw.end("preview upstream error");
@@ -65,14 +150,16 @@ export function registerLivePreviewProxy(app: FastifyInstance, portForToken: Por
     const url = req.url ?? "";
     if (!url.startsWith("/p/")) return; // not ours
     const token = previewTokenOf(url);
-    const port = token ? portForToken(token) : undefined;
-    if (!port) {
+    const target = token ? targetForToken(token) : undefined;
+    if (!target) {
       socket.destroy();
       return;
     }
+    const { port, stripPrefix } = target;
+    const fwdUrl = stripPrefix ? stripPreviewPrefix(url, token!) : url;
     const upstream = netConnect(port, "127.0.0.1", () => {
       const headers = { ...req.headers, host: `127.0.0.1:${port}` };
-      const lines = [`${req.method ?? "GET"} ${url} HTTP/1.1`];
+      const lines = [`${req.method ?? "GET"} ${fwdUrl} HTTP/1.1`];
       for (const [k, v] of Object.entries(headers)) {
         if (Array.isArray(v)) for (const vv of v) lines.push(`${k}: ${vv}`);
         else if (v != null) lines.push(`${k}: ${v}`);
