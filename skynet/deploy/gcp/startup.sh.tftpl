@@ -17,7 +17,26 @@ if ! blkid "$${DEV}" >/dev/null 2>&1; then
 fi
 grep -q "/data" /etc/fstab || echo "$${DEV} /data ext4 discard,defaults,nofail 0 2" >>/etc/fstab
 mount -a
-mkdir -p /data
+# Grow the filesystem to fill the disk (idempotent, online) so bumping
+# data_disk_gb and redeploying actually enlarges /data instead of leaving the
+# extra space unused.
+resize2fs "$${DEV}" 2>/dev/null || true
+# All heavy, unbounded churn lives on the DATA disk, never the small boot disk:
+# agent worktrees, cloned repos, and preview `npm install`s (100s of MB each).
+# The boot disk holds the OS + Docker's overlay — filling it wedges the whole VM.
+mkdir -p /data /data/worktrees /data/repos /data/.npm
+
+# ── 1b. Swap — headroom so a memory spike (a heavy agent or a preview build) on a
+#      small VM (e2-small = 2GB) spills to swap instead of OOM-killing the HOST
+#      (which takes the whole site down). Idempotent across reboots. ───────────
+if [ ! -f /swapfile ]; then
+  echo "[skynet] creating 2G swapfile"
+  fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile
+  mkswap /swapfile
+fi
+swapon /swapfile 2>/dev/null || true
+grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >>/etc/fstab
 
 # ── 2. Docker ────────────────────────────────────────────────────────────────
 if ! command -v docker >/dev/null 2>&1; then
@@ -79,6 +98,12 @@ STORE=file
 BUS=memory
 SESSIONS=memory
 SKYNET_DB_PATH=/data/skynet-data.json
+# Keep agent worktrees, cloned repos, and preview node_modules + npm cache on the
+# DATA disk — NOT the container's writable layer on the small boot disk, where
+# unbounded growth fills the disk and wedges the whole VM.
+SKYNET_WORKTREES_DIR=/data/worktrees
+SKYNET_REPOS_DIR=/data/repos
+npm_config_cache=/data/.npm
 SKYNET_MASTER_KEY=$${MASTER_KEY}
 PORT=${app_port}
 SKYNET_ADMIN_EMAIL=${admin_email}
@@ -112,12 +137,28 @@ EOF
 echo "$${TOKEN}" | docker login -u oauth2accesstoken --password-stdin "https://${region}-docker.pkg.dev"
 docker pull "${image}"
 docker rm -f skynet >/dev/null 2>&1 || true
+# Memory cap: reserve ~512MB for the OS + dockerd + Caddy so an app/agent memory
+# blowup OOM-kills the CONTAINER — which --restart=always recovers, so the site
+# self-heals — instead of the HOST, which goes unreachable and no restart policy
+# can bring back. --memory-swap lets it burst into the swapfile before the kill.
+MEM_TOTAL_MB=$(awk '/MemTotal/{print int($$2/1024)}' /proc/meminfo)
+MEM_LIMIT_MB=$(( MEM_TOTAL_MB > 1024 ? MEM_TOTAL_MB - 512 : 512 ))
+MEM_SWAP_MB=$(( MEM_LIMIT_MB + 2048 ))
+# CPU cap: reserve half a core for the OS + dockerd + Caddy so an agent/build
+# pegging the CPU can't starve the host into unresponsiveness (on a shared-core
+# e2-small, a saturated CPU makes the VM drop connections — it looks "down").
+# The app + agents share the rest. Floors at 0.5 on a 1-vCPU box.
+CPU_LIMIT=$(awk "BEGIN{c=$$(nproc)-0.5; print (c<0.5?0.5:c)}")
+# Log rotation: default json-file logs grow UNBOUNDED and fill the boot disk (a
+# top cause of a wedged VM). Cap them.
 docker run -d --restart=always --name skynet \
   -p ${app_port}:${app_port} \
   --env-file "$${ENVF}" \
   -v /data:/data \
+  --memory="$${MEM_LIMIT_MB}m" --memory-swap="$${MEM_SWAP_MB}m" --cpus="$${CPU_LIMIT}" \
+  --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 \
   "${image}"
-echo "[skynet] up on :${app_port}"
+echo "[skynet] up on :${app_port} (mem cap $${MEM_LIMIT_MB}m + swap, cpus $${CPU_LIMIT})"
 %{ if caddy_enabled ~}
 
 # ── 6. Caddy on the host network terminates TLS on :443 (Let's Encrypt) and
@@ -136,6 +177,7 @@ docker run -d --restart=always --name caddy \
   --network host \
   -v /data/Caddyfile:/etc/caddy/Caddyfile:ro \
   -v /data/caddy:/data \
+  --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
   caddy:2
 echo "[skynet] Caddy up on :443 — https://${mcp_domain}"
 %{ endif ~}

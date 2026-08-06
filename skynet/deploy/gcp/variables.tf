@@ -35,8 +35,8 @@ variable "local_port" {
 
 variable "data_disk_gb" {
   type        = number
-  default     = 20
-  description = "Persistent disk for /data (STORE=file lives here; snapshot it for backups)."
+  default     = 30
+  description = "Persistent disk for /data — holds the file store AND agent worktrees, cloned repos, and preview node_modules (kept off the small boot disk so churn can't wedge the VM). Bump it for many/large projects; the fs auto-grows on redeploy. Snapshot it for backups."
 }
 
 variable "operator_email" {

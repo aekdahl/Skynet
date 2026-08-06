@@ -153,8 +153,20 @@ Set the Telegram secrets and message your bot (`/status`, `/task …`, approve g
 - **Backup:** `setup.sh` **auto-snapshots** the `skynet-data` disk before every VM apply (skipped on a first deploy), so each re-run is recoverable. Snapshot manually anytime: `gcloud compute disks snapshot skynet-data --zone=…`.
 - **Teardown:** `terraform destroy` (the persistent disk + secrets are removed too — snapshot first if you want to keep state).
 
+## Host resilience (so the VM doesn't wedge)
+A single small VM runs the orchestrator **plus** agents and live-preview builds, which are heavy on disk and memory. The startup script keeps that from taking the whole host down:
+- **Heavy churn lives on `/data`, not the boot disk.** Agent worktrees, cloned repos, and preview `npm install`s (`SKYNET_WORKTREES_DIR` / `SKYNET_REPOS_DIR` / npm cache) are pinned to the persistent `/data` disk. Left on the container's writable layer they'd fill the small boot disk (where the OS + Docker live) and wedge the VM. `/data` auto-grows on redeploy — bump `data_disk_gb` for many/large projects.
+- **Container memory + CPU caps + swap.** `skynet` runs with `--memory` (reserving ~512 MB for the OS/Docker/Caddy) and a 2 GB swapfile, so a memory blowup OOM-kills the **container** — which `--restart=always` brings straight back — instead of the **host**, which would go unreachable with no auto-recovery. It also runs with `--cpus` set to leave ~half a core for the host: on a shared-core `e2-small`, an agent or build that pegs the CPU otherwise starves the OS and the VM stops answering connections (looks "down"). Both caps auto-scale from the VM's actual RAM/vCPUs, so bumping `machine_type` widens them.
+- **Docker log rotation** (`max-size=10m`), so container logs can't grow unbounded and fill the disk.
+
+**If the site is unreachable** (a TCP connection *timeout* — not "refused"/502 — means the host itself is wedged): reset the VM from the control plane (works even when the VM's network is dead), which reboots it into the current startup script:
+```
+gcloud compute instances reset "$(terraform -chdir=deploy/gcp output -raw vm_name)" --zone=<ZONE> --project=<PROJECT>
+```
+Then redeploy (`./setup.sh`) to apply the latest image + these guardrails. To diagnose a repeat, SSH in and check `df -h /` (boot-disk full?), `free -m` + `sudo dmesg | grep -i oom` (OOM?).
+
 ## Cost (rough)
-`e2-small` ≈ **$13–15/mo** + a 20 GB disk (~$2) + egress + **your LLM tokens**. Autonomy can spend while you sleep — the spend cap + human-approved gates are your throttle. Drop to `e2-micro` for pure orchestration, up for heavy builds.
+`e2-small` ≈ **$13–15/mo** + a 30 GB disk (~$3) + egress + **your LLM tokens**. Autonomy can spend while you sleep — the spend cap + human-approved gates are your throttle. Drop to `e2-micro` for pure orchestration; **bump to `e2-medium`/`e2-standard-2` for heavier agent + preview builds** (the #1 fix if the VM runs out of memory).
 
 ## Optional upgrades
 - **No external IP at all:** add **Cloud NAT** (a router + NAT config) so the VM has no external address; egress still works. The current setup uses an ephemeral external IP for egress with all inbound denied — nothing is publicly reachable, but this makes it explicit.
