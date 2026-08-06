@@ -187,7 +187,8 @@ describe("splitProposedAction — reply / multi-action split", () => {
   });
 
   it("caps the batch at the action budget and reports running out", () => {
-    const many = Array.from({ length: 15 }, (_, i) => ({ kind: "add_task", text: `task ${i}` }));
+    // Relative to the budget so this keeps exercising the cap if it changes.
+    const many = Array.from({ length: MAX_STEWARD_ACTIONS + 5 }, (_, i) => ({ kind: "add_task", text: `task ${i}` }));
     const raw = `Adding a lot.\n${JSON.stringify({ proposeActions: many })}`;
     const r = splitProposedAction(raw, ctx);
     expect(r.actions).toHaveLength(MAX_STEWARD_ACTIONS);
