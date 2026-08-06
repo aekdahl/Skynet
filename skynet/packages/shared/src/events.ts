@@ -64,6 +64,9 @@ export const ServerEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.status"), runId: z.string(), status: TaskRunStatus }),
   z.object({ type: z.literal("run.completed"), runId: z.string(), branch: z.string() }),
   z.object({ type: z.literal("run.archived"), runId: z.string(), archived: z.boolean() }),
+  // A whole-run replace — used when a field with no dedicated event changes (e.g.
+  // `pr`, the ready-to-merge record). The client upserts the full run.
+  z.object({ type: z.literal("run.updated"), run: TaskRun }),
 
   // HITL round-trip
   z.object({ type: z.literal("hitl.raised"), item: HitlItem }),

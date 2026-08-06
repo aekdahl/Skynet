@@ -251,13 +251,27 @@ export class GitHubProvider implements GitProvider {
   }
 
   async openPr(token: string, repo: string, head: string, base: string, title: string, body: string): Promise<PrRef> {
-    const pr = await this.api<{ number: number; html_url: string }>(token, "POST", `/repos/${repo}/pulls`, {
-      title,
-      head,
-      base,
-      body,
-    });
-    return { number: pr.number, url: pr.html_url };
+    try {
+      const pr = await this.api<{ number: number; html_url: string }>(token, "POST", `/repos/${repo}/pulls`, {
+        title,
+        head,
+        base,
+        body,
+      });
+      return { number: pr.number, url: pr.html_url };
+    } catch (err) {
+      // An open PR for this head branch may already exist — e.g. a "rework"
+      // re-push updates the same branch, and GitHub 422s a duplicate open. Reuse
+      // the existing PR instead of failing, so the ready-to-merge record refreshes.
+      const owner = repo.split("/")[0];
+      const existing = await this.api<Array<{ number: number; html_url: string }>>(
+        token,
+        "GET",
+        `/repos/${repo}/pulls?head=${encodeURIComponent(`${owner}:${head}`)}&state=open`,
+      ).catch(() => [] as Array<{ number: number; html_url: string }>);
+      if (existing.length) return { number: existing[0]!.number, url: existing[0]!.html_url };
+      throw err;
+    }
   }
 
   async prStatus(token: string, repo: string, num: number): Promise<PrStatus> {

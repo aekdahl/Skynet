@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo } from "@skynet/shared";
+import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk } from "@skynet/shared";
 import { WorkspaceSettings } from "@skynet/shared";
 import {
   type HitlRaise,
@@ -903,6 +903,7 @@ export class Orchestrator {
       parentId: null,
       branchFromStep: null,
       archived: false,
+      pr: null,
     };
 
     // Resolve the runner provider first — fail fast (before mutating state) if
@@ -1446,20 +1447,145 @@ export class Orchestrator {
       }
       await this.hub.runLog(agent.id, `pushed ${agent.branch} → opened PR ${result.pr?.url ?? "(opened)"}`);
 
-      // Do NOT auto-merge. The PR is where a HUMAN takes over: an agent (or the
-      // autonomy loop) must never merge to the repo's real base branch on its
-      // own. The run stays in `review`; the operator merges the PR on GitHub
-      // — honouring its branch protection / required checks — then marks the task
-      // done (Force-done). This is deliberate: opening the PR is automated, the
-      // merge decision is a human's.
-      await this.hub.runStatus(agent.id, "review");
-      await this.hub.runLog(
-        agent.id,
-        `PR is open for review — merge it on GitHub to complete. Skynet won't auto-merge${result.pr ? ` (${result.pr.url ?? `#${result.pr.number}`})` : ""}.`,
-      );
+      // Opening the PR completes the task's WORK — advance it to `done` so the
+      // pipeline never stalls. Merging is decoupled: the PR is recorded as
+      // "ready to merge" (with the AI reviewer's briefing) and a human makes the
+      // final merge call from that list. Skynet never auto-merges to the real
+      // base branch — opening the PR is automated, the merge decision is a
+      // human's. The worktree + review handle are KEPT (retire happens on merge)
+      // so "rework with comment" can resume the agent on the same branch.
+      if (result.pr) {
+        const briefing = await this.buildMergeBriefing(agent, stat, modules);
+        const fresh = await this.store.getRun(agent.id);
+        if (fresh) {
+          await this.hub.upsertRun({
+            ...fresh,
+            pr: { number: result.pr.number, url: result.pr.url, repo, branch: agent.branch, base, state: "open", openedAt: now(), briefing, dismissed: false },
+          });
+        }
+        await this.hub.runLog(agent.id, `ready to merge — ${briefing.recommendation} (risk: ${briefing.risk}). Review + merge from the Ready-to-merge list; Skynet won't auto-merge.`);
+        await this.markTaskDoneForRun(agent.id);
+        await this.hub.runStatus(agent.id, "done");
+      } else {
+        // No PR ref came back (shouldn't happen) — keep the safe parked behavior.
+        await this.hub.runStatus(agent.id, "review");
+        await this.hub.runLog(agent.id, "PR opened but no reference returned — merge it on GitHub to complete.");
+      }
     } catch (err) {
       await this.hub.runLog(agent.id, `GitHub push failed: ${(err as Error).message}`);
     }
+  }
+
+  // Sensitive areas — a change touching these reads as higher-risk on the
+  // ready-to-merge card (matched against module ids AND file paths, case-insensitive).
+  private static readonly SENSITIVE =
+    /(auth|login|session|token|secret|credential|password|payment|billing|charge|invoice|migration|schema|infra|deploy|terraform|k8s|kubernetes|security|permission|rbac)/i;
+
+  /** A deterministic decision-aid for the ready-to-merge card, from data already
+   *  in hand — the diff stat + mapped modules — plus the AI reviewer's recorded
+   *  verdict (task.reviewVerdict) when present: approve→merge, flag→rework. No LLM
+   *  call here; the reviewer already ran (see autoReview). Falls back cleanly when
+   *  no review was recorded (e.g. a human approved the diff directly). */
+  private async buildMergeBriefing(
+    run: TaskRun,
+    stat: { add: number; del: number; files: string[] },
+    modules: string[],
+  ): Promise<MergeBriefing> {
+    const task = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === run.id);
+    const verdict = task?.reviewVerdict ?? null;
+    const files = stat.files;
+    const sensitive = [...modules, ...files].some((s) => Orchestrator.SENSITIVE.test(s));
+    const touchesTests = files.some((f) => /(\.test\.|\.spec\.|\/tests?\/|__tests__)/i.test(f));
+    // Risk: a sensitive area → high; an otherwise broad change → medium; else low.
+    const big = files.length > 15 || stat.del > 400 || stat.add + stat.del > 800;
+    const risk: Risk = sensitive ? "high" : big ? "medium" : "low";
+    const recommendation: MergeBriefing["recommendation"] = verdict?.decision === "flag" ? "rework" : "merge";
+    const impact = [
+      modules.length
+        ? `Touches ${modules.slice(0, 6).join(", ")}${modules.length > 6 ? ` +${modules.length - 6} more` : ""}`
+        : `${files.length} file(s), no mapped module`,
+      sensitive ? "includes a sensitive area (auth/data/infra)" : null,
+      touchesTests ? "changes tests" : "no test changes",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return {
+      summary: `${run.name} — ${stat.add}+/${stat.del}− across ${files.length} file(s)`,
+      impact,
+      risk,
+      recommendation,
+      rationale: verdict ? `${verdict.by}: ${verdict.reason}` : "No AI review recorded — merge at your discretion.",
+      by: verdict?.by ?? "heuristic",
+    };
+  }
+
+  /** Mark a run's owning task done (idempotent) — used the moment its PR opens,
+   *  so the pipeline completes and the PR moves to the decoupled merge list. */
+  private async markTaskDoneForRun(runId: string): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (!run) return;
+    const taskId =
+      this.reviews.get(runId)?.taskId ??
+      (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id;
+    if (!taskId) return;
+    const task = await this.store.getTask(taskId);
+    if (task && task.state !== "done") await this.hub.upsertTask({ ...task, state: "done" });
+  }
+
+  // ── Ready-to-merge: the human's final PR merge decision, from the list ──────
+  /** Runs whose PR is open and not set-aside — the ready-to-merge list. */
+  async listReadyPrs(workspaceId: string): Promise<TaskRun[]> {
+    const runs = await this.store.listAllRuns().catch(() => [] as TaskRun[]);
+    return runs.filter((r) => r.workspaceId === workspaceId && r.pr?.state === "open" && !r.pr.dismissed);
+  }
+
+  /** Merge an open PR from the ready list. Success → integrate + settle to done
+   *  (completeMerged). GitHub may block it (branch protection / required checks) —
+   *  returned as `{merged:false, reason}`, and the PR stays ready. */
+  async mergeReadyPr(
+    workspaceId: string,
+    runId: string,
+    method: "merge" | "squash" | "rebase" = "squash",
+  ): Promise<{ merged: boolean; reason?: string }> {
+    const run = await this.store.getRun(runId);
+    if (!run || run.workspaceId !== workspaceId || run.pr?.state !== "open") throw new Error("No open PR for this run.");
+    const res = await githubService.mergePr(workspaceId, run.pr.repo, run.pr.number, method);
+    if (!res.merged) {
+      await this.hub.runLog(runId, `merge blocked by GitHub: ${res.reason ?? "branch protection / required checks"}`);
+      return res;
+    }
+    const fresh = await this.store.getRun(runId);
+    if (fresh?.pr) await this.hub.upsertRun({ ...fresh, pr: { ...fresh.pr, state: "merged" } });
+    await this.hub.runLog(runId, `PR #${run.pr.number} merged (${method}).`);
+    await this.completeMerged(runId, run.branch); // integrate + retire; task/run → done
+    return res;
+  }
+
+  /** Send a ready PR back for changes: optionally comment on the PR, then resume
+   *  the agent to revise (new commits push to the same branch; it returns to the
+   *  ready list when it re-finishes and is re-reviewed). Clears the ready record
+   *  while it's being reworked. */
+  async reworkReadyPr(workspaceId: string, runId: string, guidance: string, comment?: string): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (!run || run.workspaceId !== workspaceId || run.pr?.state !== "open") throw new Error("No open PR for this run.");
+    if (comment?.trim()) {
+      const cred = (await this.store.getProject(run.projectId))?.githubCredentialId ?? null;
+      await githubService
+        .commentIssue(workspaceId, run.pr.repo, run.pr.number, comment.trim(), cred)
+        .catch((e) => this.hub.runLog(runId, `couldn't comment on PR: ${(e as Error).message}`));
+    }
+    await this.hub.upsertRun({ ...run, pr: null }); // leaves the ready list while revising
+    await this.hub.runLog(runId, `rework requested on PR #${run.pr.number} — resuming the agent to revise.`);
+    await this.reviseAfterReview(runId, guidance);
+  }
+
+  /** No-op: set a ready PR aside — hide it from the list WITHOUT touching the PR
+   *  on GitHub (recoverable). */
+  async dismissReadyPr(workspaceId: string, runId: string): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (!run || run.workspaceId !== workspaceId || !run.pr) throw new Error("No PR for this run.");
+    await this.hub.upsertRun({ ...run, pr: { ...run.pr, dismissed: true } });
+    await this.hub.runLog(runId, `PR #${run.pr.number} set aside (no-op) — still open on GitHub.`);
   }
 
   /** One open merge gate per run — approving one that fails again may raise a

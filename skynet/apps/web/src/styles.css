@@ -259,6 +259,14 @@ kbd {
 .qcard-agent:hover { color: var(--text); }
 .qcard-wait { margin-left: auto; font-family: var(--font-mono); font-size: 12px; color: var(--warn); font-variant-numeric: tabular-nums; }
 .qcard-title { font-size: calc(var(--fs) + 4px); font-weight: 600; letter-spacing: -0.01em; }
+/* ── Ready-to-merge card ─────────────────────────────────────────────────── */
+.merge-prlink { margin-left: auto; color: var(--muted); font-size: 12.5px; text-decoration: none; }
+.merge-prlink:hover { color: var(--accent); }
+.merge-brief { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 8px 0 2px; }
+.merge-brief dt { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.merge-brief dd { margin: 0; font-size: var(--fs); line-height: 1.5; text-wrap: pretty; }
+.merge-branch { font-size: 12px; color: var(--muted); margin: 4px 0 2px; }
+.merge-blocked { margin-top: 8px; font-size: 13px; color: var(--danger); line-height: 1.5; }
 .qcard-why { font-size: var(--fs); color: var(--muted); line-height: 1.55; text-wrap: pretty; }
 .qcard-reason { margin: 2px 0 4px; font-size: 13px; color: var(--muted); font-style: italic; line-height: 1.5; }
 

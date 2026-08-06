@@ -40,6 +40,7 @@ const agent: TaskRun = {
   parentId: null,
   branchFromStep: null,
   archived: false,
+  pr: null,
 };
 
 const wire = <T>(v: T): unknown => JSON.parse(JSON.stringify(v));
@@ -101,6 +102,7 @@ describe("contracts round-trip", () => {
       { type: "run.progress", runId: "billing", progress: 0.5, plan: [{ text: "s", state: "now" }] },
       { type: "run.heartbeat", runId: "billing", at: 2 },
       { type: "run.status", runId: "billing", status: "review" },
+      { type: "run.updated", run: agent },
       { type: "run.completed", runId: "billing", branch: "agent/billing-hooks" },
       { type: "hitl.raised", item: hitl },
       { type: "hitl.resolved", id: "q1", resolution },

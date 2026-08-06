@@ -234,6 +234,16 @@ export function stopAgent(id: string) {
 export function archiveAgent(id: string, archived: boolean) {
   return req<unknown>("POST", `/api/runs/${id}/archive`, { archived });
 }
+// ── Ready-to-merge PR actions ──────────────────────────────────────────────
+export function mergePr(runId: string, method: "merge" | "squash" | "rebase" = "squash") {
+  return req<{ merged: boolean; reason?: string }>("POST", `/api/merges/${runId}/merge`, { method });
+}
+export function reworkPr(runId: string, guidance: string, comment?: string) {
+  return req<unknown>("POST", `/api/merges/${runId}/rework`, { guidance, comment });
+}
+export function dismissPr(runId: string) {
+  return req<unknown>("POST", `/api/merges/${runId}/dismiss`);
+}
 export function pauseAgent(id: string) {
   return req<unknown>("POST", `/api/runs/${id}/pause`);
 }
