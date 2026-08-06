@@ -13,7 +13,7 @@ import type { Store } from "../store/store.js";
 import { MemoryGithubStore } from "./memory.js";
 import { GitHubProvider } from "./provider.js";
 import { evaluateSafety } from "./safety.js";
-import type { GitProvider, GithubConnectionStore, GithubIssue, MergeResult, PushRequest, PushResult } from "./types.js";
+import type { GitProvider, GithubConnectionStore, GithubIssue, MergeResult, PrStatus, PushRequest, PushResult } from "./types.js";
 
 export class GithubService {
   constructor(
@@ -341,6 +341,12 @@ export class GithubService {
     if (conn.auth === "app" && !this.appHasCreds) throw new Error("GitHub App is not configured on the server");
     const token = await this.resolveToken(conn);
     return this.provider.mergePr(token, repo, prNumber, method);
+  }
+
+  /** A PR's live state, CI checks, and mergeability — used to explain WHY a merge
+   *  was blocked (conflict vs failing/pending checks vs branch protection). */
+  async prStatus(workspaceId: string, repo: string, prNumber: number, githubCredentialId?: string | null): Promise<PrStatus> {
+    return this.provider.prStatus(await this.projectToken(workspaceId, githubCredentialId), repo, prNumber);
   }
 
   /** Clone a connected repo (owner/name) into `dest` using the workspace's git

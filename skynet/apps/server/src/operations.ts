@@ -365,9 +365,13 @@ export class Operations {
   listReadyPrs(ws: string): Promise<TaskRun[]> {
     return this.orchestrator.listReadyPrs(ws);
   }
-  async mergeReadyPr(ws: string, runId: string, method: "merge" | "squash" | "rebase"): Promise<{ merged: boolean; reason?: string }> {
+  async mergeReadyPr(ws: string, runId: string, method: "merge" | "squash" | "rebase"): Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }> {
     await this.getRun(ws, runId); // 404 unless it's in this workspace
     return this.orchestrator.mergeReadyPr(ws, runId, method);
+  }
+  async updateReadyPrBranch(ws: string, runId: string): Promise<{ updated: boolean; conflicts?: string[] }> {
+    await this.getRun(ws, runId);
+    return this.orchestrator.updateReadyPrBranch(ws, runId);
   }
   async reworkReadyPr(ws: string, runId: string, guidance: string, comment?: string): Promise<void> {
     await this.getRun(ws, runId);

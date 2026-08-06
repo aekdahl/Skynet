@@ -83,7 +83,8 @@ export interface Store extends StoreState {
   pauseAgent: (id: string) => Promise<void>;
   resumeAgent: (id: string) => Promise<void>;
   stopAgent: (id: string) => Promise<void>;
-  mergePr: (runId: string, method?: "merge" | "squash" | "rebase") => Promise<{ merged: boolean; reason?: string }>;
+  mergePr: (runId: string, method?: "merge" | "squash" | "rebase") => Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }>;
+  updatePrBranch: (runId: string) => Promise<{ updated: boolean; conflicts?: string[] }>;
   reworkPr: (runId: string, guidance: string, comment?: string) => Promise<void>;
   dismissPr: (runId: string) => Promise<void>;
   // Local optimistic flip after a key is set/cleared in Settings (the snapshot
@@ -432,6 +433,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await api.resumeAgent(id);
       },
       mergePr: (runId, method) => api.mergePr(runId, method),
+      updatePrBranch: (runId) => api.updatePrBranch(runId),
       reworkPr: async (runId, guidance, comment) => {
         await api.reworkPr(runId, guidance, comment);
       },

@@ -93,7 +93,7 @@ const ALLOW = new Set<string>([
   // Ready-to-merge PR actions — exercised by ready-merge.test.ts against the real
   // Operations/Orchestrator path (with a stub GitHub service). No end-to-end
   // fleet journey opens a real PR, so they're allowlisted rather than simulated.
-  "mergePr", "reworkPr", "dismissPr",
+  "mergePr", "updatePrBranch", "reworkPr", "dismissPr",
 ]);
 
 describe("client API coverage", () => {

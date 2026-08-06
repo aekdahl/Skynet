@@ -275,12 +275,13 @@ export class GitHubProvider implements GitProvider {
   }
 
   async prStatus(token: string, repo: string, num: number): Promise<PrStatus> {
-    const pr = await this.api<{ state: string; merged: boolean; head: { sha: string } }>(
+    const pr = await this.api<{ state: string; merged: boolean; mergeable: boolean | null; head: { sha: string } }>(
       token,
       "GET",
       `/repos/${repo}/pulls/${num}`,
     );
     const state: PrStatus["state"] = pr.merged ? "merged" : pr.state === "closed" ? "closed" : "open";
+    const mergeable = pr.mergeable ?? null;
 
     let checks: PrStatus["checks"] = "none";
     try {
@@ -298,7 +299,7 @@ export class GitHubProvider implements GitProvider {
     } catch {
       /* checks are best-effort metadata */
     }
-    return { state, checks };
+    return { state, checks, mergeable };
   }
 
   async mergePr(token: string, repo: string, num: number, method: "merge" | "squash" | "rebase"): Promise<MergeResult> {

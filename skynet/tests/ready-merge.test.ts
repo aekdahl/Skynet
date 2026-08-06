@@ -11,6 +11,7 @@ vi.mock("../apps/server/src/github/index.js", () => ({
   githubService: {
     mergePr: vi.fn(async () => ({ merged: true })),
     commentIssue: vi.fn(async () => {}),
+    prStatus: vi.fn(async () => ({ state: "open", checks: "none", mergeable: true })),
   },
 }));
 import { githubService } from "../apps/server/src/github/index.js";
@@ -66,6 +67,7 @@ describe("ready-to-merge", () => {
   beforeEach(() => {
     (githubService.mergePr as ReturnType<typeof vi.fn>).mockClear().mockResolvedValue({ merged: true });
     (githubService.commentIssue as ReturnType<typeof vi.fn>).mockClear();
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockClear().mockResolvedValue({ state: "open", checks: "none", mergeable: true });
   });
 
   it("lists a run whose PR is open, and hides it once set aside (no-op)", async () => {
@@ -94,15 +96,39 @@ describe("ready-to-merge", () => {
     expect(await orch.listReadyPrs(DEFAULT_WORKSPACE)).toEqual([]); // no longer open
   });
 
-  it("merge blocked by GitHub → returns the reason, PR stays open & ready", async () => {
-    (githubService.mergePr as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ merged: false, reason: "required checks pending" });
+  it("merge blocked → classifies a CONFLICT (base moved) and keeps the PR ready", async () => {
+    (githubService.mergePr as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ merged: false, reason: "not mergeable" });
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "open", checks: "passing", mergeable: false });
     const { store, orch } = await setup();
     await store.putRun(mkRun());
 
     const res = await orch.mergeReadyPr(DEFAULT_WORKSPACE, "r1", "squash");
-    expect(res).toEqual({ merged: false, reason: "required checks pending" });
-    expect((await store.getRun("r1"))?.pr?.state).toBe("open"); // unchanged — still mergeable later
+    expect(res.merged).toBe(false);
+    expect(res.blocked).toBe("conflict");
+    expect(res.reason).toMatch(/conflicts with main/i);
+    expect((await store.getRun("r1"))?.pr?.state).toBe("open"); // unchanged — still fixable
     expect((await orch.listReadyPrs(DEFAULT_WORKSPACE)).map((r) => r.id)).toEqual(["r1"]);
+  });
+
+  it("merge blocked → classifies failing CHECKS vs a PROTECTION block", async () => {
+    const { store, orch } = await setup();
+    await store.putRun(mkRun());
+
+    (githubService.mergePr as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ merged: false, reason: "not mergeable" });
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "open", checks: "failing", mergeable: true });
+    expect((await orch.mergeReadyPr(DEFAULT_WORKSPACE, "r1", "squash")).blocked).toBe("checks");
+
+    (githubService.mergePr as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ merged: false, reason: "At least 1 approving review is required" });
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "open", checks: "passing", mergeable: true });
+    const prot = await orch.mergeReadyPr(DEFAULT_WORKSPACE, "r1", "squash");
+    expect(prot.blocked).toBe("protection");
+    expect(prot.reason).toMatch(/approving review/i);
+  });
+
+  it("update-branch rejects a run with no open PR", async () => {
+    const { store, orch } = await setup();
+    await store.putRun(mkRun({ pr: null }));
+    await expect(orch.updateReadyPrBranch(DEFAULT_WORKSPACE, "r1")).rejects.toThrow(/no open pr/i);
   });
 
   it("rework → comments on the PR and clears the ready record while revising", async () => {

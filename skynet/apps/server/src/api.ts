@@ -362,6 +362,13 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return fail(reply, err);
     }
   });
+  app.post<{ Params: { id: string } }>("/api/merges/:id/update-branch", async (req, reply) => {
+    try {
+      return await ops.updateReadyPrBranch(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
   app.post<{ Params: { id: string } }>("/api/merges/:id/dismiss", async (req, reply) => {
     try {
       await ops.dismissReadyPr(ws(req), req.params.id);

@@ -1410,6 +1410,21 @@ export class Orchestrator {
       await this.escalate(agent.id, `merge conflict with ${base}${files} — rebase the branch, then re-approve to open the PR.`, "conflict");
       return;
     }
+    await this.openPrForRun(git, agent, repo, project, base, sync);
+  }
+
+  /** Push a base-synced branch and open (or refresh, idempotently) its PR, then
+   *  record the ready-to-merge PR + advance the task to done. Shared by the first
+   *  open (pushToGithub) and the "Update branch" re-sync (updateReadyPrBranch);
+   *  the caller runs `mergeBase` first and decides how to handle a conflict. */
+  private async openPrForRun(
+    git: GitContext,
+    agent: TaskRun,
+    repo: string,
+    project: Project | null | undefined,
+    base: string,
+    sync: { depsChanged?: boolean },
+  ): Promise<void> {
     // If folding in the base changed a dependency manifest, reconcile the worktree's
     // deps so a revise loop / checks / preview run against the right ones.
     if (sync.depsChanged) {
@@ -1546,19 +1561,68 @@ export class Orchestrator {
     workspaceId: string,
     runId: string,
     method: "merge" | "squash" | "rebase" = "squash",
-  ): Promise<{ merged: boolean; reason?: string }> {
+  ): Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }> {
     const run = await this.store.getRun(runId);
     if (!run || run.workspaceId !== workspaceId || run.pr?.state !== "open") throw new Error("No open PR for this run.");
     const res = await githubService.mergePr(workspaceId, run.pr.repo, run.pr.number, method);
     if (!res.merged) {
-      await this.hub.runLog(runId, `merge blocked by GitHub: ${res.reason ?? "branch protection / required checks"}`);
-      return res;
+      const blocked = await this.classifyMergeBlock(workspaceId, run, res.reason);
+      await this.hub.runLog(runId, `merge blocked (${blocked.blocked}): ${blocked.reason}`);
+      return { merged: false, ...blocked };
     }
     const fresh = await this.store.getRun(runId);
     if (fresh?.pr) await this.hub.upsertRun({ ...fresh, pr: { ...fresh.pr, state: "merged" } });
     await this.hub.runLog(runId, `PR #${run.pr.number} merged (${method}).`);
     await this.completeMerged(runId, run.branch); // integrate + retire; task/run → done
     return res;
+  }
+
+  /** Explain WHY a merge was blocked — a conflict (base moved under the PR), a
+   *  failing/pending check, or a policy block (branch protection / required
+   *  reviews) — by reading the PR's mergeability + checks. Best-effort: if the
+   *  status read fails, fall back to GitHub's own message as a policy block. */
+  private async classifyMergeBlock(
+    workspaceId: string,
+    run: TaskRun,
+    ghMessage?: string,
+  ): Promise<{ reason: string; blocked: "conflict" | "checks" | "protection" }> {
+    const cred = (await this.store.getProject(run.projectId))?.githubCredentialId ?? null;
+    const status = await githubService.prStatus(workspaceId, run.pr!.repo, run.pr!.number, cred).catch(() => null);
+    if (status?.mergeable === false) {
+      return { blocked: "conflict", reason: `conflicts with ${run.pr!.base} — the base moved under this PR. Update branch to re-sync, or Rework so the agent resolves it.` };
+    }
+    if (status?.checks === "failing") return { blocked: "checks", reason: "required checks are failing on this PR." };
+    if (status?.checks === "pending") return { blocked: "checks", reason: "required checks are still running — try again once they finish." };
+    return { blocked: "protection", reason: ghMessage ?? "blocked by branch protection (required reviews/approvals)." };
+  }
+
+  /** "Update branch": fold the latest base into a ready PR's branch and re-push,
+   *  so a merge blocked only by a stale base becomes mergeable again WITHOUT
+   *  spinning the agent. A real textual conflict can't be auto-resolved — it
+   *  returns the conflicting files so the operator can Rework (agent resolves).
+   *  Works even after a restart (the worktree persists; git context is rebuilt). */
+  async updateReadyPrBranch(workspaceId: string, runId: string): Promise<{ updated: boolean; conflicts?: string[] }> {
+    const run = await this.store.getRun(runId);
+    if (!run || run.workspaceId !== workspaceId || run.pr?.state !== "open") throw new Error("No open PR for this run.");
+    const project = await this.store.getProject(run.projectId);
+    const git = this.gitContextFor(project);
+    if (!git) throw new Error("This project has no git backend to update the branch from.");
+    const base = this.baseBranchFor(project);
+    let sync: { ok: boolean; conflicts?: string[]; depsChanged?: boolean };
+    try {
+      sync = await git.worktrees.mergeBase(run.id);
+    } catch (err) {
+      await this.hub.runLog(runId, `couldn't update the branch — ${(err as Error).message}. Use Rework instead.`);
+      return { updated: false, conflicts: [] };
+    }
+    if (!sync.ok) {
+      const files = sync.conflicts?.length ? `: ${sync.conflicts.join(", ")}` : "";
+      await this.hub.runLog(runId, `can't auto-update ${run.pr.branch} — real conflict with ${base}${files}. Use Rework so the agent resolves it.`);
+      return { updated: false, conflicts: sync.conflicts ?? [] };
+    }
+    await this.openPrForRun(git, run, run.pr.repo, project, base, sync); // re-push + refresh the ready record
+    await this.hub.runLog(runId, `updated ${run.pr.branch} to the latest ${base} — re-check the merge.`);
+    return { updated: true };
   }
 
   /** Send a ready PR back for changes: optionally comment on the PR, then resume

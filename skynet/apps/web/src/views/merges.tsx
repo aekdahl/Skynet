@@ -13,7 +13,7 @@ const REC_META: Record<string, { label: string; color: string }> = {
 };
 
 function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string) => void }) {
-  const { mergePr, reworkPr, dismissPr } = useStore();
+  const { mergePr, updatePrBranch, reworkPr, dismissPr } = useStore();
   const pr = run.pr!;
   const b = pr.briefing;
   const rec = REC_META[b?.recommendation ?? "hold"] ?? REC_META.hold!;
@@ -21,16 +21,36 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
   const [guidance, setGuidance] = useState("");
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState<null | string>(null);
-  const [blocked, setBlocked] = useState<string | null>(null);
+  const [blocked, setBlocked] = useState<{ reason: string; kind?: "conflict" | "checks" | "protection" } | null>(null);
+  const [note, setNote] = useState<string | null>(null);
 
   const doMerge = async () => {
     setBusy("merge");
     setBlocked(null);
+    setNote(null);
     try {
       const res = await mergePr(run.id, "squash");
-      if (!res.merged) setBlocked(res.reason ?? "GitHub blocked the merge (branch protection or required checks).");
+      if (!res.merged) setBlocked({ reason: res.reason ?? "GitHub blocked the merge.", kind: res.blocked });
     } catch (e) {
-      setBlocked((e as Error).message);
+      setBlocked({ reason: (e as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  };
+  const doUpdateBranch = async () => {
+    setBusy("update");
+    setNote(null);
+    try {
+      const res = await updatePrBranch(run.id);
+      if (res.updated) {
+        setBlocked(null);
+        setNote(`Branch updated to the latest ${pr.base}. Try Merge again.`);
+      } else {
+        const files = res.conflicts?.length ? `: ${res.conflicts.join(", ")}` : "";
+        setBlocked({ reason: `Real conflict with ${pr.base}${files} — can't auto-resolve. Use "Rework" so the agent fixes it.`, kind: "conflict" });
+      }
+    } catch (e) {
+      setBlocked({ reason: (e as Error).message });
     } finally {
       setBusy(null);
     }
@@ -71,6 +91,12 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
         <button className="btn btn-primary" disabled={busy != null} onClick={doMerge}>
           {busy === "merge" ? "Merging…" : "Merge"}
         </button>
+        {/* Offered once a merge is blocked by a stale base — re-syncs without the agent. */}
+        {blocked?.kind === "conflict" && (
+          <button className="btn" disabled={busy != null} onClick={doUpdateBranch} title={`Fold the latest ${pr.base} into this branch and re-push`}>
+            {busy === "update" ? "Updating…" : "Update branch"}
+          </button>
+        )}
         <button
           className={"btn btn-ghost" + (mode === "rework" ? " btn-lit" : "")}
           disabled={busy != null}
@@ -83,7 +109,8 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
         </button>
       </div>
 
-      {blocked && <p className="merge-blocked">⚠ {blocked}</p>}
+      {blocked && <p className="merge-blocked">⚠ {blocked.reason}</p>}
+      {note && <p className="merge-note">✓ {note}</p>}
 
       {mode === "rework" && (
         <div className="qx">

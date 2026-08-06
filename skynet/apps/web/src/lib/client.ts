@@ -236,7 +236,10 @@ export function archiveAgent(id: string, archived: boolean) {
 }
 // ── Ready-to-merge PR actions ──────────────────────────────────────────────
 export function mergePr(runId: string, method: "merge" | "squash" | "rebase" = "squash") {
-  return req<{ merged: boolean; reason?: string }>("POST", `/api/merges/${runId}/merge`, { method });
+  return req<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }>("POST", `/api/merges/${runId}/merge`, { method });
+}
+export function updatePrBranch(runId: string) {
+  return req<{ updated: boolean; conflicts?: string[] }>("POST", `/api/merges/${runId}/update-branch`);
 }
 export function reworkPr(runId: string, guidance: string, comment?: string) {
   return req<unknown>("POST", `/api/merges/${runId}/rework`, { guidance, comment });
