@@ -139,3 +139,11 @@ docker run -d --restart=always --name caddy \
   caddy:2
 echo "[skynet] Caddy up on :443 — https://${mcp_domain}"
 %{ endif ~}
+
+# Reclaim boot-disk space. Every :latest re-pull leaves the previous image
+# behind, and those pile up on the small (20 GB) boot disk until it fills — which
+# wedges Caddy and breaks the next pull. Drop images not used by a running
+# container (the live skynet + caddy images are kept; bind-mounted /data is never
+# touched). Runs after the containers are up, so it only removes truly-stale layers.
+docker image prune -af >/dev/null 2>&1 || true
+echo "[skynet] boot disk after prune: $(df -h / | awk 'NR==2{print $4" free of "$2}')"
