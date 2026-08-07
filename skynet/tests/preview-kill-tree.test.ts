@@ -55,16 +55,16 @@ describe("killTree — reaps the whole dev-server process group", () => {
 
       expect(await waitFor(() => portInUse(port))).toBe(true); // grandchild bound the port
 
-      killTree(child);
-
-      // The port frees — proving the node GRANDCHILD was killed, not just sh
-      // (an orphaned node would keep the port → next preview EADDRINUSE).
+      // Awaits the group leader's exit (which tears the group down), then the
+      // port frees — proving the node GRANDCHILD was killed, not just sh (an
+      // orphaned node would keep the port → next preview EADDRINUSE).
+      await killTree(child);
       expect(await waitFor(() => portInUse(port).then((v) => !v))).toBe(true);
     },
     20000,
   );
 
-  it("is a no-op for an absent/already-killed child (no throw)", () => {
-    expect(() => killTree(undefined)).not.toThrow();
+  it("resolves (no throw/hang) for an absent child", async () => {
+    await expect(killTree(undefined)).resolves.toBeUndefined();
   });
 });

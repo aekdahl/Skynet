@@ -149,19 +149,40 @@ export function previewExitReason(code: number | null, logs: string[]): string {
  * SIGTERM first (clean shutdown), then SIGKILL any straggler after a grace period
  * (`node --watch` stays alive after a crash and can ignore a gentle term). `pid`
  * is captured so the delayed SIGKILL only ever targets THIS tree.
+ *
+ * Resolves when the group leader has EXITED — which tears the group down — or
+ * after a hard cap. A caller that awaits it can start a replacement without
+ * racing the old tree onto the app's fixed port (the group has been signalled
+ * and the leader is gone; the small startup work before the new spawn covers any
+ * millisecond lag before a grandchild releases its socket).
  */
-export function killTree(child: ChildProcess | undefined): void {
-  if (!child || child.killed || child.pid == null) return;
-  const pid = child.pid;
-  const killGroup = (sig: NodeJS.Signals) => {
-    try {
-      process.kill(-pid, sig);
-    } catch {
-      /* group already gone (ESRCH) */
+export function killTree(child: ChildProcess | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    // Already gone (exited) or nothing to kill → done.
+    if (!child || child.pid == null || child.exitCode !== null || child.signalCode !== null) return resolve();
+    const pid = child.pid;
+    const killGroup = (sig: NodeJS.Signals) => {
+      try {
+        process.kill(-pid, sig);
+      } catch {
+        /* group already gone (ESRCH) */
+      }
+    };
+    let settled = false;
+    const sigkill = setTimeout(() => killGroup("SIGKILL"), 3000);
+    const hardCap = setTimeout(finish, 6000); // never hang a caller, even if 'exit' never fires
+    function finish() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(sigkill);
+      clearTimeout(hardCap);
+      resolve();
     }
-  };
-  killGroup("SIGTERM");
-  setTimeout(() => killGroup("SIGKILL"), 3000).unref?.();
+    child.once("exit", finish);
+    killGroup("SIGTERM");
+    sigkill.unref?.();
+    hardCap.unref?.();
+  });
 }
 
 /**
@@ -531,9 +552,9 @@ export class ProjectPreviewManager {
 
   /** Kill a preview's dev-server child + idle timer, WITHOUT removing its
    *  worktree (so a restart keeps node_modules warm). Full teardown is stop(). */
-  private killChild(p: Live) {
+  private killChild(p: Live): Promise<void> {
     if (p.idleTimer) clearTimeout(p.idleTimer);
-    killTree(p.child);
+    return killTree(p.child);
   }
 
   /** Start the PROJECT preview — the integration branch (cumulative merged fleet
@@ -587,13 +608,14 @@ export class ProjectPreviewManager {
   }
 
   private async startSpec(spec: StartSpec): Promise<PreviewState> {
-    // Soft-replace any existing preview for this key: kill its child but KEEP
-    // its worktree so node_modules stays warm across restarts. (Full teardown —
-    // worktree removal — only happens on an explicit stop / idle / shutdown.)
+    // Soft-replace any existing preview for this key: kill its child but KEEP its
+    // worktree so node_modules stays warm across restarts. AWAIT the kill so the
+    // old dev servers have actually released their ports before we start new ones
+    // (else the replacement races into EADDRINUSE on the app's fixed port).
     const existing = this.previews.get(spec.key);
     if (existing) {
       existing.status = "stopped";
-      this.killChild(existing);
+      await this.killChild(existing);
       this.previews.delete(spec.key);
     }
 
@@ -604,6 +626,18 @@ export class ProjectPreviewManager {
       logs: [], error: null, startedAt: Date.now(), lastTouched: Date.now(),
     };
     this.previews.set(spec.key, p);
+
+    // ONE live preview per repo. A project's dev server often hardcodes its port
+    // (this one binds a fixed PORT), so a SECOND preview of the same repo — e.g. a
+    // per-run "Preview this change" started while the project preview is up —
+    // collides (EADDRINUSE → the second crashes → blank page). Fully stop any
+    // other live preview of this repo first; awaited, so its ports are free.
+    for (const key of [...this.previews.keys()]) {
+      if (key !== spec.key && this.previews.get(key)?.gitRepo === spec.gitRepo) {
+        this.log(p, `stopping another live preview of this repo (${key}) — one at a time (its dev ports are fixed)`);
+        await this.stop(key);
+      }
+    }
 
     try {
       p.dir = await this.prepareWorktree(spec.key, spec.gitRepo, spec.ref);
@@ -771,7 +805,10 @@ export class ProjectPreviewManager {
     const p = this.previews.get(key);
     if (p) {
       p.status = "stopped";
-      this.killChild(p);
+      // Await the tree's exit before touching the worktree — so its ports are
+      // freed (a caller starting a replacement can rely on it) and we never rm a
+      // worktree out from under a dev server still running in it.
+      await this.killChild(p);
       // If node_modules is a SYMLINK we created, unlink it first so neither git
       // nor the recursive rm below can ever follow it into the operator's real
       // node_modules. (A real installed dir is removed with the worktree.)
