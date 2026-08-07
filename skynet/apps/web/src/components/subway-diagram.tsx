@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import type { Project, Task, TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { agentsForProject, projectQueue, runnerName } from "../lib/derive";
+import { activeProjectRuns, projectQueue, runnerName } from "../lib/derive";
 import { StatusDot } from "./common";
 
 // Subway — ONE MAP PER PROJECT (docs/subway-model.md). The first agent assigned
@@ -37,7 +37,9 @@ export function SwDiagram({
   onOpenAgent: (agentId: string) => void;
 }) {
   const { runs, tasks, fleet } = useStore();
-  const mine = agentsForProject(runs, project.id);
+  // Only each task's CURRENT run (+ fork branches) — drops superseded re-run
+  // originals that would otherwise draw as a duplicate station. See derive.ts.
+  const mine = activeProjectRuns(runs, tasks, project.id);
   // Upcoming (not-yet-run) work: per-agent queues + a shared "up next" lane.
   const { pinned, shared } = projectQueue(tasks, project.id);
   if (mine.length === 0 && pinned.size === 0 && shared.length === 0) return null;

@@ -15,6 +15,7 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { StatusDot } from "../components/common";
+import { useConfirm } from "../components/confirm";
 import { Markdown } from "../components/markdown";
 import { HitlContext, RiskChip } from "../components/hitl-context";
 
@@ -102,6 +103,7 @@ export function TaskDetail({
     stopAgent,
     archiveAgent,
   } = useStore();
+  const confirm = useConfirm();
   const q = openQueue(queue).find((it) => it.runId === agent.id);
   // The backing task carries the operator's brief AND the autonomous triage
   // metadata (assessment note + duration estimate) — surface both here so
@@ -113,6 +115,11 @@ export function TaskDetail({
   const [draft, setDraft] = useState("");
   const [showDiff, setShowDiff] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Selected option for a decision (AskUserQuestion) — click to select, then
+  // "Send & resume" to submit. Reset when a new/different decision arrives so a
+  // stale pick can't carry over. (Immediate-resolve-on-click was confusing next
+  // to the Send button — it read as select-then-send but wasn't.)
+  const [picked, setPicked] = useState<number | null>(null);
   // Copy the whole log as timestamped plain text (line + any folded detail).
   const copyLog = () => {
     const text = agent.log
@@ -153,18 +160,30 @@ export function TaskDetail({
     }
   }, [agent.log, streaming]);
 
+  // A new/different decision → drop any pick from the previous one.
+  useEffect(() => {
+    setPicked(null);
+  }, [q?.id]);
+
   // The single composer. When the agent is waiting on a decision (q), the reply
-  // is delivered as guidance that RESUMES the same agent (the actionable path).
-  // Otherwise it's a chat message — relayed live to a running agent, or answered
-  // from the log for a finished one.
+  // resumes the same agent: a typed answer is delivered as guidance (modify); a
+  // selected option is delivered as that choice. Otherwise it's a chat message —
+  // relayed live to a running agent, or answered from the log for a finished one.
   const send = async () => {
     const text = draft.trim();
-    if (!text) return;
     if (q) {
-      resolveHitl(q.id, "modify", { guidance: text });
-      setDraft("");
+      // Typed text wins (a custom answer / changes); else the picked option.
+      if (text) {
+        resolveHitl(q.id, "modify", { guidance: text });
+        setDraft("");
+        setPicked(null);
+      } else if (q.options && picked != null) {
+        resolveHitl(q.id, "option", { optionIndex: picked });
+        setPicked(null);
+      }
       return;
     }
+    if (!text) return;
     setDraft("");
     setStreaming("");
     try {
@@ -228,8 +247,15 @@ export function TaskDetail({
               <button
                 className="btn btn-ghost btn-icon btn-stop"
                 title="Stop this run — halts execution and frees its agent"
-                onClick={() => {
-                  if (confirm(`Stop “${agent.name}”? This frees its agent; the run won't resume.`))
+                onClick={async () => {
+                  if (
+                    await confirm({
+                      title: "Stop this run?",
+                      body: `Stop “${agent.name}”? This frees its agent; the run won't resume.`,
+                      confirmLabel: "Stop",
+                      danger: true,
+                    })
+                  )
                     void stopAgent(agent.id);
                 }}
               >
@@ -444,13 +470,19 @@ export function TaskDetail({
                         </button>
                       </>
                     ) : q.options ? (
+                      // Select-then-send: click highlights the choice; "Send &
+                      // resume" (below) submits it. Double-clicking a choice sends
+                      // it straight away (select + confirm) for the quick path.
                       q.options.map((opt, i) => (
                         <button
                           key={i}
-                          className={"btn btn-sm" + (i === q.recommended ? " btn-primary" : "")}
-                          onClick={() => resolveHitl(q.id, "option", { optionIndex: i })}
+                          className={"btn btn-sm" + (i === picked ? " btn-primary" : "")}
+                          aria-pressed={i === picked}
+                          onClick={() => setPicked(i)}
+                          onDoubleClick={() => resolveHitl(q.id, "option", { optionIndex: i })}
                         >
-                          “{opt}”
+                          {i === picked ? "● " : "○ "}“{opt}”
+                          {i === q.recommended && <span className="rec"> rec</span>}
                         </button>
                       ))
                     ) : (
@@ -475,7 +507,9 @@ export function TaskDetail({
                   className="qx-input qx-line"
                   placeholder={
                     q
-                      ? "Reply and resume — e.g. “yes, commit and open a PR”…"
+                      ? q.options
+                        ? "Pick an option above, or type a different answer…"
+                        : "Reply and resume — e.g. “yes, commit and open a PR”…"
                       : agent.status === "done"
                         ? "Ask about what shipped…"
                         : "Message the agent — it keeps working…"
@@ -484,7 +518,11 @@ export function TaskDetail({
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && send()}
                 />
-                <button className={"btn" + (q ? " btn-primary" : "")} onClick={send} disabled={!draft.trim()}>
+                <button
+                  className={"btn" + (q ? " btn-primary" : "")}
+                  onClick={send}
+                  disabled={q ? !draft.trim() && !(q.options && picked != null) : !draft.trim()}
+                >
                   {q ? "Send & resume" : "Send"}
                 </button>
               </div>

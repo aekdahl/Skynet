@@ -211,6 +211,13 @@ async function main() {
       done();
     });
     registerLivePreviewProxy(app, (t) => projectPreview.proxyTargetForToken(t));
+    // Kill any live preview trees on graceful shutdown — their dev servers are
+    // spawned detached (own process group) so they'd otherwise outlive the server
+    // and keep holding ports (EADDRINUSE on the next boot). In a container, PID
+    // teardown handles this; this covers desktop / `app.close()`.
+    app.addHook("onClose", async () => {
+      await projectPreview.stopAll().catch(() => undefined);
+    });
     const stamped = await backfillPreviews(store);
     if (stamped) app.log.info(`preview: stamped ${stamped} agent(s) with a live preview URL`);
     const queued = await kickoffPreviewBuilds(store);

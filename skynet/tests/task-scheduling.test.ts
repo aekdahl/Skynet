@@ -66,6 +66,26 @@ describe("splitEstMinutesTag — triage duration tag", () => {
     // Body left untouched — we didn't recognize the tail as our tag.
     expect(r.body).toContain('{"port": 8080}');
   });
+
+  it("parses featureId / milestoneId grouping picks (raw — validated by the caller)", () => {
+    const r = splitEstMinutesTag('Fits the billing feature.\n{"estMinutes":20,"clarity":"clear","featureId":"feat-1","milestoneId":"ms-2"}');
+    expect(r.featureId).toBe("feat-1");
+    expect(r.milestoneId).toBe("ms-2");
+    expect(r.body).toBe("Fits the billing feature.");
+  });
+
+  it("a grouping pick alone (no est/clarity) still peels the tag", () => {
+    const r = splitEstMinutesTag('Belongs under checkout.\n{"featureId":"feat-9"}');
+    expect(r.featureId).toBe("feat-9");
+    expect(r.estMinutes).toBeNull();
+    expect(r.body).toBe("Belongs under checkout.");
+  });
+
+  it("drops empty / non-string grouping ids (never fabricated)", () => {
+    expect(splitEstMinutesTag('b.\n{"featureId":"","milestoneId":42}').featureId).toBeNull();
+    expect(splitEstMinutesTag('b.\n{"featureId":"","milestoneId":42}').milestoneId).toBeNull();
+    expect(splitEstMinutesTag('b.\n{"featureId":null}').featureId).toBeNull();
+  });
 });
 
 const ctx: ProjectActionContext = {

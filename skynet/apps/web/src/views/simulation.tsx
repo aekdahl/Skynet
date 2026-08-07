@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { JOURNEYS, type Step } from "../lib/simulation";
 import { useSimulation, type JudgeState } from "../lib/simulation-store";
+import { useConfirm } from "../components/confirm";
 
 // Full plain-text outcome for one journey — deterministic steps + the LLM judge
 // verdict — so an operator can copy the whole result into a bug report / notes.
@@ -27,6 +28,7 @@ function outcomeText(name: string, desc: string, result: string, steps: Step[] |
 export function SimulationView() {
   const { status, results, verdicts, judgeAvailable, running, clearing, lastClear, runOne, runAll, judgeOne, judgeAll, clearData } =
     useSimulation();
+  const confirm = useConfirm();
   const anyResults = JOURNEYS.some((j) => results[j.id]);
   const [copied, setCopied] = useState<string | null>(null);
   const copy = (id: string, text: string) => {
@@ -39,8 +41,15 @@ export function SimulationView() {
   const failed = JOURNEYS.filter((j) => status[j.id] === "fail").length;
   const skippedN = JOURNEYS.filter((j) => status[j.id] === "skip").length;
 
-  const onClear = () => {
-    if (window.confirm("Delete all simulation data? This removes every 'Sim:' project (and its runs) and idle 'sim-' agents.")) {
+  const onClear = async () => {
+    if (
+      await confirm({
+        title: "Delete all simulation data?",
+        body: "This removes every ‘Sim:’ project (and its runs) and idle ‘sim-’ agents.",
+        confirmLabel: "Delete all",
+        danger: true,
+      })
+    ) {
       void clearData();
     }
   };
