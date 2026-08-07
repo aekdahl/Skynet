@@ -151,14 +151,14 @@ mkdir -p /data/tmp /data/.npm && rm -rf /data/tmp/* 2>/dev/null || true
 # blowup OOM-kills the CONTAINER — which --restart=always recovers, so the site
 # self-heals — instead of the HOST, which goes unreachable and no restart policy
 # can bring back. --memory-swap lets it burst into the swapfile before the kill.
-MEM_TOTAL_MB=$(awk '/MemTotal/{print int($$2/1024)}' /proc/meminfo)
+MEM_TOTAL_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 MEM_LIMIT_MB=$(( MEM_TOTAL_MB > 1024 ? MEM_TOTAL_MB - 512 : 512 ))
 MEM_SWAP_MB=$(( MEM_LIMIT_MB + 2048 ))
 # CPU cap: reserve half a core for the OS + dockerd + Caddy so an agent/build
 # pegging the CPU can't starve the host into unresponsiveness (on a shared-core
 # e2-small, a saturated CPU makes the VM drop connections — it looks "down").
 # The app + agents share the rest. Floors at 0.5 on a 1-vCPU box.
-CPU_LIMIT=$(awk "BEGIN{c=$$(nproc)-0.5; print (c<0.5?0.5:c)}")
+CPU_LIMIT=$(nproc | awk '{c=$1-0.5; print (c<0.5?0.5:c)}')
 # Log rotation: default json-file logs grow UNBOUNDED and fill the boot disk (a
 # top cause of a wedged VM). Cap them.
 docker run -d --restart=always --name skynet \
