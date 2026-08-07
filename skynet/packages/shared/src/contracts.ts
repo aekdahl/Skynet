@@ -484,6 +484,11 @@ export const Agent = z.object({
   model: z.string(),
   status: AgentStatus,
   idleSince: Timestamp.nullable().default(null),
+  // Optional operator-set label used to group the fleet BEYOND provider — a
+  // free-form bucket ("reviewers", "frontend", "backend team") the fleet view
+  // groups cards under. Null/"" → the "Ungrouped" bucket (the default; unchanged
+  // behavior for existing agents). Purely organizational; never affects routing.
+  label: z.string().nullable().default(null),
   // True when the fleet CREATED this runner on demand (auto-scale or fork/retry
   // provisioning) rather than an operator adding it. Such runners are the only
   // ones the idle reaper auto-retires (see retireIdleRunnersAfterMinutes).
@@ -746,6 +751,8 @@ export const ConfigureRunnerRequest = z.object({
   // Which named credential this agent authenticates with. Omit → the provider's
   // default credential (id === provider).
   credentialId: z.string().optional(),
+  // Optional grouping label (see Agent.label). Omit → ungrouped.
+  label: z.string().nullable().optional(),
 });
 export type ConfigureRunnerRequest = z.infer<typeof ConfigureRunnerRequest>;
 
@@ -753,6 +760,8 @@ export const UpdateRunnerRequest = z.object({
   model: z.string().min(1).optional(),
   name: z.string().optional(),
   canReview: z.boolean().optional(), // toggle reviewer-eligibility (see Agent.canReview)
+  // Set/clear the grouping label (see Agent.label). null clears → ungrouped.
+  label: z.string().nullable().optional(),
 });
 export type UpdateRunnerRequest = z.infer<typeof UpdateRunnerRequest>;
 

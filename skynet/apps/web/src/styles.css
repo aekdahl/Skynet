@@ -1544,6 +1544,13 @@ button.kb-done:hover { opacity: 1; }
 /* ===== fleet ===== */
 .fleet-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
 .fleet-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--sp); }
+/* Custom grouping: a labeled bucket of agents. Stacked groups get spacing + a
+   small heading; a single ungrouped fleet renders headless (see showHeadings). */
+.fleet-group { display: flex; flex-direction: column; gap: 12px; }
+.fleet-group + .fleet-group { margin-top: 22px; }
+.fleet-group-head { display: flex; align-items: baseline; gap: 10px; }
+.fleet-group-name { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.fleet-group-count { font-size: 11px; color: var(--faint, var(--muted)); }
 .fleet-card { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 16px 18px; display: flex; flex-direction: column; gap: 11px; }
 .fleet-busy { border-color: color-mix(in oklch, var(--ok), transparent 70%); }
 .fleet-top { display: flex; align-items: center; gap: 10px; }
