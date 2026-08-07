@@ -2278,6 +2278,76 @@ button.firstrun-step:hover { border-color: var(--accent); }
   font-size: 12px;
 }
 
+/* ── Pipeline bar (shared segmented viz) + state legend ──────────────────── */
+.pipebar { display: flex; height: 9px; border-radius: 5px; overflow: hidden; background: var(--line-soft); }
+.pipebar-dim { opacity: 0.55; }
+.pipebar-seg { display: block; min-width: 3px; }
+.pipebar-empty { flex: 1; }
+/* A ramp chosen to be mutually distinguishable (more so than the kanban chip
+   hues, which repeat) — pipeline order backlog→done, left to right. */
+.s-backlog { background: #3a4150; }
+.s-triage { background: var(--info); }
+.s-todo { background: var(--accent); }
+.s-ongoing { background: var(--ok); animation: pipe-pulse 1.9s ease-in-out infinite; }
+.s-review { background: var(--violet); }
+.s-done { background: #2f6b4f; }
+@keyframes pipe-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+@media (prefers-reduced-motion: reduce) { .s-ongoing { animation: none; } }
+.state-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.state-lg { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+.state-dot { width: 8px; height: 8px; border-radius: 2px; flex: none; display: inline-block; }
+.pf-head { flex-wrap: wrap; row-gap: 8px; }
+
+/* completion donut (shared by roadmap milestone cards) */
+.ring { --p: 0; --c: var(--accent); width: 44px; height: 44px; flex: none; border-radius: 50%; display: grid; place-items: center;
+  background: radial-gradient(closest-side, var(--panel) 73%, transparent 74%), conic-gradient(var(--c) calc(var(--p) * 1%), var(--line) 0); }
+.ring span { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ── Features: card grid, each a pipeline bar ────────────────────────────── */
+.fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.fcard { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 13px 14px; display: flex; flex-direction: column; gap: 9px; }
+.fcard-shipped { opacity: 0.72; }
+.fcard-head { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: none; padding: 0; margin: 0; cursor: pointer; font: inherit; color: inherit; text-align: left; }
+.fcard-name { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fcard-head:hover .fcard-name { color: var(--accent); }
+.fcard-ms { font-size: 10.5px; font-family: var(--font-mono); color: var(--violet); border: 1px solid color-mix(in oklch, var(--violet), transparent 62%); border-radius: 20px; padding: 1px 7px; flex: none; }
+.fcard-pct { font-size: 12.5px; font-weight: 600; color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
+.fcard-sum { font-size: 12px; color: var(--muted); }
+.fcard-sum-empty { color: var(--faint); }
+.fcard-body { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+.tag { font-size: 10.5px; padding: 1px 7px; border-radius: 20px; font-family: var(--font-mono); flex: none; }
+.tag-ship { color: var(--ok); border: 1px solid color-mix(in oklch, var(--ok), transparent 62%); }
+.tag-pause { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn), transparent 62%); }
+
+/* ── Roadmap: milestone columns on a time track ──────────────────────────── */
+.rm-track { display: flex; gap: 14px; overflow-x: auto; padding: 8px 2px 12px; align-items: stretch; }
+.rm-today { flex: none; width: 2px; background: var(--accent); border-radius: 2px; position: relative; margin: 8px 6px; }
+.rm-today-lbl { position: absolute; top: -3px; left: 50%; transform: translateX(-50%); font-size: 9.5px; letter-spacing: 0.1em; color: var(--accent); background: var(--bg); padding: 1px 4px; white-space: nowrap; }
+.mcard { flex: none; width: 270px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 14px 15px; display: flex; flex-direction: column; gap: 12px; }
+.mcard-shipped { opacity: 0.74; }
+.mcard-unassigned { border-style: dashed; }
+.mcard-top { display: flex; align-items: flex-start; gap: 10px; }
+.mcard-id { display: flex; align-items: flex-start; gap: 9px; flex: 1; min-width: 0; }
+.mcard-diamond { width: 10px; height: 10px; margin-top: 4px; flex: none; transform: rotate(45deg); border: 2px solid var(--faint); background: var(--panel); }
+.mcard-diamond.d-in-progress { border-color: var(--accent); background: var(--accent); }
+.mcard-diamond.d-shipped { border-color: var(--ok); background: var(--ok); }
+.mcard-diamond.d-none { border-style: dashed; }
+.mcard-name { font-weight: 600; font-size: 14.5px; letter-spacing: -0.01em; line-height: 1.2; }
+.mcard-when { display: block; font-size: 11px; color: var(--muted); font-family: var(--font-mono); margin-top: 3px; }
+.mcard-when.soon { color: var(--accent); }
+.mcard-when.late { color: var(--danger); }
+.mcard-when.ship { color: var(--ok); }
+.mcard-feats { display: flex; flex-direction: column; gap: 11px; }
+.mcard-empty { color: var(--faint); font-size: 12px; font-style: italic; }
+.mcard-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.feat-mini-lbl { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin-bottom: 5px; }
+.feat-mini-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.feat-mini-direct { color: var(--muted); font-style: italic; }
+.feat-mini-lbl .mono { color: var(--faint); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
+.mcard-expand { background: none; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); font: inherit; font-size: 12px; padding: 6px; cursor: pointer; }
+.mcard-expand:hover { color: var(--text); border-color: var(--faint); }
+.mcard-body { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+
 /* Feature row */
 .pf-row {
   border: 1px solid var(--line);
