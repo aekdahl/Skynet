@@ -85,13 +85,26 @@ export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, l
   } else if (it.command) {
     lines.push(`<code>${esc(it.command)}</code>`);
   } else if (it.kind === "question" && it.options?.length) {
+    // A decision: show the question, then a numbered choice list (matches the
+    // per-option buttons) so it's unmistakably a selection.
+    if (it.title) lines.push(esc(it.title));
+    lines.push("<b>Choose one:</b>");
     lines.push(it.options.map((o, i) => `${i + 1}. ${esc(o)}`).join("\n"));
   } else if (it.title) {
     lines.push(esc(it.title));
   }
   // The agent's own words for WHY — the thing the plain notice dropped.
   if (it.rationale) lines.push(`\n<i>“${esc(it.rationale.trim())}”</i>`);
-  lines.push(control ? "Tap below — or reply to this message to send changes." : `Reply /approve ${it.id} or /reject ${it.id}`);
+  const isChoice = it.kind === "question" && !!it.options?.length;
+  lines.push(
+    control
+      ? isChoice
+        ? "👆 Tap your choice below — or reply with a different answer."
+        : "Tap below — or reply to this message to send changes."
+      : isChoice
+        ? `Open the app to choose, or reply /reject ${it.id}`
+        : `Reply /approve ${it.id} or /reject ${it.id}`,
+  );
   // A run deep link to open the full gate in the app (a href is safe — the URL
   // is server config + a safe run id, no user text). Telegram HTML supports <a>.
   if (link) lines.push(`<a href="${esc(link)}">Open in the app ↗</a>`);
@@ -105,6 +118,19 @@ export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, l
  * Pure so it's unit-testable (no client/network).
  */
 export function gateKeyboard(it: HitlItem): InlineKeyboardMarkup {
+  // A decision (AskUserQuestion) is a SELECTION, not an approve/reject gate — give
+  // it one tappable button PER option (numbered to match the message body) so it's
+  // obviously "pick one". Free-text answer + refuse still available below.
+  if (it.kind === "question" && it.options?.length) {
+    const rows: InlineKeyboardMarkup["inline_keyboard"] = it.options.map((opt, i) => [
+      { text: `${i + 1}. ${clipBtn(opt)}`, callback_data: `hitl:option:${i}:${it.id}` },
+    ]);
+    rows.push([
+      { text: "✏️ Other answer", callback_data: `hitl:modify:${it.id}` },
+      { text: "⛔ Reject", callback_data: `hitl:reject:${it.id}` },
+    ]);
+    return { inline_keyboard: rows };
+  }
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [
     [
       { text: "✅ Approve", callback_data: `hitl:approve:${it.id}` },
@@ -116,6 +142,13 @@ export function gateKeyboard(it: HitlItem): InlineKeyboardMarkup {
   }
   rows.push([{ text: "⛔ Reject", callback_data: `hitl:reject:${it.id}` }]);
   return { inline_keyboard: rows };
+}
+
+/** Keep an option's button label short — Telegram truncates long buttons anyway,
+ *  and the full text is already in the message body. */
+function clipBtn(s: string): string {
+  const t = s.trim();
+  return t.length > 40 ? t.slice(0, 39) + "…" : t;
 }
 
 /** A run parked in review with nothing tappable (no gate covers it). */
