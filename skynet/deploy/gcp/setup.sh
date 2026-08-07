@@ -44,7 +44,17 @@ if [ ! -f terraform.tfvars ]; then
   read -r -p "  Zone [${DEFZONE}]: " ZONE_IN; ZONE_IN=${ZONE_IN:-$DEFZONE}
   read -r -p "  Your Google account email (IAP access + web login) [alex@zubi.ai]: " EMAIL_IN; EMAIL_IN=${EMAIL_IN:-alex@zubi.ai}
   [ -n "$EMAIL_IN" ] || { echo "  email is required"; exit 1; }
-  read -r -p "  Machine type [e2-small] (e2-medium for heavier builds): " MT_IN; MT_IN=${MT_IN:-e2-small}
+  echo "  Machine type:"
+  echo "    1) e2-small      — 2 vCPU · 2 GB   (light; orchestration only)"
+  echo "    2) e2-medium     — 2 vCPU · 4 GB   (recommended — headroom for agent builds)"
+  echo "    3) e2-standard-2 — 2 vCPU · 8 GB   (heavy / parallel agents)"
+  read -r -p "  Choose 1-3, or type any machine type [2]: " MT_IN; MT_IN=${MT_IN:-2}
+  case "$MT_IN" in
+    1) MT="e2-small" ;;
+    2) MT="e2-medium" ;;
+    3) MT="e2-standard-2" ;;
+    *) MT="$MT_IN" ;; # a custom machine type typed verbatim (e.g. e2-standard-4)
+  esac
   read -r -p "  Allow control (approve/create/etc.) over Telegram? [Y/n]: " TC_IN
   TC=true; [[ "${TC_IN:-y}" =~ ^[Nn] ]] && TC=false
   # Public UI over HTTPS (drop the IAP tunnel for humans). Needs a real domain
@@ -60,7 +70,7 @@ if [ ! -f terraform.tfvars ]; then
 project_id       = "${PROJECT_IN}"
 region           = "${REGION_IN}"
 zone             = "${ZONE_IN}"
-machine_type     = "${MT_IN}"
+machine_type     = "${MT}"
 operator_email   = "${EMAIL_IN}"
 admin_email      = "${EMAIL_IN}"
 admin_workspace  = "skynet"
@@ -168,35 +178,31 @@ DOMAIN=$(echo 'var.mcp_domain' | terraform console | tr -d '"')
 ssh_vm() { gcloud compute ssh "$VM" --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap --quiet --command="$1" 2>/dev/null; }
 # terraform apply updates the VM's startup-script metadata but does NOT re-pull
 # on a RUNNING instance (the image tag is always :latest — no diff to act on).
-# Re-run the startup script in place: fresh registry login + pull + recreate.
-echo "  re-running startup on the VM (fresh registry login + pull + restart)…"
-ssh_vm "sudo google_metadata_script_runner startup" >/dev/null 2>&1 \
-  || echo "  (couldn't re-run startup over IAP SSH — reboot the VM to pick up the new image)"
+# Reboot to re-run startup: fresh registry login + pull + recreate, re-reading
+# the updated metadata. A reset is a plain API call — it avoids the IAP-tunnel/
+# reauth hang that an in-place SSH re-run hits when your gcloud session needs
+# reauth (the tunnel blocks silently instead of erroring, so setup.sh could hang
+# for hours at "re-running startup on the VM…").
+say "▸ Rebooting the VM to pull the new image + apply the startup script…"
+gcloud compute instances reset "$VM" --zone="$ZONE" --project="$PROJECT" >/dev/null 2>&1 \
+  || echo "  (reset failed — run 'gcloud auth login', then re-run this script)"
 
-# Health gate. public_ui: check the PUBLIC url — no tunnel, and it proves Caddy +
-# Let's Encrypt actually serve (the app being up on :8080 is NOT enough — Caddy
-# can be wedged with no cert). Otherwise check the app over the IAP tunnel.
+# Health gate. public_ui: poll the PUBLIC url — no tunnel (so reauth can't block
+# it), and it proves Caddy + Let's Encrypt actually serve (the app up on :8080 is
+# NOT enough — Caddy can be wedged with no cert). Otherwise check over the tunnel.
 poll_public() {
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 40); do
     [ "$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' "https://${DOMAIN}/" 2>/dev/null)" = "200" ] && return 0
-    sleep 10
+    sleep 12
   done
   return 1
 }
 HEALTHY=""
 if [ "$PUBLIC_UI" = "true" ]; then
-  say "▸ Waiting for https://${DOMAIN} to serve (Caddy obtains the Let's Encrypt cert)…"
-  if poll_public; then
-    HEALTHY=1
-  else
-    # Caddy can come up wedged after an in-place startup re-run; a reboot clears
-    # it reliably. Reset once and re-check before giving up.
-    echo "  ✗ not serving yet — rebooting once to clear a wedged Caddy…"
-    gcloud compute instances reset "$VM" --zone="$ZONE" --project="$PROJECT" >/dev/null 2>&1 || true
-    poll_public && HEALTHY=1
-  fi
+  say "▸ Waiting for https://${DOMAIN} to serve (reboot + Caddy + Let's Encrypt — a few minutes)…"
+  poll_public && HEALTHY=1
 else
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 40); do
     if ssh_vm "curl -fsS -o /dev/null http://localhost:${APP_PORT}"; then HEALTHY=1; break; fi
     sleep 12
   done

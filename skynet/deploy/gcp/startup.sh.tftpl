@@ -100,7 +100,8 @@ SESSIONS=memory
 SKYNET_DB_PATH=/data/skynet-data.json
 # Keep agent worktrees, cloned repos, and preview node_modules + npm cache on the
 # DATA disk — NOT the container's writable layer on the small boot disk, where
-# unbounded growth fills the disk and wedges the whole VM.
+# unbounded growth fills the disk and wedges the whole VM. (/tmp is also bind-
+# mounted to /data/tmp below, and the npm cache is set via npm_config_cache.)
 SKYNET_WORKTREES_DIR=/data/worktrees
 SKYNET_REPOS_DIR=/data/repos
 npm_config_cache=/data/.npm
@@ -135,8 +136,17 @@ EOF
 
 # ── 5. Pull + run the app ────────────────────────────────────────────────────
 echo "$${TOKEN}" | docker login -u oauth2accesstoken --password-stdin "https://${region}-docker.pkg.dev"
+# Reclaim boot-disk space BEFORE pulling: drop dangling layers left by previous
+# :latest pulls. They accumulate on the 20 GB boot disk and, once it's full, the
+# pull below fails — so prune first to recover an already-full box. (Dangling
+# only: the tagged skynet/caddy images stay, so no needless re-pull.)
+docker image prune -f >/dev/null 2>&1 || true
 docker pull "${image}"
 docker rm -f skynet >/dev/null 2>&1 || true
+# Agent scratch (npm/builds/tmp) goes on the big /data disk, not the boot overlay:
+# bind /tmp → /data/tmp (cleared each boot for fresh-/tmp semantics) + npm cache
+# on /data (env file). This is what keeps root from filling under agent load.
+mkdir -p /data/tmp /data/.npm && rm -rf /data/tmp/* 2>/dev/null || true
 # Memory cap: reserve ~512MB for the OS + dockerd + Caddy so an app/agent memory
 # blowup OOM-kills the CONTAINER — which --restart=always recovers, so the site
 # self-heals — instead of the HOST, which goes unreachable and no restart policy
@@ -155,6 +165,7 @@ docker run -d --restart=always --name skynet \
   -p ${app_port}:${app_port} \
   --env-file "$${ENVF}" \
   -v /data:/data \
+  -v /data/tmp:/tmp \
   --memory="$${MEM_LIMIT_MB}m" --memory-swap="$${MEM_SWAP_MB}m" --cpus="$${CPU_LIMIT}" \
   --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 \
   "${image}"
@@ -181,3 +192,11 @@ docker run -d --restart=always --name caddy \
   caddy:2
 echo "[skynet] Caddy up on :443 — https://${mcp_domain}"
 %{ endif ~}
+
+# Reclaim boot-disk space. Every :latest re-pull leaves the previous image
+# behind, and those pile up on the small (20 GB) boot disk until it fills — which
+# wedges Caddy and breaks the next pull. Drop images not used by a running
+# container (the live skynet + caddy images are kept; bind-mounted /data is never
+# touched). Runs after the containers are up, so it only removes truly-stale layers.
+docker image prune -af >/dev/null 2>&1 || true
+echo "[skynet] boot disk after prune: $(df -h / | awk 'NR==2{print $4" free of "$2}')"
