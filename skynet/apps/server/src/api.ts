@@ -550,7 +550,18 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
         return fail(reply, err);
       }
     };
-  app.post<{ Params: { id: string } }>("/api/projects/:id/preview/start", previewAction((w, i) => ops.previewStart(w, i)));
+  app.post<{ Params: { id: string }; Body: { source?: "main" | "merged" | "latest" } }>(
+    "/api/projects/:id/preview/start",
+    async (req, reply) => {
+      const source = req.body?.source;
+      const src = source === "main" || source === "merged" || source === "latest" ? source : undefined;
+      try {
+        return await ops.previewStart(ws(req), req.params.id, src);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
   app.post<{ Params: { id: string } }>("/api/projects/:id/preview/stop", previewAction((w, i) => ops.previewStop(w, i)));
   app.post<{ Params: { id: string } }>("/api/projects/:id/preview/restart", previewAction((w, i) => ops.previewRestart(w, i)));
   app.post<{ Params: { id: string } }>("/api/projects/:id/preview/refresh", previewAction((w, i) => ops.previewRefresh(w, i)));

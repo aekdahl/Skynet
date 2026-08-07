@@ -43,7 +43,7 @@ import { normalizeCommand, rememberableRisk } from "./approval-policy.js";
 import { config, now } from "./config.js";
 import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
-import { projectPreview, type PreviewState } from "./preview/project-preview.js";
+import { projectPreview, type PreviewState, type PreviewSource } from "./preview/project-preview.js";
 import { githubService, parseRepoRef } from "./github/index.js";
 import { parseChecklist } from "./tasks/checklist.js";
 import {
@@ -261,15 +261,33 @@ export class Operations {
   previewState(ws: string, projectId: string): Promise<PreviewState> {
     return this.getProject(ws, projectId).then(() => projectPreview.state(projectId));
   }
-  async previewStart(ws: string, projectId: string): Promise<PreviewState> {
+  async previewStart(ws: string, projectId: string, source: PreviewSource = "merged"): Promise<PreviewState> {
     const project = await this.getProject(ws, projectId);
     if (!project.repoPath) throw new Error("This project has no local folder to preview.");
-    return projectPreview.start(projectId, project.repoPath, ws);
+    return projectPreview.start(projectId, project.repoPath, ws, await this.previewOpts(projectId, project.baseBranch, source));
   }
   async previewRestart(ws: string, projectId: string): Promise<PreviewState> {
     const project = await this.getProject(ws, projectId);
     if (!project.repoPath) throw new Error("This project has no local folder to preview.");
-    return projectPreview.restart(projectId, project.repoPath, ws);
+    // Preserve whatever source the operator last chose across a restart.
+    const source = projectPreview.currentSource(projectId);
+    return projectPreview.restart(projectId, project.repoPath, ws, await this.previewOpts(projectId, project.baseBranch, source));
+  }
+  /** Resolve the base branch + (for `latest`) the review-ready run branches to
+   *  fold into the combined preview. Review-ready = a non-archived run in this
+   *  project sitting in `review` — the agent-finished, proposed-but-not-merged
+   *  state; still-ongoing runs are deliberately excluded so the combined preview
+   *  stays coherent. */
+  private async previewOpts(projectId: string, projectBase: string | null | undefined, source: PreviewSource): Promise<{ source: PreviewSource; baseBranch: string; combineBranches: string[] }> {
+    const baseBranch = projectBase || config.baseBranch;
+    let combineBranches: string[] = [];
+    if (source === "latest") {
+      const runs = await this.store.listAllRuns().catch(() => []);
+      combineBranches = runs
+        .filter((r) => r.projectId === projectId && !r.archived && r.status === "review" && !!r.branch)
+        .map((r) => r.branch);
+    }
+    return { source, baseBranch, combineBranches };
   }
   async previewStop(ws: string, projectId: string): Promise<PreviewState> {
     await this.getProject(ws, projectId);
