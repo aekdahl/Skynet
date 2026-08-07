@@ -397,6 +397,19 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
 - [ ] **Managers organize by area *or* role** — same mechanism, different scope: a "Billing manager"
   (module area) or a "Review / QA / Security manager" (function). Role-managers are how specialized
   agents are arranged; workers under them inherit the role's prompt + tool scope.
+- [ ] **Agent-to-agent handoff on feature completion** — when a Feature (v1.5 grouping) reaches
+  `shipped`, or a milestone flips to `shipped`, the orchestrator fans out to configured **role-agents**:
+  a **change-manager** commits the CHANGELOG.md entry (agent-authored, HITL-gated diff — same
+  governance as any run's diff review); a **docs-writer** updates the user-facing docs from the
+  feature's task descriptions + diff; a **release-comms** agent drafts the Slack/Telegram/email
+  announcement. Each handoff is a directed variant of `mass-inform` (v1) — a fresh scoped brief,
+  no extra human keystroke, still gated end-to-end. **Reuses**: Steward's action envelope (validated
+  ids, confirm-first) as the write path; the existing HITL Inbox as the routing target (extend an
+  item's addressee from "any operator with approver scope" to a specific role-agent); the Feature +
+  Milestone entities as the trigger. **The joinpoint is already there** — `feature.upserted` with
+  `status:"shipped"` and `milestone.upserted` with `status:"shipped"` are events the fleet can
+  subscribe to today. The v2 work is turning them into a first-class fan-out primitive with a
+  configurable role-agent map per project (which agents run on which completion event).
 - [ ] **⭐ North star: the auto dev team.** The endgame of the hierarchy is **Charter → Blueprint →
   Plan**: project intake is an LLM-assisted **Charter** (goals, non-goals, risks, done-definition —
   human-approved, G-1); from it Skynet proposes a **Team Blueprint** (Chief of Staff, Spec Analyst,
