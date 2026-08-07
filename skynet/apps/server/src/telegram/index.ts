@@ -1015,8 +1015,20 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     if (kind === "hitl") {
       const sepInRest = rest.indexOf(":");
       const decision = sepInRest > 0 ? rest.slice(0, sepInRest) : rest;
-      const gateId = sepInRest > 0 ? rest.slice(sepInRest + 1) : "";
-      if (!["approve", "reject", "modify", "diff"].includes(decision) || !gateId) {
+      let gateId = sepInRest > 0 ? rest.slice(sepInRest + 1) : "";
+      // A decision choice rides as `option:<index>:<gateId>` — peel the index off
+      // the front, leaving the real gate id (hitl ids carry no colons).
+      let optionIndex: number | undefined;
+      if (decision === "option") {
+        const sep2 = gateId.indexOf(":");
+        optionIndex = Number(gateId.slice(0, sep2));
+        gateId = sep2 > 0 ? gateId.slice(sep2 + 1) : "";
+        if (!Number.isInteger(optionIndex) || optionIndex < 0) {
+          await ackCallback(callbackQueryId);
+          return;
+        }
+      }
+      if (!["approve", "reject", "modify", "diff", "option"].includes(decision) || !gateId) {
         await ackCallback(callbackQueryId);
         return;
       }
@@ -1058,6 +1070,21 @@ export function createOwnerControl(deps: OwnerControlDeps): {
         awaitingGuidance = { gateId, runId: gate.runId, messageId };
         await notify("✏️ Reply with the changes you want — I'll send them to the agent and it'll resume.");
         return; // keep the buttons; guidance arrives as the next message
+      }
+
+      // ①②③ Chose a decision option — resolve with that index; the agent resumes
+      // on the selected answer.
+      if (decision === "option") {
+        await ackCallback(callbackQueryId).catch(() => undefined);
+        const chosen = gate.options?.[optionIndex!];
+        try {
+          await operations.resolveHitl(ws, gateId, { action: "option", optionIndex }, operatorId);
+          await notify(`✅ Chose${chosen ? ` “${esc(chosen)}”` : ` option ${optionIndex! + 1}`} — the agent is resuming.`, { parse_mode: "HTML" });
+        } catch (err) {
+          await notify(`Couldn't submit that choice: ${(err as Error).message}`);
+        }
+        if (messageId) await editReplyMarkup(chatId, messageId).catch(() => undefined);
+        return;
       }
 
       await ackCallback(callbackQueryId).catch(() => undefined);

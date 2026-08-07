@@ -208,6 +208,13 @@ resource "google_compute_instance" "vm" {
   # With it, apply just stops → resizes → starts (no recreation; /data survives).
   allow_stopping_for_update = true
 
+  # Let `terraform apply` stop→resize→start the VM in place when machine_type
+  # changes (GCP requires a stop to change it). The stop/start is a clean reboot
+  # that also re-runs the startup script — and, being a control-plane op, it
+  # works even if the VM is network-wedged. The /data disk is a separate resource
+  # (re-attached, not recreated), so resizing the box never touches your data.
+  allow_stopping_for_update = true
+
   boot_disk {
     initialize_params {
       image = "debian-cloud/debian-12"

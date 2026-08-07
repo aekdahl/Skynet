@@ -1,5 +1,6 @@
 import { type Step } from "../lib/acceptance";
 import { useAcceptance } from "../lib/acceptance-store";
+import { useConfirm } from "../components/confirm";
 import { SCENARIOS } from "../lib/acceptance";
 import { type EvalJob } from "../lib/client";
 
@@ -126,15 +127,21 @@ function LlmEvalSection() {
     runEvalAll,
     toggleArtifacts,
   } = useAcceptance();
+  const confirm = useConfirm();
 
-  const onRunAll = () => {
+  const onRunAll = async () => {
     if (!scenarios) return;
     const n = scenarios.length;
-    const ok = window.confirm(
-      `Run all ${n} LLM-judged scenarios?\n\n` +
-        `Each one provisions a REAL agent and then an LLM judge — roughly 1–3 minutes and real API ` +
-        `tokens per scenario (${n} runs total). They run one at a time; you can watch each verdict land.`,
-    );
+    const ok = await confirm({
+      title: `Run all ${n} LLM-judged scenarios?`,
+      body: (
+        <>
+          Each one provisions a <strong>real</strong> agent and then an LLM judge — roughly 1–3 minutes and
+          real API tokens per scenario ({n} runs total). They run one at a time; you can watch each verdict land.
+        </>
+      ),
+      confirmLabel: "Run all",
+    });
     if (ok) void runEvalAll();
   };
 

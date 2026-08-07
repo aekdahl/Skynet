@@ -6,6 +6,8 @@ import { App } from "./App";
 import { StoreProvider } from "./lib/store";
 import { AcceptanceProvider } from "./lib/acceptance-store";
 import { SimulationProvider } from "./lib/simulation-store";
+import { ConfirmProvider } from "./components/confirm";
+import { ToastHost } from "./components/toast";
 import { setupPwa } from "./pwa/pwa";
 
 setupPwa();
@@ -18,9 +20,12 @@ createRoot(root).render(
     <StoreProvider>
       <AcceptanceProvider>
         <SimulationProvider>
-          <App />
+          <ConfirmProvider>
+            <App />
+          </ConfirmProvider>
         </SimulationProvider>
       </AcceptanceProvider>
     </StoreProvider>
+    <ToastHost />
   </StrictMode>,
 );
