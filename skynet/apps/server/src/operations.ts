@@ -959,6 +959,7 @@ export class Operations {
       idleSince: now(),
       autoProvisioned: false, // an operator added this — the idle reaper leaves it alone
       canReview: true, // reviewer-eligible by default (never reviews its own runs)
+      label: input.label?.trim() || null, // optional grouping bucket (empty → ungrouped)
     };
     return this.hub.upsertAgent(runner);
   }
@@ -970,7 +971,11 @@ export class Operations {
       const invalid = modelValidForProvider(await this.store.listProviders(), existing.provider, patch.model);
       if (invalid) throw new Error(invalid);
     }
-    return this.hub.upsertAgent({ ...existing, ...patch });
+    // Normalize an empty/whitespace label to null so a cleared field lands in the
+    // "Ungrouped" bucket rather than a phantom "" group.
+    const normalized =
+      patch.label !== undefined ? { ...patch, label: patch.label?.trim() || null } : patch;
+    return this.hub.upsertAgent({ ...existing, ...normalized });
   }
   async retireRunner(ws: string, id: string): Promise<void> {
     const existing = await this.store.getAgent(id);

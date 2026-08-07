@@ -668,10 +668,10 @@ export function reorderTask(projectId: string, taskId: string, beforeId: string 
 }
 
 // Fleet
-export function createAgent(body: { provider: string; model: string; name?: string; credentialId?: string }) {
+export function createAgent(body: { provider: string; model: string; name?: string; credentialId?: string; label?: string | null }) {
   return req<unknown>("POST", "/api/fleet/runners", body);
 }
-export function updateAgent(id: string, body: { model?: string; name?: string; canReview?: boolean }) {
+export function updateAgent(id: string, body: { model?: string; name?: string; canReview?: boolean; label?: string | null }) {
   return req<unknown>("PATCH", `/api/fleet/runners/${id}`, body);
 }
 export function deleteAgent(id: string) {

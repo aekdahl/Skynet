@@ -12,15 +12,23 @@ export function ConfigForm({
   submitLabel,
 }: {
   initial?: Agent;
-  onSave: (r: { name: string; provider: ProviderId; model: string; credentialId?: string }) => void;
+  onSave: (r: { name: string; provider: ProviderId; model: string; credentialId?: string; label: string | null }) => void;
   onCancel: () => void;
   // Overrides the submit label. Defaults by mode: editing → "Save changes",
   // new → "Add to fleet". Cloning passes its own (it creates, not edits).
   submitLabel?: string;
 }) {
-  const { providers } = useStore();
+  const { providers, fleet } = useStore();
+  // Existing labels across the fleet, offered as a datalist so operators reuse a
+  // group name instead of accidentally spawning near-duplicate buckets.
+  const knownLabels = Array.from(
+    new Set(fleet.map((a) => a.label?.trim()).filter((l): l is string => !!l)),
+  ).sort((a, b) => a.localeCompare(b));
   const isConfigured = (p: ProviderInfo) => providerReadiness(p).ready;
   const [name, setName] = useState(initial ? initial.name : "");
+  // Optional grouping label — how the fleet view buckets this agent (empty →
+  // "Ungrouped"). Free-form; the datalist just suggests existing groups.
+  const [label, setLabel] = useState(initial?.label ?? "");
   const [provider, setProvider] = useState<ProviderId>(
     initial
       ? initial.provider
@@ -72,6 +80,21 @@ export function ConfigForm({
           placeholder="agent-10"
           onChange={(e) => setName(e.target.value)}
         />
+      </div>
+      <div className="cfg-row">
+        <label className="cfg-label">Group</label>
+        <input
+          className="qx-input"
+          value={label}
+          list="fleet-labels"
+          placeholder="Optional — e.g. reviewers, frontend, backend"
+          onChange={(e) => setLabel(e.target.value)}
+        />
+        <datalist id="fleet-labels">
+          {knownLabels.map((l) => (
+            <option key={l} value={l} />
+          ))}
+        </datalist>
       </div>
       <div className="cfg-row">
         <label className="cfg-label">Provider</label>
@@ -185,7 +208,7 @@ export function ConfigForm({
         <PrimaryButton
           disabled={!model.trim()}
           reason={custom ? "Enter a model id to continue." : "Pick a model to continue."}
-          onClick={() => onSave({ name: name.trim(), provider, model: model.trim(), credentialId })}
+          onClick={() => onSave({ name: name.trim(), provider, model: model.trim(), credentialId, label: label.trim() || null })}
         >
           {submitLabel ?? (initial ? "Save changes" : "Add to fleet")}
         </PrimaryButton>
@@ -237,6 +260,23 @@ export function FleetView({
   const busyOf = (r: Agent) =>
     runs.find((a) => a.status !== "done" && a.agentId === r.id);
 
+  // Group the fleet by label. Named groups sort alphabetically; the "Ungrouped"
+  // bucket (agents with no label) always comes last. Order within a group keeps
+  // the fleet's own order. A single-group fleet (all ungrouped — today's default)
+  // renders exactly as before: one grid, no heading.
+  const UNGROUPED = " ungrouped"; // sentinel key that can't collide with a real label
+  const groups = new Map<string, Agent[]>();
+  for (const a of fleet) {
+    const key = a.label?.trim() || UNGROUPED;
+    (groups.get(key) ?? groups.set(key, []).get(key)!).push(a);
+  }
+  const groupKeys = Array.from(groups.keys()).sort((a, b) => {
+    if (a === UNGROUPED) return 1;
+    if (b === UNGROUPED) return -1;
+    return a.localeCompare(b);
+  });
+  const showHeadings = groupKeys.length > 1 || (groupKeys.length === 1 && groupKeys[0] !== UNGROUPED);
+
   return (
     <section className="vw">
 
@@ -267,7 +307,7 @@ export function FleetView({
             initial={cloneFrom ? { ...cloneFrom, name: suggestCloneName(cloneFrom.name, takenNames) } : undefined}
             submitLabel={cloneFrom ? "Add to fleet" : undefined}
             onSave={(r) => {
-              createAgent(r.provider, r.model, r.name || undefined, cloneFrom?.credentialId ?? undefined);
+              createAgent(r.provider, r.model, r.name || undefined, cloneFrom?.credentialId ?? undefined, r.label);
               setAdding(false);
               setCloneFrom(null);
             }}
@@ -278,8 +318,16 @@ export function FleetView({
           />
         </div>
       )}
-      <div className="fleet-grid">
-        {fleet.map((r) => {
+      {groupKeys.map((gk) => (
+        <div key={gk} className="fleet-group">
+          {showHeadings && (
+            <div className="fleet-group-head">
+              <span className="fleet-group-name">{gk === UNGROUPED ? "Ungrouped" : gk}</span>
+              <span className="fleet-group-count mono">{groups.get(gk)!.length}</span>
+            </div>
+          )}
+          <div className="fleet-grid">
+            {groups.get(gk)!.map((r) => {
           const busy = busyOf(r);
           const p = providerInfo(providers, r.provider);
           const isEditing = editing === r.id;
@@ -289,7 +337,7 @@ export function FleetView({
                 <ConfigForm
                   initial={r}
                   onSave={(u) => {
-                    updateAgent(r.id, { model: u.model, name: u.name || undefined });
+                    updateAgent(r.id, { model: u.model, name: u.name || undefined, label: u.label });
                     setEditing(null);
                   }}
                   onCancel={() => setEditing(null)}
@@ -397,8 +445,10 @@ export function FleetView({
               )}
             </div>
           );
-        })}
-      </div>
+            })}
+          </div>
+        </div>
+      ))}
     </section>
   );
 }

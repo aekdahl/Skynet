@@ -171,8 +171,8 @@ export interface Store extends StoreState {
   transitionTask: (projectId: string, taskId: string, to: string) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
-  createAgent: (provider: string, model: string, name?: string, credentialId?: string) => Promise<void>;
-  updateAgent: (id: string, patch: { model?: string; name?: string; canReview?: boolean }) => Promise<void>;
+  createAgent: (provider: string, model: string, name?: string, credentialId?: string, label?: string | null) => Promise<void>;
+  updateAgent: (id: string, patch: { model?: string; name?: string; canReview?: boolean; label?: string | null }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
   // audit trail maintenance — mirror archive (agent) + delete (project/task/runner)
   archiveAudit: (hitlId: string, archived: boolean) => Promise<void>;
@@ -547,8 +547,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           throw e;
         }
       },
-      createAgent: async (provider, model, name, credentialId) => {
-        await api.createAgent({ provider, model, name, credentialId });
+      createAgent: async (provider, model, name, credentialId, label) => {
+        await api.createAgent({ provider, model, name, credentialId, label });
       },
       updateAgent: async (id, patch) => {
         await api.updateAgent(id, patch);

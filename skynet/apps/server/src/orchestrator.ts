@@ -801,7 +801,7 @@ export class Orchestrator {
         const template = eligibleRunners[0]; // a busy runner on an allowed key
         if (settings.autoProvisionRunners && underCap && template && (await this.providerUsable(workspaceId, template.provider, template.credentialId))) {
           const id = `runner-auto-${++this.seq}`;
-          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true };
+          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true, label: template.label ?? null };
           await this.hub.upsertAgent(runner);
           return { id, provider: template.provider, model: template.model, credentialId: template.credentialId ?? null };
         }
@@ -886,7 +886,7 @@ export class Orchestrator {
         );
       }
       const id = `runner-auto-${++this.seq}`;
-      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true };
+      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true, label: null };
       await this.hub.upsertAgent(runner);
       return { id, provider, model, credentialId: credentialId ?? null };
     });
