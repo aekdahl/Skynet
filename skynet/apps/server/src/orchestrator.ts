@@ -1388,7 +1388,13 @@ export class Orchestrator {
         ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
         : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
     );
-    await this.hub.runStatus(runId, "running");
+    // Reflect the (re)acquired runner on the persisted run: a reassign moves the
+    // run to a DIFFERENT agent, and the board/subway attribute runs by agentId —
+    // without this the run stays drawn under the agent it was escalated from
+    // (which is now idle), looking like a stray/duplicate station.
+    const running = await this.store.getRun(runId);
+    if (running) await this.hub.upsertRun({ ...running, status: "running", agentId: acq.id });
+    else await this.hub.runStatus(runId, "running");
     if (ctx?.taskId) {
       const task = await this.store.getTask(ctx.taskId);
       if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
