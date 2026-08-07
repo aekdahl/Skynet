@@ -203,6 +203,10 @@ resource "google_compute_instance" "vm" {
   machine_type = var.machine_type
   zone         = var.zone
   tags         = ["${var.name_prefix}"]
+  # Let `terraform apply` change the machine type in place: GCE requires the VM
+  # to be stopped to resize it, so without this a machine_type change ERRORS.
+  # With it, apply just stops → resizes → starts (no recreation; /data survives).
+  allow_stopping_for_update = true
 
   boot_disk {
     initialize_params {
