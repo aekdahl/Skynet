@@ -82,6 +82,22 @@ export const planDone = (a: TaskRun) => a.plan.filter((p) => p.state === "done")
 export const agentsForProject = (runs: TaskRun[], projectId: string) =>
   runs.filter((a) => a.projectId === projectId);
 
+// Each task's CURRENT run is the one its `runId` points to. Re-running a task
+// orphans its previous run — assignTask only mints a new run once the old one is
+// `done`, and moves the task's runId to the new run — and the subway would draw
+// that superseded original as a SECOND station for the same task (the "reassigned
+// task duplicated" bug). Keep only current runs, plus fork runs, which are real
+// branches on the map (a fork child carries `parentId`; its parent is referenced
+// by that id). PURE — unit-tested.
+export const activeProjectRuns = (runs: TaskRun[], tasks: Task[], projectId: string): TaskRun[] => {
+  const mine = runs.filter((r) => r.projectId === projectId);
+  const current = new Set(
+    tasks.filter((t) => t.projectId === projectId && t.runId).map((t) => t.runId as string),
+  );
+  const forkParents = new Set(mine.filter((r) => r.parentId).map((r) => r.parentId as string));
+  return mine.filter((r) => current.has(r.id) || r.parentId != null || forkParents.has(r.id));
+};
+
 export const tasksForProject = (tasks: Task[], projectId: string) =>
   tasks.filter((t) => t.projectId === projectId);
 
