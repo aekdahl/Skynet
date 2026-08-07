@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk } from "@skynet/shared";
+import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk, Feature, Milestone } from "@skynet/shared";
 import { WorkspaceSettings } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -95,14 +95,24 @@ export class TaskAlreadyAssignedError extends Error {
  * (and only when they also have an eligibility set). "unclear" and null both
  * park the task in triage for a human to promote.
  */
-export function splitEstMinutesTag(
-  raw: string,
-): { body: string; estMinutes: number | null; clarity: "clear" | "unclear" | null } {
+export interface TriageTag {
+  body: string;
+  estMinutes: number | null;
+  clarity: "clear" | "unclear" | null;
+  // Grouping picks: the id of a suitable existing feature / milestone, or null.
+  // Raw here — assessTask validates them against the project's actual ids (the
+  // model must pick from a supplied list; we never trust a fabricated id).
+  featureId: string | null;
+  milestoneId: string | null;
+}
+
+export function splitEstMinutesTag(raw: string): TriageTag {
+  const none: TriageTag = { body: (raw ?? "").trim(), estMinutes: null, clarity: null, featureId: null, milestoneId: null };
   const trimmed = (raw ?? "").trim();
   const noFence = trimmed.replace(/\n?```\s*$/, "").trimEnd();
   // Match the LAST balanced top-level {...} on the tail.
   const end = noFence.lastIndexOf("}");
-  if (end === -1) return { body: trimmed, estMinutes: null, clarity: null };
+  if (end === -1) return none;
   let depth = 0;
   let start = -1;
   for (let i = end; i >= 0; i--) {
@@ -113,9 +123,14 @@ export function splitEstMinutesTag(
       if (depth === 0) { start = i; break; }
     }
   }
-  if (start < 0) return { body: trimmed, estMinutes: null, clarity: null };
+  if (start < 0) return none;
   try {
-    const obj = JSON.parse(noFence.slice(start, end + 1)) as { estMinutes?: unknown; clarity?: unknown };
+    const obj = JSON.parse(noFence.slice(start, end + 1)) as {
+      estMinutes?: unknown;
+      clarity?: unknown;
+      featureId?: unknown;
+      milestoneId?: unknown;
+    };
     // Parse each field independently — a malformed one shouldn't drop the tag.
     const estMinutes =
       typeof obj.estMinutes === "number" && Number.isFinite(obj.estMinutes) && obj.estMinutes > 0
@@ -123,16 +138,19 @@ export function splitEstMinutesTag(
         : null;
     const clarity: "clear" | "unclear" | null =
       obj.clarity === "clear" || obj.clarity === "unclear" ? obj.clarity : null;
+    const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+    const featureId = str(obj.featureId);
+    const milestoneId = str(obj.milestoneId);
     // Only strip the tag from the body if AT LEAST ONE field parsed — if
-    // neither did the "JSON object" was probably a false positive in prose.
-    if (estMinutes != null || clarity != null) {
+    // none did the "JSON object" was probably a false positive in prose.
+    if (estMinutes != null || clarity != null || featureId != null || milestoneId != null) {
       const body = noFence.slice(0, start).replace(/```[a-zA-Z]*\s*$/, "").trim();
-      return { body, estMinutes, clarity };
+      return { body, estMinutes, clarity, featureId, milestoneId };
     }
   } catch {
     /* not a JSON tail — whole reply is the body */
   }
-  return { body: trimmed, estMinutes: null, clarity: null };
+  return none;
 }
 
 // Appended to every run brief. Scope creep — an agent finishing the ask and then
@@ -2256,13 +2274,19 @@ export class Orchestrator {
               (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") !== "unassigned",
             );
             if (backlog) {
-              const { assessment, estimatedDurationMs, clarity } = await this.assessTask(ws, idle[0]!, backlog);
+              const { assessment, estimatedDurationMs, clarity, featureId, milestoneId } = await this.assessTask(ws, idle[0]!, backlog);
               // Only OVERWRITE an existing estimate when triage produced a new
               // one — leaves an operator-set estimate intact if triage failed
               // to guess (or on retriage of a task that already had one).
               const nextEst = estimatedDurationMs != null
                 ? estimatedDurationMs
                 : backlog.estimatedDurationMs;
+              // File under a suitable feature/milestone — but only when the task
+              // isn't ALREADY grouped, so triage never clobbers an operator's
+              // choice. A feature carries its milestone (assessTask nulls a direct
+              // milestone when a feature was picked).
+              const nextFeatureId = backlog.featureId ?? featureId;
+              const nextMilestoneId = backlog.featureId || backlog.milestoneId ? backlog.milestoneId : milestoneId;
               // Auto-promote to todo when the LLM said "clear" — the eligibility
               // check above already guarantees the task can leave backlog.
               const nextState: Task["state"] = clarity === "clear" ? "todo" : "triage";
@@ -2271,6 +2295,8 @@ export class Orchestrator {
                 state: nextState,
                 assessment,
                 estimatedDurationMs: nextEst,
+                featureId: nextFeatureId,
+                milestoneId: nextMilestoneId,
               });
             }
             // 2) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
@@ -2337,7 +2363,7 @@ export class Orchestrator {
     ws: string,
     agent: Agent,
     task: Task,
-  ): Promise<{ assessment: string; estimatedDurationMs: number | null; clarity: "clear" | "unclear" | null }> {
+  ): Promise<{ assessment: string; estimatedDurationMs: number | null; clarity: "clear" | "unclear" | null; featureId: string | null; milestoneId: string | null }> {
     try {
       const provider = await this.getProvider(agent.provider);
       if (!provider.consult) {
@@ -2345,10 +2371,29 @@ export class Orchestrator {
           assessment: `Auto-triaged — "${task.text}" looks actionable; no blockers noted.`,
           estimatedDurationMs: null,
           clarity: null,
+          featureId: null,
+          milestoneId: null,
         };
       }
       const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
       const project = await this.store.getProject(task.projectId);
+      // Offer the project's OPEN features + milestones so triage can file the task
+      // under a suitable one. The model must pick an id FROM these lists (or null);
+      // we validate its pick against them below — never trust a fabricated id.
+      const features = (await this.store.listFeatures(ws).catch(() => [] as Feature[]))
+        .filter((f) => f.projectId === task.projectId && !f.archived && f.status !== "shipped");
+      const milestones = (await this.store.listMilestones(ws).catch(() => [] as Milestone[]))
+        .filter((m) => m.projectId === task.projectId && !m.archived && m.status !== "shipped");
+      const groupingInstr =
+        features.length || milestones.length
+          ? [
+              "",
+              "GROUPING: file this task under a suitable EXISTING feature and/or milestone if one clearly fits.",
+              features.length ? `Features (id — name): ${features.map((f) => `${f.id} — ${f.name}`).join("; ")}` : "Features: (none)",
+              milestones.length ? `Milestones (id — name): ${milestones.map((m) => `${m.id} — ${m.name}`).join("; ")}` : "Milestones: (none)",
+              'Add "featureId" and/or "milestoneId" to the JSON tag with an id COPIED EXACTLY from the lists above — or null if none clearly fits. Prefer a feature (its milestone is inherited); set milestoneId directly only when no feature fits. Do NOT invent ids; when unsure, use null.',
+            ].join("\n")
+          : "";
       // The estimate is for AGENT wall-clock time, not human developer time —
       // these differ by an order of magnitude on typical coding tasks (an
       // autonomous agent's 20-minute feature is a person's afternoon). Without
@@ -2368,7 +2413,7 @@ export class Orchestrator {
           "Anchors (agent wall-clock): S ≈ 5m (rename, config tweak, single small edit), M ≈ 20m (a real feature — new endpoint, migration, small refactor), L ≈ 60m (multi-file change, cross-module work). Cap at 240m even for very large asks.",
           "clarity = \"clear\" ONLY if the ask is well-scoped and actionable AS WRITTEN (an agent could start without more info).",
           '"unclear" if it needs clarification, is missing acceptance criteria, or the scope is ambiguous. When in doubt, choose "unclear".',
-          "Omit any field you can't confidently supply; a missing signal is honest, a fabricated one is not.",
+          "Omit any field you can't confidently supply; a missing signal is honest, a fabricated one is not." + groupingInstr,
         ].join("\n"),
       );
       const raw = reply.trim();
@@ -2378,12 +2423,20 @@ export class Orchestrator {
           ? Math.min(parsed.estMinutes * 60_000, 24 * 60 * 60_000) // cap at 24h
           : null;
       const assessment = (parsed.body || raw).slice(0, 500) || `Auto-triaged — "${task.text}".`;
-      return { assessment, estimatedDurationMs, clarity: parsed.clarity };
+      // Validate the model's grouping picks against the offered ids — never write a
+      // fabricated id. A feature carries its milestone, so take a direct milestone
+      // ONLY when no feature was chosen (avoids a conflicting double-assignment).
+      const featureId = parsed.featureId && features.some((f) => f.id === parsed.featureId) ? parsed.featureId : null;
+      const milestoneId =
+        !featureId && parsed.milestoneId && milestones.some((m) => m.id === parsed.milestoneId) ? parsed.milestoneId : null;
+      return { assessment, estimatedDurationMs, clarity: parsed.clarity, featureId, milestoneId };
     } catch (err) {
       return {
         assessment: `Auto-triaged — "${task.text}" (assessment unavailable: ${(err as Error).message}).`,
         estimatedDurationMs: null,
         clarity: null,
+        featureId: null,
+        milestoneId: null,
       };
     }
   }

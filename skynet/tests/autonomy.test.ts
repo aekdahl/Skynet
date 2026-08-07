@@ -2,7 +2,7 @@
 // auto-pick todo → ongoing, and review → done/flag. Uses an injected provider so
 // the consult (triage/review) and run start are deterministic.
 import { describe, it, expect, beforeEach } from "vitest";
-import type { Agent, HitlItem, Project, Task, TaskRun, ServerEvent } from "@skynet/shared";
+import type { Agent, Feature, HitlItem, Milestone, Project, Task, TaskRun, ServerEvent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
 import { Orchestrator } from "../apps/server/src/orchestrator.js";
@@ -48,6 +48,15 @@ const mkTask = (over: Partial<Task>): Task => ({
   id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do X", state: "backlog",
   runId: null, autoPick: false, assessment: null, reviewVerdict: null,
   assignment: { mode: "any", agentIds: [] }, ...over,
+});
+
+const mkFeature = (over: Partial<Feature>): Feature => ({
+  id: "f1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "Billing", description: null,
+  status: "active", milestoneId: null, archived: false, createdAt: 0, ...over,
+});
+const mkMilestone = (over: Partial<Milestone>): Milestone => ({
+  id: "m1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "v1", description: null,
+  targetAt: null, status: "planned", archived: false, createdAt: 0, ...over,
 });
 
 const setup = async (reply?: string) => {
@@ -400,5 +409,51 @@ describe("autonomy loop", () => {
     expect(provider.consults).toBe(consultsBefore); // no new consult fired
     const t = await store.getTask("t1");
     expect(t?.reviewVerdict?.reason).toBe("prior verdict"); // unchanged
+  });
+});
+
+describe("autonomy triage — feature/milestone grouping", () => {
+  // Triage offers the project's open features/milestones; the model picks an id
+  // from those lists, which we validate before writing (never a fabricated id).
+  const triageWith = async (reply: string, over: Partial<Task> = {}) => {
+    const { store, orch } = await setup(reply);
+    await store.putFeature(mkFeature({ id: "f1", name: "Billing" }));
+    await store.putMilestone(mkMilestone({ id: "m1", name: "v1" }));
+    await store.putTask(mkTask({ state: "backlog", ...over }));
+    await orch.tickAutonomy();
+    return store.getTask("t1");
+  };
+
+  it("files the task under a suitable existing feature (milestone inherited → not set directly)", async () => {
+    const t = await triageWith('Fits Billing.\n{"estMinutes":20,"clarity":"clear","featureId":"f1"}');
+    expect(t?.featureId).toBe("f1");
+    expect(t?.milestoneId).toBeNull();
+    expect(t?.state).toBe("todo"); // clarity=clear still auto-promotes
+  });
+
+  it("sets a milestone directly when no feature fits", async () => {
+    const t = await triageWith('Belongs in v1.\n{"clarity":"unclear","milestoneId":"m1"}');
+    expect(t?.milestoneId).toBe("m1");
+    expect(t?.featureId).toBeNull();
+  });
+
+  it("prefers the feature and drops a co-picked milestone (the feature carries it)", async () => {
+    const t = await triageWith('Both.\n{"clarity":"clear","featureId":"f1","milestoneId":"m1"}');
+    expect(t?.featureId).toBe("f1");
+    expect(t?.milestoneId).toBeNull();
+  });
+
+  it("rejects a fabricated id not in the offered lists", async () => {
+    const t = await triageWith('Made up.\n{"clarity":"unclear","featureId":"ghost","milestoneId":"nope"}');
+    expect(t?.featureId).toBeNull();
+    expect(t?.milestoneId).toBeNull();
+  });
+
+  it("never clobbers a grouping the operator already set", async () => {
+    const t = await triageWith(
+      'Retriage.\n{"clarity":"unclear","featureId":"f1"}',
+      { featureId: "operator-choice" },
+    );
+    expect(t?.featureId).toBe("operator-choice");
   });
 });
