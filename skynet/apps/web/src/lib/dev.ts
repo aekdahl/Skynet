@@ -19,7 +19,10 @@ export function devToolsEnabled(): boolean {
 }
 
 /** Views hidden from release builds (nav item + reachable page). */
-export const DEV_ONLY_VIEWS: ReadonlySet<ViewName> = new Set<ViewName>(["roadmap"]);
+// TEMP (pre-launch): the Roadmap is intentionally visible in ALL builds for now
+// — including the deployed GCP release — so it can be shown to stakeholders. Put
+// "roadmap" back in this set (and re-gate the nav item in shell.tsx) before launch.
+export const DEV_ONLY_VIEWS: ReadonlySet<ViewName> = new Set<ViewName>([]);
 
 /** Coerce a dev-only view to "home" when dev tooling is off — so a release build
  *  can't reach it via a deep link, a stale hash, or a PWA/notification nav. */
