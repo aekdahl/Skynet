@@ -250,8 +250,10 @@ export function OpSidebar({
         {item("Fleet", "◇", () => setView("fleet"), active === "fleet")}
         {item("Integrations", "⑂", () => setView("integrations"), active === "integrations")}
         {item("Ready to merge", "⇲", () => setView("merges"), active === "merges", mergeCount)}
-        {/* Roadmap is dev-only (see lib/dev) — hidden from release builds. */}
-        {devTools && item("Roadmap", "◈", () => setView("roadmap"), active === "roadmap")}
+        {/* TEMP (pre-launch): Roadmap shown in ALL builds so it's visible on the
+            deployed GCP release. Restore `devTools &&` here + re-add "roadmap" to
+            DEV_ONLY_VIEWS (lib/dev) to hide it again before launch. */}
+        {item("Roadmap", "◈", () => setView("roadmap"), active === "roadmap")}
         {item("Settings", "⚙", () => setView("settings"), active === "settings")}
       </nav>
       {showQa && (
