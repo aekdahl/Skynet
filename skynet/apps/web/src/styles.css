@@ -2154,6 +2154,13 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .lp-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); flex-wrap: wrap; }
 .lp-title { font-weight: 600; font-size: 13px; }
 .lp-scope { font-size: 11px; color: var(--muted); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 8px; cursor: help; }
+/* Source toggle: Main · Merged · Latest — which slice the preview shows. */
+.lp-source { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.lp-src { font-size: 11px; padding: 3px 9px; background: var(--bg); color: var(--muted); border: none; border-right: 1px solid var(--line); cursor: pointer; font-family: inherit; }
+.lp-src:last-child { border-right: none; }
+.lp-src:hover { color: var(--text); }
+.lp-src.on { color: #0B0D11; background: var(--accent); font-weight: 600; }
+.lp-combined { font-size: 11px; color: var(--muted); }
 .lp-status { font-size: 11px; font-family: var(--font-mono, monospace); }
 .lp-status-live { color: var(--ok); }
 .lp-status-starting { color: var(--warn); }

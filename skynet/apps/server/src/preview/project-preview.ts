@@ -53,6 +53,14 @@ export function previewEnv(extra: Record<string, string> = {}): NodeJS.ProcessEn
 
 export type PreviewStatus = "idle" | "starting" | "live" | "failed" | "stopped";
 
+// Which slice of the project's work a PROJECT preview shows:
+//   • main    — the base branch tip (what's actually shipped / stable).
+//   • merged  — the integration branch (approved + merged fleet state).
+//   • latest  — merged PLUS every review-ready run branch, combined best-effort
+//               into one worktree (conflicting branches are skipped + reported),
+//               so you see everything in flight in a single preview.
+export type PreviewSource = "main" | "merged" | "latest";
+
 export interface PreviewRecipe {
   /** The command line to start the server, e.g. "npm run dev". */
   cmd: string;
@@ -69,6 +77,10 @@ export interface PreviewState {
   error: string | null;
   logs: string[];
   startedAt: number | null;
+  // Which slice this preview shows (project previews only; run previews report
+  // "merged" as a placeholder). `combined` is populated for `latest`.
+  source: PreviewSource;
+  combined: { total: number; included: number; skipped: number } | null;
 }
 
 interface Live {
@@ -93,6 +105,12 @@ interface Live {
   // order. The health check prefers these over the injected port. See start().
   strongPort?: number;
   detectedPorts?: number[];
+  // The preview source (see PreviewSource) + the inputs a `latest` recombine
+  // needs on refresh: the base ref it resets to and the run branches to fold in.
+  source: PreviewSource;
+  baseBranch?: string;
+  combineBranches?: string[];
+  combined?: { total: number; included: number; skipped: number };
   // Did we start the dev server under `--base=/p/<token>/`? When true its assets
   // already carry the proxy prefix, so the /p/<token>/ proxy forwards the full
   // path. When false (the common `concurrently`/nested-Vite case, where --base
@@ -110,6 +128,9 @@ interface StartSpec {
   workspaceId?: string; // for BYOK key resolution (agent recipe)
   persistTo?: string; // repo working tree to write .skynet/preview.json (project previews only)
   refreshBranch?: string; // branch to re-point to on refresh (project previews only)
+  source?: PreviewSource; // which slice this preview shows (default "merged")
+  baseBranch?: string; // the project's base branch (for `main` + as the `latest` reset base)
+  combineBranches?: string[]; // run branches to fold in for `latest` (best-effort)
 }
 
 // Files whose change (when a merge is folded into the preview) means the
@@ -189,7 +210,7 @@ export class ProjectPreviewManager {
   /** A serializable snapshot for the API/UI. */
   state(key: string): PreviewState {
     const p = this.previews.get(key);
-    if (!p) return { status: "idle", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null };
+    if (!p) return { status: "idle", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null, source: "merged", combined: null };
     p.lastTouched = Date.now(); // polling status counts as "watching" → defers idle stop
     // Public origin known (hosted) → hand back the proxied `/p/<token>/` URL so
     // the preview is reachable from a phone; else the loopback URL (desktop, same
@@ -208,6 +229,8 @@ export class ProjectPreviewManager {
       error: p.error,
       logs: p.logs.slice(-80),
       startedAt: p.startedAt,
+      source: p.source,
+      combined: p.combined ?? null,
     };
   }
 
@@ -428,6 +451,37 @@ export class ProjectPreviewManager {
     return dir;
   }
 
+  /** `latest`: fold every review-ready run branch into the (already base/
+   *  integration-checked-out) preview worktree, in a detached-HEAD merge — one
+   *  worktree that shows everything in flight. Best-effort: a branch that fails
+   *  to merge (textual conflict with an earlier one, or any git error) is
+   *  aborted and skipped, and the tally is recorded + logged. Never pushed. */
+  private async combineLatest(p: Live): Promise<void> {
+    const branches = p.combineBranches ?? [];
+    let included = 0;
+    const skipped: string[] = [];
+    for (const b of branches) {
+      // Only merge a branch that actually exists locally (a run may not have
+      // committed, or its branch may have been reaped).
+      const exists = !!(await this.git(p.dir, "rev-parse", "--verify", "--quiet", b).catch(() => ({ stdout: "" }))).stdout.trim();
+      if (!exists) { skipped.push(b); continue; }
+      try {
+        await this.git(p.dir, "-c", "user.name=Skynet", "-c", "user.email=skynet@local", "merge", "--no-ff", "--no-edit", b);
+        included++;
+      } catch {
+        await this.git(p.dir, "merge", "--abort").catch(() => undefined);
+        skipped.push(b);
+      }
+    }
+    p.combined = { total: branches.length, included, skipped: skipped.length };
+    this.log(
+      p,
+      branches.length === 0
+        ? "latest: no review-ready changes to combine — showing the merged state"
+        : `latest: combined ${included}/${branches.length} review-ready change(s)${skipped.length ? ` · skipped ${skipped.length} (conflict)` : ""}`,
+    );
+  }
+
   /** Make dependencies available in the preview worktree before we run the dev
    *  command. A fresh detached checkout has no node_modules, so a script like
    *  `concurrently`/`vite` isn't found. Fast path: symlink the operator's already
@@ -511,20 +565,39 @@ export class ProjectPreviewManager {
     if (p.child && !p.child.killed) p.child.kill("SIGTERM");
   }
 
-  /** Start the PROJECT preview — the integration branch (cumulative merged fleet
-   *  state), refreshed on merge. */
-  async start(projectId: string, repoPath: string, workspaceId?: string): Promise<PreviewState> {
+  /** Start (or switch the source of) the PROJECT preview. `source` chooses the
+   *  slice: `main` (base branch), `merged` (integration branch — the default and
+   *  historical behavior), or `latest` (integration + review-ready run branches
+   *  combined best-effort). `baseBranch`/`combineBranches` come from the caller
+   *  (ops), which knows the project's base and its review-ready runs. */
+  async start(
+    projectId: string,
+    repoPath: string,
+    workspaceId?: string,
+    opts: { source?: PreviewSource; baseBranch?: string; combineBranches?: string[] } = {},
+  ): Promise<PreviewState> {
     if (!repoPath) throw new Error("This project has no local folder to preview.");
-    const branch = this.integrationBranch(projectId);
-    const hasBranch = (await this.git(repoPath, "branch", "--list", branch).catch(() => ({ stdout: "" }))).stdout.trim();
+    const source = opts.source ?? "merged";
+    const integration = this.integrationBranch(projectId);
+    const hasIntegration = !!(await this.git(repoPath, "branch", "--list", integration).catch(() => ({ stdout: "" }))).stdout.trim();
+    // `main` resets to the base branch; `merged`/`latest` reset to the integration
+    // branch (the merged fleet state), falling back to the base — or HEAD — when
+    // no integration branch exists yet. `latest` then folds review branches on top.
+    const base = opts.baseBranch;
+    const mergedRef = hasIntegration ? integration : base ?? "HEAD";
+    const ref = source === "main" ? (base ?? "HEAD") : mergedRef;
+    const refreshBranch = source === "main" ? base : hasIntegration ? integration : base;
     return this.startSpec({
       key: projectId,
       gitRepo: repoPath,
-      ref: hasBranch ? branch : "HEAD",
+      ref,
       recipeKey: projectId,
       workspaceId,
       persistTo: repoPath,
-      refreshBranch: hasBranch ? branch : undefined,
+      refreshBranch,
+      source,
+      baseBranch: base,
+      combineBranches: source === "latest" ? opts.combineBranches ?? [] : undefined,
     });
   }
 
@@ -545,7 +618,7 @@ export class ProjectPreviewManager {
       const p: Live = {
         status: "failed", key, token: randomBytes(9).toString("base64url"), dir: this.previewDir(key), gitRepo: opts.repoPath, recipeKey: opts.projectId,
         logs: [], error: `This run has no commits to preview yet (branch ${opts.branch} doesn't exist).`,
-        startedAt: Date.now(), lastTouched: Date.now(),
+        startedAt: Date.now(), lastTouched: Date.now(), source: "merged",
       };
       this.previews.set(key, p);
       return this.state(key);
@@ -577,11 +650,15 @@ export class ProjectPreviewManager {
       dir: this.previewDir(spec.key), gitRepo: spec.gitRepo,
       recipeKey: spec.recipeKey, refreshBranch: spec.refreshBranch,
       logs: [], error: null, startedAt: Date.now(), lastTouched: Date.now(),
+      source: spec.source ?? "merged", baseBranch: spec.baseBranch, combineBranches: spec.combineBranches,
     };
     this.previews.set(spec.key, p);
 
     try {
       p.dir = await this.prepareWorktree(spec.key, spec.gitRepo, spec.ref);
+      // `latest`: fold every review-ready run branch onto the base worktree,
+      // best-effort — conflicting branches are skipped + reported.
+      if (spec.source === "latest") await this.combineLatest(p);
       const port = await this.freePort();
       if (this.previews.get(spec.key) === p && !this.resolveRecipeStatic(p.dir, port) && !this.agentRecipe.has(spec.recipeKey)) {
         this.log(p, "no dev/start script found — asking the assistant how to run this project…");
@@ -691,7 +768,12 @@ export class ProjectPreviewManager {
     if (hasBranch) {
       const before = (await this.git(p.dir, "rev-parse", "HEAD").catch(() => ({ stdout: "" }))).stdout.trim();
       await this.git(p.dir, "checkout", "--detach", p.refreshBranch).catch((e) => this.log(p, `refresh: ${(e as Error).message}`));
-      this.log(p, "↻ refreshed to integration branch tip");
+      // `latest` re-folds its review branches onto the fresh base each refresh
+      // (picks up new commits on those branches + the base moving under them).
+      // A run that entered review AFTER this preview started only appears once
+      // it's re-launched (toggle Latest again) — the branch set is captured then.
+      if (p.source === "latest") await this.combineLatest(p);
+      this.log(p, p.source === "latest" ? "↻ refreshed — recombined latest" : `↻ refreshed to ${p.source === "main" ? "base" : "integration"} branch tip`);
       const after = (await this.git(p.dir, "rev-parse", "HEAD").catch(() => ({ stdout: "" }))).stdout.trim();
       if (before && after && before !== after) await this.reconcileDepsOnRefresh(p, before, after);
     }
@@ -723,8 +805,19 @@ export class ProjectPreviewManager {
     await this.runToCompletion(cmd, p.dir, p, 3 * 60_000).catch((e) => this.log(p, `re-install failed: ${(e as Error).message}`));
   }
 
-  async restart(projectId: string, repoPath: string, workspaceId?: string): Promise<PreviewState> {
-    return this.start(projectId, repoPath, workspaceId);
+  async restart(
+    projectId: string,
+    repoPath: string,
+    workspaceId?: string,
+    opts: { source?: PreviewSource; baseBranch?: string; combineBranches?: string[] } = {},
+  ): Promise<PreviewState> {
+    return this.start(projectId, repoPath, workspaceId, opts);
+  }
+
+  /** The source a live project preview is currently showing (for restart to
+   *  preserve it, and the UI to reflect it). "merged" when none is running. */
+  currentSource(projectId: string): PreviewSource {
+    return this.previews.get(projectId)?.source ?? "merged";
   }
 
   /** Restart a run preview — re-adds the worktree at the branch tip (picks up
@@ -754,7 +847,7 @@ export class ProjectPreviewManager {
       await rm(p.dir, { recursive: true, force: true }).catch(() => undefined);
       this.previews.delete(key);
     }
-    return { status: "stopped", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null };
+    return { status: "stopped", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null, source: "merged", combined: null };
   }
 
   /** Auto-stop a preview nothing has polled in IDLE_MS (bounds resource use). */

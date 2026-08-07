@@ -594,6 +594,7 @@ export async function streamStewardChat(
 }
 
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
+export type PreviewSource = "main" | "merged" | "latest";
 export interface PreviewState {
   status: "idle" | "starting" | "live" | "failed" | "stopped";
   url: string | null;
@@ -602,12 +603,14 @@ export interface PreviewState {
   error: string | null;
   logs: string[];
   startedAt: number | null;
+  source: PreviewSource;
+  combined: { total: number; included: number; skipped: number } | null;
 }
 export function previewStatus(projectId: string) {
   return req<PreviewState>("GET", `/api/projects/${projectId}/preview`);
 }
-export function previewStart(projectId: string) {
-  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/start`);
+export function previewStart(projectId: string, source?: PreviewSource) {
+  return req<PreviewState>("POST", `/api/projects/${projectId}/preview/start`, source ? { source } : undefined);
 }
 export function previewStop(projectId: string) {
   return req<PreviewState>("POST", `/api/projects/${projectId}/preview/stop`);

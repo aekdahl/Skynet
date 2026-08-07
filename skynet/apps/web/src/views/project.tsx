@@ -1344,7 +1344,12 @@ export function LivePreviewModal({
   title: string;
   onClose: () => void;
 }) {
-  const ctl = { status: () => api.previewStatus(id), start: () => api.previewStart(id), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
+  // Which slice to preview: main (base branch) · merged (integration branch) ·
+  // latest (merged + review-ready changes combined). Drives start().
+  const [source, setSource] = useState<api.PreviewSource>("merged");
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
+  const ctl = { status: () => api.previewStatus(id), start: () => api.previewStart(id, sourceRef.current), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
   const ctlRef = useRef(ctl);
   ctlRef.current = ctl;
 
@@ -1414,17 +1419,37 @@ export function LivePreviewModal({
 
   const width = DEVICES[device];
   const live = st?.status === "live" && st.url;
+  // Switch the previewed slice — re-(re)starts the server against the new source
+  // (keeps node_modules warm; see startSpec's soft-replace).
+  const switchSource = (next: api.PreviewSource) => {
+    if (next === source) return;
+    setSource(next);
+    startedRef.current = true;
+    void api.previewStart(id, next).then(setSt).catch(() => undefined);
+  };
+  const SRC_LABEL: Record<api.PreviewSource, string> = { main: "Main", merged: "Merged", latest: "Latest" };
+  const SRC_HINT: Record<api.PreviewSource, string> = {
+    main: "The base branch — what's actually shipped/stable. No in-flight work.",
+    merged: "The integration branch — approved + merged changes only.",
+    latest: "Merged + every review-ready change, combined into one preview (conflicting ones skipped).",
+  };
 
   const inner = (
       <div className={"lp-modal lp-mode-" + mode} onClick={(e) => e.stopPropagation()}>
         <div className="lp-bar">
           <span className="lp-title">{title}</span>
-          <span
-            className="lp-scope mono"
-            title="Reflects the integration branch — merged changes only. An in-flight run's work appears here after it's approved and merged; unmerged/uncommitted changes aren't shown."
-          >
-            merged · integration branch
-          </span>
+          <div className="lp-source" role="group" aria-label="Preview source">
+            {(["main", "merged", "latest"] as const).map((s) => (
+              <button key={s} className={"lp-src" + (source === s ? " on" : "")} title={SRC_HINT[s]} onClick={() => switchSource(s)}>
+                {SRC_LABEL[s]}
+              </button>
+            ))}
+          </div>
+          {source === "latest" && st?.combined && (
+            <span className="lp-combined mono" title="Review-ready changes folded into this preview">
+              {st.combined.included}/{st.combined.total} combined{st.combined.skipped > 0 ? ` · ${st.combined.skipped} skipped` : ""}
+            </span>
+          )}
           <span className={"lp-status lp-status-" + (st?.status ?? "idle")}>
             {st?.status === "live" ? "● live" : st?.status === "starting" ? "◐ starting…" : st?.status === "failed" ? "✕ failed" : st?.status ?? "…"}
           </span>
