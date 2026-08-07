@@ -39,6 +39,12 @@ variable "data_disk_gb" {
   description = "Persistent disk for /data — holds the file store AND agent worktrees, cloned repos, and preview node_modules (kept off the small boot disk so churn can't wedge the VM). Bump it for many/large projects; the fs auto-grows on redeploy. Snapshot it for backups."
 }
 
+variable "boot_disk_gb" {
+  type        = number
+  default     = 50
+  description = "Boot disk (OS + Docker images + container overlay). 50 GB gives headroom for image churn; agent scratch (/tmp, npm cache) is redirected to /data so it can't fill this. Growing it on an existing VM is non-destructive — a reboot auto-expands the root partition."
+}
+
 variable "operator_email" {
   type        = string
   description = "Your Google account email — granted IAP tunnel access to reach the board (roles/iap.tunnelResourceAccessor)."
