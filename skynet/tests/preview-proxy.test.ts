@@ -4,7 +4,7 @@
 // bits: token extraction from the path, and public-origin learning (env wins;
 // loopback ignored).
 import { describe, it, expect, beforeEach } from "vitest";
-import { previewTokenOf, stripPreviewPrefix, rewritePreviewHtml } from "../apps/server/src/preview/preview-proxy.js";
+import { previewTokenOf, stripPreviewPrefix, rewritePreviewHtml, rewriteJsImports } from "../apps/server/src/preview/preview-proxy.js";
 import { recordPublicOrigin, publicOrigin, __resetPublicOrigin } from "../apps/server/src/preview/public-origin.js";
 
 describe("previewTokenOf", () => {
@@ -60,6 +60,30 @@ describe("rewritePreviewHtml", () => {
   it("does not touch relative paths", () => {
     const html = `<script src="./rel.js"></script><img src="rel.png">`;
     expect(rewritePreviewHtml(html, P)).toBe(html);
+  });
+});
+
+describe("rewriteJsImports", () => {
+  const P = "/p/abc123";
+  it("re-prefixes root-absolute static import/re-export specifiers", () => {
+    const js = `import App from "/src/App.jsx"\nexport { x } from "/src/x.js"`;
+    const out = rewriteJsImports(js, P);
+    expect(out).toContain(`from "/p/abc123/src/App.jsx"`);
+    expect(out).toContain(`from "/p/abc123/src/x.js"`);
+  });
+  it("re-prefixes root-absolute side-effect and dynamic imports", () => {
+    const js = `import "/src/styles.css"\nconst m = import("/src/lazy.js")`;
+    const out = rewriteJsImports(js, P);
+    expect(out).toContain(`import "/p/abc123/src/styles.css"`);
+    expect(out).toContain(`import("/p/abc123/src/lazy.js"`);
+  });
+  it("re-prefixes /@fs/ absolute filesystem imports (Vite deps cache)", () => {
+    const js = `import React from "/@fs/data/worktrees/preview/node_modules/.vite/deps/react.js"`;
+    expect(rewriteJsImports(js, P)).toContain(`from "/p/abc123/@fs/data/worktrees/preview/node_modules/.vite/deps/react.js"`);
+  });
+  it("leaves relative, absolute-URL, and already-prefixed specifiers alone", () => {
+    const js = `import "./rel.js"\nimport "http://cdn.example.com/x.js"\nimport "/p/abc123/already.js"`;
+    expect(rewriteJsImports(js, P)).toBe(js);
   });
 });
 

@@ -21,12 +21,17 @@
 //     common case when Vite runs INDIRECTLY (via `concurrently`/npm scripts), so
 //     the `--base` flag can't reach the leaf `vite` process. Here we STRIP the
 //     `/p/<token>` prefix before forwarding (so `/p/<tok>/main.jsx` → `/main.jsx`
-//     reaches Vite), and REWRITE the returned HTML so its root-absolute `src`/
-//     `href` (and inline module imports like Vite's react-refresh preamble)
+//     reaches Vite), and REWRITE the returned body so its root-absolute refs
 //     re-gain the prefix — otherwise the browser, viewing the page at
 //     `/p/<tok>/`, would request `/main.jsx` at the top origin, miss this proxy,
 //     and get Skynet's SPA fallback HTML back (a `text/html` MIME error → blank
-//     page). HMR-over-proxy degrades to reload-on-refresh in this mode.
+//     page). Two response kinds need this, not just the entry document: the HTML
+//     (`src`/`href` attrs + inline `<script>` imports) AND every JS module Vite
+//     serves after it — Vite rewrites each module's import specifiers to
+//     root-absolute paths (`from "/src/App.jsx"`, `from "/@fs/…"`), so the SAME
+//     MIME-mismatch/blank-page failure hits the whole module graph, not just the
+//     entry HTML, if only the HTML were rewritten. HMR-over-proxy degrades to
+//     reload-on-refresh in this mode.
 //
 // HTTP is hijacked in an `onRequest` hook — that runs BEFORE Fastify parses the
 // body, so we stream the raw request straight through. HMR (and any app) WebSocket
@@ -53,12 +58,39 @@ export function stripPreviewPrefix(url: string, token: string): string {
   return url;
 }
 
+/** Re-prefix root-absolute ES-module specifiers in a JS body: `from "/…"` (static
+ *  imports/re-exports), bare `import "/…"` (side-effect imports), and dynamic
+ *  `import("/…")`. This is what Vite's module graph is actually built from once
+ *  you're past the entry HTML — e.g. `main.jsx` importing `"/src/App.jsx"` or
+ *  `"/@fs/…"` — so it applies both inside inline `<script>` blocks (react-refresh
+ *  preamble) and to whole standalone `.js`/`.jsx` module responses. Skips
+ *  protocol-relative, absolute-URL, relative, and already-prefixed specifiers
+ *  (only a single leading `/` qualifies). PURE — tested. */
+export function rewriteJsImports(js: string, prefix: string): string {
+  const reprefix = (path: string): string | null =>
+    path === prefix || path.startsWith(prefix + "/") ? null : prefix + path;
+  return js
+    .replace(/\bfrom\s*("|')(\/(?!\/)[^"']*)\1/g, (m, q, path) => {
+      const r = reprefix(path);
+      return r ? `from ${q}${r}${q}` : m;
+    })
+    .replace(/\bimport\s*\(\s*("|')(\/(?!\/)[^"']*)\1/g, (m, q, path) => {
+      const r = reprefix(path);
+      return r ? `import(${q}${r}${q}` : m;
+    })
+    .replace(/\bimport\s*("|')(\/(?!\/)[^"']*)\1/g, (m, q, path) => {
+      const r = reprefix(path);
+      return r ? `import ${q}${r}${q}` : m;
+    });
+}
+
 /** Re-prefix a root-served dev server's HTML so its root-absolute asset URLs are
  *  reachable through the `/p/<token>/` proxy. Rewrites `src`/`href` attributes and
- *  absolute ES-module specifiers inside inline `<script>` blocks (e.g. Vite's
- *  react-refresh preamble: `import X from "/@react-refresh"`). Skips protocol-
- *  relative (`//host`), absolute-URL (`http…`), and already-prefixed values.
- *  `prefix` is the base with no trailing slash, e.g. `/p/abc123`. PURE — tested. */
+ *  (via {@link rewriteJsImports}) absolute ES-module specifiers inside inline
+ *  `<script>` blocks (e.g. Vite's react-refresh preamble: `import X from
+ *  "/@react-refresh"`). Skips protocol-relative (`//host`), absolute-URL
+ *  (`http…`), and already-prefixed values. `prefix` is the base with no trailing
+ *  slash, e.g. `/p/abc123`. PURE — tested. */
 export function rewritePreviewHtml(html: string, prefix: string): string {
   const reprefix = (path: string): string | null =>
     path === prefix || path.startsWith(prefix + "/") ? null : prefix + path;
@@ -69,18 +101,9 @@ export function rewritePreviewHtml(html: string, prefix: string): string {
   });
   // 2) Absolute module specifiers inside inline <script> blocks (external scripts
   //    have an empty body, so those are untouched here — their src was handled in 1).
-  out = out.replace(/(<script\b[^>]*>)([\s\S]*?)(<\/script>)/gi, (_m, open: string, body: string, close: string) => {
-    const b = body
-      .replace(/\bfrom\s*("|')(\/(?!\/)[^"']*)\1/g, (m, q, path) => {
-        const r = reprefix(path);
-        return r ? `from ${q}${r}${q}` : m;
-      })
-      .replace(/\bimport\s*\(\s*("|')(\/(?!\/)[^"']*)\1/g, (m, q, path) => {
-        const r = reprefix(path);
-        return r ? `import(${q}${r}${q}` : m;
-      });
-    return open + b + close;
-  });
+  out = out.replace(/(<script\b[^>]*>)([\s\S]*?)(<\/script>)/gi, (_m, open: string, body: string, close: string) =>
+    open + rewriteJsImports(body, prefix) + close,
+  );
   return out;
 }
 
@@ -104,23 +127,32 @@ export function registerLivePreviewProxy(app: FastifyInstance, targetForToken: P
     const raw = reply.raw;
     const fwdPath = stripPrefix ? stripPreviewPrefix(req.url, token!) : req.url;
     const headers = { ...req.headers, host: `127.0.0.1:${port}` };
-    // In strip mode we may rewrite the HTML body, so ask the dev server to hand it
+    // In strip mode we may rewrite the body, so ask the dev server to hand it
     // back uncompressed (we can't rewrite gzipped bytes).
     if (stripPrefix) delete (headers as Record<string, unknown>)["accept-encoding"];
     const upstream = httpRequest({ host: "127.0.0.1", port, method: req.method, path: fwdPath, headers }, (up) => {
       const ct = String(up.headers["content-type"] ?? "");
-      const rewritable = stripPrefix && ct.includes("text/html") && !up.headers["content-encoding"];
+      const isHtml = ct.includes("text/html");
+      // Vite (and any bundler) rewrites a root-served module's import specifiers
+      // to root-absolute paths too (`from "/src/App.jsx"`, `from "/@fs/…"`) — not
+      // just the entry HTML's tags — so the whole module graph needs the same
+      // treatment, else every import 404s off the prefix (Skynet's SPA fallback
+      // answers with HTML → "Failed to load module script" → blank page).
+      const isJs = ct.includes("javascript");
+      const rewritable = stripPrefix && (isHtml || isJs) && !up.headers["content-encoding"];
       if (!rewritable) {
         raw.writeHead(up.statusCode ?? 502, up.headers);
         up.pipe(raw);
         return;
       }
-      // Buffer the (small) HTML entry document, re-prefix its asset URLs, and send
+      // Buffer the (small) response, re-prefix its root-absolute refs, and send
       // with a corrected content-length.
       const chunks: Buffer[] = [];
       up.on("data", (c: Buffer) => chunks.push(c));
       up.on("end", () => {
-        const body = Buffer.from(rewritePreviewHtml(Buffer.concat(chunks).toString("utf8"), `/p/${token}`), "utf8");
+        const text = Buffer.concat(chunks).toString("utf8");
+        const rewritten = isHtml ? rewritePreviewHtml(text, `/p/${token}`) : rewriteJsImports(text, `/p/${token}`);
+        const body = Buffer.from(rewritten, "utf8");
         const outHeaders = { ...up.headers };
         delete outHeaders["content-length"];
         delete outHeaders["transfer-encoding"];
