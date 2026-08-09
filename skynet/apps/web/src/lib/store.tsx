@@ -101,6 +101,7 @@ export interface Store extends StoreState {
       autonomy?: boolean;
       approvalLevel?: string;
       instructions?: string;
+      importGithubIssues?: boolean;
     },
   ) => Promise<Project>;
   updateProject: (
@@ -458,6 +459,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           autonomy: opts?.autonomy,
           approvalLevel: opts?.approvalLevel,
           instructions: opts?.instructions,
+          importGithubIssues: opts?.importGithubIssues,
         });
         // Optimistically land it in the store so navigating into it renders
         // immediately (the WS project.upserted reconciles the same row shortly).

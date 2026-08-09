@@ -481,13 +481,15 @@ export class Operations {
       // Runner-key confinement is opt-in and set later in project settings —
       // a fresh project runs on any workspace key until narrowed.
       enabledRunnerCredentialIds: [],
-      // Source-of-truth write-back is opt-in (outward-facing) — enabled in settings.
-      syncSourceStatus: false,
+      // Source-of-truth write-back is opt-in (outward-facing) — enabled in settings,
+      // or right here when the creation form asks for an issue import (below).
+      syncSourceStatus: !!(repo && input.importGithubIssues),
       // Optional: stack this project's runs/PRs onto a branch; else the global default.
       baseBranch: input.baseBranch?.trim() || null,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
+    this.maybeAutoImportIssues(ws, created, input.importGithubIssues);
     return created;
   }
   async updateProject(ws: string, id: string, patch: UpdateProjectRequest): Promise<Project> {
@@ -539,6 +541,17 @@ export class Operations {
     if (!project.repo || project.repoPath) return;
     void this.cloneRepoIntoProject(ws, project.id).catch((err) =>
       console.warn(`[project ${project.id}] auto-clone failed: ${(err as Error).message}`),
+    );
+  }
+  /** Seed the backlog from the repo's open GitHub issues right after creation,
+   *  when the creation form asked for it — same best-effort background shape as
+   *  maybeAutoClone. Runs against the GitHub API directly (not the local
+   *  checkout), so it doesn't wait on the clone. No-op unless the project is
+   *  repo-bound and `wanted` is true. */
+  private maybeAutoImportIssues(ws: string, project: Project, wanted: boolean | undefined): void {
+    if (!wanted || !project.repo) return;
+    void this.importGithubIssues(ws, project.id).catch((err) =>
+      console.warn(`[project ${project.id}] auto-import GitHub issues failed: ${(err as Error).message}`),
     );
   }
   /**

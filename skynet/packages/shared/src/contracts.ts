@@ -643,6 +643,12 @@ export const CreateProjectRequest = z.object({
   // Project-scoped agent guidance that rides every prompt (see Project.instructions).
   instructions: z.string().optional(),
   baseBranch: z.string().optional(), // branch to stack runs/PRs onto (omit → global default)
+  // Import the repo's open GitHub issues as backlog tasks right after creation,
+  // and turn on ongoing write-back (Project.syncSourceStatus) so later task
+  // transitions comment/close/reopen the issue. No-op for a non-repo-bound
+  // project. Defaults to on in the UI when a repo is bound; best-effort —
+  // failure doesn't fail project creation. See docs/task-source-sync.md.
+  importGithubIssues: z.boolean().optional(),
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 

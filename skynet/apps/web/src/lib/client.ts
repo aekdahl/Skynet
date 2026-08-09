@@ -374,6 +374,7 @@ export function createProject(body: {
   approvalLevel?: string;
   instructions?: string;
   baseBranch?: string;
+  importGithubIssues?: boolean;
 }) {
   return req<Project>("POST", "/api/projects", body);
 }

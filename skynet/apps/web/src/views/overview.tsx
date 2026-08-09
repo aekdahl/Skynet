@@ -163,6 +163,7 @@ export function NewProjectCard({
       createRepo?: { name: string; private: boolean; owner?: string };
       autonomy?: boolean;
       approvalLevel?: ApprovalLevel;
+      importGithubIssues?: boolean;
     },
   ) => void | Promise<void>;
 }) {
@@ -180,6 +181,11 @@ export function NewProjectCard({
   const [approvalTouched, setApprovalTouched] = useState(false);
   const [repo, setRepo] = useState("");
   const [repoPath, setRepoPath] = useState("");
+  // Seed the backlog from the repo's open GitHub issues on creation, and turn on
+  // ongoing write-back — only meaningful for an EXISTING repo (a brand-new one
+  // Skynet just created has no issues yet). Defaults on: it's the common case
+  // and free (best-effort, doesn't block/fail project creation).
+  const [importIssues, setImportIssues] = useState(true);
   const [newRepoName, setNewRepoName] = useState("");
   const [newRepoNameTouched, setNewRepoNameTouched] = useState(false);
   const [newRepoOwner, setNewRepoOwner] = useState("");
@@ -218,6 +224,7 @@ export function NewProjectCard({
     setMode("folder");
     setRepo("");
     setRepoPath("");
+    setImportIssues(true);
     setNewRepoName("");
     setNewRepoNameTouched(false);
     setAutonomy(true);
@@ -225,7 +232,12 @@ export function NewProjectCard({
     setApprovalTouched(false);
   };
 
-  const submit = async (opts: { repo?: string; repoPath?: string; createRepo?: { name: string; private: boolean; owner?: string } }) => {
+  const submit = async (opts: {
+    repo?: string;
+    repoPath?: string;
+    createRepo?: { name: string; private: boolean; owner?: string };
+    importGithubIssues?: boolean;
+  }) => {
     setCreating(true);
     setError(null);
     try {
@@ -314,7 +326,24 @@ export function NewProjectCard({
           <FolderPicker value={repoPath} onChange={setRepoPath} />
         </>
       )}
-      {mode === "existing" && <RepoPicker repos={repos} value={repo} onChange={setRepo} />}
+      {mode === "existing" && (
+        <>
+          <RepoPicker repos={repos} value={repo} onChange={setRepo} />
+          <label
+            className="np-private"
+            title="Import the repo's open issues as backlog tasks, and keep them in sync as tasks move (comment/close/reopen the issue)."
+          >
+            <input
+              type="checkbox"
+              className="proj-autonomy-cb"
+              checked={importIssues}
+              onChange={(e) => setImportIssues(e.target.checked)}
+            />
+            <span className="proj-autonomy-switch" aria-hidden="true" />
+            <span className="np-private-label">Import open GitHub issues as backlog tasks</span>
+          </label>
+        </>
+      )}
       {mode === "new" && (
         <div className="np-newrepo">
           <div className="rp-label">New repository <span className="rp-hint">· Skynet creates it on GitHub</span></div>
@@ -415,6 +444,7 @@ export function NewProjectCard({
                 void submit({
                   repo: mode === "existing" ? repo || undefined : undefined,
                   repoPath: mode === "folder" ? repoPath || undefined : undefined,
+                  importGithubIssues: mode === "existing" ? importIssues : undefined,
                 });
               }}
             >
