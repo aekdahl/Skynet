@@ -1081,7 +1081,7 @@ export function ProjectView({
           <div className="projview-head-tools">
             <label
               className="proj-approval"
-              title="How much an agent may run without asking. Dangerous or outward-facing steps (git push, merge, infra, destructive commands) always ask, regardless of this setting."
+              title="How much an agent may run commands without asking. Diff review before merge is always a human call, regardless of this setting — as are outward-facing steps like git push, infra, and destructive commands."
             >
               <span className="proj-approval-label mono">Approvals</span>
               <select
@@ -1090,8 +1090,8 @@ export function ProjectView({
                 onChange={(e) => updateProject(project.id, { approvalLevel: e.target.value })}
               >
                 <option value="manual">Manual · ask for everything</option>
-                <option value="assisted">Assisted · auto-approve low-risk</option>
-                <option value="trusted">Trusted · auto-approve low + medium</option>
+                <option value="assisted">Assisted · auto-approve low-risk commands</option>
+                <option value="trusted">Trusted · auto-approve low + medium-risk commands</option>
               </select>
             </label>
             <label className="proj-autonomy" title="When on, agents autonomously triage backlog items, pick up auto-pick tasks, and review finished work.">

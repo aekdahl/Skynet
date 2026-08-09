@@ -11,7 +11,7 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { StatusDot } from "./common";
-import { workspaceName } from "../lib/firstrun";
+import { operatorHandle, workspaceName } from "../lib/firstrun";
 import { devToolsEnabled } from "../lib/dev";
 import type { ViewName, Lens } from "../App";
 
@@ -287,11 +287,11 @@ export function OpSidebar({
           </button>
         ))}
       </div>
-      <div className="op-side-foot">
+      <div className="op-side-foot" title={operatorHandle() ? `Operator: ${operatorHandle()}` : undefined}>
         <span className="op-avatar">{wsInitials(workspaceName())}</span>
         <div>
           <div className="who">{workspaceName() || "Skynet"}</div>
-          <div className="role">Workspace</div>
+          <div className="role">{operatorHandle() || "Workspace"}</div>
         </div>
       </div>
     </aside>
