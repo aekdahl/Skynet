@@ -1066,6 +1066,10 @@ button.kb-done:hover { opacity: 1; }
 .proj-approval { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-right: 4px; }
 .proj-approval-label { font-size: 11px; color: var(--muted); letter-spacing: 0.03em; }
 .proj-approval-select { font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; }
+/* Full autonomy is live: the diff-review gate is unattended — flag it, don't
+   let it blend in with the other (always human-gated-somewhere) levels. */
+.proj-approval-danger .proj-approval-label { color: var(--danger); font-weight: 600; }
+.proj-approval-danger .proj-approval-select { border-color: color-mix(in oklch, var(--danger), transparent 40%); color: var(--danger); }
 /* Project runner-key confinement — a compact <details> popover in the header. */
 .proj-keys { position: relative; }
 .proj-keys-summary { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; list-style: none; }

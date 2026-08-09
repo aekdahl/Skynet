@@ -651,7 +651,8 @@ export class Orchestrator {
     // Record what actually changed on the run so every view reflects it (the run
     // itself, not just the review card). `modifiedFiles` was never populated.
     await this.hub.runModifiedFiles(runId, stat.files);
-    await this.hub.raiseHitl({
+    const risk: Risk = stat.del > 200 || stat.files.length > 40 ? "high" : "medium";
+    const item: HitlItem = {
       id: `q-diff-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId,
@@ -661,7 +662,7 @@ export class Orchestrator {
       // here just bloats the row. The stats + branch live in `why`.
       title: `Review diff — ${stat.add}+/${stat.del}− (${stat.files.length} file${stat.files.length === 1 ? "" : "s"})`,
       why: `Finished on ${agent.branch} — ${stat.add}+/${stat.del}- across ${stat.files.length} file(s). Approve to integrate.`,
-      risk: stat.del > 200 || stat.files.length > 40 ? "high" : "medium",
+      risk,
       raisedAt: now(),
       expiresAt: null,
       resolvedAt: null,
@@ -673,7 +674,27 @@ export class Orchestrator {
       steps: null,
       diff: { add: stat.add, del: stat.del, modules, files: stat.files },
       flags: [],
-    });
+    };
+    // `full` autonomy (see ApprovalLevel in @skynet/shared) skips even a diff's
+    // OWN human decision, unconditionally — no second agent, no LLM consult.
+    // This is distinct from (and stacks on top of) `autoReview` below: a
+    // "trusted" multi-agent project can ALREADY merge unattended when a
+    // DIFFERENT fleet agent reviews this run's diff and approves it, but that
+    // needs a second agent and its favorable verdict. `full` needs neither.
+    // Requires the project's `autonomy` toggle too (the master "let agents act
+    // without me" switch), and still gates a `high`-risk (unusually large)
+    // diff for a human even at this level. Recorded via the SILENT hub path —
+    // same pattern as the command-gate auto-approver in raise() — so it's a
+    // real audited decision, not a human notification that immediately
+    // self-cancels.
+    if (project?.approvalLevel === "full" && project.autonomy && risk !== "high") {
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "policy:full-autonomy", at: now() };
+      await this.hub.runLog(runId, `auto-merged (policy:full-autonomy): ${item.title}`);
+      await this.hub.raiseAndAutoResolveHitl(item, resolution);
+      await this.deliver(item, resolution);
+      return;
+    }
+    await this.hub.raiseHitl(item);
   }
 
   /**
