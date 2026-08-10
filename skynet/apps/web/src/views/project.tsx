@@ -21,7 +21,7 @@ import { Markdown } from "../components/markdown";
 import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
-import { FeaturesLens, RoadmapLens } from "./project-grouping";
+import { RoadmapDocView } from "./project-roadmap";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -827,20 +827,12 @@ export function ProjectView({
     runs,
     queue,
     tasks,
-    features,
-    milestones,
     fleet,
     updateProject,
     removeApprovalRule,
     deleteProject,
     cloneProjectRepo,
     createTask,
-    createFeature,
-    updateFeature,
-    deleteFeature,
-    createMilestone,
-    updateMilestone,
-    deleteMilestone,
     archiveAgent,
     archiveTask,
     transitionTask,
@@ -848,8 +840,6 @@ export function ProjectView({
     reorderTask,
   } = useStore();
   const confirm = useConfirm();
-  const projFeatures = features.filter((f) => f.projectId === project.id && !f.archived);
-  const projMilestones = milestones.filter((m) => m.projectId === project.id && !m.archived);
   const noFleet = fleet.length === 0;
   // Full autonomy merges every run's OWN diff with no review at all — even a
   // multi-agent "Trusted" project only merges unattended when a DIFFERENT
@@ -898,19 +888,28 @@ export function ProjectView({
     setDrag(null);
     setDropBeforeId(null);
   };
-  // Per-project lens (Kanban is the default; Timeline mirrors Home's timeline
-  // scoped to just this project; Archived shows soft-hidden tasks + restore).
-  // Persisted per-project in sessionStorage so switching back restores the
-  // last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "features" | "roadmap" | "timeline" | "archived">(() => {
+  // Per-project lens (Kanban is the default; Archived shows soft-hidden tasks +
+  // restore; Roadmap renders ROADMAP.md from the repo). Persisted per-project in
+  // sessionStorage so switching back restores the last chosen lens.
+  const [lens, setLens] = useState<"kanban" | "roadmap" | "archived">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "timeline" || v === "archived" || v === "features" || v === "roadmap" ? v : "kanban";
+    return v === "roadmap" || v === "archived" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
       sessionStorage.setItem(`skynet.proj.lens.${project.id}`, lens);
   }, [lens, project.id]);
+  // Kanban's own board-vs-timeline sub-view (Timeline used to be a top-level
+  // lens; it's a toggle within Kanban now). Independently persisted.
+  const [kanbanView, setKanbanView] = useState<"board" | "timeline">(() => {
+    if (typeof sessionStorage === "undefined") return "board";
+    return sessionStorage.getItem(`skynet.proj.kview.${project.id}`) === "timeline" ? "timeline" : "board";
+  });
+  useEffect(() => {
+    if (typeof sessionStorage !== "undefined")
+      sessionStorage.setItem(`skynet.proj.kview.${project.id}`, kanbanView);
+  }, [kanbanView, project.id]);
   // The backlog task composer's open state (lifted from AddTaskCard so a fresh
   // "Create project" landing can pop it open + focused). Landing with autoCompose
   // forces the Kanban lens (where the composer lives) and opens it once.
@@ -1210,65 +1209,36 @@ export function ProjectView({
 
       <div className="projview-lens">
         <div className="lens-switch">
-          {(["kanban", "features", "roadmap", "timeline", "archived"] as const).map((id) => (
+          {(["kanban", "roadmap", "archived"] as const).map((id) => (
             <button
               key={id}
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban"
-                ? "Kanban"
-                : id === "features"
-                ? "Features"
-                : id === "roadmap"
-                ? "Roadmap"
-                : id === "timeline"
-                ? "Timeline"
-                : "Archived"}
-              {id === "features" && projFeatures.length > 0 && (
-                <span className="lens-btn-count">{projFeatures.length}</span>
-              )}
-              {id === "roadmap" && projMilestones.length > 0 && (
-                <span className="lens-btn-count">{projMilestones.length}</span>
-              )}
+              {id === "kanban" ? "Kanban" : id === "roadmap" ? "Roadmap" : "Archived"}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
             </button>
           ))}
         </div>
+        {lens === "kanban" && (
+          <div className="lens-switch lens-switch-sub">
+            {(["board", "timeline"] as const).map((id) => (
+              <button
+                key={id}
+                className={"lens-btn" + (kanbanView === id ? " on" : "")}
+                onClick={() => setKanbanView(id)}
+              >
+                {id === "board" ? "Board" : "Timeline"}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {lens === "features" ? (
-        <FeaturesLens
-          project={project}
-          features={projFeatures}
-          milestones={projMilestones}
-          tasks={tasks.filter((t) => t.projectId === project.id && !hidden(t))}
-          runs={runById}
-          onOpenTask={onOpenTask}
-          onCreate={(name, description) => void createFeature(project.id, name, description || undefined)}
-          onUpdate={(fid, patch) => void updateFeature(fid, patch)}
-          onDelete={(fid) => void deleteFeature(fid)}
-        />
-      ) : lens === "roadmap" ? (
-        <RoadmapLens
-          project={project}
-          features={projFeatures}
-          milestones={projMilestones}
-          tasks={tasks.filter((t) => t.projectId === project.id && !hidden(t))}
-          runs={runById}
-          onOpenTask={onOpenTask}
-          onCreate={(name, description, targetAt) =>
-            void createMilestone(project.id, name, description || undefined, targetAt)
-          }
-          onUpdate={(mid, patch) => void updateMilestone(mid, patch)}
-          onDelete={(mid) => void deleteMilestone(mid)}
-        />
-      ) : lens === "timeline" ? (
-        <div className="projview-timeline">
-          <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
-        </div>
+      {lens === "roadmap" ? (
+        <RoadmapDocView project={project} />
       ) : lens === "archived" ? (
         <div className="projview-archived">
           {archivedTasks.length === 0 ? (
@@ -1297,6 +1267,10 @@ export function ProjectView({
               })}
             </div>
           )}
+        </div>
+      ) : kanbanView === "timeline" ? (
+        <div className="projview-timeline">
+          <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
         </div>
       ) : (
       <BoardDnd.Provider value={{ drag, begin: setDrag, end: () => { setDrag(null); setDropBeforeId(null); }, dropBeforeId }}>

@@ -259,6 +259,25 @@ export function fetchRoadmap() {
   return req<{ markdown: string }>("GET", "/api/roadmap");
 }
 
+// ─── Project roadmap doc (ROADMAP.md, read from the project's bound repo) ──
+export type ProjectRoadmapResult =
+  | { state: "ok"; path: string; content: string; source: "local" | "github"; sha?: string }
+  | { state: "unbound" }
+  | { state: "missing_local_repo" }
+  | { state: "not_found" }
+  | { state: "github_error"; message: string };
+
+export function fetchProjectRoadmap(projectId: string) {
+  return req<ProjectRoadmapResult>("GET", `/api/projects/${projectId}/roadmap`);
+}
+
+export function commitProjectRoadmap(
+  projectId: string,
+  body: { path: string; content: string; baselineHash: string; baselineSha?: string },
+) {
+  return req<ProjectRoadmapResult>("POST", `/api/projects/${projectId}/roadmap`, body);
+}
+
 // ─── Advanced env settings (desktop) ───────────────────────────────────────
 export type EnvFieldType = "text" | "number" | "toggle" | "secret";
 export interface EnvSettingField {
@@ -516,7 +535,8 @@ export interface AssistantAction {
     | "add_feature"
     | "add_milestone"
     | "set_task_feature"
-    | "set_feature_milestone";
+    | "set_feature_milestone"
+    | "edit_roadmap";
   summary: string;
   taskId?: string;
   text?: string;
@@ -538,6 +558,15 @@ export interface AssistantAction {
   featureId?: string | null;
   milestoneId?: string | null;
   targetAt?: number | null;
+  // edit_roadmap: the diff to show in the confirm chip, and the baseline it was
+  // drafted against (needed by commitProjectRoadmap to detect a concurrent edit).
+  path?: string;
+  content?: string;
+  patch?: string;
+  add?: number;
+  del?: number;
+  baselineHash?: string;
+  baselineSha?: string;
 }
 // Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
 // (full project assistant + actions); omit it for a workspace-wide answer. The
