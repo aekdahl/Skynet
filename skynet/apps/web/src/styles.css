@@ -1505,7 +1505,8 @@ button.fleet-task-link:hover { background: var(--hover, var(--raised)); border-c
 .fleet-task-link .fleet-task-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fleet-task-link .fleet-task-cta { flex: none; font-size: 11px; color: var(--muted, var(--faint)); opacity: 0; transition: opacity 0.12s; }
 button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
-.fleet-actions { display: flex; gap: 8px; border-top: 1px solid var(--line-soft); padding-top: 11px; }
+.fleet-actions { display: flex; flex-wrap: wrap; gap: 6px 8px; border-top: 1px solid var(--line-soft); padding-top: 11px; }
+.fleet-actions .btn { padding: 6px 10px; font-size: 12px; min-height: 30px; }
 /* Reviewer-eligibility toggle: lit when on, dimmed/struck when off. */
 .fleet-reviewer.off { opacity: 0.55; text-decoration: line-through; }
 /* Clickable card header → opens the agent detail view. */
