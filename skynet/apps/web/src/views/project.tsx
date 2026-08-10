@@ -1152,7 +1152,7 @@ export function ProjectView({
                 ▶ Preview app
               </button>
             )}
-            <button className="btn btn-ghost proj-config-btn" onClick={() => setEditing(true)} title="Project settings" aria-label="Project settings">⚙</button>
+            <button className="btn proj-config-btn" onClick={() => setEditing(true)} title="Project settings" aria-label="Project settings">⚙</button>
             {confirmDel ? (
               <span className="del-confirm">
                 Delete project?{" "}
@@ -1160,7 +1160,7 @@ export function ProjectView({
                 <button className="btn btn-ghost" onClick={() => setConfirmDel(false)}>No</button>
               </span>
             ) : (
-              <button className="btn btn-ghost btn-retire" onClick={() => setConfirmDel(true)}>Delete</button>
+              <button className="btn btn-retire" onClick={() => setConfirmDel(true)}>Delete</button>
             )}
           </div>
         </div>
