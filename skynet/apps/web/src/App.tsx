@@ -160,6 +160,7 @@ export function App() {
       createRepo?: { name: string; private: boolean; owner?: string };
       autonomy?: boolean;
       approvalLevel?: string;
+      importGithubIssues?: boolean;
     },
   ) => {
     const created = await store.createProject(name, goal, opts);

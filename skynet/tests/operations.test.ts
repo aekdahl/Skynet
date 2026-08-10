@@ -89,6 +89,36 @@ describe("Operations — workspace-scoped domain layer", () => {
     ).rejects.toThrow(/repo URL/);
   });
 
+  it("createProject wires importGithubIssues into syncSourceStatus, only when repo-bound", async () => {
+    const { ops } = setup();
+    // Asked for + repo-bound → write-back turns on (the background import itself
+    // is best-effort against the live GitHub API — no token in this test, so it
+    // fails silently, same as auto-clone above; only the synchronous field is asserted).
+    const wired = await ops.createProject(DEFAULT_WORKSPACE, {
+      name: "Synced",
+      goal: "",
+      repo: "acme/app",
+      importGithubIssues: true,
+    });
+    expect(wired.syncSourceStatus).toBe(true);
+
+    // Asked for, but no repo bound (local folder) → nothing to sync against.
+    const noRepo = await ops.createProject(DEFAULT_WORKSPACE, {
+      name: "Local only",
+      goal: "",
+      importGithubIssues: true,
+    });
+    expect(noRepo.syncSourceStatus).toBe(false);
+
+    // Repo-bound, but not asked for → stays off (existing default).
+    const optedOut = await ops.createProject(DEFAULT_WORKSPACE, {
+      name: "Not synced",
+      goal: "",
+      repo: "acme/app",
+    });
+    expect(optedOut.syncSourceStatus).toBe(false);
+  });
+
   it("rejects cross-workspace access with NotFoundError", async () => {
     const { ops } = setup();
     const mine = await ops.createProject(DEFAULT_WORKSPACE, { name: "Mine", goal: "", repo: undefined });
