@@ -39,7 +39,6 @@ export type ViewName =
   | "simulation"
   | "roadmap"
   | "agentDetail";
-export type Lens = "subway" | "timeline" | "ledger" | "roster";
 
 const VIEW_LABEL: Record<string, string> = {
   home: "Home",
@@ -69,7 +68,6 @@ export function App() {
   // navigation path flows through here, so guarding it once covers them all.
   const [view, setViewRaw] = useState<ViewName>(() => gateView(route0?.view ?? initialView() ?? "home"));
   const setView = useCallback((v: ViewName) => setViewRaw(gateView(v)), []);
-  const [lens, setLens] = useState<Lens>(() => route0?.lens ?? "subway");
   const [projectId, setProjectId] = useState<string | null>(() => route0?.projectId ?? null);
   const [runId, setRunId] = useState<string | null>(() => route0?.runId ?? null);
   const [agentId, setAgentId] = useState<string | null>(() => route0?.agentId ?? null);
@@ -109,9 +107,9 @@ export function App() {
 
   // [w7] Keep the URL hash in sync with router state (shareable deep links).
   useEffect(() => {
-    const desired = toHash({ view, lens, projectId, runId, agentId });
+    const desired = toHash({ view, projectId, runId, agentId });
     if (location.hash !== desired) location.hash = desired;
-  }, [view, lens, projectId, runId, agentId]);
+  }, [view, projectId, runId, agentId]);
 
   // [w7] Apply hash changes (back/forward, manual edits, shared links).
   //
@@ -130,7 +128,6 @@ export function App() {
       const r = parseHash();
       if (!r) return;
       if (r.view) setView(r.view);
-      if (r.lens) setLens(r.lens);
       if (r.projectId !== undefined) setProjectId(r.projectId);
       if (r.runId !== undefined) setRunId(r.runId);
       if (r.agentId !== undefined) setAgentId(r.agentId);
@@ -236,9 +233,7 @@ export function App() {
       <div className="op-shell">
         <OpSidebar
           view={view}
-          lens={lens}
           setView={setView}
-          setLens={setLens}
           onOpenProject={openProject}
         />
         <main className="main">
@@ -254,8 +249,6 @@ export function App() {
             )}
             {store.loaded && view === "home" && (
               <HomeView
-                lens={lens}
-                setLens={setLens}
                 now={now}
                 onOpenTask={openTask}
                 onOpenAgent={openAgent}

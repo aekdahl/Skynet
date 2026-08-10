@@ -1,32 +1,24 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { TaskRun, Project } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import {
   agentsForProject,
   conflicts,
   curStep,
-  familyOf,
   fmtWait,
   heartbeatSecs,
   idleRunners,
   KIND_META,
   modName,
   openQueue,
-  providerOf,
-  providerInfo,
   projectShipped,
   providerReadiness,
-  runnerIdleLabel,
   runnerName,
-  stepIdx,
   waitedSecs,
 } from "../lib/derive";
-import { Bar, Prov, StatusDot } from "../components/common";
-import { SwDiagram } from "../components/subway-diagram";
 import { EmptyState, PrimaryButton } from "../components/empty";
 import { RepoPicker, useConnectedRepos } from "../components/repo-picker";
 import { FolderPicker } from "../components/folder-picker";
-import type { Lens } from "../App";
 
 function ViewHead({ title, sub }: { title: string; sub: string }) {
   return (
@@ -241,17 +233,13 @@ function FirstRunChecklist({
 }
 
 // ─── Home shell ──────────────────────────────────────────────────────────────
-
-const LENSES: Array<[Lens, string]> = [
-  ["subway", "Subway"],
-  ["timeline", "Timeline"],
-  ["ledger", "Ledger"],
-  ["roster", "Roster"],
-];
+// Home used to switch between four lenses (Subway / Timeline / Ledger /
+// Roster) — four takes on the same underlying runs/tasks, none of them THE
+// answer to "what's happening right now." Departures below replaces all four:
+// one live board, sorted by what needs attention first. Per-project detail
+// (the map, dependency lines) still lives on each project's own page.
 
 export function HomeView({
-  lens,
-  setLens,
   now,
   onOpenTask,
   onOpenAgent,
@@ -262,8 +250,6 @@ export function HomeView({
   onOpenSettings,
   onAssign,
 }: {
-  lens: Lens;
-  setLens: (l: Lens) => void;
   now: number;
   onOpenTask: (id: string) => void;
   onOpenAgent: (id: string) => void;
@@ -363,345 +349,183 @@ export function HomeView({
             </button>
           </div>
         ))}
-        <div className="lens-switch">
-          {LENSES.map(([id, label]) => (
-            <button
-              key={id}
-              className={"lens-btn" + (lens === id ? " on" : "")}
-              onClick={() => setLens(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
       </div>
-      <div className="home-lens">
-        {lens === "subway" && (
-          <SubwayView now={now} onOpenTask={onOpenTask} onOpenAgent={onOpenAgent} onOpenProject={onOpenProject} />
-        )}
-        {lens === "timeline" && <TimelineView now={now} onOpenTask={onOpenTask} />}
-        {lens === "ledger" && (
-          <LedgerView now={now} onOpenTask={onOpenTask} onAssign={onAssign} />
-        )}
-        {lens === "roster" && (
-          <RosterView
-            now={now}
-            onOpenTask={onOpenTask}
-            onOpenProject={onOpenProject}
-            onAssign={onAssign}
-          />
-        )}
-      </div>
+      <DeparturesView
+        now={now}
+        onOpenTask={onOpenTask}
+        onOpenAgent={onOpenAgent}
+        onOpenProject={onOpenProject}
+        onAssign={onAssign}
+      />
     </div>
   );
 }
 
-// ─── Ledger lens ─────────────────────────────────────────────────────────────
-
-function LedgerView({
-  now,
-  onOpenTask,
-  onAssign,
-}: {
-  now: number;
-  onOpenTask: (id: string) => void;
-  onAssign: () => void;
-}) {
-  const { runs, queue, fleet, projects, providers } = useStore();
-  const idle = idleRunners(fleet, runs);
-  const oq = openQueue(queue);
-  const projName = (a: TaskRun) =>
-    projects.find((p) => p.id === a.projectId)?.name ?? "—";
-
-  const groups = [
-    { h: "WAITING ON YOU", s: "waiting", list: runs.filter((a) => a.status === "waiting") },
-    { h: "IN REVIEW", s: "review", list: runs.filter((a) => a.status === "review") },
-    { h: "RUNNING", s: "running", list: runs.filter((a) => a.status === "running") },
-  ].filter((g) => g.list.length > 0);
-  const ongoing = runs.filter((a) => a.status !== "done");
-
-  return (
-    <section className="vw">
-      <ViewHead
-        title="Ongoing tasks"
-        sub={`${ongoing.length} in flight · ${oq.length} waiting on you · ${idle.length} runs idle`}
-      />
-      <div className="lg-table">
-        {groups.map((g) => (
-          <div key={g.h} className="lg-group">
-            <div className={"lg-group-head lg-gh-" + g.s}>
-              {g.h} · {g.list.length}
-            </div>
-            {g.list.map((a) => {
-              const q = oq.find((it) => it.runId === a.id);
-              return (
-                <button key={a.id} className="lg-row" onClick={() => onOpenTask(a.id)}>
-                  <StatusDot status={a.status} />
-                  <span className="lg-task">{a.name}</span>
-                  <span className="lg-agent mono">{runnerName(a, fleet)}</span>
-                  <span className="lg-proj">{projName(a)}</span>
-                  <span className="lg-step">
-                    {stepIdx(a)}/{a.plan.length} · {curStep(a)}
-                  </span>
-                  <Bar value={a.progress} status={a.status} />
-                  <span className={"lg-state lg-state-" + a.status}>
-                    {q
-                      ? "⏸ " + fmtWait(waitedSecs(q, now))
-                      : Math.round(a.progress * 100) + "%"}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        ))}
-        <div className="lg-group">
-          <div className="lg-group-head lg-gh-runs">
-            ACTIVE AGENTS · {ongoing.length} — {idle.length} IDLE
-          </div>
-          {ongoing.map((a) => {
-            const q = oq.find((it) => it.runId === a.id);
-            return (
-              <button key={a.id} className="lg-arow" onClick={() => onOpenTask(a.id)}>
-                <StatusDot status={a.status} />
-                <span className="lg-agent-id mono">{runnerName(a, fleet)}</span>
-                <span className="lg-model mono">{a.model}</span>
-                <span className="lg-step">{a.name}</span>
-                <Bar value={a.progress} status={a.status} />
-                <span className={"lg-state lg-state-" + a.status}>
-                  {q
-                    ? "⏸ " + fmtWait(waitedSecs(q, now))
-                    : Math.round(a.progress * 100) + "%"}
-                </span>
-              </button>
-            );
-          })}
-          {idle.map((r) => (
-            <div key={r.id} className="lg-arow lg-arow-idle">
-              <span className="dot dot-idle" />
-              <span className="lg-agent-id mono">{r.name}</span>
-              <span className="lg-model mono">
-                <Prov info={providerInfo(providers, r.provider)} /> {r.model}
-              </span>
-              <span className="lg-step">idle — available for work</span>
-              <button className="lg-assign" onClick={onAssign}>
-                Assign task →
-              </button>
-              <span className="lg-state lg-state-idle">{runnerIdleLabel(r, now)}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
+// ─── Departures — the one live board (replaces Subway/Timeline/Ledger/Roster) ─
+// Every in-flight run, plus the most recently landed ones, as one table sorted
+// by what needs attention first: delayed (an open HITL — oldest-waiting
+// first), then building (most recently started first), then landed (most
+// recently done first). No per-project grouping, no separate idle-agent list —
+// idle capacity and the unassigned backlog are single-number stats, not rows;
+// drilling into a project's own page still shows that project's map.
+const LANDED_CAP = 8;
+type DepTag = "building" | "delayed" | "paused" | "shipped";
+interface DepRow {
+  run: TaskRun;
+  route: string;
+  agentId: string | null;
+  agentName: string;
+  projectId: string;
+  projectName: string;
+  tag: DepTag;
+  statusLabel: string;
+  etaLabel: string;
+  sortKey: number;
 }
+const TAG_RANK: Record<DepTag, number> = { delayed: 0, building: 1, paused: 2, shipped: 3 };
+// A short, STABLE display code derived from the run's own id (not a row index,
+// which would shift as rows enter/leave) — flavor, not a real identifier.
+const routeCode = (runId: string) => "R-" + runId.replace(/[^a-zA-Z0-9]/g, "").slice(-4).toUpperCase();
 
-// ─── Subway lens ─────────────────────────────────────────────────────────────
-
-function SubwayView({
+function DeparturesView({
   now,
   onOpenTask,
   onOpenAgent,
   onOpenProject,
+  onAssign,
 }: {
   now: number;
   onOpenTask: (id: string) => void;
   onOpenAgent: (id: string) => void;
   onOpenProject: (id: string) => void;
-}) {
-  const { runs, tasks, queue, projects, modules } = useStore();
-  const oq = openQueue(queue);
-  return (
-    <section className="vw">
-      <ViewHead
-        title="Project lines"
-        sub="Every agent fans out from start and merges into end · one line per agent · stations are its tasks · ⑂ a fork branches to a new agent"
-      />
-      <div className="sw-list">
-        {projects.map((p) => {
-          const pa = agentsForProject(runs, p.id);
-          // "Shipped" = every task done (see projectShipped) — not merely every
-          // run done, else an unstarted backlog would still badge "shipped".
-          const allDone = projectShipped(tasks, p.id);
-          const q = oq.find((it) => pa.some((a) => a.id === it.runId));
-          const conflictAgent = pa.find(
-            (a) =>
-              a.status !== "done" &&
-              a.modules.some((mod) =>
-                runs.some(
-                  (o) =>
-                    o.id !== a.id &&
-                    o.status !== "done" &&
-                    familyOf(o) !== familyOf(a) &&
-                    o.modules.includes(mod),
-                ),
-              ),
-          );
-          const conflictMod = conflictAgent?.modules.find((mod) =>
-            runs.some(
-              (o) =>
-                o.id !== conflictAgent.id &&
-                o.status !== "done" &&
-                familyOf(o) !== familyOf(conflictAgent) &&
-                o.modules.includes(mod),
-            ),
-          );
-          // Unstarted work: no run yet AND not already done (a force-done task has
-          // no runId but isn't backlog — counting it would contradict "✓ shipped").
-          const backlog = tasks.filter((t) => t.projectId === p.id && !t.runId && t.state !== "done").length;
-          return (
-            <div key={p.id} className={"sw-proj" + (allDone ? " sw-proj-done" : "")}>
-              <div className="sw-proj-head">
-                <span className="sw-proj-title">
-                  <button className="sw-proj-name" onClick={() => onOpenProject(p.id)}>
-                    {p.name} →
-                  </button>
-                  {backlog > 0 && <span className="sw-proj-sub mono">{backlog} in backlog</span>}
-                </span>
-                {q && (
-                  <span className="expill expill-waiting">
-                    ⏸ waiting {fmtWait(waitedSecs(q, now))}
-                  </span>
-                )}
-                {conflictMod && (
-                  <span className="expill expill-conflict">
-                    ⚠ overlap · {modName(modules, conflictMod)}
-                  </span>
-                )}
-                {allDone && <span className="expill expill-done">✓ shipped</span>}
-              </div>
-              {pa.length > 0 ? (
-                <SwDiagram project={p} onOpenTask={onOpenTask} onOpenAgent={onOpenAgent} />
-              ) : tasks.some((t) => t.projectId === p.id) ? (
-                <EmptyState
-                  compact
-                  title="Backlog ready to assign"
-                  hint="Assign a task to an agent and its run line appears here."
-                  cta={{ label: "Open backlog →", onClick: () => onOpenProject(p.id) }}
-                />
-              ) : (
-                <EmptyState
-                  compact
-                  title="No tasks yet"
-                  hint="Break the goal into tasks, then assign one to an agent to start a run."
-                  cta={{ label: "Add tasks →", onClick: () => onOpenProject(p.id) }}
-                />
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-// ─── Roster lens ─────────────────────────────────────────────────────────────
-
-function RosterView({
-  now,
-  onOpenTask,
-  onOpenProject,
-  onAssign,
-}: {
-  now: number;
-  onOpenTask: (id: string) => void;
-  onOpenProject: (id: string) => void;
   onAssign: () => void;
 }) {
-  const { runs, queue, fleet, projects, providers } = useStore();
-  const busy = runs.filter((a) => a.status !== "done");
-  const idle = idleRunners(fleet, runs);
+  const { runs, tasks, projects, queue, fleet } = useStore();
   const oq = openQueue(queue);
+  const idle = idleRunners(fleet, runs);
+  const backlogCount = tasks.filter(
+    (t) => !t.runId && !t.archived && (t.state === "backlog" || t.state === "triage" || t.state === "todo"),
+  ).length;
+
+  const toRow = (r: TaskRun): DepRow => {
+    const hitl = oq.find((q) => q.runId === r.id);
+    const project = projects.find((p) => p.id === r.projectId);
+    let tag: DepTag, statusLabel: string, etaLabel: string, sortKey: number;
+    if (r.status === "done") {
+      tag = "shipped"; statusLabel = "landed"; etaLabel = "—";
+      sortKey = -r.lastHeartbeatAt; // most recently landed first
+    } else if (hitl) {
+      const waited = waitedSecs(hitl, now);
+      tag = "delayed"; statusLabel = KIND_META[hitl.kind].label.toLowerCase(); etaLabel = fmtWait(waited) + " waiting";
+      sortKey = -waited; // longest-waiting first
+    } else if (r.status === "paused") {
+      tag = "paused"; statusLabel = "paused"; etaLabel = fmtWait(heartbeatSecs(r, now)) + " ago";
+      sortKey = heartbeatSecs(r, now);
+    } else {
+      const elapsed = (now - r.startedAt) / 1000;
+      tag = "building"; statusLabel = curStep(r); etaLabel = fmtWait(elapsed) + " elapsed";
+      sortKey = elapsed; // most recently started first
+    }
+    return {
+      run: r,
+      route: routeCode(r.id),
+      agentId: r.agentId,
+      agentName: runnerName(r, fleet),
+      projectId: r.projectId,
+      projectName: project?.name ?? "—",
+      tag, statusLabel, etaLabel, sortKey,
+    };
+  };
+
+  const live = runs.filter((r) => r.status !== "done" && !r.archived);
+  const landed = runs
+    .filter((r) => r.status === "done" && !r.archived)
+    .sort((a, b) => b.lastHeartbeatAt - a.lastHeartbeatAt)
+    .slice(0, LANDED_CAP);
+  const rows = [...live, ...landed]
+    .map(toRow)
+    .sort((a, b) => TAG_RANK[a.tag] - TAG_RANK[b.tag] || a.sortKey - b.sortKey);
+
+  const buildingCount = rows.filter((r) => r.tag === "building").length;
+  const delayedCount = rows.filter((r) => r.tag === "delayed").length;
+  const landedCount = rows.filter((r) => r.tag === "shipped").length;
+
+  // Split-flap flip: remember each row's last shown status text so the CSS
+  // flip animation plays only on rows that actually changed since the last
+  // render, not on every row every time the live snapshot ticks.
+  const prevFlap = useRef<Record<string, string>>({});
+  const flips = new Set<string>();
+  rows.forEach((r) => { if (prevFlap.current[r.run.id] !== r.statusLabel) flips.add(r.run.id); });
+  useEffect(() => {
+    const next: Record<string, string> = {};
+    rows.forEach((r) => { next[r.run.id] = r.statusLabel; });
+    prevFlap.current = next;
+  });
+
   return (
     <section className="vw">
-      <ViewHead title="Mission control" sub="Who's working — and on what" />
-      <div className="rs-cols">
-        <div>
-          <div className="ex-sec-head">
-            AGENT POOL · {busy.length} busy / {idle.length} idle
-          </div>
-          <div className="rs-cards">
-            {busy.map((a) => {
-              const q = oq.find((it) => it.runId === a.id);
-              return (
-                <button key={a.id} className="rs-card" onClick={() => onOpenTask(a.id)}>
-                  <span className="rs-card-top">
-                    <StatusDot status={a.status} />
-                    <span className="mono rs-id">
-                      <Prov info={providerInfo(providers, providerOf(a, fleet))} />{" "}
-                      {runnerName(a, fleet)}
-                    </span>
-                    <span className="rs-model">{a.model}</span>
-                  </span>
-                  <span className="rs-task">{a.name}</span>
-                  <span className="rs-hb mono">
-                    ♥{" "}
-                    {q ? fmtWait(waitedSecs(q, now)) : fmtWait(heartbeatSecs(a, now))}{" "}
-                    · {a.branch}
+      <ViewHead title="Departures" sub="Every project, one live board — sorted by what needs you first" />
+      <div className="dep-card">
+        <div className="dep-stats">
+          <div className="dep-stat"><span className="dep-v">{rows.length}</span><span className="dep-k">routes</span></div>
+          <div className="dep-stat dep-air"><span className="dep-v">{buildingCount}</span><span className="dep-k">in the air</span></div>
+          <div className="dep-stat dep-delay"><span className="dep-v">{delayedCount}</span><span className="dep-k">delayed</span></div>
+          <div className="dep-stat dep-land"><span className="dep-v">{landedCount}</span><span className="dep-k">landed</span></div>
+          {idle.length > 0 && (
+            <button className="dep-stat dep-idle" onClick={onAssign} title="Assign work to an idle agent">
+              <span className="dep-v">{idle.length}</span><span className="dep-k">idle · assign →</span>
+            </button>
+          )}
+        </div>
+        {rows.length === 0 ? (
+          <EmptyState
+            compact
+            title="Nothing in flight"
+            hint="Assign a task to an agent and it lands here."
+            cta={{ label: "Assign work →", onClick: onAssign }}
+          />
+        ) : (
+          <div className="dep-table">
+            <div className="dep-hcell">Route</div>
+            <div className="dep-hcell">Task</div>
+            <div className="dep-hcell">Project</div>
+            <div className="dep-hcell">Callsign</div>
+            <div className="dep-hcell">Status</div>
+            <div className="dep-hcell">ETA</div>
+            {rows.map((row) => (
+              <Fragment key={row.run.id}>
+                <div className="dep-cell dep-route mono">{row.route}</div>
+                <button className="dep-cell dep-task" onClick={() => onOpenTask(row.run.id)}>
+                  {row.run.name}
+                </button>
+                <button className="dep-cell dep-proj" onClick={() => onOpenProject(row.projectId)}>
+                  {row.projectName}
+                </button>
+                <div className="dep-cell dep-call">
+                  {row.agentId ? (
+                    <button className="dep-pill" onClick={() => onOpenAgent(row.agentId!)}>
+                      {row.agentName}
+                    </button>
+                  ) : (
+                    <span className="dep-off">—</span>
+                  )}
+                </div>
+                <button className="dep-cell dep-statuscell" onClick={() => onOpenTask(row.run.id)}>
+                  <span className={"dep-chip dep-tag-" + row.tag + (flips.has(row.run.id) ? " dep-flip" : "")}>
+                    {row.statusLabel}
                   </span>
                 </button>
-              );
-            })}
-            {idle.map((r) => (
-              <div key={r.id} className="rs-card rs-card-idle">
-                <span className="rs-card-top">
-                  <span className="dot dot-idle" />
-                  <span className="mono rs-id">
-                    <Prov info={providerInfo(providers, r.provider)} /> {r.name}
-                  </span>
-                  <span className="rs-model">{r.model}</span>
-                </span>
-                <span className="rs-idle-row">
-                  <span>idle {runnerIdleLabel(r, now)}</span>
-                  <button className="rs-assign" onClick={onAssign}>
-                    Assign task →
-                  </button>
-                </span>
-              </div>
+                <div className="dep-cell dep-eta mono">{row.etaLabel}</div>
+              </Fragment>
             ))}
           </div>
-        </div>
-        <div>
-          <div className="ex-sec-head">ONGOING TASKS · {busy.length}</div>
-          <div className="rs-tasks">
-            {projects
-              .filter((p) =>
-                agentsForProject(runs, p.id).some((a) => a.status !== "done"),
-              )
-              .map((p) => (
-                <div key={p.id} className="rs-proj">
-                  <button className="rs-proj-name" onClick={() => onOpenProject(p.id)}>
-                    {p.name} →
-                  </button>
-                  {agentsForProject(runs, p.id)
-                    .filter((a) => a.status !== "done")
-                    .map((a) => {
-                      const q = oq.find((it) => it.runId === a.id);
-                      return (
-                        <button
-                          key={a.id}
-                          className="rs-task-row"
-                          onClick={() => onOpenTask(a.id)}
-                        >
-                          <StatusDot status={a.status} />
-                          <span className="rs-task-main">
-                            <span className="rs-task-name">{a.name}</span>
-                            <span className="rs-task-step">
-                              {stepIdx(a)}/{a.plan.length} · {curStep(a)}
-                            </span>
-                          </span>
-                          <Bar value={a.progress} status={a.status} />
-                          <span className={"lg-state lg-state-" + a.status}>
-                            {q
-                              ? "⏸ " + fmtWait(waitedSecs(q, now))
-                              : Math.round(a.progress * 100) + "%"}
-                          </span>
-                        </button>
-                      );
-                    })}
-                </div>
-              ))}
+        )}
+        {backlogCount > 0 && (
+          <div className="dep-backlog-note">
+            {backlogCount} more queued, not yet assigned —{" "}
+            <button onClick={onAssign}>open a project to assign →</button>
           </div>
-        </div>
+        )}
       </div>
     </section>
   );
