@@ -13,7 +13,7 @@
 import type { ProviderInfo } from "./contracts.js";
 
 export const DEFAULT_PROVIDERS: ProviderInfo[] = [
-  { id: "claude", name: "Claude Code", glyph: "✱", color: "#D97757", models: ["opus-4.8", "sonnet-4.6", "haiku-4.5", "fable-5"] },
+  { id: "claude", name: "Claude Code", glyph: "✱", color: "#D97757", models: ["opus-4.8", "sonnet-5", "haiku-4.5", "fable-5"] },
   { id: "codex", name: "Codex", glyph: "◌", color: "#19C2A8", models: ["gpt-5.2-codex", "gpt-5.2-codex-mini"] },
   { id: "gemini", name: "Gemini CLI", glyph: "✦", color: "#5EA2FF", models: ["gemini-3-pro", "gemini-3-flash"] },
   { id: "cursor", name: "Cursor Agent", glyph: "▎", color: "#A78BFA", models: ["composer-2"] },

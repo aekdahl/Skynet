@@ -1071,14 +1071,29 @@ export function ProjectView({
                 ⓘ Instructions active — click to view/edit
               </button>
             )}
-            {project.repoPath && (
-              <div className="mono proj-repo-line" title={project.repoPath}>
-                {project.gitBacked ? "◈ git" : "📁"} {project.repoPath}
-                {project.gitBacked && " · runs work in auto worktrees here"}
-              </div>
-            )}
+            {/* Identity first: the GitHub repo (a human recognizes "org/repo";
+                a raw server clone path never reads as an identity). The local
+                checkout, when there's also a repo, is just where that repo's
+                working copy happens to live, not a second fact worth leading
+                with — so it renders second and, in that case, without the raw
+                path. A repoPath with NO repo (the desktop "point at a folder"
+                case) has no other identity to defer to, so it stays primary
+                and keeps its real path. */}
             {project.repo && (
               <div className="mono proj-repo-line">⑂ {project.repo} · runs branch &amp; PR here</div>
+            )}
+            {project.repoPath && (
+              <div className="mono proj-repo-line" title={project.repoPath}>
+                {project.gitBacked ? (
+                  project.repo ? (
+                    <>◈ working copy ready · runs work in auto worktrees here</>
+                  ) : (
+                    <>◈ git {project.repoPath} · runs work in auto worktrees here</>
+                  )
+                ) : (
+                  <>📁 {project.repoPath}</>
+                )}
+              </div>
             )}
             {project.baseBranch && (
               <div className="mono proj-repo-line" title="Runs cut from and open PRs against this branch instead of the default.">
@@ -1117,7 +1132,10 @@ export function ProjectView({
                 <option value="full">⚠ Full autonomy · merges to main unattended</option>
               </select>
             </label>
-            <label className="proj-autonomy" title="When on, agents autonomously triage backlog items, pick up auto-pick tasks, and review finished work.">
+            <label
+              className="proj-autonomy"
+              title="Whether work starts and gets reviewed on its own: picks up backlog tasks flagged auto-pick, and lets another agent review + resolve a finished diff. Approvals (left) is a different axis — how much of an already-running agent's OWN commands get auto-approved."
+            >
               <input
                 type="checkbox"
                 className="proj-autonomy-cb"
@@ -1125,7 +1143,7 @@ export function ProjectView({
                 onChange={(e) => updateProject(project.id, { autonomy: e.target.checked })}
               />
               <span className="proj-autonomy-switch" aria-hidden="true" />
-              <span className="proj-autonomy-label">Autonomy</span>
+              <span className="proj-autonomy-label">Autonomy <span className="proj-autonomy-sub">picks &amp; reviews work</span></span>
             </label>
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
