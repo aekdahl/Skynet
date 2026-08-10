@@ -2,9 +2,9 @@
 // suite on purpose: it spawns REAL, billed agent runs (needs a working provider
 // credential on the server), so it must never fire unattended in CI or from the
 // in-app QA panel. Run it by hand against a dev server when you want to eyeball
-// whether the Home lenses (Subway / Timeline / Ledger / Roster) hold up under a
-// busy fleet — 6 projects, 15 tasks, 15 dedicated agents, all in flight at once
-// — instead of the single project / single agent every other check exercises.
+// whether Home's Runs board holds up under a busy fleet — 6 projects, 15
+// tasks, 15 dedicated agents, all in flight at once — instead of the single
+// project / single agent every other check exercises.
 //
 // Usage (from the skynet/ dir, against a running dev server with a real key):
 //   node scripts/qa/fleet-scale-stress.mjs seed --repo /path/to/a/git/repo
@@ -101,7 +101,7 @@ async function seed({ repo }) {
     }
     console.log(`  ${project.name}: ${counts[p]} tasks assigned`);
   }
-  console.log("Seed complete — open the app and switch between Subway / Timeline / Ledger / Roster.");
+  console.log("Seed complete — open the app and look at Home's Runs board.");
   console.log("Run `node scripts/qa/fleet-scale-stress.mjs cleanup` when done.");
 }
 

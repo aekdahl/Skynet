@@ -235,8 +235,8 @@ function FirstRunChecklist({
 // ─── Home shell ──────────────────────────────────────────────────────────────
 // Home used to switch between four lenses (Subway / Timeline / Ledger /
 // Roster) — four takes on the same underlying runs/tasks, none of them THE
-// answer to "what's happening right now." Departures below replaces all four:
-// one live board, sorted by what needs attention first. Per-project detail
+// answer to "what's happening right now." Runs below replaces all four: one
+// live board, sorted by what needs attention first. Per-project detail
 // (the map, dependency lines) still lives on each project's own page.
 
 export function HomeView({
@@ -350,7 +350,7 @@ export function HomeView({
           </div>
         ))}
       </div>
-      <DeparturesView
+      <RunsBoard
         now={now}
         onOpenTask={onOpenTask}
         onOpenAgent={onOpenAgent}
@@ -361,33 +361,29 @@ export function HomeView({
   );
 }
 
-// ─── Departures — the one live board (replaces Subway/Timeline/Ledger/Roster) ─
-// Every in-flight run, plus the most recently landed ones, as one table sorted
-// by what needs attention first: delayed (an open HITL — oldest-waiting
-// first), then building (most recently started first), then landed (most
-// recently done first). No per-project grouping, no separate idle-agent list —
-// idle capacity and the unassigned backlog are single-number stats, not rows;
-// drilling into a project's own page still shows that project's map.
-const LANDED_CAP = 8;
-type DepTag = "building" | "delayed" | "paused" | "shipped";
-interface DepRow {
+// ─── Runs — the one live board (replaces Subway/Timeline/Ledger/Roster) ──────
+// Every in-flight run, plus the most recently done ones, as one table sorted
+// by what needs attention first: needs you (an open HITL — oldest-waiting
+// first), then running (most recently started first), then done (most
+// recently finished first). No per-project grouping, no separate idle-agent
+// list — idle capacity and the unassigned backlog are single-number stats,
+// not rows; drilling into a project's own page still shows that project's map.
+const DONE_CAP = 8;
+type RunTag = "running" | "blocked" | "paused" | "done";
+interface RunRow {
   run: TaskRun;
-  route: string;
   agentId: string | null;
   agentName: string;
   projectId: string;
   projectName: string;
-  tag: DepTag;
+  tag: RunTag;
   statusLabel: string;
-  etaLabel: string;
+  timeLabel: string;
   sortKey: number;
 }
-const TAG_RANK: Record<DepTag, number> = { delayed: 0, building: 1, paused: 2, shipped: 3 };
-// A short, STABLE display code derived from the run's own id (not a row index,
-// which would shift as rows enter/leave) — flavor, not a real identifier.
-const routeCode = (runId: string) => "R-" + runId.replace(/[^a-zA-Z0-9]/g, "").slice(-4).toUpperCase();
+const TAG_RANK: Record<RunTag, number> = { blocked: 0, running: 1, paused: 2, done: 3 };
 
-function DeparturesView({
+function RunsBoard({
   now,
   onOpenTask,
   onOpenAgent,
@@ -407,48 +403,47 @@ function DeparturesView({
     (t) => !t.runId && !t.archived && (t.state === "backlog" || t.state === "triage" || t.state === "todo"),
   ).length;
 
-  const toRow = (r: TaskRun): DepRow => {
+  const toRow = (r: TaskRun): RunRow => {
     const hitl = oq.find((q) => q.runId === r.id);
     const project = projects.find((p) => p.id === r.projectId);
-    let tag: DepTag, statusLabel: string, etaLabel: string, sortKey: number;
+    let tag: RunTag, statusLabel: string, timeLabel: string, sortKey: number;
     if (r.status === "done") {
-      tag = "shipped"; statusLabel = "landed"; etaLabel = "—";
-      sortKey = -r.lastHeartbeatAt; // most recently landed first
+      tag = "done"; statusLabel = "done"; timeLabel = "—";
+      sortKey = -r.lastHeartbeatAt; // most recently finished first
     } else if (hitl) {
       const waited = waitedSecs(hitl, now);
-      tag = "delayed"; statusLabel = KIND_META[hitl.kind].label.toLowerCase(); etaLabel = fmtWait(waited) + " waiting";
+      tag = "blocked"; statusLabel = KIND_META[hitl.kind].label.toLowerCase(); timeLabel = fmtWait(waited) + " waiting";
       sortKey = -waited; // longest-waiting first
     } else if (r.status === "paused") {
-      tag = "paused"; statusLabel = "paused"; etaLabel = fmtWait(heartbeatSecs(r, now)) + " ago";
+      tag = "paused"; statusLabel = "paused"; timeLabel = fmtWait(heartbeatSecs(r, now)) + " ago";
       sortKey = heartbeatSecs(r, now);
     } else {
       const elapsed = (now - r.startedAt) / 1000;
-      tag = "building"; statusLabel = curStep(r); etaLabel = fmtWait(elapsed) + " elapsed";
+      tag = "running"; statusLabel = curStep(r); timeLabel = fmtWait(elapsed) + " elapsed";
       sortKey = elapsed; // most recently started first
     }
     return {
       run: r,
-      route: routeCode(r.id),
       agentId: r.agentId,
       agentName: runnerName(r, fleet),
       projectId: r.projectId,
       projectName: project?.name ?? "—",
-      tag, statusLabel, etaLabel, sortKey,
+      tag, statusLabel, timeLabel, sortKey,
     };
   };
 
   const live = runs.filter((r) => r.status !== "done" && !r.archived);
-  const landed = runs
+  const done = runs
     .filter((r) => r.status === "done" && !r.archived)
     .sort((a, b) => b.lastHeartbeatAt - a.lastHeartbeatAt)
-    .slice(0, LANDED_CAP);
-  const rows = [...live, ...landed]
+    .slice(0, DONE_CAP);
+  const rows = [...live, ...done]
     .map(toRow)
     .sort((a, b) => TAG_RANK[a.tag] - TAG_RANK[b.tag] || a.sortKey - b.sortKey);
 
-  const buildingCount = rows.filter((r) => r.tag === "building").length;
-  const delayedCount = rows.filter((r) => r.tag === "delayed").length;
-  const landedCount = rows.filter((r) => r.tag === "shipped").length;
+  const runningCount = rows.filter((r) => r.tag === "running").length;
+  const blockedCount = rows.filter((r) => r.tag === "blocked").length;
+  const doneCount = rows.filter((r) => r.tag === "done").length;
 
   // Split-flap flip: remember each row's last shown status text so the CSS
   // flip animation plays only on rows that actually changed since the last
@@ -464,64 +459,62 @@ function DeparturesView({
 
   return (
     <section className="vw">
-      <ViewHead title="Departures" sub="Every project, one live board — sorted by what needs you first" />
-      <div className="dep-card">
-        <div className="dep-stats">
-          <div className="dep-stat"><span className="dep-v">{rows.length}</span><span className="dep-k">routes</span></div>
-          <div className="dep-stat dep-air"><span className="dep-v">{buildingCount}</span><span className="dep-k">in the air</span></div>
-          <div className="dep-stat dep-delay"><span className="dep-v">{delayedCount}</span><span className="dep-k">delayed</span></div>
-          <div className="dep-stat dep-land"><span className="dep-v">{landedCount}</span><span className="dep-k">landed</span></div>
+      <ViewHead title="Runs" sub="Every project, one live view — sorted by what needs you first" />
+      <div className="rb-card">
+        <div className="rb-stats">
+          <div className="rb-stat"><span className="rb-v">{rows.length}</span><span className="rb-k">runs</span></div>
+          <div className="rb-stat rb-running"><span className="rb-v">{runningCount}</span><span className="rb-k">running</span></div>
+          <div className="rb-stat rb-blocked"><span className="rb-v">{blockedCount}</span><span className="rb-k">needs you</span></div>
+          <div className="rb-stat rb-done"><span className="rb-v">{doneCount}</span><span className="rb-k">done</span></div>
           {idle.length > 0 && (
-            <button className="dep-stat dep-idle" onClick={onAssign} title="Assign work to an idle agent">
-              <span className="dep-v">{idle.length}</span><span className="dep-k">idle · assign →</span>
+            <button className="rb-stat rb-idle" onClick={onAssign} title="Assign work to an idle agent">
+              <span className="rb-v">{idle.length}</span><span className="rb-k">idle · assign →</span>
             </button>
           )}
         </div>
         {rows.length === 0 ? (
           <EmptyState
             compact
-            title="Nothing in flight"
-            hint="Assign a task to an agent and it lands here."
+            title="Nothing running"
+            hint="Assign a task to an agent and it shows up here."
             cta={{ label: "Assign work →", onClick: onAssign }}
           />
         ) : (
-          <div className="dep-table">
-            <div className="dep-hcell">Route</div>
-            <div className="dep-hcell">Task</div>
-            <div className="dep-hcell">Project</div>
-            <div className="dep-hcell">Callsign</div>
-            <div className="dep-hcell">Status</div>
-            <div className="dep-hcell">ETA</div>
+          <div className="rb-table">
+            <div className="rb-hcell">Task</div>
+            <div className="rb-hcell">Project</div>
+            <div className="rb-hcell">Agent</div>
+            <div className="rb-hcell">Status</div>
+            <div className="rb-hcell">Time</div>
             {rows.map((row) => (
               <Fragment key={row.run.id}>
-                <div className="dep-cell dep-route mono">{row.route}</div>
-                <button className="dep-cell dep-task" onClick={() => onOpenTask(row.run.id)}>
+                <button className="rb-cell rb-task" onClick={() => onOpenTask(row.run.id)}>
                   {row.run.name}
                 </button>
-                <button className="dep-cell dep-proj" onClick={() => onOpenProject(row.projectId)}>
+                <button className="rb-cell rb-proj" onClick={() => onOpenProject(row.projectId)}>
                   {row.projectName}
                 </button>
-                <div className="dep-cell dep-call">
+                <div className="rb-cell rb-agent">
                   {row.agentId ? (
-                    <button className="dep-pill" onClick={() => onOpenAgent(row.agentId!)}>
+                    <button className="rb-pill" onClick={() => onOpenAgent(row.agentId!)}>
                       {row.agentName}
                     </button>
                   ) : (
-                    <span className="dep-off">—</span>
+                    <span className="rb-off">—</span>
                   )}
                 </div>
-                <button className="dep-cell dep-statuscell" onClick={() => onOpenTask(row.run.id)}>
-                  <span className={"dep-chip dep-tag-" + row.tag + (flips.has(row.run.id) ? " dep-flip" : "")}>
+                <button className="rb-cell rb-statuscell" onClick={() => onOpenTask(row.run.id)}>
+                  <span className={"rb-chip rb-tag-" + row.tag + (flips.has(row.run.id) ? " rb-flip" : "")}>
                     {row.statusLabel}
                   </span>
                 </button>
-                <div className="dep-cell dep-eta mono">{row.etaLabel}</div>
+                <div className="rb-cell rb-time mono">{row.timeLabel}</div>
               </Fragment>
             ))}
           </div>
         )}
         {backlogCount > 0 && (
-          <div className="dep-backlog-note">
+          <div className="rb-backlog-note">
             {backlogCount} more queued, not yet assigned —{" "}
             <button onClick={onAssign}>open a project to assign →</button>
           </div>

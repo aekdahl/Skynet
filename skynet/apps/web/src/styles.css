@@ -1629,64 +1629,67 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 /* Archived lens body — same width band as the kanban / timeline slots. */
 .projview-archived { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 10px 12px; }
 
-/* ===== departures — Home's one live board ===== */
-.dep-card { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 20px 22px 8px; }
-.dep-stats { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 16px; }
-.dep-stat { display: flex; flex-direction: column; gap: 2px; text-align: left; background: none; border: none; padding: 0; cursor: default; font-family: var(--font-ui); }
-button.dep-stat { cursor: pointer; }
-button.dep-stat:hover .dep-v { color: var(--accent); }
-.dep-v { font-family: var(--font-mono); font-size: 18px; font-weight: 600; line-height: 1.1; color: var(--text); }
-.dep-k { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
-.dep-air .dep-v { color: var(--info); }
-.dep-delay .dep-v { color: var(--danger); }
-.dep-land .dep-v { color: var(--ok); }
-.dep-idle .dep-k { color: var(--accent); }
+/* ===== runs — Home's one live board ===== */
+.rb-card { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 20px 22px 8px; }
+.rb-stats { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 16px; }
+.rb-stat { display: flex; flex-direction: column; gap: 2px; text-align: left; background: none; border: none; padding: 0; cursor: default; font-family: var(--font-ui); }
+button.rb-stat { cursor: pointer; }
+button.rb-stat:hover .rb-v { color: var(--accent); }
+.rb-v { font-family: var(--font-mono); font-size: 18px; font-weight: 600; line-height: 1.1; color: var(--text); }
+.rb-k { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.rb-running .rb-v { color: var(--info); }
+.rb-blocked .rb-v { color: var(--danger); }
+.rb-done .rb-v { color: var(--ok); }
+.rb-idle .rb-k { color: var(--accent); }
 
-.dep-table {
-  display: grid; grid-template-columns: 68px 1.7fr 1fr 110px 1.3fr 110px;
+.rb-table {
+  display: grid; grid-template-columns: 1.7fr 1fr 130px 1.3fr 110px;
   column-gap: 14px; font-size: 12.5px;
 }
-.dep-hcell { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); padding-bottom: 8px; border-bottom: 1px solid var(--line); }
-.dep-cell {
+.rb-hcell { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.rb-cell {
   padding: 10px 0; border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; min-width: 0;
   background: none; border-left: none; border-right: none; border-top: none; font-family: var(--font-ui); font-size: inherit; color: var(--text); text-align: left;
 }
-button.dep-cell { cursor: pointer; }
-button.dep-cell:hover { color: var(--accent); }
-.dep-route { font-family: var(--font-mono); color: var(--muted); }
-.dep-task, .dep-proj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dep-proj { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
-button.dep-proj:hover { color: var(--accent); }
-.dep-pill { font-family: var(--font-mono); font-size: 11px; color: var(--text); background: var(--raised-2, var(--raised)); border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; cursor: pointer; }
-.dep-pill:hover { border-color: var(--accent); color: var(--accent); }
-.dep-off { color: var(--faint); }
-.dep-eta { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
+button.rb-cell { cursor: pointer; }
+button.rb-cell:hover { color: var(--accent); }
+.rb-task, .rb-proj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rb-proj { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
+button.rb-proj:hover { color: var(--accent); }
+.rb-pill { font-family: var(--font-mono); font-size: 11px; color: var(--text); background: var(--raised-2, var(--raised)); border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; cursor: pointer; }
+.rb-pill:hover { border-color: var(--accent); color: var(--accent); }
+.rb-off { color: var(--faint); }
+.rb-time { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
 
-.dep-chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; }
-.dep-tag-building { color: var(--info); border-color: color-mix(in oklch, var(--info), transparent 55%); background: color-mix(in oklch, var(--info), transparent 92%); }
-.dep-tag-delayed { color: var(--danger); border-color: color-mix(in oklch, var(--danger), transparent 45%); background: color-mix(in oklch, var(--danger), transparent 88%); }
-.dep-tag-paused { color: var(--faint); border-color: var(--line); }
-.dep-tag-shipped { color: var(--ok); border-color: color-mix(in oklch, var(--ok), transparent 55%); background: color-mix(in oklch, var(--ok), transparent 92%); }
+.rb-chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; }
+.rb-tag-running { color: var(--info); border-color: color-mix(in oklch, var(--info), transparent 55%); background: color-mix(in oklch, var(--info), transparent 92%); }
+.rb-tag-blocked { color: var(--danger); border-color: color-mix(in oklch, var(--danger), transparent 45%); background: color-mix(in oklch, var(--danger), transparent 88%); }
+.rb-tag-paused { color: var(--faint); border-color: var(--line); }
+.rb-tag-done { color: var(--ok); border-color: color-mix(in oklch, var(--ok), transparent 55%); background: color-mix(in oklch, var(--ok), transparent 92%); }
 /* Split-flap flip — plays only on rows whose status text actually changed
-   since the last render (see the prevFlap ref in DeparturesView), not on
-   every row on every live-snapshot tick. */
-.dep-flip { animation: dep-flip 0.5s ease; }
-@keyframes dep-flip {
+   since the last render (see the prevFlap ref in RunsBoard), not on every
+   row on every live-snapshot tick. */
+.rb-flip { animation: rb-flip 0.5s ease; }
+@keyframes rb-flip {
   0%   { transform: scaleY(1); }
   50%  { transform: scaleY(0.08); opacity: 0.3; }
   100% { transform: scaleY(1); opacity: 1; }
 }
 
-.dep-backlog-note { font-size: 12px; color: var(--faint); padding: 12px 0 14px; }
-.dep-backlog-note button { background: none; border: none; padding: 0; font-family: inherit; font-size: inherit; color: var(--accent); cursor: pointer; }
-.dep-backlog-note button:hover { text-decoration: underline; }
+.rb-backlog-note { font-size: 12px; color: var(--faint); padding: 12px 0 14px; }
+.rb-backlog-note button { background: none; border: none; padding: 0; font-family: inherit; font-size: inherit; color: var(--accent); cursor: pointer; }
+.rb-backlog-note button:hover { text-decoration: underline; }
 
 @media (max-width: 760px) {
-  .dep-table { grid-template-columns: 50px 1.4fr 90px; }
-  /* Body Project/ETA cells are hidden by class (every row); the header's own
-     Project/ETA labels are literally its 3rd/6th child (the header row is
+  /* Project + Time drop out, leaving Task / Agent / Status — 3 tracks, not 5:
+     display:none removes a grid ITEM from layout entirely, so the template
+     must match however many cells per row are actually still visible, or the
+     auto-placement algorithm wraps mid-row and rows go crooked. */
+  .rb-table { grid-template-columns: 1.6fr 100px 1fr; }
+  /* Body Project/Time cells are hidden by class (every row); the header's own
+     Project/Time labels are literally its 2nd/5th child (the header row is
      rendered before any data rows). */
-  .dep-proj, .dep-eta, .dep-hcell:nth-child(3), .dep-hcell:nth-child(6) { display: none; }
+  .rb-proj, .rb-time, .rb-hcell:nth-child(2), .rb-hcell:nth-child(5) { display: none; }
 }
 
 /* gear (fleet) */
