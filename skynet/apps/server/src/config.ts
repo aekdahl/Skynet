@@ -145,6 +145,10 @@ export const config = {
   // low+medium reversible in-sandbox commands while high-risk / boundary ops
   // (push, merge, infra, destructive git) always gate. Env override:
   // SKYNET_APPROVAL_LEVEL. An unrecognized value falls back to `trusted`.
+  // `full` (unattended merge to the base branch) is DELIBERATELY not settable
+  // here — a workspace-wide env var silently defaulting every new project to
+  // unattended merges would defeat the point of it being an explicit, confirmed,
+  // per-project opt-in (see the Approvals selector in the web app).
   defaultApprovalLevel: (["manual", "assisted", "trusted"].includes(process.env.SKYNET_APPROVAL_LEVEL ?? "")
     ? process.env.SKYNET_APPROVAL_LEVEL
     : "trusted") as "manual" | "assisted" | "trusted",

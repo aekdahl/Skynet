@@ -847,9 +847,28 @@ export function ProjectView({
     assignTask,
     reorderTask,
   } = useStore();
+  const confirm = useConfirm();
   const projFeatures = features.filter((f) => f.projectId === project.id && !f.archived);
   const projMilestones = milestones.filter((m) => m.projectId === project.id && !m.archived);
   const noFleet = fleet.length === 0;
+  // Full autonomy merges every run's OWN diff with no review at all — even a
+  // multi-agent "Trusted" project only merges unattended when a DIFFERENT
+  // fleet agent LLM-reviews it favorably first. Switching to Full (but not
+  // away) asks for an explicit confirm rather than a stray dropdown click
+  // silently enabling it.
+  const onApprovalLevelChange = async (level: string) => {
+    if (
+      level === "full" &&
+      !(await confirm({
+        title: "Turn on Full autonomy?",
+        body: "Finished diffs merge straight into the base branch with no review at all — not even from another agent. Turn Autonomy off or switch back to Trusted anytime to stop it.",
+        confirmLabel: "Enable full autonomy",
+        danger: true,
+      }))
+    )
+      return;
+    await updateProject(project.id, { approvalLevel: level });
+  };
   // Board drag state: the card being dragged + (for backlog reorder) the card it
   // would drop before. Held here so lanes highlight + cards show the drop line.
   const [drag, setDrag] = useState<DragInfo | null>(null);
@@ -1080,18 +1099,22 @@ export function ProjectView({
           </div>
           <div className="projview-head-tools">
             <label
-              className="proj-approval"
-              title="How much an agent may run without asking. Dangerous or outward-facing steps (git push, merge, infra, destructive commands) always ask, regardless of this setting."
+              className={"proj-approval" + (project.approvalLevel === "full" ? " proj-approval-danger" : "")}
+              title="How much an agent may run commands without asking. Diff review needs a human unless Autonomy lets another fleet agent LLM-review and merge it — Full autonomy skips even that: every run's own diff merges immediately, no second opinion."
             >
-              <span className="proj-approval-label mono">Approvals</span>
+              <span className="proj-approval-label mono">
+                {project.approvalLevel === "full" && <span aria-hidden="true">⚠ </span>}
+                Approvals
+              </span>
               <select
                 className="proj-approval-select"
                 value={project.approvalLevel ?? "trusted"}
-                onChange={(e) => updateProject(project.id, { approvalLevel: e.target.value })}
+                onChange={(e) => void onApprovalLevelChange(e.target.value)}
               >
                 <option value="manual">Manual · ask for everything</option>
-                <option value="assisted">Assisted · auto-approve low-risk</option>
-                <option value="trusted">Trusted · auto-approve low + medium</option>
+                <option value="assisted">Assisted · auto-approve low-risk commands</option>
+                <option value="trusted">Trusted · auto-approve low + medium-risk commands</option>
+                <option value="full">⚠ Full autonomy · merges to main unattended</option>
               </select>
             </label>
             <label className="proj-autonomy" title="When on, agents autonomously triage backlog items, pick up auto-pick tasks, and review finished work.">

@@ -11,9 +11,9 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { StatusDot } from "./common";
-import { workspaceName } from "../lib/firstrun";
+import { operatorHandle, workspaceName } from "../lib/firstrun";
 import { devToolsEnabled } from "../lib/dev";
-import type { ViewName, Lens } from "../App";
+import type { ViewName } from "../App";
 
 // The single source of truth for the sidebar highlight. Exactly one primary nav
 // key is "current" for a given router state (or none), so highlights can never
@@ -33,11 +33,10 @@ type NavKey =
   | "acceptance"
   | "simulation";
 
-function activeNav(view: ViewName, lens: Lens): NavKey | null {
+function activeNav(view: ViewName): NavKey | null {
   switch (view) {
-    // The timeline lens is a distinct Home mode; leave Home un-highlighted there.
     case "home":
-      return lens === "timeline" ? null : "home";
+      return "home";
     case "queue":
       return "queue";
     case "audit":
@@ -179,22 +178,18 @@ export function ConnectingShell({
 
 export function OpSidebar({
   view,
-  lens,
   setView,
-  setLens,
   onOpenProject,
 }: {
   view: ViewName;
-  lens: Lens;
   setView: (v: ViewName) => void;
-  setLens: (l: Lens) => void;
   onOpenProject: (id: string) => void;
 }) {
   const { projects, runs, queue } = useStore();
   const queueCount = openQueue(queue).length;
   const mergeCount = readyMerges(runs).length;
   // Single source of truth for the highlight — see activeNav above.
-  const active = activeNav(view, lens);
+  const active = activeNav(view);
   // QA & testing surfaces (Acceptance / Simulation) are internal tooling — they
   // stay OUT of the operator nav for GA. Shown only in a dev build, or when
   // opted in on any build via localStorage `skynet.devtools=1`, or when one of
@@ -238,10 +233,7 @@ export function OpSidebar({
         {item(
           "Home",
           "⌂",
-          () => {
-            setLens("subway");
-            setView("home");
-          },
+          () => setView("home"),
           active === "home",
         )}
         {item("Inbox", "⊙", () => setView("queue"), active === "queue", queueCount)}
@@ -287,11 +279,11 @@ export function OpSidebar({
           </button>
         ))}
       </div>
-      <div className="op-side-foot">
+      <div className="op-side-foot" title={operatorHandle() ? `Operator: ${operatorHandle()}` : undefined}>
         <span className="op-avatar">{wsInitials(workspaceName())}</span>
         <div>
           <div className="who">{workspaceName() || "Skynet"}</div>
-          <div className="role">Workspace</div>
+          <div className="role">{operatorHandle() || "Workspace"}</div>
         </div>
       </div>
     </aside>

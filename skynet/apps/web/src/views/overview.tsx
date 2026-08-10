@@ -358,18 +358,22 @@ export function NewProjectCard({
           later on the project page). */}
       <div className="np-governance">
         <label
-          className="proj-approval"
-          title="How much an agent may run without asking. Dangerous or outward-facing steps (git push, merge, infra, destructive commands) always ask, regardless of this setting."
+          className={"proj-approval" + (approvalLevel === "full" ? " proj-approval-danger" : "")}
+          title="How much an agent may run commands without asking. Diff review needs a human unless Autonomy lets another fleet agent LLM-review and merge it — Full autonomy skips even that: every run's own diff merges immediately, no second opinion."
         >
-          <span className="proj-approval-label mono">Approvals</span>
+          <span className="proj-approval-label mono">
+            {approvalLevel === "full" && <span aria-hidden="true">⚠ </span>}
+            Approvals
+          </span>
           <select
             className="proj-approval-select"
             value={approvalLevel}
             onChange={(e) => { setApprovalTouched(true); setApprovalLevel(e.target.value as ApprovalLevel); }}
           >
             <option value="manual">Manual · ask for everything</option>
-            <option value="assisted">Assisted · auto-approve low-risk</option>
-            <option value="trusted">Trusted · auto-approve low + medium</option>
+            <option value="assisted">Assisted · auto-approve low-risk commands</option>
+            <option value="trusted">Trusted · auto-approve low + medium-risk commands</option>
+            <option value="full">⚠ Full autonomy · merges to main unattended</option>
           </select>
         </label>
         <label className="proj-autonomy" title="When on, agents autonomously triage backlog items, pick up auto-pick tasks, and review finished work.">

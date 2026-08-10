@@ -206,12 +206,28 @@ export type TaskRun = z.infer<typeof TaskRun>;
 // medium/high line is the trust boundary: everything genuinely dangerous or
 // outward-facing (git push, merge, infra CLIs, destructive git) classifies as
 // high-risk or is hard-denied by command-safety, so it ALWAYS needs a human
-// regardless of level. Agents run in isolated worktrees, so low/medium commands
-// are reversible and contained until the (always-gated) diff review.
+// regardless of level — with exactly ONE opt-in exception (see `full` below).
+// Agents run in isolated worktrees, so low/medium commands are reversible and
+// contained until the diff review.
 //   manual   — gate every gated action (nothing auto-approved; today's behavior)
 //   assisted — auto-approve LOW-risk commands; gate medium/high
-//   trusted  — auto-approve LOW+MEDIUM commands; gate high (deny stays deny)
-export const ApprovalLevel = z.enum(["manual", "assisted", "trusted"]);
+//   trusted  — auto-approve LOW+MEDIUM commands; gate high (deny stays deny).
+// This level does NOT by itself guarantee a human reviews every diff: with the
+// project's `autonomy` toggle on (the default) AND a second reviewer-eligible
+// fleet agent, the autonomy tick already lets that OTHER agent LLM-judge a
+// finished run's diff and auto-merge on an "approve" verdict — a person is
+// only in the loop if the fleet has just one agent, or the reviewer flags it,
+// or autonomy is off (see orchestrator.ts autoReview). `full` below is the
+// unconditional version of that: no second agent or LLM judgment call needed.
+//   full     — everything `trusted` does, PLUS every finished run's OWN diff
+//              auto-merges into the base branch immediately — no second
+//              agent, no LLM consult, no human — while `autonomy` is on (off
+//              → `full` alone changes nothing). An unusually large diff (see
+//              the `high` risk threshold in orchestrator.ts) still gates for
+//              a human even at this level. Pick it deliberately for zero-touch
+//              merges to main, understanding `trusted` + a multi-agent fleet
+//              can already merge unattended too, just conditionally.
+export const ApprovalLevel = z.enum(["manual", "assisted", "trusted", "full"]);
 export type ApprovalLevel = z.infer<typeof ApprovalLevel>;
 
 // A standing "approve always" allowance: an exact command the operator approved
