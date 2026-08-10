@@ -2303,16 +2303,18 @@ export class Orchestrator {
             //    Gated by `p.autonomy` — this is where money/time actually gets
             //    spent, so it stays under the project autonomy toggle. Also
             //    honors each task's eligibility set via assignTask → acquireAgent.
+            //    Fired concurrently, not awaited one at a time: acquireAgent's
+            //    find-idle→mark-busy step is already serialized by acquireExclusive
+            //    (orchestrator.ts:752), so racing N eligible tasks here is safe —
+            //    it just lets their (slower) provider-session starts overlap
+            //    instead of queuing behind each other. allSettled isolates each
+            //    task's failure (busy fleet, no credential) from the rest, same
+            //    as the try/catch/continue this replaces.
             if (p.autonomy) {
-              for (const t of mine.filter(
+              const pickable = mine.filter(
                 (t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned",
-              )) {
-                try {
-                  await this.assignTask(p.id, t.id);
-                } catch {
-                  continue; // this task's agents busy / no credential — try the next
-                }
-              }
+              );
+              await Promise.allSettled(pickable.map((t) => this.assignTask(p.id, t.id)));
             }
             // 3) Review a finished run — runs REGARDLESS of `p.autonomy`.
             //    Recording a verdict is diagnostic (an LLM consult), not a

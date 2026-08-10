@@ -158,6 +158,31 @@ describe("autonomy loop", () => {
     expect(provider.started).toBe(1);
   });
 
+  it("auto-picks multiple eligible todo tasks concurrently without double-booking a runner", async () => {
+    // tickAutonomy fires assignTask for every eligible task via Promise.allSettled
+    // rather than one at a time — this pins the safety property that relies on:
+    // acquireAgent's find-idle→mark-busy step is serialized by acquireExclusive,
+    // so racing 3 tasks against 2 idle agents claims exactly 2 distinct agents
+    // and leaves the third queued, instead of double-booking or crashing the tick.
+    const { store, orch, provider } = await setup();
+    await store.putAgent(reviewerAgent); // a second idle agent — 2 idle total
+    await store.putTask(mkTask({ id: "t1", state: "todo", autoPick: true }));
+    await store.putTask(mkTask({ id: "t2", state: "todo", autoPick: true }));
+    await store.putTask(mkTask({ id: "t3", state: "todo", autoPick: true })); // exceeds capacity
+    await orch.tickAutonomy();
+
+    const [t1, t2, t3] = await Promise.all(["t1", "t2", "t3"].map((id) => store.getTask(id)));
+    const started = [t1, t2, t3].filter((t) => t?.state === "ongoing");
+    const queued = [t1, t2, t3].filter((t) => t?.state === "todo");
+    expect(started).toHaveLength(2);
+    expect(queued).toHaveLength(1);
+    expect(provider.started).toBe(2);
+
+    const runs = await Promise.all(started.map((t) => store.getRun(t!.runId!)));
+    const agentIds = new Set(runs.map((r) => r?.agentId));
+    expect(agentIds).toEqual(new Set(["a1", "a2"])); // two distinct agents, not one double-booked
+  });
+
   it("leaves a non-auto-pick todo task alone", async () => {
     const { store, orch, provider } = await setup();
     await store.putTask(mkTask({ state: "todo", autoPick: false }));
