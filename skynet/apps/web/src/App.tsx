@@ -88,6 +88,18 @@ export function App() {
     document.documentElement.classList.toggle("steward-open", stewardOpen);
     return () => document.documentElement.classList.remove("steward-open");
   }, [stewardOpen]);
+  // A "discuss this" button anywhere in the app (e.g. a backlog task card) opens
+  // the dock pre-filled with a question — see dispatch in project.tsx's TaskCard.
+  const [stewardSeed, setStewardSeed] = useState<{ text: string; nonce: number } | null>(null);
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const text = (e as CustomEvent<{ text: string }>).detail?.text ?? "";
+      setStewardOpen(true);
+      setStewardSeed((prev) => ({ text, nonce: (prev?.nonce ?? 0) + 1 }));
+    };
+    window.addEventListener("skynet:open-steward", onOpen);
+    return () => window.removeEventListener("skynet:open-steward", onOpen);
+  }, []);
 
   // [pwa] A push / notification click (relayed by the service worker) or a
   // manifest shortcut navigates the app in-place — usually to the Inbox.
@@ -340,6 +352,8 @@ export function App() {
           focusProjectId={stewardFocus?.id ?? null}
           focusProjectName={stewardFocus?.name ?? null}
           onClose={() => setStewardOpen(false)}
+          seedText={stewardSeed?.text}
+          seedNonce={stewardSeed?.nonce}
         />
       )}
       {store.loaded && !stewardOpen && (

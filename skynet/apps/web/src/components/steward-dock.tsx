@@ -35,10 +35,18 @@ export function StewardDock({
   focusProjectId,
   focusProjectName,
   onClose,
+  seedText,
+  seedNonce,
 }: {
   focusProjectId: string | null;
   focusProjectName: string | null;
   onClose: () => void;
+  // A caller (e.g. "discuss this task" on a kanban card) can drop text into the
+  // input box from outside the dock — bump `seedNonce` each time `seedText`
+  // should be (re-)applied, since setting the same text twice in a row wouldn't
+  // otherwise re-trigger the effect.
+  seedText?: string;
+  seedNonce?: number;
 }) {
   const { projects, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, updateProject, createFeature, createMilestone, updateFeature } = useStore();
   const [msgs, setMsgs] = useState<Msg[]>(thread);
@@ -50,6 +58,13 @@ export function StewardDock({
   // the project it's now working on (a page focus, when present, always wins).
   const [resolvedId, setResolvedId] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (seedNonce == null) return;
+    setInput(seedText ?? "");
+    inputRef.current?.focus();
+  }, [seedNonce]); // eslint-disable-line react-hooks/exhaustive-deps -- re-apply only on a fresh seed, not every seedText identity change
   const effFocusId = focusProjectId ?? resolvedId;
   const effFocusName = focusProjectName ?? projects.find((p) => p.id === resolvedId)?.name ?? null;
 
@@ -257,6 +272,7 @@ export function StewardDock({
       {err && <div className="asst-err">{err}</div>}
       <form className="asst-input" onSubmit={(e) => { e.preventDefault(); void ask(input); }}>
         <input
+          ref={inputRef}
           className="qx-input"
           placeholder={effFocusName ? `Ask about ${effFocusName} or the workspace…` : "Ask Steward about your workspace…"}
           value={input}
