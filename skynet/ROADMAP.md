@@ -369,6 +369,24 @@ features below are white space.)
 - [x] **Per-project agent instructions (house rules)** — a `Project.instructions` markdown field that rides *every* prompt an agent sees on that project (assignTask, forkAgent, review-revise, escalation resume, triage consult, auto-review consult) and Steward's grounding. Motivated by: "build agents in Skynet using a specific subset of packages, pre-written code, and structure" — that's a per-project policy, not a workspace boundary, and it lives on the project record for instant editability. Trims + normalizes empty → null; the read-only header shows a compact "ⓘ Instructions active" chip.
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.*
+- [ ] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third
+  lane: when a request is better SHOWN than said (review a diff, browse the board, tune the fleet), the
+  reply carries a **deep link straight into the exact web-app view** — project/task pre-focused —
+  instead of trying to cram it into a chat bubble. The link mechanism already exists and is already
+  sent from Telegram today — `runLink()` → `PUBLIC_URL` + `#/agent/<runId>`
+  (`apps/server/src/telegram/notices.ts`) — and the hash router already handles `#/project/<id>`
+  (`apps/web/src/lib/routing.ts`). What's missing is **zero cold start**: today the link only lands
+  cleanly if the browser tab is already signed in — click it fresh and you hit the login wall, which
+  defeats the point. Two paths, matched to how each release is actually reached, not one generic
+  scheme: **desktop (the committed release)** registers a `skynet://` OS protocol handler — no token
+  at all, since the app is already running locally as the single operator and the OS just routes the
+  click to it; **hosted/GCP (`public_ui`, 🏢 deferred)** is the one case that actually needs a
+  signed-token flow — mint a short-lived, single-use exchange token per link that the app consumes on
+  load to establish a normal session. Chat stays the command line, the web app stays the one canvas —
+  the link is the bridge, not a second interface to maintain. *(Prompted by an outside SOTA-routing
+  pitch — "transport vs. generation," deep links that "hydrate state" instead of forcing a re-login.
+  The underlying idea is sound and is genuinely missing; the "agent renders a whole spatial PWA on the
+  fly" framing isn't — see the AG-UI note in Considerations for why we're not chasing that part.)*
 - [ ] **Operator ergonomics (P3 of [docs/ux-review.md](docs/ux-review.md)):** **⌘K command palette**
   (navigation + verbs: assign, approve latest gate, open project) · **keyboard-first Inbox**
   (j/k navigate, a/r/m approve/reject/modify, ↵ opens the run — `QueueView.selectedIdx` already
@@ -522,6 +540,16 @@ memory (v4) + thin runner adapters.
   weirdness. Waiting on the vendor, not building.
 - 🔬 **LLMs for memory distillation (v4) and the fluency coach (v5)** — both likely require an LLM;
   decide model / cost / UX. (Flagged by design, not avoidance.)
+- **Generative-UI streaming protocols (AG-UI and similar)** — the pitch is standardizing how an agent
+  streams UI events (tool-call-start, state-delta) to a client instead of hand-rolling the wiring every
+  time. We already hand-roll this twice, on purpose: Steward's `{"proposeActions":[...]}` envelope
+  (`apps/server/src/steward/assistant.ts`) and the bespoke inline renderers it drives (`DiffView`,
+  `RoadmapDocView`). **Watch for**: a standard that earns real *multi-vendor* adoption, same posture as
+  the vendor-SDK entry above — this isn't that yet (single-vendor-pushed, pre-adoption). The
+  validate-then-confirm trust boundary (nothing model-trusted, every id re-checked server-side before
+  a chip even renders) is the part that actually matters and stays regardless of transport; swapping
+  the wire format later is a no-op to that boundary. Not chasing this now — "wrap, don't rebuild" cuts
+  against adopting a nascent protocol for a problem our envelope already solves.
 - **Repo-optional / chat-only mode** — a repo should *not* be hard-required. A "just chat with an
   agent" mode is mechanically a runner with **no worktree and no merge**; it widens the funnel to try
   Skynet. Not the core money bet, but cheap to allow.
