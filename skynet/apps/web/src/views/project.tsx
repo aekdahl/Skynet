@@ -406,13 +406,15 @@ function TaskCard({
         </div>
       )}
 
-      {/* Assign → is the primary affordance for starting work: an explicit button
+      {/* Start → is the primary affordance for starting work: an explicit button
           on backlog/todo cards that acquires an idle agent and moves the task to
           Ongoing (the same effect as dragging todo→ongoing, but discoverable up
-          front). Other stage changes still happen by dragging the card to another
-          lane (review→done approves, backlog drags reorder). The escape hatches
-          (Force done / Sync), Auto-pick, and Archive can't be expressed as a lane
-          move, so they stay as buttons. */}
+          front). Named "Start", not "Assign" — it doesn't just hand the task to
+          an agent, it kicks the run off immediately. Other stage changes still
+          happen by dragging the card to another lane (review→done approves,
+          backlog drags reorder). The escape hatches (Force done / Sync),
+          Auto-pick, and Archive can't be expressed as a lane move, so they stay
+          as buttons. */}
       {(s === "backlog" || s === "todo" || s === "ongoing" || s === "review" || s === "done") && (
         <div className="kb-actions" onClick={stop}>
           {(s === "backlog" || s === "todo") && (
@@ -421,12 +423,12 @@ function TaskCard({
               disabled={noFleet}
               title={
                 noFleet
-                  ? "No agents configured — add one in Fleet before assigning."
-                  : "Assign now — start an idle agent on this task (moves it to Ongoing)."
+                  ? "No agents configured — add one in Fleet before starting."
+                  : "Start now — grabs an idle agent and moves this task to Ongoing."
               }
               onClick={() => void assignTask(pid, task.id)}
             >
-              Assign →
+              Start →
             </button>
           )}
           {s === "todo" && (
