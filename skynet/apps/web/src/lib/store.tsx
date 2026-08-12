@@ -23,6 +23,7 @@ import type {
   Snapshot,
   Task,
   TaskAssignment,
+  WorkspaceSettings,
 } from "@skynet/shared";
 import * as api from "./client";
 import { toast } from "../components/toast";
@@ -68,6 +69,11 @@ export interface StoreState {
   // pre-select what a new project would otherwise get. Undefined until the first
   // snapshot lands (or an older server that doesn't send it).
   defaultApprovalLevel?: ApprovalLevel;
+  // Live workspace settings (display name + fleet policy). Undefined until the
+  // first snapshot lands (or an older server that doesn't send it) — read
+  // workspaceSettings?.name, never firstrun.ts's old localStorage helper, so
+  // the name is consistent across profiles/machines instead of per-browser.
+  workspaceSettings?: WorkspaceSettings;
 }
 
 export interface Store extends StoreState {
@@ -180,6 +186,10 @@ export interface Store extends StoreState {
   deleteAudit: (hitlId: string) => Promise<void>;
   archiveAllAudit: () => Promise<void>;
   clearAudit: () => Promise<void>;
+  // Persist the workspace display name. No WS delta announces this (settings
+  // aren't part of the live event stream), so echo the response into local
+  // state directly rather than waiting on the next snapshot.
+  updateWorkspaceName: (name: string) => Promise<void>;
   // Re-fetch the snapshot and force the socket to reconnect now (Retry button).
   retry: () => void;
   // Exchange operator credentials for a session token, then reconnect with it.
@@ -332,6 +342,7 @@ function fromSnapshot(snap: Snapshot): StoreState {
     deps: snap.deps,
     providers: snap.providers,
     defaultApprovalLevel: snap.defaultApprovalLevel,
+    workspaceSettings: snap.workspaceSettings,
     connected: true,
     loaded: true,
     // A snapshot in hand means we're effectively online; a later socket close
@@ -577,6 +588,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       clearAudit: async () => {
         await api.clearAudit();
+      },
+      updateWorkspaceName: async (name) => {
+        const settings = await api.updateWorkspaceSettings({ name });
+        setState((s) => ({ ...s, workspaceSettings: settings }));
       },
       retry: () => {
         setState((s) => ({ ...s, wsPhase: "connecting" }));

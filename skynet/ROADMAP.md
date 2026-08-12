@@ -143,8 +143,10 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
    next to the button. Applies to GetStarted, wizard step 4, task composer, fleet form.
 4. [ ] **Legibility floor** — ≥11px and `--muted` for any text that carries meaning; `--faint`
    only for decoration (subway anchor labels, backlog subtitle, legends, picker hints).
-5. [ ] **Persist the workspace name server-side** — today it's localStorage-only and silently
-   reverts to "Skynet" on another profile/machine.
+5. [x] **Persist the workspace name server-side** — rides `WorkspaceSettings` (the existing
+   auto-scale settings record) as a `name` field; onboarding writes it via `PATCH
+   /api/settings/fleet`, the sidebar/shell header read it from the live store
+   (`workspaceSettings.name`), not `firstrun.ts`'s old localStorage helper.
 
 **P1 — core-loop guidance & affordances**
 6. [ ] **Continuation after Create project** — land in the project with the task composer
