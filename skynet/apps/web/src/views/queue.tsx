@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { TaskRun, HitlItem } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { fmtWait, KIND_META, openQueue, waitedSecs } from "../lib/derive";
+import { isTypingTarget } from "../lib/keys";
 import { RiskChip } from "../components/hitl-context";
 import { DiffView } from "../components/diff-view";
 
@@ -11,12 +12,19 @@ export function QueueCard({
   now,
   selected,
   onOpen,
+  modifyTrigger,
 }: {
   item: HitlItem;
   agent: TaskRun | undefined;
   now: number;
   selected: boolean;
   onOpen: () => void;
+  // Bumped by the parent (the `m` keyboard shortcut on the selected card) to
+  // toggle this card's modify panel — the same `setMode(mode === "modify" ?
+  // null : "modify")` the Modify / Help & resume buttons already call, just
+  // triggered externally. 0/undefined is the "no request yet" rest state, so
+  // the mount-time effect run never fires it.
+  modifyTrigger?: number;
 }) {
   const { resolveHitl, streamAgentMessage } = useStore();
   const k = KIND_META[item.kind];
@@ -24,6 +32,10 @@ export function QueueCard({
   const [draft, setDraft] = useState("");
   const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
   const agentName = agent?.name ?? item.runId;
+
+  useEffect(() => {
+    if (modifyTrigger) setMode((m) => (m === "modify" ? null : "modify"));
+  }, [modifyTrigger]); // eslint-disable-line react-hooks/exhaustive-deps -- functional updater reads mode, doesn't need it as a dep
 
   const send = async () => {
     if (!draft.trim() || !agent) return;
@@ -265,12 +277,16 @@ const EMPTY_GATE_KINDS: { kind: HitlItem["kind"]; blurb: string }[] = [
   { kind: "merge", blurb: "a merge conflict it can't resolve alone" },
 ];
 
+const HINTS_DISMISSED_KEY = "skynet.queueHintsDismissed";
+
 export function QueueView({
   selectedIdx,
+  onSelectIdx,
   onOpen,
   now,
 }: {
   selectedIdx: number;
+  onSelectIdx: (i: number) => void;
   onOpen: (id: string) => void;
   now: number;
 }) {
@@ -287,6 +303,73 @@ export function QueueView({
   // that run), so it's a two-step: arm, then confirm.
   const [armed, setArmed] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [hintsDismissed, setHintsDismissed] = useState(
+    () => typeof localStorage !== "undefined" && localStorage.getItem(HINTS_DISMISSED_KEY) === "1",
+  );
+  const dismissHints = () => {
+    localStorage.setItem(HINTS_DISMISSED_KEY, "1");
+    setHintsDismissed(true);
+  };
+  // `m` toggles the selected card's modify panel. Keyed by item id (not just
+  // a bare counter) so a *different* gate that lands on the same list index
+  // right after a resolve doesn't inherit a stale nonzero trigger and pop
+  // its modify panel open on mount.
+  const [modifyRequest, setModifyRequest] = useState<{ id: string; nonce: number } | null>(null);
+
+  // Keep the selection in bounds as the list shrinks (a resolve, a reconnect
+  // that drops a stale item, …) so `selectedIdx` never points past the end.
+  useEffect(() => {
+    if (selectedIdx > open.length - 1) onSelectIdx(Math.max(0, open.length - 1));
+  }, [open.length, selectedIdx, onSelectIdx]);
+
+  // j/k navigate, ↵ opens the run, a/r/m act on the selected gate — the exact
+  // same resolveHitl/setMode calls the card's own buttons make, just fired
+  // from the keyboard. Scoped to this view (mounted only while the Inbox is
+  // open) and skipped while the operator is typing in a text field.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (open.length === 0 || isTypingTarget(e.target)) return;
+      const it = open[selectedIdx];
+      switch (e.key) {
+        case "j":
+          e.preventDefault();
+          onSelectIdx(Math.min(selectedIdx + 1, open.length - 1));
+          break;
+        case "k":
+          e.preventDefault();
+          onSelectIdx(Math.max(selectedIdx - 1, 0));
+          break;
+        case "Enter":
+          if (!it) return;
+          e.preventDefault();
+          onOpen(it.runId);
+          break;
+        case "a":
+          if (!it || it.kind === "escalation") return;
+          e.preventDefault();
+          // Options-kind cards have no bare "approve" button — the closest
+          // equivalent is the recommended (or first) option's own button.
+          if (it.options) resolveHitl(it.id, "option", { optionIndex: it.recommended ?? 0 });
+          else resolveHitl(it.id, "approve");
+          break;
+        case "r":
+          // Options-kind cards have no reject button (the operator picks an
+          // option instead) — leave that case alone rather than inventing one.
+          if (!it || it.options) return;
+          e.preventDefault();
+          resolveHitl(it.id, "reject");
+          break;
+        case "m":
+          if (!it) return;
+          e.preventDefault();
+          setModifyRequest((prev) => ({ id: it.id, nonce: (prev?.id === it.id ? prev.nonce : 0) + 1 }));
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, selectedIdx, onSelectIdx, onOpen, resolveHitl]);
+
   const rejectAll = async () => {
     setClearing(true);
     // Sequential, not Promise.all — each reject resumes its agent; don't stampede.
@@ -303,6 +386,18 @@ export function QueueView({
 
   return (
     <section className="queue">
+      {!hintsDismissed && open.length > 0 && (
+        <div className="queue-hintbar" role="note">
+          <span className="queue-hintbar-item"><kbd>j</kbd><kbd>k</kbd> navigate</span>
+          <span className="queue-hintbar-item"><kbd>↵</kbd> open</span>
+          <span className="queue-hintbar-item"><kbd>a</kbd> approve</span>
+          <span className="queue-hintbar-item"><kbd>r</kbd> reject</span>
+          <span className="queue-hintbar-item"><kbd>m</kbd> modify</span>
+          <button className="queue-hintbar-dismiss" title="Dismiss" onClick={dismissHints}>
+            ✕
+          </button>
+        </div>
+      )}
       <div className="queue-readout">
         <div className="readout-block">
           <span className="readout-num">{open.length}</span>
@@ -369,6 +464,7 @@ export function QueueView({
               now={now}
               selected={i === selectedIdx}
               onOpen={() => onOpen(it.runId)}
+              modifyTrigger={modifyRequest?.id === it.id ? modifyRequest.nonce : 0}
             />
           ))}
         </div>
