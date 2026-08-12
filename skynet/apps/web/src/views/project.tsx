@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta, ProviderId, ProviderInfo } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
-import { PrimaryButton } from "../components/empty";
+import { Blocked, PrimaryButton } from "../components/empty";
 import {
   agentsForProject,
   curStep,
@@ -500,18 +500,16 @@ function TaskCard({
             />
           )}
           {(s === "backlog" || s === "todo") && (
-            <button
-              className="kb-move kb-move-primary kb-assign"
-              disabled={noFleet}
-              title={
-                noFleet
-                  ? "No agents configured — add one in Fleet before starting."
-                  : "Start now — grabs an idle agent and moves this task to Ongoing."
-              }
-              onClick={() => void assignTask(pid, task.id)}
-            >
-              Start →
-            </button>
+            <Blocked disabled={noFleet} reason={noFleet ? "No agents configured — add one in Fleet before starting." : undefined}>
+              <button
+                className="kb-move kb-move-primary kb-assign"
+                disabled={noFleet}
+                title={noFleet ? undefined : "Start now — grabs an idle agent and moves this task to Ongoing."}
+                onClick={() => void assignTask(pid, task.id)}
+              >
+                Start →
+              </button>
+            </Blocked>
           )}
           {s === "backlog" && (
             <button

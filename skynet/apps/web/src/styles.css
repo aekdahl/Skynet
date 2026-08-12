@@ -1635,6 +1635,16 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .pb-center { align-items: center; }
 .btn-reason { font-size: 12px; line-height: 1.4; color: var(--muted); max-width: 320px; }
 .pb-end .btn-reason { text-align: right; }
+/* A row that gains a taller (button + reason) pb-wrap child stays top-aligned
+   instead of vertically centering it against its shorter siblings. */
+.kb-actions:has(.pb-wrap),
+.detail-actions:has(.pb-wrap),
+.ad-actions:has(.pb-wrap),
+.fleet-actions:has(.pb-wrap),
+.acc-bar:has(.pb-wrap),
+.acc-row-head:has(.pb-wrap),
+.settings-key:has(.pb-wrap),
+.mcp-mint-line:has(.pb-wrap) { align-items: flex-start; }
 
 /* ===== configure form ===== */
 .cfg-panel { padding: 18px 20px; }

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { JOURNEYS, type Step } from "../lib/simulation";
 import { useSimulation, type JudgeState } from "../lib/simulation-store";
 import { useConfirm } from "../components/confirm";
+import { Blocked } from "../components/empty";
 
 // Full plain-text outcome for one journey — deterministic steps + the LLM judge
 // verdict — so an operator can copy the whole result into a bug report / notes.
@@ -74,20 +75,27 @@ export function SimulationView() {
           {running ? "Running…" : "Run all journeys"}
         </button>
         {judgeAvailable && (
-          <button className="btn btn-ghost" disabled={running || !anyResults} onClick={() => void judgeAll()} title="Have an LLM review every journey that has a result">
-            ⚖ Judge all
-          </button>
+          <Blocked
+            disabled={running || !anyResults}
+            reason={running ? "Wait for the current run to finish." : !anyResults ? "Run at least one journey first." : undefined}
+          >
+            <button className="btn btn-ghost" disabled={running || !anyResults} onClick={() => void judgeAll()} title={running || !anyResults ? undefined : "Have an LLM review every journey that has a result"}>
+              ⚖ Judge all
+            </button>
+          </Blocked>
         )}
         <span className="acc-tally">
           {passed > 0 && <span className="acc-tally-ok">✓ {passed} passed</span>}
           {failed > 0 && <span className="acc-tally-fail">✗ {failed} failed</span>}
           {skippedN > 0 && <span className="acc-tally-skip">— {skippedN} skipped</span>}
         </span>
-        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "10px" }}>
+        <span style={{ marginLeft: "auto", display: "flex", alignItems: "flex-start", gap: "10px" }}>
           {lastClear && <span className="acc-section-sub" style={{ margin: 0 }}>{lastClear}</span>}
-          <button className="btn btn-ghost" disabled={clearing || running} onClick={onClear} title="Remove Sim: projects + sim- agents">
-            {clearing ? "Clearing…" : "Clear simulation data"}
-          </button>
+          <Blocked disabled={running} reason={running ? "Wait for the current run to finish." : undefined}>
+            <button className="btn btn-ghost" disabled={clearing || running} onClick={onClear} title={running ? undefined : "Remove Sim: projects + sim- agents"}>
+              {clearing ? "Clearing…" : "Clear simulation data"}
+            </button>
+          </Blocked>
         </span>
       </div>
 
@@ -111,23 +119,27 @@ export function SimulationView() {
                   <div className="acc-desc">{j.desc}</div>
                 </div>
                 {judgeAvailable && steps && steps.length > 0 && (
+                  <Blocked disabled={running && verdicts[j.id]?.phase !== "judging"} reason={running ? "Wait for the current run to finish." : undefined}>
+                    <button
+                      className="btn btn-ghost"
+                      disabled={verdicts[j.id]?.phase === "judging" || running}
+                      onClick={() => void judgeOne(j.id)}
+                      title={running ? undefined : "Have an LLM review this journey's outcome"}
+                    >
+                      {verdicts[j.id]?.phase === "judging" ? "Judging…" : "⚖ Judge"}
+                    </button>
+                  </Blocked>
+                )}
+                <Blocked disabled={!steps || steps.length === 0} reason={!steps || steps.length === 0 ? "Run this journey first." : undefined}>
                   <button
                     className="btn btn-ghost"
-                    disabled={verdicts[j.id]?.phase === "judging" || running}
-                    onClick={() => void judgeOne(j.id)}
-                    title="Have an LLM review this journey's outcome"
+                    disabled={!steps || steps.length === 0}
+                    title={!steps || steps.length === 0 ? undefined : "Copy the full outcome (steps + judge verdict)"}
+                    onClick={() => copy(j.id, outcomeText(j.name, j.desc, st, steps, verdicts[j.id]))}
                   >
-                    {verdicts[j.id]?.phase === "judging" ? "Judging…" : "⚖ Judge"}
+                    {copied === j.id ? "Copied" : "⧉ Copy"}
                   </button>
-                )}
-                <button
-                  className="btn btn-ghost"
-                  disabled={!steps || steps.length === 0}
-                  title="Copy the full outcome (steps + judge verdict)"
-                  onClick={() => copy(j.id, outcomeText(j.name, j.desc, st, steps, verdicts[j.id]))}
-                >
-                  {copied === j.id ? "Copied" : "⧉ Copy"}
-                </button>
+                </Blocked>
                 <button className="btn btn-ghost" disabled={st === "running" || running} onClick={() => void runOne(j.id)}>
                   Run
                 </button>

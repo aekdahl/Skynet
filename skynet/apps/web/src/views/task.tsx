@@ -15,6 +15,7 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { StatusDot } from "../components/common";
+import { Blocked } from "../components/empty";
 import { useConfirm } from "../components/confirm";
 import { Markdown } from "../components/markdown";
 import { HitlContext, RiskChip } from "../components/hitl-context";
@@ -210,18 +211,16 @@ export function TaskDetail({
             {STATUS_META[agent.status].label}
           </span>
           <div className="detail-actions">
-            <button
-              className="btn btn-ghost btn-icon btn-fork"
-              disabled={fleet.length === 0}
-              title={
-                fleet.length === 0
-                  ? "Configure an agent in Fleet before forking runs."
-                  : "Duplicate this run with the same context to work on something else"
-              }
-              onClick={() => forkAgent(agent.id)}
-            >
-              <span className="btn-gly" aria-hidden="true">⑂</span> Fork
-            </button>
+            <Blocked disabled={fleet.length === 0} reason={fleet.length === 0 ? "Configure an agent in Fleet before forking runs." : undefined}>
+              <button
+                className="btn btn-ghost btn-icon btn-fork"
+                disabled={fleet.length === 0}
+                title={fleet.length === 0 ? undefined : "Duplicate this run with the same context to work on something else"}
+                onClick={() => forkAgent(agent.id)}
+              >
+                <span className="btn-gly" aria-hidden="true">⑂</span> Fork
+              </button>
+            </Blocked>
 
             {/* Lifecycle controls */}
             {agent.status === "paused" ? (

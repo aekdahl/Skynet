@@ -4,6 +4,7 @@ import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import type { McpScope, ServiceTokenMeta } from "../lib/client";
 import { InstallControls } from "../components/install-controls";
+import { Blocked } from "../components/empty";
 import { fmtWait, providerReadiness } from "../lib/derive";
 
 // A key's live-verify result, keyed by credential id (provider id for a
@@ -218,13 +219,15 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                   onChange={(e) => setDrafts((d) => ({ ...d, [p.id]: e.target.value }))}
                   onKeyDown={(e) => e.key === "Enter" && save(p.id)}
                 />
-                <button
-                  className="btn btn-primary"
-                  disabled={busy === p.id || !draft.trim()}
-                  onClick={() => save(p.id)}
-                >
-                  {meta ? "Replace" : envBacked ? "Override" : "Save"}
-                </button>
+                <Blocked disabled={!draft.trim()} reason={!draft.trim() ? "Paste a key to continue." : undefined}>
+                  <button
+                    className="btn btn-primary"
+                    disabled={busy === p.id || !draft.trim()}
+                    onClick={() => save(p.id)}
+                  >
+                    {meta ? "Replace" : envBacked ? "Override" : "Save"}
+                  </button>
+                </Blocked>
                 {meta && (
                   <button
                     className="btn btn-ghost"
@@ -343,9 +346,11 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                       onChange={(e) => setDrafts((d) => ({ ...d, [c.id]: e.target.value }))}
                       onKeyDown={(e) => e.key === "Enter" && rotateCredential(c.id)}
                     />
-                    <button className="btn btn-primary" disabled={busy === c.id || !(drafts[c.id] ?? "").trim()} onClick={() => rotateCredential(c.id)}>
-                      Rotate
-                    </button>
+                    <Blocked disabled={!(drafts[c.id] ?? "").trim()} reason={!(drafts[c.id] ?? "").trim() ? "Paste a new key to continue." : undefined}>
+                      <button className="btn btn-primary" disabled={busy === c.id || !(drafts[c.id] ?? "").trim()} onClick={() => rotateCredential(c.id)}>
+                        Rotate
+                      </button>
+                    </Blocked>
                     <button className="btn btn-ghost" disabled={busy === c.id} onClick={() => removeCredential(c.id)}>
                       Remove
                     </button>
@@ -458,9 +463,14 @@ function AddCredentialForm({
           onChange={(e) => setKey(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
         />
-        <button className="btn btn-primary" disabled={busy || !name.trim() || !key.trim()} onClick={add}>
-          Add key
-        </button>
+        <Blocked
+          disabled={!name.trim() || !key.trim()}
+          reason={!name.trim() ? "Name the key to continue." : !key.trim() ? "Paste the key to continue." : undefined}
+        >
+          <button className="btn btn-primary" disabled={busy || !name.trim() || !key.trim()} onClick={add}>
+            Add key
+          </button>
+        </Blocked>
         <button className="btn btn-ghost" disabled={busy} onClick={() => { setOpen(false); setName(""); setKey(""); setErr(null); }}>
           Cancel
         </button>
@@ -924,9 +934,14 @@ function McpAccessSection() {
             onChange={(e) => setLabel(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void mint()}
           />
-          <button className="btn btn-primary" disabled={busy || !label.trim() || selected.length === 0} onClick={() => void mint()}>
-            Mint token
-          </button>
+          <Blocked
+            disabled={!label.trim() || selected.length === 0}
+            reason={!label.trim() ? "Label the token to continue." : selected.length === 0 ? "Select at least one scope." : undefined}
+          >
+            <button className="btn btn-primary" disabled={busy || !label.trim() || selected.length === 0} onClick={() => void mint()}>
+              Mint token
+            </button>
+          </Blocked>
         </div>
         <div className="mcp-scopes">
           {SCOPE_INFO.map((s) => (

@@ -138,9 +138,17 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 2. [x] **Onboarding step 2 (GitHub) is a PLACEHOLDER** mid-wizard — removed the GitHub step
    from the wizard (now Workspace → Module map → Fleet). Integrations already owns the connect
    flow post-onboarding, so a first-run user never meets the unfinished App-install mid-wizard.
-3. [ ] **Blocked-CTA / disabled-state system** — one pattern app-wide: distinct disabled
+3. [x] **Blocked-CTA / disabled-state system** — one pattern app-wide: distinct disabled
    treatment + an inline, readable reason ("Select at least one provider", "name required")
    next to the button. Applies to GetStarted, wizard step 4, task composer, fleet form.
+   *(GetStarted / wizard / task composer / fleet form already had it. Extended the pattern
+   to the rest of the app: factored `PrimaryButton`'s reason-rendering out into a shared
+   `Blocked` wrapper (`components/empty.tsx`) any button style can use — migrated
+   Start/Assign, Retire (agent detail + fleet), Fork, Simulation's Judge/Copy, Settings'
+   key/credential/token forms, and Merges' rework guidance to it. Selector chips
+   (provider picker, subway rows, task-grouping chips) were left on hover-title — they're
+   multi-choice rows, not a single blocked CTA, so a permanent reason line under each would
+   be noise, not signal.)*
 4. [ ] **Legibility floor** — ≥11px and `--muted` for any text that carries meaning; `--faint`
    only for decoration (subway anchor labels, backlog subtitle, legends, picker hints).
 5. [x] **Persist the workspace name server-side** — rides `WorkspaceSettings` (the existing
