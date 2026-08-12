@@ -156,9 +156,11 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
    ONGOING later); today it only lives on Roster idle rows.
 9. [ ] **Explain the Autonomy toggle** — subtitle its consequences; consider default-off for a
    user's first project (autonomy impresses more after the gates have been seen).
-10. [ ] **Fleet copy & guardrails** — "1 agents" pluralization; unify "+ Configure agent" vs
-    "Add to fleet"; move destructive **Retire** behind detail/overflow or confirm inline;
-    label the provider strip as the *catalog*, not configured.
+10. [x] **Fleet copy & guardrails** — fixed "1 agents" pluralization; unified the create-agent CTA
+    to "+ Add agent"/"Add to fleet" (was "+ Configure agent" → "Add to fleet", a verb mismatch
+    across one flow); **Retire** now confirms inline (reused the existing `useConfirm()` dialog,
+    danger-styled) instead of deleting on a single click; the header line now reads "catalog:
+    Claude, Codex, Gemini, ..." instead of implying those providers are all configured.
 11. [ ] **Inbox empty state teaches** — show the four gate kinds that would arrive there.
 12. [ ] **Prioritize the backlog _and_ todo** — manual promote/demote (reorder) on **todo**
     cards, not just backlog. A card's rank sets both what surfaces at the top of the column
