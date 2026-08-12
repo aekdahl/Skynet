@@ -179,7 +179,7 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     highest-priority task first instead of array order. (Drag-to-reorder stays the later polish.)
 
 ## v1 — Orchestration completeness & hardening
-- [ ] **⭐ Browser tools for coding agents (MCP)** — *near-term priority.* Equip the Claude runner (then the
+- [~] **⭐ Browser tools for coding agents (MCP)** — *near-term priority.* Equip the Claude runner (then the
   CLI runners) with a Chrome/Playwright **MCP** server so an agent can drive a real browser *within* a
   coding task: reproduce a bug, verify a UI change end-to-end, or read live docs before editing. Wrap,
   don't rebuild — a scoped MCP tool on the existing `runner-sdk` seam, **not** our own browser
@@ -187,7 +187,13 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   other tool. Opt-in per runner/workspace, off by default. Claude first (Agent SDK `mcpServers`), CLI
   runners after. *(Pulls the browser slice of v3's "Tools via MCP" forward — it's the highest-leverage
   tool for the code loop; verification/repro is where it pays off, and it composes with the live-preview
-  pipeline below.)*
+  pipeline below.)* *Landed: the Claude half — `browserMcpServers()` (`runner-sdk/src/claude.ts`) wraps
+  `@playwright/mcp` over stdio, wired into the live query's `mcpServers` when `StartSpec.browser` is set
+  (a per-workspace `browserTools` toggle); tools surface as `mcp__browser__…`, outside the auto-allow set,
+  so every browser action gates through normal HITL approval like any other tool.* Still to do: **CLI
+  runners** (Codex/Gemini/Cursor/Copilot) — `cli-runner.ts` has no MCP wiring at all today, and vendor
+  support varies (several don't support MCP config yet), so this is a per-vendor investigation, not one
+  drop-in change.
 - [ ] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** (+ **OpenCode**, which
   is ubiquitous across the competitor field, and **Kimi Code** — Moonshot AI's terminal coding agent, same
   CLI shape as Claude/Codex/Gemini, [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — then
@@ -309,7 +315,7 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 - [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs).* Still to do:
   - **Plan-mode gate (Claude)** — expose `permissionMode: "plan"` as a per-project/runner policy so the agent proposes a plan and `ExitPlanMode` becomes a `plan` HITL approved *before* any writes. Best fit for Skynet's HITL model; native to the Agent SDK.
   - **Per-runner tool + prompt policy** — surface `allowedTools`/`disallowedTools`, a project system prompt, and `settingSources` (CLAUDE.md) instead of the hardcoded auto-allow set + inline steering. Ties into v4 repo-native memory.
-  - **Structured diffs in gates/review** — populate `HitlRaise.diff` from Codex/Cursor patch events and `git diff` in the worktree, so approvals show a real diff, not reconstructed text.
+  - [x] **Structured diffs in gates/review** — shipped: `HitlItem.diff` (stat) is set in `raiseDiffReview` from `WorktreeManager.diffStat`, and the full unified patch is served on-demand by `GET /api/runs/:id/diff` (`orchestrator.ts#runDiff` → `worktrees.ts#patch`, a real `git diff` in the worktree) and rendered by `diff-view.tsx`'s `parseUnifiedDiff`. No vendor-specific patch-event plumbing exists (or is needed) — every runner's changes land in the same worktree, so one `git diff` covers Claude/Codex/Cursor/Gemini/Copilot alike.
   - **Token-by-token streaming** — Claude `includePartialMessages` / CLI NDJSON deltas → live "typing" in the log instead of whole-message chunks.
   - **CLI usage fidelity** — Codex/Gemini/Cursor usage is parsed best-effort today; Copilot emits none (text-only). Firm these up as each vendor's structured output stabilizes.
 - [~] **Review upgrades (adopted from the competitor sweep):**
@@ -355,6 +361,25 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   auto-expiring window (break-glass / sudo-style), then revert to their base role automatically; every
   promotion + expiry is audited. Depends on the read-only role above.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap, additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
+- [ ] 🔗⛓ **Feature-scoped branch hierarchy — branch out from branches.** Today every task's agent branch
+  cuts from the project's single integration branch and merges straight back to it
+  (`MergeEngine.integrationBranch(projectId)` is keyed only by `projectId` — one merge target per
+  project, no sub-grouping). When a Feature has several tasks/subtasks, group their branches under a
+  **feature branch** first — so the whole feature merges there and can be tested/reviewed as a unit —
+  and only that feature branch later merges up into the project base. **Reuses**: the branch-from-branch
+  mechanism already proven by agent `fork()` (`orchestrator.ts` passes a parent run's branch as `baseRef`
+  into `WorktreeProvisioner.provision()`), extended from today's 1-parent→1-child fork to N sibling tasks
+  under one Feature; and live-preview's existing arbitrary-branch pinning (a per-run preview already pins
+  to `ref: opts.branch`, and `latest` mode already octopus-combines several run branches) — a feature
+  branch just becomes another pinnable ref, no new preview plumbing. **New work, concentrated in the merge
+  engine**: a feature-branch naming scheme (e.g. `skynet/feature/${featureId}`); `MergeRequest` keyed by
+  `featureId` for the first-stage merge (today it's `projectId`-only); orchestrator wiring so a task under
+  a Feature passes the feature branch as `baseRef` (today only `fork()` does this, for a single parent);
+  and a human-gated "merge feature branch → project base" step once every task in the Feature is done —
+  reusing the same diff/verifier-gate/auto-review machinery **Guided merge** above already composes, just
+  retargeted to a feature-vs-base diff instead of task-vs-base. A different axis from **Structural
+  agent-hierarchy hooks** just above (that's agent *role* — worker/manager; this is *Feature/task*
+  grouping) — complementary, not dependent.
 
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
