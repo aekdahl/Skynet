@@ -153,10 +153,14 @@ function TaskCard({
   task,
   run,
   onOpenTask,
+  canMoveUp,
+  canMoveDown,
 }: {
   task: Task;
   run?: TaskRun;
   onOpenTask: (id: string) => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
 }) {
   const {
     queue,
@@ -170,6 +174,7 @@ function TaskCard({
     archiveTask,
     assignTask,
     transitionTask,
+    moveTask,
   } = useStore();
   const confirm = useConfirm();
   // Features + milestones available to this task (same project, not archived).
@@ -315,6 +320,26 @@ function TaskCard({
         )}
         {(s === "backlog" || s === "triage" || s === "todo") && (
           <span className="kb-card-tools" onClick={stop}>
+            {(s === "backlog" || s === "todo") && (
+              <>
+                <button
+                  className="kb-tool"
+                  title="Move up — higher priority (also the auto-pick order when Autonomy is on)"
+                  disabled={!canMoveUp}
+                  onClick={() => void moveTask(pid, task.id, "up")}
+                >
+                  ↑
+                </button>
+                <button
+                  className="kb-tool"
+                  title="Move down — lower priority"
+                  disabled={!canMoveDown}
+                  onClick={() => void moveTask(pid, task.id, "down")}
+                >
+                  ↓
+                </button>
+              </>
+            )}
             <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>✎</button>
             <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
             <button className="kb-tool kb-tool-del" title="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
@@ -1343,12 +1368,14 @@ export function ProjectView({
                 <span className="kb-count">{colTasks.length}</span>
               </div>
               <div className="kb-lane-body">
-                {colTasks.map((t) => (
+                {colTasks.map((t, i) => (
                   <TaskCard
                     key={t.id}
                     task={t}
                     run={t.runId ? runById.get(t.runId) : undefined}
                     onOpenTask={onOpenTask}
+                    canMoveUp={i > 0}
+                    canMoveDown={i < colTasks.length - 1}
                   />
                 ))}
                 {st === "backlog" && drag?.from === "backlog" && dropBeforeId === null && <div className="kb-drop-line" aria-hidden="true" />}

@@ -183,6 +183,20 @@ describe("autonomy loop", () => {
     expect(agentIds).toEqual(new Set(["a1", "a2"])); // two distinct agents, not one double-booked
   });
 
+  it("picks the lowest-`order` (highest-priority) eligible task first when capacity is short", async () => {
+    // Only one idle agent (a1) — capacity for exactly one task. t2 carries the
+    // lower `order` (promoted via the ↑/↓ control), so it must win the single
+    // slot even though t1 was inserted first and sorts first by id.
+    const { store, orch, provider } = await setup();
+    await store.putTask(mkTask({ id: "t1", state: "todo", autoPick: true, order: 1 }));
+    await store.putTask(mkTask({ id: "t2", state: "todo", autoPick: true, order: 0 }));
+    await orch.tickAutonomy();
+
+    expect((await store.getTask("t2"))?.state).toBe("ongoing");
+    expect((await store.getTask("t1"))?.state).toBe("todo");
+    expect(provider.started).toBe(1);
+  });
+
   it("leaves a non-auto-pick todo task alone", async () => {
     const { store, orch, provider } = await setup();
     await store.putTask(mkTask({ state: "todo", autoPick: false }));
