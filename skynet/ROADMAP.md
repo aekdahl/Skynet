@@ -150,8 +150,10 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 6. [ ] **Continuation after Create project** — land in the project with the task composer
    focused; keep a live **first-run checklist** on Home (create → task → assign → approve)
    until the first merge.
-7. [ ] **Task composer polish** — autofocus name; "description (optional — the full brief the
-   agent receives)"; ⌘↵ submits; blocked-reason per P0.3.
+7. [x] **Task composer polish** — `AddTaskCard` already autofocuses the name field, carries the
+   "description (optional — the full brief the agent receives)" placeholder, submits on ⌘↵ (and
+   bare Enter in the name field), and its "Add task" button already renders a visible blocked-reason
+   via `PrimaryButton` (not a hover-only tooltip).
 8. [x] **Assign is a primary affordance** — the button (now labeled "Start →" — "Assign" implied
    a handoff, but it kicks the run off immediately) lives directly on backlog/todo kanban cards, and
    `todo → ongoing` is a legal drag transition too.
