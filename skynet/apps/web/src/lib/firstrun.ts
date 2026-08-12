@@ -22,22 +22,6 @@ export function setOnboarded(): void {
   }
 }
 
-export function workspaceName(): string {
-  try {
-    return localStorage.getItem(`skynet.workspace.${tokenKey()}`) || "";
-  } catch {
-    return "";
-  }
-}
-
-export function setWorkspaceName(name: string): void {
-  try {
-    localStorage.setItem(`skynet.workspace.${tokenKey()}`, name);
-  } catch {
-    /* ignore */
-  }
-}
-
 export function operatorHandle(): string {
   try {
     return localStorage.getItem(`skynet.operator.${tokenKey()}`) || "";

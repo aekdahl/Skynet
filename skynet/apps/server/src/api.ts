@@ -19,6 +19,7 @@ import {
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
+  UpdateProjectRoadmapRequest,
   UpdateWorkspaceSettingsRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
@@ -43,7 +44,7 @@ import {
 } from "./settings/env-settings.js";
 import { CommandDeniedError } from "./command-safety.js";
 import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
-import { NotFoundError, type Operations, RunnerBusyError } from "./operations.js";
+import { NotFoundError, type Operations, RoadmapConflictError, RunnerBusyError } from "./operations.js";
 import type { ChatTurn } from "./project-assistant.js";
 import { simulateConversational } from "./telegram/index.js";
 import { simulationGrade } from "./simulation/grade.js";
@@ -71,7 +72,8 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
     err instanceof NoCapacityError ||
     err instanceof TaskAlreadyAssignedError ||
     err instanceof RunnerNotConfiguredError ||
-    err instanceof RunnerBusyError
+    err instanceof RunnerBusyError ||
+    err instanceof RoadmapConflictError
   ) {
     return reply.code(409).send({ error: (err as Error).message });
   }
@@ -736,6 +738,24 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     try {
       await ops.deleteMilestone(ws(req), req.params.mid);
       return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── project roadmap doc (ROADMAP.md, read straight from the bound repo) ──
+  app.get<{ Params: { id: string } }>("/api/projects/:id/roadmap", async (req, reply) => {
+    try {
+      return await ops.getProjectRoadmap(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/projects/:id/roadmap", async (req, reply) => {
+    const body = UpdateProjectRoadmapRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateProjectRoadmap(ws(req), req.params.id, body.data);
     } catch (err) {
       return fail(reply, err);
     }

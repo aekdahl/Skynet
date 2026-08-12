@@ -70,7 +70,7 @@ function StateLegend() {
 }
 
 /** A conic-gradient completion donut. */
-function Ring({ pct, color }: { pct: number; color: string }) {
+export function Ring({ pct, color }: { pct: number; color: string }) {
   return (
     <div className="ring" style={{ "--p": pct, "--c": color } as CSSProperties}>
       <span className="mono">{pct}%</span>
