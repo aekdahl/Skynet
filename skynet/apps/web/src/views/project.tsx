@@ -25,6 +25,14 @@ import { RoadmapDocView } from "./project-roadmap";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
+// Task linter v0 (assistive) — short label per concern kind, shown before the
+// model's own one-line note. See apps/server/src/task-linter.ts.
+const LINT_KIND_LABEL: Record<string, string> = {
+  vague: "Vague",
+  "multi-module": "Spans modules",
+  "no-done-definition": "No done definition",
+};
+
 // ─── Board drag & drop ───────────────────────────────────────────────────────
 // Cards are dragged between lanes instead of clicking move buttons. A drop that's
 // a legal human transition applies it; todo→ongoing starts the run; review→done
@@ -175,6 +183,7 @@ function TaskCard({
     assignTask,
     transitionTask,
     moveTask,
+    dismissTaskLint,
   } = useStore();
   const confirm = useConfirm();
   // Features + milestones available to this task (same project, not archived).
@@ -367,6 +376,27 @@ function TaskCard({
       )}
 
       {s === "triage" && task.assessment && <div className="kb-assessment">{task.assessment}</div>}
+      {(s === "backlog" || s === "triage" || s === "todo") &&
+        task.lint &&
+        !task.lint.dismissed &&
+        task.lint.concerns.length > 0 && (
+          <div className="kb-lint" onClick={stop}>
+            <div className="kb-lint-items">
+              {task.lint.concerns.map((c, i) => (
+                <span key={i} className="kb-lint-item" title={c.note}>
+                  ⚑ {LINT_KIND_LABEL[c.kind] ?? c.kind} — {c.note}
+                </span>
+              ))}
+            </div>
+            <button
+              className="kb-lint-dismiss"
+              title="Dismiss — this is just a hint, not a blocker"
+              onClick={() => void dismissTaskLint(pid, task.id)}
+            >
+              ×
+            </button>
+          </div>
+        )}
       {s === "review" && task.reviewVerdict && (
         task.reviewVerdict.decision === "flag" ? (
           <div className="kb-flag">⚠ flagged for you — {task.reviewVerdict.reason}</div>
@@ -549,6 +579,25 @@ function TaskCard({
               <div className="kb-detail-section">
                 <div className="kb-detail-label mono">TRIAGE</div>
                 <p className="kb-detail-assess">{task.assessment}</p>
+              </div>
+            )}
+            {task.lint && !task.lint.dismissed && task.lint.concerns.length > 0 && (
+              <div className="kb-detail-section">
+                <div className="kb-detail-label mono">
+                  LINT{" "}
+                  <button
+                    className="kb-detail-lint-dismiss"
+                    title="Dismiss — this is just a hint, not a blocker"
+                    onClick={() => void dismissTaskLint(pid, task.id)}
+                  >
+                    dismiss
+                  </button>
+                </div>
+                {task.lint.concerns.map((c, i) => (
+                  <p key={i} className="kb-detail-assess">
+                    ⚑ {LINT_KIND_LABEL[c.kind] ?? c.kind} — {c.note}
+                  </p>
+                ))}
               </div>
             )}
             {task.reviewVerdict && (

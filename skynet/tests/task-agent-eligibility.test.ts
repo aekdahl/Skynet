@@ -32,7 +32,7 @@ const project: Project = {
 };
 const mkTask = (id: string, assignment: Task["assignment"]): Task => ({
   id, workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: `task ${id}`, state: "backlog",
-  runId: null, autoPick: false, assessment: null, reviewVerdict: null, assignment,
+  runId: null, autoPick: false, assessment: null, reviewVerdict: null, lint: null, assignment,
 });
 const mkAgent = (id: string): Agent => ({
   id, workspaceId: DEFAULT_WORKSPACE, name: id, provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0,

@@ -178,6 +178,7 @@ export interface Store extends StoreState {
   transitionTask: (projectId: string, taskId: string, to: string) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
+  dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
   createAgent: (provider: string, model: string, name?: string, credentialId?: string, label?: string | null) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string; canReview?: boolean; label?: string | null }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
@@ -559,6 +560,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           }
           throw e;
         }
+      },
+      dismissTaskLint: async (projectId, taskId) => {
+        await api.dismissTaskLint(projectId, taskId);
       },
       createAgent: async (provider, model, name, credentialId, label) => {
         await api.createAgent({ provider, model, name, credentialId, label });

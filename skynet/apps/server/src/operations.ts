@@ -47,6 +47,7 @@ import { isGitRepo } from "./fs-browse.js";
 import { projectPreview, type PreviewState, type PreviewSource } from "./preview/project-preview.js";
 import { githubService, parseRepoRef } from "./github/index.js";
 import { parseChecklist } from "./tasks/checklist.js";
+import { lintTask } from "./task-linter.js";
 import {
   answerProjectQuestion,
   type AssistantAction,
@@ -637,8 +638,43 @@ export class Operations {
       milestoneId: null,
       // Provenance — set when importing from a source of truth (GitHub issue, …).
       source: input.source ?? null,
+      lint: null,
     };
-    return this.hub.upsertTask(task);
+    const created = await this.hub.upsertTask(task);
+    this.maybeLintTask(ws, created);
+    return created;
+  }
+
+  /**
+   * Task linter v0 (assistive): run {@link lintTask} in the BACKGROUND right
+   * after a task is created or its text/description is edited, same
+   * best-effort fire-and-forget shape as `maybeAutoClone`. Never blocks the
+   * caller and never throws into it — a failure just leaves `lint` unset,
+   * which is indistinguishable from "no concerns" in the UI (advisory-only,
+   * so silence is a safe fallback).
+   */
+  private maybeLintTask(ws: string, task: Task): void {
+    void this.lintTaskNow(ws, task).catch((err) =>
+      console.warn(`[task ${task.id}] linter failed: ${(err as Error).message}`),
+    );
+  }
+  private async lintTaskNow(ws: string, task: Task): Promise<void> {
+    const concerns = await lintTask(task.text, task.description);
+    const current = await this.store.getTask(task.id);
+    if (!current || current.workspaceId !== ws) return; // deleted meanwhile
+    // The task may have been edited again while the consult was in flight —
+    // only apply the result if it still matches what was linted, else a
+    // stale verdict would clobber a fresher edit's own (pending) lint.
+    if (current.text !== task.text || current.description !== task.description) return;
+    await this.hub.upsertTask({ ...current, lint: { concerns, at: now(), dismissed: false } });
+  }
+  /** Dismiss the current lint hint on a task — the operator has seen it and
+   *  is setting it aside. A no-op if the task has no active lint result. */
+  async dismissTaskLint(ws: string, tid: string): Promise<Task> {
+    const task = await this.store.getTask(tid);
+    if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    if (!task.lint) return task;
+    return this.hub.upsertTask({ ...task, lint: { ...task.lint, dismissed: true } });
   }
 
   /** Import a GitHub-connected project's OPEN issues as backlog tasks, each linked
@@ -735,7 +771,20 @@ export class Operations {
       task.assignment.mode === "unassigned";
     const autoPickPatch: Pick<Task, "autoPick"> | Record<string, never> =
       settingEligibility && patch.autoPick === undefined ? { autoPick: true } : {};
-    return this.hub.upsertTask({ ...task, ...patch, ...autoPickPatch });
+    // Editing the text or description invalidates any existing lint result —
+    // clear it immediately (so a stale hint doesn't linger against new text)
+    // and kick a fresh background check.
+    const relint =
+      (patch.text !== undefined && patch.text !== task.text) ||
+      (patch.description !== undefined && patch.description !== task.description);
+    const updated = await this.hub.upsertTask({
+      ...task,
+      ...patch,
+      ...autoPickPatch,
+      ...(relint ? { lint: null } : {}),
+    });
+    if (relint) this.maybeLintTask(ws, updated);
+    return updated;
   }
   /**
    * Manually promote (up) or demote (down) a task within its project's backlog.
