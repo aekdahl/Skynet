@@ -387,6 +387,14 @@ export const Task = z.object({
   // Where this task was imported from (GitHub issue / repo file / tracker), so a
   // status change can be written back to it. null → a native Skynet task.
   source: TaskSource.nullable().default(null),
+  // Operator-saved provider/model preference for auto-pick — set via the Start
+  // picker. Null (the default) leaves acquisition exactly as it's always been:
+  // the first idle, usable runner in fleet order. When set, acquireAgent tries
+  // an idle runner on this provider (preferring an exact model match too)
+  // BEFORE falling back to that same default order — never a hard requirement,
+  // since a preference with no matching idle runner shouldn't block the task.
+  preferredProvider: ProviderId.nullable().default(null),
+  preferredModel: z.string().nullable().default(null),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -726,6 +734,10 @@ export const UpdateTaskRequest = z.object({
   // that the referenced feature/milestone belongs to the same project.
   featureId: z.string().nullable().optional(),
   milestoneId: z.string().nullable().optional(),
+  // Saved provider/model preference for auto-pick (see Task.preferredProvider).
+  // Null clears it back to plain auto-pick.
+  preferredProvider: ProviderId.nullable().optional(),
+  preferredModel: z.string().nullable().optional(),
 });
 export type UpdateTaskRequest = z.infer<typeof UpdateTaskRequest>;
 

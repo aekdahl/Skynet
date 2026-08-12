@@ -937,6 +937,10 @@ button.kb-done:hover { opacity: 1; }
    Muted amber so it reads as "use sparingly" without competing with the primary. */
 .kb-move-force { color: var(--warn); border-color: color-mix(in oklch, var(--warn), transparent 60%); }
 .kb-autopick { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); cursor: pointer; }
+/* Start-picker preference (which provider/model auto-pick should try first) */
+.kb-pref { display: inline-flex; gap: 4px; min-width: 0; }
+.kb-pref-select { flex: none; max-width: 108px; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font-family: var(--font-ui); font-size: 11px; color: var(--muted); cursor: pointer; }
+.kb-pref-select:hover { border-color: var(--border); color: var(--text); }
 /* agent-eligibility picker (who may take a task) */
 .kb-elig { display: flex; flex-direction: column; gap: 5px; margin: 2px 0; min-width: 0; }
 .kb-elig-row { display: flex; align-items: center; gap: 6px; min-width: 0; }

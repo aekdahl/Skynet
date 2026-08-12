@@ -637,6 +637,10 @@ export class Operations {
       milestoneId: null,
       // Provenance — set when importing from a source of truth (GitHub issue, …).
       source: input.source ?? null,
+      // Start-picker preference starts unset — plain auto-pick until an operator
+      // saves one via updateTask.
+      preferredProvider: null,
+      preferredModel: null,
     };
     return this.hub.upsertTask(task);
   }
