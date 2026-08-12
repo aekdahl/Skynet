@@ -320,8 +320,6 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   - **Token-by-token streaming** — Claude `includePartialMessages` / CLI NDJSON deltas → live "typing" in the log instead of whole-message chunks.
   - **Copilot usage/event fidelity** — `copilot` (v1.0.79) turns out to have a machine-readable mode after all (`--output-format json`, JSONL — this was previously undocumented here as text-only, now confirmed live), reporting output tokens + duration per turn, but no input-token count and no USD cost (it meters "premium requests"/AI credits, not $/token — a genuinely different billing model from the others). Adopting it isn't a usage-only change: the Copilot runner's approval-gate detection and tool/log lines are currently parsed from human-readable text, and `--output-format json` replaces ALL output with JSONL, so wiring usage means migrating that whole parser to structured events, not just adding a field extraction. Scoped out of the CLI-usage-fidelity fix as a separate, larger follow-up.
 - [~] **Review upgrades (adopted from the competitor sweep):**
-  - **Agent-authored diff walkthrough** — the run drafts a plain-English summary + inline comments grounded on
-    the real `git diff` *before* you approve (nothing merges until accepted). Upgrades the diff HITL. *(Octomux-style.)*
   - **Verifier gate** — run the project's tests/checks in the worktree and **block the merge on failure** as a
     first-class gate (not just the pre-merge `checkCmd`); auto-commit on green. *(bernstein / MartinLoop-style.)*
   - **Checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks. *(AGX-style.)*
@@ -332,6 +330,12 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     so a reason mentioning "flagged" never false-flags an APPROVE.*
   - *Landed: **`error_max_turns` is resumable** — a run that hits the Claude turn cap parks with the current
     plan + guidance instead of dead-ending; the operator resolves it forward.*
+  - *Landed: **Agent-authored diff walkthrough** — the run's own provider drafts a plain-English summary +
+    file/line-anchored comments grounded on the REAL `git diff` (a stateless `consult`, same pattern as the
+    auto-review verdict — structured JSON read as a field, never prose classification) before the diff HITL
+    raises. Stored on `HitlItem.diff.walkthrough` and rendered above the raw patch in the Inbox/run-detail diff
+    view; a failed/unsupported draft (most CLI runners today have no `consult`) never blocks the gate — the
+    raw diff is always there regardless. *(Octomux-style.)*
 - [ ] **🔬⭐ Guided merge — understand-then-merge, to any branch.** Merging today is a single approve on the
   diff HITL. Make it a **guided experience**: before anything merges, Skynet presents a plain-English **merge
   brief** — what the change *does*, which files/modules it touches, the **risks** (blast radius: writes outside

@@ -102,7 +102,7 @@ export function QueueCard({
       )}
 
       {item.diff && (item.kind === "diff" || item.kind === "merge") && (
-        <DiffView runId={item.runId} add={item.diff.add} del={item.diff.del} />
+        <DiffView runId={item.runId} add={item.diff.add} del={item.diff.del} walkthrough={item.diff.walkthrough} />
       )}
 
       {item.kind === "escalation" ? (
