@@ -1564,6 +1564,18 @@ export class Orchestrator {
     const stat = await git.worktrees.diffStat(agent.id, base);
     const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
     await this.hub.runStatus(agent.id, "review");
+    // A task imported from a GitHub issue (Task.source) gets GitHub's own
+    // "Closes #N" convention in the PR body, so merging the PR auto-closes the
+    // source issue — belt-and-suspenders alongside task-sync.ts's direct
+    // close-on-done write-back, since the human merge and the task reaching
+    // `done` don't necessarily happen in the same order.
+    const sourcedTask = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === agent.id);
+    const issueRef =
+      sourcedTask?.source?.kind === "github_issue"
+        ? sourcedTask.source.repo === repo
+          ? `#${sourcedTask.source.number}`
+          : `${sourcedTask.source.repo}#${sourcedTask.source.number}`
+        : null;
     try {
       const result = await githubService.pushAndOpenPr({
         workspaceId: agent.workspaceId,
@@ -1578,7 +1590,7 @@ export class Orchestrator {
         force: false,
         githubCredentialId: project?.githubCredentialId ?? null, // push to the project's pinned account
         title: agent.name,
-        body: `Automated by Skynet agent \`${agent.id}\`.\n\n${stat.add}+/${stat.del}- across ${stat.files.length} file(s).`,
+        body: `Automated by Skynet agent \`${agent.id}\`.\n\n${stat.add}+/${stat.del}- across ${stat.files.length} file(s).${issueRef ? `\n\nCloses ${issueRef}` : ""}`,
       });
       if (!result.ok) {
         await this.hub.runLog(agent.id, `push blocked by safety policy: ${result.violations.map((v) => v.message).join("; ")}`);
