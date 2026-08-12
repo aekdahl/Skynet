@@ -408,7 +408,15 @@ features below are white space.)
   Charter). Uses the **user's own key** via the existing secret store (one cheap call; metered). The
   Charter is what the auto dev team (v2 north star) later sizes itself from, and what **auto task/milestone
   proposal** plans against. See [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §1.
-- [ ] **Parallelism nudge** — "idle runners + deep backlog → spin up more?" turns the fleet's own state into guidance.
+- [x] **Parallelism nudge** — "idle runners + deep backlog → spin up more?" turns the fleet's own state into
+  guidance. Server-computed (`derive/parallelism.ts`, on the snapshot — not persisted), reusing the exact same
+  eligibility check the autonomy loop's auto-pick already uses (`assignment.mode !== "unassigned"`, so a task
+  no one's set up yet doesn't count as "waiting work"). Threshold: ≥2 idle runners (one idle agent between runs
+  is normal churn, not spare capacity) AND ≥3 eligible backlog/todo tasks (a real queue, not the last couple of
+  items about to be picked up anyway) — deliberately simple, tune later. Surfaces as a dismissible (session-only,
+  not persisted — a fresh load re-checks live state rather than remembering a stale dismissal), accent-toned
+  hint on Home's Runs board, the one place idle-runner count and backlog depth already show together; the CTA
+  reuses the existing Fleet nav entry point, no new fleet-scaling logic.
 - [x] **Task grouping & per-project roadmap** — a level *above* the task board. **Features** group related tasks (⊞ chip on cards; a lens listing each feature's mini 6-column count + progress bar); **milestones** are planned releases per project (◉ chip; a Roadmap lens with target-date badges and rolled-up features/tasks — "in Nd" / "today" / "Nd late"). Same-project scoping is enforced by the server (cross-project links refuse) and by the Steward/Telegram validators. Drove by: "roadmap formed from items in all stages of kanban marked with planned releases + milestones." Steward + Telegram both speak the seven grouping actions (`create_feature`, `set_task_feature`, `archive_feature`, `create_milestone`, `set_feature_milestone`, `set_task_milestone`, `mark_milestone_shipped`) — same confirm-first envelope task actions use.
 - [x] **Per-project agent instructions (house rules)** — a `Project.instructions` markdown field that rides *every* prompt an agent sees on that project (assignTask, forkAgent, review-revise, escalation resume, triage consult, auto-review consult) and Steward's grounding. Motivated by: "build agents in Skynet using a specific subset of packages, pre-written code, and structure" — that's a per-project policy, not a workspace boundary, and it lives on the project record for instant editability. Trims + normalizes empty → null; the read-only header shows a compact "ⓘ Instructions active" chip.
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
