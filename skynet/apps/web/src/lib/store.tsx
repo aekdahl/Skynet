@@ -77,6 +77,12 @@ export interface StoreState {
   // workspaceSettings?.name, never firstrun.ts's old localStorage helper, so
   // the name is consistent across profiles/machines instead of per-browser.
   workspaceSettings?: WorkspaceSettings;
+  // Live "typing" preview, keyed by runId — accumulated `run.log.delta` chunks
+  // for the line currently being generated. Transient: NOT part of a TaskRun's
+  // persisted `log[]`, cleared the moment the matching `run.log` lands (or the
+  // run completes). A view renders `run.log` plus this tail so the log types
+  // live instead of jumping in whole-message chunks.
+  logDeltas: Record<string, string>;
   // "Idle runners + deep backlog → spin up more?" — a derived read, refreshed
   // whenever a snapshot lands (not on every live delta; it's a light hint, not
   // a real-time gate). Undefined until the first snapshot lands (or an older
@@ -193,6 +199,7 @@ export interface Store extends StoreState {
   transitionTask: (projectId: string, taskId: string, to: string) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
+  dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
   createAgent: (provider: string, model: string, name?: string, credentialId?: string, label?: string | null) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string; canReview?: boolean; label?: string | null }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
@@ -236,6 +243,16 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
             ? { ...a, log: [...a.log, { at: ev.at, line: ev.line, detail: ev.detail }] }
             : a,
         ),
+        // The finalized line just landed — whatever was typing for it is now
+        // redundant (see the delta case below: every stream_event for a turn is
+        // fully drained before its onLog fires, so nothing still in flight gets
+        // cut off here).
+        logDeltas: { ...state.logDeltas, [ev.runId]: "" },
+      };
+    case "run.log.delta":
+      return {
+        ...state,
+        logDeltas: { ...state.logDeltas, [ev.runId]: (state.logDeltas[ev.runId] ?? "") + ev.delta },
       };
     case "run.progress":
       return {
@@ -273,6 +290,7 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
             ? { ...a, status: "done", branch: ev.branch, progress: 1 }
             : a,
         ),
+        logDeltas: { ...state.logDeltas, [ev.runId]: "" },
       };
     case "run.archived":
       return {
@@ -342,6 +360,7 @@ const EMPTY: StoreState = {
   loaded: false,
   wsPhase: "connecting",
   auditRev: 0,
+  logDeltas: {},
 };
 
 function fromSnapshot(snap: Snapshot): StoreState {
@@ -367,6 +386,9 @@ function fromSnapshot(snap: Snapshot): StoreState {
     // A fresh snapshot supersedes any prior trail state; the Audit view re-pulls
     // on mount anyway, so reset the revision rather than carrying it across.
     auditRev: 0,
+    // Any in-flight typing preview predates this snapshot — drop it rather than
+    // carry stale partial text across a reconnect.
+    logDeltas: {},
   };
 }
 
@@ -590,6 +612,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           }
           throw e;
         }
+      },
+      dismissTaskLint: async (projectId, taskId) => {
+        await api.dismissTaskLint(projectId, taskId);
       },
       createAgent: async (provider, model, name, credentialId, label) => {
         await api.createAgent({ provider, model, name, credentialId, label });

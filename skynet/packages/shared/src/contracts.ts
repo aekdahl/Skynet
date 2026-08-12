@@ -348,6 +348,13 @@ export const TaskSource = z.discriminatedUnion("kind", [
 ]);
 export type TaskSource = z.infer<typeof TaskSource>;
 
+// One quality concern from the task linter v0 (see Task.lint below).
+export const TaskLintConcern = z.object({
+  kind: z.enum(["vague", "multi-module", "no-done-definition"]),
+  note: z.string(),
+});
+export type TaskLintConcern = z.infer<typeof TaskLintConcern>;
+
 export const Task = z.object({
   id: z.string(),
   workspaceId: z.string(),
@@ -365,6 +372,22 @@ export const Task = z.object({
   // Short agent-written assessment produced during autonomous triage
   // (backlog → triage): clarity / rough effort / risks.
   assessment: z.string().nullable().default(null),
+  // Task linter v0 (assistive) — cheap quality hints computed in the
+  // background right after the task is created or its text/description is
+  // edited (see apps/server/src/task-linter.ts). NEVER blocks creation or
+  // edits, and NEVER auto-splits a task: `concerns` is a dismissible hint the
+  // operator can act on or ignore. Empty `concerns` = the linter ran and found
+  // nothing worth flagging (or its reply was unreadable — same "nothing to
+  // report" outcome, never a thrown error). `null` = not linted yet for the
+  // CURRENT text (freshly created, or the text/description just changed).
+  lint: z
+    .object({
+      concerns: z.array(TaskLintConcern),
+      at: Timestamp,
+      dismissed: z.boolean().default(false),
+    })
+    .nullable()
+    .default(null),
   // Auto-review verdict left by an agent on a review-state task. ALWAYS
   // recorded once an agent has looked at the run — approve OR flag — so a
   // human can audit what the reviewer thought regardless of whether the

@@ -699,6 +699,16 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Dismiss a task linter (v0) hint — advisory only, so this just marks the
+  // current lint result seen; it never re-checks or blocks anything.
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/lint/dismiss", async (req, reply) => {
+    try {
+      return await ops.dismissTaskLint(ws(req), req.params.tid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // Drag-reorder a task to an arbitrary backlog position (before `beforeId`, or end).
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/reorder", async (req, reply) => {
     const body = ReorderTaskRequest.safeParse(req.body);

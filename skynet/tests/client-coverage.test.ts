@@ -106,6 +106,13 @@ const ALLOW = new Set<string>([
   // dev server + repo, confirmed the worktree actually rewinds to the
   // checkpoint's sha) — see the PR that landed this for the full trace.
   "createCheckpoint", "fetchCheckpoints", "restoreCheckpoint",
+  // Task linter v0 (assistive) — dismisses a lint hint produced by a background
+  // LLM consult (task-linter.ts). The consult itself needs a live provider key
+  // (no offline journey can produce a real hint to dismiss); the Operations
+  // wiring — background lint on create/edit, clear-on-relint, dismiss —  is
+  // exercised against a real store + hub in task-linter-ops.test.ts, and the
+  // model's structured-output parsing in task-linter.test.ts.
+  "dismissTaskLint",
 ]);
 
 describe("client API coverage", () => {
