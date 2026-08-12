@@ -42,6 +42,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
 import { normalizeCommand, rememberableRisk } from "./approval-policy.js";
 import { config, now } from "./config.js";
+import { computeParallelismNudge } from "./derive/parallelism.js";
 import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { projectPreview, type PreviewState, type PreviewSource } from "./preview/project-preview.js";
@@ -207,6 +208,7 @@ export class Operations {
     snap.providers = await withSecretAvailability(snap.providers, ws);
     snap.defaultApprovalLevel = config.defaultApprovalLevel;
     snap.workspaceSettings = await this.getWorkspaceSettings(ws);
+    snap.parallelismNudge = computeParallelismNudge(snap.fleet, snap.tasks);
     return snap;
   }
 
@@ -639,6 +641,10 @@ export class Operations {
       // Provenance — set when importing from a source of truth (GitHub issue, …).
       source: input.source ?? null,
       lint: null,
+      // Start-picker preference starts unset — plain auto-pick until an operator
+      // saves one via updateTask.
+      preferredProvider: null,
+      preferredModel: null,
     };
     const created = await this.hub.upsertTask(task);
     this.maybeLintTask(ws, created);
