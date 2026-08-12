@@ -875,6 +875,15 @@ export const CreateCredentialRequest = z.object({
 });
 export type CreateCredentialRequest = z.infer<typeof CreateCredentialRequest>;
 
+/** Result of a live verify against the vendor (or its CLI-auth account
+ *  endpoint) — a real, cheap call confirming the key actually authenticates.
+ *  Never gates the save; the UI shows this as feedback after the fact. */
+export const VerifyCredentialResult = z.object({
+  ok: z.boolean(),
+  message: z.string().optional(),
+});
+export type VerifyCredentialResult = z.infer<typeof VerifyCredentialResult>;
+
 // ─── GitHub integration ─────────────────────────────────────────────────────
 // A workspace connects via a GitHub *App* installation (least-privilege,
 // short-lived installation tokens, PR-first). The connection record below is
