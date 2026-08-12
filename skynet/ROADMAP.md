@@ -143,17 +143,22 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
    next to the button. Applies to GetStarted, wizard step 4, task composer, fleet form.
 4. [ ] **Legibility floor** — ≥11px and `--muted` for any text that carries meaning; `--faint`
    only for decoration (subway anchor labels, backlog subtitle, legends, picker hints).
-5. [ ] **Persist the workspace name server-side** — today it's localStorage-only and silently
-   reverts to "Skynet" on another profile/machine.
+5. [x] **Persist the workspace name server-side** — rides `WorkspaceSettings` (the existing
+   auto-scale settings record) as a `name` field; onboarding writes it via `PATCH
+   /api/settings/fleet`, the sidebar/shell header read it from the live store
+   (`workspaceSettings.name`), not `firstrun.ts`'s old localStorage helper.
 
 **P1 — core-loop guidance & affordances**
-6. [ ] **Continuation after Create project** — land in the project with the task composer
+6. [x] **Continuation after Create project** — land in the project with the task composer
    focused; keep a live **first-run checklist** on Home (create → task → assign → approve)
    until the first merge.
-7. [ ] **Task composer polish** — autofocus name; "description (optional — the full brief the
-   agent receives)"; ⌘↵ submits; blocked-reason per P0.3.
-8. [ ] **Assign is a primary affordance** — "Assign →" on backlog/todo kanban cards (drag-to-
-   ONGOING later); today it only lives on Roster idle rows.
+7. [x] **Task composer polish** — `AddTaskCard` already autofocuses the name field, carries the
+   "description (optional — the full brief the agent receives)" placeholder, submits on ⌘↵ (and
+   bare Enter in the name field), and its "Add task" button already renders a visible blocked-reason
+   via `PrimaryButton` (not a hover-only tooltip).
+8. [x] **Assign is a primary affordance** — the button (now labeled "Start →" — "Assign" implied
+   a handoff, but it kicks the run off immediately) lives directly on backlog/todo kanban cards, and
+   `todo → ongoing` is a legal drag transition too.
 9. [x] **Explain the Autonomy toggle** — a visible subtitle now sits under the toggle in both
    the project header and the create-project form ("Agents triage, auto-pick, and review tasks
    on their own — off, the board is fully human-driven."), not just the hover title. A
@@ -163,7 +168,8 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 10. [ ] **Fleet copy & guardrails** — "1 agents" pluralization; unify "+ Configure agent" vs
     "Add to fleet"; move destructive **Retire** behind detail/overflow or confirm inline;
     label the provider strip as the *catalog*, not configured.
-11. [ ] **Inbox empty state teaches** — show the four gate kinds that would arrive there.
+11. [x] **Inbox empty state teaches** — the empty state lists all four gate kinds (approval / plan
+    review / diff review / merge conflict) with a one-line blurb each.
 12. [ ] **Prioritize the backlog _and_ todo** — manual promote/demote (reorder) on **todo**
     cards, not just backlog. A card's rank sets both what surfaces at the top of the column
     and — with Autonomy on — which todo an idle agent **auto-picks first** (today auto-pick
@@ -184,7 +190,9 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   is ubiquitous across the competitor field, and **Kimi Code** — Moonshot AI's terminal coding agent, same
   CLI shape as Claude/Codex/Gemini, [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — then
   breadth reactively from the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
-- [ ] **Agent labels / custom grouping** — rename agents and group them beyond project (small UX add).
+- [x] **Agent labels / custom grouping** — Fleet already supports both: a "Group" field
+  (`label`) with a known-groups datalist, the fleet grid groups by label with headings, and
+  editing an agent's name is already part of the same Configure form.
 - [ ] **Mass inform** — select multiple agents (or a whole project / area / manager-family) and attach a
   note that rides the *next* prompt each already receives — **no extra turn, ~free** (Claude SDK
   `shouldQuery:false`; CLI runners buffer + prepend). A third interaction type (`inform`) alongside
@@ -373,6 +381,24 @@ features below are white space.)
 - [x] **Per-project agent instructions (house rules)** — a `Project.instructions` markdown field that rides *every* prompt an agent sees on that project (assignTask, forkAgent, review-revise, escalation resume, triage consult, auto-review consult) and Steward's grounding. Motivated by: "build agents in Skynet using a specific subset of packages, pre-written code, and structure" — that's a per-project policy, not a workspace boundary, and it lives on the project record for instant editability. Trims + normalizes empty → null; the read-only header shows a compact "ⓘ Instructions active" chip.
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.*
+- [ ] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third
+  lane: when a request is better SHOWN than said (review a diff, browse the board, tune the fleet), the
+  reply carries a **deep link straight into the exact web-app view** — project/task pre-focused —
+  instead of trying to cram it into a chat bubble. The link mechanism already exists and is already
+  sent from Telegram today — `runLink()` → `PUBLIC_URL` + `#/agent/<runId>`
+  (`apps/server/src/telegram/notices.ts`) — and the hash router already handles `#/project/<id>`
+  (`apps/web/src/lib/routing.ts`). What's missing is **zero cold start**: today the link only lands
+  cleanly if the browser tab is already signed in — click it fresh and you hit the login wall, which
+  defeats the point. Two paths, matched to how each release is actually reached, not one generic
+  scheme: **desktop (the committed release)** registers a `skynet://` OS protocol handler — no token
+  at all, since the app is already running locally as the single operator and the OS just routes the
+  click to it; **hosted/GCP (`public_ui`, 🏢 deferred)** is the one case that actually needs a
+  signed-token flow — mint a short-lived, single-use exchange token per link that the app consumes on
+  load to establish a normal session. Chat stays the command line, the web app stays the one canvas —
+  the link is the bridge, not a second interface to maintain. *(Prompted by an outside SOTA-routing
+  pitch — "transport vs. generation," deep links that "hydrate state" instead of forcing a re-login.
+  The underlying idea is sound and is genuinely missing; the "agent renders a whole spatial PWA on the
+  fly" framing isn't — see the AG-UI note in Considerations for why we're not chasing that part.)*
 - [ ] **Operator ergonomics (P3 of [docs/ux-review.md](docs/ux-review.md)):** **⌘K command palette**
   (navigation + verbs: assign, approve latest gate, open project) · **keyboard-first Inbox**
   (j/k navigate, a/r/m approve/reject/modify, ↵ opens the run — `QueueView.selectedIdx` already
@@ -526,6 +552,16 @@ memory (v4) + thin runner adapters.
   weirdness. Waiting on the vendor, not building.
 - 🔬 **LLMs for memory distillation (v4) and the fluency coach (v5)** — both likely require an LLM;
   decide model / cost / UX. (Flagged by design, not avoidance.)
+- **Generative-UI streaming protocols (AG-UI and similar)** — the pitch is standardizing how an agent
+  streams UI events (tool-call-start, state-delta) to a client instead of hand-rolling the wiring every
+  time. We already hand-roll this twice, on purpose: Steward's `{"proposeActions":[...]}` envelope
+  (`apps/server/src/steward/assistant.ts`) and the bespoke inline renderers it drives (`DiffView`,
+  `RoadmapDocView`). **Watch for**: a standard that earns real *multi-vendor* adoption, same posture as
+  the vendor-SDK entry above — this isn't that yet (single-vendor-pushed, pre-adoption). The
+  validate-then-confirm trust boundary (nothing model-trusted, every id re-checked server-side before
+  a chip even renders) is the part that actually matters and stays regardless of transport; swapping
+  the wire format later is a no-op to that boundary. Not chasing this now — "wrap, don't rebuild" cuts
+  against adopting a nascent protocol for a problem our envelope already solves.
 - **Repo-optional / chat-only mode** — a repo should *not* be hard-required. A "just chat with an
   agent" mode is mechanically a runner with **no worktree and no merge**; it widens the funnel to try
   Skynet. Not the core money bet, but cheap to allow.
