@@ -15,6 +15,7 @@ import type {
   HitlItem,
   Milestone,
   Module,
+  ParallelismNudge,
   Project,
   ProviderInfo,
   ResolveAction,
@@ -74,6 +75,11 @@ export interface StoreState {
   // workspaceSettings?.name, never firstrun.ts's old localStorage helper, so
   // the name is consistent across profiles/machines instead of per-browser.
   workspaceSettings?: WorkspaceSettings;
+  // "Idle runners + deep backlog → spin up more?" — a derived read, refreshed
+  // whenever a snapshot lands (not on every live delta; it's a light hint, not
+  // a real-time gate). Undefined until the first snapshot lands (or an older
+  // server that doesn't send it).
+  parallelismNudge?: ParallelismNudge;
 }
 
 export interface Store extends StoreState {
@@ -343,6 +349,7 @@ function fromSnapshot(snap: Snapshot): StoreState {
     providers: snap.providers,
     defaultApprovalLevel: snap.defaultApprovalLevel,
     workspaceSettings: snap.workspaceSettings,
+    parallelismNudge: snap.parallelismNudge,
     connected: true,
     loaded: true,
     // A snapshot in hand means we're effectively online; a later socket close

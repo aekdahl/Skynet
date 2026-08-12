@@ -26,6 +26,16 @@ import {
 
 // ─── Connect-time snapshot ────────────────────────────────────────────────
 
+// "idle runners + deep backlog → spin up more?" (roadmap v1.5) — a light,
+// non-naggy hint derived server-side (see apps/server/src/derive/parallelism.ts)
+// from the fleet's own idle count vs. eligible backlog+todo depth.
+export const ParallelismNudge = z.object({
+  idleRunners: z.number().int().nonnegative(),
+  eligibleBacklog: z.number().int().nonnegative(),
+  shouldNudge: z.boolean(),
+});
+export type ParallelismNudge = z.infer<typeof ParallelismNudge>;
+
 export const Snapshot = z.object({
   runs: z.array(TaskRun),
   queue: z.array(HitlItem), // open + recently-resolved HITL items
@@ -44,6 +54,9 @@ export const Snapshot = z.object({
   defaultApprovalLevel: ApprovalLevel.optional(),
   // The live workspace fleet policy (auto-scale + cap). Optional for forward-compat.
   workspaceSettings: WorkspaceSettings.optional(),
+  // Derived read, not a persisted record (see ParallelismNudge above). Optional
+  // for forward-compat with older servers that don't send it.
+  parallelismNudge: ParallelismNudge.optional(),
 });
 export type Snapshot = z.infer<typeof Snapshot>;
 

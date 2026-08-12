@@ -358,6 +358,7 @@ export function HomeView({
         onOpenAgent={onOpenAgent}
         onOpenProject={onOpenProject}
         onAssign={onAssign}
+        onConfigureFleet={onConfigureFleet}
       />
     </div>
   );
@@ -385,18 +386,46 @@ interface RunRow {
 }
 const TAG_RANK: Record<RunTag, number> = { blocked: 0, running: 1, paused: 2, done: 3 };
 
+// ─── Parallelism nudge ────────────────────────────────────────────────────
+// "idle runners + deep backlog → spin up more?" — the fleet's own idle state
+// turned into a light suggestion, not a warning: accent-toned, dismissible for
+// the session (no localStorage — it's a hint, and a fresh page load re-checks
+// the live state rather than remembering a stale dismissal). Silent whenever
+// the heuristic (derive/parallelism.ts, server-computed) isn't met.
+function ParallelismNudgeBanner({ onConfigureFleet }: { onConfigureFleet: () => void }) {
+  const { parallelismNudge } = useStore();
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed || !parallelismNudge?.shouldNudge) return null;
+  return (
+    <div className="parallel-nudge" role="status">
+      <span className="parallel-nudge-txt">
+        <b>{parallelismNudge.idleRunners} idle runners</b> and {parallelismNudge.eligibleBacklog} tasks waiting —
+        spin up more agents to work them in parallel?
+      </span>
+      <button className="parallel-nudge-cta" onClick={onConfigureFleet}>
+        Add agent →
+      </button>
+      <button className="approval-rule-x parallel-nudge-x" title="Dismiss" onClick={() => setDismissed(true)}>
+        ×
+      </button>
+    </div>
+  );
+}
+
 function RunsBoard({
   now,
   onOpenTask,
   onOpenAgent,
   onOpenProject,
   onAssign,
+  onConfigureFleet,
 }: {
   now: number;
   onOpenTask: (id: string) => void;
   onOpenAgent: (id: string) => void;
   onOpenProject: (id: string) => void;
   onAssign: () => void;
+  onConfigureFleet: () => void;
 }) {
   const { runs, tasks, projects, queue, fleet } = useStore();
   const oq = openQueue(queue);
@@ -462,6 +491,7 @@ function RunsBoard({
   return (
     <section className="vw">
       <ViewHead title="Runs" sub="Every project, one live view — sorted by what needs you first" />
+      <ParallelismNudgeBanner onConfigureFleet={onConfigureFleet} />
       <div className="rb-card">
         <div className="rb-stats">
           <div className="rb-stat"><span className="rb-v">{rows.length}</span><span className="rb-k">runs</span></div>

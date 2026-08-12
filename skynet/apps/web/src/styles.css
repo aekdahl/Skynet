@@ -1885,6 +1885,20 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .fleet-warn-cta { margin-left: auto; flex: none; background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
 .fleet-warn-cta:hover { text-decoration: underline; text-underline-offset: 3px; }
 
+/* ─── Parallelism nudge — a suggestion, not a warning, so it's accent-toned
+   (not --danger) and carries its own dismiss. ────────────────────────────── */
+.parallel-nudge {
+  display: flex; align-items: center; gap: 11px; width: 100%;
+  padding: 9px 12px 9px 15px; border-radius: 11px; text-align: left;
+  background: color-mix(in oklch, var(--accent), transparent 92%);
+  border: 1px solid color-mix(in oklch, var(--accent), transparent 65%);
+  margin-bottom: 10px;
+}
+.parallel-nudge-txt { font-size: 13px; color: var(--text); line-height: 1.45; }
+.parallel-nudge-cta { flex: none; background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+.parallel-nudge-cta:hover { text-decoration: underline; text-underline-offset: 3px; }
+.parallel-nudge-x { margin-left: auto; }
+
 /* ─── Shared empty state ─────────────────────────────────────────────────── */
 .empty-state { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 22px 20px; border: 1px dashed var(--line); border-radius: 12px; background: color-mix(in oklch, var(--panel), transparent 30%); }
 .empty-state-compact { padding: 16px 16px; gap: 6px; }
