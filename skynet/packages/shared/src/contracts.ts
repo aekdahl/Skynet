@@ -756,6 +756,19 @@ export const UpdateMilestoneRequest = z.object({
 });
 export type UpdateMilestoneRequest = z.infer<typeof UpdateMilestoneRequest>;
 
+// ─── Roadmap doc requests ──────────────────────────────────────────────
+// Commit a Steward-drafted edit to a project's ROADMAP.md — only reachable
+// after the operator confirms the diff in chat. `baselineHash` (always) and
+// `baselineSha` (GitHub-bound projects only) pin the edit to the exact content
+// it was drafted against, so a concurrent change is refused, not clobbered.
+export const UpdateProjectRoadmapRequest = z.object({
+  path: z.enum(["ROADMAP.md", "docs/ROADMAP.md"]),
+  content: z.string().min(1),
+  baselineHash: z.string().min(1),
+  baselineSha: z.string().optional(),
+});
+export type UpdateProjectRoadmapRequest = z.infer<typeof UpdateProjectRoadmapRequest>;
+
 // A human-initiated kanban move; the server validates it against the allowed
 // (human) transition map before applying.
 export const MoveTaskRequest = z.object({ to: TaskState });
