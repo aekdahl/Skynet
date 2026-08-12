@@ -147,7 +147,7 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
    reverts to "Skynet" on another profile/machine.
 
 **P1 — core-loop guidance & affordances**
-6. [ ] **Continuation after Create project** — land in the project with the task composer
+6. [x] **Continuation after Create project** — land in the project with the task composer
    focused; keep a live **first-run checklist** on Home (create → task → assign → approve)
    until the first merge.
 7. [ ] **Task composer polish** — autofocus name; "description (optional — the full brief the
