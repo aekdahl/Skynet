@@ -153,3 +153,48 @@ describe("ClaudeRunner error handling", () => {
     expect(events.onFailed).toHaveBeenCalledWith("a1", expect.stringContaining("error_max_turns"));
   });
 });
+
+// Regression for the "ClaudeRunnerProvider.sessions grows forever" tech-debt
+// item: the cache is now a bounded LRU (runner-sdk/src/claude.ts) instead of
+// unbounded, but Fork stays available on ANY run indefinitely (no completion
+// event ever disables the Fork button — see apps/web/src/views/task.tsx), so
+// eviction must be purely capacity-driven, never tied to a run reaching done.
+// These pull each start() call's actual query options to see whether `resume`
+// was passed — the ground truth for "did this fork inherit its parent's
+// session", not just an indirect side effect.
+function lastQueryOptions(fn: ReturnType<typeof scriptedQuery>["fn"]): { resume?: string; forkSession?: boolean } {
+  const call = fn.mock.calls.at(-1) as [{ options: { resume?: string; forkSession?: boolean } }] | undefined;
+  return call?.[0].options ?? {};
+}
+
+describe("ClaudeRunnerProvider session cache (fork resume)", () => {
+  let q: ReturnType<typeof scriptedQuery>;
+  beforeEach(() => {
+    q = scriptedQuery();
+  });
+
+  it("evicts the least-recently-used session past the cap, but still resumes a recent one", async () => {
+    // Cap shrunk to 2 so eviction is provable without driving 500+ runs.
+    __setClaudeTestHooks({ query: q.fn as never, backoffMs: () => 5, maxSessions: 2 });
+    const provider = new ClaudeRunnerProvider();
+
+    for (const [runId, sessionId] of [["p1", "s1"], ["p2", "s2"], ["p3", "s3"]] as const) {
+      q.push([{ type: "system", session_id: sessionId }, ok]);
+      const events = fakeEvents();
+      await provider.start({ ...spec, runId }, events);
+      await vi.waitFor(() => expect(events.onCompleted).toHaveBeenCalled(), { timeout: 2000, interval: 20 });
+    }
+    // p1 was the least-recently-used entry when p3 pushed the cache (cap 2)
+    // past its bound — it's the one that must have been evicted, not p2/p3.
+
+    await provider.start({ ...spec, runId: "fork-of-p1", parentId: "p1" }, fakeEvents());
+    const forkOfEvicted = lastQueryOptions(q.fn);
+    expect(forkOfEvicted.resume).toBeUndefined(); // evicted — starts fresh, doesn't error
+    expect(forkOfEvicted.forkSession).toBeUndefined();
+
+    await provider.start({ ...spec, runId: "fork-of-p3", parentId: "p3" }, fakeEvents());
+    const forkOfRecent = lastQueryOptions(q.fn);
+    expect(forkOfRecent.resume).toBe("s3"); // still cached — real resume
+    expect(forkOfRecent.forkSession).toBe(true);
+  });
+});

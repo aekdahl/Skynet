@@ -643,16 +643,34 @@ function classifyResult(msg: Record<string, unknown>, context: string): { reason
   };
 }
 
+// Cap on ClaudeRunnerProvider.sessions (runId → SDK session id, kept so a fork
+// can resume its parent's context) — was previously unbounded, growing one
+// entry per run for the server-process lifetime. Fork stays available on ANY
+// run indefinitely (no completion/archival ever disables the Fork button —
+// see task.tsx), so there's no lifecycle event that safely marks an entry as
+// "will never be resumed again"; evicting on run completion or worktree
+// retirement would silently break resume for the ordinary "fork a run I
+// finished a while ago" case. A bounded LRU is the safe fix instead: it caps
+// memory the way the roadmap item asks for, without guessing wrong about
+// which entries are still wanted. Beyond the cap, a fork just starts a fresh
+// (non-resumed) session — exactly what already happens for every run today
+// after a server restart, since this cache was never persisted to begin with.
+const MAX_SESSIONS = 500;
+
 // Test seams (mirror the orchestrator's providerOverride): let tests drive the
-// SDK message stream deterministically and collapse backoff. Production always
-// uses the real query() and real exponential timing.
+// SDK message stream deterministically, collapse backoff, and shrink the
+// session cap so LRU eviction is provable without driving 500+ runs.
+// Production always uses the real query(), real exponential timing, and
+// MAX_SESSIONS.
 let queryImpl: typeof query = query;
 let backoffMsImpl: (attempt: number) => number = retryBackoffMs;
+let maxSessionsImpl = MAX_SESSIONS;
 export function __setClaudeTestHooks(
-  hooks: { query?: typeof query; backoffMs?: (n: number) => number } | null,
+  hooks: { query?: typeof query; backoffMs?: (n: number) => number; maxSessions?: number } | null,
 ): void {
   queryImpl = hooks?.query ?? query;
   backoffMsImpl = hooks?.backoffMs ?? retryBackoffMs;
+  maxSessionsImpl = hooks?.maxSessions ?? MAX_SESSIONS;
 }
 
 class ClaudeRunnerHandle implements RunnerHandle {
@@ -1290,18 +1308,41 @@ class ClaudeRunnerHandle implements RunnerHandle {
 
 export class ClaudeRunnerProvider implements RunnerProvider {
   readonly id: ProviderId = "claude";
-  // runId → SDK session id, so a fork can resume a parent's context.
+  // runId → SDK session id, so a fork can resume a parent's context. Bounded
+  // LRU (see MAX_SESSIONS): a Map preserves insertion order, so re-inserting
+  // an entry on both read and write keeps it at the "most recent" end;
+  // eviction always drops the true least-recently-used entry, not just the
+  // oldest-written one.
   private sessions = new Map<string, string>();
+
+  private getSession(runId: string): string | undefined {
+    const sessionId = this.sessions.get(runId);
+    if (sessionId !== undefined) {
+      this.sessions.delete(runId);
+      this.sessions.set(runId, sessionId); // touch: move to the MRU end
+    }
+    return sessionId;
+  }
+
+  private setSession(runId: string, sessionId: string): void {
+    this.sessions.delete(runId); // re-set below moves it to the MRU end either way
+    this.sessions.set(runId, sessionId);
+    if (this.sessions.size > maxSessionsImpl) {
+      const oldest = this.sessions.keys().next().value;
+      if (oldest !== undefined) this.sessions.delete(oldest);
+    }
+  }
 
   async start(spec: StartSpec, events: RunnerEvents): Promise<RunnerHandle> {
     // An explicit checkpoint restore takes precedence over the parentId-based
     // fork lookup — a restore isn't a fork (no parent run), just an earlier
-    // session on this same run.
-    const resumeSessionId = spec.resumeSessionId ?? (spec.parentId ? this.sessions.get(spec.parentId) : undefined);
+    // session on this same run. The fork lookup goes through getSession() (not
+    // a raw .get()) so it counts as a touch for the LRU cache below.
+    const resumeSessionId = spec.resumeSessionId ?? (spec.parentId ? this.getSession(spec.parentId) : undefined);
     return new ClaudeRunnerHandle(
       spec,
       events,
-      (runId, sessionId) => this.sessions.set(runId, sessionId),
+      (runId, sessionId) => this.setSession(runId, sessionId),
       resumeSessionId,
     );
   }
