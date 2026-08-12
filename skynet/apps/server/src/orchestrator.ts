@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk, Feature, Milestone } from "@skynet/shared";
+import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk, Feature, Milestone, DiffWalkthrough } from "@skynet/shared";
 import { WorkspaceSettings } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -16,6 +16,7 @@ import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
 import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
+import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
 import { decisionResumePrompt } from "./decision-resume.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
@@ -503,6 +504,10 @@ export class Orchestrator {
 
       if (res.committed) {
         const stat = await wt.diffStat(runId, live.baseRef);
+        // Fetched alongside the stat (not inside raiseDiffReview) since it's the
+        // same worktree/baseRef this function already has in scope — raiseDiffReview
+        // only needs the text, to draft the walkthrough and hand to the HITL.
+        const patch = await wt.patch(runId, live.baseRef);
         await this.freeRunner(live.agentId); // compute is done; awaiting review
         await this.hub.runStatus(runId, "review");
         // The run produced a diff → its task enters the review column (a human or
@@ -511,7 +516,7 @@ export class Orchestrator {
           const task = await this.store.getTask(live.taskId);
           if (task) await this.hub.upsertTask({ ...task, state: "review" });
         }
-        await this.raiseDiffReview(runId, stat);
+        await this.raiseDiffReview(runId, stat, patch);
         // Keep what a `modify` review resolution needs to resume this run for a
         // revision — its worktree survives (retire only happens on merge).
         this.reviews.set(runId, { git: live.git, baseRef: live.baseRef, taskId: live.taskId });
@@ -640,7 +645,11 @@ export class Orchestrator {
   }
 
   /** Raise the `diff` review that gates a finished agent's branch into the queue. */
-  private async raiseDiffReview(runId: string, stat: { add: number; del: number; files: string[] }): Promise<void> {
+  private async raiseDiffReview(
+    runId: string,
+    stat: { add: number; del: number; files: string[] },
+    patch: string,
+  ): Promise<void> {
     const agent = await this.store.getRun(runId);
     if (!agent) return;
     // Modules the diff ACTUALLY touched, derived from the changed files via the
@@ -652,6 +661,11 @@ export class Orchestrator {
     // itself, not just the review card). `modifiedFiles` was never populated.
     await this.hub.runModifiedFiles(runId, stat.files);
     const risk: Risk = stat.del > 200 || stat.files.length > 40 ? "high" : "medium";
+    // Drafted BEFORE the item is raised — the reviewer should never see a diff
+    // gate that later "pops in" a walkthrough. Best-effort: any failure (no
+    // consult support, no credential, unreadable reply) yields null and the
+    // gate raises exactly as it did before this existed.
+    const walkthrough = await this.draftDiffWalkthrough(agent, project?.instructions, stat.files, patch);
     const item: HitlItem = {
       id: `q-diff-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
@@ -672,7 +686,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: stat.add, del: stat.del, modules, files: stat.files },
+      diff: { add: stat.add, del: stat.del, modules, files: stat.files, walkthrough },
       flags: [],
     };
     // `full` autonomy (see ApprovalLevel in @skynet/shared) skips even a diff's
@@ -695,6 +709,41 @@ export class Orchestrator {
       return;
     }
     await this.hub.raiseHitl(item);
+  }
+
+  /**
+   * Ask the run's OWN provider/model to explain its diff — a stateless
+   * one-shot `consult`, same pattern as `autoReview` — before the diff HITL is
+   * raised. Grounded on the real patch (`context`), not the agent's
+   * self-reported summary. Empty patch (no git worktree) or no `consult`
+   * support (most CLI runners today) → no walkthrough, not an error.
+   */
+  private async draftDiffWalkthrough(
+    run: TaskRun,
+    projectInstructions: string | null | undefined,
+    files: string[],
+    patch: string,
+  ): Promise<DiffWalkthrough | null> {
+    if (!patch) return null;
+    try {
+      const provider = await this.getProvider(run.provider);
+      if (!provider.consult) return null;
+      const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+      const reply = await provider.consult(
+        {
+          task: withInstructions(projectInstructions, run.name),
+          model: run.model,
+          cwd: config.runnerCwd,
+          apiKey,
+          context: patch,
+          system: DIFF_WALKTHROUGH_SYSTEM,
+        },
+        DIFF_WALKTHROUGH_INSTRUCTION,
+      );
+      return parseDiffWalkthrough(reply, files);
+    } catch {
+      return null; // best-effort — a draft failure never blocks the review
+    }
   }
 
   /**
@@ -1807,7 +1856,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: 0, del: 0, modules: agent.modules, files: [] },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null },
       flags: [reason],
     });
   }
@@ -1835,7 +1884,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: 0, del: 0, modules: agent.modules, files: [] },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null },
       flags: files, // the conflicting files — shown as chips
     });
   }

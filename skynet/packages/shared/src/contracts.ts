@@ -439,6 +439,23 @@ export type Milestone = z.infer<typeof Milestone>;
 
 // ─── HITL item & resolution ───────────────────────────────────────────────
 
+// Agent-authored explanation of its own diff — drafted once, grounded on the
+// real patch, before the diff HITL is raised (see Orchestrator.raiseDiffReview
+// / draftDiffWalkthrough). Null when the draft failed or the provider doesn't
+// support `consult` — the review always proceeds on the raw diff either way.
+export const DiffWalkthroughComment = z.object({
+  file: z.string(),
+  line: z.number().int().positive().nullable().default(null), // null → file-level note
+  note: z.string(),
+});
+export type DiffWalkthroughComment = z.infer<typeof DiffWalkthroughComment>;
+
+export const DiffWalkthrough = z.object({
+  summary: z.string(),
+  comments: z.array(DiffWalkthroughComment).default([]),
+});
+export type DiffWalkthrough = z.infer<typeof DiffWalkthrough>;
+
 export const DiffSummary = z.object({
   add: z.number().int().nonnegative(),
   del: z.number().int().nonnegative(),
@@ -447,6 +464,7 @@ export const DiffSummary = z.object({
   // without opening the full diff. Optional/defaulted so the empty-diff merge
   // gates that carry no file list stay valid.
   files: z.array(z.string()).default([]),
+  walkthrough: DiffWalkthrough.nullable().default(null),
 });
 export type DiffSummary = z.infer<typeof DiffSummary>;
 
