@@ -11,7 +11,7 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { StatusDot } from "./common";
-import { operatorHandle, workspaceName } from "../lib/firstrun";
+import { operatorHandle } from "../lib/firstrun";
 import { devToolsEnabled } from "../lib/dev";
 import type { ViewName } from "../App";
 
@@ -85,6 +85,7 @@ const wsInitials = (name: string): string =>
   ).toUpperCase();
 
 export function TitleBar() {
+  const { workspaceSettings } = useStore();
   const cls =
     "op-titlebar" +
     (isDesktop ? " is-desktop" : "") +
@@ -106,7 +107,7 @@ export function TitleBar() {
       </div>
       <div className="op-title">Skynet — Agent Network</div>
       <div className="op-titleright">
-        <span className="op-avatar">{wsInitials(workspaceName())}</span>
+        <span className="op-avatar">{wsInitials(workspaceSettings?.name ?? "")}</span>
       </div>
     </header>
   );
@@ -185,7 +186,7 @@ export function OpSidebar({
   setView: (v: ViewName) => void;
   onOpenProject: (id: string) => void;
 }) {
-  const { projects, runs, queue } = useStore();
+  const { projects, runs, queue, workspaceSettings } = useStore();
   const queueCount = openQueue(queue).length;
   const mergeCount = readyMerges(runs).length;
   // Single source of truth for the highlight — see activeNav above.
@@ -227,7 +228,7 @@ export function OpSidebar({
     <aside className="op-side">
       <div className="op-ws">
         <span className="op-ws-logo">S</span>
-        <span className="op-ws-name">{workspaceName() || "Skynet"}</span>
+        <span className="op-ws-name">{workspaceSettings?.name || "Skynet"}</span>
       </div>
       <nav className="op-nav">
         {item(
@@ -280,9 +281,9 @@ export function OpSidebar({
         ))}
       </div>
       <div className="op-side-foot" title={operatorHandle() ? `Operator: ${operatorHandle()}` : undefined}>
-        <span className="op-avatar">{wsInitials(workspaceName())}</span>
+        <span className="op-avatar">{wsInitials(workspaceSettings?.name ?? "")}</span>
         <div>
-          <div className="who">{workspaceName() || "Skynet"}</div>
+          <div className="who">{workspaceSettings?.name || "Skynet"}</div>
           <div className="role">{operatorHandle() || "Workspace"}</div>
         </div>
       </div>
