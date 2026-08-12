@@ -1487,7 +1487,8 @@ button.kb-done:hover { opacity: 1; }
 .kb-card-tools { display: flex; gap: 4px; flex: none; opacity: 0; transition: opacity 0.12s ease; }
 .kb-card:hover .kb-card-tools { opacity: 1; }
 .kb-tool { background: none; border: none; cursor: pointer; color: var(--faint); font-size: 14px; line-height: 1; padding: 2px 4px; border-radius: 4px; font-family: var(--font-ui); }
-.kb-tool:hover { color: var(--text); background: var(--raised); }
+.kb-tool:hover:not(:disabled) { color: var(--text); background: var(--raised); }
+.kb-tool:disabled { color: var(--faint); opacity: 0.4; cursor: not-allowed; }
 .kb-tool-del:hover { color: var(--danger); }
 .kb-add {
   background: none; border: 1px dashed var(--line); border-radius: 10px; padding: 11px;
