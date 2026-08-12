@@ -11,6 +11,7 @@ import { fingerprint, masterKey, open, seal } from "./crypto.js";
 import { MemorySecretStore } from "./memory.js";
 import { PostgresSecretStore } from "./postgres.js";
 import type { SecretRecord, SecretStore } from "./types.js";
+import { verifyProviderCredential, type VerifyCredentialResult } from "./verify.js";
 
 // Re-exported for existing consumers (secrets/index.js).
 export { PROVIDER_ENV_VAR };
@@ -147,6 +148,22 @@ export class SecretService {
     // Env fallback applies only to a provider's DEFAULT credential (id === provider).
     const parsed = ProviderId.safeParse(credentialId);
     return parsed.success ? process.env[PROVIDER_ENV_VAR[parsed.data]] || undefined : undefined;
+  }
+
+  /**
+   * Live-verify a credential's key against its vendor — the same key
+   * `resolve` would hand a runner (stored key, else an env fallback for a
+   * default credential). Never throws for a bad/unreachable key, only for an
+   * id that names neither a stored credential nor a known provider.
+   */
+  async verify(workspaceId: string, id: string): Promise<VerifyCredentialResult> {
+    const record = await this.store.get(workspaceId, id);
+    const parsed = ProviderId.safeParse(id);
+    if (!record && !parsed.success) throw new UnknownCredentialError(id);
+    const provider: CredentialProvider = record?.provider ?? (parsed.data as ProviderId);
+    const apiKey = await this.resolve(workspaceId, id);
+    if (!apiKey) return { ok: false, message: "No key is set for this credential (and no environment fallback)." };
+    return verifyProviderCredential(provider, apiKey);
   }
 }
 

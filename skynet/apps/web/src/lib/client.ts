@@ -14,6 +14,7 @@ import {
   type Project,
   type WorkspaceSettings,
   type UpdateWorkspaceSettingsRequest,
+  type VerifyCredentialResult,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 
@@ -329,6 +330,12 @@ export function deleteSecret(id: string) {
 // ("Claude on another account"). Agents can then be pinned to it via credentialId.
 export function createCredential(provider: string, name: string, apiKey: string) {
   return req<{ secret: SecretMeta }>("POST", "/api/credentials", { provider, name, apiKey });
+}
+// Live-verify a credential's key against its vendor — a real, cheap call
+// (never a generation) confirming it actually authenticates. Never blocks the
+// save that already happened; this is UI feedback only.
+export function verifyCredential(id: string) {
+  return req<VerifyCredentialResult>("POST", `/api/credentials/${id}/verify`);
 }
 
 // ─── Service tokens (MCP / programmatic access) ────────────────────────────
