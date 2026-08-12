@@ -13,6 +13,7 @@
 import type {
   TaskRun,
   AuditRecord,
+  Checkpoint,
   ConfigureRunnerRequest,
   CreateFeatureRequest,
   CreateMilestoneRequest,
@@ -395,6 +396,18 @@ export class Operations {
     await this.getRun(ws, runId);
     return this.orchestrator.fork(runId);
   }
+  async createCheckpoint(ws: string, runId: string, label: string | null): Promise<Checkpoint> {
+    await this.getRun(ws, runId); // 404 unless it's in this workspace
+    return this.orchestrator.checkpoint(runId, label);
+  }
+  async listCheckpoints(ws: string, runId: string): Promise<Checkpoint[]> {
+    await this.getRun(ws, runId);
+    return this.orchestrator.listCheckpoints(runId);
+  }
+  async restoreCheckpoint(ws: string, runId: string, checkpointId: string): Promise<TaskRun> {
+    await this.getRun(ws, runId);
+    return this.orchestrator.restoreCheckpoint(runId, checkpointId);
+  }
   /** The real diff (unified patch + stat) of a run's branch, for the review UI. */
   async runDiff(ws: string, runId: string): Promise<{ patch: string; add: number; del: number; files: string[] }> {
     await this.getRun(ws, runId); // 404 unless it's in this workspace
@@ -492,6 +505,8 @@ export class Operations {
       autonomy: input.autonomy ?? true,
       approvalLevel: input.approvalLevel ?? config.defaultApprovalLevel,
       approvalRules: [],
+      // Plan-mode gating is off by default — set later in project settings.
+      planModeGate: false,
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo,
@@ -626,6 +641,8 @@ export class Operations {
       runId: null,
       autoPick: false,
       assessment: null,
+      assessmentEffort: null,
+      assessmentRisks: [],
       reviewVerdict: null,
       assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,

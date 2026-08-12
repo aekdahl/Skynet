@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import type { GithubConnection, WorkspaceSettings } from "@skynet/shared";
-import { Agent, AuditRecord, Dependency, Feature, HitlItem, Milestone, Module, Project, Task, TaskRun } from "@skynet/shared";
+import { Agent, AuditRecord, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, Project, Task, TaskRun } from "@skynet/shared";
 import type { z } from "zod";
 import { MemoryStore } from "./memory.js";
 
@@ -70,6 +70,7 @@ export class FileStore extends MemoryStore {
       };
 
       fill(this.runs, d.runs, TaskRun, "run");
+      fill(this.checkpoints, d.checkpoints, Checkpoint, "checkpoint");
       // Legacy repair: the agentId→runId rename shipped without a data migration.
       fill(this.queue, d.queue, HitlItem, "HITL item", (x) =>
         x.runId == null && typeof x.agentId === "string" ? { ...x, runId: x.agentId } : x,
@@ -116,6 +117,7 @@ export class FileStore extends MemoryStore {
   flush(): void {
     const data = {
       runs: [...this.runs.values()],
+      checkpoints: [...this.checkpoints.values()],
       queue: [...this.queue.values()],
       projects: [...this.projects.values()],
       tasks: [...this.tasks.values()],

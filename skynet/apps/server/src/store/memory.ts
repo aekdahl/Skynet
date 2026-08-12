@@ -5,6 +5,7 @@
 
 import type {
   TaskRun,
+  Checkpoint,
   Dependency,
   Feature,
   GithubConnection,
@@ -27,6 +28,7 @@ import { PROVIDERS } from "./providers.js";
 export class MemoryStore implements Store {
   // `protected` so a persistence subclass (FileStore) can load/serialize them.
   protected runs = new Map<string, TaskRun>();
+  protected checkpoints = new Map<string, Checkpoint>();
   protected queue = new Map<string, HitlItem>();
   protected projects = new Map<string, Project>();
   protected tasks = new Map<string, Task>();
@@ -74,6 +76,12 @@ export class MemoryStore implements Store {
     const a = this.runs.get(runId);
     if (a) { a.log.push(detail ? { at, line, detail } : { at, line }); this.persist(); }
   }
+
+  async listCheckpoints(runId: string) {
+    return [...this.checkpoints.values()].filter((c) => c.runId === runId).sort((a, b) => a.createdAt - b.createdAt);
+  }
+  async getCheckpoint(id: string) { return this.checkpoints.get(id); }
+  async putCheckpoint(checkpoint: Checkpoint) { this.checkpoints.set(checkpoint.id, checkpoint); this.persist(); return checkpoint; }
 
   async listQueue(ws: string) { return [...this.queue.values()].filter((q) => q.workspaceId === ws); }
   async getHitl(id: string) { return this.queue.get(id); }

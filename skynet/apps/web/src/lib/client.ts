@@ -3,6 +3,7 @@ import {
   GithubConnection,
   Snapshot,
   WsMessage,
+  type Checkpoint,
   type TaskRun,
   type TaskAssignment,
   type ProviderId,
@@ -220,6 +221,16 @@ export function simulationGrade(prompt: string, expectation: string, actual: str
 export function forkAgent(id: string) {
   return req<unknown>("POST", `/api/runs/${id}/fork`);
 }
+export function createCheckpoint(runId: string, label?: string) {
+  return req<Checkpoint>("POST", `/api/runs/${runId}/checkpoints`, label ? { label } : {});
+}
+/** A run's checkpoints — lazily fetched (like the diff) rather than riding the snapshot. */
+export function fetchCheckpoints(runId: string) {
+  return req<Checkpoint[]>("GET", `/api/runs/${runId}/checkpoints`);
+}
+export function restoreCheckpoint(runId: string, checkpointId: string) {
+  return req<TaskRun>("POST", `/api/runs/${runId}/checkpoints/${checkpointId}/restore`);
+}
 export interface RunDiff {
   patch: string;
   add: number;
@@ -413,6 +424,7 @@ export function updateProject(
     status?: string;
     autonomy?: boolean;
     approvalLevel?: string;
+    planModeGate?: boolean;
     repoPath?: string | null;
     // null clears the field back to "no project rules".
     instructions?: string | null;

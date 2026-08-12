@@ -86,6 +86,41 @@ describe("splitEstMinutesTag — triage duration tag", () => {
     expect(splitEstMinutesTag('b.\n{"featureId":"","milestoneId":42}').milestoneId).toBeNull();
     expect(splitEstMinutesTag('b.\n{"featureId":null}').featureId).toBeNull();
   });
+
+  it("parses `effort` alongside the other fields (structured triage card)", () => {
+    const r = splitEstMinutesTag('Small config tweak.\n{"estMinutes":5,"effort":"small"}');
+    expect(r.effort).toBe("small");
+    expect(r.estMinutes).toBe(5);
+    expect(r.body).toBe("Small config tweak.");
+  });
+
+  it("bogus effort values are dropped (never fabricated)", () => {
+    expect(splitEstMinutesTag('b.\n{"effort":"XL"}').effort).toBeNull();
+    expect(splitEstMinutesTag('b.\n{"effort":123}').effort).toBeNull();
+  });
+
+  it("parses a risks list, capped and trimmed, empty strings dropped", () => {
+    const r = splitEstMinutesTag('Touches auth.\n{"risks":["  touches session handling  ","","no tests here"]}');
+    expect(r.risks).toEqual(["touches session handling", "no tests here"]);
+  });
+
+  it("caps risks at 5 entries and 140 chars each (no runaway payload)", () => {
+    const many = Array.from({ length: 8 }, (_, i) => `risk ${i}`);
+    const r = splitEstMinutesTag(`b.\n${JSON.stringify({ risks: many })}`);
+    expect(r.risks).toHaveLength(5);
+    const long = "x".repeat(500);
+    expect(splitEstMinutesTag(`b.\n${JSON.stringify({ risks: [long] })}`).risks?.[0]?.length).toBe(140);
+  });
+
+  it("a non-array risks value is dropped, not crashed on", () => {
+    expect(splitEstMinutesTag('b.\n{"risks":"one risk as a string"}').risks).toBeNull();
+  });
+
+  it("an empty risks array alone (no other field) doesn't peel the tag as a false positive", () => {
+    const r = splitEstMinutesTag('Just prose that happens to mention risks.\n{"risks":[]}');
+    expect(r.risks).toBeNull();
+    expect(r.body).toContain('{"risks":[]}');
+  });
 });
 
 const ctx: ProjectActionContext = {

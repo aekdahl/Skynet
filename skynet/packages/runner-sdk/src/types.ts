@@ -20,6 +20,15 @@ export interface StartSpec {
   parentId?: string | null;
   branchFromStep?: number | null;
   /**
+   * Explicit session/conversation id to resume — set when restoring a
+   * checkpoint, so the provider picks up that captured session instead of
+   * whatever `parentId` would otherwise resolve to (checkpoint restore isn't a
+   * fork: there's no parent run, just an earlier point on this same run).
+   * Only the Claude runner acts on it today; other providers ignore it (git-
+   * branch continuity only).
+   */
+  resumeSessionId?: string | null;
+  /**
    * Per-workspace provider API key, resolved by the orchestrator from the
    * secret store and injected into the runner's environment/SDK so each
    * workspace uses its own credentials. Null/absent → fall back to the ambient
@@ -34,6 +43,15 @@ export interface StartSpec {
    * actions still gate through the normal HITL approval flow.
    */
   browser?: boolean;
+  /**
+   * Opt-in: start this run in the Claude Agent SDK's plan mode
+   * (`permissionMode: "plan"`) — the agent must propose a plan and call
+   * ExitPlanMode before making any edits; the runner intercepts that call and
+   * raises a `plan` HITL the operator approves before writes happen. Resolved
+   * by the orchestrator from the project's `planModeGate` setting, off by
+   * default. Only the Claude runner acts on it today.
+   */
+  planModeGate?: boolean;
 }
 
 /**
@@ -94,6 +112,13 @@ export interface RunnerHandle {
   /** Discuss without resolving — agent keeps working; reply via onChatReply. */
   message(text: string): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * Best-effort snapshot of the provider's current session/conversation id —
+   * for checkpointing (captured onto the `Checkpoint` record so a later restore
+   * can resume it via `StartSpec.resumeSessionId`). Undefined when the provider
+   * has no such concept, or none has been captured yet.
+   */
+  getSessionId?(): string | undefined;
 }
 
 /** A provider backend. One per vendor; all share this shape. */

@@ -320,9 +320,8 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     `approve-with-rule` still to do.*
   - Secrets at rest (local); 🏢 **observability** (hosted metrics/logging/tracing) + SIEM export of the audit.
 - [x] **Runner session-map cleanup** — `ClaudeRunnerProvider.sessions` (runId→sessionId, kept for fork resume) is now a bounded LRU (cap 500, evict-oldest via re-insertion-on-touch), not evict-on-completion as originally scoped: Fork stays available on ANY run indefinitely (no completion/archival ever disables the Fork button), so there's no lifecycle event that safely marks an entry as "will never be resumed again" — evicting on done/worktree-retire would silently break resume for the ordinary "fork a run I finished a while ago" case. Beyond the cap, a fork just starts a fresh (non-resumed) session — exactly what already happens today after a server restart, since this cache was never persisted. Small RAM/tech-debt fix; no behavior change for realistic single-operator volumes.
-- [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs) + token-by-token streaming for Claude (`includePartialMessages` → a bus-only `run.log.delta` event, never persisted per-token → live "typing" in the run log, same finalized `run.log` write as before). **CLI usage fidelity firmed up** (re-verified against each vendor's CURRENT CLI, not assumed): Codex — fixed a real bug, `usageFromJson` scanned for a flat `usage`/`stats`/`tokens` key but codex-cli 0.147.0's `TokenCountEvent` nests real counts two levels deep (`msg.info.total_token_usage`), so usage was silently never reported; now unwrapped correctly. Gemini — `buildArgs` never actually requested JSON output, so text mode was the ONLY mode ever exercised and usage was never parsed despite the JSON-handling code already existing; now defaults to `--output-format stream-json` (verified against gemini-cli's `StreamJsonFormatter`). Cursor — `--output-format stream-json` confirmed current via `cursor-agent --help`; no bug found, left as-is.*
+- [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs) + **plan-mode gate (Claude)** — an opt-in per-project `planModeGate` sets `permissionMode: "plan"`; `ExitPlanMode` is intercepted and raised as a real `plan` HITL (the dead `HitlKind` finally has a producer), and everything but read-only investigation is denied outright until the operator approves it — genuinely no writes happen first + token-by-token streaming for Claude (`includePartialMessages` → a bus-only `run.log.delta` event, never persisted per-token → live "typing" in the run log, same finalized `run.log` write as before). **CLI usage fidelity firmed up** (re-verified against each vendor's CURRENT CLI, not assumed): Codex — fixed a real bug, `usageFromJson` scanned for a flat `usage`/`stats`/`tokens` key but codex-cli 0.147.0's `TokenCountEvent` nests real counts two levels deep (`msg.info.total_token_usage`), so usage was silently never reported; now unwrapped correctly. Gemini — `buildArgs` never actually requested JSON output, so text mode was the ONLY mode ever exercised and usage was never parsed despite the JSON-handling code already existing; now defaults to `--output-format stream-json` (verified against gemini-cli's `StreamJsonFormatter`). Cursor — `--output-format stream-json` confirmed current via `cursor-agent --help`; no bug found, left as-is.*
   Still to do:
-  - **Plan-mode gate (Claude)** — expose `permissionMode: "plan"` as a per-project/runner policy so the agent proposes a plan and `ExitPlanMode` becomes a `plan` HITL approved *before* any writes. Best fit for Skynet's HITL model; native to the Agent SDK.
   - **Per-runner tool + prompt policy** — surface `allowedTools`/`disallowedTools`, a project system prompt, and `settingSources` (CLAUDE.md) instead of the hardcoded auto-allow set + inline steering. Ties into v4 repo-native memory.
   - [x] **Structured diffs in gates/review** — shipped: `HitlItem.diff` (stat) is set in `raiseDiffReview` from `WorktreeManager.diffStat`, and the full unified patch is served on-demand by `GET /api/runs/:id/diff` (`orchestrator.ts#runDiff` → `worktrees.ts#patch`, a real `git diff` in the worktree) and rendered by `diff-view.tsx`'s `parseUnifiedDiff`. No vendor-specific patch-event plumbing exists (or is needed) — every runner's changes land in the same worktree, so one `git diff` covers Claude/Codex/Cursor/Gemini/Copilot alike.
   - **Token-by-token streaming for the CLI runners** — Codex/Gemini/Cursor/Copilot NDJSON deltas → the same `run.log.delta` live-typing path Claude now has.
@@ -330,7 +329,6 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 - [~] **Review upgrades (adopted from the competitor sweep):**
   - **Verifier gate** — run the project's tests/checks in the worktree and **block the merge on failure** as a
     first-class gate (not just the pre-merge `checkCmd`); auto-commit on green. *(bernstein / MartinLoop-style.)*
-  - **Checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks. *(AGX-style.)*
   - *Landed: **every review is auto-reviewed** — a fleet agent judges each `review`-state task's diff/output
     and writes a structured verdict (approve/flag) to the task; the log line names the reviewer + reason, and
     the audit trail records who reviewed what. Auto-approve merges only when the project's autonomy toggle is
@@ -338,6 +336,21 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     so a reason mentioning "flagged" never false-flags an APPROVE.*
   - *Landed: **`error_max_turns` is resumable** — a run that hits the Claude turn cap parks with the current
     plan + guidance instead of dead-ending; the operator resolves it forward.*
+  - *Landed: **checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks
+    (AGX-style). A `Checkpoint` record (sha + captured plan/progress + Claude session id,
+    `Store`-persisted across file/memory/postgres) manually triggered from the run's Checkpoint
+    button — the smaller, safer piece vs. auto-checkpointing on every plan-step transition (no new
+    hook into the plan-progress dataflow, no risk of checkpoint spam on a chatty plan; the hook point
+    for that, `Hub.runProgress`, is documented in the code for whoever picks it up next). Restore
+    re-provisions the run's worktree at the checkpoint's pinned sha (`git update-ref` under
+    `refs/skynet/checkpoints/*` so gc can't reclaim it once the branch is reset past it) via the
+    existing `WorktreeProvisioner`, and — Claude only — resumes the captured SDK session
+    (`StartSpec.resumeSessionId`, forked like `fork()` already does) instead of always the latest.
+    Verified for real against a live run (no mocks): worktree rewind, the pinned-ref gc-safety, and
+    the full create/list/restore API+UI path all confirmed working end-to-end. Not independently
+    verified: the Claude SDK's actual conversation-resume behavior on a restored session (needs a
+    real `ANTHROPIC_API_KEY`, unavailable in the sandbox this landed from) — the mechanism mirrors
+    `fork()`'s already-shipped `resume`/`forkSession` call exactly, so risk is low, but flagging the gap.*
   - *Landed: **Agent-authored diff walkthrough** — the run's own provider drafts a plain-English summary +
     file/line-anchored comments grounded on the REAL `git diff` (a stateless `consult`, same pattern as the
     auto-review verdict — structured JSON read as a field, never prose classification) before the diff HITL
@@ -402,7 +415,25 @@ features below are white space.)
 **UX/UI to SOTA (pre-release review — high &amp; polish):**
 - [ ] **Text-contrast ramp** (ink / muted / faint, checked ratios — muted currently sits at the reading floor) + a **systematized button/state token set** (primary / ghost / danger, each with explicit hover · focus-visible · disabled · loading).
 - [x] **Agent picker at Start** + a saved per-task provider/model preference, and always show which agent a run is on. "Always show which agent" was already live (the kanban card surfaces the run's actual runner/provider·model once assigned). New: a compact provider (+ optional model) select on backlog/todo cards, right at the Start action — persists onto `Task.preferredProvider`/`preferredModel` via the existing `updateTask` path. It's a SOFT hint, never a hard requirement: `Orchestrator.acquireAgent` tries an idle, usable runner on the saved provider (preferring an exact model match) before falling back to today's plain first-idle pick — a preference with no matching idle runner never blocks Start.
-- [ ] **Structured triage card** (effort pill · full-contrast summary · risks list, not one muted paragraph); **Inbox count badge**; grouped nav (**Operate** / **Configure**).
+- [x] **Structured triage card** (effort pill · full-contrast summary · risks list, not one muted paragraph); **Inbox count badge**; grouped nav (**Operate** / **Configure**).
+  *(Inbox count badge was already shipped. Landed: the triage LLM consult's prompt now requests
+  `effort`/`risks` alongside the existing `estMinutes`/`clarity` tail tag, parsed the same
+  defensive, field-based way as the auto-review verdict (`splitEstMinutesTag`, never regex/
+  keyword-classified) — a malformed or missing field never drops the others. `Task` gained
+  `assessmentEffort`/`assessmentRisks` as additive, defaulted siblings of the existing
+  `assessment` string (which now doubles as the card's summary line), so a task triaged before
+  this shipped keeps rendering fine off `assessment` alone — verified live: a real live-browser
+  run of the actual triage pipeline landed a task with only `assessment` set (the LLM call's own
+  auth failure meant no tag was found) and it rendered as a clean summary-only card, no pill, no
+  risks, nothing broken. The happy path (pill + risks) was verified two ways: exhaustively at the
+  parser level (new unit tests) and through the real `Orchestrator.tickAutonomy()` pipeline with
+  an injected canned reply (new integration tests) — no `ANTHROPIC_API_KEY` was available in the
+  sandbox this landed from to get a genuine model-generated reply, so the visual (pill/summary/
+  risks rendering) was additionally confirmed with a temporary, since-reverted server-side stub
+  of the LLM reply text, screenshotted live in the browser, never committed. `shell.tsx`'s flat
+  nav list is now two labeled groups — Operate (Home/Inbox/Audit/Projects/Fleet/Ready to merge)
+  and Configure (Integrations/Roadmap/Settings) — reusing the existing `.op-navsec` label style;
+  active-item highlighting and routing unchanged (confirmed live).)*
 - [ ] **Humanized time** + stale-heartbeat styling (no raw "79062s ago"); honest empty-**PLAN** state; **provider identity** (real marks + names, not abstract glyphs).
 - [ ] **Design tokens published** (type scale, 8px rhythm, motion behind `prefers-reduced-motion`, one focus ring, semantic palette kept separate from the accent); **a11y pass** (icon-button labels, visible focus, keyboard walkthrough of assign→decide→merge); explicit **Inbox-first mobile/PWA shell**.
 

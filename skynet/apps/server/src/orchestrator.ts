@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk, Feature, Milestone, DiffWalkthrough } from "@skynet/shared";
+import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk, Feature, Milestone, DiffWalkthrough } from "@skynet/shared";
 import { WorkspaceSettings } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -105,10 +105,23 @@ export interface TriageTag {
   // model must pick from a supplied list; we never trust a fabricated id).
   featureId: string | null;
   milestoneId: string | null;
+  // Structured triage card (v1.5): rough agent-effort size and a short risks
+  // list, alongside the existing estimate/clarity/grouping signals. Same
+  // "missing signal stays missing" rule as every other field here.
+  effort: "small" | "medium" | "large" | null;
+  risks: string[] | null;
 }
 
 export function splitEstMinutesTag(raw: string): TriageTag {
-  const none: TriageTag = { body: (raw ?? "").trim(), estMinutes: null, clarity: null, featureId: null, milestoneId: null };
+  const none: TriageTag = {
+    body: (raw ?? "").trim(),
+    estMinutes: null,
+    clarity: null,
+    featureId: null,
+    milestoneId: null,
+    effort: null,
+    risks: null,
+  };
   const trimmed = (raw ?? "").trim();
   const noFence = trimmed.replace(/\n?```\s*$/, "").trimEnd();
   // Match the LAST balanced top-level {...} on the tail.
@@ -131,6 +144,8 @@ export function splitEstMinutesTag(raw: string): TriageTag {
       clarity?: unknown;
       featureId?: unknown;
       milestoneId?: unknown;
+      effort?: unknown;
+      risks?: unknown;
     };
     // Parse each field independently — a malformed one shouldn't drop the tag.
     const estMinutes =
@@ -142,11 +157,18 @@ export function splitEstMinutesTag(raw: string): TriageTag {
     const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
     const featureId = str(obj.featureId);
     const milestoneId = str(obj.milestoneId);
+    const effort: "small" | "medium" | "large" | null =
+      obj.effort === "small" || obj.effort === "medium" || obj.effort === "large" ? obj.effort : null;
+    // Cap count + length so a garbage/runaway array can't bloat the task record —
+    // a legitimate risks list is a handful of short lines, never a wall of text.
+    const risks = Array.isArray(obj.risks)
+      ? obj.risks.filter((r): r is string => typeof r === "string" && r.trim().length > 0).map((r) => r.trim().slice(0, 140)).slice(0, 5)
+      : null;
     // Only strip the tag from the body if AT LEAST ONE field parsed — if
     // none did the "JSON object" was probably a false positive in prose.
-    if (estMinutes != null || clarity != null || featureId != null || milestoneId != null) {
+    if (estMinutes != null || clarity != null || featureId != null || milestoneId != null || effort != null || (risks != null && risks.length > 0)) {
       const body = noFence.slice(0, start).replace(/```[a-zA-Z]*\s*$/, "").trim();
-      return { body, estMinutes, clarity, featureId, milestoneId };
+      return { body, estMinutes, clarity, featureId, milestoneId, effort, risks };
     }
   } catch {
     /* not a JSON tail — whole reply is the body */
@@ -1115,7 +1137,7 @@ export class Orchestrator {
       // runner decides how to expose it (Claude → a Playwright MCP server).
       const { browserTools } = await this.fleetPolicy(project.workspaceId);
       const handle = await provider.start(
-        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, browser: browserTools },
+        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, browser: browserTools, planModeGate: project.planModeGate },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId, branch, baseRef, git });
@@ -1200,6 +1222,128 @@ export class Orchestrator {
       throw err;
     }
     return agent;
+  }
+
+  // ── checkpoint / restore ────────────────────────────────────────────────
+  // Snapshot a run's worktree + plan state mid-run so a long task can be
+  // rewound in place if it goes sideways — an extension of fork/resume: fork
+  // branches a NEW run off wherever the parent currently sits; a checkpoint
+  // pins a POINT on THIS run's own branch, and restoreCheckpoint rewinds this
+  // SAME run back to it (worktree +, for Claude, the SDK session — best-effort;
+  // see the runner-sdk `resumeSessionId` doc for why this can't be a perfect
+  // point-in-time conversation rewind, only "resume from that session").
+
+  /** Every checkpoint taken on a run, oldest first. */
+  async listCheckpoints(runId: string): Promise<Checkpoint[]> {
+    return this.store.listCheckpoints(runId);
+  }
+
+  /**
+   * Manually snapshot a live run: commit whatever's uncommitted in its
+   * worktree, capture the resulting sha (pinned under a stable ref so a later
+   * restore's branch reset can't lose it to gc), the run's current plan +
+   * progress, and — Claude only — its SDK session id. Requires a live
+   * worktree: there's nothing in-flight to snapshot once a run's compute is
+   * gone. (Automatic per-plan-step checkpointing was the other option here —
+   * this manual trigger is the smaller, safer piece to land first: no new hook
+   * into the plan-progress dataflow, no risk of checkpoint spam on a chatty
+   * plan. See PR description.)
+   */
+  async checkpoint(runId: string, label?: string | null): Promise<Checkpoint> {
+    const run = await this.store.getRun(runId);
+    if (!run) throw new Error("Run not found");
+    const live = this.live.get(runId);
+    if (!live) throw new Error("This run isn't live — nothing in flight to checkpoint.");
+    const git = live.git ?? (await this.gitContextForAgent(runId).catch(() => undefined));
+    if (!git || !git.worktrees.exists(runId)) throw new Error("This run has no worktree to checkpoint.");
+
+    await git.worktrees.commitAll(runId, `checkpoint${label ? `: ${label}` : ""}`);
+    const sha = await git.worktrees.headSha(runId);
+    const id = `cp-${runId}-${++this.seq}`;
+    await git.worktrees.pinRef(`refs/skynet/checkpoints/${id}`, sha);
+
+    const checkpoint: Checkpoint = {
+      id,
+      runId,
+      workspaceId: run.workspaceId,
+      label: label ?? null,
+      sha,
+      claudeSessionId: run.provider === "claude" ? (live.handle.getSessionId?.() ?? null) : null,
+      plan: run.plan,
+      progress: run.progress,
+      createdAt: now(),
+    };
+    await this.store.putCheckpoint(checkpoint);
+    await this.hub.runLog(runId, `checkpoint saved${label ? ` — "${label}"` : ""} (${sha.slice(0, 7)})`);
+    return checkpoint;
+  }
+
+  /**
+   * Rewind a run to an earlier checkpoint IN PLACE: stop whatever's currently
+   * live, re-provision the worktree at the checkpoint's pinned sha (a hard
+   * reset of the run's own branch — forward commits drop off the branch,
+   * though the pinned ref keeps them reachable on disk), and relaunch the
+   * provider resuming the checkpoint's captured session (Claude) so the
+   * conversation, not just the git state, rewinds.
+   */
+  async restoreCheckpoint(runId: string, checkpointId: string): Promise<TaskRun> {
+    const run = await this.store.getRun(runId);
+    if (!run) throw new Error("Run not found");
+    const checkpoint = await this.store.getCheckpoint(checkpointId);
+    if (!checkpoint || checkpoint.runId !== runId) throw new Error("Checkpoint not found");
+
+    const project = await this.store.getProject(run.projectId);
+    const live = this.live.get(runId);
+    const git = live?.git ?? this.gitContextFor(project);
+    if (!git) throw new Error("This run has no git worktree to restore.");
+
+    // Tear down any current execution before rewinding the worktree out from
+    // under it — mirrors stopAgent's detach, but keeps the run's own slot
+    // (status flips back to running below) rather than marking it done.
+    if (live) {
+      await live.handle.stop().catch(() => undefined);
+      await this.freeRunner(live.agentId);
+      this.live.delete(runId);
+    }
+
+    const runner = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId, await this.projectKeyAllowlist(run.projectId));
+    const provider = await this.getProvider(runner.provider);
+    const { cwd, baseRef } = await this.provisionCwd(git, runId, run.branch, checkpoint.sha);
+    const apiKey = await secretService.resolve(run.workspaceId, runner.credentialId ?? runner.provider);
+    const resumeSessionId = run.provider === "claude" ? checkpoint.claudeSessionId : null;
+    const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
+
+    await this.hub.runProgress(runId, checkpoint.progress, checkpoint.plan);
+    await this.hub.runStatus(runId, "running");
+    await this.hub.runLog(
+      runId,
+      `restored to checkpoint${checkpoint.label ? ` "${checkpoint.label}"` : ""} (${checkpoint.sha.slice(0, 7)}) — worktree rewound, ${resumeSessionId ? "conversation resumed" : "fresh turn started"}`,
+    );
+    if (taskId) {
+      const task = await this.store.getTask(taskId);
+      if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
+    }
+
+    try {
+      const handle = await provider.start(
+        {
+          runId,
+          projectId: run.projectId,
+          task: withInstructions(project?.instructions, run.name),
+          model: runner.model,
+          branch: run.branch,
+          cwd,
+          apiKey,
+          resumeSessionId,
+        },
+        this.events(),
+      );
+      this.live.set(runId, { handle, agentId: runner.id, taskId, branch: run.branch, baseRef, git });
+    } catch (err) {
+      await this.failStartup(runId, runner.id, (err as Error).message);
+      throw err;
+    }
+    return (await this.store.getRun(runId))!;
   }
 
   // ── deliver a resolved decision ────────────────────────────────────────────
@@ -2386,7 +2530,8 @@ export class Orchestrator {
               (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") !== "unassigned",
             );
             if (backlog) {
-              const { assessment, estimatedDurationMs, clarity, featureId, milestoneId } = await this.assessTask(ws, idle[0]!, backlog);
+              const { assessment, assessmentEffort, assessmentRisks, estimatedDurationMs, clarity, featureId, milestoneId } =
+                await this.assessTask(ws, idle[0]!, backlog);
               // Only OVERWRITE an existing estimate when triage produced a new
               // one — leaves an operator-set estimate intact if triage failed
               // to guess (or on retriage of a task that already had one).
@@ -2406,6 +2551,8 @@ export class Orchestrator {
                 ...backlog,
                 state: nextState,
                 assessment,
+                assessmentEffort,
+                assessmentRisks,
                 estimatedDurationMs: nextEst,
                 featureId: nextFeatureId,
                 milestoneId: nextMilestoneId,
@@ -2470,23 +2617,38 @@ export class Orchestrator {
 
   /**
    * A short agent-written assessment for autonomous triage — plus a duration
-   * estimate AND a clarity self-report parsed from a trailing JSON tag on the
-   * model's reply. The model is asked to end with
-   * `{"estMinutes": N, "clarity": "clear"|"unclear"}`; we convert minutes to
-   * ms (cap 24h) and use clarity to gate auto-promote (triage→todo). A missing
-   * signal stays missing — never fabricated. Falls back to a deterministic
-   * note when the provider has no stateless consult (e.g. mock).
+   * estimate, a clarity self-report, and the structured triage card
+   * (effort size + a short risks list), all parsed from a trailing JSON tag
+   * on the model's reply the same defensive, field-based way as the
+   * auto-review verdict (never regex/keyword-classify free text — see
+   * `splitEstMinutesTag`). We convert minutes to ms (cap 24h) and use
+   * clarity to gate auto-promote (triage→todo). A missing signal stays
+   * missing — never fabricated. `assessment` doubles as the card's summary
+   * line; `assessmentEffort`/`assessmentRisks` are additive siblings, so a
+   * task assessed before this shipped (or by the no-consult/error fallback
+   * below) just renders its `assessment` alone. Falls back to a
+   * deterministic note when the provider has no stateless consult (e.g. mock).
    */
   private async assessTask(
     ws: string,
     agent: Agent,
     task: Task,
-  ): Promise<{ assessment: string; estimatedDurationMs: number | null; clarity: "clear" | "unclear" | null; featureId: string | null; milestoneId: string | null }> {
+  ): Promise<{
+    assessment: string;
+    assessmentEffort: "small" | "medium" | "large" | null;
+    assessmentRisks: string[];
+    estimatedDurationMs: number | null;
+    clarity: "clear" | "unclear" | null;
+    featureId: string | null;
+    milestoneId: string | null;
+  }> {
     try {
       const provider = await this.getProvider(agent.provider);
       if (!provider.consult) {
         return {
           assessment: `Auto-triaged — "${task.text}" looks actionable; no blockers noted.`,
+          assessmentEffort: null,
+          assessmentRisks: [],
           estimatedDurationMs: null,
           clarity: null,
           featureId: null,
@@ -2523,14 +2685,15 @@ export class Orchestrator {
         { task: withInstructions(project?.instructions, taskBody), model: agent.model, cwd: config.runnerCwd, apiKey },
         [
           "You are triaging a backlog item for a coding project.",
-          "In 2-3 short lines: is the ask clear, rough effort (S/M/L), and any risks? Be terse.",
+          "In ONE short line: summarize the ask (is it clear, what's the gist). Be terse — the effort size and any risks go in the JSON tag below, not this line.",
           "END your reply with a JSON tag on its OWN line:",
-          '  {"estMinutes": <int>, "clarity": "clear"|"unclear"}',
+          '  {"estMinutes": <int>, "clarity": "clear"|"unclear", "effort": "small"|"medium"|"large", "risks": ["<short risk>", ...]}',
           "estMinutes = the AGENT'S wall-clock time to complete this task — NOT a human developer's time.",
           "An autonomous coding agent works fast: a task that would take a person hours typically takes an agent minutes.",
-          "Anchors (agent wall-clock): S ≈ 5m (rename, config tweak, single small edit), M ≈ 20m (a real feature — new endpoint, migration, small refactor), L ≈ 60m (multi-file change, cross-module work). Cap at 240m even for very large asks.",
+          "Anchors (agent wall-clock): small ≈ 5m (rename, config tweak, single small edit), medium ≈ 20m (a real feature — new endpoint, migration, small refactor), large ≈ 60m (multi-file change, cross-module work). Cap at 240m even for very large asks. `effort` should agree with `estMinutes`.",
           "clarity = \"clear\" ONLY if the ask is well-scoped and actionable AS WRITTEN (an agent could start without more info).",
           '"unclear" if it needs clarification, is missing acceptance criteria, or the scope is ambiguous. When in doubt, choose "unclear".',
+          '"risks" = 0-3 short, CONCRETE risks specific to this task (e.g. "touches auth — check session handling", "no tests in this area yet") — omit the field entirely (not an empty array) if you see none worth flagging; never pad with generic filler like "could have bugs".',
           "Omit any field you can't confidently supply; a missing signal is honest, a fabricated one is not." + groupingInstr,
         ].join("\n"),
       );
@@ -2547,10 +2710,20 @@ export class Orchestrator {
       const featureId = parsed.featureId && features.some((f) => f.id === parsed.featureId) ? parsed.featureId : null;
       const milestoneId =
         !featureId && parsed.milestoneId && milestones.some((m) => m.id === parsed.milestoneId) ? parsed.milestoneId : null;
-      return { assessment, estimatedDurationMs, clarity: parsed.clarity, featureId, milestoneId };
+      return {
+        assessment,
+        assessmentEffort: parsed.effort,
+        assessmentRisks: parsed.risks ?? [],
+        estimatedDurationMs,
+        clarity: parsed.clarity,
+        featureId,
+        milestoneId,
+      };
     } catch (err) {
       return {
         assessment: `Auto-triaged — "${task.text}" (assessment unavailable: ${(err as Error).message}).`,
+        assessmentEffort: null,
+        assessmentRisks: [],
         estimatedDurationMs: null,
         clarity: null,
         featureId: null,

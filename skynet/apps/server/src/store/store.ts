@@ -6,6 +6,7 @@
 import type {
   TaskRun,
   AuditRecord,
+  Checkpoint,
   Dependency,
   Feature,
   GithubConnection,
@@ -34,6 +35,13 @@ export interface Store {
   getRun(id: string): Promise<TaskRun | undefined>;
   putRun(agent: TaskRun): Promise<TaskRun>;
   appendLog(runId: string, at: number, line: string, detail?: string): Promise<void>;
+
+  // checkpoints — snapshot/restore for a run (extends fork/resume). Scoped by
+  // runId rather than workspaceId: always fetched through a run whose
+  // ownership was already checked, so a per-run list is what callers need.
+  listCheckpoints(runId: string): Promise<Checkpoint[]>;
+  getCheckpoint(id: string): Promise<Checkpoint | undefined>;
+  putCheckpoint(checkpoint: Checkpoint): Promise<Checkpoint>;
 
   // HITL queue
   listQueue(workspaceId: string): Promise<HitlItem[]>;
