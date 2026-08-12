@@ -2330,11 +2330,15 @@ export class Orchestrator {
             //    it just lets their (slower) provider-session starts overlap
             //    instead of queuing behind each other. allSettled isolates each
             //    task's failure (busy fleet, no credential) from the rest, same
-            //    as the try/catch/continue this replaces.
+            //    as the try/catch/continue this replaces. Sorted by `order` (the
+            //    same rank field the ↑/↓ column control writes) before firing so
+            //    that when capacity is short, the acquireExclusive queue — which
+            //    serializes in call order — grants idle agents to the
+            //    highest-priority tasks first instead of array/insertion order.
             if (p.autonomy) {
-              const pickable = mine.filter(
-                (t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned",
-              );
+              const pickable = mine
+                .filter((t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned")
+                .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
               await Promise.allSettled(pickable.map((t) => this.assignTask(p.id, t.id)));
             }
             // 3) Review a finished run — runs REGARDLESS of `p.autonomy`.

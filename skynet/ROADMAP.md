@@ -160,11 +160,13 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     "Add to fleet"; move destructive **Retire** behind detail/overflow or confirm inline;
     label the provider strip as the *catalog*, not configured.
 11. [ ] **Inbox empty state teaches** — show the four gate kinds that would arrive there.
-12. [ ] **Prioritize the backlog _and_ todo** — manual promote/demote (reorder) on **todo**
+12. [x] **Prioritize the backlog _and_ todo** — manual promote/demote (reorder) on **todo**
     cards, not just backlog. A card's rank sets both what surfaces at the top of the column
-    and — with Autonomy on — which todo an idle agent **auto-picks first** (today auto-pick
-    ignores order). Backlog already has ↑/↓ (shipped); extend the same control to todo and
-    make rank the pick order. (Drag-to-reorder is the later polish; ↑/↓ first.)
+    and — with Autonomy on — which todo an idle agent **auto-picks first**. The ↑/↓ control
+    (`moveTask`, same `order` rank field as the backlog drag-reorder) now renders on both
+    backlog and todo cards; `tickAutonomy`'s auto-pick step sorts eligible todo tasks by
+    `order` before firing, so a short-capacity tick grants idle agents to the
+    highest-priority task first instead of array order. (Drag-to-reorder stays the later polish.)
 
 ## v1 — Orchestration completeness & hardening
 - [ ] **⭐ Browser tools for coding agents (MCP)** — *near-term priority.* Equip the Claude runner (then the
