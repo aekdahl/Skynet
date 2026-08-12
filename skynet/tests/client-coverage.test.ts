@@ -43,6 +43,11 @@ const ALLOW = new Set<string>([
   // store (master key), so no offline journey; the route is guarded server-side
   // and the set/delete-by-id paths it shares ARE journey-covered.
   "createCredential",
+  // live-verify a credential against its real vendor API (Anthropic/OpenAI/
+  // Google/Cursor/GitHub/OpenRouter) — needs a real key AND makes a genuine
+  // outbound call, so it can't run in an offline journey; covered server-side
+  // by secrets-verify.test.ts (mocked fetch, both the ok and failing paths).
+  "verifyCredential",
   // streaming variant of sendAgentMessage (which IS journey-covered) — same
   // chat surface, just delta-rendered; no separate journey needed.
   "streamAgentMessage",
@@ -94,6 +99,13 @@ const ALLOW = new Set<string>([
   // Operations/Orchestrator path (with a stub GitHub service). No end-to-end
   // fleet journey opens a real PR, so they're allowlisted rather than simulated.
   "mergePr", "updatePrBranch", "reworkPr", "dismissPr",
+  // Checkpoint / snapshot-restore — creates a real git commit + pinned ref and,
+  // on restore, stops the live handle and relaunches the provider with a
+  // resumed SDK session. No offline journey can exercise the worktree
+  // rewind + provider relaunch; verified manually against a live run (real
+  // dev server + repo, confirmed the worktree actually rewinds to the
+  // checkpoint's sha) — see the PR that landed this for the full trace.
+  "createCheckpoint", "fetchCheckpoints", "restoreCheckpoint",
 ]);
 
 describe("client API coverage", () => {

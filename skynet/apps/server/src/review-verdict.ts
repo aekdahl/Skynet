@@ -20,8 +20,10 @@ export const REVIEW_OUTPUT_INSTRUCTION =
   'Use "approve" if the run satisfies the task, "flag" if a human should look.';
 
 /** Pull the last balanced top-level `{…}` object out of a reply that may be
- *  wrapped in prose or a ```json fence. Returns the parsed object or null. */
-function extractJsonObject(reply: string): Record<string, unknown> | null {
+ *  wrapped in prose or a ```json fence. Returns the parsed object or null.
+ *  Exported so other structured-consult readers (e.g. diff-walkthrough.ts)
+ *  share the same defensive extraction instead of re-parsing prose. */
+export function extractJsonObject(reply: string): Record<string, unknown> | null {
   const text = (reply ?? "").trim().replace(/^```[a-zA-Z]*\s*/g, "").replace(/```\s*$/g, "");
   const end = text.lastIndexOf("}");
   if (end === -1) return null;
