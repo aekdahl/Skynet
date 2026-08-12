@@ -6,6 +6,32 @@ import type { McpScope, ServiceTokenMeta } from "../lib/client";
 import { InstallControls } from "../components/install-controls";
 import { fmtWait, providerReadiness } from "../lib/derive";
 
+// A key's live-verify result, keyed by credential id (provider id for a
+// default credential, `cred-…` for a named one). "Guided provider connect"'s
+// missing half: key entry already worked, this proves the key actually
+// authenticates instead of just being present.
+export type VerifyState = { status: "verifying" } | { status: "ok"; message?: string } | { status: "fail"; message?: string };
+
+export function VerifyBadge({ state, onDismiss }: { state: VerifyState | undefined; onDismiss?: () => void }) {
+  if (!state) return null;
+  if (state.status === "verifying") {
+    return <span className="settings-verify settings-verify-pending mono">⟳ verifying…</span>;
+  }
+  if (state.status === "ok") {
+    return <span className="settings-verify settings-verify-ok mono">✓ {state.message ?? "verified"}</span>;
+  }
+  return (
+    <span className="settings-verify settings-verify-fail mono">
+      ✕ {state.message ?? "verification failed"}
+      {onDismiss && (
+        <button type="button" className="settings-verify-dismiss" onClick={onDismiss} aria-label="Dismiss">
+          ×
+        </button>
+      )}
+    </span>
+  );
+}
+
 // Provider keys live in the encrypted secret store, scoped to this workspace.
 // A vendor's runners are only selectable in create-agent once its key is set
 // (the snapshot recomputes provider availability from the secret store).
@@ -22,6 +48,25 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [disabled, setDisabled] = useState(false);
+  // Live-verify result per credential id — cleared on remove, replaced on the
+  // next save/rotate for that same id.
+  const [verify, setVerify] = useState<Record<string, VerifyState>>({});
+  const runVerify = useCallback(async (id: string) => {
+    setVerify((v) => ({ ...v, [id]: { status: "verifying" } }));
+    try {
+      const result = await api.verifyCredential(id);
+      setVerify((v) => ({ ...v, [id]: { status: result.ok ? "ok" : "fail", message: result.message } }));
+    } catch (e) {
+      setVerify((v) => ({ ...v, [id]: { status: "fail", message: (e as Error).message } }));
+    }
+  }, []);
+  const dismissVerify = (id: string) =>
+    setVerify((v) => {
+      if (!(id in v)) return v;
+      const next = { ...v };
+      delete next[id];
+      return next;
+    });
 
   const load = useCallback(async () => {
     try {
@@ -52,6 +97,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
       await api.setSecret(id, key);
       setDrafts((d) => ({ ...d, [id]: "" }));
       await load();
+      void runVerify(id);
     } catch (e) {
       setErr(`Couldn't rotate the key: ${(e as Error).message}`);
     } finally {
@@ -63,6 +109,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
     setErr(null);
     try {
       await api.deleteSecret(id);
+      dismissVerify(id);
       await load();
     } catch (e) {
       setErr(`Couldn't remove the key: ${(e as Error).message}`);
@@ -81,6 +128,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
       setDrafts((d) => ({ ...d, [id]: "" }));
       setProviderAvailable(id, true);
       await load();
+      void runVerify(id);
     } catch (e) {
       if (e instanceof api.ApiError && e.status === 501) setDisabled(true);
       else setErr(`Couldn't save the key: ${(e as Error).message}`);
@@ -94,6 +142,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
     setErr(null);
     try {
       await api.deleteSecret(id);
+      dismissVerify(id);
       // Removing the stored key falls back to the env var, if one exists.
       setProviderAvailable(id, envSet.has(id));
       await load();
@@ -186,6 +235,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                   </button>
                 )}
               </div>
+              <VerifyBadge state={verify[p.id]} onDismiss={() => dismissVerify(p.id)} />
               {req && (
                 <div className="settings-req">
                   <span className={"settings-badge " + (rd.ready ? "ok" : "warn")}>
@@ -300,9 +350,10 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                       Remove
                     </button>
                   </div>
+                  <VerifyBadge state={verify[c.id]} onDismiss={() => dismissVerify(c.id)} />
                 </div>
               ))}
-              <AddCredentialForm provider={p.id} providerName={p.name} onAdded={load} />
+              <AddCredentialForm provider={p.id} providerName={p.name} onAdded={load} onVerify={runVerify} />
             </div>
           );
         })}
@@ -342,7 +393,21 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
 // "Add another key" for a provider — a named credential (a second account/key).
 // Collapsed to a link until used, so the provider card stays tidy when there's
 // just the one key. On success it re-fetches the secret list (onAdded).
-function AddCredentialForm({ provider, providerName, onAdded }: { provider: string; providerName: string; onAdded: () => Promise<void> }) {
+function AddCredentialForm({
+  provider,
+  providerName,
+  onAdded,
+  onVerify,
+}: {
+  provider: string;
+  providerName: string;
+  onAdded: () => Promise<void>;
+  // Kicks off the same live verify as the main provider row; the new
+  // credential's row (rendered from the reloaded list below) picks up its
+  // spinner → pass/fail via the shared verify state, so the form itself
+  // doesn't need to track it.
+  onVerify: (id: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
@@ -354,11 +419,12 @@ function AddCredentialForm({ provider, providerName, onAdded }: { provider: stri
     setBusy(true);
     setErr(null);
     try {
-      await api.createCredential(provider, name.trim(), key.trim());
+      const { secret } = await api.createCredential(provider, name.trim(), key.trim());
       setName("");
       setKey("");
       setOpen(false);
       await onAdded();
+      onVerify(secret.id);
     } catch (e) {
       setErr(e instanceof api.ApiError && e.status === 501 ? "The secret store is disabled — no master key configured." : `Couldn't add the key: ${(e as Error).message}`);
     } finally {

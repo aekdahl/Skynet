@@ -5,7 +5,9 @@ import { parseHash, toHash } from "./lib/routing"; // [w7] deep links
 import { gateView } from "./lib/dev"; // dev-only pages hidden from release builds
 import { TitleBar, OpSidebar, OpStatusBar, ConnectingShell } from "./components/shell";
 import { StewardDock } from "./components/steward-dock";
+import { CommandPalette } from "./components/command-palette";
 import { useTweaks } from "./components/tweaks";
+import { isTypingTarget } from "./lib/keys";
 import { HomeView } from "./views/home";
 import { OverviewView } from "./views/overview";
 import { FleetView } from "./views/fleet";
@@ -77,7 +79,7 @@ export function App() {
   // task composer focused, so the operator's next move (add a task) is one keystroke
   // away. Cleared once consumed so re-visiting the project doesn't re-open it.
   const [composeProjectId, setComposeProjectId] = useState<string | null>(null);
-  const [selIdx] = useState(0);
+  const [selIdx, setSelIdx] = useState(0);
   const [onboarded, setOnboarded] = useState(isOnboarded);
   // Re-run setup on demand (from Settings), even after it's been completed/skipped.
   const [rerunSetup, setRerunSetup] = useState(false);
@@ -99,6 +101,20 @@ export function App() {
     };
     window.addEventListener("skynet:open-steward", onOpen);
     return () => window.removeEventListener("skynet:open-steward", onOpen);
+  }, []);
+
+  // ⌘K / Ctrl+K command palette — global, from anywhere in the app, except
+  // while the operator is typing in a text field (isTypingTarget guard).
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey) && !isTypingTarget(e.target)) {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   // [pwa] A push / notification click (relayed by the service worker) or a
@@ -315,7 +331,7 @@ export function App() {
               </div>
             )}
             {store.loaded && view === "queue" && (
-              <QueueView selectedIdx={selIdx} onOpen={openTask} now={now} />
+              <QueueView selectedIdx={selIdx} onSelectIdx={setSelIdx} onOpen={openTask} now={now} />
             )}
             {store.loaded && view === "audit" && (
               <AuditView now={now} onOpenTask={openTask} />
@@ -347,6 +363,14 @@ export function App() {
           </div>
         </main>
       </div>
+      {store.loaded && (
+        <CommandPalette
+          open={paletteOpen}
+          onClose={() => setPaletteOpen(false)}
+          setView={setView}
+          onOpenProject={openProject}
+        />
+      )}
       {store.loaded && stewardOpen && (
         <StewardDock
           focusProjectId={stewardFocus?.id ?? null}
