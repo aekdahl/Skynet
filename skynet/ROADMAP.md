@@ -150,16 +150,20 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 6. [ ] **Continuation after Create project** — land in the project with the task composer
    focused; keep a live **first-run checklist** on Home (create → task → assign → approve)
    until the first merge.
-7. [ ] **Task composer polish** — autofocus name; "description (optional — the full brief the
-   agent receives)"; ⌘↵ submits; blocked-reason per P0.3.
-8. [ ] **Assign is a primary affordance** — "Assign →" on backlog/todo kanban cards (drag-to-
-   ONGOING later); today it only lives on Roster idle rows.
+7. [x] **Task composer polish** — `AddTaskCard` already autofocuses the name field, carries the
+   "description (optional — the full brief the agent receives)" placeholder, submits on ⌘↵ (and
+   bare Enter in the name field), and its "Add task" button already renders a visible blocked-reason
+   via `PrimaryButton` (not a hover-only tooltip).
+8. [x] **Assign is a primary affordance** — the button (now labeled "Start →" — "Assign" implied
+   a handoff, but it kicks the run off immediately) lives directly on backlog/todo kanban cards, and
+   `todo → ongoing` is a legal drag transition too.
 9. [ ] **Explain the Autonomy toggle** — subtitle its consequences; consider default-off for a
    user's first project (autonomy impresses more after the gates have been seen).
 10. [ ] **Fleet copy & guardrails** — "1 agents" pluralization; unify "+ Configure agent" vs
     "Add to fleet"; move destructive **Retire** behind detail/overflow or confirm inline;
     label the provider strip as the *catalog*, not configured.
-11. [ ] **Inbox empty state teaches** — show the four gate kinds that would arrive there.
+11. [x] **Inbox empty state teaches** — the empty state lists all four gate kinds (approval / plan
+    review / diff review / merge conflict) with a one-line blurb each.
 12. [ ] **Prioritize the backlog _and_ todo** — manual promote/demote (reorder) on **todo**
     cards, not just backlog. A card's rank sets both what surfaces at the top of the column
     and — with Autonomy on — which todo an idle agent **auto-picks first** (today auto-pick
