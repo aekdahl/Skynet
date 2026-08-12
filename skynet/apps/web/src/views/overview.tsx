@@ -405,7 +405,10 @@ export function NewProjectCard({
             <option value="full">⚠ Full autonomy · merges to main unattended</option>
           </select>
         </label>
-        <label className="proj-autonomy" title="When on, agents autonomously triage backlog items, pick up auto-pick tasks, and review finished work.">
+        <label
+          className="proj-autonomy"
+          title="Whether work starts and gets reviewed on its own: picks up backlog tasks flagged auto-pick, and lets another agent review + resolve a finished diff. Approvals (left) is a different axis — how much of an already-running agent's OWN commands get auto-approved."
+        >
           <input
             type="checkbox"
             className="proj-autonomy-cb"
@@ -413,7 +416,7 @@ export function NewProjectCard({
             onChange={(e) => setAutonomy(e.target.checked)}
           />
           <span className="proj-autonomy-switch" aria-hidden="true" />
-          <span className="proj-autonomy-label">Autonomy</span>
+          <span className="proj-autonomy-label">Autonomy <span className="proj-autonomy-sub">picks &amp; reviews work</span></span>
         </label>
       </div>
 

@@ -67,9 +67,14 @@ export function runnerIdleLabel(runner: Agent, now: number): string {
 
 // ─── plan helpers ───────────────────────────────────────────────────────────
 
+// "complete" as a fallback here reads as a terminal state and contradicts a
+// still-running run's own status elsewhere in the UI (DEF: Runs board showed
+// "complete" on a row it also counted under "running"). No step in "now"
+// means one of two different things, not one — say which.
 export const curStep = (a: TaskRun) => {
   const s = a.plan.find((p) => p.state === "now");
-  return s ? s.text : "complete";
+  if (s) return s.text;
+  return a.plan.length === 0 ? "starting…" : "wrapping up";
 };
 export const stepIdx = (a: TaskRun) => {
   const i = a.plan.findIndex((p) => p.state === "now");
