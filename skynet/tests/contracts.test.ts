@@ -41,6 +41,7 @@ const agent: TaskRun = {
   branchFromStep: null,
   archived: false,
   pr: null,
+  mergedAt: null,
 };
 
 const wire = <T>(v: T): unknown => JSON.parse(JSON.stringify(v));
