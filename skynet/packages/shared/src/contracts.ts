@@ -400,6 +400,14 @@ export const Task = z.object({
   // Where this task was imported from (GitHub issue / repo file / tracker), so a
   // status change can be written back to it. null → a native Skynet task.
   source: TaskSource.nullable().default(null),
+  // Operator-saved provider/model preference for auto-pick — set via the Start
+  // picker. Null (the default) leaves acquisition exactly as it's always been:
+  // the first idle, usable runner in fleet order. When set, acquireAgent tries
+  // an idle runner on this provider (preferring an exact model match too)
+  // BEFORE falling back to that same default order — never a hard requirement,
+  // since a preference with no matching idle runner shouldn't block the task.
+  preferredProvider: ProviderId.nullable().default(null),
+  preferredModel: z.string().nullable().default(null),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -452,6 +460,23 @@ export type Milestone = z.infer<typeof Milestone>;
 
 // ─── HITL item & resolution ───────────────────────────────────────────────
 
+// Agent-authored explanation of its own diff — drafted once, grounded on the
+// real patch, before the diff HITL is raised (see Orchestrator.raiseDiffReview
+// / draftDiffWalkthrough). Null when the draft failed or the provider doesn't
+// support `consult` — the review always proceeds on the raw diff either way.
+export const DiffWalkthroughComment = z.object({
+  file: z.string(),
+  line: z.number().int().positive().nullable().default(null), // null → file-level note
+  note: z.string(),
+});
+export type DiffWalkthroughComment = z.infer<typeof DiffWalkthroughComment>;
+
+export const DiffWalkthrough = z.object({
+  summary: z.string(),
+  comments: z.array(DiffWalkthroughComment).default([]),
+});
+export type DiffWalkthrough = z.infer<typeof DiffWalkthrough>;
+
 export const DiffSummary = z.object({
   add: z.number().int().nonnegative(),
   del: z.number().int().nonnegative(),
@@ -460,6 +485,7 @@ export const DiffSummary = z.object({
   // without opening the full diff. Optional/defaulted so the empty-diff merge
   // gates that carry no file list stay valid.
   files: z.array(z.string()).default([]),
+  walkthrough: DiffWalkthrough.nullable().default(null),
 });
 export type DiffSummary = z.infer<typeof DiffSummary>;
 
@@ -739,6 +765,10 @@ export const UpdateTaskRequest = z.object({
   // that the referenced feature/milestone belongs to the same project.
   featureId: z.string().nullable().optional(),
   milestoneId: z.string().nullable().optional(),
+  // Saved provider/model preference for auto-pick (see Task.preferredProvider).
+  // Null clears it back to plain auto-pick.
+  preferredProvider: ProviderId.nullable().optional(),
+  preferredModel: z.string().nullable().optional(),
 });
 export type UpdateTaskRequest = z.infer<typeof UpdateTaskRequest>;
 
@@ -857,6 +887,15 @@ export const CreateCredentialRequest = z.object({
   apiKey: z.string().min(1),
 });
 export type CreateCredentialRequest = z.infer<typeof CreateCredentialRequest>;
+
+/** Result of a live verify against the vendor (or its CLI-auth account
+ *  endpoint) — a real, cheap call confirming the key actually authenticates.
+ *  Never gates the save; the UI shows this as feedback after the fact. */
+export const VerifyCredentialResult = z.object({
+  ok: z.boolean(),
+  message: z.string().optional(),
+});
+export type VerifyCredentialResult = z.infer<typeof VerifyCredentialResult>;
 
 // ─── GitHub integration ─────────────────────────────────────────────────────
 // A workspace connects via a GitHub *App* installation (least-privilege,

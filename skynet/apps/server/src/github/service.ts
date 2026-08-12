@@ -156,6 +156,15 @@ export class GithubService {
   async setIssueState(workspaceId: string, repo: string, number: number, state: "open" | "closed", githubCredentialId?: string | null): Promise<void> {
     await this.provider.setIssueState(await this.projectToken(workspaceId, githubCredentialId), repo, number, state);
   }
+  /** Every label currently on an issue (write-back — read before replace, so a
+   *  label mirror can preserve labels it doesn't own). */
+  async getIssueLabels(workspaceId: string, repo: string, number: number, githubCredentialId?: string | null): Promise<string[]> {
+    return this.provider.getIssueLabels(await this.projectToken(workspaceId, githubCredentialId), repo, number);
+  }
+  /** Replace an issue's entire label set (write-back — kanban-stage mirror). */
+  async setIssueLabels(workspaceId: string, repo: string, number: number, labels: string[], githubCredentialId?: string | null): Promise<void> {
+    await this.provider.setIssueLabels(await this.projectToken(workspaceId, githubCredentialId), repo, number, labels);
+  }
 
   /** Read a repo file's text + blob sha (for repo-file task import + write-back). */
   async getRepoFileWithSha(workspaceId: string, repo: string, path: string, githubCredentialId?: string | null): Promise<{ content: string; sha: string } | null> {

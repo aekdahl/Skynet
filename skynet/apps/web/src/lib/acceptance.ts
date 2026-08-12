@@ -275,4 +275,36 @@ export const SCENARIOS: Scenario[] = [
       return steps;
     },
   },
+  {
+    id: "project-roadmap-doc",
+    name: "Project roadmap doc reflects the repo binding",
+    desc: "The Roadmap tab's read/commit endpoints report the right state for an unbound project and one bound to a missing local path — control-plane only, no real ROADMAP.md needed.",
+    run: async () => {
+      const steps: Step[] = [];
+      const unboundName = `UAT: roadmap unbound ${uid()}`;
+      await api.createProject({ name: unboundName, goal: "acceptance" });
+      let s = await settle((sn) => sn.projects.some((p) => p.name === unboundName));
+      const unbound = s.projects.find((p) => p.name === unboundName)!;
+      const unboundResult = await api.fetchProjectRoadmap(unbound.id);
+      steps.push(step("unbound project reports state 'unbound'", unboundResult.state === "unbound", unboundResult.state));
+      try {
+        await api.commitProjectRoadmap(unbound.id, { path: "ROADMAP.md", content: "x", baselineHash: "x" });
+        steps.push(step("commit on an unbound project is refused", false, "did not throw"));
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : 0;
+        steps.push(step("commit on an unbound project is refused", status === 400, `status ${status}`));
+      }
+
+      const missingName = `UAT: roadmap missing-repo ${uid()}`;
+      await api.createProject({ name: missingName, goal: "acceptance", repoPath: `/tmp/uat-roadmap-missing-${uid()}` });
+      s = await settle((sn) => sn.projects.some((p) => p.name === missingName));
+      const missing = s.projects.find((p) => p.name === missingName)!;
+      const missingResult = await api.fetchProjectRoadmap(missing.id);
+      steps.push(step("project bound to a missing local path reports 'missing_local_repo'", missingResult.state === "missing_local_repo", missingResult.state));
+
+      await swallow(api.deleteProject(unbound.id));
+      await swallow(api.deleteProject(missing.id));
+      return steps;
+    },
+  },
 ];
