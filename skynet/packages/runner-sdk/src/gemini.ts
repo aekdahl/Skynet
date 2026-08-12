@@ -5,12 +5,17 @@
 // tool/command lines → progress, and a tool-confirmation prompt → a HITL
 // approval gate answered over stdin (y/N) on resume.
 //
-// Gemini emits human-readable text by default and structured JSON when asked
-// (`--output-format json`), so the parser handles both: JSON lines first, then a
-// text-line fallback that recognises tool calls and confirmation prompts. Binary
-// and argv are env-overridable (GEMINI_BIN, GEMINI_EXTRA_ARGS). Missing binary
-// or an auth failure falls back cleanly (see cli-runner.ts); the default
-// RUNNER=mock path never imports this module.
+// Gemini emits human-readable text by default; we request `--output-format
+// stream-json` instead — a real NDJSON event per line, including a final
+// `result` event with flat token/duration totals (`stats.{input_tokens,
+// output_tokens,duration_ms}`, verified against google-gemini/gemini-cli's
+// StreamJsonFormatter) — so usage is actually reported, not just logged as
+// prose. The parser still falls back to text-line heuristics (tool calls,
+// confirmation prompts) for anything that isn't valid JSON, in case an
+// operator overrides GEMINI_EXTRA_ARGS back to text mode. Binary and argv are
+// env-overridable (GEMINI_BIN, GEMINI_EXTRA_ARGS — a later --output-format in
+// EXTRA wins). Missing binary or an auth failure falls back cleanly (see
+// cli-runner.ts); the default RUNNER=mock path never imports this module.
 
 import type { ProviderId, Resolution } from "@skynet/shared";
 import {
@@ -45,7 +50,7 @@ function approvalRaise(command: string): HitlRaise {
   };
 }
 
-const gemini: CliVendor = {
+export const gemini: CliVendor = {
   id: "gemini" as ProviderId,
   bin: BIN,
   installHint: "Install with `npm i -g @google/gemini-cli` and authenticate (`gemini`, then sign in).",
@@ -57,7 +62,10 @@ const gemini: CliVendor = {
 
   buildArgs(spec: StartSpec): string[] {
     // `-p` runs the prompt non-interactively in the cwd; `-m` selects the model.
-    return ["-m", spec.model, ...EXTRA, "-p", spec.task];
+    // `--output-format stream-json` is the default so usage is actually
+    // reported (see the file header) — placed before EXTRA so an operator's
+    // own GEMINI_EXTRA_ARGS can still override it back to text/json.
+    return ["-m", spec.model, "--output-format", "stream-json", ...EXTRA, "-p", spec.task];
   },
 
   parseLine(line: string, ctx: ParseCtx): CliEvent {

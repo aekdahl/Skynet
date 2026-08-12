@@ -53,7 +53,7 @@ function pick(obj: Record<string, unknown>, keys: string[]): string | undefined 
   return undefined;
 }
 
-const codex: CliVendor = {
+export const codex: CliVendor = {
   id: "codex" as ProviderId,
   bin: BIN,
   installHint: "Install with `npm i -g @openai/codex` and authenticate (`codex login`).",
@@ -87,9 +87,21 @@ const codex: CliVendor = {
     const type = String(obj.type ?? (obj.msg as Record<string, unknown>)?.type ?? "");
 
     // Token-count / usage events (shape varies across Codex versions) — report
-    // best-effort. Prefer the nested `msg` scope when present.
+    // best-effort. As of codex-cli 0.147.0 (codex-rs/protocol TokenCountEvent),
+    // the real counts sit two levels deep — `msg.info.total_token_usage` /
+    // `.last_token_usage` — not at a flat usage/stats/tokens/metrics key, so the
+    // generic scanner alone finds nothing here; unwrap it first. Prefer the
+    // session TOTAL (matches Skynet's cumulative Usage semantics) over the last
+    // turn, and fall back to the raw scopes in case a future version flattens
+    // the shape again.
     if (/token|usage/i.test(type)) {
-      const usage = usageFromJson((obj.msg as Record<string, unknown>) ?? obj) ?? usageFromJson(obj);
+      const msg = (obj.msg as Record<string, unknown>) ?? obj;
+      const info = msg.info as Record<string, unknown> | undefined;
+      const usage =
+        usageFromJson((info?.total_token_usage as Record<string, unknown>) ?? {}) ??
+        usageFromJson((info?.last_token_usage as Record<string, unknown>) ?? {}) ??
+        usageFromJson(msg) ??
+        usageFromJson(obj);
       if (usage) return { kind: "usage", usage };
     }
 
