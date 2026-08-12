@@ -159,13 +159,15 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 8. [x] **Assign is a primary affordance** — the button (now labeled "Start →" — "Assign" implied
    a handoff, but it kicks the run off immediately) lives directly on backlog/todo kanban cards, and
    `todo → ongoing` is a legal drag transition too.
-9. [ ] **Explain the Autonomy toggle** — subtitle its consequences; consider default-off for a
-   user's first project (autonomy impresses more after the gates have been seen).
-10. [x] **Fleet copy & guardrails** — fixed "1 agents" pluralization; unified the create-agent CTA
-    to "+ Add agent"/"Add to fleet" (was "+ Configure agent" → "Add to fleet", a verb mismatch
-    across one flow); **Retire** now confirms inline (reused the existing `useConfirm()` dialog,
-    danger-styled) instead of deleting on a single click; the header line now reads "catalog:
-    Claude, Codex, Gemini, ..." instead of implying those providers are all configured.
+9. [x] **Explain the Autonomy toggle** — a visible subtitle now sits under the toggle in both
+   the project header and the create-project form ("Agents triage, auto-pick, and review tasks
+   on their own — off, the board is fully human-driven."), not just the hover title. A
+   workspace's very first project also defaults Autonomy **off** (every project after defaults
+   on, as before) — gated on the client's own project count at the moment the create form opens,
+   not a server-side default change, so every other caller (MCP, API) is unaffected.
+10. [ ] **Fleet copy & guardrails** — "1 agents" pluralization; unify "+ Configure agent" vs
+    "Add to fleet"; move destructive **Retire** behind detail/overflow or confirm inline;
+    label the provider strip as the *catalog*, not configured.
 11. [x] **Inbox empty state teaches** — the empty state lists all four gate kinds (approval / plan
     review / diff review / merge conflict) with a one-line blurb each.
 12. [x] **Prioritize the backlog _and_ todo** — manual promote/demote (reorder) on **todo**

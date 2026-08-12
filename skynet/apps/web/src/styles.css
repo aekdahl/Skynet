@@ -982,11 +982,13 @@ button.kb-done:hover { opacity: 1; }
 .proj-autonomy-cb:checked + .proj-autonomy-switch::after { transform: translateX(14px); background: var(--bg); }
 .proj-autonomy-cb:focus-visible + .proj-autonomy-switch { outline: 2px solid var(--accent); outline-offset: 2px; }
 .proj-autonomy-label { font-weight: 500; color: var(--text); white-space: nowrap; }
-/* Approvals already spells out its current setting inline ("Trusted · auto-
-   approve low + medium-risk COMMANDS"); a bare "Autonomy" toggle next to that
-   reads as a second, redundant auto-approve switch. This says what it's
-   actually for — starting/reviewing work on its own — a different axis. */
-.proj-autonomy-sub { font-weight: 400; color: var(--muted); margin-left: 4px; }
+/* The consequence explainer sits under the label, not just in the hover title —
+   a toggle this consequential (unattended triage/pick/review) shouldn't rely on
+   a tooltip to be understood. --muted (not --faint): this text carries meaning.
+   Supersedes an earlier same-line "Autonomy · picks & reviews work" suffix —
+   redundant now that the fuller line below says the same thing with more room. */
+.proj-autonomy-text { display: flex; flex-direction: column; gap: 1px; line-height: 1.25; }
+.proj-autonomy-hint { font-size: 11px; font-weight: 400; color: var(--muted); white-space: normal; }
 /* Approval-level selector + standing "always allowed" rules — same pill as
    .proj-autonomy above; the <select> inside goes borderless/transparent so it
    sits flush in the pill instead of drawing a second nested border. */

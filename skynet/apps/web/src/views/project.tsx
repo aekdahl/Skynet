@@ -1182,7 +1182,10 @@ export function ProjectView({
                 onChange={(e) => updateProject(project.id, { autonomy: e.target.checked })}
               />
               <span className="proj-autonomy-switch" aria-hidden="true" />
-              <span className="proj-autonomy-label">Autonomy <span className="proj-autonomy-sub">picks &amp; reviews work</span></span>
+              <span className="proj-autonomy-text">
+                <span className="proj-autonomy-label">Autonomy</span>
+                <span className="proj-autonomy-hint">Agents triage, auto-pick, and review tasks on their own — off, the board is fully human-driven.</span>
+              </span>
             </label>
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
