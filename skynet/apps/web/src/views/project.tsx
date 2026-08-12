@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta, ProviderId, ProviderInfo } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
-import { PrimaryButton } from "../components/empty";
+import { Blocked, PrimaryButton } from "../components/empty";
 import {
   agentsForProject,
   curStep,
@@ -24,6 +24,14 @@ import { TimelineView } from "./home";
 import { RoadmapDocView } from "./project-roadmap";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
+
+// Task linter v0 (assistive) — short label per concern kind, shown before the
+// model's own one-line note. See apps/server/src/task-linter.ts.
+const LINT_KIND_LABEL: Record<string, string> = {
+  vague: "Vague",
+  "multi-module": "Spans modules",
+  "no-done-definition": "No done definition",
+};
 
 // ─── Board drag & drop ───────────────────────────────────────────────────────
 // Cards are dragged between lanes instead of clicking move buttons. A drop that's
@@ -251,6 +259,7 @@ function TaskCard({
     assignTask,
     transitionTask,
     moveTask,
+    dismissTaskLint,
   } = useStore();
   const confirm = useConfirm();
   // Features + milestones available to this task (same project, not archived).
@@ -443,6 +452,27 @@ function TaskCard({
       )}
 
       {s === "triage" && <TriageCard task={task} />}
+      {(s === "backlog" || s === "triage" || s === "todo") &&
+        task.lint &&
+        !task.lint.dismissed &&
+        task.lint.concerns.length > 0 && (
+          <div className="kb-lint" onClick={stop}>
+            <div className="kb-lint-items">
+              {task.lint.concerns.map((c, i) => (
+                <span key={i} className="kb-lint-item" title={c.note}>
+                  ⚑ {LINT_KIND_LABEL[c.kind] ?? c.kind} — {c.note}
+                </span>
+              ))}
+            </div>
+            <button
+              className="kb-lint-dismiss"
+              title="Dismiss — this is just a hint, not a blocker"
+              onClick={() => void dismissTaskLint(pid, task.id)}
+            >
+              ×
+            </button>
+          </div>
+        )}
       {s === "review" && task.reviewVerdict && (
         task.reviewVerdict.decision === "flag" ? (
           <div className="kb-flag">⚠ flagged for you — {task.reviewVerdict.reason}</div>
@@ -526,18 +556,16 @@ function TaskCard({
             />
           )}
           {(s === "backlog" || s === "todo") && (
-            <button
-              className="kb-move kb-move-primary kb-assign"
-              disabled={noFleet}
-              title={
-                noFleet
-                  ? "No agents configured — add one in Fleet before starting."
-                  : "Start now — grabs an idle agent and moves this task to Ongoing."
-              }
-              onClick={() => void assignTask(pid, task.id)}
-            >
-              Start →
-            </button>
+            <Blocked disabled={noFleet} reason={noFleet ? "No agents configured — add one in Fleet before starting." : undefined}>
+              <button
+                className="kb-move kb-move-primary kb-assign"
+                disabled={noFleet}
+                title={noFleet ? undefined : "Start now — grabs an idle agent and moves this task to Ongoing."}
+                onClick={() => void assignTask(pid, task.id)}
+              >
+                Start →
+              </button>
+            </Blocked>
           )}
           {s === "backlog" && (
             <button
@@ -632,6 +660,25 @@ function TaskCard({
               <div className="kb-detail-section">
                 <div className="kb-detail-label mono">TRIAGE</div>
                 <TriageCard task={task} />
+              </div>
+            )}
+            {task.lint && !task.lint.dismissed && task.lint.concerns.length > 0 && (
+              <div className="kb-detail-section">
+                <div className="kb-detail-label mono">
+                  LINT{" "}
+                  <button
+                    className="kb-detail-lint-dismiss"
+                    title="Dismiss — this is just a hint, not a blocker"
+                    onClick={() => void dismissTaskLint(pid, task.id)}
+                  >
+                    dismiss
+                  </button>
+                </div>
+                {task.lint.concerns.map((c, i) => (
+                  <p key={i} className="kb-detail-assess">
+                    ⚑ {LINT_KIND_LABEL[c.kind] ?? c.kind} — {c.note}
+                  </p>
+                ))}
               </div>
             )}
             {task.reviewVerdict && (

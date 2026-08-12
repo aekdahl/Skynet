@@ -43,6 +43,16 @@ export interface StartSpec {
 export interface RunnerEvents {
   /** A log line. `detail` is optional expandable content (e.g. a tool's full input/output). */
   onLog(runId: string, line: string, detail?: string): void;
+  /**
+   * Token-level text delta for the line currently being generated — live
+   * "typing" only, called far more often than onLog (once per streamed chunk,
+   * not once per finished message). Optional: a provider with no token-level
+   * transport just never calls it, and the UI falls back to whole-message
+   * onLog jumps. Never treat this as the persisted record — onLog with the
+   * complete text is still called once the message finishes; that's the only
+   * write that lands in the log.
+   */
+  onLogDelta?(runId: string, delta: string): void;
   onProgress(runId: string, progress: number, plan: PlanStep[]): void;
   onHeartbeat(runId: string): void;
   onStatus(runId: string, status: TaskRunStatus): void;

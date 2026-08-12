@@ -138,9 +138,17 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 2. [x] **Onboarding step 2 (GitHub) is a PLACEHOLDER** mid-wizard — removed the GitHub step
    from the wizard (now Workspace → Module map → Fleet). Integrations already owns the connect
    flow post-onboarding, so a first-run user never meets the unfinished App-install mid-wizard.
-3. [ ] **Blocked-CTA / disabled-state system** — one pattern app-wide: distinct disabled
+3. [x] **Blocked-CTA / disabled-state system** — one pattern app-wide: distinct disabled
    treatment + an inline, readable reason ("Select at least one provider", "name required")
    next to the button. Applies to GetStarted, wizard step 4, task composer, fleet form.
+   *(GetStarted / wizard / task composer / fleet form already had it. Extended the pattern
+   to the rest of the app: factored `PrimaryButton`'s reason-rendering out into a shared
+   `Blocked` wrapper (`components/empty.tsx`) any button style can use — migrated
+   Start/Assign, Retire (agent detail + fleet), Fork, Simulation's Judge/Copy, Settings'
+   key/credential/token forms, and Merges' rework guidance to it. Selector chips
+   (provider picker, subway rows, task-grouping chips) were left on hover-title — they're
+   multi-choice rows, not a single blocked CTA, so a permanent reason line under each would
+   be noise, not signal.)*
 4. [ ] **Legibility floor** — ≥11px and `--muted` for any text that carries meaning; `--faint`
    only for decoration (subway anchor labels, backlog subtitle, legends, picker hints).
 5. [x] **Persist the workspace name server-side** — rides `WorkspaceSettings` (the existing
@@ -312,12 +320,12 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     `approve-with-rule` still to do.*
   - Secrets at rest (local); 🏢 **observability** (hosted metrics/logging/tracing) + SIEM export of the audit.
 - [ ] **Runner session-map cleanup** — `ClaudeRunnerProvider.sessions` (agentId→sessionId, kept for fork resume) grows one entry per agent for the server-process lifetime. Evict on agent completion (retain only entries an active fork could resume). Small RAM/tech-debt fix; no behavior change.
-- [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs). **CLI usage fidelity firmed up** (re-verified against each vendor's CURRENT CLI, not assumed): Codex — fixed a real bug, `usageFromJson` scanned for a flat `usage`/`stats`/`tokens` key but codex-cli 0.147.0's `TokenCountEvent` nests real counts two levels deep (`msg.info.total_token_usage`), so usage was silently never reported; now unwrapped correctly. Gemini — `buildArgs` never actually requested JSON output, so text mode was the ONLY mode ever exercised and usage was never parsed despite the JSON-handling code already existing; now defaults to `--output-format stream-json` (verified against gemini-cli's `StreamJsonFormatter`). Cursor — `--output-format stream-json` confirmed current via `cursor-agent --help`; no bug found, left as-is.*
+- [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs) + token-by-token streaming for Claude (`includePartialMessages` → a bus-only `run.log.delta` event, never persisted per-token → live "typing" in the run log, same finalized `run.log` write as before). **CLI usage fidelity firmed up** (re-verified against each vendor's CURRENT CLI, not assumed): Codex — fixed a real bug, `usageFromJson` scanned for a flat `usage`/`stats`/`tokens` key but codex-cli 0.147.0's `TokenCountEvent` nests real counts two levels deep (`msg.info.total_token_usage`), so usage was silently never reported; now unwrapped correctly. Gemini — `buildArgs` never actually requested JSON output, so text mode was the ONLY mode ever exercised and usage was never parsed despite the JSON-handling code already existing; now defaults to `--output-format stream-json` (verified against gemini-cli's `StreamJsonFormatter`). Cursor — `--output-format stream-json` confirmed current via `cursor-agent --help`; no bug found, left as-is.*
   Still to do:
   - **Plan-mode gate (Claude)** — expose `permissionMode: "plan"` as a per-project/runner policy so the agent proposes a plan and `ExitPlanMode` becomes a `plan` HITL approved *before* any writes. Best fit for Skynet's HITL model; native to the Agent SDK.
   - **Per-runner tool + prompt policy** — surface `allowedTools`/`disallowedTools`, a project system prompt, and `settingSources` (CLAUDE.md) instead of the hardcoded auto-allow set + inline steering. Ties into v4 repo-native memory.
   - [x] **Structured diffs in gates/review** — shipped: `HitlItem.diff` (stat) is set in `raiseDiffReview` from `WorktreeManager.diffStat`, and the full unified patch is served on-demand by `GET /api/runs/:id/diff` (`orchestrator.ts#runDiff` → `worktrees.ts#patch`, a real `git diff` in the worktree) and rendered by `diff-view.tsx`'s `parseUnifiedDiff`. No vendor-specific patch-event plumbing exists (or is needed) — every runner's changes land in the same worktree, so one `git diff` covers Claude/Codex/Cursor/Gemini/Copilot alike.
-  - **Token-by-token streaming** — Claude `includePartialMessages` / CLI NDJSON deltas → live "typing" in the log instead of whole-message chunks.
+  - **Token-by-token streaming for the CLI runners** — Codex/Gemini/Cursor/Copilot NDJSON deltas → the same `run.log.delta` live-typing path Claude now has.
   - **Copilot usage/event fidelity** — `copilot` (v1.0.79) turns out to have a machine-readable mode after all (`--output-format json`, JSONL — this was previously undocumented here as text-only, now confirmed live), reporting output tokens + duration per turn, but no input-token count and no USD cost (it meters "premium requests"/AI credits, not $/token — a genuinely different billing model from the others). Adopting it isn't a usage-only change: the Copilot runner's approval-gate detection and tool/log lines are currently parsed from human-readable text, and `--output-format json` replaces ALL output with JSONL, so wiring usage means migrating that whole parser to structured events, not just adding a field extraction. Scoped out of the CLI-usage-fidelity fix as a separate, larger follow-up.
 - [~] **Review upgrades (adopted from the competitor sweep):**
   - **Verifier gate** — run the project's tests/checks in the worktree and **block the merge on failure** as a
@@ -419,8 +427,16 @@ features below are white space.)
 **Easier to use than anyone else:**
 - [ ] **Repo-optional / chat-only mode** — a runner with **no worktree and no merge**; try Skynet in 30s,
   no git literacy. Widens the funnel (also in Considerations).
-- [ ] **Task linter v0 (assistive)** — *pulled forward from v5:* "vague task → touches 3 modules, split into
+- [x] **Task linter v0 (assistive)** — *pulled forward from v5:* "vague task → touches 3 modules, split into
   3?"; "no 'done' defined?". The ease differentiator **nobody has** — lowers the skill floor, not just setup.
+  *(Landed: a background, fire-and-forget consult right after `createTask`/text-editing `updateTask` — same
+  shape as the existing `maybeAutoClone`, never blocks task creation. `task-linter.ts` mirrors
+  `review-verdict.ts`'s discipline: reads a structured `{concerns:[{kind,note}]}` field, never
+  classifies free text; an unreadable reply parses to `[]`, indistinguishable from a genuinely clean
+  task. Cheap by default (`haiku`, `SKYNET_LINT_MODEL` to override). Dismissible via
+  `Task.lint.dismissed`, mirroring the existing `dismissPr` pattern. Verified live against a real
+  model: a vague task ("fix the thing") surfaced two real concerns; a well-scoped one came back
+  clean; dismiss stuck.)*
 - [ ] **Charter-assisted project creation** — creating a project is a short LLM-drafted intake, not a name
   field: goals, non-goals, risks, constraints, definition of done — operator corrects and approves (the
   Charter). Uses the **user's own key** via the existing secret store (one cheap call; metered). The

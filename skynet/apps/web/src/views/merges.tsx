@@ -3,6 +3,7 @@ import type { TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { readyMerges } from "../lib/derive";
 import { RiskChip } from "../components/hitl-context";
+import { Blocked } from "../components/empty";
 
 // The recommendation the AI reviewer left, as a colored chip. Merge = the run
 // satisfies the task; rework = a reviewer flagged it; hold = neither (unclear).
@@ -129,9 +130,11 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
             onChange={(e) => setComment(e.target.value)}
           />
           <div className="qx-row">
-            <button className="btn btn-primary" disabled={busy != null || !guidance.trim()} onClick={doRework}>
-              {busy === "rework" ? "Sending…" : "Send & rework"}
-            </button>
+            <Blocked disabled={!guidance.trim()} reason={!guidance.trim() ? "Describe what should change before sending." : undefined}>
+              <button className="btn btn-primary" disabled={busy != null || !guidance.trim()} onClick={doRework}>
+                {busy === "rework" ? "Sending…" : "Send & rework"}
+              </button>
+            </Blocked>
             <button className="btn btn-ghost" onClick={() => setMode(null)}>Cancel</button>
           </div>
         </div>
