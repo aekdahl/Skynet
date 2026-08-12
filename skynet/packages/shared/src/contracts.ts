@@ -339,8 +339,21 @@ export const Task = z.object({
   // human "Start now".
   autoPick: z.boolean().default(false),
   // Short agent-written assessment produced during autonomous triage
-  // (backlog → triage): clarity / rough effort / risks.
+  // (backlog → triage): clarity / rough effort / risks. Doubles as the
+  // structured card's SUMMARY line for a task triaged after the fields below
+  // were added, and as the whole read-out (rendered as one paragraph) for an
+  // older task triaged before — never fabricated for a legacy task, so a
+  // missing `assessmentEffort` there is just "not part of this task's shape",
+  // not an error.
   assessment: z.string().nullable().default(null),
+  // Structured triage read-out (v1.5 "Structured triage card") — additive
+  // siblings of `assessment` above, so an older task keeps rendering fine via
+  // its free-text `assessment` alone (`.nullable().default(null)` / `[]`
+  // means a legacy record with neither field still parses). Parsed the same
+  // defensive, field-based way as the auto-review verdict (never regex/
+  // keyword-classify free text) — see `splitEstMinutesTag` in orchestrator.ts.
+  assessmentEffort: z.enum(["small", "medium", "large"]).nullable().default(null),
+  assessmentRisks: z.array(z.string()).default([]),
   // Auto-review verdict left by an agent on a review-state task. ALWAYS
   // recorded once an agent has looked at the run — approve OR flag — so a
   // human can audit what the reviewer thought regardless of whether the

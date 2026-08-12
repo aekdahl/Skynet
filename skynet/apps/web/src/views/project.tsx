@@ -146,6 +146,32 @@ function AgentEligibility({
   );
 }
 
+// Structured triage read-out: an effort pill + a full-contrast summary line +
+// a short risks list — replaces the old single muted paragraph. `assessment`
+// (the summary) is the only field a PRE-this-change task carries, so a legacy
+// task still renders sanely here: just its summary line, no pill, no risks —
+// never blank, never broken.
+function TriageCard({ task }: { task: Task }) {
+  if (!task.assessment) return null;
+  return (
+    <div className="triage-card">
+      <div className="triage-card-head">
+        {task.assessmentEffort && (
+          <span className={"effort-pill effort-" + task.assessmentEffort}>{task.assessmentEffort}</span>
+        )}
+        <span className="triage-summary">{task.assessment}</span>
+      </div>
+      {task.assessmentRisks.length > 0 && (
+        <ul className="triage-risks">
+          {task.assessmentRisks.map((r, i) => (
+            <li key={i}>{r}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // One card per Task. For pre-run states (backlog/triage/todo) it shows the task
 // text + stage controls; for ongoing/review/done it joins the linked TaskRun to
 // show live status/progress and opens the Task detail view on click.
@@ -366,7 +392,7 @@ function TaskCard({
         </>
       )}
 
-      {s === "triage" && task.assessment && <div className="kb-assessment">{task.assessment}</div>}
+      {s === "triage" && <TriageCard task={task} />}
       {s === "review" && task.reviewVerdict && (
         task.reviewVerdict.decision === "flag" ? (
           <div className="kb-flag">⚠ flagged for you — {task.reviewVerdict.reason}</div>
@@ -548,7 +574,7 @@ function TaskCard({
             {task.assessment && (
               <div className="kb-detail-section">
                 <div className="kb-detail-label mono">TRIAGE</div>
-                <p className="kb-detail-assess">{task.assessment}</p>
+                <TriageCard task={task} />
               </div>
             )}
             {task.reviewVerdict && (

@@ -230,6 +230,7 @@ export function OpSidebar({
         <span className="op-ws-logo">S</span>
         <span className="op-ws-name">{workspaceSettings?.name || "Skynet"}</span>
       </div>
+      <div className="op-navsec">OPERATE</div>
       <nav className="op-nav">
         {item(
           "Home",
@@ -241,8 +242,11 @@ export function OpSidebar({
         {item("Audit", "❑", () => setView("audit"), active === "audit")}
         {item("Projects", "▤", () => setView("projects"), active === "projects")}
         {item("Fleet", "◇", () => setView("fleet"), active === "fleet")}
-        {item("Integrations", "⑂", () => setView("integrations"), active === "integrations")}
         {item("Ready to merge", "⇲", () => setView("merges"), active === "merges", mergeCount)}
+      </nav>
+      <div className="op-navsec">CONFIGURE</div>
+      <nav className="op-nav">
+        {item("Integrations", "⑂", () => setView("integrations"), active === "integrations")}
         {/* TEMP (pre-launch): Roadmap shown in ALL builds so it's visible on the
             deployed GCP release. Restore `devTools &&` here + re-add "roadmap" to
             DEV_ONLY_VIEWS (lib/dev) to hide it again before launch. */}

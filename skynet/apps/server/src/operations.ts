@@ -623,6 +623,8 @@ export class Operations {
       runId: null,
       autoPick: false,
       assessment: null,
+      assessmentEffort: null,
+      assessmentRisks: [],
       reviewVerdict: null,
       assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,

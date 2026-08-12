@@ -364,7 +364,25 @@ features below are white space.)
 **UX/UI to SOTA (pre-release review — high &amp; polish):**
 - [ ] **Text-contrast ramp** (ink / muted / faint, checked ratios — muted currently sits at the reading floor) + a **systematized button/state token set** (primary / ghost / danger, each with explicit hover · focus-visible · disabled · loading).
 - [ ] **Agent picker at Start** + a saved per-task provider/model preference, and always show which agent a run is on — today assignment auto-picks and the fleet premise is invisible.
-- [ ] **Structured triage card** (effort pill · full-contrast summary · risks list, not one muted paragraph); **Inbox count badge**; grouped nav (**Operate** / **Configure**).
+- [x] **Structured triage card** (effort pill · full-contrast summary · risks list, not one muted paragraph); **Inbox count badge**; grouped nav (**Operate** / **Configure**).
+  *(Inbox count badge was already shipped. Landed: the triage LLM consult's prompt now requests
+  `effort`/`risks` alongside the existing `estMinutes`/`clarity` tail tag, parsed the same
+  defensive, field-based way as the auto-review verdict (`splitEstMinutesTag`, never regex/
+  keyword-classified) — a malformed or missing field never drops the others. `Task` gained
+  `assessmentEffort`/`assessmentRisks` as additive, defaulted siblings of the existing
+  `assessment` string (which now doubles as the card's summary line), so a task triaged before
+  this shipped keeps rendering fine off `assessment` alone — verified live: a real live-browser
+  run of the actual triage pipeline landed a task with only `assessment` set (the LLM call's own
+  auth failure meant no tag was found) and it rendered as a clean summary-only card, no pill, no
+  risks, nothing broken. The happy path (pill + risks) was verified two ways: exhaustively at the
+  parser level (new unit tests) and through the real `Orchestrator.tickAutonomy()` pipeline with
+  an injected canned reply (new integration tests) — no `ANTHROPIC_API_KEY` was available in the
+  sandbox this landed from to get a genuine model-generated reply, so the visual (pill/summary/
+  risks rendering) was additionally confirmed with a temporary, since-reverted server-side stub
+  of the LLM reply text, screenshotted live in the browser, never committed. `shell.tsx`'s flat
+  nav list is now two labeled groups — Operate (Home/Inbox/Audit/Projects/Fleet/Ready to merge)
+  and Configure (Integrations/Roadmap/Settings) — reusing the existing `.op-navsec` label style;
+  active-item highlighting and routing unchanged (confirmed live).)*
 - [ ] **Humanized time** + stale-heartbeat styling (no raw "79062s ago"); honest empty-**PLAN** state; **provider identity** (real marks + names, not abstract glyphs).
 - [ ] **Design tokens published** (type scale, 8px rhythm, motion behind `prefers-reduced-motion`, one focus ring, semantic palette kept separate from the accent); **a11y pass** (icon-button labels, visible focus, keyboard walkthrough of assign→decide→merge); explicit **Inbox-first mobile/PWA shell**.
 
