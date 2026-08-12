@@ -429,6 +429,19 @@ function TaskCard({
               Assign →
             </button>
           )}
+          {s === "backlog" && (
+            <button
+              className="kb-move"
+              title="Open Steward, focused on this project, to talk through this task before it's picked up."
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("skynet:open-steward", { detail: { text: `Let's talk through this task: "${task.text}"` } }),
+                )
+              }
+            >
+              💬 Discuss
+            </button>
+          )}
           {s === "todo" && (
             <label className="kb-autopick" title="When on, an idle agent starts this task autonomously.">
               <input
