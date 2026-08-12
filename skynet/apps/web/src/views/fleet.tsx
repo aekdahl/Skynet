@@ -4,6 +4,7 @@ import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy } from "../lib/derive";
 import { Blocked, PrimaryButton } from "../components/empty";
+import { useConfirm } from "../components/confirm";
 
 export function ConfigForm({
   initial,
@@ -247,6 +248,7 @@ export function FleetView({
 }) {
   const { fleet, runs, providers, createAgent, updateAgent, deleteAgent } =
     useStore();
+  const confirm = useConfirm();
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   // The agent being duplicated: opens the same form pre-filled with its provider
@@ -284,7 +286,7 @@ export function FleetView({
         <div className="vw-head">
           <h1>Agent fleet</h1>
           <p>
-            {fleet.length} agents configured · Claude, Codex, Gemini, Cursor, Copilot
+            {fleet.length} agent{fleet.length === 1 ? "" : "s"} configured · catalog: Claude, Codex, Gemini, Cursor, Copilot
           </p>
         </div>
         <button
@@ -295,7 +297,7 @@ export function FleetView({
             setCloneFrom(null);
           }}
         >
-          + Configure agent
+          + Add agent
         </button>
       </div>
       {(adding || cloneFrom) && (
@@ -433,7 +435,17 @@ export function FleetView({
                         className="btn btn-ghost btn-retire"
                         disabled={!!busy}
                         title={busy ? undefined : "Retire this agent"}
-                        onClick={() => deleteAgent(r.id)}
+                        onClick={async () => {
+                          if (
+                            await confirm({
+                              title: "Retire this agent?",
+                              body: `“${r.name}” is removed from the fleet — its run history is preserved, but it can't pick up new work.`,
+                              confirmLabel: "Retire",
+                              danger: true,
+                            })
+                          )
+                            deleteAgent(r.id);
+                        }}
                       >
                         Retire
                       </button>

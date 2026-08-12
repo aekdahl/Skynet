@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta } from "@skynet/shared";
+import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta, ProviderId, ProviderInfo } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { Blocked, PrimaryButton } from "../components/empty";
@@ -146,6 +146,56 @@ function AgentEligibility({
   );
 }
 
+// Saved provider/model preference for auto-pick — a SOFT hint the server tries
+// first, not a hard requirement (see Orchestrator.acquireAgent): unlike
+// AgentEligibility (who's even ALLOWED to take it), this never blocks Start,
+// it just steers which idle runner gets picked when more than one qualifies.
+// "Auto-pick" (the default, empty selection) leaves today's behavior alone.
+function AgentPreference({
+  task,
+  providers,
+  onChange,
+}: {
+  task: Task;
+  providers: ProviderInfo[];
+  onChange: (patch: { preferredProvider: ProviderId | null; preferredModel: string | null }) => void;
+}) {
+  const models = task.preferredProvider
+    ? (providers.find((p) => p.id === task.preferredProvider)?.models ?? [])
+    : [];
+  return (
+    <div className="kb-pref" onClick={stop}>
+      <select
+        className="kb-pref-select"
+        value={task.preferredProvider ?? ""}
+        title="Prefer this provider when starting — falls back to auto-pick if none is idle"
+        onChange={(e) => {
+          const preferredProvider = (e.target.value || null) as ProviderId | null;
+          onChange({ preferredProvider, preferredModel: null }); // provider change invalidates any saved model
+        }}
+      >
+        <option value="">Auto-pick</option>
+        {providers.map((p) => (
+          <option key={p.id} value={p.id}>{p.name}</option>
+        ))}
+      </select>
+      {task.preferredProvider && models.length > 0 && (
+        <select
+          className="kb-pref-select"
+          value={task.preferredModel ?? ""}
+          title="Prefer this model too — leave as “any” to match the provider alone"
+          onChange={(e) => onChange({ preferredProvider: task.preferredProvider ?? null, preferredModel: e.target.value || null })}
+        >
+          <option value="">Any model</option>
+          {models.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+}
+
 // One card per Task. For pre-run states (backlog/triage/todo) it shows the task
 // text + stage controls; for ongoing/review/done it joins the linked TaskRun to
 // show live status/progress and opens the Task detail view on click.
@@ -153,10 +203,14 @@ function TaskCard({
   task,
   run,
   onOpenTask,
+  canMoveUp,
+  canMoveDown,
 }: {
   task: Task;
   run?: TaskRun;
   onOpenTask: (id: string) => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
 }) {
   const {
     queue,
@@ -170,6 +224,7 @@ function TaskCard({
     archiveTask,
     assignTask,
     transitionTask,
+    moveTask,
   } = useStore();
   const confirm = useConfirm();
   // Features + milestones available to this task (same project, not archived).
@@ -315,6 +370,26 @@ function TaskCard({
         )}
         {(s === "backlog" || s === "triage" || s === "todo") && (
           <span className="kb-card-tools" onClick={stop}>
+            {(s === "backlog" || s === "todo") && (
+              <>
+                <button
+                  className="kb-tool"
+                  title="Move up — higher priority (also the auto-pick order when Autonomy is on)"
+                  disabled={!canMoveUp}
+                  onClick={() => void moveTask(pid, task.id, "up")}
+                >
+                  ↑
+                </button>
+                <button
+                  className="kb-tool"
+                  title="Move down — lower priority"
+                  disabled={!canMoveDown}
+                  onClick={() => void moveTask(pid, task.id, "down")}
+                >
+                  ↓
+                </button>
+              </>
+            )}
             <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>✎</button>
             <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
             <button className="kb-tool kb-tool-del" title="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
@@ -417,6 +492,13 @@ function TaskCard({
           as buttons. */}
       {(s === "backlog" || s === "todo" || s === "ongoing" || s === "review" || s === "done") && (
         <div className="kb-actions" onClick={stop}>
+          {(s === "backlog" || s === "todo") && (
+            <AgentPreference
+              task={task}
+              providers={providers}
+              onChange={(patch) => updateTask(pid, task.id, patch)}
+            />
+          )}
           {(s === "backlog" || s === "todo") && (
             <Blocked disabled={noFleet} reason={noFleet ? "No agents configured — add one in Fleet before starting." : undefined}>
               <button
@@ -1155,7 +1237,10 @@ export function ProjectView({
                 onChange={(e) => updateProject(project.id, { autonomy: e.target.checked })}
               />
               <span className="proj-autonomy-switch" aria-hidden="true" />
-              <span className="proj-autonomy-label">Autonomy <span className="proj-autonomy-sub">picks &amp; reviews work</span></span>
+              <span className="proj-autonomy-text">
+                <span className="proj-autonomy-label">Autonomy</span>
+                <span className="proj-autonomy-hint">Agents triage, auto-pick, and review tasks on their own — off, the board is fully human-driven.</span>
+              </span>
             </label>
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
@@ -1338,12 +1423,14 @@ export function ProjectView({
                 <span className="kb-count">{colTasks.length}</span>
               </div>
               <div className="kb-lane-body">
-                {colTasks.map((t) => (
+                {colTasks.map((t, i) => (
                   <TaskCard
                     key={t.id}
                     task={t}
                     run={t.runId ? runById.get(t.runId) : undefined}
                     onOpenTask={onOpenTask}
+                    canMoveUp={i > 0}
+                    canMoveDown={i < colTasks.length - 1}
                   />
                 ))}
                 {st === "backlog" && drag?.from === "backlog" && dropBeforeId === null && <div className="kb-drop-line" aria-hidden="true" />}
