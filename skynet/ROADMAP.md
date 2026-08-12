@@ -149,7 +149,7 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
    (`workspaceSettings.name`), not `firstrun.ts`'s old localStorage helper.
 
 **P1 — core-loop guidance & affordances**
-6. [ ] **Continuation after Create project** — land in the project with the task composer
+6. [x] **Continuation after Create project** — land in the project with the task composer
    focused; keep a live **first-run checklist** on Home (create → task → assign → approve)
    until the first merge.
 7. [x] **Task composer polish** — `AddTaskCard` already autofocuses the name field, carries the

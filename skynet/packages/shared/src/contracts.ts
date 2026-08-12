@@ -197,6 +197,13 @@ export const TaskRun = z.object({
   // task itself is already `done` — merging is decoupled so the pipeline never
   // stalls on a human. Null → no PR (a local-merge project, or not pushed yet).
   pr: PullRequest.nullable().default(null),
+  // Set exactly once, inside `completeMerged` (the single lifecycle function both
+  // the local merge queue and `mergeReadyPr` funnel through) — the moment code
+  // actually landed on the base branch. Unlike `status === "done"`, which also
+  // fires for zero-diff self-completion, an operator Stop, a reaper timeout, or a
+  // GitHub PR merely opened (not yet merged), this is the one field that means a
+  // real merge happened. Null → never merged.
+  mergedAt: Timestamp.nullable().default(null),
 });
 export type TaskRun = z.infer<typeof TaskRun>;
 

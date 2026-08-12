@@ -175,10 +175,12 @@ function FirstRunChecklist({
   onGoInbox: () => void;
 }) {
   const { projects, tasks, runs } = useStore();
-  // "Merged" = a run reached done, OR a task reached done (a force-done task
-  // leaves no run). Once ANY work has merged the first run is over — hide it.
-  const merged =
-    runs.some((r) => r.status === "done") || tasks.some((t) => t.state === "done");
+  // `run.status === "done"` alone is NOT "merged" — it also fires on a zero-diff
+  // self-completion, an operator Stop, a reaper timeout, force-done, or a GitHub
+  // PR that's merely been opened. `mergedAt` is set exactly once, only inside
+  // orchestrator's `completeMerged`, which both the local merge queue and an
+  // actual GitHub PR merge funnel through — the one accurate "code landed" signal.
+  const merged = runs.some((r) => r.mergedAt != null);
   if (projects.length === 0 || merged) return null;
 
   const hasTask = tasks.length > 0;
