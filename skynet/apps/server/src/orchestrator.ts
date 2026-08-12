@@ -836,6 +836,12 @@ export class Orchestrator {
     // any key). A runner is assignable only if its key (credentialId ?? provider)
     // is in this set — the project-level provider-key confinement.
     allowedCredentialIds: string[] = [],
+    // The task's saved Start-picker preference (Task.preferredProvider/-Model).
+    // A SOFT hint, not a requirement: tried first among idle+usable runners,
+    // but any mismatch (no provider match, or matches but none usable) falls
+    // straight through to the unchanged default pick below — a preference must
+    // never block a task the way `agents`-mode eligibility legitimately can.
+    preferred?: { provider?: TaskRun["provider"] | null; model?: string | null },
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
@@ -860,6 +866,22 @@ export class Orchestrator {
         );
       }
       const idle = eligibleRunners.filter((r) => r.status === "idle");
+      // Try the preference FIRST, ranked exact-model > provider-only, before the
+      // plain "first idle, usable" pick below. `sort` is stable, so when nothing
+      // matches (every rank is 0) this reduces to the original order and the
+      // loop falls straight through on its first iteration — a task with no
+      // preference (or one nothing idle can satisfy) picks exactly as before.
+      if (idle.length > 0 && preferred?.provider) {
+        const rank = (r: Agent) =>
+          r.provider !== preferred.provider ? 0 : preferred.model && r.model === preferred.model ? 2 : 1;
+        for (const r of [...idle].sort((a, b) => rank(b) - rank(a))) {
+          if (rank(r) === 0) break; // ranked list is sorted — no more candidates
+          if (await this.providerUsable(workspaceId, r.provider, r.credentialId)) {
+            await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
+            return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
+          }
+        }
+      }
       if (idle.length === 0) {
         // Auto-scale: every eligible runner is busy. If the workspace policy
         // allows it AND we're under the fleet cap, clone an eligible runner
@@ -1019,7 +1041,10 @@ export class Orchestrator {
     const current: TaskAssignment = task.assignment ?? { mode: "unassigned", agentIds: [] };
     const assignment: TaskAssignment =
       current.mode === "unassigned" ? { mode: "any", agentIds: [] } : current;
-    const runner = await this.acquireAgent(project.workspaceId, assignment, project.enabledRunnerCredentialIds);
+    const runner = await this.acquireAgent(project.workspaceId, assignment, project.enabledRunnerCredentialIds, {
+      provider: task.preferredProvider,
+      model: task.preferredModel,
+    });
     const runId = `${this.slug(task.text)}-${++this.seq}`;
     // runId is unique → unique branch & worktree path (two same-named tasks
     // never collide on the same branch).

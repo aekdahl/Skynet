@@ -16,6 +16,7 @@ import type {
   Milestone,
   Module,
   Project,
+  ProviderId,
   ProviderInfo,
   ResolveAction,
   Agent,
@@ -145,6 +146,8 @@ export interface Store extends StoreState {
       plannedStartAt?: number | null;
       featureId?: string | null;
       milestoneId?: string | null;
+      preferredProvider?: ProviderId | null;
+      preferredModel?: string | null;
     },
   ) => Promise<void>;
   createFeature: (projectId: string, name: string, description?: string, milestoneId?: string | null) => Promise<void>;

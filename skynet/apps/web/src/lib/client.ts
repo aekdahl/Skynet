@@ -5,6 +5,7 @@ import {
   WsMessage,
   type TaskRun,
   type TaskAssignment,
+  type ProviderId,
   type GithubInstallation,
   type GithubOwner,
   type GithubRepo,
@@ -460,6 +461,9 @@ export function updateTask(
     // Grouping — null clears the linkage.
     featureId?: string | null;
     milestoneId?: string | null;
+    // Start-picker preference — null clears it back to plain auto-pick.
+    preferredProvider?: ProviderId | null;
+    preferredModel?: string | null;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${projectId}/tasks/${taskId}`, body);
