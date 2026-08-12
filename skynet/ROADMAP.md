@@ -512,24 +512,29 @@ supervision layer, it doesn't host or resell those services.
   *(Agent Orchestrator-style; ties directly to the responders below.)*
 - [ ] **Interop surface (adopted)** — beyond `/mcp`, expose the fleet via an **OpenAI-compatible endpoint + REST**
   so external tools can drive it as a model/service. *(claw-orchestrator-style; broadens who can call Skynet.)*
-- [ ] **⭐ GitHub Issues ↔ tasks (two-way sync).** Read issues from a project's connected repo as Skynet
+- [x] **⭐ GitHub Issues ↔ tasks (two-way sync).** Read issues from a project's connected repo as Skynet
   tasks, work them through the normal loop, and keep the *issue* updated as they progress — the first
   concrete instance of the inbound-trigger + tools-back pattern, specialized for the tracker people
-  already live in. **Proposed approach:**
-  - **Read (issue → task):** an "import issues" action pulls open issues (optionally filtered by
-    label/assignee/query) from the connected repo; each becomes a Task (title→name, body→description,
-    with the issue number + URL kept as a link). Pull-on-demand first; a webhook trigger
-    (issue opened/labeled → task) follows once the inbound-trigger primitive lands.
-  - **Work:** the task runs the standard loop (assign → worktree → diff → PR), with the PR body
-    auto-linked (`Closes #123`) so a merge closes the issue.
-  - **Update as worked (task → issue):** Skynet comments back at lifecycle transitions — work started
-    (which agent + branch), PR opened (link), merged/closed — and optionally mirrors the kanban stage as
-    a label (`skynet:triage|ongoing|review|done`). Every write goes through the existing GitHub **safety
-    policy** + human approval where risky; the operator's own token, nothing resold.
-  - **Reuses:** the GitHub provider's REST client (it already creates/reads PRs — issue read/comment/
-    close is the same client + token), **clone-on-connect** (the repo's local checkout), the Task model +
-    PR flow, and the v3 inbound-trigger for the push path. Supersedes the bare "GitHub issue → PR"
-    candidate below with the full round-trip.
+  already live in. **Landed, in three passes — every piece below is done:**
+  - **Read (issue → task):** an "import issues" action (callable anytime, not just at project creation —
+    `POST /api/projects/:id/import/github-issues`) pulls open issues from the connected repo; each becomes
+    a Task linked back via `Task.source` (issue number + URL). Pull-on-demand only; a webhook trigger
+    (issue opened/labeled → task) still waits on the v3 inbound-trigger primitive.
+  - **Work:** the task runs the standard loop (assign → worktree → diff → PR). *Landed this pass:* the PR
+    body is auto-linked with `Closes #<n>` (`orchestrator.ts`'s `openPrForRun`) whenever the task's
+    `source.kind === "github_issue"`, so merging the PR closes the issue on GitHub even if write-back
+    below hasn't fired yet.
+  - **Update as worked (task → issue):** `task-sync.ts` subscribes to every `task.upserted` (human drag,
+    complete/merge, the autonomy loop — one choke point) and comments/closes/reopens the linked issue on
+    state transitions. *Landed this pass:* it also mirrors the kanban stage as a `skynet:triage|ongoing|
+    review|done` label (replace-all on the issue's label set, preserving any non-`skynet:` labels a human
+    added). Both gated by the same opt-in `Project.syncSourceStatus` — no second toggle. Verified against
+    a real private test repo + issue: PR body carried `Closes #1`, the label tracked triage→ongoing→
+    review→done live (including moves the autonomy loop made, not just human drags), and merging the PR
+    closed the issue for real.
+  - **Reuses:** the GitHub provider's REST client — `getIssueLabels`/`setIssueLabels` added alongside the
+    existing `commentIssue`/`setIssueState` on the same `GitProvider` seam, no second client. Supersedes
+    the bare "GitHub issue → PR" candidate below with the full round-trip.
 - [ ] **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
   fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
 - [ ] Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.

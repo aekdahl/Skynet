@@ -95,6 +95,11 @@ export interface GitProvider {
   commentIssue(token: string, repo: string, number: number, body: string): Promise<void>;
   /** Open or close an issue (write-back on task status change). */
   setIssueState(token: string, repo: string, number: number, state: "open" | "closed"): Promise<void>;
+  /** Every label currently on an issue (names only), so a caller can preserve
+   *  the ones it doesn't own before replacing the set. */
+  getIssueLabels(token: string, repo: string, number: number): Promise<string[]>;
+  /** Replace an issue's ENTIRE label set (GitHub's replace-all semantics). */
+  setIssueLabels(token: string, repo: string, number: number, labels: string[]): Promise<void>;
   /** Read a file's decoded text + blob sha (the sha is needed to commit an update).
    *  Returns null if the file/repo is absent. */
   getFile(token: string, repo: string, path: string): Promise<{ content: string; sha: string } | null>;
