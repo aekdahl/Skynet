@@ -169,12 +169,16 @@ export function NewProjectCard({
 }) {
   // The server's default approval level seeds the picker, so a new project's
   // shown default matches what it would otherwise be created with.
-  const { defaultApprovalLevel } = useStore();
+  const { defaultApprovalLevel, projects } = useStore();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
   const [mode, setMode] = useState<BindMode>("folder");
-  const [autonomy, setAutonomy] = useState(true);
+  // A workspace's very FIRST project starts with Autonomy off — the toggle's
+  // consequences (unattended triage/pick/review) land better once an operator
+  // has watched the assign → gate → approve loop manually at least once. Every
+  // project after that defaults on, same as today.
+  const [autonomy, setAutonomy] = useState(() => projects.length > 0);
   const [approvalLevel, setApprovalLevel] = useState<ApprovalLevel>(defaultApprovalLevel ?? "trusted");
   // While the operator hasn't touched the picker, keep it in sync with the
   // server default as it arrives (the snapshot may land after first render).
@@ -227,7 +231,7 @@ export function NewProjectCard({
     setImportIssues(true);
     setNewRepoName("");
     setNewRepoNameTouched(false);
-    setAutonomy(true);
+    setAutonomy(projects.length > 0);
     setApprovalLevel(defaultApprovalLevel ?? "trusted");
     setApprovalTouched(false);
   };
@@ -413,7 +417,10 @@ export function NewProjectCard({
             onChange={(e) => setAutonomy(e.target.checked)}
           />
           <span className="proj-autonomy-switch" aria-hidden="true" />
-          <span className="proj-autonomy-label">Autonomy</span>
+          <span className="proj-autonomy-text">
+            <span className="proj-autonomy-label">Autonomy</span>
+            <span className="proj-autonomy-hint">Agents triage, auto-pick, and review tasks on their own — off, the board is fully human-driven.</span>
+          </span>
         </label>
       </div>
 

@@ -972,6 +972,11 @@ button.kb-done:hover { opacity: 1; }
 .proj-autonomy-cb:checked + .proj-autonomy-switch::after { transform: translateX(14px); background: var(--bg); }
 .proj-autonomy-cb:focus-visible + .proj-autonomy-switch { outline: 2px solid var(--accent); outline-offset: 2px; }
 .proj-autonomy-label { font-weight: 500; }
+/* The consequence explainer sits under the label, not just in the hover title —
+   a toggle this consequential (unattended triage/pick/review) shouldn't rely on
+   a tooltip to be understood. --muted (not --faint): this text carries meaning. */
+.proj-autonomy-text { display: flex; flex-direction: column; gap: 1px; line-height: 1.25; }
+.proj-autonomy-hint { font-size: 11px; font-weight: 400; color: var(--muted); white-space: normal; }
 /* Approval-level selector + standing "always allowed" rules */
 .proj-approval { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-right: 4px; }
 .proj-approval-label { font-size: 11px; color: var(--muted); letter-spacing: 0.03em; }

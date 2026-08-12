@@ -154,8 +154,12 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
    agent receives)"; ⌘↵ submits; blocked-reason per P0.3.
 8. [ ] **Assign is a primary affordance** — "Assign →" on backlog/todo kanban cards (drag-to-
    ONGOING later); today it only lives on Roster idle rows.
-9. [ ] **Explain the Autonomy toggle** — subtitle its consequences; consider default-off for a
-   user's first project (autonomy impresses more after the gates have been seen).
+9. [x] **Explain the Autonomy toggle** — a visible subtitle now sits under the toggle in both
+   the project header and the create-project form ("Agents triage, auto-pick, and review tasks
+   on their own — off, the board is fully human-driven."), not just the hover title. A
+   workspace's very first project also defaults Autonomy **off** (every project after defaults
+   on, as before) — gated on the client's own project count at the moment the create form opens,
+   not a server-side default change, so every other caller (MCP, API) is unaffected.
 10. [ ] **Fleet copy & guardrails** — "1 agents" pluralization; unify "+ Configure agent" vs
     "Add to fleet"; move destructive **Retire** behind detail/overflow or confirm inline;
     label the provider strip as the *catalog*, not configured.
