@@ -154,6 +154,32 @@ function AgentEligibility({
   );
 }
 
+// Structured triage read-out: an effort pill + a full-contrast summary line +
+// a short risks list — replaces the old single muted paragraph. `assessment`
+// (the summary) is the only field a PRE-this-change task carries, so a legacy
+// task still renders sanely here: just its summary line, no pill, no risks —
+// never blank, never broken.
+function TriageCard({ task }: { task: Task }) {
+  if (!task.assessment) return null;
+  return (
+    <div className="triage-card">
+      <div className="triage-card-head">
+        {task.assessmentEffort && (
+          <span className={"effort-pill effort-" + task.assessmentEffort}>{task.assessmentEffort}</span>
+        )}
+        <span className="triage-summary">{task.assessment}</span>
+      </div>
+      {task.assessmentRisks.length > 0 && (
+        <ul className="triage-risks">
+          {task.assessmentRisks.map((r, i) => (
+            <li key={i}>{r}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // Saved provider/model preference for auto-pick — a SOFT hint the server tries
 // first, not a hard requirement (see Orchestrator.acquireAgent): unlike
 // AgentEligibility (who's even ALLOWED to take it), this never blocks Start,
@@ -425,7 +451,7 @@ function TaskCard({
         </>
       )}
 
-      {s === "triage" && task.assessment && <div className="kb-assessment">{task.assessment}</div>}
+      {s === "triage" && <TriageCard task={task} />}
       {(s === "backlog" || s === "triage" || s === "todo") &&
         task.lint &&
         !task.lint.dismissed &&
@@ -633,7 +659,7 @@ function TaskCard({
             {task.assessment && (
               <div className="kb-detail-section">
                 <div className="kb-detail-label mono">TRIAGE</div>
-                <p className="kb-detail-assess">{task.assessment}</p>
+                <TriageCard task={task} />
               </div>
             )}
             {task.lint && !task.lint.dismissed && task.lint.concerns.length > 0 && (

@@ -79,6 +79,28 @@ describe("autonomy loop", () => {
     expect(t?.assessment).toContain("clear ask");
   });
 
+  it("triages a backlog task → structured triage card (effort + risks land on the task)", async () => {
+    const { store, orch } = await setup(
+      'Adds a rate limiter to the login endpoint.\n{"estMinutes":20,"clarity":"clear","effort":"medium","risks":["touches auth — verify session handling","no existing tests for this path"]}',
+    );
+    await store.putTask(mkTask({ state: "backlog" }));
+    await orch.tickAutonomy();
+    const t = await store.getTask("t1");
+    expect(t?.assessment).toContain("rate limiter");
+    expect(t?.assessmentEffort).toBe("medium");
+    expect(t?.assessmentRisks).toEqual(["touches auth — verify session handling", "no existing tests for this path"]);
+  });
+
+  it("a reply with no effort/risks tag leaves both at their legacy-safe defaults (renders as the old free-text-only card)", async () => {
+    const { store, orch } = await setup("clear ask, S, low risk"); // no JSON tag at all
+    await store.putTask(mkTask({ state: "backlog" }));
+    await orch.tickAutonomy();
+    const t = await store.getTask("t1");
+    expect(t?.assessment).toContain("clear ask");
+    expect(t?.assessmentEffort).toBeNull();
+    expect(t?.assessmentRisks).toEqual([]);
+  });
+
   it("parks an unassigned backlog task (never auto-triages without an eligibility choice)", async () => {
     const { store, orch } = await setup("clear ask, S, low risk");
     await store.putTask(mkTask({ state: "backlog", assignment: { mode: "unassigned", agentIds: [] } }));
