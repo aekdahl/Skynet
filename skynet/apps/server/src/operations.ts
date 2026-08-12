@@ -489,6 +489,8 @@ export class Operations {
       autonomy: input.autonomy ?? true,
       approvalLevel: input.approvalLevel ?? config.defaultApprovalLevel,
       approvalRules: [],
+      // Plan-mode gating is off by default — set later in project settings.
+      planModeGate: false,
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo,

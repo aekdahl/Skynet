@@ -1040,7 +1040,7 @@ export class Orchestrator {
       // runner decides how to expose it (Claude → a Playwright MCP server).
       const { browserTools } = await this.fleetPolicy(project.workspaceId);
       const handle = await provider.start(
-        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, browser: browserTools },
+        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, browser: browserTools, planModeGate: project.planModeGate },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId, branch, baseRef, git });

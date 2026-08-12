@@ -72,6 +72,16 @@ const AUTO_ALLOW = new Set([
   "Edit", "MultiEdit", "Write", "NotebookEdit",
 ]);
 
+// While a plan-mode-gated run (see StartSpec.planModeGate) hasn't had its plan
+// approved yet, ONLY these are auto-allowed — read-only investigation plus the
+// agent's own TodoWrite step-tracking. Everything else, including the file
+// edits AUTO_ALLOW normally lets through, is denied outright (not gated) so
+// the agent stays in planning until the operator approves its ExitPlanMode
+// call. Deliberately a separate, narrower set from AUTO_ALLOW rather than a
+// filtered view of it — the two answer different questions (what needs no
+// gate at all vs. what's allowed before a plan exists).
+const PLAN_MODE_ALLOW = new Set(["Read", "LS", "Glob", "Grep", "NotebookRead", "TodoWrite"]);
+
 /**
  * Does `toolName` run without a blocking mid-run approval? True for read-only
  * tools and file edits (edits ride the end-of-run diff review). False for the
@@ -499,6 +509,39 @@ function buildEscalationRaise(q: ParsedQuestion): HitlRaise {
   };
 }
 
+// ExitPlanMode's `plan` field is markdown prose from the agent — not already a
+// discrete step list like TodoWrite's. Split it into lines for the `steps`
+// list the HITL UI renders as a numbered list (see queue.tsx); a plan with no
+// line breaks becomes a single step. Not a full markdown parser — just strips
+// leading bullet/number markers so a bulleted plan reads naturally as a list.
+function planToSteps(text: string): string[] {
+  const lines = text
+    .split("\n")
+    .map((l) => l.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, "").trim())
+    .filter(Boolean);
+  return lines.length ? lines : [text];
+}
+
+// Turn an ExitPlanMode call into a `plan` HITL: the proposed plan, gated
+// before the agent may write anything (see StartSpec.planModeGate). Approve /
+// reject / modify share the same semantics as a normal approval gate — see
+// resume() and decision-resume.ts.
+function buildPlanRaise(input: Record<string, unknown>): HitlRaise {
+  const planText = typeof input.plan === "string" ? input.plan.trim() : "";
+  return {
+    kind: "plan",
+    title: "Review the proposed plan",
+    why: "The agent wants to start implementing this plan — approve to let it begin making changes.",
+    risk: "medium",
+    rationale: null,
+    command: null,
+    options: null,
+    recommended: null,
+    steps: planToSteps(planText || "(the agent didn't include plan text)"),
+    diff: null,
+  };
+}
+
 // Short human label of the chosen answer, for the activity log.
 function describeAnswer(q: ParsedQuestion, decision?: Resolution): string {
   if (decision?.action === "option" && decision.optionIndex != null) {
@@ -615,6 +658,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
   private gateTool: string | null = null; // name of the tool awaiting approval
   private gateQuestion: ParsedQuestion | null = null; // set when the gate is an AskUserQuestion
   private lastRationale = ""; // the agent's most recent prose (its stated reasoning)
+  // Flips true once the operator approves this run's ExitPlanMode gate (see
+  // StartSpec.planModeGate). Irrelevant — and stays false — for a run that
+  // didn't opt into plan mode.
+  private planApproved = false;
   private sdkEnv: Record<string, string> = {}; // resolved auth env, reused for side-queries
   private pendingTools = new Map<string, string>(); // tool_use id → tool name, to pair outputs
   private pendingChat = false;
@@ -656,13 +703,46 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.input.push(this.initialPrompt);
 
     const canUseTool: CanUseTool = (toolName, input) => {
-      if (isAutoAllowed(toolName)) return Promise.resolve({ behavior: "allow", updatedInput: input });
+      // Plan-mode gate (StartSpec.planModeGate): ExitPlanMode is intercepted
+      // and raised as its own `plan` HITL, not a generic approval, carrying
+      // the agent's proposed plan. Approving it flips `planApproved` and lets
+      // the SDK's own allow fall through to end plan mode normally (resume());
+      // reject/modify send it back to revise, same as any approval gate.
+      if (toolName === "ExitPlanMode") {
+        return new Promise<PermissionResult>((resolve) => {
+          this.gate = resolve;
+          this.gateInput = input;
+          this.gateTool = toolName;
+          this.gateQuestion = null;
+          this.events.onStatus(this.runId, "waiting");
+          this.events.onHitl(this.runId, buildPlanRaise(input));
+        });
+      }
       // AskUserQuestion is the agent asking the operator a decision — surface it
       // as a `question` HITL with real option buttons, not a generic "approve".
+      // Checked before the plan-mode restriction below so the agent can still
+      // ask a clarifying question while it's planning, not just once approved.
       const question = toolName === "AskUserQuestion" ? parseAskUserQuestion(input) : null;
       // A question whose header signals a hand-off is an ESCALATION, not a
       // routine decision — the agent has given up and wants a human.
       const escalation = question && isEscalation(question) ? buildEscalationRaise(question) : null;
+      if (!question) {
+        // Until the plan above is approved, only read-only investigation + its
+        // own TodoWrite tracking are auto-allowed — deny everything else
+        // outright (including the edits AUTO_ALLOW normally lets through)
+        // rather than opening a second gate, so the agent stays in planning.
+        if (this.spec.planModeGate && !this.planApproved) {
+          return Promise.resolve(
+            PLAN_MODE_ALLOW.has(toolName)
+              ? ({ behavior: "allow", updatedInput: input } as PermissionResult)
+              : ({
+                  behavior: "deny",
+                  message: "Still in plan mode — read what you need, then call ExitPlanMode with your proposed plan. Do not make changes yet.",
+                } as PermissionResult),
+          );
+        }
+        if (isAutoAllowed(toolName)) return Promise.resolve({ behavior: "allow", updatedInput: input });
+      }
       return new Promise<PermissionResult>((resolve) => {
         // One gate at a time — the SDK serializes tool calls in a turn.
         // Register the gate BEFORE emitting the event: a synchronous resume
@@ -711,7 +791,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
     const baseOptions: Options = {
       cwd: spec.cwd ?? process.cwd(),
       model: mapModel(spec.model),
-      permissionMode: "default",
+      // Opt-in plan mode: the agent must propose a plan and call ExitPlanMode
+      // before making any edits (intercepted in canUseTool above and raised as
+      // a `plan` HITL). Off (the default) is today's behavior, unchanged.
+      permissionMode: spec.planModeGate ? "plan" : "default",
       canUseTool,
       maxTurns: 60,
       // Use Claude Code's default system prompt + full tool suite. Without this a
@@ -730,6 +813,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     };
     this.baseOptions = baseOptions;
     if (spec.browser) this.events.onLog(this.runId, "browser tools enabled (Playwright MCP) — browser actions gate for approval");
+    if (spec.planModeGate) this.events.onLog(this.runId, "plan mode enabled — the agent will propose a plan and pause for approval before making changes");
 
     // A fork inherits its parent's context via resume; a fresh run doesn't.
     const firstOptions: Options = resumeSessionId
@@ -1034,6 +1118,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
       const gate = this.gate;
       const input = this.gateInput ?? {};
       const question = this.gateQuestion;
+      const tool = this.gateTool;
       this.gate = null;
       this.gateInput = null;
       this.gateTool = null;
@@ -1046,7 +1131,13 @@ class ClaudeRunnerHandle implements RunnerHandle {
         gate({ behavior: "deny", message: answerForQuestion(question, decision) });
         this.events.onLog(this.runId, `↳ answered "${question.header}": ${describeAnswer(question, decision)}`);
       } else if (decision?.action === "reject") {
-        gate({ behavior: "deny", message: "Operator rejected this action — revise your approach." });
+        gate({
+          behavior: "deny",
+          message:
+            tool === "ExitPlanMode"
+              ? "Operator rejected this plan — propose a different approach."
+              : "Operator rejected this action — revise your approach.",
+        });
       } else if (decision?.action === "modify") {
         // Deliver the operator's guidance on the TRUSTED operator channel (a user
         // message), not just as the tool-denial reason. Guidance smuggled only in
@@ -1067,6 +1158,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
             "The operator interrupted this action with a new directive, delivered to you as an operator message. Do NOT stop or wait for further input — read that directive and continue the task with it now.",
         });
       } else {
+        if (tool === "ExitPlanMode") {
+          this.planApproved = true;
+          this.events.onLog(this.runId, "plan approved — proceeding to make changes");
+        }
         // Echo the tool's own input as `updatedInput` — required for the SDK to
         // actually run the approved tool (omitting it stalls the session).
         gate({ behavior: "allow", updatedInput: input });
