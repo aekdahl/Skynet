@@ -59,13 +59,21 @@ export function stripPreviewPrefix(url: string, token: string): string {
 }
 
 /** Re-prefix root-absolute ES-module specifiers in a JS body: `from "/…"` (static
- *  imports/re-exports), bare `import "/…"` (side-effect imports), and dynamic
- *  `import("/…")`. This is what Vite's module graph is actually built from once
- *  you're past the entry HTML — e.g. `main.jsx` importing `"/src/App.jsx"` or
- *  `"/@fs/…"` — so it applies both inside inline `<script>` blocks (react-refresh
- *  preamble) and to whole standalone `.js`/`.jsx` module responses. Skips
- *  protocol-relative, absolute-URL, relative, and already-prefixed specifiers
- *  (only a single leading `/` qualifies). PURE — tested. */
+ *  imports/re-exports), bare `import "/…"` (side-effect imports), dynamic
+ *  `import("/…")`, and `new URL("/…", import.meta.url)` (Vite's transform for a
+ *  static-literal `new URL(specifier, import.meta.url)` — the pattern libraries
+ *  like `pdfjs-dist` use to locate a worker file: `fileToDevUrl` bakes the
+ *  resolved path in as a *root-relative string*, so at runtime the browser
+ *  resolves it against the page's origin, landing on the unprefixed path and
+ *  missing this proxy entirely — a `text/html` SPA-fallback response where a
+ *  worker script was expected, which surfaces as "failed to fetch dynamically
+ *  imported module"). This is what Vite's module graph is actually built from
+ *  once you're past the entry HTML — e.g. `main.jsx` importing `"/src/App.jsx"`
+ *  or `"/@fs/…"` — so it applies both inside inline `<script>` blocks
+ *  (react-refresh preamble) and to whole standalone `.js`/`.jsx` module
+ *  responses. Skips protocol-relative, absolute-URL, relative, and
+ *  already-prefixed specifiers (only a single leading `/` qualifies). PURE —
+ *  tested. */
 export function rewriteJsImports(js: string, prefix: string): string {
   const reprefix = (path: string): string | null =>
     path === prefix || path.startsWith(prefix + "/") ? null : prefix + path;
@@ -81,6 +89,10 @@ export function rewriteJsImports(js: string, prefix: string): string {
     .replace(/\bimport\s*("|')(\/(?!\/)[^"']*)\1/g, (m, q, path) => {
       const r = reprefix(path);
       return r ? `import ${q}${r}${q}` : m;
+    })
+    .replace(/\bnew\s+URL\s*\(\s*("|')(\/(?!\/)[^"']*)\1\s*,\s*import\.meta\.url\s*\)/g, (m, q, path) => {
+      const r = reprefix(path);
+      return r ? `new URL(${q}${r}${q}, import.meta.url)` : m;
     });
 }
 
