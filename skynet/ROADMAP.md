@@ -186,7 +186,9 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   is ubiquitous across the competitor field, and **Kimi Code** — Moonshot AI's terminal coding agent, same
   CLI shape as Claude/Codex/Gemini, [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — then
   breadth reactively from the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
-- [ ] **Agent labels / custom grouping** — rename agents and group them beyond project (small UX add).
+- [x] **Agent labels / custom grouping** — Fleet already supports both: a "Group" field
+  (`label`) with a known-groups datalist, the fleet grid groups by label with headings, and
+  editing an agent's name is already part of the same Configure form.
 - [ ] **Mass inform** — select multiple agents (or a whole project / area / manager-family) and attach a
   note that rides the *next* prompt each already receives — **no extra turn, ~free** (Claude SDK
   `shouldQuery:false`; CLI runners buffer + prepend). A third interaction type (`inform`) alongside
