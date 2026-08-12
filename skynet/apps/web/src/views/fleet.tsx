@@ -3,7 +3,7 @@ import type { ProviderId, ProviderInfo, Agent, SecretMeta } from "@skynet/shared
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy } from "../lib/derive";
-import { PrimaryButton } from "../components/empty";
+import { Blocked, PrimaryButton } from "../components/empty";
 
 export function ConfigForm({
   initial,
@@ -428,18 +428,16 @@ export function FleetView({
                     >
                       Duplicate
                     </button>
-                    <button
-                      className="btn btn-ghost btn-retire"
-                      disabled={!!busy}
-                      title={
-                        busy
-                          ? "Finish or reassign its task before retiring"
-                          : "Retire this agent"
-                      }
-                      onClick={() => deleteAgent(r.id)}
-                    >
-                      Retire
-                    </button>
+                    <Blocked disabled={!!busy} reason={busy ? "Finish or reassign its task before retiring." : undefined}>
+                      <button
+                        className="btn btn-ghost btn-retire"
+                        disabled={!!busy}
+                        title={busy ? undefined : "Retire this agent"}
+                        onClick={() => deleteAgent(r.id)}
+                      >
+                        Retire
+                      </button>
+                    </Blocked>
                   </div>
                 </>
               )}
