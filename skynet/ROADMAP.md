@@ -409,8 +409,16 @@ features below are white space.)
 **Easier to use than anyone else:**
 - [ ] **Repo-optional / chat-only mode** — a runner with **no worktree and no merge**; try Skynet in 30s,
   no git literacy. Widens the funnel (also in Considerations).
-- [ ] **Task linter v0 (assistive)** — *pulled forward from v5:* "vague task → touches 3 modules, split into
+- [x] **Task linter v0 (assistive)** — *pulled forward from v5:* "vague task → touches 3 modules, split into
   3?"; "no 'done' defined?". The ease differentiator **nobody has** — lowers the skill floor, not just setup.
+  *(Landed: a background, fire-and-forget consult right after `createTask`/text-editing `updateTask` — same
+  shape as the existing `maybeAutoClone`, never blocks task creation. `task-linter.ts` mirrors
+  `review-verdict.ts`'s discipline: reads a structured `{concerns:[{kind,note}]}` field, never
+  classifies free text; an unreadable reply parses to `[]`, indistinguishable from a genuinely clean
+  task. Cheap by default (`haiku`, `SKYNET_LINT_MODEL` to override). Dismissible via
+  `Task.lint.dismissed`, mirroring the existing `dismissPr` pattern. Verified live against a real
+  model: a vague task ("fix the thing") surfaced two real concerns; a well-scoped one came back
+  clean; dismiss stuck.)*
 - [ ] **Charter-assisted project creation** — creating a project is a short LLM-drafted intake, not a name
   field: goals, non-goals, risks, constraints, definition of done — operator corrects and approves (the
   Charter). Uses the **user's own key** via the existing secret store (one cheap call; metered). The

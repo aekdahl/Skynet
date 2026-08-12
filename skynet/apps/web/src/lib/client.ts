@@ -486,6 +486,9 @@ export function archiveTask(projectId: string, taskId: string, archived = true) 
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
 }
+export function dismissTaskLint(projectId: string, taskId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/lint/dismiss`);
+}
 
 // Features (task grouping)
 export function createFeature(projectId: string, body: { name: string; description?: string; milestoneId?: string | null }) {
