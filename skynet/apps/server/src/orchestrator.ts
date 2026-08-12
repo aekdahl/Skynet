@@ -1011,6 +1011,7 @@ export class Orchestrator {
       branchFromStep: null,
       archived: false,
       pr: null,
+      mergedAt: null,
     };
 
     // Resolve the runner provider first — fail fast (before mutating state) if
@@ -1091,6 +1092,7 @@ export class Orchestrator {
       previewUrl: preview.previewUrl,
       parentId,
       branchFromStep: stepIndex,
+      mergedAt: null, // a fork is a fresh, unmerged run — never inherit the parent's
     };
 
     const provider = await this.getProvider(runner.provider); // fail fast if it can't resolve
@@ -1475,6 +1477,8 @@ export class Orchestrator {
       await this.hub.runLog(runId, "merged, but could not resolve the owning task to mark it done");
     }
     await this.hub.runStatus(runId, "done");
+    const merged = await this.store.getRun(runId);
+    if (merged) await this.hub.upsertRun({ ...merged, mergedAt: now() });
     await this.hub.runCompleted(runId, branch);
     const live = this.live.get(runId);
     if (live) {

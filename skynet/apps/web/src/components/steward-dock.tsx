@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { Markdown } from "./markdown";
+import { DiffView } from "./diff-view";
 
 // Steward as a right-hand dock available on every page. Workspace-wide by default;
 // when a project is in focus (the page you're on) it's the full project assistant
@@ -35,10 +36,18 @@ export function StewardDock({
   focusProjectId,
   focusProjectName,
   onClose,
+  seedText,
+  seedNonce,
 }: {
   focusProjectId: string | null;
   focusProjectName: string | null;
   onClose: () => void;
+  // A caller (e.g. "discuss this task" on a kanban card) can drop text into the
+  // input box from outside the dock — bump `seedNonce` each time `seedText`
+  // should be (re-)applied, since setting the same text twice in a row wouldn't
+  // otherwise re-trigger the effect.
+  seedText?: string;
+  seedNonce?: number;
 }) {
   const { projects, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, updateProject, createFeature, createMilestone, updateFeature } = useStore();
   const [msgs, setMsgs] = useState<Msg[]>(thread);
@@ -50,6 +59,13 @@ export function StewardDock({
   // the project it's now working on (a page focus, when present, always wins).
   const [resolvedId, setResolvedId] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (seedNonce == null) return;
+    setInput(seedText ?? "");
+    inputRef.current?.focus();
+  }, [seedNonce]); // eslint-disable-line react-hooks/exhaustive-deps -- re-apply only on a fresh seed, not every seedText identity change
   const effFocusId = focusProjectId ?? resolvedId;
   const effFocusName = focusProjectName ?? projects.find((p) => p.id === resolvedId)?.name ?? null;
 
@@ -88,6 +104,21 @@ export function StewardDock({
       case "add_milestone": return createMilestone(projectId, a.name ?? "", a.description, a.targetAt ?? undefined);
       case "set_task_feature": return updateTask(projectId, a.taskId!, { featureId: a.featureId ?? null });
       case "set_feature_milestone": return updateFeature(a.featureId!, { milestoneId: a.milestoneId ?? null });
+      case "edit_roadmap":
+        // Not a store entity — the roadmap doc lives in the repo, not the DB — so
+        // this commits straight to the API and lets the Roadmap tab (if mounted)
+        // pick up the change itself via the event below, rather than an optimistic
+        // store update.
+        return api
+          .commitProjectRoadmap(projectId, {
+            path: a.path!,
+            content: a.content!,
+            baselineHash: a.baselineHash!,
+            baselineSha: a.baselineSha,
+          })
+          .then(() => {
+            window.dispatchEvent(new CustomEvent("skynet:roadmap-updated", { detail: { projectId } }));
+          });
       default: {
         // Exhaustiveness guard: every ProjectActionKind Steward can propose MUST
         // have a case here. Without it a confirmed action silently no-ops (the
@@ -241,6 +272,9 @@ export function StewardDock({
                     ) : (
                       <>
                         <span className="asst-propose-label">{pa.action.summary}</span>
+                        {pa.action.kind === "edit_roadmap" && (
+                          <DiffView patch={pa.action.patch ?? ""} add={pa.action.add ?? 0} del={pa.action.del ?? 0} defaultOpen />
+                        )}
                         <span className="asst-propose-actions">
                           <button className="btn btn-primary btn-sm" onClick={() => void resolveAction(i, ai, true)}>Confirm</button>
                           <button className="btn btn-ghost btn-sm" onClick={() => void resolveAction(i, ai, false)}>Dismiss</button>
@@ -257,6 +291,7 @@ export function StewardDock({
       {err && <div className="asst-err">{err}</div>}
       <form className="asst-input" onSubmit={(e) => { e.preventDefault(); void ask(input); }}>
         <input
+          ref={inputRef}
           className="qx-input"
           placeholder={effFocusName ? `Ask about ${effFocusName} or the workspace…` : "Ask Steward about your workspace…"}
           value={input}

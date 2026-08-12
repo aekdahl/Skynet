@@ -31,6 +31,7 @@ import type {
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
+  UpdateProjectRoadmapRequest,
   UpdateRunnerRequest,
   UpdateTaskRequest,
   UpdateWorkspaceSettingsRequest,
@@ -52,6 +53,8 @@ import {
   type ChatTurn,
 } from "./project-assistant.js";
 import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
+import { contentHash, readProjectDoc, readProjectDocFromCandidates, ROADMAP_PATHS } from "./steward/docs.js";
+import { commitLocalRepoFile } from "./local-repo-write.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -73,6 +76,15 @@ export class RunnerBusyError extends Error {
   }
 }
 
+/** A roadmap-doc edit's baseline no longer matches the file on disk/GitHub —
+ *  someone else changed it since this edit was drafted. 409. */
+export class RoadmapConflictError extends Error {
+  constructor() {
+    super("The roadmap doc changed since this edit was drafted — refresh and try again.");
+    this.name = "RoadmapConflictError";
+  }
+}
+
 /** A kanban move that isn't a legal human transition. 400. */
 export class InvalidTransitionError extends Error {
   constructor(from: string, to: string) {
@@ -88,6 +100,14 @@ export class AssignmentRequiredError extends Error {
     this.name = "AssignmentRequiredError";
   }
 }
+
+/** A project's roadmap doc, or why it couldn't be read. */
+export type ProjectRoadmapResult =
+  | { state: "ok"; path: string; content: string; source: "local" | "github"; sha?: string }
+  | { state: "unbound" }
+  | { state: "missing_local_repo" }
+  | { state: "not_found" }
+  | { state: "github_error"; message: string };
 
 // Legal HUMAN kanban moves (the autonomy loop uses its own paths). `ongoing` is
 // run-driven — a human uses Stop on the run, or abandons back to `todo` (which
@@ -956,6 +976,53 @@ export class Operations {
     const tasks = (await this.store.listTasks(ws)).filter((t) => t.milestoneId === mid);
     for (const t of tasks) await this.hub.upsertTask({ ...t, milestoneId: null });
     await this.hub.deleteMilestone(mid);
+  }
+
+  // ── roadmap doc (ROADMAP.md read straight from the project's bound repo) ──
+  async getProjectRoadmap(ws: string, projectId: string): Promise<ProjectRoadmapResult> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath && !project.repo) return { state: "unbound" };
+    if (project.repoPath && !existsSync(project.repoPath)) return { state: "missing_local_repo" };
+    try {
+      const doc = await readProjectDocFromCandidates(ws, project, ROADMAP_PATHS);
+      return doc
+        ? { state: "ok", path: doc.path, content: doc.content, source: doc.source, ...(doc.sha ? { sha: doc.sha } : {}) }
+        : { state: "not_found" };
+    } catch (err) {
+      return { state: "github_error", message: (err as Error).message };
+    }
+  }
+
+  /** Commit a Steward-drafted edit to the project's roadmap doc — only reachable
+   *  after the operator has confirmed the diff in the chat UI. Refuses
+   *  (RoadmapConflictError) if the file changed since the edit was drafted. */
+  async updateProjectRoadmap(ws: string, projectId: string, body: UpdateProjectRoadmapRequest): Promise<ProjectRoadmapResult> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath && !project.repo) throw new Error("This project has no bound repo to commit to.");
+
+    if (project.repoPath) {
+      const current = await readProjectDoc(ws, project, body.path);
+      if (!current || contentHash(current.content) !== body.baselineHash) throw new RoadmapConflictError();
+      await commitLocalRepoFile(project.repoPath, body.path, body.content, current.content, `Skynet: update ${body.path} (Steward)`);
+      return { state: "ok", path: body.path, content: body.content, source: "local" };
+    }
+    if (!body.baselineSha) throw new Error("Missing baseline sha for a GitHub-bound roadmap edit.");
+    // Reuse the ORIGINAL sha (not a refetch) so a concurrent edit trips GitHub's own
+    // atomic sha check in commitRepoFile/provider.putFile instead of silently overwriting it.
+    try {
+      await githubService.commitRepoFile(ws, project.repo!, body.path, body.content, body.baselineSha, `Skynet: update ${body.path} (Steward)`, project.githubCredentialId);
+    } catch (err) {
+      // GitHub's Contents API returns 409/422 specifically for a sha mismatch (the
+      // API has no typed error, only the status embedded in the message — see
+      // github/provider.ts's api()). Anything else is a real failure (auth, network,
+      // rate-limit) and should surface as-is, not be misreported as "someone edited it".
+      const msg = (err as Error).message;
+      if (/→ (409|422):/.test(msg)) throw new RoadmapConflictError();
+      throw err;
+    }
+    return { state: "ok", path: body.path, content: body.content, source: "github" };
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────

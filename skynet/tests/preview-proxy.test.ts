@@ -85,6 +85,12 @@ describe("rewriteJsImports", () => {
     const js = `import "./rel.js"\nimport "http://cdn.example.com/x.js"\nimport "/p/abc123/already.js"`;
     expect(rewriteJsImports(js, P)).toBe(js);
   });
+  it("re-prefixes new URL(\"/…\", import.meta.url) — Vite's transform for a worker/asset URL (e.g. pdfjs-dist's pdf.worker)", () => {
+    const js = `const w = new URL("/@fs/data/worktrees/preview/node_modules/pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url)`;
+    expect(rewriteJsImports(js, P)).toBe(
+      `const w = new URL("/p/abc123/@fs/data/worktrees/preview/node_modules/pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url)`,
+    );
+  });
 });
 
 describe("public origin learning", () => {

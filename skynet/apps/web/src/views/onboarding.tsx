@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 import type { ProviderInfo } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { operatorHandle, setOnboarded, setOperatorHandle, setWorkspaceName, workspaceName } from "../lib/firstrun";
+import { operatorHandle, setOnboarded, setOperatorHandle } from "../lib/firstrun";
 import { PrimaryButton } from "../components/empty";
 
 const STEPS = ["Workspace", "Module map", "Fleet"];
@@ -37,8 +37,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const store = useStore();
   const [step, setStep] = useState(0);
   // Prefill from anything a previous setup already saved, so re-running the
-  // wizard shows the current values rather than blank fields.
-  const [workspace, setWorkspace] = useState(() => workspaceName());
+  // wizard shows the current values rather than blank fields. The name comes
+  // from the server (workspaceSettings), not localStorage, so it's the same
+  // value on every profile/machine signed into this workspace.
+  const [workspace, setWorkspace] = useState(() => store.workspaceSettings?.name ?? "");
   const [operator, setOperator] = useState(() => operatorHandle());
   // The fleet to stand up: one row per agent (provider + model). Multiple rows
   // may share a provider on different models. Seeded with one row on the first
@@ -69,7 +71,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const finish = async () => {
     setBusy(true);
     try {
-      setWorkspaceName(workspace.trim());
+      await store.updateWorkspaceName(workspace.trim());
       setOperatorHandle(operator.trim());
       // Stand up the fleet: one runner per row. Names are auto-assigned
       // server-side (<provider>-<name>); the operator renames later in Fleet.

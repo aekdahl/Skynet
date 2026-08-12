@@ -204,7 +204,8 @@ kbd {
 .proj-stat-lbl { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .proj-stat-val { font-size: 13.5px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 /* Kanban / Timeline lens toggle above the board (mirrors Home's .lens-switch). */
-.projview-lens { display: flex; margin: 6px 0 10px; }
+.projview-lens { display: flex; gap: 10px; margin: 6px 0 10px; }
+.lens-switch-sub .lens-btn { padding: 7px 12px; font-size: 12px; }
 .projview-timeline { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 10px 12px; }
 .projview .panel-head { margin-bottom: 0; }
 .pa-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: var(--sp); }
@@ -832,6 +833,7 @@ button.ct-seg { cursor: pointer; }
 .kb-head-active { color: var(--ok); }
 .kb-head-done { color: var(--muted); }
 .kb-empty { font-size: 12px; color: var(--muted); padding: 10px 2px; }
+.kb-empty .btn-sm { margin-left: 8px; vertical-align: middle; }
 .kb-card {
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   padding: 13px 15px; display: flex; flex-direction: column; gap: 8px;
@@ -927,7 +929,7 @@ button.kb-done:hover { opacity: 1; }
 .kb-move:hover:not(:disabled) { border-color: var(--border); }
 .kb-move:disabled { color: var(--faint); cursor: not-allowed; }
 .kb-move-primary { color: var(--accent); border-color: color-mix(in oklch, var(--accent), transparent 55%); }
-/* Assign → is the card's primary call-to-action: a faint accent fill lifts it
+/* Start → is the card's primary call-to-action: a faint accent fill lifts it
    above the neutral controls it sits beside without shouting. */
 .kb-assign { font-weight: 500; background: color-mix(in oklch, var(--accent), transparent 90%); }
 .kb-assign:hover:not(:disabled) { background: color-mix(in oklch, var(--accent), transparent 82%); border-color: color-mix(in oklch, var(--accent), transparent 40%); }
@@ -964,25 +966,45 @@ button.kb-done:hover { opacity: 1; }
   border: 1px solid var(--line-soft); background: var(--raised);
   font-variant-numeric: tabular-nums;
 }
-.proj-autonomy { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); cursor: pointer; margin-right: 4px; }
+/* Every header-toolbar pill (Autonomy, Approvals, GitHub account, Keys) shares
+   this one height/border/background — same visual weight as the .btn-styled
+   Preview app / gear / Delete next to them, so the row reads as one toolbar
+   instead of a mix of bare form fields and real buttons. */
+.proj-autonomy {
+  display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--raised);
+  font-size: 12.5px; color: var(--muted); cursor: pointer;
+}
 .proj-autonomy-cb { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .proj-autonomy-switch { position: relative; width: 34px; height: 20px; border-radius: 20px; background: var(--line); flex: none; transition: background 0.15s ease; }
 .proj-autonomy-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform 0.15s ease, background 0.15s ease; }
 .proj-autonomy-cb:checked + .proj-autonomy-switch { background: var(--accent); }
 .proj-autonomy-cb:checked + .proj-autonomy-switch::after { transform: translateX(14px); background: var(--bg); }
 .proj-autonomy-cb:focus-visible + .proj-autonomy-switch { outline: 2px solid var(--accent); outline-offset: 2px; }
-.proj-autonomy-label { font-weight: 500; }
-/* Approval-level selector + standing "always allowed" rules */
-.proj-approval { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-right: 4px; }
+.proj-autonomy-label { font-weight: 500; color: var(--text); white-space: nowrap; }
+/* Approvals already spells out its current setting inline ("Trusted · auto-
+   approve low + medium-risk COMMANDS"); a bare "Autonomy" toggle next to that
+   reads as a second, redundant auto-approve switch. This says what it's
+   actually for — starting/reviewing work on its own — a different axis. */
+.proj-autonomy-sub { font-weight: 400; color: var(--muted); margin-left: 4px; }
+/* Approval-level selector + standing "always allowed" rules — same pill as
+   .proj-autonomy above; the <select> inside goes borderless/transparent so it
+   sits flush in the pill instead of drawing a second nested border. */
+.proj-approval {
+  display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--raised);
+  font-size: 12.5px; color: var(--muted);
+}
 .proj-approval-label { font-size: 11px; color: var(--muted); letter-spacing: 0.03em; }
-.proj-approval-select { font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; }
+.proj-approval-select { font-size: 12px; padding: 0; border: none; background: none; color: var(--ink); cursor: pointer; }
 /* Full autonomy is live: the diff-review gate is unattended — flag it, don't
    let it blend in with the other (always human-gated-somewhere) levels. */
+.proj-approval-danger { border-color: color-mix(in oklch, var(--danger), transparent 40%); }
 .proj-approval-danger .proj-approval-label { color: var(--danger); font-weight: 600; }
-.proj-approval-danger .proj-approval-select { border-color: color-mix(in oklch, var(--danger), transparent 40%); color: var(--danger); }
+.proj-approval-danger .proj-approval-select { color: var(--danger); }
 /* Project runner-key confinement — a compact <details> popover in the header. */
 .proj-keys { position: relative; }
-.proj-keys-summary { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; list-style: none; }
+.proj-keys-summary { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; box-sizing: border-box; font-size: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; list-style: none; }
 .proj-keys-summary::-webkit-details-marker { display: none; }
 .proj-keys-value { color: var(--muted); }
 .proj-keys[open] .proj-keys-summary { border-color: var(--accent); }
@@ -1440,19 +1462,24 @@ button.kb-done:hover { opacity: 1; }
 .proj-new-form { display: flex; flex-direction: column; gap: 10px; align-items: stretch; cursor: default; }
 
 /* ===== project edit / delete ===== */
-.projview-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 20px; flex-wrap: wrap; }
-/* Grow to fill, but never shrink below a readable width — otherwise a crowded
-   tools row would collapse the title/goal to one word per line. */
-.projview-head-main { flex: 1 1 300px; min-width: min(300px, 100%); }
-/* Let the controls wrap onto multiple lines (right-aligned) instead of squeezing
-   the title column. */
-.projview-head-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+/* Stacked, not side-by-side: a short title/goal next to a wide right-aligned
+   toolbar used to leave a huge dead gap between them at anything wider than a
+   laptop. A title block, then one full-width toolbar row beneath it, reads as
+   a coherent header at any width. */
+.projview-head { display: flex; flex-direction: column; gap: 14px; }
+.projview-head-main { max-width: 720px; }
+/* Every control in this row — Approvals, Autonomy, GitHub account, Keys,
+   Preview app, the gear, Delete — shares one pill height/border/background
+   (see .proj-approval / .proj-keys-summary / .btn) so the row reads as one
+   toolbar of same-weight controls, not a mix of bare form fields and buttons. */
+.projview-head-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .projview-edit { display: flex; flex-direction: column; gap: 10px; }
 .projview-edit .qx-input:first-of-type { font-size: 18px; font-weight: 600; }
 /* A single setting inside the project settings panel: label above its control. */
 .projview-setting { display: flex; flex-direction: column; gap: 6px; }
-/* The header's gear button opens the settings panel (was a text "Edit"). */
-.proj-config-btn { font-size: 15px; line-height: 1; padding: 5px 10px; }
+/* The header's gear button opens the settings panel — a square icon button at
+   the same height as the rest of the toolbar row. */
+.proj-config-btn { width: 36px; height: 36px; padding: 0; justify-content: center; font-size: 15px; line-height: 1; }
 .del-confirm { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--danger); }
 
 /* ===== backlog CRUD ===== */
@@ -1506,7 +1533,8 @@ button.fleet-task-link:hover { background: var(--hover, var(--raised)); border-c
 .fleet-task-link .fleet-task-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fleet-task-link .fleet-task-cta { flex: none; font-size: 11px; color: var(--muted, var(--faint)); opacity: 0; transition: opacity 0.12s; }
 button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
-.fleet-actions { display: flex; gap: 8px; border-top: 1px solid var(--line-soft); padding-top: 11px; }
+.fleet-actions { display: flex; flex-wrap: wrap; gap: 6px 8px; border-top: 1px solid var(--line-soft); padding-top: 11px; }
+.fleet-actions .btn { padding: 6px 10px; font-size: 12px; min-height: 30px; }
 /* Reviewer-eligibility toggle: lit when on, dimmed/struck when off. */
 .fleet-reviewer.off { opacity: 0.55; text-decoration: line-through; }
 /* Clickable card header → opens the agent detail view. */
@@ -1643,8 +1671,12 @@ button.rb-stat:hover .rb-v { color: var(--accent); }
 .rb-done .rb-v { color: var(--ok); }
 .rb-idle .rb-k { color: var(--accent); }
 
+/* Agent is a flexible fr, not a fixed px — real agent names ("runner-ms3k46b8-1")
+   run longer than the placeholder ones a first pass gets tested against, and
+   Status never needs the room a wide fr column gives it (its longest values
+   are still one short word/phrase, e.g. "diff review"). */
 .rb-table {
-  display: grid; grid-template-columns: 1.7fr 1fr 130px 1.3fr 110px;
+  display: grid; grid-template-columns: 1.5fr 0.85fr 1fr 140px 100px;
   column-gap: 14px; font-size: 12.5px;
 }
 .rb-hcell { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); padding-bottom: 8px; border-bottom: 1px solid var(--line); }
@@ -1657,7 +1689,11 @@ button.rb-cell:hover { color: var(--accent); }
 .rb-task, .rb-proj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rb-proj { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
 button.rb-proj:hover { color: var(--accent); }
-.rb-pill { font-family: var(--font-mono); font-size: 11px; color: var(--text); background: var(--raised-2, var(--raised)); border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; cursor: pointer; }
+.rb-pill {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text); background: var(--raised-2, var(--raised));
+  border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; cursor: pointer;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .rb-pill:hover { border-color: var(--accent); color: var(--accent); }
 .rb-off { color: var(--faint); }
 .rb-time { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
@@ -2330,6 +2366,23 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .tag { font-size: 10.5px; padding: 1px 7px; border-radius: 20px; font-family: var(--font-mono); flex: none; }
 .tag-ship { color: var(--ok); border: 1px solid color-mix(in oklch, var(--ok), transparent 62%); }
 .tag-pause { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn), transparent 62%); }
+
+/* ── Project Roadmap tab: ROADMAP.md read straight from the repo ─────────── */
+.prd-source { font-size: 11px; color: var(--faint); margin-bottom: 14px; }
+.prd-lead { margin-bottom: 4px; }
+.prd-spine { display: flex; flex-direction: column; }
+.prd-phase { border-top: 1px solid var(--line-soft); }
+.prd-phase:first-child { border-top: none; }
+.prd-phase-summary { width: 100%; display: flex; align-items: center; gap: 12px; padding: 14px 4px; background: none; border: none; cursor: pointer; text-align: left; font: inherit; color: inherit; }
+.prd-phase-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.prd-phase-caret { flex: none; font-size: 10px; color: var(--faint); width: 12px; }
+.prd-phase-title { font-size: 14px; font-weight: 600; flex: 1; min-width: 0; }
+.prd-phase-summary:hover .prd-phase-title { color: var(--accent); }
+.prd-phase-summary:hover .prd-phase-caret { color: var(--accent); }
+.prd-phase-shipped .prd-phase-title { color: var(--muted); }
+.prd-phase-pill { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent), transparent 55%); background: color-mix(in oklch, var(--accent), transparent 88%); border-radius: 999px; padding: 2px 8px; flex: none; }
+.prd-phase-frac { flex: none; font-size: 11px; color: var(--faint); }
+.prd-phase-body { padding: 0 4px 20px 46px; }
 
 /* ── Roadmap: milestone columns on a time track ──────────────────────────── */
 .rm-track { display: flex; gap: 14px; overflow-x: auto; padding: 8px 2px 12px; align-items: stretch; }
