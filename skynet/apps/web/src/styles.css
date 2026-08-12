@@ -929,7 +929,7 @@ button.kb-done:hover { opacity: 1; }
 .kb-move:hover:not(:disabled) { border-color: var(--border); }
 .kb-move:disabled { color: var(--faint); cursor: not-allowed; }
 .kb-move-primary { color: var(--accent); border-color: color-mix(in oklch, var(--accent), transparent 55%); }
-/* Assign → is the card's primary call-to-action: a faint accent fill lifts it
+/* Start → is the card's primary call-to-action: a faint accent fill lifts it
    above the neutral controls it sits beside without shouting. */
 .kb-assign { font-weight: 500; background: color-mix(in oklch, var(--accent), transparent 90%); }
 .kb-assign:hover:not(:disabled) { background: color-mix(in oklch, var(--accent), transparent 82%); border-color: color-mix(in oklch, var(--accent), transparent 40%); }
