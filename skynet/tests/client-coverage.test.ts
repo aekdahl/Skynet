@@ -43,6 +43,11 @@ const ALLOW = new Set<string>([
   // store (master key), so no offline journey; the route is guarded server-side
   // and the set/delete-by-id paths it shares ARE journey-covered.
   "createCredential",
+  // live-verify a credential against its real vendor API (Anthropic/OpenAI/
+  // Google/Cursor/GitHub/OpenRouter) — needs a real key AND makes a genuine
+  // outbound call, so it can't run in an offline journey; covered server-side
+  // by secrets-verify.test.ts (mocked fetch, both the ok and failing paths).
+  "verifyCredential",
   // streaming variant of sendAgentMessage (which IS journey-covered) — same
   // chat surface, just delta-rendered; no separate journey needed.
   "streamAgentMessage",

@@ -1263,6 +1263,35 @@ export const JOURNEYS: Journey[] = [
       return steps;
     },
   },
+  {
+    id: "project-roadmap-doc",
+    name: "Project roadmap doc reads + guards a stale write",
+    desc: "The Roadmap tab reads ROADMAP.md straight from the project's bound repo; Steward's commit path refuses to write when it can't re-read the doc to diff against. Deterministic — no real repo checkout needed.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: roadmap ${tag}`;
+      // Bound to a local folder that never gets created on disk, so both calls
+      // below hit real, deterministic guard clauses server-side — no fixture repo needed.
+      await api.createProject({ name: pname, goal: "simulated roadmap doc", repoPath: `/tmp/skynet-sim/${tag}` });
+      const s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      steps.push(step("project created, bound to a local folder", !!p, p?.id));
+      if (!p) return steps;
+
+      const doc = await api.fetchProjectRoadmap(p.id);
+      steps.push(step("fetch on a missing local checkout → missing_local_repo", doc.state === "missing_local_repo", doc.state));
+
+      try {
+        await api.commitProjectRoadmap(p.id, { path: "ROADMAP.md", content: "# x", baselineHash: "deadbeef" });
+        steps.push(step("commit against an unreadable doc is refused", false, "commit unexpectedly succeeded"));
+      } catch (e) {
+        const conflict = e instanceof api.ApiError && e.status === 409;
+        steps.push(step("commit against an unreadable doc is refused (409)", conflict, (e as Error).message));
+      }
+      return steps;
+    },
+  },
 ];
 
 /**

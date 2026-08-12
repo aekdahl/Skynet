@@ -3,7 +3,7 @@
 // linked GitHub issue. Pinning it keeps the write-back predictable without a
 // live GitHub. See docs/task-source-sync.md.
 import { describe, it, expect } from "vitest";
-import { githubIssuePlan } from "../apps/server/src/task-sync.js";
+import { githubIssuePlan, stageLabelFor } from "../apps/server/src/task-sync.js";
 
 describe("githubIssuePlan", () => {
   it("→ done closes the issue with a comment", () => {
@@ -32,5 +32,19 @@ describe("githubIssuePlan", () => {
 
   it("a no-op (same state) does nothing", () => {
     expect(githubIssuePlan("done", "done")).toEqual({});
+  });
+});
+
+describe("stageLabelFor", () => {
+  it("mirrors the four kanban stages the roadmap calls out", () => {
+    expect(stageLabelFor("triage")).toBe("skynet:triage");
+    expect(stageLabelFor("ongoing")).toBe("skynet:ongoing");
+    expect(stageLabelFor("review")).toBe("skynet:review");
+    expect(stageLabelFor("done")).toBe("skynet:done");
+  });
+
+  it("has no stage label for backlog/todo", () => {
+    expect(stageLabelFor("backlog")).toBeNull();
+    expect(stageLabelFor("todo")).toBeNull();
   });
 });

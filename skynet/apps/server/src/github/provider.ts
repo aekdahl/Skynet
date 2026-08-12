@@ -181,6 +181,17 @@ export class GitHubProvider implements GitProvider {
     await this.api(token, "PATCH", `/repos/${repo}/issues/${number}`, { state });
   }
 
+  async getIssueLabels(token: string, repo: string, number: number): Promise<string[]> {
+    const issue = await this.api<{ labels: Array<string | { name: string }> }>(token, "GET", `/repos/${repo}/issues/${number}`);
+    return issue.labels.map((l) => (typeof l === "string" ? l : l.name));
+  }
+
+  async setIssueLabels(token: string, repo: string, number: number, labels: string[]): Promise<void> {
+    // Replace-all — GitHub auto-creates any label name that doesn't exist yet
+    // on the repo, so no separate label-creation call is needed.
+    await this.api(token, "PUT", `/repos/${repo}/issues/${number}/labels`, { labels });
+  }
+
   async getFile(token: string, repo: string, path: string): Promise<{ content: string; sha: string } | null> {
     try {
       const r = await this.api<{ content?: string; encoding?: string; sha: string }>(

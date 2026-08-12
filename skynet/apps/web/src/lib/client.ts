@@ -5,6 +5,7 @@ import {
   WsMessage,
   type TaskRun,
   type TaskAssignment,
+  type ProviderId,
   type GithubInstallation,
   type GithubOwner,
   type GithubRepo,
@@ -14,6 +15,7 @@ import {
   type Project,
   type WorkspaceSettings,
   type UpdateWorkspaceSettingsRequest,
+  type VerifyCredentialResult,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 
@@ -330,6 +332,12 @@ export function deleteSecret(id: string) {
 export function createCredential(provider: string, name: string, apiKey: string) {
   return req<{ secret: SecretMeta }>("POST", "/api/credentials", { provider, name, apiKey });
 }
+// Live-verify a credential's key against its vendor — a real, cheap call
+// (never a generation) confirming it actually authenticates. Never blocks the
+// save that already happened; this is UI feedback only.
+export function verifyCredential(id: string) {
+  return req<VerifyCredentialResult>("POST", `/api/credentials/${id}/verify`);
+}
 
 // ─── Service tokens (MCP / programmatic access) ────────────────────────────
 // Scoped API tokens for runs driving Skynet over MCP. The raw token is
@@ -461,6 +469,9 @@ export function updateTask(
     // Grouping — null clears the linkage.
     featureId?: string | null;
     milestoneId?: string | null;
+    // Start-picker preference — null clears it back to plain auto-pick.
+    preferredProvider?: ProviderId | null;
+    preferredModel?: string | null;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${projectId}/tasks/${taskId}`, body);

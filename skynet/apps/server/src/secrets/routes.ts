@@ -6,6 +6,9 @@
 // /api onRequest hook (req.principal).
 //
 // The raw key only appears in a request body; it is never logged or echoed.
+// The one exception to "write-only" is /verify: it uses the stored key for a
+// single outbound call to the vendor and returns only {ok, message} — never
+// the key itself (see secrets/verify.ts).
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { CreateCredentialRequest, SetSecretRequest } from "@skynet/shared";
@@ -67,6 +70,23 @@ export async function registerSecretsRoutes(app: FastifyInstance): Promise<void>
     async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       await secretService.delete(req.principal!.workspaceId, req.params.id);
       return reply.code(204).send();
+    },
+  );
+
+  // Live-verify a credential's key against its vendor (a real, cheap call —
+  // never a generation). Never gates the save that already happened; this is
+  // feedback only, so a failed verify still returns 200 with {ok: false}.
+  app.post<{ Params: { id: string } }>(
+    "/api/credentials/:id/verify",
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { workspaceId } = req.principal!;
+      try {
+        return reply.code(200).send(await secretService.verify(workspaceId, req.params.id));
+      } catch (err) {
+        if (err instanceof SecretsDisabledError) return reply.code(501).send({ error: err.message });
+        if (err instanceof UnknownCredentialError) return reply.code(404).send({ error: err.message });
+        throw err;
+      }
     },
   );
 }
