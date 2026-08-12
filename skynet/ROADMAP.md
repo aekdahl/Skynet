@@ -306,11 +306,11 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     `approve-with-rule` still to do.*
   - Secrets at rest (local); 🏢 **observability** (hosted metrics/logging/tracing) + SIEM export of the audit.
 - [ ] **Runner session-map cleanup** — `ClaudeRunnerProvider.sessions` (agentId→sessionId, kept for fork resume) grows one entry per agent for the server-process lifetime. Evict on agent completion (retain only entries an active fork could resume). Small RAM/tech-debt fix; no behavior change.
-- [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs).* Still to do:
+- [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs) + token-by-token streaming for Claude (`includePartialMessages` → a bus-only `run.log.delta` event, never persisted per-token → live "typing" in the run log, same finalized `run.log` write as before).* Still to do:
   - **Plan-mode gate (Claude)** — expose `permissionMode: "plan"` as a per-project/runner policy so the agent proposes a plan and `ExitPlanMode` becomes a `plan` HITL approved *before* any writes. Best fit for Skynet's HITL model; native to the Agent SDK.
   - **Per-runner tool + prompt policy** — surface `allowedTools`/`disallowedTools`, a project system prompt, and `settingSources` (CLAUDE.md) instead of the hardcoded auto-allow set + inline steering. Ties into v4 repo-native memory.
   - **Structured diffs in gates/review** — populate `HitlRaise.diff` from Codex/Cursor patch events and `git diff` in the worktree, so approvals show a real diff, not reconstructed text.
-  - **Token-by-token streaming** — Claude `includePartialMessages` / CLI NDJSON deltas → live "typing" in the log instead of whole-message chunks.
+  - **Token-by-token streaming for the CLI runners** — Codex/Gemini/Cursor/Copilot NDJSON deltas → the same `run.log.delta` live-typing path Claude now has.
   - **CLI usage fidelity** — Codex/Gemini/Cursor usage is parsed best-effort today; Copilot emits none (text-only). Firm these up as each vendor's structured output stabilizes.
 - [~] **Review upgrades (adopted from the competitor sweep):**
   - **Agent-authored diff walkthrough** — the run drafts a plain-English summary + inline comments grounded on

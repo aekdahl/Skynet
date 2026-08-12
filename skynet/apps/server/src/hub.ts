@@ -74,6 +74,16 @@ export class Hub {
     if (ws) this.bus.publish(ws, { type: "run.log", runId, at, line, detail });
   }
 
+  /** Token-level "typing" delta — bus-only, deliberately no store.appendLog.
+   *  Called once per streamed chunk (far more often than runLog), so a store
+   *  write here would multiply DB writes per run by the token count. The
+   *  finalized line still gets exactly one appendLog via runLog() above once
+   *  the message completes — this is a live preview, not a second record. */
+  async runLogDelta(runId: string, delta: string): Promise<void> {
+    const ws = await this.wsOf(runId);
+    if (ws) this.bus.publish(ws, { type: "run.log.delta", runId, delta });
+  }
+
   async runProgress(runId: string, progress: number, plan: PlanStep[]): Promise<void> {
     const a = await this.store.getRun(runId);
     if (!a) return;
