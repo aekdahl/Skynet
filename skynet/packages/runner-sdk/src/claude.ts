@@ -149,6 +149,19 @@ export function buildRunnerEnv(): Record<string, string> {
   return env;
 }
 
+// Anthropic streaming: content_block_delta → { delta: { type:"text_delta", text } }.
+// Requires `includePartialMessages: true` in the query options, else the SDK
+// never emits `stream_event` messages at all. Shared by every place that reads
+// token-level deltas — the one-shot streaming helpers below AND the live
+// ClaudeRunnerHandle.drain() loop — so the extraction is proven in one place.
+function textDeltaOf(msg: SDKMessage): string | null {
+  if (msg.type !== "stream_event") return null;
+  const ev = (msg as { event?: { type?: string; delta?: { type?: string; text?: string } } }).event;
+  return ev?.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text
+    ? ev.delta.text
+    : null;
+}
+
 /**
  * Yield an SDK query's answer as text deltas. With `includePartialMessages` the
  * SDK emits `stream_event`s carrying token-level `text_delta`s — we yield those
@@ -161,13 +174,10 @@ async function* streamQueryText(q: AsyncIterable<SDKMessage>): AsyncGenerator<st
   let emitted = "";
   try {
     for await (const msg of q) {
-      if (msg.type === "stream_event") {
-        // Anthropic streaming: content_block_delta → { delta: { type:"text_delta", text } }.
-        const ev = (msg as { event?: { type?: string; delta?: { type?: string; text?: string } } }).event;
-        if (ev?.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
-          emitted += ev.delta.text;
-          yield ev.delta.text;
-        }
+      const delta = textDeltaOf(msg);
+      if (delta) {
+        emitted += delta;
+        yield delta;
       } else if (msg.type === "assistant") {
         // Safety net: emit any final text the partial stream didn't already cover.
         // (A tool-using assistant emits a fresh text block per turn; only the
@@ -742,6 +752,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // Scrubbed env (drops the nested-session OAuth path); a per-workspace key
       // (orchestrator-injected) overrides ANTHROPIC_API_KEY for this session only.
       env: this.sdkEnv,
+      // Token-level `stream_event`s (textDeltaOf, drain() below) — without this
+      // the SDK only ever emits whole `assistant` messages and the log jumps in
+      // full-paragraph chunks instead of typing live.
+      includePartialMessages: true,
       // Opt-in real browser (Playwright/Chrome MCP). Omitted unless the workspace
       // enabled it; its tools gate through canUseTool like any other non-read tool.
       ...(spec.browser ? { mcpServers: browserMcpServers(true) } : {}),
@@ -943,6 +957,12 @@ class ClaudeRunnerHandle implements RunnerHandle {
         if (msg.type === "system" && "session_id" in msg && typeof msg.session_id === "string") {
           this.sessionId = msg.session_id; // captured for resume-on-retry
           this.onSession(this.runId, msg.session_id);
+        } else if (msg.type === "stream_event") {
+          // Live "typing" only — never persisted itself. The complete text still
+          // lands exactly once via the `assistant` branch below (onLog/onChatReply),
+          // same as before includePartialMessages; this just previews it early.
+          const delta = textDeltaOf(msg);
+          if (delta) this.events.onLogDelta?.(this.runId, delta);
         } else if (msg.type === "assistant") {
           const { text, tools } = readAssistant((msg as { message: { content?: unknown } }).message);
           if (text) {

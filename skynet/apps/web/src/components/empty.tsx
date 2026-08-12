@@ -30,10 +30,34 @@ export function EmptyState({
 }
 
 // ─── Blocked-CTA pattern ─────────────────────────────────────────────────────
-// A primary button that, when blocked, stays visually solid-but-inert and shows
-// its reason directly beneath at readable contrast — never a dim-amber button
-// with a faint hint parked somewhere else. Pass `reason` describing what's
-// missing; it renders only while `disabled` is true.
+// Wrap any button in this and, when blocked, its reason renders directly
+// beneath at readable contrast — never a dim button with a faint hint parked
+// somewhere else (a hover-only `title` doesn't count: it's invisible until you
+// happen to hover). Pass `reason` describing what's missing; it renders only
+// while `disabled` is true. Shared by every button style (primary/ghost/danger)
+// so the reason markup is never hand-duplicated at a call site.
+export function Blocked({
+  disabled,
+  reason,
+  align = "start",
+  children,
+}: {
+  disabled?: boolean;
+  reason?: string;
+  align?: "start" | "end" | "center";
+  children: ReactNode;
+}) {
+  return (
+    <div className={"pb-wrap pb-" + align}>
+      {children}
+      {disabled && reason && <div className="btn-reason">{reason}</div>}
+    </div>
+  );
+}
+
+// The primary (amber) CTA — the common case of `Blocked` wrapping a
+// `btn btn-primary`. Non-primary blocked buttons (ghost, danger/Retire, etc.)
+// use `Blocked` directly around their own `<button>`.
 export function PrimaryButton({
   disabled,
   reason,
@@ -50,7 +74,7 @@ export function PrimaryButton({
   align?: "start" | "end" | "center";
 }) {
   return (
-    <div className={"pb-wrap pb-" + align}>
+    <Blocked disabled={disabled} reason={reason} align={align}>
       <button
         className={"btn btn-primary" + (className ? " " + className : "")}
         disabled={disabled}
@@ -58,7 +82,6 @@ export function PrimaryButton({
       >
         {children}
       </button>
-      {disabled && reason && <div className="btn-reason">{reason}</div>}
-    </div>
+    </Blocked>
   );
 }
