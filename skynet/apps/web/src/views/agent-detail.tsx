@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useStore } from "../lib/store";
 import { fmtWait, providerInfo, runnerIdleLabel, runnerIsBusy, STATUS_META } from "../lib/derive";
 import { StatusDot } from "../components/common";
+import { Blocked } from "../components/empty";
 import { ConfigForm } from "./fleet";
 
 // Detail view for one fleet AGENT (a configured runner) — its identity, a stats
@@ -79,17 +80,19 @@ export function AgentDetailView({
           <button className="btn btn-ghost" onClick={() => setEditing((e) => !e)}>
             {editing ? "Cancel" : "Configure"}
           </button>
-          <button
-            className="btn btn-ghost btn-retire"
-            disabled={isBusy}
-            title={isBusy ? "Finish or reassign its task before retiring" : "Retire this agent"}
-            onClick={() => {
-              deleteAgent(agent.id);
-              onBack();
-            }}
-          >
-            Retire
-          </button>
+          <Blocked disabled={isBusy} reason={isBusy ? "Finish or reassign its task before retiring." : undefined}>
+            <button
+              className="btn btn-ghost btn-retire"
+              disabled={isBusy}
+              title={isBusy ? undefined : "Retire this agent"}
+              onClick={() => {
+                deleteAgent(agent.id);
+                onBack();
+              }}
+            >
+              Retire
+            </button>
+          </Blocked>
         </div>
       </header>
 

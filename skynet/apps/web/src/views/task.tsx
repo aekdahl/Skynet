@@ -15,6 +15,7 @@ import {
   waitedSecs,
 } from "../lib/derive";
 import { StatusDot } from "../components/common";
+import { Blocked } from "../components/empty";
 import { useConfirm } from "../components/confirm";
 import { Markdown } from "../components/markdown";
 import { HitlContext, RiskChip } from "../components/hitl-context";
@@ -102,6 +103,7 @@ export function TaskDetail({
     resumeAgent,
     stopAgent,
     archiveAgent,
+    logDeltas,
   } = useStore();
   const confirm = useConfirm();
   const q = openQueue(queue).find((it) => it.runId === agent.id);
@@ -136,6 +138,11 @@ export function TaskDetail({
   // In-flight assistant reply for the chat path — streamed here so it types in
   // live, then dropped once the persisted `↳` line lands in the log (below).
   const [streaming, setStreaming] = useState<string | null>(null);
+  // Token-level "typing" preview of whatever the agent is currently generating
+  // (its own narration, a tool-call rationale, …) — server-pushed via
+  // `run.log.delta`, held in the store keyed by runId. Empty string (the
+  // reducer's clear-on-flush value) reads the same as absent.
+  const delta = logDeltas[agent.id] || null;
   const logRef = useRef<HTMLDivElement>(null);
 
   const conflictMods = conflictModulesForAgent(agent, runs);
@@ -145,7 +152,7 @@ export function TaskDetail({
   // Keep the conversation pinned to the newest entry as it grows / streams.
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
-  }, [agent.log, streaming]);
+  }, [agent.log, streaming, delta]);
 
   // Once the streamed reply is persisted to the log, drop the transient bubble
   // so it isn't shown twice.
@@ -210,18 +217,16 @@ export function TaskDetail({
             {STATUS_META[agent.status].label}
           </span>
           <div className="detail-actions">
-            <button
-              className="btn btn-ghost btn-icon btn-fork"
-              disabled={fleet.length === 0}
-              title={
-                fleet.length === 0
-                  ? "Configure an agent in Fleet before forking runs."
-                  : "Duplicate this run with the same context to work on something else"
-              }
-              onClick={() => forkAgent(agent.id)}
-            >
-              <span className="btn-gly" aria-hidden="true">⑂</span> Fork
-            </button>
+            <Blocked disabled={fleet.length === 0} reason={fleet.length === 0 ? "Configure an agent in Fleet before forking runs." : undefined}>
+              <button
+                className="btn btn-ghost btn-icon btn-fork"
+                disabled={fleet.length === 0}
+                title={fleet.length === 0 ? undefined : "Duplicate this run with the same context to work on something else"}
+                onClick={() => forkAgent(agent.id)}
+              >
+                <span className="btn-gly" aria-hidden="true">⑂</span> Fork
+              </button>
+            </Blocked>
 
             {/* Lifecycle controls */}
             {agent.status === "paused" ? (
@@ -434,7 +439,17 @@ export function TaskDetail({
                   </div>
                 </div>
               )}
-              {agent.status === "running" && streaming == null && <div className="log-line log-cursor">▌</div>}
+              {/* Token-level preview of whatever the agent is generating right now
+                  (narration, tool rationale, …) — same markup as a finalized
+                  marker-less prose line (see looksMarkdown above) so it doesn't
+                  visibly reflow the instant `run.log` lands and replaces it. */}
+              {streaming == null && delta && (
+                <div className="log-prose log-md">
+                  <Markdown text={delta} />
+                  <span className="log-cursor">▌</span>
+                </div>
+              )}
+              {agent.status === "running" && streaming == null && !delta && <div className="log-line log-cursor">▌</div>}
             </div>
 
             {/* The one place to respond: quick decision buttons when the agent is

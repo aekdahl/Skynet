@@ -22,7 +22,7 @@ const project: Project = {
 // the leaving-backlog gate is covered explicitly below with an `unassigned` task.
 const mkTask = (state: Task["state"], assignment: Task["assignment"] = { mode: "any", agentIds: [] }): Task => ({
   id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "x", state,
-  runId: null, autoPick: false, assessment: null, reviewVerdict: null, assignment,
+  runId: null, autoPick: false, assessment: null, reviewVerdict: null, lint: null, assignment,
 });
 
 describe("task transition guard", () => {

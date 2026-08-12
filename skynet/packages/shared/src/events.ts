@@ -66,6 +66,11 @@ export const ServerEvent = z.discriminatedUnion("type", [
   // task-run lifecycle
   z.object({ type: z.literal("run.started"), run: TaskRun }),
   z.object({ type: z.literal("run.log"), runId: z.string(), at: Timestamp, line: z.string(), detail: z.string().optional() }),
+  // Token-level "typing" preview of the line currently being generated — NOT
+  // persisted (no store write, see Hub.runLogDelta): a real `run.log` still
+  // lands once the message is complete. Clients hold this in a transient
+  // per-run buffer and drop it once the matching `run.log` arrives.
+  z.object({ type: z.literal("run.log.delta"), runId: z.string(), delta: z.string() }),
   z.object({
     type: z.literal("run.progress"),
     runId: z.string(),

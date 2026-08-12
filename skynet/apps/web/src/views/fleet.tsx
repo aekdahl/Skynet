@@ -3,7 +3,7 @@ import type { ProviderId, ProviderInfo, Agent, SecretMeta } from "@skynet/shared
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy } from "../lib/derive";
-import { PrimaryButton } from "../components/empty";
+import { Blocked, PrimaryButton } from "../components/empty";
 import { useConfirm } from "../components/confirm";
 
 export function ConfigForm({
@@ -430,28 +430,26 @@ export function FleetView({
                     >
                       Duplicate
                     </button>
-                    <button
-                      className="btn btn-ghost btn-retire"
-                      disabled={!!busy}
-                      title={
-                        busy
-                          ? "Finish or reassign its task before retiring"
-                          : "Retire this agent"
-                      }
-                      onClick={async () => {
-                        if (
-                          await confirm({
-                            title: "Retire this agent?",
-                            body: `“${r.name}” is removed from the fleet — its run history is preserved, but it can't pick up new work.`,
-                            confirmLabel: "Retire",
-                            danger: true,
-                          })
-                        )
-                          deleteAgent(r.id);
-                      }}
-                    >
-                      Retire
-                    </button>
+                    <Blocked disabled={!!busy} reason={busy ? "Finish or reassign its task before retiring." : undefined}>
+                      <button
+                        className="btn btn-ghost btn-retire"
+                        disabled={!!busy}
+                        title={busy ? undefined : "Retire this agent"}
+                        onClick={async () => {
+                          if (
+                            await confirm({
+                              title: "Retire this agent?",
+                              body: `“${r.name}” is removed from the fleet — its run history is preserved, but it can't pick up new work.`,
+                              confirmLabel: "Retire",
+                              danger: true,
+                            })
+                          )
+                            deleteAgent(r.id);
+                        }}
+                      >
+                        Retire
+                      </button>
+                    </Blocked>
                   </div>
                 </>
               )}

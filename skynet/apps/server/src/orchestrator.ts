@@ -343,6 +343,7 @@ export class Orchestrator {
   private events(): RunnerEvents {
     return {
       onLog: (runId, line, detail) => void this.hub.runLog(runId, line, detail),
+      onLogDelta: (runId, delta) => void this.hub.runLogDelta(runId, delta),
       onProgress: (runId, progress, plan) => void this.hub.runProgress(runId, progress, plan),
       onUsage: (runId, usage) => void this.hub.runUsage(runId, usage),
       onHeartbeat: (runId) => void this.hub.runHeartbeat(runId),
