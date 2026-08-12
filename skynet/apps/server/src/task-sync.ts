@@ -27,6 +27,17 @@ export function githubIssuePlan(from: TaskState, to: TaskState): { comment?: str
   return {}; // intermediate moves (backlog↔triage↔todo↔ongoing) don't touch the issue
 }
 
+// The kanban stages the roadmap calls out for label mirroring. backlog/todo are
+// deliberately excluded (same as githubIssuePlan's "intermediate moves don't
+// touch the issue" — there's no `skynet:backlog`/`skynet:todo` label).
+const STAGE_LABEL_STATES: ReadonlySet<TaskState> = new Set(["triage", "ongoing", "review", "done"]);
+
+/** PURE: the `skynet:<stage>` label a task state should carry, or null when the
+ *  state has no stage label (backlog/todo). */
+export function stageLabelFor(state: TaskState): string | null {
+  return STAGE_LABEL_STATES.has(state) ? `skynet:${state}` : null;
+}
+
 export interface SyncDeps {
   store: Store;
   log?: (msg: string) => void;
@@ -56,12 +67,22 @@ async function writeBack(task: Task, from: TaskState, to: TaskState, deps: SyncD
   if (!src) return;
   const cred = project.githubCredentialId; // write under the project's GitHub account
 
-  // Phase 1 — GitHub issue: comment / close / reopen.
+  // Phase 1 — GitHub issue: comment / close / reopen, plus mirror the kanban
+  // stage as a `skynet:<stage>` label (triage/ongoing/review/done).
   if (src.kind === "github_issue") {
     const plan = githubIssuePlan(from, to);
-    if (!plan.comment && !plan.state) return;
+    const label = stageLabelFor(to);
+    if (!plan.comment && !plan.state && !label) return;
     if (plan.comment) await githubService.commentIssue(task.workspaceId, src.repo, src.number, plan.comment, cred);
     if (plan.state) await githubService.setIssueState(task.workspaceId, src.repo, src.number, plan.state, cred);
+    if (label) {
+      // Replace-all label API — read the current set first so a human-added
+      // label (e.g. "bug") survives; only the `skynet:*` slot gets swapped.
+      const current = await githubService.getIssueLabels(task.workspaceId, src.repo, src.number, cred);
+      const next = current.filter((l) => !l.startsWith("skynet:"));
+      next.push(label);
+      await githubService.setIssueLabels(task.workspaceId, src.repo, src.number, next, cred);
+    }
     deps.log?.(`[task-sync] ${src.repo}#${src.number} ← task ${task.id} is now ${to}`);
     return;
   }

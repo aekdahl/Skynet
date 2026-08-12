@@ -179,7 +179,7 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     highest-priority task first instead of array order. (Drag-to-reorder stays the later polish.)
 
 ## v1 — Orchestration completeness & hardening
-- [ ] **⭐ Browser tools for coding agents (MCP)** — *near-term priority.* Equip the Claude runner (then the
+- [~] **⭐ Browser tools for coding agents (MCP)** — *near-term priority.* Equip the Claude runner (then the
   CLI runners) with a Chrome/Playwright **MCP** server so an agent can drive a real browser *within* a
   coding task: reproduce a bug, verify a UI change end-to-end, or read live docs before editing. Wrap,
   don't rebuild — a scoped MCP tool on the existing `runner-sdk` seam, **not** our own browser
@@ -187,7 +187,13 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   other tool. Opt-in per runner/workspace, off by default. Claude first (Agent SDK `mcpServers`), CLI
   runners after. *(Pulls the browser slice of v3's "Tools via MCP" forward — it's the highest-leverage
   tool for the code loop; verification/repro is where it pays off, and it composes with the live-preview
-  pipeline below.)*
+  pipeline below.)* *Landed: the Claude half — `browserMcpServers()` (`runner-sdk/src/claude.ts`) wraps
+  `@playwright/mcp` over stdio, wired into the live query's `mcpServers` when `StartSpec.browser` is set
+  (a per-workspace `browserTools` toggle); tools surface as `mcp__browser__…`, outside the auto-allow set,
+  so every browser action gates through normal HITL approval like any other tool.* Still to do: **CLI
+  runners** (Codex/Gemini/Cursor/Copilot) — `cli-runner.ts` has no MCP wiring at all today, and vendor
+  support varies (several don't support MCP config yet), so this is a per-vendor investigation, not one
+  drop-in change.
 - [ ] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** (+ **OpenCode**, which
   is ubiquitous across the competitor field, and **Kimi Code** — Moonshot AI's terminal coding agent, same
   CLI shape as Claude/Codex/Gemini, [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — then
@@ -306,15 +312,14 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     `approve-with-rule` still to do.*
   - Secrets at rest (local); 🏢 **observability** (hosted metrics/logging/tracing) + SIEM export of the audit.
 - [ ] **Runner session-map cleanup** — `ClaudeRunnerProvider.sessions` (agentId→sessionId, kept for fork resume) grows one entry per agent for the server-process lifetime. Evict on agent completion (retain only entries an active fork could resume). Small RAM/tech-debt fix; no behavior change.
-- [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs) + token-by-token streaming for Claude (`includePartialMessages` → a bus-only `run.log.delta` event, never persisted per-token → live "typing" in the run log, same finalized `run.log` write as before).* Still to do:
+- [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs) + token-by-token streaming for Claude (`includePartialMessages` → a bus-only `run.log.delta` event, never persisted per-token → live "typing" in the run log, same finalized `run.log` write as before). **CLI usage fidelity firmed up** (re-verified against each vendor's CURRENT CLI, not assumed): Codex — fixed a real bug, `usageFromJson` scanned for a flat `usage`/`stats`/`tokens` key but codex-cli 0.147.0's `TokenCountEvent` nests real counts two levels deep (`msg.info.total_token_usage`), so usage was silently never reported; now unwrapped correctly. Gemini — `buildArgs` never actually requested JSON output, so text mode was the ONLY mode ever exercised and usage was never parsed despite the JSON-handling code already existing; now defaults to `--output-format stream-json` (verified against gemini-cli's `StreamJsonFormatter`). Cursor — `--output-format stream-json` confirmed current via `cursor-agent --help`; no bug found, left as-is.*
+  Still to do:
   - **Plan-mode gate (Claude)** — expose `permissionMode: "plan"` as a per-project/runner policy so the agent proposes a plan and `ExitPlanMode` becomes a `plan` HITL approved *before* any writes. Best fit for Skynet's HITL model; native to the Agent SDK.
   - **Per-runner tool + prompt policy** — surface `allowedTools`/`disallowedTools`, a project system prompt, and `settingSources` (CLAUDE.md) instead of the hardcoded auto-allow set + inline steering. Ties into v4 repo-native memory.
-  - **Structured diffs in gates/review** — populate `HitlRaise.diff` from Codex/Cursor patch events and `git diff` in the worktree, so approvals show a real diff, not reconstructed text.
+  - [x] **Structured diffs in gates/review** — shipped: `HitlItem.diff` (stat) is set in `raiseDiffReview` from `WorktreeManager.diffStat`, and the full unified patch is served on-demand by `GET /api/runs/:id/diff` (`orchestrator.ts#runDiff` → `worktrees.ts#patch`, a real `git diff` in the worktree) and rendered by `diff-view.tsx`'s `parseUnifiedDiff`. No vendor-specific patch-event plumbing exists (or is needed) — every runner's changes land in the same worktree, so one `git diff` covers Claude/Codex/Cursor/Gemini/Copilot alike.
   - **Token-by-token streaming for the CLI runners** — Codex/Gemini/Cursor/Copilot NDJSON deltas → the same `run.log.delta` live-typing path Claude now has.
-  - **CLI usage fidelity** — Codex/Gemini/Cursor usage is parsed best-effort today; Copilot emits none (text-only). Firm these up as each vendor's structured output stabilizes.
+  - **Copilot usage/event fidelity** — `copilot` (v1.0.79) turns out to have a machine-readable mode after all (`--output-format json`, JSONL — this was previously undocumented here as text-only, now confirmed live), reporting output tokens + duration per turn, but no input-token count and no USD cost (it meters "premium requests"/AI credits, not $/token — a genuinely different billing model from the others). Adopting it isn't a usage-only change: the Copilot runner's approval-gate detection and tool/log lines are currently parsed from human-readable text, and `--output-format json` replaces ALL output with JSONL, so wiring usage means migrating that whole parser to structured events, not just adding a field extraction. Scoped out of the CLI-usage-fidelity fix as a separate, larger follow-up.
 - [~] **Review upgrades (adopted from the competitor sweep):**
-  - **Agent-authored diff walkthrough** — the run drafts a plain-English summary + inline comments grounded on
-    the real `git diff` *before* you approve (nothing merges until accepted). Upgrades the diff HITL. *(Octomux-style.)*
   - **Verifier gate** — run the project's tests/checks in the worktree and **block the merge on failure** as a
     first-class gate (not just the pre-merge `checkCmd`); auto-commit on green. *(bernstein / MartinLoop-style.)*
   - **Checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks. *(AGX-style.)*
@@ -325,6 +330,12 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     so a reason mentioning "flagged" never false-flags an APPROVE.*
   - *Landed: **`error_max_turns` is resumable** — a run that hits the Claude turn cap parks with the current
     plan + guidance instead of dead-ending; the operator resolves it forward.*
+  - *Landed: **Agent-authored diff walkthrough** — the run's own provider drafts a plain-English summary +
+    file/line-anchored comments grounded on the REAL `git diff` (a stateless `consult`, same pattern as the
+    auto-review verdict — structured JSON read as a field, never prose classification) before the diff HITL
+    raises. Stored on `HitlItem.diff.walkthrough` and rendered above the raw patch in the Inbox/run-detail diff
+    view; a failed/unsupported draft (most CLI runners today have no `consult`) never blocks the gate — the
+    raw diff is always there regardless. *(Octomux-style.)*
 - [ ] **🔬⭐ Guided merge — understand-then-merge, to any branch.** Merging today is a single approve on the
   diff HITL. Make it a **guided experience**: before anything merges, Skynet presents a plain-English **merge
   brief** — what the change *does*, which files/modules it touches, the **risks** (blast radius: writes outside
@@ -355,6 +366,25 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   auto-expiring window (break-glass / sudo-style), then revert to their base role automatically; every
   promotion + expiry is audited. Depends on the read-only role above.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap, additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
+- [ ] 🔗⛓ **Feature-scoped branch hierarchy — branch out from branches.** Today every task's agent branch
+  cuts from the project's single integration branch and merges straight back to it
+  (`MergeEngine.integrationBranch(projectId)` is keyed only by `projectId` — one merge target per
+  project, no sub-grouping). When a Feature has several tasks/subtasks, group their branches under a
+  **feature branch** first — so the whole feature merges there and can be tested/reviewed as a unit —
+  and only that feature branch later merges up into the project base. **Reuses**: the branch-from-branch
+  mechanism already proven by agent `fork()` (`orchestrator.ts` passes a parent run's branch as `baseRef`
+  into `WorktreeProvisioner.provision()`), extended from today's 1-parent→1-child fork to N sibling tasks
+  under one Feature; and live-preview's existing arbitrary-branch pinning (a per-run preview already pins
+  to `ref: opts.branch`, and `latest` mode already octopus-combines several run branches) — a feature
+  branch just becomes another pinnable ref, no new preview plumbing. **New work, concentrated in the merge
+  engine**: a feature-branch naming scheme (e.g. `skynet/feature/${featureId}`); `MergeRequest` keyed by
+  `featureId` for the first-stage merge (today it's `projectId`-only); orchestrator wiring so a task under
+  a Feature passes the feature branch as `baseRef` (today only `fork()` does this, for a single parent);
+  and a human-gated "merge feature branch → project base" step once every task in the Feature is done —
+  reusing the same diff/verifier-gate/auto-review machinery **Guided merge** above already composes, just
+  retargeted to a feature-vs-base diff instead of task-vs-base. A different axis from **Structural
+  agent-hierarchy hooks** just above (that's agent *role* — worker/manager; this is *Feature/task*
+  grouping) — complementary, not dependent.
 
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
@@ -363,7 +393,7 @@ features below are white space.)
 
 **UX/UI to SOTA (pre-release review — high &amp; polish):**
 - [ ] **Text-contrast ramp** (ink / muted / faint, checked ratios — muted currently sits at the reading floor) + a **systematized button/state token set** (primary / ghost / danger, each with explicit hover · focus-visible · disabled · loading).
-- [ ] **Agent picker at Start** + a saved per-task provider/model preference, and always show which agent a run is on — today assignment auto-picks and the fleet premise is invisible.
+- [x] **Agent picker at Start** + a saved per-task provider/model preference, and always show which agent a run is on. "Always show which agent" was already live (the kanban card surfaces the run's actual runner/provider·model once assigned). New: a compact provider (+ optional model) select on backlog/todo cards, right at the Start action — persists onto `Task.preferredProvider`/`preferredModel` via the existing `updateTask` path. It's a SOFT hint, never a hard requirement: `Orchestrator.acquireAgent` tries an idle, usable runner on the saved provider (preferring an exact model match) before falling back to today's plain first-idle pick — a preference with no matching idle runner never blocks Start.
 - [ ] **Structured triage card** (effort pill · full-contrast summary · risks list, not one muted paragraph); **Inbox count badge**; grouped nav (**Operate** / **Configure**).
 - [ ] **Humanized time** + stale-heartbeat styling (no raw "79062s ago"); honest empty-**PLAN** state; **provider identity** (real marks + names, not abstract glyphs).
 - [ ] **Design tokens published** (type scale, 8px rhythm, motion behind `prefers-reduced-motion`, one focus ring, semantic palette kept separate from the accent); **a11y pass** (icon-button labels, visible focus, keyboard walkthrough of assign→decide→merge); explicit **Inbox-first mobile/PWA shell**.
@@ -378,7 +408,15 @@ features below are white space.)
   Charter). Uses the **user's own key** via the existing secret store (one cheap call; metered). The
   Charter is what the auto dev team (v2 north star) later sizes itself from, and what **auto task/milestone
   proposal** plans against. See [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §1.
-- [ ] **Parallelism nudge** — "idle runners + deep backlog → spin up more?" turns the fleet's own state into guidance.
+- [x] **Parallelism nudge** — "idle runners + deep backlog → spin up more?" turns the fleet's own state into
+  guidance. Server-computed (`derive/parallelism.ts`, on the snapshot — not persisted), reusing the exact same
+  eligibility check the autonomy loop's auto-pick already uses (`assignment.mode !== "unassigned"`, so a task
+  no one's set up yet doesn't count as "waiting work"). Threshold: ≥2 idle runners (one idle agent between runs
+  is normal churn, not spare capacity) AND ≥3 eligible backlog/todo tasks (a real queue, not the last couple of
+  items about to be picked up anyway) — deliberately simple, tune later. Surfaces as a dismissible (session-only,
+  not persisted — a fresh load re-checks live state rather than remembering a stale dismissal), accent-toned
+  hint on Home's Runs board, the one place idle-runner count and backlog depth already show together; the CTA
+  reuses the existing Fleet nav entry point, no new fleet-scaling logic.
 - [x] **Task grouping & per-project roadmap** — a level *above* the task board. **Features** group related tasks (⊞ chip on cards; a lens listing each feature's mini 6-column count + progress bar); **milestones** are planned releases per project (◉ chip; a Roadmap lens with target-date badges and rolled-up features/tasks — "in Nd" / "today" / "Nd late"). Same-project scoping is enforced by the server (cross-project links refuse) and by the Steward/Telegram validators. Drove by: "roadmap formed from items in all stages of kanban marked with planned releases + milestones." Steward + Telegram both speak the seven grouping actions (`create_feature`, `set_task_feature`, `archive_feature`, `create_milestone`, `set_feature_milestone`, `set_task_milestone`, `mark_milestone_shipped`) — same confirm-first envelope task actions use.
 - [x] **Per-project agent instructions (house rules)** — a `Project.instructions` markdown field that rides *every* prompt an agent sees on that project (assignTask, forkAgent, review-revise, escalation resume, triage consult, auto-review consult) and Steward's grounding. Motivated by: "build agents in Skynet using a specific subset of packages, pre-written code, and structure" — that's a per-project policy, not a workspace boundary, and it lives on the project record for instant editability. Trims + normalizes empty → null; the read-only header shows a compact "ⓘ Instructions active" chip.
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
@@ -482,24 +520,29 @@ supervision layer, it doesn't host or resell those services.
   *(Agent Orchestrator-style; ties directly to the responders below.)*
 - [ ] **Interop surface (adopted)** — beyond `/mcp`, expose the fleet via an **OpenAI-compatible endpoint + REST**
   so external tools can drive it as a model/service. *(claw-orchestrator-style; broadens who can call Skynet.)*
-- [ ] **⭐ GitHub Issues ↔ tasks (two-way sync).** Read issues from a project's connected repo as Skynet
+- [x] **⭐ GitHub Issues ↔ tasks (two-way sync).** Read issues from a project's connected repo as Skynet
   tasks, work them through the normal loop, and keep the *issue* updated as they progress — the first
   concrete instance of the inbound-trigger + tools-back pattern, specialized for the tracker people
-  already live in. **Proposed approach:**
-  - **Read (issue → task):** an "import issues" action pulls open issues (optionally filtered by
-    label/assignee/query) from the connected repo; each becomes a Task (title→name, body→description,
-    with the issue number + URL kept as a link). Pull-on-demand first; a webhook trigger
-    (issue opened/labeled → task) follows once the inbound-trigger primitive lands.
-  - **Work:** the task runs the standard loop (assign → worktree → diff → PR), with the PR body
-    auto-linked (`Closes #123`) so a merge closes the issue.
-  - **Update as worked (task → issue):** Skynet comments back at lifecycle transitions — work started
-    (which agent + branch), PR opened (link), merged/closed — and optionally mirrors the kanban stage as
-    a label (`skynet:triage|ongoing|review|done`). Every write goes through the existing GitHub **safety
-    policy** + human approval where risky; the operator's own token, nothing resold.
-  - **Reuses:** the GitHub provider's REST client (it already creates/reads PRs — issue read/comment/
-    close is the same client + token), **clone-on-connect** (the repo's local checkout), the Task model +
-    PR flow, and the v3 inbound-trigger for the push path. Supersedes the bare "GitHub issue → PR"
-    candidate below with the full round-trip.
+  already live in. **Landed, in three passes — every piece below is done:**
+  - **Read (issue → task):** an "import issues" action (callable anytime, not just at project creation —
+    `POST /api/projects/:id/import/github-issues`) pulls open issues from the connected repo; each becomes
+    a Task linked back via `Task.source` (issue number + URL). Pull-on-demand only; a webhook trigger
+    (issue opened/labeled → task) still waits on the v3 inbound-trigger primitive.
+  - **Work:** the task runs the standard loop (assign → worktree → diff → PR). *Landed this pass:* the PR
+    body is auto-linked with `Closes #<n>` (`orchestrator.ts`'s `openPrForRun`) whenever the task's
+    `source.kind === "github_issue"`, so merging the PR closes the issue on GitHub even if write-back
+    below hasn't fired yet.
+  - **Update as worked (task → issue):** `task-sync.ts` subscribes to every `task.upserted` (human drag,
+    complete/merge, the autonomy loop — one choke point) and comments/closes/reopens the linked issue on
+    state transitions. *Landed this pass:* it also mirrors the kanban stage as a `skynet:triage|ongoing|
+    review|done` label (replace-all on the issue's label set, preserving any non-`skynet:` labels a human
+    added). Both gated by the same opt-in `Project.syncSourceStatus` — no second toggle. Verified against
+    a real private test repo + issue: PR body carried `Closes #1`, the label tracked triage→ongoing→
+    review→done live (including moves the autonomy loop made, not just human drags), and merging the PR
+    closed the issue for real.
+  - **Reuses:** the GitHub provider's REST client — `getIssueLabels`/`setIssueLabels` added alongside the
+    existing `commentIssue`/`setIssueState` on the same `GitProvider` seam, no second client. Supersedes
+    the bare "GitHub issue → PR" candidate below with the full round-trip.
 - [ ] **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
   fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
 - [ ] Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.

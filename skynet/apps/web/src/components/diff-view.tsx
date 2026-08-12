@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { DiffWalkthrough } from "@skynet/shared";
 import { fetchRunDiff, type RunDiff } from "../lib/client";
 
 // A GitHub-style unified-diff viewer for a diff/merge review gate. The patch is
@@ -58,12 +59,35 @@ function parseUnifiedDiff(patch: string): DiffFile[] {
   return files;
 }
 
+/** Group a walkthrough's comments by file, splitting each file's list into
+ *  line-anchored (rendered inline, next to the matching line) vs file-level
+ *  (no line, or a line the rendered diff never shows — e.g. outside any
+ *  hunk's context) — the latter render once under that file's head instead. */
+function commentsByFile(walkthrough: DiffWalkthrough | null | undefined, files: DiffFile[]) {
+  const byFile = new Map<string, { anchored: Map<number, string[]>; loose: string[] }>();
+  if (!walkthrough) return byFile;
+  const linesByFile = new Map(files.map((f) => [f.path, new Set(f.lines.map((l) => l.newNo).filter((n): n is number => n != null))]));
+  for (const c of walkthrough.comments) {
+    if (!byFile.has(c.file)) byFile.set(c.file, { anchored: new Map(), loose: [] });
+    const bucket = byFile.get(c.file)!;
+    const knownLines = linesByFile.get(c.file);
+    if (c.line != null && knownLines?.has(c.line)) {
+      if (!bucket.anchored.has(c.line)) bucket.anchored.set(c.line, []);
+      bucket.anchored.get(c.line)!.push(c.note);
+    } else {
+      bucket.loose.push(c.note);
+    }
+  }
+  return byFile;
+}
+
 export function DiffView({
   runId,
   patch,
   files: capturedFiles,
   add,
   del,
+  walkthrough,
   defaultOpen = false,
 }: {
   // Live mode: fetch the patch lazily by runId (the Inbox review gate).
@@ -74,6 +98,11 @@ export function DiffView({
   files?: string[];
   add: number;
   del: number;
+  // The agent's own plain-English explanation of this diff, drafted once when
+  // the review gate was raised (Orchestrator.draftDiffWalkthrough). Null when
+  // it wasn't drafted (older gate, no consult support, or the draft failed) —
+  // the raw diff below is always complete on its own regardless.
+  walkthrough?: DiffWalkthrough | null;
   defaultOpen?: boolean;
 }) {
   const isStatic = patch !== undefined;
@@ -107,9 +136,22 @@ export function DiffView({
     : fetched;
   const files = data ? parseUnifiedDiff(data.patch) : [];
   const nFiles = data ? data.files.length : 0;
+  const commentMap = commentsByFile(walkthrough, files);
+  const nComments = walkthrough?.comments.length ?? 0;
 
   return (
     <div className="dv-wrap">
+      {walkthrough && (
+        <div className="dv-walkthrough">
+          <span className="dv-walkthrough-badge mono" title="Drafted by the agent that made this change">AGENT SUMMARY</span>
+          <p className="dv-walkthrough-text">{walkthrough.summary}</p>
+          {nComments > 0 && !open && (
+            <p className="dv-walkthrough-hint">
+              {nComments} inline note{nComments === 1 ? "" : "s"} — view changes to see {nComments === 1 ? "it" : "them"}.
+            </p>
+          )}
+        </div>
+      )}
       <button className="dv-toggle mono" onClick={() => setOpen((o) => !o)}>
         <span className="dv-caret">{open ? "▾" : "▸"}</span> {open ? "Hide changes" : "View changes"}
         <span className="dv-toggle-stat">
@@ -129,26 +171,38 @@ export function DiffView({
           <p className="dv-empty">No file changes on this branch{data.patch ? "." : " (no git worktree)."}</p>
         ) : (
           <div className="dv">
-            {files.map((f) => (
-              <div key={f.path} className="dv-file">
-                <div className="dv-file-head mono">
-                  <span className="dv-path">{f.path}</span>
-                  <span className="dv-stat">
-                    <span className="diff-add">+{f.add}</span> <span className="diff-del">−{f.del}</span>
-                  </span>
-                </div>
-                <div className="dv-body mono">
-                  {f.lines.map((l, i) => (
-                    <div key={i} className={"dv-line dv-" + l.kind}>
-                      <span className="dv-ln">{l.kind === "hunk" ? "" : (l.oldNo ?? "")}</span>
-                      <span className="dv-ln">{l.kind === "hunk" ? "" : (l.newNo ?? "")}</span>
-                      <span className="dv-sign">{l.kind === "add" ? "+" : l.kind === "del" ? "−" : ""}</span>
-                      <span className="dv-code">{l.text || " "}</span>
-                    </div>
+            {files.map((f) => {
+              const fileComments = commentMap.get(f.path);
+              return (
+                <div key={f.path} className="dv-file">
+                  <div className="dv-file-head mono">
+                    <span className="dv-path">{f.path}</span>
+                    <span className="dv-stat">
+                      <span className="diff-add">+{f.add}</span> <span className="diff-del">−{f.del}</span>
+                    </span>
+                  </div>
+                  {fileComments?.loose.map((note, i) => (
+                    <p key={i} className="dv-comment dv-comment-file">🤖 {note}</p>
                   ))}
+                  <div className="dv-body mono">
+                    {f.lines.map((l, i) => (
+                      <div key={i}>
+                        <div className={"dv-line dv-" + l.kind}>
+                          <span className="dv-ln">{l.kind === "hunk" ? "" : (l.oldNo ?? "")}</span>
+                          <span className="dv-ln">{l.kind === "hunk" ? "" : (l.newNo ?? "")}</span>
+                          <span className="dv-sign">{l.kind === "add" ? "+" : l.kind === "del" ? "−" : ""}</span>
+                          <span className="dv-code">{l.text || " "}</span>
+                        </div>
+                        {l.newNo != null &&
+                          fileComments?.anchored.get(l.newNo)?.map((note, j) => (
+                            <p key={j} className="dv-comment dv-comment-line">🤖 {note}</p>
+                          ))}
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ))}
     </div>

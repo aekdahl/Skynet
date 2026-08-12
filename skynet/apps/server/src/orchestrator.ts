@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk, Feature, Milestone } from "@skynet/shared";
+import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk, Feature, Milestone, DiffWalkthrough } from "@skynet/shared";
 import { WorkspaceSettings } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -16,6 +16,7 @@ import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
 import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
+import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
 import { decisionResumePrompt } from "./decision-resume.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
@@ -504,6 +505,10 @@ export class Orchestrator {
 
       if (res.committed) {
         const stat = await wt.diffStat(runId, live.baseRef);
+        // Fetched alongside the stat (not inside raiseDiffReview) since it's the
+        // same worktree/baseRef this function already has in scope — raiseDiffReview
+        // only needs the text, to draft the walkthrough and hand to the HITL.
+        const patch = await wt.patch(runId, live.baseRef);
         await this.freeRunner(live.agentId); // compute is done; awaiting review
         await this.hub.runStatus(runId, "review");
         // The run produced a diff → its task enters the review column (a human or
@@ -512,7 +517,7 @@ export class Orchestrator {
           const task = await this.store.getTask(live.taskId);
           if (task) await this.hub.upsertTask({ ...task, state: "review" });
         }
-        await this.raiseDiffReview(runId, stat);
+        await this.raiseDiffReview(runId, stat, patch);
         // Keep what a `modify` review resolution needs to resume this run for a
         // revision — its worktree survives (retire only happens on merge).
         this.reviews.set(runId, { git: live.git, baseRef: live.baseRef, taskId: live.taskId });
@@ -641,7 +646,11 @@ export class Orchestrator {
   }
 
   /** Raise the `diff` review that gates a finished agent's branch into the queue. */
-  private async raiseDiffReview(runId: string, stat: { add: number; del: number; files: string[] }): Promise<void> {
+  private async raiseDiffReview(
+    runId: string,
+    stat: { add: number; del: number; files: string[] },
+    patch: string,
+  ): Promise<void> {
     const agent = await this.store.getRun(runId);
     if (!agent) return;
     // Modules the diff ACTUALLY touched, derived from the changed files via the
@@ -653,6 +662,11 @@ export class Orchestrator {
     // itself, not just the review card). `modifiedFiles` was never populated.
     await this.hub.runModifiedFiles(runId, stat.files);
     const risk: Risk = stat.del > 200 || stat.files.length > 40 ? "high" : "medium";
+    // Drafted BEFORE the item is raised — the reviewer should never see a diff
+    // gate that later "pops in" a walkthrough. Best-effort: any failure (no
+    // consult support, no credential, unreadable reply) yields null and the
+    // gate raises exactly as it did before this existed.
+    const walkthrough = await this.draftDiffWalkthrough(agent, project?.instructions, stat.files, patch);
     const item: HitlItem = {
       id: `q-diff-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
@@ -673,7 +687,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: stat.add, del: stat.del, modules, files: stat.files },
+      diff: { add: stat.add, del: stat.del, modules, files: stat.files, walkthrough },
       flags: [],
     };
     // `full` autonomy (see ApprovalLevel in @skynet/shared) skips even a diff's
@@ -696,6 +710,41 @@ export class Orchestrator {
       return;
     }
     await this.hub.raiseHitl(item);
+  }
+
+  /**
+   * Ask the run's OWN provider/model to explain its diff — a stateless
+   * one-shot `consult`, same pattern as `autoReview` — before the diff HITL is
+   * raised. Grounded on the real patch (`context`), not the agent's
+   * self-reported summary. Empty patch (no git worktree) or no `consult`
+   * support (most CLI runners today) → no walkthrough, not an error.
+   */
+  private async draftDiffWalkthrough(
+    run: TaskRun,
+    projectInstructions: string | null | undefined,
+    files: string[],
+    patch: string,
+  ): Promise<DiffWalkthrough | null> {
+    if (!patch) return null;
+    try {
+      const provider = await this.getProvider(run.provider);
+      if (!provider.consult) return null;
+      const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+      const reply = await provider.consult(
+        {
+          task: withInstructions(projectInstructions, run.name),
+          model: run.model,
+          cwd: config.runnerCwd,
+          apiKey,
+          context: patch,
+          system: DIFF_WALKTHROUGH_SYSTEM,
+        },
+        DIFF_WALKTHROUGH_INSTRUCTION,
+      );
+      return parseDiffWalkthrough(reply, files);
+    } catch {
+      return null; // best-effort — a draft failure never blocks the review
+    }
   }
 
   /**
@@ -788,6 +837,12 @@ export class Orchestrator {
     // any key). A runner is assignable only if its key (credentialId ?? provider)
     // is in this set — the project-level provider-key confinement.
     allowedCredentialIds: string[] = [],
+    // The task's saved Start-picker preference (Task.preferredProvider/-Model).
+    // A SOFT hint, not a requirement: tried first among idle+usable runners,
+    // but any mismatch (no provider match, or matches but none usable) falls
+    // straight through to the unchanged default pick below — a preference must
+    // never block a task the way `agents`-mode eligibility legitimately can.
+    preferred?: { provider?: TaskRun["provider"] | null; model?: string | null },
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
@@ -812,6 +867,22 @@ export class Orchestrator {
         );
       }
       const idle = eligibleRunners.filter((r) => r.status === "idle");
+      // Try the preference FIRST, ranked exact-model > provider-only, before the
+      // plain "first idle, usable" pick below. `sort` is stable, so when nothing
+      // matches (every rank is 0) this reduces to the original order and the
+      // loop falls straight through on its first iteration — a task with no
+      // preference (or one nothing idle can satisfy) picks exactly as before.
+      if (idle.length > 0 && preferred?.provider) {
+        const rank = (r: Agent) =>
+          r.provider !== preferred.provider ? 0 : preferred.model && r.model === preferred.model ? 2 : 1;
+        for (const r of [...idle].sort((a, b) => rank(b) - rank(a))) {
+          if (rank(r) === 0) break; // ranked list is sorted — no more candidates
+          if (await this.providerUsable(workspaceId, r.provider, r.credentialId)) {
+            await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
+            return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
+          }
+        }
+      }
       if (idle.length === 0) {
         // Auto-scale: every eligible runner is busy. If the workspace policy
         // allows it AND we're under the fleet cap, clone an eligible runner
@@ -971,7 +1042,10 @@ export class Orchestrator {
     const current: TaskAssignment = task.assignment ?? { mode: "unassigned", agentIds: [] };
     const assignment: TaskAssignment =
       current.mode === "unassigned" ? { mode: "any", agentIds: [] } : current;
-    const runner = await this.acquireAgent(project.workspaceId, assignment, project.enabledRunnerCredentialIds);
+    const runner = await this.acquireAgent(project.workspaceId, assignment, project.enabledRunnerCredentialIds, {
+      provider: task.preferredProvider,
+      model: task.preferredModel,
+    });
     const runId = `${this.slug(task.text)}-${++this.seq}`;
     // runId is unique → unique branch & worktree path (two same-named tasks
     // never collide on the same branch).
@@ -1565,6 +1639,18 @@ export class Orchestrator {
     const stat = await git.worktrees.diffStat(agent.id, base);
     const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
     await this.hub.runStatus(agent.id, "review");
+    // A task imported from a GitHub issue (Task.source) gets GitHub's own
+    // "Closes #N" convention in the PR body, so merging the PR auto-closes the
+    // source issue — belt-and-suspenders alongside task-sync.ts's direct
+    // close-on-done write-back, since the human merge and the task reaching
+    // `done` don't necessarily happen in the same order.
+    const sourcedTask = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === agent.id);
+    const issueRef =
+      sourcedTask?.source?.kind === "github_issue"
+        ? sourcedTask.source.repo === repo
+          ? `#${sourcedTask.source.number}`
+          : `${sourcedTask.source.repo}#${sourcedTask.source.number}`
+        : null;
     try {
       const result = await githubService.pushAndOpenPr({
         workspaceId: agent.workspaceId,
@@ -1579,7 +1665,7 @@ export class Orchestrator {
         force: false,
         githubCredentialId: project?.githubCredentialId ?? null, // push to the project's pinned account
         title: agent.name,
-        body: `Automated by Skynet agent \`${agent.id}\`.\n\n${stat.add}+/${stat.del}- across ${stat.files.length} file(s).`,
+        body: `Automated by Skynet agent \`${agent.id}\`.\n\n${stat.add}+/${stat.del}- across ${stat.files.length} file(s).${issueRef ? `\n\nCloses ${issueRef}` : ""}`,
       });
       if (!result.ok) {
         await this.hub.runLog(agent.id, `push blocked by safety policy: ${result.violations.map((v) => v.message).join("; ")}`);
@@ -1808,7 +1894,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: 0, del: 0, modules: agent.modules, files: [] },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null },
       flags: [reason],
     });
   }
@@ -1836,7 +1922,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: 0, del: 0, modules: agent.modules, files: [] },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null },
       flags: files, // the conflicting files — shown as chips
     });
   }
