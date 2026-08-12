@@ -99,6 +99,13 @@ const ALLOW = new Set<string>([
   // Operations/Orchestrator path (with a stub GitHub service). No end-to-end
   // fleet journey opens a real PR, so they're allowlisted rather than simulated.
   "mergePr", "updatePrBranch", "reworkPr", "dismissPr",
+  // Checkpoint / snapshot-restore — creates a real git commit + pinned ref and,
+  // on restore, stops the live handle and relaunches the provider with a
+  // resumed SDK session. No offline journey can exercise the worktree
+  // rewind + provider relaunch; verified manually against a live run (real
+  // dev server + repo, confirmed the worktree actually rewinds to the
+  // checkpoint's sha) — see the PR that landed this for the full trace.
+  "createCheckpoint", "fetchCheckpoints", "restoreCheckpoint",
   // Task linter v0 (assistive) — dismisses a lint hint produced by a background
   // LLM consult (task-linter.ts). The consult itself needs a live provider key
   // (no offline journey can produce a real hint to dismiss); the Operations

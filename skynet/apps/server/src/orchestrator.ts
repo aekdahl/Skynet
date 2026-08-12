@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk, Feature, Milestone, DiffWalkthrough } from "@skynet/shared";
+import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk, Feature, Milestone, DiffWalkthrough } from "@skynet/shared";
 import { WorkspaceSettings } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -1200,6 +1200,128 @@ export class Orchestrator {
       throw err;
     }
     return agent;
+  }
+
+  // ── checkpoint / restore ────────────────────────────────────────────────
+  // Snapshot a run's worktree + plan state mid-run so a long task can be
+  // rewound in place if it goes sideways — an extension of fork/resume: fork
+  // branches a NEW run off wherever the parent currently sits; a checkpoint
+  // pins a POINT on THIS run's own branch, and restoreCheckpoint rewinds this
+  // SAME run back to it (worktree +, for Claude, the SDK session — best-effort;
+  // see the runner-sdk `resumeSessionId` doc for why this can't be a perfect
+  // point-in-time conversation rewind, only "resume from that session").
+
+  /** Every checkpoint taken on a run, oldest first. */
+  async listCheckpoints(runId: string): Promise<Checkpoint[]> {
+    return this.store.listCheckpoints(runId);
+  }
+
+  /**
+   * Manually snapshot a live run: commit whatever's uncommitted in its
+   * worktree, capture the resulting sha (pinned under a stable ref so a later
+   * restore's branch reset can't lose it to gc), the run's current plan +
+   * progress, and — Claude only — its SDK session id. Requires a live
+   * worktree: there's nothing in-flight to snapshot once a run's compute is
+   * gone. (Automatic per-plan-step checkpointing was the other option here —
+   * this manual trigger is the smaller, safer piece to land first: no new hook
+   * into the plan-progress dataflow, no risk of checkpoint spam on a chatty
+   * plan. See PR description.)
+   */
+  async checkpoint(runId: string, label?: string | null): Promise<Checkpoint> {
+    const run = await this.store.getRun(runId);
+    if (!run) throw new Error("Run not found");
+    const live = this.live.get(runId);
+    if (!live) throw new Error("This run isn't live — nothing in flight to checkpoint.");
+    const git = live.git ?? (await this.gitContextForAgent(runId).catch(() => undefined));
+    if (!git || !git.worktrees.exists(runId)) throw new Error("This run has no worktree to checkpoint.");
+
+    await git.worktrees.commitAll(runId, `checkpoint${label ? `: ${label}` : ""}`);
+    const sha = await git.worktrees.headSha(runId);
+    const id = `cp-${runId}-${++this.seq}`;
+    await git.worktrees.pinRef(`refs/skynet/checkpoints/${id}`, sha);
+
+    const checkpoint: Checkpoint = {
+      id,
+      runId,
+      workspaceId: run.workspaceId,
+      label: label ?? null,
+      sha,
+      claudeSessionId: run.provider === "claude" ? (live.handle.getSessionId?.() ?? null) : null,
+      plan: run.plan,
+      progress: run.progress,
+      createdAt: now(),
+    };
+    await this.store.putCheckpoint(checkpoint);
+    await this.hub.runLog(runId, `checkpoint saved${label ? ` — "${label}"` : ""} (${sha.slice(0, 7)})`);
+    return checkpoint;
+  }
+
+  /**
+   * Rewind a run to an earlier checkpoint IN PLACE: stop whatever's currently
+   * live, re-provision the worktree at the checkpoint's pinned sha (a hard
+   * reset of the run's own branch — forward commits drop off the branch,
+   * though the pinned ref keeps them reachable on disk), and relaunch the
+   * provider resuming the checkpoint's captured session (Claude) so the
+   * conversation, not just the git state, rewinds.
+   */
+  async restoreCheckpoint(runId: string, checkpointId: string): Promise<TaskRun> {
+    const run = await this.store.getRun(runId);
+    if (!run) throw new Error("Run not found");
+    const checkpoint = await this.store.getCheckpoint(checkpointId);
+    if (!checkpoint || checkpoint.runId !== runId) throw new Error("Checkpoint not found");
+
+    const project = await this.store.getProject(run.projectId);
+    const live = this.live.get(runId);
+    const git = live?.git ?? this.gitContextFor(project);
+    if (!git) throw new Error("This run has no git worktree to restore.");
+
+    // Tear down any current execution before rewinding the worktree out from
+    // under it — mirrors stopAgent's detach, but keeps the run's own slot
+    // (status flips back to running below) rather than marking it done.
+    if (live) {
+      await live.handle.stop().catch(() => undefined);
+      await this.freeRunner(live.agentId);
+      this.live.delete(runId);
+    }
+
+    const runner = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId, await this.projectKeyAllowlist(run.projectId));
+    const provider = await this.getProvider(runner.provider);
+    const { cwd, baseRef } = await this.provisionCwd(git, runId, run.branch, checkpoint.sha);
+    const apiKey = await secretService.resolve(run.workspaceId, runner.credentialId ?? runner.provider);
+    const resumeSessionId = run.provider === "claude" ? checkpoint.claudeSessionId : null;
+    const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
+
+    await this.hub.runProgress(runId, checkpoint.progress, checkpoint.plan);
+    await this.hub.runStatus(runId, "running");
+    await this.hub.runLog(
+      runId,
+      `restored to checkpoint${checkpoint.label ? ` "${checkpoint.label}"` : ""} (${checkpoint.sha.slice(0, 7)}) — worktree rewound, ${resumeSessionId ? "conversation resumed" : "fresh turn started"}`,
+    );
+    if (taskId) {
+      const task = await this.store.getTask(taskId);
+      if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
+    }
+
+    try {
+      const handle = await provider.start(
+        {
+          runId,
+          projectId: run.projectId,
+          task: withInstructions(project?.instructions, run.name),
+          model: runner.model,
+          branch: run.branch,
+          cwd,
+          apiKey,
+          resumeSessionId,
+        },
+        this.events(),
+      );
+      this.live.set(runId, { handle, agentId: runner.id, taskId, branch: run.branch, baseRef, git });
+    } catch (err) {
+      await this.failStartup(runId, runner.id, (err as Error).message);
+      throw err;
+    }
+    return (await this.store.getRun(runId))!;
   }
 
   // ── deliver a resolved decision ────────────────────────────────────────────

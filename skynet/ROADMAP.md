@@ -329,7 +329,6 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 - [~] **Review upgrades (adopted from the competitor sweep):**
   - **Verifier gate** — run the project's tests/checks in the worktree and **block the merge on failure** as a
     first-class gate (not just the pre-merge `checkCmd`); auto-commit on green. *(bernstein / MartinLoop-style.)*
-  - **Checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks. *(AGX-style.)*
   - *Landed: **every review is auto-reviewed** — a fleet agent judges each `review`-state task's diff/output
     and writes a structured verdict (approve/flag) to the task; the log line names the reviewer + reason, and
     the audit trail records who reviewed what. Auto-approve merges only when the project's autonomy toggle is
@@ -337,6 +336,21 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     so a reason mentioning "flagged" never false-flags an APPROVE.*
   - *Landed: **`error_max_turns` is resumable** — a run that hits the Claude turn cap parks with the current
     plan + guidance instead of dead-ending; the operator resolves it forward.*
+  - *Landed: **checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks
+    (AGX-style). A `Checkpoint` record (sha + captured plan/progress + Claude session id,
+    `Store`-persisted across file/memory/postgres) manually triggered from the run's Checkpoint
+    button — the smaller, safer piece vs. auto-checkpointing on every plan-step transition (no new
+    hook into the plan-progress dataflow, no risk of checkpoint spam on a chatty plan; the hook point
+    for that, `Hub.runProgress`, is documented in the code for whoever picks it up next). Restore
+    re-provisions the run's worktree at the checkpoint's pinned sha (`git update-ref` under
+    `refs/skynet/checkpoints/*` so gc can't reclaim it once the branch is reset past it) via the
+    existing `WorktreeProvisioner`, and — Claude only — resumes the captured SDK session
+    (`StartSpec.resumeSessionId`, forked like `fork()` already does) instead of always the latest.
+    Verified for real against a live run (no mocks): worktree rewind, the pinned-ref gc-safety, and
+    the full create/list/restore API+UI path all confirmed working end-to-end. Not independently
+    verified: the Claude SDK's actual conversation-resume behavior on a restored session (needs a
+    real `ANTHROPIC_API_KEY`, unavailable in the sandbox this landed from) — the mechanism mirrors
+    `fork()`'s already-shipped `resume`/`forkSession` call exactly, so risk is low, but flagging the gap.*
   - *Landed: **Agent-authored diff walkthrough** — the run's own provider drafts a plain-English summary +
     file/line-anchored comments grounded on the REAL `git diff` (a stateless `consult`, same pattern as the
     auto-review verdict — structured JSON read as a field, never prose classification) before the diff HITL

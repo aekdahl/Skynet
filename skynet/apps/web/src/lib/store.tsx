@@ -10,6 +10,7 @@ import {
 import type {
   TaskRun,
   ApprovalLevel,
+  Checkpoint,
   Dependency,
   Feature,
   HitlItem,
@@ -99,6 +100,11 @@ export interface Store extends StoreState {
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
   forkAgent: (id: string) => Promise<void>;
+  // Checkpoint / restore (extends fork/resume, W6). Checkpoints aren't part of
+  // the WS-synced snapshot (per-run, lazily fetched like a diff) — create/
+  // restore return their result directly rather than relying on an echoed delta.
+  createCheckpoint: (id: string, label?: string) => Promise<Checkpoint | null>;
+  restoreCheckpoint: (id: string, checkpointId: string) => Promise<void>;
   archiveAgent: (id: string, archived: boolean) => Promise<void>;
   pauseAgent: (id: string) => Promise<void>;
   resumeAgent: (id: string) => Promise<void>;
@@ -464,6 +470,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             return;
           }
           throw e;
+        }
+      },
+      createCheckpoint: async (id, label) => {
+        try {
+          return await api.createCheckpoint(id, label);
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't create the checkpoint."));
+          return null;
+        }
+      },
+      restoreCheckpoint: async (id, checkpointId) => {
+        try {
+          await api.restoreCheckpoint(id, checkpointId);
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't restore the checkpoint."));
         }
       },
       stopAgent: async (id) => {

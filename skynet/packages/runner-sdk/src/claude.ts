@@ -1280,6 +1280,12 @@ class ClaudeRunnerHandle implements RunnerHandle {
     await this.q?.interrupt().catch(() => undefined);
     this.input.close();
   }
+
+  /** This run's own SDK session id, if one has been captured yet — for
+   *  checkpointing (see {@link RunnerHandle.getSessionId}). */
+  getSessionId(): string | undefined {
+    return this.sessionId;
+  }
 }
 
 export class ClaudeRunnerProvider implements RunnerProvider {
@@ -1288,7 +1294,10 @@ export class ClaudeRunnerProvider implements RunnerProvider {
   private sessions = new Map<string, string>();
 
   async start(spec: StartSpec, events: RunnerEvents): Promise<RunnerHandle> {
-    const resumeSessionId = spec.parentId ? this.sessions.get(spec.parentId) : undefined;
+    // An explicit checkpoint restore takes precedence over the parentId-based
+    // fork lookup — a restore isn't a fork (no parent run), just an earlier
+    // session on this same run.
+    const resumeSessionId = spec.resumeSessionId ?? (spec.parentId ? this.sessions.get(spec.parentId) : undefined);
     return new ClaudeRunnerHandle(
       spec,
       events,

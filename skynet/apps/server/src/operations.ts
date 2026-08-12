@@ -13,6 +13,7 @@
 import type {
   TaskRun,
   AuditRecord,
+  Checkpoint,
   ConfigureRunnerRequest,
   CreateFeatureRequest,
   CreateMilestoneRequest,
@@ -394,6 +395,18 @@ export class Operations {
   async forkAgent(ws: string, runId: string): Promise<TaskRun> {
     await this.getRun(ws, runId);
     return this.orchestrator.fork(runId);
+  }
+  async createCheckpoint(ws: string, runId: string, label: string | null): Promise<Checkpoint> {
+    await this.getRun(ws, runId); // 404 unless it's in this workspace
+    return this.orchestrator.checkpoint(runId, label);
+  }
+  async listCheckpoints(ws: string, runId: string): Promise<Checkpoint[]> {
+    await this.getRun(ws, runId);
+    return this.orchestrator.listCheckpoints(runId);
+  }
+  async restoreCheckpoint(ws: string, runId: string, checkpointId: string): Promise<TaskRun> {
+    await this.getRun(ws, runId);
+    return this.orchestrator.restoreCheckpoint(runId, checkpointId);
   }
   /** The real diff (unified patch + stat) of a run's branch, for the review UI. */
   async runDiff(ws: string, runId: string): Promise<{ patch: string; add: number; del: number; files: string[] }> {
