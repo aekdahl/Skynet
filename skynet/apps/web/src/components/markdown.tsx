@@ -6,9 +6,13 @@ import { Fragment, useState, type ReactNode } from "react";
 // in progress, [ ] planned) on list items. Repo-relative links resolve to GitHub
 // so [docs/positioning.md](docs/positioning.md) works from inside the app.
 
-const LINK_BASE = "https://github.com/aekdahl/Skynet/blob/main/skynet/";
+// Default GitHub base for repo-relative links — Skynet's own repo, used when
+// rendering Skynet's own docs (the workspace Settings roadmap page, Steward's
+// chat replies). A doc from an arbitrary PROJECT's repo must pass its own
+// `linkBase` (see `Markdown`'s prop) rather than resolving against this one.
+export const DEFAULT_LINK_BASE = "https://github.com/aekdahl/Skynet/blob/main/skynet/";
 
-function inline(text: string, keyBase: string): ReactNode[] {
+export function inline(text: string, keyBase: string, linkBase?: string): ReactNode[] {
   const out: ReactNode[] = [];
   // code · bold · italic · link — first match wins, then recurse on the rest.
   const re = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\[([^\]]+)\]\(([^)]+)\))/;
@@ -23,15 +27,27 @@ function inline(text: string, keyBase: string): ReactNode[] {
     if (m.index > 0) out.push(rest.slice(0, m.index));
     const k = `${keyBase}-${i++}`;
     if (m[1]) out.push(<code key={k}>{m[2]}</code>);
-    else if (m[3]) out.push(<strong key={k}>{inline(m[4]!, k)}</strong>);
-    else if (m[5]) out.push(<em key={k}>{inline(m[6]!, k)}</em>);
+    else if (m[3]) out.push(<strong key={k}>{inline(m[4]!, k, linkBase)}</strong>);
+    else if (m[5]) out.push(<em key={k}>{inline(m[6]!, k, linkBase)}</em>);
     else if (m[7]) {
-      const href = /^https?:\/\//.test(m[9]!) ? m[9]! : LINK_BASE + m[9]!.replace(/^\.\//, "");
-      out.push(
-        <a key={k} href={href} target="_blank" rel="noreferrer">
-          {m[8]}
-        </a>,
-      );
+      const isAbsolute = /^https?:\/\//.test(m[9]!);
+      if (isAbsolute) {
+        out.push(
+          <a key={k} href={m[9]!} target="_blank" rel="noreferrer">
+            {m[8]}
+          </a>,
+        );
+      } else if (linkBase) {
+        out.push(
+          <a key={k} href={linkBase + m[9]!.replace(/^\.\//, "")} target="_blank" rel="noreferrer">
+            {m[8]}
+          </a>,
+        );
+      } else {
+        // No known repo to resolve a relative link against — render the label
+        // as plain text rather than a link that would point at the wrong repo.
+        out.push(<Fragment key={k}>{m[8]}</Fragment>);
+      }
     }
     rest = rest.slice(m.index + m[0].length);
   }
@@ -142,7 +158,17 @@ function StatusPill({ status }: { status: Status }) {
   );
 }
 
-function List({ ordered, items, keyBase }: { ordered: boolean; items: ListItem[]; keyBase: string }) {
+function List({
+  ordered,
+  items,
+  keyBase,
+  linkBase,
+}: {
+  ordered: boolean;
+  items: ListItem[];
+  keyBase: string;
+  linkBase: string | undefined;
+}) {
   const Tag = ordered ? "ol" : "ul";
   return (
     <Tag>
@@ -152,9 +178,9 @@ function List({ ordered, items, keyBase }: { ordered: boolean; items: ListItem[]
           <li key={k} className={it.status ? "md-li-status md-li-" + it.status : undefined}>
             <span className="md-li-body">
               <StatusPill status={it.status} />
-              <span>{inline(it.text, k)}</span>
+              <span>{inline(it.text, k, linkBase)}</span>
             </span>
-            {it.children.length > 0 && <List ordered={false} items={it.children} keyBase={k} />}
+            {it.children.length > 0 && <List ordered={false} items={it.children} keyBase={k} linkBase={linkBase} />}
           </li>
         );
       })}
@@ -164,16 +190,18 @@ function List({ ordered, items, keyBase }: { ordered: boolean; items: ListItem[]
 
 // Render a flat list of blocks — the shared body used by both the plain and the
 // folded paths. `keyBase` namespaces React keys so sections never collide.
-function renderBlocks(blocks: Block[], keyBase: string): ReactNode[] {
+// `linkBase` resolves repo-relative links; omit for a doc with no known repo
+// (they render as plain text — see `inline`).
+export function renderBlocks(blocks: Block[], keyBase: string, linkBase?: string): ReactNode[] {
   return blocks.map((b, i) => {
     const key = `${keyBase}-${i}`;
     if (b.kind === "hr") return <hr key={key} />;
     if (b.kind === "h") {
       const Tag = (["h1", "h2", "h3", "h4"] as const)[b.level - 1] ?? "h4";
-      return <Tag key={key}>{inline(b.text, `h${key}`)}</Tag>;
+      return <Tag key={key}>{inline(b.text, `h${key}`, linkBase)}</Tag>;
     }
-    if (b.kind === "list") return <List key={key} ordered={b.ordered} items={b.items} keyBase={"l" + key} />;
-    return <Fragment key={key}>{b.text ? <p>{inline(b.text, `p${key}`)}</p> : null}</Fragment>;
+    if (b.kind === "list") return <List key={key} ordered={b.ordered} items={b.items} keyBase={"l" + key} linkBase={linkBase} />;
+    return <Fragment key={key}>{b.text ? <p>{inline(b.text, `p${key}`, linkBase)}</p> : null}</Fragment>;
   });
 }
 
@@ -205,7 +233,7 @@ export function sectionsFromBlocks(blocks: Block[]): {
 }
 
 // Count status-bearing list items (done vs. total) anywhere in a section's body.
-function countStatuses(blocks: Block[]): { done: number; total: number } {
+export function countStatuses(blocks: Block[]): { done: number; total: number } {
   let done = 0;
   let total = 0;
   const walk = (items: ListItem[]) => {
@@ -221,7 +249,7 @@ function countStatuses(blocks: Block[]): { done: number; total: number } {
   return { done, total };
 }
 
-function FoldSection({ heading, body, sIdx }: { heading: string; body: Block[]; sIdx: number }) {
+function FoldSection({ heading, body, sIdx, linkBase }: { heading: string; body: Block[]; sIdx: number; linkBase: string | undefined }) {
   const [open, setOpen] = useState(false);
   const title = heading.replace(/✓\s*shipped/i, "").trim();
   const { done, total } = countStatuses(body);
@@ -239,34 +267,45 @@ function FoldSection({ heading, body, sIdx }: { heading: string; body: Block[]; 
         <span className="md-status md-st-done">
           <span className="md-status-mark">✓</span>shipped
         </span>
-        <span className="md-fold-title">{inline(title, `fold-h-${sIdx}`)}</span>
+        <span className="md-fold-title">{inline(title, `fold-h-${sIdx}`, linkBase)}</span>
         {total > 0 && (
           <span className="md-fold-count">
             {done}/{total}
           </span>
         )}
       </button>
-      {open && <div className="md-fold-body">{renderBlocks(body, `fold-b-${sIdx}`)}</div>}
+      {open && <div className="md-fold-body">{renderBlocks(body, `fold-b-${sIdx}`, linkBase)}</div>}
     </div>
   );
 }
 
-export function Markdown({ text, foldShipped = false }: { text: string; foldShipped?: boolean }) {
+export function Markdown({
+  text,
+  foldShipped = false,
+  linkBase = DEFAULT_LINK_BASE,
+}: {
+  text: string;
+  foldShipped?: boolean;
+  /** Base URL repo-relative links resolve against. Pass a project's own repo
+   *  when rendering that project's docs; omit only for Skynet's own docs
+   *  (Settings roadmap page, Steward chat), which default to Skynet's repo. */
+  linkBase?: string;
+}) {
   const blocks = parseMarkdown(text);
   if (!foldShipped) {
-    return <div className="md">{renderBlocks(blocks, "b")}</div>;
+    return <div className="md">{renderBlocks(blocks, "b", linkBase)}</div>;
   }
   const { lead, sections } = sectionsFromBlocks(blocks);
   return (
     <div className="md">
-      {renderBlocks(lead, "lead")}
+      {renderBlocks(lead, "lead", linkBase)}
       {sections.map((s, i) =>
         headingIsShipped(s.heading) ? (
-          <FoldSection key={`s${i}`} heading={s.heading} body={s.body} sIdx={i} />
+          <FoldSection key={`s${i}`} heading={s.heading} body={s.body} sIdx={i} linkBase={linkBase} />
         ) : (
           <Fragment key={`s${i}`}>
-            <h2>{inline(s.heading, `sh${i}`)}</h2>
-            {renderBlocks(s.body, `sb${i}`)}
+            <h2>{inline(s.heading, `sh${i}`, linkBase)}</h2>
+            {renderBlocks(s.body, `sb${i}`, linkBase)}
           </Fragment>
         ),
       )}

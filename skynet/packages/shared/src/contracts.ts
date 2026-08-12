@@ -197,6 +197,13 @@ export const TaskRun = z.object({
   // task itself is already `done` — merging is decoupled so the pipeline never
   // stalls on a human. Null → no PR (a local-merge project, or not pushed yet).
   pr: PullRequest.nullable().default(null),
+  // Set exactly once, inside `completeMerged` (the single lifecycle function both
+  // the local merge queue and `mergeReadyPr` funnel through) — the moment code
+  // actually landed on the base branch. Unlike `status === "done"`, which also
+  // fires for zero-diff self-completion, an operator Stop, a reaper timeout, or a
+  // GitHub PR merely opened (not yet merged), this is the one field that means a
+  // real merge happened. Null → never merged.
+  mergedAt: Timestamp.nullable().default(null),
 });
 export type TaskRun = z.infer<typeof TaskRun>;
 
@@ -756,6 +763,19 @@ export const UpdateMilestoneRequest = z.object({
 });
 export type UpdateMilestoneRequest = z.infer<typeof UpdateMilestoneRequest>;
 
+// ─── Roadmap doc requests ──────────────────────────────────────────────
+// Commit a Steward-drafted edit to a project's ROADMAP.md — only reachable
+// after the operator confirms the diff in chat. `baselineHash` (always) and
+// `baselineSha` (GitHub-bound projects only) pin the edit to the exact content
+// it was drafted against, so a concurrent change is refused, not clobbered.
+export const UpdateProjectRoadmapRequest = z.object({
+  path: z.enum(["ROADMAP.md", "docs/ROADMAP.md"]),
+  content: z.string().min(1),
+  baselineHash: z.string().min(1),
+  baselineSha: z.string().optional(),
+});
+export type UpdateProjectRoadmapRequest = z.infer<typeof UpdateProjectRoadmapRequest>;
+
 // A human-initiated kanban move; the server validates it against the allowed
 // (human) transition map before applying.
 export const MoveTaskRequest = z.object({ to: TaskState });
@@ -886,11 +906,15 @@ export const GithubConnection = z.object({
 });
 export type GithubConnection = z.infer<typeof GithubConnection>;
 
-// ─── Workspace settings (live, per-workspace fleet policy) ──────────────────
+// ─── Workspace settings (live, per-workspace policy + identity) ─────────────
 // Non-secret operator settings that govern the workspace at runtime (no engine
 // restart). Persisted as a workspace-keyed singleton, mirroring GithubConnection.
 export const WorkspaceSettings = z.object({
   workspaceId: z.string(),
+  // Display name (sidebar/shell header). Server-side, not localStorage — a
+  // workspace is the auth principal, not a per-browser setting, so the name
+  // must be the same on every profile/machine that signs into it.
+  name: z.string().default(""),
   // When on, assigning a task with no free runner AUTO-PROVISIONS a fresh runner
   // (cloned from a busy one already on an allowed key) instead of waiting — up to
   // `maxRunners`. Off = today's behavior (the task waits for a runner to free).
@@ -916,6 +940,7 @@ export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 
 /** Patch for the live workspace settings (all fields optional). */
 export const UpdateWorkspaceSettingsRequest = z.object({
+  name: z.string().optional(),
   autoProvisionRunners: z.boolean().optional(),
   maxRunners: z.number().int().min(0).optional(),
   retireIdleRunnersAfterMinutes: z.number().int().min(0).optional(),

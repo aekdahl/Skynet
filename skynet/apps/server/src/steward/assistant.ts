@@ -23,9 +23,8 @@ import {
   oneShotText,
   oneShotTextStream,
 } from "@skynet/runner-sdk/claude";
-import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
-import { githubService } from "../github/index.js";
+import { buildUnifiedDiff } from "./diff.js";
+import { KEY_DOCS, MAX_DOC_CHARS, ROADMAP_PATHS, contentHash, listProjectRoot, readProjectDoc, readProjectDocFromCandidates } from "./docs.js";
 import { secretService } from "../secrets/index.js";
 import { settingsContext } from "../settings/env-settings.js";
 import type { Store } from "../store/store.js";
@@ -36,9 +35,6 @@ export interface ChatTurn {
 }
 
 const STAGES: Task["state"][] = ["backlog", "triage", "todo", "ongoing", "review", "done"];
-// Docs worth prefetching for a GitHub-only project, in priority order.
-const KEY_DOCS = ["README.md", "ROADMAP.md", "docs/ROADMAP.md", "AGENTS.md", "CLAUDE.md"];
-const MAX_DOC_CHARS = 8000;
 const MAX_HISTORY = 8;
 /** Steward's per-input action budget ("loops"). It can propose up to this many
  *  changes from one message; asked for more, it proposes the first N and reports
@@ -70,7 +66,11 @@ const SYSTEM =
   '  {"kind":"add_milestone","name":"<milestone name>","description":"<optional>","targetAt":<optional epoch ms>}\n' +
   '  {"kind":"set_task_feature","taskId":"<id>","featureId":"<feature id, or null to unlink>"}\n' +
   '  {"kind":"set_feature_milestone","featureId":"<feature id>","milestoneId":"<milestone id, or null to detach>"}\n' +
-  "Notes on the roadmap actions (features + milestones): a FEATURE groups tasks; a MILESTONE is a dated release/checkpoint that features roll up into — that's the roadmap. " +
+  '  {"kind":"edit_roadmap","path":"<the ROADMAP.md path shown in REPO CONTENT>","content":"<the ENTIRE new file>"}\n' +
+  "Notes on edit_roadmap: only propose this when the operator explicitly asks to change the roadmap DOC (ROADMAP.md) — NOT for add_feature/add_milestone, which are unrelated task-grouping records, not the file. " +
+  "`content` MUST be the complete file: reproduce every unchanged line verbatim, and change only what the operator asked for — no reformatting, no fixing unrelated typos — so the diff the operator reviews shows exactly the intended edit and nothing else. " +
+  "`path` must be exactly the ROADMAP.md path shown under REPO CONTENT; if no roadmap doc was shown there, say so instead of guessing a path or inventing content.\n" +
+  "Notes on the roadmap actions (features + milestones): a FEATURE groups tasks; a MILESTONE is a dated release/checkpoint that features roll up into — that's a separate, DB-tracked roadmap grouping, distinct from the ROADMAP.md file edit_roadmap edits. " +
   "Use the feature ids from the FEATURES list and milestone ids from the MILESTONES list in PROJECT STATUS; if the operator names one that isn't listed, propose add_feature/add_milestone to create it (you can create it and link in the same batch), and never invent an id. " +
   "For `targetAt` prefer an epoch-ms timestamp for the date the operator gives.\n" +
   "Notes on set_schedule: either or both fields may be present. `estimatedDurationMs` = how long you think the task takes; " +
@@ -97,23 +97,13 @@ export async function prefetchProjectDocs(
   project: Project,
   perDocChars: number = MAX_DOC_CHARS,
 ): Promise<string> {
+  if (!project.repoPath && !project.repo) return "";
   let docs = "";
-  if (project.repoPath) {
-    // Local checkout — read the top-level listing + key docs straight off disk.
-    const root = await readdir(project.repoPath).catch(() => [] as string[]);
-    if (root.length) docs += `\n\nTop-level files: ${root.slice(0, 60).join(", ")}`;
-    for (const rel of KEY_DOCS) {
-      // KEY_DOCS are fixed constants (no user input), so this join can't escape the repo.
-      const content = await readFile(join(project.repoPath, rel), "utf8").catch(() => null);
-      if (content) docs += `\n\n=== ${rel} ===\n${content.slice(0, perDocChars)}`;
-    }
-  } else if (project.repo) {
-    const root = await githubService.listRepoRoot(workspaceId, project.repo).catch(() => [] as string[]);
-    if (root.length) docs += `\n\nTop-level files: ${root.join(", ")}`;
-    for (const rel of KEY_DOCS) {
-      const content = await githubService.readRepoFile(workspaceId, project.repo, rel).catch(() => null);
-      if (content) docs += `\n\n=== ${rel} ===\n${content.slice(0, perDocChars)}`;
-    }
+  const root = await listProjectRoot(workspaceId, project);
+  if (root.length) docs += `\n\nTop-level files: ${root.join(", ")}`;
+  for (const rel of KEY_DOCS) {
+    const doc = await readProjectDoc(workspaceId, project, rel, { maxChars: perDocChars }).catch(() => null);
+    if (doc) docs += `\n\n=== ${rel} ===\n${doc.content}`;
   }
   return docs;
 }
@@ -138,7 +128,8 @@ export type ProjectActionKind =
   | "add_feature"
   | "add_milestone"
   | "set_task_feature"
-  | "set_feature_milestone";
+  | "set_feature_milestone"
+  | "edit_roadmap";
 
 export interface AssistantAction {
   kind: ProjectActionKind;
@@ -167,6 +158,17 @@ export interface AssistantAction {
   featureId?: string | null;
   milestoneId?: string | null;
   targetAt?: number | null;
+  // edit_roadmap. `path` is which doc; `content` is the full proposed file;
+  // `patch`/`add`/`del` are the diff shown in the confirm chip; `baselineHash`
+  // (always) and `baselineSha` (GitHub-bound projects only) pin the edit to the
+  // exact content it was drafted against, so a concurrent change is refused.
+  path?: string;
+  content?: string;
+  patch?: string;
+  add?: number;
+  del?: number;
+  baselineHash?: string;
+  baselineSha?: string;
 }
 
 /** The grounding the action validator resolves ids against (this project only).
@@ -180,6 +182,11 @@ export interface ProjectActionContext {
   // ids against real records (a misparse can't invent one, mirroring `tasks`).
   features?: { id: string; name: string }[];
   milestones?: { id: string; name: string }[];
+  // The project's ROADMAP.md, prefetched UNCLIPPED (not MAX_DOC_CHARS-limited —
+  // that cap is for general grounding, not for a whole-file edit diff). `null`
+  // when no repo is bound or neither ROADMAP.md/docs/ROADMAP.md exists — in
+  // that case edit_roadmap is never offered.
+  roadmap?: { path: string; content: string; sha?: string } | null;
 }
 
 const clip = (s: string): string => (s.length > 60 ? s.slice(0, 57) + "…" : s);
@@ -388,6 +395,29 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
       const m = (ctx.milestones ?? []).find((x) => x.id === o.milestoneId);
       if (!m) return null;
       return { kind, featureId: f.id, milestoneId: m.id, summary: `Roll feature “${clip(f.name)}” into milestone “${clip(m.name)}”` };
+    }
+    case "edit_roadmap": {
+      // Pure/sync — diffs against ctx.roadmap, prefetched by the caller. No
+      // roadmap doc available at all → nothing to propose, ever.
+      const roadmap = ctx.roadmap;
+      if (!roadmap) return null;
+      const path = str(o.path);
+      if (path !== roadmap.path) return null; // must target exactly the doc the model was shown
+      const content = typeof o.content === "string" ? o.content : "";
+      if (!content.trim() || content === roadmap.content) return null; // empty or no-op → refuse
+      const { patch, add, del } = buildUnifiedDiff(path, roadmap.content, content);
+      if (add === 0 && del === 0) return null;
+      return {
+        kind,
+        path,
+        content,
+        patch,
+        add,
+        del,
+        baselineHash: contentHash(roadmap.content),
+        ...(roadmap.sha ? { baselineSha: roadmap.sha } : {}),
+        summary: `Update ${path} — ${add} added, ${del} removed line${add + del === 1 ? "" : "s"}`,
+      };
     }
     default:
       return null;
@@ -614,6 +644,12 @@ export async function prepareStewardCall(
     features,
     milestones,
   );
+  // Prefetched UNCLIPPED (not MAX_DOC_CHARS-limited — that cap is for general
+  // grounding text, not a whole-file edit diff) regardless of local-vs-GitHub
+  // binding, so edit_roadmap always has the real current file to diff against
+  // even when the local tool-loop path (below) is what actually answers the
+  // question. Best-effort: a read failure just means no edit_roadmap this turn.
+  const roadmapDoc = await readProjectDocFromCandidates(workspaceId, project, ROADMAP_PATHS).catch(() => null);
   const actionCtx: ProjectActionContext = {
     project: { id: project.id, name: project.name },
     tasks: projectTasks.map((t) => ({ id: t.id, text: t.text, state: t.state })),
@@ -622,6 +658,7 @@ export async function prepareStewardCall(
     agents: agents.map((a) => ({ id: a.id, name: a.name })),
     features: features.map((f) => ({ id: f.id, name: f.name })),
     milestones: milestones.map((m) => ({ id: m.id, name: m.name })),
+    roadmap: roadmapDoc ? { path: roadmapDoc.path, content: roadmapDoc.content, ...(roadmapDoc.sha ? { sha: roadmapDoc.sha } : {}) } : null,
   };
   const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
   // Live, secret-safe settings snapshot so settings questions ground in real
@@ -634,6 +671,14 @@ export async function prepareStewardCall(
   }
   // GitHub-connected but not cloned → prefetch key docs + the top-level tree.
   let docs = project.repo ? await prefetchProjectDocs(workspaceId, project) : "";
+  // The general prefetch above clips ROADMAP.md to MAX_DOC_CHARS like every other
+  // doc — fine for grounding a QUESTION, but an edit_roadmap proposal drafted from
+  // a truncated file would "delete" everything past the clip as an unintended
+  // side effect of the diff. When the real file is longer, append the unclipped
+  // copy so a full-file edit is always drafted from the actual content.
+  if (project.repo && roadmapDoc && roadmapDoc.content.length > MAX_DOC_CHARS) {
+    docs += `\n\n=== ${roadmapDoc.path} (FULL — the copy above is truncated; use THIS as the exact source for any edit_roadmap edit) ===\n${roadmapDoc.content}`;
+  }
   if (project.repo && !docs) {
     docs = "\n\n(Repo is connected but no README/ROADMAP was found and files aren't cloned locally — answer from project status.)";
   }

@@ -21,7 +21,7 @@ import { Markdown } from "../components/markdown";
 import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
-import { FeaturesLens, RoadmapLens } from "./project-grouping";
+import { RoadmapDocView } from "./project-roadmap";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -406,26 +406,41 @@ function TaskCard({
         </div>
       )}
 
-      {/* Assign → is the primary affordance for starting work: an explicit button
+      {/* Start → is the primary affordance for starting work: an explicit button
           on backlog/todo cards that acquires an idle agent and moves the task to
           Ongoing (the same effect as dragging todo→ongoing, but discoverable up
-          front). Other stage changes still happen by dragging the card to another
-          lane (review→done approves, backlog drags reorder). The escape hatches
-          (Force done / Sync), Auto-pick, and Archive can't be expressed as a lane
-          move, so they stay as buttons. */}
+          front). Named "Start", not "Assign" — it doesn't just hand the task to
+          an agent, it kicks the run off immediately. Other stage changes still
+          happen by dragging the card to another lane (review→done approves,
+          backlog drags reorder). The escape hatches (Force done / Sync),
+          Auto-pick, and Archive can't be expressed as a lane move, so they stay
+          as buttons. */}
       {(s === "backlog" || s === "todo" || s === "ongoing" || s === "review" || s === "done") && (
         <div className="kb-actions" onClick={stop}>
           {(s === "backlog" || s === "todo") && (
-            <Blocked disabled={noFleet} reason={noFleet ? "No agents configured — add one in Fleet." : undefined}>
+            <Blocked disabled={noFleet} reason={noFleet ? "No agents configured — add one in Fleet before starting." : undefined}>
               <button
                 className="kb-move kb-move-primary kb-assign"
                 disabled={noFleet}
-                title={noFleet ? undefined : "Assign now — start an idle agent on this task (moves it to Ongoing)."}
+                title={noFleet ? undefined : "Start now — grabs an idle agent and moves this task to Ongoing."}
                 onClick={() => void assignTask(pid, task.id)}
               >
-                Assign →
+                Start →
               </button>
             </Blocked>
+          )}
+          {s === "backlog" && (
+            <button
+              className="kb-move"
+              title="Open Steward, focused on this project, to talk through this task before it's picked up."
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("skynet:open-steward", { detail: { text: `Let's talk through this task: "${task.text}"` } }),
+                )
+              }
+            >
+              💬 Discuss
+            </button>
           )}
           {s === "todo" && (
             <label className="kb-autopick" title="When on, an idle agent starts this task autonomously.">
@@ -825,20 +840,12 @@ export function ProjectView({
     runs,
     queue,
     tasks,
-    features,
-    milestones,
     fleet,
     updateProject,
     removeApprovalRule,
     deleteProject,
     cloneProjectRepo,
     createTask,
-    createFeature,
-    updateFeature,
-    deleteFeature,
-    createMilestone,
-    updateMilestone,
-    deleteMilestone,
     archiveAgent,
     archiveTask,
     transitionTask,
@@ -846,8 +853,6 @@ export function ProjectView({
     reorderTask,
   } = useStore();
   const confirm = useConfirm();
-  const projFeatures = features.filter((f) => f.projectId === project.id && !f.archived);
-  const projMilestones = milestones.filter((m) => m.projectId === project.id && !m.archived);
   const noFleet = fleet.length === 0;
   // Full autonomy merges every run's OWN diff with no review at all — even a
   // multi-agent "Trusted" project only merges unattended when a DIFFERENT
@@ -896,19 +901,28 @@ export function ProjectView({
     setDrag(null);
     setDropBeforeId(null);
   };
-  // Per-project lens (Kanban is the default; Timeline mirrors Home's timeline
-  // scoped to just this project; Archived shows soft-hidden tasks + restore).
-  // Persisted per-project in sessionStorage so switching back restores the
-  // last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "features" | "roadmap" | "timeline" | "archived">(() => {
+  // Per-project lens (Kanban is the default; Archived shows soft-hidden tasks +
+  // restore; Roadmap renders ROADMAP.md from the repo). Persisted per-project in
+  // sessionStorage so switching back restores the last chosen lens.
+  const [lens, setLens] = useState<"kanban" | "roadmap" | "archived">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "timeline" || v === "archived" || v === "features" || v === "roadmap" ? v : "kanban";
+    return v === "roadmap" || v === "archived" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
       sessionStorage.setItem(`skynet.proj.lens.${project.id}`, lens);
   }, [lens, project.id]);
+  // Kanban's own board-vs-timeline sub-view (Timeline used to be a top-level
+  // lens; it's a toggle within Kanban now). Independently persisted.
+  const [kanbanView, setKanbanView] = useState<"board" | "timeline">(() => {
+    if (typeof sessionStorage === "undefined") return "board";
+    return sessionStorage.getItem(`skynet.proj.kview.${project.id}`) === "timeline" ? "timeline" : "board";
+  });
+  useEffect(() => {
+    if (typeof sessionStorage !== "undefined")
+      sessionStorage.setItem(`skynet.proj.kview.${project.id}`, kanbanView);
+  }, [kanbanView, project.id]);
   // The backlog task composer's open state (lifted from AddTaskCard so a fresh
   // "Create project" landing can pop it open + focused). Landing with autoCompose
   // forces the Kanban lens (where the composer lives) and opens it once.
@@ -1069,14 +1083,29 @@ export function ProjectView({
                 ⓘ Instructions active — click to view/edit
               </button>
             )}
-            {project.repoPath && (
-              <div className="mono proj-repo-line" title={project.repoPath}>
-                {project.gitBacked ? "◈ git" : "📁"} {project.repoPath}
-                {project.gitBacked && " · runs work in auto worktrees here"}
-              </div>
-            )}
+            {/* Identity first: the GitHub repo (a human recognizes "org/repo";
+                a raw server clone path never reads as an identity). The local
+                checkout, when there's also a repo, is just where that repo's
+                working copy happens to live, not a second fact worth leading
+                with — so it renders second and, in that case, without the raw
+                path. A repoPath with NO repo (the desktop "point at a folder"
+                case) has no other identity to defer to, so it stays primary
+                and keeps its real path. */}
             {project.repo && (
               <div className="mono proj-repo-line">⑂ {project.repo} · runs branch &amp; PR here</div>
+            )}
+            {project.repoPath && (
+              <div className="mono proj-repo-line" title={project.repoPath}>
+                {project.gitBacked ? (
+                  project.repo ? (
+                    <>◈ working copy ready · runs work in auto worktrees here</>
+                  ) : (
+                    <>◈ git {project.repoPath} · runs work in auto worktrees here</>
+                  )
+                ) : (
+                  <>📁 {project.repoPath}</>
+                )}
+              </div>
             )}
             {project.baseBranch && (
               <div className="mono proj-repo-line" title="Runs cut from and open PRs against this branch instead of the default.">
@@ -1115,7 +1144,10 @@ export function ProjectView({
                 <option value="full">⚠ Full autonomy · merges to main unattended</option>
               </select>
             </label>
-            <label className="proj-autonomy" title="When on, agents autonomously triage backlog items, pick up auto-pick tasks, and review finished work.">
+            <label
+              className="proj-autonomy"
+              title="Whether work starts and gets reviewed on its own: picks up backlog tasks flagged auto-pick, and lets another agent review + resolve a finished diff. Approvals (left) is a different axis — how much of an already-running agent's OWN commands get auto-approved."
+            >
               <input
                 type="checkbox"
                 className="proj-autonomy-cb"
@@ -1123,7 +1155,7 @@ export function ProjectView({
                 onChange={(e) => updateProject(project.id, { autonomy: e.target.checked })}
               />
               <span className="proj-autonomy-switch" aria-hidden="true" />
-              <span className="proj-autonomy-label">Autonomy</span>
+              <span className="proj-autonomy-label">Autonomy <span className="proj-autonomy-sub">picks &amp; reviews work</span></span>
             </label>
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
@@ -1132,7 +1164,7 @@ export function ProjectView({
                 ▶ Preview app
               </button>
             )}
-            <button className="btn btn-ghost proj-config-btn" onClick={() => setEditing(true)} title="Project settings" aria-label="Project settings">⚙</button>
+            <button className="btn proj-config-btn" onClick={() => setEditing(true)} title="Project settings" aria-label="Project settings">⚙</button>
             {confirmDel ? (
               <span className="del-confirm">
                 Delete project?{" "}
@@ -1140,7 +1172,7 @@ export function ProjectView({
                 <button className="btn btn-ghost" onClick={() => setConfirmDel(false)}>No</button>
               </span>
             ) : (
-              <button className="btn btn-ghost btn-retire" onClick={() => setConfirmDel(true)}>Delete</button>
+              <button className="btn btn-retire" onClick={() => setConfirmDel(true)}>Delete</button>
             )}
           </div>
         </div>
@@ -1208,65 +1240,36 @@ export function ProjectView({
 
       <div className="projview-lens">
         <div className="lens-switch">
-          {(["kanban", "features", "roadmap", "timeline", "archived"] as const).map((id) => (
+          {(["kanban", "roadmap", "archived"] as const).map((id) => (
             <button
               key={id}
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban"
-                ? "Kanban"
-                : id === "features"
-                ? "Features"
-                : id === "roadmap"
-                ? "Roadmap"
-                : id === "timeline"
-                ? "Timeline"
-                : "Archived"}
-              {id === "features" && projFeatures.length > 0 && (
-                <span className="lens-btn-count">{projFeatures.length}</span>
-              )}
-              {id === "roadmap" && projMilestones.length > 0 && (
-                <span className="lens-btn-count">{projMilestones.length}</span>
-              )}
+              {id === "kanban" ? "Kanban" : id === "roadmap" ? "Roadmap" : "Archived"}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
             </button>
           ))}
         </div>
+        {lens === "kanban" && (
+          <div className="lens-switch lens-switch-sub">
+            {(["board", "timeline"] as const).map((id) => (
+              <button
+                key={id}
+                className={"lens-btn" + (kanbanView === id ? " on" : "")}
+                onClick={() => setKanbanView(id)}
+              >
+                {id === "board" ? "Board" : "Timeline"}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {lens === "features" ? (
-        <FeaturesLens
-          project={project}
-          features={projFeatures}
-          milestones={projMilestones}
-          tasks={tasks.filter((t) => t.projectId === project.id && !hidden(t))}
-          runs={runById}
-          onOpenTask={onOpenTask}
-          onCreate={(name, description) => void createFeature(project.id, name, description || undefined)}
-          onUpdate={(fid, patch) => void updateFeature(fid, patch)}
-          onDelete={(fid) => void deleteFeature(fid)}
-        />
-      ) : lens === "roadmap" ? (
-        <RoadmapLens
-          project={project}
-          features={projFeatures}
-          milestones={projMilestones}
-          tasks={tasks.filter((t) => t.projectId === project.id && !hidden(t))}
-          runs={runById}
-          onOpenTask={onOpenTask}
-          onCreate={(name, description, targetAt) =>
-            void createMilestone(project.id, name, description || undefined, targetAt)
-          }
-          onUpdate={(mid, patch) => void updateMilestone(mid, patch)}
-          onDelete={(mid) => void deleteMilestone(mid)}
-        />
-      ) : lens === "timeline" ? (
-        <div className="projview-timeline">
-          <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
-        </div>
+      {lens === "roadmap" ? (
+        <RoadmapDocView project={project} />
       ) : lens === "archived" ? (
         <div className="projview-archived">
           {archivedTasks.length === 0 ? (
@@ -1295,6 +1298,10 @@ export function ProjectView({
               })}
             </div>
           )}
+        </div>
+      ) : kanbanView === "timeline" ? (
+        <div className="projview-timeline">
+          <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
         </div>
       ) : (
       <BoardDnd.Provider value={{ drag, begin: setDrag, end: () => { setDrag(null); setDropBeforeId(null); }, dropBeforeId }}>
