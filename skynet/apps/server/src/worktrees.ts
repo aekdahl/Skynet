@@ -219,6 +219,23 @@ export class WorktreeProvisioner {
     return { committed: true, sha };
   }
 
+  /** Current HEAD commit of the agent's worktree — e.g. for checkpointing after
+   *  a {@link commitAll} that found nothing new (`sha` is only set when it
+   *  actually committed; this always resolves the worktree's real HEAD). */
+  async headSha(runId: string): Promise<string> {
+    return this.git(this.pathFor(runId), "rev-parse", "HEAD");
+  }
+
+  /**
+   * Pin a commit under a stable ref namespace outside `refs/heads/*` so it stays
+   * reachable (never gc'd) even after the branch that produced it is deleted or
+   * reset — e.g. a checkpoint's sha, which `provision()` may later branch-delete
+   * out from under when a restore rewinds the run's branch to an EARLIER commit.
+   */
+  async pinRef(ref: string, sha: string): Promise<void> {
+    await this.git(this.repo, "update-ref", ref, sha);
+  }
+
   /** Added/deleted line counts + touched files of the branch vs its base ref. */
   async diffStat(runId: string, baseRef: string): Promise<DiffStat> {
     const path = this.pathFor(runId);

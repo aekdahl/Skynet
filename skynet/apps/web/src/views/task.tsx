@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { TaskRun } from "@skynet/shared";
+import type { Checkpoint, TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
+import { fetchCheckpoints } from "../lib/client";
 import {
   conflictModulesForAgent,
   fmtElapsed,
@@ -97,6 +98,8 @@ export function TaskDetail({
     modules,
     resolveHitl,
     forkAgent,
+    createCheckpoint,
+    restoreCheckpoint,
     streamAgentMessage,
     pauseAgent,
     resumeAgent,
@@ -137,6 +140,46 @@ export function TaskDetail({
   // live, then dropped once the persisted `↳` line lands in the log (below).
   const [streaming, setStreaming] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+
+  // Checkpoints aren't part of the WS-synced snapshot (per-run, like the diff) —
+  // fetched lazily here and kept in local state, refreshed on a new checkpoint
+  // or a switch to a different run.
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
+  const [checkpointing, setCheckpointing] = useState(false);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetchCheckpoints(agent.id)
+      .then((cps) => live && setCheckpoints(cps))
+      .catch(() => live && setCheckpoints([]));
+    return () => {
+      live = false;
+    };
+  }, [agent.id]);
+  const takeCheckpoint = async () => {
+    setCheckpointing(true);
+    try {
+      const cp = await createCheckpoint(agent.id);
+      if (cp) setCheckpoints((cps) => [...cps, cp]);
+    } finally {
+      setCheckpointing(false);
+    }
+  };
+  const restore = async (cp: Checkpoint) => {
+    const ok = await confirm({
+      title: "Restore this checkpoint?",
+      body: `Rewinds “${agent.name}” back to ${cp.label ? `"${cp.label}"` : cp.sha.slice(0, 7)} — any work done since is dropped from the branch (still reachable in git history, just no longer on it).`,
+      confirmLabel: "Restore",
+      danger: true,
+    });
+    if (!ok) return;
+    setRestoringId(cp.id);
+    try {
+      await restoreCheckpoint(agent.id, cp.id);
+    } finally {
+      setRestoringId(null);
+    }
+  };
 
   const conflictMods = conflictModulesForAgent(agent, runs);
   const conflictMod = conflictMods[0];
@@ -222,6 +265,16 @@ export function TaskDetail({
             >
               <span className="btn-gly" aria-hidden="true">⑂</span> Fork
             </button>
+            {agent.status !== "done" && (
+              <button
+                className="btn btn-ghost btn-icon"
+                disabled={checkpointing}
+                title="Snapshot this run's worktree + plan now, so it can be rewound here later"
+                onClick={() => void takeCheckpoint()}
+              >
+                <span className="btn-gly" aria-hidden="true">◍</span> {checkpointing ? "Checkpointing…" : "Checkpoint"}
+              </button>
+            )}
 
             {/* Lifecycle controls */}
             {agent.status === "paused" ? (
@@ -368,6 +421,33 @@ export function TaskDetail({
               </span>
             ))}
           </div>
+          {checkpoints.length > 0 && (
+            <>
+              <div className="panel-head">
+                CHECKPOINTS <span className="panel-sub">{checkpoints.length}</span>
+              </div>
+              <ul className="cp-list">
+                {checkpoints.map((cp) => (
+                  <li key={cp.id} className="cp-row">
+                    <span className="cp-info">
+                      <span className="cp-label">{cp.label || "checkpoint"}</span>
+                      <span className="cp-meta mono">
+                        {cp.sha.slice(0, 7)} · {Math.round(cp.progress * 100)}% · {new Date(cp.createdAt).toLocaleTimeString()}
+                      </span>
+                    </span>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      disabled={restoringId === cp.id}
+                      title="Rewind this run's worktree (and, for Claude, its conversation) back to this point"
+                      onClick={() => void restore(cp)}
+                    >
+                      {restoringId === cp.id ? "Restoring…" : "Restore"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </div>
         <div className="detail-right">
           <div className="panel panel-log">

@@ -207,6 +207,30 @@ export const TaskRun = z.object({
 });
 export type TaskRun = z.infer<typeof TaskRun>;
 
+// ─── Checkpoint ───────────────────────────────────────────────────────────
+// A durable snapshot of a run's worktree + plan state, taken mid-run so a long
+// task can be rewound in place if it goes sideways. Extends fork/resume
+// (`parentId`/`branchFromStep` above): a fork branches a NEW run off wherever
+// the parent's branch/session currently sits; a checkpoint records a specific
+// earlier POINT on the same run's own branch (a pinned sha, not "whatever HEAD
+// is right now"), so `restoreCheckpoint` can rewind that one run in place.
+export const Checkpoint = z.object({
+  id: z.string(),
+  runId: z.string(),
+  workspaceId: z.string(),
+  // Operator-supplied note ("before the refactor"); null for an unlabeled checkpoint.
+  label: z.string().nullable().default(null),
+  sha: z.string(), // the run's worktree commit at checkpoint time
+  // Claude's SDK session id at checkpoint time, so a restore can resume the
+  // conversation instead of starting a fresh turn. Null for non-Claude
+  // providers (git-branch continuity only) or if no session was captured yet.
+  claudeSessionId: z.string().nullable().default(null),
+  plan: z.array(PlanStep),
+  progress: z.number().min(0).max(1),
+  createdAt: Timestamp,
+});
+export type Checkpoint = z.infer<typeof Checkpoint>;
+
 // ─── Approval policy (agent-action gating) ──────────────────────────────────
 // How aggressively a project auto-approves an agent's GATED actions, so the
 // operator isn't asked to confirm every reversible in-sandbox command. The

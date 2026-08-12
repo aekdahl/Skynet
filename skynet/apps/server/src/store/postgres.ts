@@ -8,6 +8,7 @@ import { Pool } from "pg";
 import type {
   TaskRun,
   AuditRecord,
+  Checkpoint,
   Dependency,
   Feature,
   GithubConnection,
@@ -28,6 +29,7 @@ import { PROVIDERS } from "./providers.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS runs     (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS checkpoints (id text PRIMARY KEY, run_id text NOT NULL, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS hitl_queue (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS projects   (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS tasks      (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
@@ -49,6 +51,7 @@ CREATE TABLE IF NOT EXISTS service_tokens     (id text PRIMARY KEY, token_hash t
 CREATE INDEX IF NOT EXISTS service_tokens_hash ON service_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS service_tokens_ws   ON service_tokens(workspace_id);
 CREATE INDEX IF NOT EXISTS runs_ws   ON runs(workspace_id);
+CREATE INDEX IF NOT EXISTS checkpoints_run ON checkpoints(run_id);
 CREATE INDEX IF NOT EXISTS hitl_ws     ON hitl_queue(workspace_id);
 CREATE INDEX IF NOT EXISTS projects_ws ON projects(workspace_id);
 CREATE INDEX IF NOT EXISTS tasks_ws    ON tasks(workspace_id);
@@ -119,6 +122,28 @@ export class PostgresStore implements Store {
   }
   async appendLog(runId: string, at: number, line: string, detail?: string): Promise<void> {
     await this.pool.query("INSERT INTO run_log(run_id,at,line,detail) VALUES($1,$2,$3,$4)", [runId, at, line, detail ?? null]);
+  }
+
+  // ── checkpoints (run-scoped, not workspace-scoped — the generic list/get/put
+  // trio below keys on workspace_id, so this needs its own run_id-filtered list
+  // and a put with the extra column, same shape as runs). ─────────────────────
+  async listCheckpoints(runId: string): Promise<Checkpoint[]> {
+    const { rows } = await this.pool.query<{ data: Checkpoint }>(
+      "SELECT data FROM checkpoints WHERE run_id=$1 ORDER BY (data->>'createdAt')::bigint ASC",
+      [runId],
+    );
+    return rows.map((r) => r.data);
+  }
+  async getCheckpoint(id: string): Promise<Checkpoint | undefined> {
+    const { rows } = await this.pool.query<{ data: Checkpoint }>("SELECT data FROM checkpoints WHERE id=$1", [id]);
+    return rows[0]?.data;
+  }
+  async putCheckpoint(checkpoint: Checkpoint): Promise<Checkpoint> {
+    await this.pool.query(
+      "INSERT INTO checkpoints(id,run_id,workspace_id,data) VALUES($1,$2,$3,$4::jsonb) ON CONFLICT(id) DO UPDATE SET run_id=$2, workspace_id=$3, data=$4::jsonb",
+      [checkpoint.id, checkpoint.runId, checkpoint.workspaceId, J(checkpoint)],
+    );
+    return checkpoint;
   }
 
   // ── generic JSONB collections ─────────────────────────────────────────────

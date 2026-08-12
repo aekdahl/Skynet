@@ -332,6 +332,29 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // ── Checkpoint / restore (extends fork/resume) ─────────────────────────────
+  app.post<{ Params: { id: string }; Body: { label?: string } }>("/api/runs/:id/checkpoints", async (req, reply) => {
+    try {
+      return await ops.createCheckpoint(ws(req), req.params.id, req.body?.label ?? null);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.get<{ Params: { id: string } }>("/api/runs/:id/checkpoints", async (req, reply) => {
+    try {
+      return await ops.listCheckpoints(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string; checkpointId: string } }>("/api/runs/:id/checkpoints/:checkpointId/restore", async (req, reply) => {
+    try {
+      return await ops.restoreCheckpoint(ws(req), req.params.id, req.params.checkpointId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // The real diff of a run's branch (unified patch + stat) — lazily loaded by the
   // diff-review UI so patches never ride in the snapshot.
   app.get<{ Params: { id: string } }>("/api/runs/:id/diff", async (req, reply) => {
