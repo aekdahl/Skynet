@@ -179,7 +179,7 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     highest-priority task first instead of array order. (Drag-to-reorder stays the later polish.)
 
 ## v1 — Orchestration completeness & hardening
-- [ ] **⭐ Browser tools for coding agents (MCP)** — *near-term priority.* Equip the Claude runner (then the
+- [~] **⭐ Browser tools for coding agents (MCP)** — *near-term priority.* Equip the Claude runner (then the
   CLI runners) with a Chrome/Playwright **MCP** server so an agent can drive a real browser *within* a
   coding task: reproduce a bug, verify a UI change end-to-end, or read live docs before editing. Wrap,
   don't rebuild — a scoped MCP tool on the existing `runner-sdk` seam, **not** our own browser
@@ -187,7 +187,13 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   other tool. Opt-in per runner/workspace, off by default. Claude first (Agent SDK `mcpServers`), CLI
   runners after. *(Pulls the browser slice of v3's "Tools via MCP" forward — it's the highest-leverage
   tool for the code loop; verification/repro is where it pays off, and it composes with the live-preview
-  pipeline below.)*
+  pipeline below.)* *Landed: the Claude half — `browserMcpServers()` (`runner-sdk/src/claude.ts`) wraps
+  `@playwright/mcp` over stdio, wired into the live query's `mcpServers` when `StartSpec.browser` is set
+  (a per-workspace `browserTools` toggle); tools surface as `mcp__browser__…`, outside the auto-allow set,
+  so every browser action gates through normal HITL approval like any other tool.* Still to do: **CLI
+  runners** (Codex/Gemini/Cursor/Copilot) — `cli-runner.ts` has no MCP wiring at all today, and vendor
+  support varies (several don't support MCP config yet), so this is a per-vendor investigation, not one
+  drop-in change.
 - [ ] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** (+ **OpenCode**, which
   is ubiquitous across the competitor field, and **Kimi Code** — Moonshot AI's terminal coding agent, same
   CLI shape as Claude/Codex/Gemini, [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — then
