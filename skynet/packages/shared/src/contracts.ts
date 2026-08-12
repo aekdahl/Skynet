@@ -269,6 +269,15 @@ export const Project = z.object({
   // "approve always" exact-command allowances (see ApprovalRule).
   approvalLevel: ApprovalLevel.default("trusted"),
   approvalRules: z.array(ApprovalRule).default([]),
+  // Opt-in: start each run in the Claude Agent SDK's plan mode
+  // (`permissionMode: "plan"`) — the agent must propose a plan and call
+  // ExitPlanMode before making any edits; that call is intercepted and raised
+  // as a `plan` HITL the operator approves (or rejects/modifies) before any
+  // writes happen. Off by default — most tasks are small enough that the
+  // end-of-run diff review is sufficient; this is for higher-stakes work where
+  // a human wants to see the approach BEFORE anything changes. Only the Claude
+  // runner acts on it today.
+  planModeGate: z.boolean().default(false),
   // A project binds to a repository one of two ways (they can coexist):
   //  • repoPath — an absolute local folder the runs work in. When it contains
   //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
@@ -738,6 +747,7 @@ export const UpdateProjectRequest = z.object({
   status: ProjectStatus.optional(),
   autonomy: z.boolean().optional(),
   approvalLevel: ApprovalLevel.optional(),
+  planModeGate: z.boolean().optional(), // see Project.planModeGate
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
   // Project-scoped agent guidance. `null` clears the field back to "no rules".

@@ -34,6 +34,15 @@ export interface StartSpec {
    * actions still gate through the normal HITL approval flow.
    */
   browser?: boolean;
+  /**
+   * Opt-in: start this run in the Claude Agent SDK's plan mode
+   * (`permissionMode: "plan"`) — the agent must propose a plan and call
+   * ExitPlanMode before making any edits; the runner intercepts that call and
+   * raises a `plan` HITL the operator approves before writes happen. Resolved
+   * by the orchestrator from the project's `planModeGate` setting, off by
+   * default. Only the Claude runner acts on it today.
+   */
+  planModeGate?: boolean;
 }
 
 /**

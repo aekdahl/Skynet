@@ -413,6 +413,7 @@ export function updateProject(
     status?: string;
     autonomy?: boolean;
     approvalLevel?: string;
+    planModeGate?: boolean;
     repoPath?: string | null;
     // null clears the field back to "no project rules".
     instructions?: string | null;

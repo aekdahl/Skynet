@@ -131,6 +131,7 @@ export interface Store extends StoreState {
       status?: string;
       autonomy?: boolean;
       approvalLevel?: string;
+      planModeGate?: boolean;
       repoPath?: string | null;
       // null clears the project's instructions back to "no rules".
       instructions?: string | null;

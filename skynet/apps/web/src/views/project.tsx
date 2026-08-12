@@ -1291,6 +1291,22 @@ export function ProjectView({
                 <span className="proj-autonomy-hint">Agents triage, auto-pick, and review tasks on their own — off, the board is fully human-driven.</span>
               </span>
             </label>
+            <label
+              className="proj-autonomy"
+              title="Every run proposes a plan first and pauses for your approval before making any changes. Off by default; Claude runners only for now."
+            >
+              <input
+                type="checkbox"
+                className="proj-autonomy-cb"
+                checked={project.planModeGate}
+                onChange={(e) => updateProject(project.id, { planModeGate: e.target.checked })}
+              />
+              <span className="proj-autonomy-switch" aria-hidden="true" />
+              <span className="proj-autonomy-text">
+                <span className="proj-autonomy-label">Plan mode</span>
+                <span className="proj-autonomy-hint">Agents propose a plan and pause for approval before writing any changes.</span>
+              </span>
+            </label>
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
             {project.repoPath && (
