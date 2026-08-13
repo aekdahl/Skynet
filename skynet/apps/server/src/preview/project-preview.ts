@@ -51,6 +51,40 @@ export function previewEnv(extra: Record<string, string> = {}): NodeJS.ProcessEn
   return env;
 }
 
+/** `"npm run <script>"` → `<script>`, else null. Used to look up the actual
+ *  underlying command a wrapped recipe wraps, so base-injection can detect
+ *  Vite even though the literal word "vite" never appears in the wrapper.
+ *  PURE — tested. */
+export function npmRunScriptName(cmd: string): string | null {
+  const m = cmd.trim().match(/^npm\s+run\s+([^\s]+)/);
+  return m ? m[1]! : null;
+}
+
+/**
+ * Append `--base=/p/<token>/` to a recipe's command when it's Vite and
+ * doesn't already set one — see the header comment for why base-mode matters
+ * (it's the only complete fix for runtime-computed worker imports; regex
+ * rewriting in preview-proxy.ts is a best-effort fallback). `cmd` is almost
+ * always `npm run dev` (the heuristic path) — the literal word "vite" never
+ * appears there, only inside the wrapped script body — so Vite detection
+ * checks `wrappedScript` when `cmd` is an `npm run` wrapper, and the flag is
+ * passed through with `--` so npm forwards it to the script instead of
+ * consuming it itself. PURE — tested.
+ */
+export function injectViteBase(
+  recipe: { cmd: string; wrappedScript?: string },
+  token: string,
+  hasPublicOrigin: boolean,
+): { cmd: string; injected: boolean } {
+  const wrapperScript = npmRunScriptName(recipe.cmd);
+  const viteTarget = wrapperScript !== null ? recipe.wrappedScript : recipe.cmd;
+  if (!hasPublicOrigin || !viteTarget || !/(^|\s|\/)vite(\s|$)/.test(viteTarget) || /--base[=\s]/.test(viteTarget)) {
+    return { cmd: recipe.cmd, injected: false };
+  }
+  const flag = `--base=/p/${token}/`;
+  return { cmd: wrapperScript !== null ? `${recipe.cmd} -- ${flag}` : `${recipe.cmd} ${flag}`, injected: true };
+}
+
 export type PreviewStatus = "idle" | "starting" | "live" | "failed" | "stopped";
 
 // Which slice of the project's work a PROJECT preview shows:
@@ -67,6 +101,12 @@ export interface PreviewRecipe {
   /** Where the app will listen; injected as PORT and used to health-check. */
   port: number;
   source: "descriptor" | "heuristic" | "agent";
+  /** The underlying script body when `cmd` is an `npm run <script>` wrapper
+   *  (e.g. "vite --host") — lets base-injection detect Vite even though the
+   *  literal word "vite" never appears in `cmd` itself. Undefined when `cmd`
+   *  isn't a wrapped npm script (a direct command, or the script couldn't be
+   *  looked up). */
+  wrappedScript?: string;
 }
 
 export interface PreviewState {
@@ -311,13 +351,32 @@ export class ProjectPreviewManager {
     }
   }
 
+  /** package.json's `scripts[name]` body, if the file and script both exist. */
+  private readPackageScript(dir: string, name: string): string | undefined {
+    const pkgPath = join(dir, "package.json");
+    if (!existsSync(pkgPath)) return undefined;
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { scripts?: Record<string, string> };
+      return pkg.scripts?.[name];
+    } catch {
+      return undefined; // malformed package.json
+    }
+  }
+
   /** Deterministic recipe: `.skynet/preview.json` descriptor, then a
    *  package.json script heuristic. No I/O beyond reading two files. */
   private resolveRecipeStatic(dir: string, port: number): PreviewRecipe | null {
     const d = this.readDescriptor(dir);
     if (d) {
       const cmd = d.dev || d.start;
-      if (cmd) return { cmd, port: d.port ?? port, source: "descriptor" };
+      if (cmd) {
+        // A human/agent-authored descriptor can itself be an `npm run <script>`
+        // wrapper — look up the real script body too, same as the heuristic
+        // path below, so Vite detection works here as well.
+        const scriptName = npmRunScriptName(cmd);
+        const wrappedScript = scriptName ? this.readPackageScript(dir, scriptName) : undefined;
+        return { cmd, port: d.port ?? port, source: "descriptor", ...(wrappedScript ? { wrappedScript } : {}) };
+      }
     }
     const pkgPath = join(dir, "package.json");
     if (existsSync(pkgPath)) {
@@ -325,7 +384,7 @@ export class ProjectPreviewManager {
         const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { scripts?: Record<string, string> };
         const scripts = pkg.scripts ?? {};
         const script = ["dev", "start", "serve", "preview"].find((s) => scripts[s]);
-        if (script) return { cmd: `npm run ${script}`, port, source: "heuristic" };
+        if (script) return { cmd: `npm run ${script}`, port, source: "heuristic", wrappedScript: scripts[script] };
       } catch {
         /* malformed package.json */
       }
@@ -742,11 +801,18 @@ export class ProjectPreviewManager {
 
       // When we'll serve this preview through the public `/p/<token>/` proxy
       // (hosted — a public origin is known), a Vite dev server must emit its
-      // asset + HMR URLs under that base, else they 404 off the prefix. Inject
+      // asset + HMR URLs under that base, else they 404 off the prefix (and
+      // anything Vite can't statically rewrite to a literal — a worker's own
+      // runtime `import(variable)`, e.g. pdfjs-dist's fake-worker fallback —
+      // ends up unprefixed no matter how good preview-proxy.ts's regexes get;
+      // base-mode is the only fix that actually covers those). Inject
       // `--base=/p/<token>/` for a Vite recipe that doesn't already set one.
-      let cmd = recipe.cmd;
-      if (publicOrigin() && /(^|\s|\/)vite(\s|$)/.test(cmd) && !/--base[=\s]/.test(cmd)) {
-        cmd = `${cmd} --base=/p/${p.token}/`;
+      // `cmd` itself is almost always `npm run dev` (the heuristic path,
+      // resolveRecipeStatic) — the literal word "vite" never appears there,
+      // only inside the wrapped script body — so `injectViteBase` detects
+      // Vite off `recipe.wrappedScript` when this is an `npm run` wrapper.
+      const { cmd, injected } = injectViteBase(recipe, p.token, Boolean(publicOrigin()));
+      if (injected) {
         p.baseInjected = true;
         this.log(p, `serving behind Skynet's proxy — added --base=/p/${p.token}/ for Vite`);
       }
