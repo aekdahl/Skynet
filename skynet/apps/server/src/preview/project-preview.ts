@@ -85,6 +85,67 @@ export function injectViteBase(
   return { cmd: wrapperScript !== null ? `${recipe.cmd} -- ${flag}` : `${recipe.cmd} ${flag}`, injected: true };
 }
 
+/**
+ * The generated Vite config a preview is pointed at via `--config` when
+ * `injectViteFsAllow` fires — LOADS the project's own config (via Vite's own
+ * `loadConfigFromFile`, so plugins/aliases/etc. are untouched) and merges in
+ * an extra `server.fs.allow` entry. Needed because `ensureDeps`'s
+ * node_modules symlink (see its own comment) resolves OUTSIDE the preview
+ * worktree, past Vite's filesystem allow-list boundary — and nesting the
+ * worktree near/inside the repo does NOT fix this: Vite's workspace-root
+ * search stops at the first ancestor with its own package.json (the
+ * worktree's own checkout) regardless of physical placement, so it never
+ * climbs far enough to discover the real node_modules (verified empirically
+ * against a live Vite server, not assumed from its docs). Any `/@fs/`
+ * reference into node_modules then 403s — a worker, wasm, or an asset a
+ * package resolves via `import.meta.url` (pdfjs-dist's `pdf.worker` is the
+ * case that surfaced this) — independent of `injectViteBase` above, and in
+ * desktop/loopback mode too (this is Vite's own boundary check, not proxy-
+ * specific).
+ *
+ * `allow` must include the worktree root itself (`process.cwd()`), not just
+ * `extraAllowPaths` — Vite only computes its own default allow-list entry
+ * (the detected workspace root, normally the worktree root) when
+ * `server.fs.allow` is left `undefined`; explicitly setting it, even to add
+ * one more path, REPLACES that default rather than extending it, which
+ * without this would 403 the worktree's own files instead (verified live:
+ * the very regression this addition fixes). PURE — tested. */
+export function viteFsAllowConfigSource(extraAllowPaths: string[]): string {
+  const allow = JSON.stringify([".", ...extraAllowPaths]);
+  return `import { defineConfig, mergeConfig, loadConfigFromFile } from "vite";
+export default defineConfig(async (env) => {
+  const loaded = await loadConfigFromFile(env, undefined, process.cwd()).catch(() => null);
+  return mergeConfig(loaded?.config ?? {}, { server: { fs: { allow: ${allow} } } });
+});
+`;
+}
+
+/**
+ * Append `--config <configPath>` to `cmd` when the recipe is Vite, its
+ * node_modules is a symlink (the only case the fs.allow boundary bites — a
+ * freshly-installed real node_modules already lives inside the worktree, so
+ * needs nothing extra), and it doesn't already pass `--config` itself.
+ * Composes onto whatever `injectViteBase` already produced: reuses an
+ * existing `--` separator (an npm-run wrapper) instead of adding a second
+ * one. PURE — tested.
+ */
+export function injectViteFsAllow(
+  recipe: { cmd: string; wrappedScript?: string },
+  cmd: string,
+  configPath: string,
+  nmSymlinked: boolean,
+): { cmd: string; injected: boolean } {
+  const wrapperScript = npmRunScriptName(recipe.cmd);
+  const viteTarget = wrapperScript !== null ? recipe.wrappedScript : recipe.cmd;
+  if (!nmSymlinked || !viteTarget || !/(^|\s|\/)vite(\s|$)/.test(viteTarget) || /--config[=\s]/.test(viteTarget)) {
+    return { cmd, injected: false };
+  }
+  const flag = `--config ${JSON.stringify(configPath)}`;
+  const hasSeparator = / -- /.test(cmd) || cmd.trimEnd().endsWith("--");
+  const next = wrapperScript !== null && !hasSeparator ? `${cmd} -- ${flag}` : `${cmd} ${flag}`;
+  return { cmd: next, injected: true };
+}
+
 export type PreviewStatus = "idle" | "starting" | "live" | "failed" | "stopped";
 
 // Which slice of the project's work a PROJECT preview shows:
@@ -811,10 +872,30 @@ export class ProjectPreviewManager {
       // resolveRecipeStatic) — the literal word "vite" never appears there,
       // only inside the wrapped script body — so `injectViteBase` detects
       // Vite off `recipe.wrappedScript` when this is an `npm run` wrapper.
-      const { cmd, injected } = injectViteBase(recipe, p.token, Boolean(publicOrigin()));
+      const { cmd: cmdWithBase, injected } = injectViteBase(recipe, p.token, Boolean(publicOrigin()));
       if (injected) {
         p.baseInjected = true;
         this.log(p, `serving behind Skynet's proxy — added --base=/p/${p.token}/ for Vite`);
+      }
+
+      // `ensureDeps`'s node_modules symlink resolves outside this worktree,
+      // past Vite's fs.allow boundary — so any /@fs/ reference into it (a
+      // worker, wasm, or an import.meta.url-resolved asset; pdfjs-dist's
+      // pdf.worker is the case that surfaced this) 403s, independent of the
+      // base-mode fix above and in desktop/loopback mode too. See
+      // `injectViteFsAllow`'s own comment for why nesting the worktree
+      // doesn't help and a generated config does.
+      let nmSymlinked = false;
+      try {
+        nmSymlinked = lstatSync(join(p.dir, "node_modules")).isSymbolicLink();
+      } catch {
+        /* no node_modules yet, or not a link — nothing to extend */
+      }
+      const fsAllowConfigPath = join(p.dir, ".skynet-preview.vite.config.mjs");
+      const { cmd, injected: fsAllowInjected } = injectViteFsAllow(recipe, cmdWithBase, fsAllowConfigPath, nmSymlinked);
+      if (fsAllowInjected) {
+        await writeFile(fsAllowConfigPath, viteFsAllowConfigSource([spec.gitRepo]));
+        this.log(p, "extended Vite's fs.allow so node_modules symlinked from the checkout stays servable");
       }
       this.log(p, `▸ ${cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
 
