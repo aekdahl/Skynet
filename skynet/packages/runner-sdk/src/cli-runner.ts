@@ -11,7 +11,7 @@
 // when the binary or auth is missing — lives here once. This file is internal:
 // only ./codex and ./gemini are exported as package subpaths.
 
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution, Usage } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
@@ -86,6 +86,16 @@ export interface CliVendor {
   /** The initial prompt to write to stdin once spawned, or null if the prompt
    *  is passed entirely via argv. */
   initialStdin?(spec: StartSpec): string | null;
+  /**
+   * True when this vendor's non-interactive process hangs indefinitely on an
+   * OPEN stdin pipe — Node's `spawn()` default. Verified live for OpenCode: its
+   * `run` command completes instantly when invoked from a shell (stdin
+   * inherited/already closed) but hangs producing zero output when spawned with
+   * Node's default piped stdio, and completes instantly again once stdin is
+   * closed (`stdio: ["ignore", …]`) at spawn time. Unset/false preserves every
+   * other vendor's existing behavior.
+   */
+  readonly closeStdin?: boolean;
   /** Map one stdout line to a neutral event. Throw-safe: the base falls back to
    *  logging the raw line if this throws. */
   parseLine(line: string, ctx: ParseCtx): CliEvent;
@@ -99,7 +109,7 @@ export interface CliVendor {
 class CliRunnerHandle implements RunnerHandle {
   readonly runId: string;
   readonly provider: ProviderId;
-  private child?: ChildProcessWithoutNullStreams;
+  private child?: ChildProcess;
   private gateOpen = false;
   private pendingChat = false;
   private progress = 0;
@@ -129,12 +139,24 @@ class CliRunnerHandle implements RunnerHandle {
     // and a sandbox tool is available; otherwise runs the vendor bin directly.
     const wrapped = wrapForSandbox(this.vendor.bin, this.vendor.buildArgs(this.spec), { cwd });
     if (wrapped.note) this.events.onLog(this.runId, wrapped.note);
-    let child: ChildProcessWithoutNullStreams;
+    let child: ChildProcess;
     try {
       child = spawn(wrapped.bin, wrapped.args, {
         cwd,
-        env: { ...process.env, ...(this.vendor.env?.(this.spec) ?? {}) },
-        // Default stdio is "pipe" for all three streams.
+        // `spawn`'s `cwd` option changes the child's REAL working directory but
+        // never touches the inherited `PWD` env var — it stays whatever the
+        // Skynet server process itself was launched from. Verified live: a
+        // Bun-compiled vendor binary (OpenCode) resolves its own project
+        // directory from `PWD` rather than the OS cwd, so a stale inherited
+        // `PWD` silently pointed it at the SERVER's launch directory instead of
+        // the agent's worktree — writing real files there instead of failing
+        // loudly. Overriding PWD to match `cwd` here is strictly more correct
+        // for every vendor, not just the one that surfaced the bug.
+        env: { ...process.env, PWD: cwd, ...(this.vendor.env?.(this.spec) ?? {}) },
+        // Default stdio is "pipe" for all three streams — except a vendor that
+        // opts into closeStdin (see CliVendor), whose stdin is closed at spawn
+        // time instead (stdout/stderr stay piped either way).
+        ...(this.vendor.closeStdin ? { stdio: ["ignore", "pipe", "pipe"] as const } : {}),
       });
     } catch (err) {
       this.fallback(`could not launch ${this.vendor.bin}: ${(err as Error).message}. ${this.vendor.installHint}`);
@@ -158,8 +180,9 @@ class CliRunnerHandle implements RunnerHandle {
       this.fallback(`${this.vendor.bin} unavailable: ${(err as Error).message}. ${this.vendor.installHint}`),
     );
 
-    createInterface({ input: child.stdout }).on("line", (line) => this.onLine(line));
-    createInterface({ input: child.stderr }).on("line", (line) => {
+    // stdout/stderr are always piped (only stdin's mode varies, see above).
+    createInterface({ input: child.stdout! }).on("line", (line) => this.onLine(line));
+    createInterface({ input: child.stderr! }).on("line", (line) => {
       this.stderrTail.push(line);
       if (this.stderrTail.length > 12) this.stderrTail.shift();
     });
@@ -319,7 +342,7 @@ class CliRunnerHandle implements RunnerHandle {
     const child = this.child;
     if (!child || child.killed) return;
     try {
-      child.stdin.end();
+      child.stdin?.end();
     } catch {
       /* ignore */
     }

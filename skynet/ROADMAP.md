@@ -202,10 +202,29 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   runners** (Codex/Gemini/Cursor/Copilot) — `cli-runner.ts` has no MCP wiring at all today, and vendor
   support varies (several don't support MCP config yet), so this is a per-vendor investigation, not one
   drop-in change.
-- [ ] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** (+ **OpenCode**, which
-  is ubiquitous across the competitor field, and **Kimi Code** — Moonshot AI's terminal coding agent, same
-  CLI shape as Claude/Codex/Gemini, [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — then
-  breadth reactively from the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
+- [~] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** done; **Kimi Code**
+  (Moonshot AI's terminal coding agent, same CLI shape as Claude/Codex/Gemini,
+  [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) still to do; then breadth reactively from
+  [docs/runner-catalog.md](docs/runner-catalog.md). **OpenCode landed**
+  (`packages/runner-sdk/src/opencode.ts`, `RUNNER=opencode`, npm `opencode-ai`) — drives `opencode run
+  --format json`, a real NDJSON stream verified live against 1.18.18 (a plain reply, a bash call, and a file
+  write, each captured and locked into `tests/cli-runner-vendor-usage.test.ts`); `usageFromJson` needed zero
+  vendor-specific unwrapping since its per-step `input`/`output`/`cost` fields already match the scanner's
+  aliases — opencode.ts accumulates them itself (OpenCode reports per-step deltas, not a running session
+  total the way Codex does). No live HITL gate: `run`'s non-interactive mode auto-*rejects* any
+  `ask`-configured permission instead of pausing for a decision (verified live — the rejection is stderr-only,
+  never a stdout event), so `--auto` avoids that trap and Skynet's own post-run diff review gates the merge,
+  same as Hermes. The model catalog uses OpenCode's own `provider/model` slugs (`anthropic/claude-opus-5`
+  etc., defaulted to Anthropic per its docs) passed straight through, like Hermes' slugs. Landed alongside two
+  real bugs this integration surfaced in the shared CLI base (`cli-runner.ts`), both verified live and fixed
+  for every vendor, not just this one: (1) `opencode run` hung indefinitely producing zero output on Node
+  `spawn()`'s default *open* stdin pipe, while completing instantly from an interactive shell or with stdin
+  explicitly closed — fixed via a new opt-in `CliVendor.closeStdin` flag; (2) the OpenCode binary resolves its
+  working directory from the inherited `PWD` env var rather than the OS cwd, so a stale `PWD` (spawn's `cwd`
+  option changes the real working directory but never syncs `PWD` to match) silently pointed it at the
+  Skynet server's own launch directory instead of the agent's worktree, writing real files there while
+  `commitAll` correctly saw a clean, unrelated worktree and reported "no changes to integrate" — fixed by
+  setting `PWD` to match `cwd` on every spawn.
 - [x] **Agent labels / custom grouping** — Fleet already supports both: a "Group" field
   (`label`) with a known-groups datalist, the fleet grid groups by label with headings, and
   editing an agent's name is already part of the same Configure form.

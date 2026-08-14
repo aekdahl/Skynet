@@ -86,6 +86,16 @@ describe("verifyProviderCredential", () => {
     }
   });
 
+  it("opencode — verified the same way as claude (its stored key is injected as ANTHROPIC_API_KEY)", async () => {
+    mockResponse(false, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } });
+    const result = await verifyProviderCredential("opencode", "sk-ant-bad");
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("invalid x-api-key");
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.anthropic.com/v1/models");
+    expect((init as RequestInit).headers).toMatchObject({ "x-api-key": "sk-ant-bad" });
+  });
+
   it("never throws on a network failure — comes back as {ok:false, message}", async () => {
     fetchMock.mockRejectedValue(new Error("getaddrinfo ENOTFOUND"));
     const result = await verifyProviderCredential("claude", "sk-ant-x");

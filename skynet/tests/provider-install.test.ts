@@ -29,6 +29,9 @@ describe("provider-install", () => {
     expect(installCommandFor("gemini")).toEqual({ packageManager: "npm", command: "npm install -g @google/gemini-cli" });
     // The GitHub Copilot CLI is a standalone npm package now, so it's scriptable too.
     expect(installCommandFor("copilot")).toEqual({ packageManager: "npm", command: "npm install -g @github/copilot" });
+    // OpenCode's CLI is the `opencode-ai` npm package (verified live against
+    // opencode-ai@1.18.18) — also a plain npm install.
+    expect(installCommandFor("opencode")).toEqual({ packageManager: "npm", command: "npm install -g opencode-ai" });
     // The rest stay null: cursor is a `curl | bash` script and hermes is a manual
     // download — neither is a plain npm install the no-shell installer will run.
     expect(installCommandFor("cursor")).toBeNull();
