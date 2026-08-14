@@ -435,6 +435,30 @@ export class Operations {
     await this.getRun(ws, runId);
     return this.orchestrator.dismissReadyPr(ws, runId);
   }
+
+  // ── Ready-to-merge, feature-scoped batches (feature-scoped branch batching) ─
+  /** Fetch a feature scoped to the workspace, or throw NotFoundError (404). */
+  private async getFeatureScoped(ws: string, featureId: string): Promise<Feature> {
+    const feature = await this.store.getFeature(featureId);
+    if (!feature || feature.workspaceId !== ws) throw new NotFoundError("Feature");
+    return feature;
+  }
+  /** Features whose aggregate PR is open and awaiting a human merge decision. */
+  listReadyFeaturePrs(ws: string): Promise<Feature[]> {
+    return this.orchestrator.listReadyFeaturePrs(ws);
+  }
+  async mergeReadyFeaturePr(
+    ws: string,
+    featureId: string,
+    method: "merge" | "squash" | "rebase",
+  ): Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }> {
+    await this.getFeatureScoped(ws, featureId);
+    return this.orchestrator.mergeReadyFeaturePr(ws, featureId, method);
+  }
+  async dismissReadyFeaturePr(ws: string, featureId: string): Promise<void> {
+    await this.getFeatureScoped(ws, featureId);
+    return this.orchestrator.dismissReadyFeaturePr(ws, featureId);
+  }
   async archiveAgent(ws: string, runId: string, archived: boolean): Promise<TaskRun> {
     await this.getRun(ws, runId);
     const updated = await this.hub.setRunArchived(runId, archived);
@@ -993,6 +1017,7 @@ export class Operations {
       order: inProject.length,
       archived: false,
       createdAt: now(),
+      pr: null,
     };
     return this.hub.upsertFeature(feature);
   }

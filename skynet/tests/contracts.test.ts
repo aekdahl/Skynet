@@ -96,6 +96,7 @@ describe("contracts round-trip", () => {
       id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "billing", kind: "approval",
       title: "t", why: "w", risk: "medium", raisedAt: 1, expiresAt: null, resolvedAt: null, resolution: null,
       command: "deploy", options: null, recommended: null, steps: null, diff: null, rationale: null, flags: [],
+      sourceBranchOverride: null,
     };
     const events: ServerEvent[] = [
       { type: "run.started", run: agent },

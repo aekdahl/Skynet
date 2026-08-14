@@ -403,6 +403,28 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Feature-scoped branch batching's aggregate PR — one per completed Feature,
+  // not per task (see orchestrator.ts's checkFeatureCompletion). Only Merge +
+  // Dismiss: no Rework/Update-branch for a batch (see the plan).
+  app.get("/api/features/pr/ready", (req) => ops.listReadyFeaturePrs(ws(req)));
+  app.post<{ Params: { id: string } }>("/api/features/:id/pr/merge", async (req, reply) => {
+    const body = MergePrRequest.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.mergeReadyFeaturePr(ws(req), req.params.id, body.data.method);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/features/:id/pr/dismiss", async (req, reply) => {
+    try {
+      await ops.dismissReadyFeaturePr(ws(req), req.params.id);
+      return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // Archive / restore an agent (hidden from the board, kept in the store).
   app.post<{ Params: { id: string }; Body: { archived?: boolean } }>("/api/runs/:id/archive", async (req, reply) => {
     try {

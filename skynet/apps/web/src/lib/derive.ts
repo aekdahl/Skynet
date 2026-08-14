@@ -9,6 +9,7 @@ import type {
   Agent,
   Task,
   TaskState,
+  Feature,
 } from "@skynet/shared";
 
 // ─── time formatting ───────────────────────────────────────────────────────
@@ -170,6 +171,14 @@ export const openQueue = (queue: HitlItem[]) =>
 export const readyMerges = (runs: TaskRun[]) =>
   runs
     .filter((r) => r.pr?.state === "open" && !r.pr.dismissed)
+    .sort((a, b) => (b.pr!.openedAt ?? 0) - (a.pr!.openedAt ?? 0));
+
+// Features whose aggregate PR is open and awaiting a human merge decision
+// (feature-scoped branch batching — one PR per completed Feature, not per
+// task). Same shape/sort as readyMerges, over the already-synced store list.
+export const readyFeatureMerges = (features: Feature[]) =>
+  features
+    .filter((f) => f.pr?.state === "open" && !f.pr.dismissed)
     .sort((a, b) => (b.pr!.openedAt ?? 0) - (a.pr!.openedAt ?? 0));
 
 // ─── runner / fleet derivations ──────────────────────────────────────────────
