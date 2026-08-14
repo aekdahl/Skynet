@@ -617,6 +617,12 @@ export const Agent = z.object({
   // own agent) — this only narrows the reviewer pool further. Off = never picked
   // as a reviewer (it still does its own tasks).
   canReview: z.boolean().default(true),
+  // Area-manager hierarchy (docs/agent-hierarchy.md), landed additively ahead of
+  // the agentic manager runtime: 'worker' (default) is every agent today —
+  // unchanged behavior. 'manager' is reserved for a future per-project area
+  // manager that delegates to worker subagents; nothing in this codebase sets
+  // it yet (no manager provisioning exists), so it's inert until that lands.
+  role: z.enum(["manager", "worker"]).default("worker"),
 });
 export type Agent = z.infer<typeof Agent>;
 
