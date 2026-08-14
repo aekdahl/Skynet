@@ -342,10 +342,12 @@ export class Operations {
       at: now(),
     };
     // Capture the real diff into the audit record now, while the worktree still
-    // exists — it's retired once the branch merges, so a diff/merge decision
-    // can't be re-fetched afterward. Best-effort; the summary always remains.
+    // exists — it's retired once the branch merges, so a diff/merge/verifier
+    // decision can't be re-fetched afterward. Best-effort; the summary always
+    // remains. (A verifier gate's agent worktree is still around — only the
+    // scratch INTEGRATION worktree the check ran in was torn down.)
     let capturedDiff: CapturedDiff | undefined;
-    if (item.kind === "diff" || item.kind === "merge") {
+    if (item.kind === "diff" || item.kind === "merge" || item.kind === "verifier") {
       const d = await this.orchestrator.runDiff(item.runId).catch(() => null);
       if (d && (d.patch || d.files.length > 0)) capturedDiff = { patch: d.patch, files: d.files };
     }
@@ -524,6 +526,8 @@ export class Operations {
       syncSourceStatus: !!(repo && input.importGithubIssues),
       // Optional: stack this project's runs/PRs onto a branch; else the global default.
       baseBranch: input.baseBranch?.trim() || null,
+      // Verifier gate command is set later in project settings, else the global default.
+      checkCmd: null,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
