@@ -56,7 +56,7 @@ import {
   type ChatTurn,
 } from "./project-assistant.js";
 import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
-import { contentHash, readProjectDoc, readProjectDocFromCandidates, ROADMAP_PATHS } from "./steward/docs.js";
+import { contentHash, readProjectDoc, resolveRoadmapDoc } from "./steward/docs.js";
 import { commitLocalRepoFile } from "./local-repo-write.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
@@ -524,6 +524,9 @@ export class Operations {
       syncSourceStatus: !!(repo && input.importGithubIssues),
       // Optional: stack this project's runs/PRs onto a branch; else the global default.
       baseBranch: input.baseBranch?.trim() || null,
+      // No override at creation — set later, once the operator (or Steward)
+      // discovers the default ROADMAP.md/docs/ROADMAP.md candidates are wrong.
+      roadmapPath: null,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
@@ -554,7 +557,13 @@ export class Operations {
       patch.baseBranch === undefined
         ? {}
         : { baseBranch: patch.baseBranch?.trim() ? patch.baseBranch.trim() : null };
-    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions, ...baseBranch });
+    // Same again for the roadmap doc override: empty/whitespace clears back to
+    // null (= the default ROADMAP.md/docs/ROADMAP.md candidates).
+    const roadmapPath =
+      patch.roadmapPath === undefined
+        ? {}
+        : { roadmapPath: patch.roadmapPath?.trim() ? patch.roadmapPath.trim() : null };
+    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions, ...baseBranch, ...roadmapPath });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     return updated;
   }
@@ -1057,7 +1066,7 @@ export class Operations {
     if (!project.repoPath && !project.repo) return { state: "unbound" };
     if (project.repoPath && !existsSync(project.repoPath)) return { state: "missing_local_repo" };
     try {
-      const doc = await readProjectDocFromCandidates(ws, project, ROADMAP_PATHS);
+      const doc = await resolveRoadmapDoc(ws, project);
       return doc
         ? { state: "ok", path: doc.path, content: doc.content, source: doc.source, ...(doc.sha ? { sha: doc.sha } : {}) }
         : { state: "not_found" };

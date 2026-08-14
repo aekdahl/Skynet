@@ -147,6 +147,9 @@ export interface Store extends StoreState {
       syncSourceStatus?: boolean;
       // Branch to stack runs/PRs onto; null clears back to the global default.
       baseBranch?: string | null;
+      // Where the Roadmap tab reads its doc from; null clears back to the
+      // default ROADMAP.md/docs/ROADMAP.md candidates.
+      roadmapPath?: string | null;
     },
   ) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;
