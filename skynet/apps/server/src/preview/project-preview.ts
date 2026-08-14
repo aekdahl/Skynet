@@ -20,12 +20,12 @@
 // SPA iframes that port directly (desktop = same machine, no proxy).
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { get as httpGet } from "node:http";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { wrapForSandbox } from "@skynet/runner-sdk/sandbox";
 import { oneShotRepoAssistant } from "@skynet/runner-sdk/claude";
@@ -136,6 +136,19 @@ interface StartSpec {
 // Files whose change (when a merge is folded into the preview) means the
 // worktree's dependencies may be stale.
 const DEP_MANIFESTS = new Set(["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"]);
+// Lockfiles ensureDeps()/reconcileDepsOnRefresh() already know how to name for
+// the ROOT install; reused here per sub-directory for a nested one.
+const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"];
+
+// A recipe for a nested monorepo can embed its OWN install step for a
+// sub-package the root-level ensureDeps()/symlink never reaches (its
+// node_modules isn't hoisted to the worktree root) — e.g. `cd apps/web &&
+// pnpm install && pnpm dev`. Matches that "cd <dir> && <pm install> &&" shape
+// so reconcileEmbeddedInstalls() can skip the install half when it's already
+// warm. `g` because a recipe can chain more than one (used with both
+// .replace() and .matchAll()).
+const EMBEDDED_INSTALL_RE =
+  /cd\s+(\S+)\s*&&\s*((?:npm\s+(?:install|ci)|pnpm\s+(?:install|i)|bun\s+(?:install|i)|yarn(?:\s+install)?)(?:\s+[^&]+)?)\s*&&/g;
 
 const LOG_CAP = 200;
 const IDLE_MS = 15 * 60 * 1000; // auto-stop a preview no one is watching
@@ -580,6 +593,77 @@ export class ProjectPreviewManager {
     return "npm install";
   }
 
+  /** Where a nested sub-package's "last successful install" marker lives —
+   *  its content IS the lockfile hash from that install, nothing more. Scoped
+   *  to THIS worktree (under its own `.skynet/`), never the operator's real
+   *  checkout: reused across restarts because prepareWorktree() reuses the
+   *  worktree dir, and gone the moment a stale/broken worktree gets recreated
+   *  — exactly the lifetime an "is it still warm HERE" marker should have. */
+  private installMarkerPath(worktreeDir: string, subDir: string): string {
+    const slug = subDir.replace(/[^a-zA-Z0-9]+/g, "_");
+    return join(worktreeDir, ".skynet", "preview-installs", `${slug}.hash`);
+  }
+
+  /** Content hash of a sub-directory's lockfile, or null if it has none (then
+   *  there's nothing to pin a "still warm" claim to — always treated as
+   *  needing a real install). A CONTENT hash, deliberately not mtime:
+   *  prepareWorktree()'s checkout + `reset --hard` touches every tracked
+   *  file's mtime on EVERY restart whether or not its content changed, so
+   *  mtime would always read "stale" here. */
+  private lockfileHash(subDir: string): string | null {
+    const lockfile = LOCKFILES.map((f) => join(subDir, f)).find((f) => existsSync(f));
+    return lockfile ? createHash("sha256").update(readFileSync(lockfile)).digest("hex") : null;
+  }
+
+  /** Is a nested sub-package's install already warm — its node_modules present
+   *  AND its lockfile unchanged since the marker from the last successful
+   *  install in this reused worktree? Also returns the current hash (or null,
+   *  no lockfile) so callers don't have to re-hash to write a fresh marker. */
+  private isEmbeddedInstallWarm(worktreeDir: string, subDirRel: string): { warm: boolean; hash: string | null } {
+    const subDir = join(worktreeDir, subDirRel);
+    const hash = this.lockfileHash(subDir);
+    if (!hash || !existsSync(join(subDir, "node_modules"))) return { warm: false, hash };
+    const markerPath = this.installMarkerPath(worktreeDir, subDirRel);
+    const prev = existsSync(markerPath) ? readFileSync(markerPath, "utf8").trim() : null;
+    return { warm: prev === hash, hash };
+  }
+
+  private async writeInstallMarker(worktreeDir: string, subDirRel: string, hash: string): Promise<void> {
+    const markerPath = this.installMarkerPath(worktreeDir, subDirRel);
+    await mkdir(dirname(markerPath), { recursive: true });
+    await writeFile(markerPath, hash);
+  }
+
+  /** One `cd <dir> && <install> &&` match from EMBEDDED_INSTALL_RE, decided:
+   *  warm → strip the install (keep the `cd`, so the rest of the chain still
+   *  runs in the right place) and say why; else → keep it, but splice in a
+   *  marker-write step right after it so the marker is recorded ONLY if the
+   *  install actually exits 0 — the same `&&` short-circuit the recipe
+   *  already relies on. (A `cmd` that also starts a long-running dev server
+   *  never itself exits, so there's no other completion signal to hang a
+   *  "did the install succeed" write on.) */
+  private reconcileOneEmbeddedInstall(p: Live, dir: string, installCmdText: string): string {
+    const { warm, hash } = this.isEmbeddedInstallWarm(p.dir, dir);
+    if (warm) {
+      this.log(p, `skipping embedded install in ${dir} — node_modules is warm and its lockfile hasn't changed since the last install here`);
+      return `cd ${dir} &&`;
+    }
+    if (!hash) return `cd ${dir} && ${installCmdText} &&`; // no lockfile there to pin a marker to — always run, never claim "warm"
+    const markerPath = this.installMarkerPath(p.dir, dir);
+    const writeMarker = `mkdir -p '${dirname(markerPath)}' && printf '%s' '${hash}' > '${markerPath}'`;
+    return `cd ${dir} && ${installCmdText} && ${writeMarker} &&`;
+  }
+
+  /** Apply reconcileOneEmbeddedInstall to every embedded install the recipe
+   *  chains (usually zero or one). See EMBEDDED_INSTALL_RE. Root-level deps
+   *  are ensureDeps()'s job, untouched here — this is only the nested case
+   *  ensureDeps()'s worktree-root symlink/install can't reach. */
+  private reconcileEmbeddedInstalls(p: Live, cmd: string): string {
+    return cmd.replace(EMBEDDED_INSTALL_RE, (_full, dir: string, install: string) =>
+      this.reconcileOneEmbeddedInstall(p, dir, install),
+    );
+  }
+
   /** Run a setup command (e.g. install) to completion, streaming to the logs.
    *  Not sandboxed — install needs the registry; the untrusted app runtime (the
    *  dev server) is the wrapped one. Rejects on non-zero exit or timeout. */
@@ -744,7 +828,12 @@ export class ProjectPreviewManager {
       // (hosted — a public origin is known), a Vite dev server must emit its
       // asset + HMR URLs under that base, else they 404 off the prefix. Inject
       // `--base=/p/<token>/` for a Vite recipe that doesn't already set one.
-      let cmd = recipe.cmd;
+      // A recipe for a nested monorepo can embed its OWN install step for a
+      // sub-package ensureDeps()'s root-level symlink/install never reaches
+      // (e.g. `cd apps/web && pnpm install && pnpm dev`) — unlike the root
+      // install, nothing skips it once it's already warm, so it reran on
+      // every single start/restart. Strip it when it's provably a no-op.
+      let cmd = this.reconcileEmbeddedInstalls(p, recipe.cmd);
       if (publicOrigin() && /(^|\s|\/)vite(\s|$)/.test(cmd) && !/--base[=\s]/.test(cmd)) {
         cmd = `${cmd} --base=/p/${p.token}/`;
         p.baseInjected = true;
@@ -850,24 +939,53 @@ export class ProjectPreviewManager {
    *  dependency manifest changed — so a live preview reflects merged dep changes.
    *  Re-installs ONLY when node_modules is a real dir; when it's a symlink to the
    *  operator's checkout we leave it alone (their deps, not ours to modify) and
-   *  just note it. Best-effort + time-boxed; never breaks the refresh. */
+   *  just note it. Best-effort + time-boxed; never breaks the refresh. Also
+   *  reconciles any nested sub-package install the recipe embeds (see
+   *  reconcileEmbeddedInstalls) — independently, since a merge can touch one
+   *  without the other. */
   private async reconcileDepsOnRefresh(p: Live, before: string, after: string): Promise<void> {
-    const changed = (await this.git(p.dir, "diff", "--name-only", before, after).catch(() => ({ stdout: "" }))).stdout.split("\n");
-    if (!changed.some((f) => DEP_MANIFESTS.has(f.trim().split("/").pop() ?? ""))) return;
-    const nm = join(p.dir, "node_modules");
-    let symlink = false;
-    try {
-      symlink = lstatSync(nm).isSymbolicLink();
-    } catch {
-      return; // no node_modules at all → nothing to reconcile (started fresh next time)
+    const changed = (await this.git(p.dir, "diff", "--name-only", before, after).catch(() => ({ stdout: "" }))).stdout
+      .split("\n")
+      .map((f) => f.trim())
+      .filter(Boolean);
+
+    if (changed.some((f) => DEP_MANIFESTS.has(f.split("/").pop() ?? ""))) {
+      const nm = join(p.dir, "node_modules");
+      let symlink = false;
+      try {
+        symlink = lstatSync(nm).isSymbolicLink();
+      } catch {
+        symlink = false; // no node_modules at all → nothing to reconcile at the root (started fresh next time)
+      }
+      if (existsSync(nm) && symlink) {
+        this.log(p, "merged changes touched dependencies — this preview uses the project checkout's node_modules; run an install there if the app needs the new deps.");
+      } else if (existsSync(nm)) {
+        const cmd = this.installCmd(p.dir);
+        this.log(p, `merged changes touched dependencies — re-installing (${cmd})…`);
+        await this.runToCompletion(cmd, p.dir, p, 3 * 60_000).catch((e) => this.log(p, `re-install failed: ${(e as Error).message}`));
+      }
     }
-    if (symlink) {
-      this.log(p, "merged changes touched dependencies — this preview uses the project checkout's node_modules; run an install there if the app needs the new deps.");
-      return;
+
+    // Nested sub-package installs the recipe embeds (see EMBEDDED_INSTALL_RE) —
+    // out of band from the && chain this time (there's no chain to piggyback
+    // on here; the dev server, if the recipe started one, is already running
+    // and unaffected by a refresh — only its on-disk node_modules needs
+    // updating). Re-run one ONLY if THIS refresh's diff actually touched files
+    // under its own directory, using the exact same warm check as
+    // reconcileOneEmbeddedInstall — an unrelated merge doesn't trigger it.
+    if (!p.recipe) return;
+    for (const m of p.recipe.cmd.matchAll(EMBEDDED_INSTALL_RE)) {
+      const dir = m[1]!;
+      const prefix = `${dir.replace(/\/+$/, "")}/`;
+      if (!changed.some((f) => f.startsWith(prefix) && DEP_MANIFESTS.has(f.split("/").pop() ?? ""))) continue;
+      const { warm, hash } = this.isEmbeddedInstallWarm(p.dir, dir);
+      if (warm || !hash) continue; // touched files under dir but not its lockfile, or no lockfile to install against
+      const cmd = m[2]!; // the exact install text the recipe specified, not a re-inferred one
+      this.log(p, `merged changes touched ${dir}'s dependencies — re-installing there (${cmd})…`);
+      await this.runToCompletion(cmd, join(p.dir, dir), p, 3 * 60_000)
+        .then(() => this.writeInstallMarker(p.dir, dir, hash))
+        .catch((e) => this.log(p, `re-install in ${dir} failed: ${(e as Error).message}`));
     }
-    const cmd = this.installCmd(p.dir);
-    this.log(p, `merged changes touched dependencies — re-installing (${cmd})…`);
-    await this.runToCompletion(cmd, p.dir, p, 3 * 60_000).catch((e) => this.log(p, `re-install failed: ${(e as Error).message}`));
   }
 
   async restart(

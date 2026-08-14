@@ -262,10 +262,24 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     live preview is reachable from a phone** (Host-rewrite → Vite allowedHosts, HMR WS bridged, Vite
     `--base` injected). **Still to do:** Phase 2 remainder (service-container runtime + auto-rebuild on
     merge) & Phase 3 (command/artifacts, "any software").
-  - **Perf — warm-worktree dep caching:** a fresh preview installs deps each start (~20s for a
-    nested monorepo whose recipe embeds `install`, since the built-in root-level provisioning doesn't
-    cover a sub-package). Cache/skip the reinstall when the reused worktree already has `node_modules`
-    (and the lockfile is unchanged) so restarts are near-instant.
+  - [x] **Perf — warm-worktree dep caching, nested sub-packages.** The root-level path (ensureDeps's
+    symlink/install, reconcileDepsOnRefresh's root reinstall) was already correct — untouched here.
+    The actual gap: a recipe for a nested monorepo can embed its OWN install directly in `recipe.cmd`
+    (`cd apps/web && pnpm install && pnpm dev`) for a sub-package the root-level provisioning never
+    reaches, and that embedded install reran on every single start/restart with nothing to skip it.
+    `project-preview.ts`'s `reconcileEmbeddedInstalls` now detects a `cd <dir> && <pm install> &&`
+    segment (`EMBEDDED_INSTALL_RE`) and strips it when that sub-package's `node_modules` already
+    exists and its lockfile is content-identical (SHA-256, not mtime — the worktree's own
+    `checkout --detach && reset --hard` on every restart touches every tracked file's mtime whether
+    or not it changed, so mtime would always read "stale" here) to the one from the last successful
+    install *in this reused worktree* (`.skynet/preview-installs/<slug>.hash`, written by a step
+    spliced into the command's own `&&` chain — the only way to know the install actually exited 0,
+    since a `cmd` that also starts a long-running dev server never itself exits). The same warm check
+    now also gates `reconcileDepsOnRefresh`'s nested case, so a merge-triggered refresh only re-runs a
+    sub-package's install when the diff actually touched *its* manifest, not any dep-file anywhere.
+    Verified against a real nested-monorepo fixture (real `npm install`, not mocked): cold start
+    installs, warm restart skips it (`▸ cd apps/web && node server.js` — no install segment at all),
+    a dependency bump makes it reinstall again.
 - [~] **🔁 Task ↔ source-of-truth sync.** Tasks imported from an external source (GitHub issues, repo
   files, a tracker) should update the source when their Skynet status changes. **Approach:** a
   `Task.source` provenance link (set at import) + a `SyncSink` adapter seam (one per source kind),
