@@ -22,6 +22,7 @@ import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
 import { RoadmapDocView } from "./project-roadmap";
+import { InformComposer, toastInformResult } from "./fleet";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -1008,9 +1009,14 @@ export function ProjectView({
     transitionTask,
     assignTask,
     reorderTask,
+    informRuns,
   } = useStore();
   const confirm = useConfirm();
   const noFleet = fleet.length === 0;
+  // Mass inform, whole-project mode: attach a note to every currently live run
+  // in this project — see InformComposer (fleet.tsx) for the shared UI.
+  const [informOpen, setInformOpen] = useState(false);
+  const liveProjectRunCount = runs.filter((r) => r.projectId === project.id && r.status !== "done").length;
   // Full autonomy merges every run's OWN diff with no review at all — even a
   // multi-agent "Trusted" project only merges unattended when a DIFFERENT
   // fleet agent LLM-reviews it favorably first. Switching to Full (but not
@@ -1340,6 +1346,15 @@ export function ProjectView({
                 ▶ Preview app
               </button>
             )}
+            {liveProjectRunCount > 0 && (
+              <button
+                className={"btn btn-ghost" + (informOpen ? " on" : "")}
+                title="Attach a note to every currently live run in this project — no extra turn, no reply expected."
+                onClick={() => setInformOpen((v) => !v)}
+              >
+                📣 Inform active agents
+              </button>
+            )}
             <button className="btn proj-config-btn" onClick={() => setEditing(true)} title="Project settings" aria-label="Project settings">⚙</button>
             {confirmDel ? (
               <span className="del-confirm">
@@ -1352,6 +1367,19 @@ export function ProjectView({
             )}
           </div>
         </div>
+      )}
+
+      {informOpen && (
+        <InformComposer
+          count={liveProjectRunCount}
+          countLabel={`this project's ${liveProjectRunCount} active agent${liveProjectRunCount === 1 ? "" : "s"}`}
+          onCancel={() => setInformOpen(false)}
+          onSend={async (note) => {
+            const { informed, skipped } = await informRuns({ note, projectId: project.id });
+            toastInformResult(informed.length, skipped.length);
+            setInformOpen(false);
+          }}
+        />
       )}
 
       {(project.approvalRules?.length ?? 0) > 0 && (

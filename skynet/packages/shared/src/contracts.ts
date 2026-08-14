@@ -719,6 +719,17 @@ export type ResolveRequest = z.infer<typeof ResolveRequest>;
 
 export const ChatRequest = z.object({ text: z.string().min(1) });
 
+// `inform` — a third interaction type alongside chat (a real extra turn) and
+// resolve (a HITL decision): a note that rides each targeted run's NEXT prompt
+// at no extra turn — never a fresh round-trip query, never a HITL gate. Select
+// explicit run ids, a whole project's live runs, or both (the two sets union).
+export const InformRequest = z.object({
+  note: z.string().min(1),
+  runIds: z.array(z.string()).default([]),
+  projectId: z.string().optional(),
+});
+export type InformRequest = z.infer<typeof InformRequest>;
+
 // ─── Ready-to-merge actions ──────────────────────────────────────────────────
 /** Merge an open PR from the ready list. `method` = the GitHub merge strategy. */
 export const MergePrRequest = z.object({

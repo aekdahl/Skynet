@@ -16,6 +16,7 @@ import {
   ProviderId,
   ResolveRequest,
   ChatRequest,
+  InformRequest,
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
@@ -321,6 +322,20 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       raw.write(`\n[stream error] ${(err as Error).message}`);
     } finally {
       raw.end();
+    }
+  });
+
+  // `inform` — mass-select runs (explicit ids and/or a whole project's live
+  // runs) and attach a note that rides each one's NEXT prompt, no extra turn.
+  // A third interaction type alongside chat (above) and resolve (HITL) — not a
+  // HITL gate itself, so this never touches /api/hitl.
+  app.post("/api/runs/inform", async (req, reply) => {
+    const body = InformRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.informRuns(ws(req), body.data);
+    } catch (err) {
+      return fail(reply, err);
     }
   });
 
