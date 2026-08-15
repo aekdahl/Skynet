@@ -452,7 +452,8 @@ kbd {
 .plan-mark { font-family: var(--font-mono); width: 14px; flex: none; }
 .plan-step.done .plan-mark { color: var(--ok); }
 .plan-step.now .plan-mark { color: var(--accent); }
-.plan ~ .panel-head { margin-top: 20px; }
+.plan ~ .panel-head, .plan-empty ~ .panel-head { margin-top: 20px; }
+.plan-empty { color: var(--muted); font-size: 12px; font-style: italic; margin: 4px 0 8px; }
 /* Triage assessment above PLAN in a run's left column — the agent-written note
    from the autonomy triage step, plus the duration estimate in the panel-head. */
 .task-triage-note { font-size: 13px; line-height: 1.5; color: var(--muted); margin: -6px 0 16px; white-space: pre-wrap; }
@@ -1769,11 +1770,15 @@ button.rb-cell:hover { color: var(--accent); }
 .rb-proj { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
 button.rb-proj:hover { color: var(--accent); }
 .rb-pill {
+  display: inline-flex; align-items: center; gap: 5px;
   font-family: var(--font-mono); font-size: 11px; color: var(--text); background: var(--raised-2, var(--raised));
   border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; cursor: pointer;
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 100%; overflow: hidden; white-space: nowrap;
 }
 .rb-pill:hover { border-color: var(--accent); color: var(--accent); }
+/* The vendor's own mark (colored glyph) — a real identity signal, not the
+   fleet runner's custom name alone. */
+.rb-prov-glyph { flex: none; font-size: 12px; line-height: 1; }
 .rb-off { color: var(--faint); }
 .rb-time { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
 
@@ -1790,6 +1795,16 @@ button.rb-proj:hover { color: var(--accent); }
   0%   { transform: scaleY(1); }
   50%  { transform: scaleY(0.08); opacity: 0.3; }
   100% { transform: scaleY(1); opacity: 1; }
+}
+/* No heartbeat in a while (see STALE_HEARTBEAT_SEC in home.tsx) — overrides
+   the tag's own color so "running" and "paused" both read as suspect the
+   same way, distinct from --danger (an open gate genuinely needs a decision)
+   and --info (a healthy, actively-heartbeating run). */
+.rb-chip.rb-stale { color: var(--warn); border-color: color-mix(in oklch, var(--warn), transparent 45%); background: color-mix(in oklch, var(--warn), transparent 88%); }
+.rb-stale-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); flex: none; animation: rb-stale-pulse 1.6s ease-in-out infinite; }
+@keyframes rb-stale-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
 }
 
 .rb-backlog-note { font-size: 12px; color: var(--faint); padding: 12px 0 14px; }
