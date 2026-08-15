@@ -425,9 +425,9 @@ function TaskCard({
                 </button>
               </>
             )}
-            <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>✎</button>
-            <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
-            <button className="kb-tool kb-tool-del" title="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
+            <button className="kb-tool" title="Edit task" aria-label="Edit task" onClick={() => setEditing(true)}>✎</button>
+            <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" aria-label="Archive task" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
+            <button className="kb-tool kb-tool-del" title="Delete task" aria-label="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
           </span>
         )}
       </div>
@@ -1363,6 +1363,7 @@ export function ProjectView({
               <button
                 className="approval-rule-x"
                 title="Revoke — this command will ask again"
+                aria-label={`Revoke auto-approval for ${r.command}`}
                 onClick={() => removeApprovalRule(project.id, r.id)}
               >
                 ×
@@ -1374,7 +1375,7 @@ export function ProjectView({
 
       {lead && (
         <div className="proj-delivery">
-          <button className="proj-delivery-head" onClick={() => setFolded((f) => !f)}>
+          <button className="proj-delivery-head" onClick={() => setFolded((f) => !f)} aria-expanded={!folded}>
             <span className="fold-caret">{folded ? "▸" : "▾"}</span>
             <span className="proj-delivery-title">LIVE PREVIEW</span>
             <span className="proj-delivery-sub">

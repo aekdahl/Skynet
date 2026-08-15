@@ -9,7 +9,15 @@
   --faint: #596172;
   --accent: #FFB224;
   --ok: #3DD68C;
-  --warn: #FFB224;
+  /* Distinct from --accent on purpose (was an accidental #FFB224 duplicate —
+     "amber does three jobs": brand + primary + caution status shared one hue,
+     degrading status scanning). A genuinely separate golden-yellow (~8° hue
+     shift, not just dimmer) for ambient/repeated caution status — risk chips,
+     wait pills, log lines, timeline bars. The handful of singular "look here,
+     a decision is needed" signals (the topbar/nav needs-you counts, the home
+     NEEDS YOU strip title) stay pinned to --accent explicitly — see their
+     rules below — so the rare, most-actionable signal keeps the brand hue. */
+  --warn: #E8C64A;
   --danger: #FF5D5D;
   --info: #5EA2FF;
   --violet: #A78BFA;
@@ -18,8 +26,26 @@
   --sp: 16px;
   --card-pad: 20px;
   --fs: 14px;
+  /* Shared UI-feedback timing (hover/focus micro-interactions and small
+     reveals) — previously ad hoc, scattered as 0.12s/0.14s/0.15s/0.18s/0.2s/
+     0.35s across individual selectors. NOT used for the slow, deliberate
+     animations that stay their own speed on purpose: .bar-fill's 0.6s width
+     fill (a progress readout, not UI feedback) and the pulse/blink/shimmer
+     "still alive" loops (@keyframes pulse/blink/pvpulse/sk-shimmer/pipe-pulse). */
+  --motion-fast: 120ms ease-out;
+  --motion-base: 200ms ease-out;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
+/* Baseline keyboard-focus ring for every interactive element — previously only
+   a handful of components (op-navitem, a few :focus-visible one-offs) had a
+   deliberate ring; everything else fell back to the browser default (visible,
+   but visually inconsistent with the app). Low specificity (element/attribute
+   selectors) on purpose: any component with its own more-specific
+   :focus-visible rule (a class selector) keeps winning without touching it. */
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible,
+textarea:focus-visible, [role="button"]:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
 html, body { height: 100%; }
 body {
   background: var(--bg);
@@ -90,7 +116,9 @@ kbd {
 /* ---------- status dots ---------- */
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
 .dot-running { background: var(--ok); box-shadow: 0 0 8px color-mix(in oklch, var(--ok), transparent 40%); }
-.dot-waiting { background: var(--warn); box-shadow: 0 0 8px color-mix(in oklch, var(--warn), transparent 40%); animation: pulse 1.6s ease-in-out infinite; }
+/* The "needs you" dot (topbar stat, subway legend) — pinned to --accent, not
+   --warn: it's the rare, singular "look here" signal, not ambient status. */
+.dot-waiting { background: var(--accent); box-shadow: 0 0 8px color-mix(in oklch, var(--accent), transparent 40%); animation: pulse 1.6s ease-in-out infinite; }
 .dot-review  { background: var(--info); }
 .dot-paused  { background: var(--muted); }
 .dot-done    { background: var(--faint); }
@@ -155,7 +183,7 @@ kbd {
      overflow the viewport. min-width:0 lets it shrink so the inner ellipsis
      engages; overflow:hidden keeps any stray content inside the rounded border. */
   min-width: 0; overflow: hidden;
-  transition: border-color 0.15s ease, transform 0.15s ease;
+  transition: border-color var(--motion-fast), transform var(--motion-fast);
 }
 .proj:hover { border-color: var(--faint); transform: translateY(-1px); }
 .proj-done { opacity: 0.55; }
@@ -213,7 +241,7 @@ kbd {
   text-align: left; font-family: var(--font-ui); color: var(--text);
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   padding: var(--card-pad); cursor: pointer; display: flex; flex-direction: column; gap: 11px;
-  transition: border-color 0.15s ease;
+  transition: border-color var(--motion-fast);
 }
 .pa-card:hover { border-color: var(--faint); }
 .pa-top { display: flex; align-items: center; gap: 10px; }
@@ -256,10 +284,14 @@ kbd {
 .qcard {
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   padding: var(--card-pad); display: flex; flex-direction: column; gap: 12px;
-  transition: opacity 0.35s ease, transform 0.35s ease, border-color 0.15s ease;
+  /* The "gate-resolve collapse" — a resolved HITL item (queue.tsx's `resolved`
+     prop → .leaving below) fades + slides out on the base tier; border-color
+     (hover/select, no real motion) stays on the fast tier. */
+  transition: opacity var(--motion-base), transform var(--motion-base), border-color var(--motion-fast);
 }
 .qcard.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 8px 32px rgba(0,0,0,0.35); }
 .qcard.leaving { opacity: 0; transform: translateX(32px); }
+@media (prefers-reduced-motion: reduce) { .qcard { transition: border-color var(--motion-fast); } .qcard.leaving { opacity: 1; transform: none; } }
 .qcard-head { display: flex; align-items: center; gap: 12px; }
 .kind-chip {
   font-family: var(--font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
@@ -379,16 +411,25 @@ kbd {
   font-family: var(--font-ui); font-size: 13px; font-weight: 500;
   background: var(--raised); color: var(--text); border: 1px solid var(--line);
   border-radius: 7px; padding: 8px 14px; cursor: pointer; min-height: 36px;
-  transition: border-color 0.12s ease, background 0.12s ease;
+  transition: border-color var(--motion-fast), background var(--motion-fast), transform var(--motion-fast);
 }
 .btn:hover { border-color: var(--faint); }
+/* Every .btn variant shares one press + focus-visible treatment — previously
+   neither existed anywhere in the file (hover was the only interactive state
+   consistently styled). Active is a subtle scale so it reads as "pressed"
+   without competing with the hover/focus color cues below. */
+.btn:active { transform: scale(0.98); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .btn-primary { background: var(--accent); color: #0B0D11; border-color: var(--accent); font-weight: 600; }
 .btn-primary:hover { border-color: var(--accent); filter: brightness(1.08); }
+.btn-primary:focus-visible { outline-color: var(--text); }
 .btn-primary kbd { color: #0B0D11; background: rgba(255,255,255,0.25); border-color: transparent; }
 .btn-danger { color: var(--danger); }
 .btn-danger:hover { border-color: var(--danger); }
+.btn-danger:focus-visible { outline-color: var(--danger); }
 .btn-ghost { background: none; color: var(--muted); border-color: transparent; }
 .btn-ghost:hover { color: var(--text); border-color: var(--line); }
+@media (prefers-reduced-motion: reduce) { .btn:active { transform: none; } }
 .rec {
   font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
   background: rgba(0,0,0,0.25); border-radius: 3px; padding: 2px 5px;
@@ -462,7 +503,7 @@ kbd {
 .log-line { color: var(--muted); white-space: pre-wrap; }
 .log-time { color: var(--faint); font-size: 10.5px; user-select: none; }
 .log-time-block { display: block; margin-bottom: 2px; }
-.log-copy { flex: none; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; cursor: pointer; transition: color 0.14s ease, border-color 0.14s ease; }
+.log-copy { flex: none; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; cursor: pointer; transition: color var(--motion-fast), border-color var(--motion-fast); }
 .log-copy:hover { color: var(--text); border-color: var(--faint); }
 .log-hitl { color: var(--warn); }
 .log-warn { color: var(--danger); }
@@ -609,7 +650,7 @@ button.chip:hover { border-color: var(--faint); }
 .swb-start-done { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in oklch, var(--ok), transparent 82%); }
 .swb-end { background: var(--panel); border: 2px solid var(--faint); }
 .swb-end-live { border-color: var(--ok); box-shadow: 0 0 10px color-mix(in oklch, var(--ok), transparent 55%); }
-.swb-anchor-label { position: absolute; transform: translateX(-50%); font-size: 9.5px; letter-spacing: 0.06em; color: var(--faint); white-space: nowrap; }
+.swb-anchor-label { position: absolute; transform: translateX(-50%); font-size: 11px; letter-spacing: 0.06em; color: var(--muted); white-space: nowrap; }
 /* rejoin the main path (END) — green once a subtree merges, grey while pending */
 .swb-fold {
   position: absolute; z-index: 1;
@@ -900,7 +941,7 @@ button.kb-done:hover { opacity: 1; }
 .kb-done-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
 /* archive control on a board card */
-.kb-archive { flex: none; background: none; border: none; color: var(--faint); cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 5px; border-radius: 5px; opacity: 0; transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease; }
+.kb-archive { flex: none; background: none; border: none; color: var(--faint); cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 5px; border-radius: 5px; opacity: 0; transition: opacity var(--motion-fast), color var(--motion-fast), background var(--motion-fast); }
 .pa-card:hover .kb-archive, .kb-done:hover .kb-archive, .kb-card:hover .kb-archive { opacity: 1; }
 
 /* ── 6-stage pipeline board ─────────────────────────────────────────────── */
@@ -1035,8 +1076,8 @@ button.kb-done:hover { opacity: 1; }
   font-size: 12.5px; color: var(--muted); cursor: pointer;
 }
 .proj-autonomy-cb { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-.proj-autonomy-switch { position: relative; width: 34px; height: 20px; border-radius: 20px; background: var(--line); flex: none; transition: background 0.15s ease; }
-.proj-autonomy-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform 0.15s ease, background 0.15s ease; }
+.proj-autonomy-switch { position: relative; width: 34px; height: 20px; border-radius: 20px; background: var(--line); flex: none; transition: background var(--motion-fast); }
+.proj-autonomy-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform var(--motion-fast), background var(--motion-fast); }
 .proj-autonomy-cb:checked + .proj-autonomy-switch { background: var(--accent); }
 .proj-autonomy-cb:checked + .proj-autonomy-switch::after { transform: translateX(14px); background: var(--bg); }
 .proj-autonomy-cb:focus-visible + .proj-autonomy-switch { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -1330,7 +1371,7 @@ button.kb-done:hover { opacity: 1; }
 .placeholder-note { display: flex; align-items: flex-start; gap: 9px; margin: 10px 0; padding: 9px 11px; font-size: 12px; line-height: 1.45; color: var(--text); background: repeating-linear-gradient(45deg, color-mix(in oklch, var(--warn), transparent 90%), color-mix(in oklch, var(--warn), transparent 90%) 9px, transparent 9px, transparent 18px), color-mix(in oklch, var(--warn), transparent 92%); border: 1px solid color-mix(in oklch, var(--warn), transparent 55%); border-radius: 8px; }
 .placeholder-note-tag { flex: none; font-family: var(--font-mono); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; color: var(--bg); background: var(--warn); border-radius: 4px; padding: 2px 6px; margin-top: 1px; }
 .placeholder-note-text { color: var(--muted); }
-.proj-backlog { font-size: 11px; color: var(--faint); padding-top: 2px; }
+.proj-backlog { font-size: 11px; color: var(--muted); padding-top: 2px; }
 .proj-merged { font-size: 11px; color: var(--ok, var(--muted)); padding-top: 2px; }
 
 /* ===== MCP access (Settings) ===== */
@@ -1487,7 +1528,7 @@ button.kb-done:hover { opacity: 1; }
 .dlv-pillval { font-family: var(--font-mono); font-weight: 600; background: #fff; border: 1px solid #D4D8E0; border-radius: 12px; padding: 2px 10px; }
 .dlv-toggle { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #3A4150; }
 .dlv-switch { width: 34px; height: 19px; border-radius: 12px; background: #C2C8D4; position: relative; }
-.dlv-switch i { position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; transition: left 0.2s; }
+.dlv-switch i { position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; transition: left var(--motion-base); }
 .dlv-switch.dlv-on { background: #2E5BE0; } .dlv-switch.dlv-on i { left: 17px; }
 .dlv-note { font-family: var(--font-mono); font-size: 10px; color: #1F8A4C; }
 /* sparkline / chart */
@@ -1553,7 +1594,7 @@ button.kb-done:hover { opacity: 1; }
 
 /* ===== backlog CRUD ===== */
 .kb-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
-.kb-card-tools { display: flex; gap: 4px; flex: none; opacity: 0; transition: opacity 0.12s ease; }
+.kb-card-tools { display: flex; gap: 4px; flex: none; opacity: 0; transition: opacity var(--motion-fast); }
 .kb-card:hover .kb-card-tools { opacity: 1; }
 .kb-tool { background: none; border: none; cursor: pointer; color: var(--faint); font-size: 14px; line-height: 1; padding: 2px 4px; border-radius: 4px; font-family: var(--font-ui); }
 .kb-tool:hover:not(:disabled) { color: var(--text); background: var(--raised); }
@@ -1597,10 +1638,10 @@ button.kb-done:hover { opacity: 1; }
 .fleet-model { font-size: 11px; color: var(--muted); }
 .fleet-task { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 7px 10px; background: var(--raised); border-radius: 7px; }
 /* Clickable "what it's running" line → opens the agent's live activity. */
-button.fleet-task-link { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid transparent; font: inherit; text-align: left; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+button.fleet-task-link { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid transparent; font: inherit; text-align: left; cursor: pointer; transition: background var(--motion-fast), border-color var(--motion-fast); }
 button.fleet-task-link:hover { background: var(--hover, var(--raised)); border-color: var(--border); }
 .fleet-task-link .fleet-task-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fleet-task-link .fleet-task-cta { flex: none; font-size: 11px; color: var(--muted, var(--faint)); opacity: 0; transition: opacity 0.12s; }
+.fleet-task-link .fleet-task-cta { flex: none; font-size: 11px; color: var(--muted, var(--faint)); opacity: 0; transition: opacity var(--motion-fast); }
 button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
 .fleet-actions { display: flex; flex-wrap: wrap; gap: 6px 8px; border-top: 1px solid var(--line-soft); padding-top: 11px; }
 .fleet-actions .btn { padding: 6px 10px; font-size: 12px; min-height: 30px; }
@@ -1610,7 +1651,7 @@ button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
 button.fleet-cardhead { display: flex; flex-direction: column; gap: 11px; width: 100%; padding: 0; margin: 0; border: none; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 button.fleet-cardhead:hover .fleet-rn { color: var(--accent); }
 button.fleet-cardhead:hover .fleet-caret { color: var(--accent); transform: translateX(2px); }
-.fleet-caret { flex: none; color: var(--muted); font-size: 15px; transition: transform 0.12s, color 0.12s; }
+.fleet-caret { flex: none; color: var(--muted); font-size: 15px; transition: transform var(--motion-fast), color var(--motion-fast); }
 .fleet-histcount { flex: none; color: var(--muted); font-size: 11px; font-family: var(--font-mono); }
 
 /* ── Agent detail view ────────────────────────────────────────────────────── */
@@ -1634,7 +1675,7 @@ button.fleet-cardhead:hover .fleet-caret { color: var(--accent); transform: tran
 .ad-h2 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 10px; }
 .ad-hist { display: flex; flex-direction: column; gap: 4px; }
 .ad-hist-empty { font-size: 13px; color: var(--muted); padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
-button.ad-hist-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); font: inherit; text-align: left; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+button.ad-hist-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); font: inherit; text-align: left; cursor: pointer; transition: background var(--motion-fast), border-color var(--motion-fast); }
 button.ad-hist-row:hover { border-color: var(--border); background: var(--raised); }
 .ad-hist-name { flex: 1; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ad-hist-state { flex: none; font-size: 11px; }
@@ -1698,12 +1739,13 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .needs-strip { display: flex; flex-direction: column; gap: 10px; }
 .needs-clear { flex-direction: row; align-items: center; gap: 9px; font-size: 13px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 15px; }
 .needs-strip-head { display: flex; align-items: baseline; justify-content: space-between; }
-.needs-strip-title { font-family: var(--font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em; color: var(--warn); white-space: nowrap; }
+/* Section headline, same "pin to --accent" reasoning as .dot-waiting above. */
+.needs-strip-title { font-family: var(--font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em; color: var(--accent); white-space: nowrap; }
 .needs-strip-hint { color: var(--muted); font-weight: 400; letter-spacing: 0.04em; margin-left: 6px; }
 .needs-strip-all { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 12px; color: var(--accent); font-weight: 500; }
 .needs-strip-all:hover { text-decoration: underline; }
 .needs-row { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 6px; scrollbar-width: thin; }
-.blocker { flex: 0 0 320px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; text-align: left; font-family: var(--font-ui); color: var(--text); transition: border-color 0.14s ease, transform 0.14s ease; }
+.blocker { flex: 0 0 320px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; text-align: left; font-family: var(--font-ui); color: var(--text); transition: border-color var(--motion-fast), transform var(--motion-fast); }
 .blocker:hover { border-color: color-mix(in oklch, var(--accent), transparent 45%); transform: translateY(-1px); }
 .blocker:hover .blocker-cta { color: var(--accent); }
 .blocker-hot { border-color: color-mix(in oklch, var(--warn), transparent 55%); }
@@ -1838,8 +1880,9 @@ button.rb-proj:hover { color: var(--accent); }
 .op-ws-name { font-size: 13px; font-weight: 600; flex: 1; }
 .op-nav { padding: 10px 8px; display: flex; flex-direction: column; gap: 1px; }
 .op-navitem { display: flex; align-items: center; gap: 11px; padding: 8px 11px; border-radius: 7px; color: var(--muted); border: none; background: none; text-align: left; font-family: var(--font-ui); font-size: 13px; width: 100%; cursor: pointer; }
-.op-navitem .ic { width: 16px; text-align: center; opacity: 0.85; }
-.op-navitem .badge { margin-left: auto; font-family: var(--font-mono); font-size: 10px; background: var(--warn); color: #0B0D11; border-radius: 9px; padding: 1px 7px; font-weight: 600; }
+.op-navitem .ic { width: 16px; height: 16px; flex: none; display: inline-flex; align-items: center; justify-content: center; opacity: 0.85; }
+/* Inbox/Ready-to-merge nav counts — same "pin to --accent" reasoning above. */
+.op-navitem .badge { margin-left: auto; font-family: var(--font-mono); font-size: 10px; background: var(--accent); color: #0B0D11; border-radius: 9px; padding: 1px 7px; font-weight: 600; }
 /* Current view (router-derived, exactly one at a time): raised bg + accent
    marker + bolder label so it reads as selected, not merely hovered. */
 .op-navitem.on { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
@@ -1856,7 +1899,7 @@ button.rb-proj:hover { color: var(--accent); }
 .op-navsec-toggle { display: flex; align-items: center; width: 100%; gap: 8px; background: none; border: none; text-align: left; font-family: var(--font-ui); text-transform: inherit; cursor: pointer; }
 .op-navsec-toggle:hover { color: var(--muted); }
 .op-navsec-toggle.on { color: var(--muted); }
-.op-navsec-caret { margin-left: auto; font-size: 9px; line-height: 1; }
+.op-navsec-caret { margin-left: auto; width: 13px; height: 13px; display: inline-flex; flex: none; }
 .op-nav-sub { padding-top: 2px; padding-bottom: 2px; }
 .op-plist { padding: 0 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1; }
 .op-pitem { display: flex; align-items: center; gap: 9px; padding: 6px 11px; border-radius: 6px; color: var(--muted); font-size: 12px; background: none; border: none; text-align: left; width: 100%; cursor: pointer; }
@@ -2069,9 +2112,9 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .gh-rule-label { font-size: 13.5px; font-weight: 500; margin-bottom: 3px; }
 .gh-rule-desc { color: var(--muted); font-size: 12px; line-height: 1.55; }
 .gh-rule-desc.is-off { color: var(--danger); }
-.gh-switch { flex: none; width: 38px; height: 22px; border-radius: 12px; border: none; cursor: pointer; position: relative; background: var(--line); transition: background .15s; margin-top: 2px; }
+.gh-switch { flex: none; width: 38px; height: 22px; border-radius: 12px; border: none; cursor: pointer; position: relative; background: var(--line); transition: background var(--motion-fast); margin-top: 2px; }
 .gh-switch.on { background: var(--accent); }
-.gh-switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.gh-switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform var(--motion-fast); }
 .gh-switch.on::after { transform: translateX(16px); }
 .gh-warn { font-size: 11.5px; color: var(--warn); margin-top: 14px; line-height: 1.5; }
 .gh-row { display: flex; gap: 10px; align-items: center; margin-top: 16px; }
@@ -2136,7 +2179,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
   .ob-steplist { flex-direction: row; flex-wrap: wrap; }
 }
 .ob-progress { display: flex; gap: 8px; justify-content: center; margin-bottom: 28px; }
-.ob-pip { width: 30px; height: 3px; border-radius: 2px; background: var(--line); transition: background .2s; }
+.ob-pip { width: 30px; height: 3px; border-radius: 2px; background: var(--line); transition: background var(--motion-base); }
 .ob-pip.on { background: var(--accent); }
 .ob-pip.done { background: var(--ok); }
 .ob-step-tag { font-family: var(--font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); text-align: center; }
@@ -2148,7 +2191,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .ob-mods { display: flex; flex-wrap: wrap; gap: 8px; }
 .ob-mod-chip { font-size: 11px; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 16px; padding: 5px 12px; }
 .ob-prov-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-.ob-prov { display: flex; align-items: center; gap: 10px; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--text); font-family: var(--font-ui); font-size: 13px; transition: border-color .15s, background .15s; }
+.ob-prov { display: flex; align-items: center; gap: 10px; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--text); font-family: var(--font-ui); font-size: 13px; transition: border-color var(--motion-fast), background var(--motion-fast); }
 .ob-prov:hover:not(:disabled) { border-color: var(--faint); }
 .ob-prov.on { background: var(--raised); }
 .ob-prov:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -2162,9 +2205,9 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .ob-fleet-glyph { font-size: 16px; width: 18px; text-align: center; flex: none; }
 .ob-fleet-select { flex: 1; min-width: 0; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--text); font-family: var(--font-ui); font-size: 13px; cursor: pointer; }
 .ob-fleet-select:disabled { opacity: 0.5; cursor: not-allowed; }
-.ob-fleet-del { flex: none; width: 32px; height: 32px; background: none; border: 1px solid var(--line); border-radius: 8px; color: var(--faint); font-size: 18px; line-height: 1; cursor: pointer; transition: color .12s, border-color .12s, background .12s; }
+.ob-fleet-del { flex: none; width: 32px; height: 32px; background: none; border: 1px solid var(--line); border-radius: 8px; color: var(--faint); font-size: 18px; line-height: 1; cursor: pointer; transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast); }
 .ob-fleet-del:hover { color: var(--danger); border-color: var(--danger); background: var(--raised); }
-.ob-fleet-add { align-self: flex-start; margin-top: 2px; background: none; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-family: var(--font-ui); font-size: 13px; padding: 9px 14px; cursor: pointer; transition: color .12s, border-color .12s; }
+.ob-fleet-add { align-self: flex-start; margin-top: 2px; background: none; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-family: var(--font-ui); font-size: 13px; padding: 9px 14px; cursor: pointer; transition: color var(--motion-fast), border-color var(--motion-fast); }
 .ob-fleet-add:hover:not(:disabled) { color: var(--text); border-color: var(--faint); }
 .ob-fleet-add:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -2181,7 +2224,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .gh-int-title { font-size: 15px; font-weight: 600; }
 .gh-int-spacer { flex: 1; }
 .gh-int-summary { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
-.gh-chev { color: var(--faint); font-size: 17px; line-height: 1; transition: transform .18s; display: inline-block; }
+.gh-chev { color: var(--faint); font-size: 17px; line-height: 1; transition: transform var(--motion-base); display: inline-block; }
 .gh-chev.open { transform: rotate(90deg); }
 .gh-int-body { margin-top: 12px; }
 .gh-pill-off { color: var(--muted); border-color: var(--line); }
@@ -2267,7 +2310,8 @@ button.firstrun-step:hover { border-color: var(--accent); }
 :root.steward-open .op-ws { justify-content: center; padding: 13px 0; }
 :root.steward-open .op-ws-name { display: none; }
 :root.steward-open .op-navitem { justify-content: center; gap: 0; padding: 8px 0; font-size: 0; }
-:root.steward-open .op-navitem .ic { font-size: 15px; width: auto; }
+/* Icon-only rail: a touch larger since there's no adjacent label to anchor to. */
+:root.steward-open .op-navitem .ic { width: 18px; height: 18px; }
 :root.steward-open .op-navitem .badge { display: none; }
 :root.steward-open .op-navsec,
 :root.steward-open .op-navsec-caret,
@@ -2283,7 +2327,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 @media (max-width: 900px) { .steward-dock { width: 100vw; max-width: 100vw; } :root.steward-open .main { padding-right: 0; } }
 /* Drag handle on the dock's left edge to resize the pane. */
 .lp-resize { position: absolute; left: 0; top: 0; bottom: 0; width: 9px; cursor: ew-resize; z-index: 2; touch-action: none; }
-.lp-resize::after { content: ""; position: absolute; left: 3px; top: 50%; transform: translateY(-50%); width: 3px; height: 44px; border-radius: 3px; background: var(--line); opacity: 0; transition: opacity .12s; }
+.lp-resize::after { content: ""; position: absolute; left: 3px; top: 50%; transform: translateY(-50%); width: 3px; height: 44px; border-radius: 3px; background: var(--line); opacity: 0; transition: opacity var(--motion-fast); }
 .lp-resize:hover::after, .lp-resize:active::after { opacity: 1; background: var(--accent); }
 .lp-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); flex-wrap: wrap; }
 .lp-title { font-weight: 600; font-size: 13px; }
@@ -2562,7 +2606,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .pf-progress-fill {
   height: 100%;
   background: var(--ok, #2ea043);
-  transition: width 0.2s ease;
+  transition: width var(--motion-base);
 }
 .pf-progress-lbl {
   min-width: 32px;

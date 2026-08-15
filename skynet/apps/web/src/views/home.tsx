@@ -405,7 +405,7 @@ function ParallelismNudgeBanner({ onConfigureFleet }: { onConfigureFleet: () => 
       <button className="parallel-nudge-cta" onClick={onConfigureFleet}>
         Add agent →
       </button>
-      <button className="approval-rule-x parallel-nudge-x" title="Dismiss" onClick={() => setDismissed(true)}>
+      <button className="approval-rule-x parallel-nudge-x" title="Dismiss" aria-label="Dismiss" onClick={() => setDismissed(true)}>
         ×
       </button>
     </div>

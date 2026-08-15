@@ -526,7 +526,7 @@ function MilestoneCard({
         {tasks.length === 0 && features.length === 0 && <div className="mcard-empty">No tasks or features yet.</div>}
       </div>
 
-      <button className="mcard-expand" onClick={() => setOpen((v) => !v)}>
+      <button className="mcard-expand" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         {open ? "Hide details" : `Details · edit · ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`}
       </button>
 
