@@ -269,13 +269,23 @@ export class Orchestrator {
         repo,
         baseBranch,
         {
-          onMerged: (req) => this.completeMerged(req.runId, req.agentBranch),
-          onConflict: (req, files) => this.raiseMergeHitl(req, files),
+          // `targetOverride` marks stage 2 of the Feature-branch hierarchy (a
+          // Feature's branch merging up into the project base) — there's no
+          // TaskRun behind that request, so it's dispatched to its own
+          // lightweight handlers rather than the run-oriented ones below.
+          onMerged: (req, branch) =>
+            req.targetOverride ? this.completeFeatureMerge(req, branch) : this.completeMerged(req.runId, req.agentBranch, req.featureId),
+          onConflict: (req, files) => (req.targetOverride ? this.raiseFeatureMergeGate(req, "conflict", files) : this.raiseMergeHitl(req, files)),
           onChecksFailed: async (req, out) => {
+            if (req.targetOverride) {
+              await this.raiseFeatureMergeGate(req, "checks-failed", [], out);
+              return;
+            }
             await this.hub.runLog(req.runId, `checks failed: ${out.slice(0, 200)}`);
             await this.hub.runStatus(req.runId, "review");
           },
-          onMergeFailed: (req, reason) => this.raiseMergeFailedHitl(req, reason),
+          onMergeFailed: (req, reason) =>
+            req.targetOverride ? this.raiseFeatureMergeGate(req, "failed", [], reason) : this.raiseMergeFailedHitl(req, reason),
           onLog: (id, line) => void this.hub.runLog(id, line),
         },
         config.checkCmd,
@@ -1126,7 +1136,14 @@ export class Orchestrator {
       // Isolated worktree cut from LATEST main: provisionCwd fetches origin and
       // branches from origin/<base> (no baseRef passed), so every run starts on
       // the newest human-merged state — not a stale local integration branch.
-      const { cwd, baseRef } = await this.provisionCwd(git, runId, branch);
+      // A task under a Feature branches from that Feature's shared branch
+      // instead (lazily created off base) — the same parent-branch mechanism
+      // fork() uses for a single parent, generalized to "the Feature's branch"
+      // as the shared parent for all its sibling tasks (ROADMAP: Feature-branch
+      // hierarchy — group a Feature's tasks under one branch, merge/test as a
+      // unit, then merge that branch up into the project base as a whole).
+      const featureBase = task.featureId && git ? await git.merge.ensureFeatureBranch(task.featureId) : undefined;
+      const { cwd, baseRef } = await this.provisionCwd(git, runId, branch, featureBase);
       // Inject this workspace's provider key (env fallback when none is stored).
       const apiKey = await secretService.resolve(project.workspaceId, runner.credentialId ?? runner.provider);
       // The agent gets the full brief: the short name plus the longer
@@ -1363,6 +1380,15 @@ export class Orchestrator {
       return;
     }
 
+    // Stage 2 of the Feature-branch hierarchy: approving merges the Feature's
+    // branch into the project base. Any other resolution just leaves the gate
+    // resolved — the Feature's tasks stay done and the branch is untouched for
+    // a later manual retry (there's no agent to bounce a `modify` back to).
+    if (item.kind === "feature-merge") {
+      if (resolution.action === "approve") await this.approveFeatureMergeGate(item);
+      return;
+    }
+
     // diff-approve / merge-retry → integrate the agent's branch. This is the
     // post-approval half of the `approveBeforePush` guardrail: the diff review
     // gated here, so reaching this point means an operator approved the push.
@@ -1382,7 +1408,15 @@ export class Orchestrator {
         if (git) {
           await this.hub.runStatus(runId, "review");
           await this.hub.runLog(runId, item.kind === "merge" ? "retrying merge after reconciliation" : "diff approved — queued for merge");
-          git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId });
+          // A task under a Feature merges into that Feature's branch first, not
+          // straight to the project integration branch (stage 1 of the
+          // Feature-branch hierarchy) — resolve it the same way completeMerged
+          // does (the captured review taskId, falling back to a runId match).
+          const taskId =
+            this.reviews.get(runId)?.taskId ??
+            (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === runId)?.id;
+          const featureId = (taskId ? await this.store.getTask(taskId) : undefined)?.featureId ?? undefined;
+          git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId, featureId });
           return;
         }
       }
@@ -1674,7 +1708,7 @@ export class Orchestrator {
   }
 
   /** Merge committed: free the runner, mark the owning task done, finish the agent. */
-  private async completeMerged(runId: string, branch: string): Promise<void> {
+  private async completeMerged(runId: string, branch: string, featureId?: string): Promise<void> {
     const review = this.reviews.get(runId);
     this.reviews.delete(runId); // integrated — no longer awaiting a revise
     const agent = await this.store.getRun(runId);
@@ -1710,6 +1744,14 @@ export class Orchestrator {
     // A change just landed on the integration branch → nudge a live preview to
     // re-point at the new tip so the operator sees the app update (docs/live-preview.md).
     if (agent?.projectId) void projectPreview.refresh(agent.projectId).catch(() => undefined);
+    // Stage 1 of the Feature-branch hierarchy just landed a task's branch onto
+    // its Feature's branch — once every task under the Feature is done, surface
+    // the stage-2 "merge Feature branch → project base" gate.
+    if (featureId && agent) {
+      await this.maybeRaiseFeatureMergeGate(featureId, agent.workspaceId, agent.projectId).catch((err) =>
+        this.hub.runLog(runId, `couldn't check Feature merge-up readiness: ${(err as Error).message}`),
+      );
+    }
   }
 
   /**
@@ -1725,6 +1767,24 @@ export class Orchestrator {
    * it's already been retired.
    */
   async runDiff(runId: string): Promise<{ patch: string; add: number; del: number; files: string[] }> {
+    // A `feature-merge` gate's runId is synthetic (`feature-${featureId}`) —
+    // no TaskRun/worktree behind it, so its diff is the Feature branch against
+    // the project base, computed directly on the shared repo (refDiffStat/
+    // refPatch need no worktree at all).
+    if (runId.startsWith("feature-")) {
+      const featureId = runId.slice("feature-".length);
+      const feature = await this.store.getFeature(featureId);
+      const project = feature ? await this.store.getProject(feature.projectId) : undefined;
+      const git = this.gitContextFor(project);
+      if (!feature || !git) return { patch: "", add: 0, del: 0, files: [] };
+      const base = this.baseBranchFor(project);
+      const featureBranch = git.merge.featureBranch(featureId);
+      const [stat, patch] = await Promise.all([
+        git.worktrees.refDiffStat(base, featureBranch),
+        git.worktrees.refPatch(base, featureBranch),
+      ]);
+      return { patch, add: stat.add, del: stat.del, files: stat.files };
+    }
     const review = this.reviews.get(runId);
     const ctx = review?.git ?? (await this.gitContextForAgent(runId).catch(() => undefined));
     if (!ctx) return { patch: "", add: 0, del: 0, files: [] };
@@ -2071,6 +2131,147 @@ export class Orchestrator {
     });
   }
 
+  // ── Feature-branch hierarchy: stage 2 (Feature branch → project base) ──────
+  // Stage 1 (a task's branch → its Feature's branch) rides the existing merge
+  // queue unchanged (MergeRequest.featureId, handled in completeMerged above).
+  // Stage 2 has no TaskRun behind it — it's the Feature as a whole — so it gets
+  // its own lightweight HITL (`feature-merge` kind) and its own gate-dedup,
+  // mirroring hasOpenMergeGate/raiseMergeHitl/raiseMergeFailedHitl above rather
+  // than stretching those run-oriented helpers to cover a runId with no run.
+
+  /** One open feature-merge gate per Feature at a time. */
+  private async hasOpenFeatureMergeGate(workspaceId: string, featureId: string): Promise<boolean> {
+    const queue = await this.store.listQueue(workspaceId);
+    return queue.some((q) => q.runId === `feature-${featureId}` && q.kind === "feature-merge" && q.resolvedAt == null);
+  }
+
+  /** Every task under `featureId` reached done → surface the human-gated
+   *  "merge Feature branch → project base" decision. No-op if the Feature has
+   *  no (non-archived) tasks, isn't fully done yet, has nothing to merge, or
+   *  already has an open gate. */
+  private async maybeRaiseFeatureMergeGate(featureId: string, workspaceId: string, projectId: string): Promise<void> {
+    const tasks = (await this.store.listTasks(workspaceId)).filter((t) => t.featureId === featureId && !t.archived);
+    if (tasks.length === 0 || tasks.some((t) => t.state !== "done")) return;
+    if (await this.hasOpenFeatureMergeGate(workspaceId, featureId)) return;
+    const project = await this.store.getProject(projectId);
+    const git = this.gitContextFor(project);
+    if (!git) return;
+    const base = this.baseBranchFor(project);
+    const featureBranch = git.merge.featureBranch(featureId);
+    const stat = await git.worktrees.refDiffStat(base, featureBranch);
+    if (stat.files.length === 0) return; // nothing to merge up
+    const feature = await this.store.getFeature(featureId);
+    const name = feature?.name ?? featureId;
+    await this.hub.raiseHitl({
+      id: `q-feature-merge-${featureId}-${++this.seq}`,
+      workspaceId,
+      runId: `feature-${featureId}`,
+      kind: "feature-merge",
+      title: `Merge Feature "${name}" — ${stat.add}+/${stat.del}− (${stat.files.length} file${stat.files.length === 1 ? "" : "s"})`,
+      why: `Every task under "${name}" is done. Approve to merge ${featureBranch} into ${base}.`,
+      risk: stat.del > 200 || stat.files.length > 40 ? "high" : "medium",
+      raisedAt: now(),
+      expiresAt: null,
+      resolvedAt: null,
+      resolution: null,
+      rationale: null,
+      command: null,
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: { add: stat.add, del: stat.del, modules: [], files: stat.files, walkthrough: null },
+      flags: [],
+    });
+  }
+
+  /** Approve on a `feature-merge` gate → enqueue the Feature's branch onto the
+   *  merge queue with an explicit target of the project base (targetOverride),
+   *  reusing the SAME queue/scratch-worktree/checks machinery a task's merge
+   *  uses — just retargeted to a Feature-vs-base merge. */
+  private async approveFeatureMergeGate(item: HitlItem): Promise<void> {
+    const featureId = item.runId.startsWith("feature-") ? item.runId.slice("feature-".length) : undefined;
+    const feature = featureId ? await this.store.getFeature(featureId) : undefined;
+    if (!featureId || !feature) {
+      await this.hub.runLog(item.runId, "feature-merge approved, but the Feature no longer exists — nothing to merge");
+      return;
+    }
+    const project = await this.store.getProject(feature.projectId);
+    const git = this.gitContextFor(project);
+    if (!git) {
+      await this.hub.runLog(item.runId, "feature-merge approved, but the project has no git backend — nothing to merge");
+      return;
+    }
+    const base = this.baseBranchFor(project);
+    const featureBranch = git.merge.featureBranch(featureId);
+    await this.hub.runLog(item.runId, `Feature merge approved — queued ${featureBranch} → ${base}`);
+    git.merge.enqueue({
+      runId: item.runId,
+      projectId: feature.projectId,
+      agentBranch: featureBranch,
+      workspaceId: item.workspaceId,
+      featureId,
+      targetOverride: base,
+    });
+  }
+
+  /** Stage 2 succeeded: the Feature's branch is now part of the project base.
+   *  No TaskRun backs this request — just log + nudge the live preview. */
+  private async completeFeatureMerge(req: MergeRequest, branch: string): Promise<void> {
+    await this.hub.runLog(req.runId, `Feature ${req.featureId} merged into ${branch}`);
+    void projectPreview.refresh(req.projectId).catch(() => undefined);
+  }
+
+  /** Stage-2 merge couldn't complete cleanly (conflict, failed checks, or a
+   *  git-level failure) — re-raise the `feature-merge` gate so approving it
+   *  retries. Unlike the task-level checksFailed path (which relies on the
+   *  run's own review-limbo sweep to eventually surface a stuck run), there's
+   *  no TaskRun here for that sweep to catch, so all three failure modes raise
+   *  explicitly rather than silently stalling. */
+  private async raiseFeatureMergeGate(
+    req: MergeRequest,
+    reasonKind: "conflict" | "checks-failed" | "failed",
+    files: string[],
+    detail?: string,
+  ): Promise<void> {
+    const featureId = req.featureId;
+    if (!featureId) return;
+    if (await this.hasOpenFeatureMergeGate(req.workspaceId, featureId)) return;
+    const feature = await this.store.getFeature(featureId);
+    const name = feature?.name ?? featureId;
+    const title =
+      reasonKind === "conflict"
+        ? `Merge conflict — ${files.length} file${files.length === 1 ? "" : "s"}`
+        : reasonKind === "checks-failed"
+          ? "Checks failed"
+          : "Integration failed — not a conflict";
+    const why =
+      reasonKind === "conflict"
+        ? `${files.length} file(s) conflict merging ${req.agentBranch} into ${req.targetOverride}. Reconcile on the Feature branch, then approve to retry.`
+        : reasonKind === "checks-failed"
+          ? `Project checks failed after merging ${req.agentBranch}: ${(detail ?? "").slice(0, 200)}. Fix on the Feature branch, then approve to retry.`
+          : `git could not merge ${req.agentBranch}: ${detail}. Fix the repo state, then approve to retry.`;
+    await this.hub.raiseHitl({
+      id: `q-feature-merge-${featureId}-${++this.seq}`,
+      workspaceId: req.workspaceId,
+      runId: `feature-${featureId}`,
+      kind: "feature-merge",
+      title: `Merge Feature "${name}" — ${title}`,
+      why,
+      risk: "high",
+      raisedAt: now(),
+      expiresAt: null,
+      resolvedAt: null,
+      resolution: null,
+      rationale: null,
+      command: null,
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: { add: 0, del: 0, modules: [], files: [], walkthrough: null },
+      flags: reasonKind === "conflict" ? files : detail ? [detail] : [],
+    });
+  }
+
   // ── chat ────────────────────────────────────────────────────────────────────
   async chat(runId: string, text: string): Promise<string> {
     await this.hub.runLog(runId, `you: ${text}`);
@@ -2340,13 +2541,25 @@ export class Orchestrator {
         await ctx.worktrees.removeAt(wt.path).catch(() => undefined);
         stats.worktreesRemoved++;
       }
-      // 2. Integrated agent branches nobody live is using.
+      // 2. Integrated agent branches nobody live is using — the project
+      // integration branch AND every project's Feature branches (a task under
+      // a Feature merges there first, never into the integration branch).
       for (const p of ps) {
         const merged = await ctx.worktrees.mergedAgentBranches(ctx.merge.integrationBranch(p.id)).catch(() => []);
         for (const name of merged) {
           if (liveBranches.has(name)) continue;
           await ctx.worktrees.deleteBranch(name).catch(() => undefined);
           stats.branchesDeleted++;
+        }
+        const features = await this.store.listFeatures(p.workspaceId).catch(() => []);
+        for (const f of features) {
+          if (f.projectId !== p.id) continue;
+          const mergedF = await ctx.worktrees.mergedAgentBranches(ctx.merge.featureBranch(f.id)).catch(() => []);
+          for (const name of mergedF) {
+            if (liveBranches.has(name)) continue;
+            await ctx.worktrees.deleteBranch(name).catch(() => undefined);
+            stats.branchesDeleted++;
+          }
         }
       }
     }

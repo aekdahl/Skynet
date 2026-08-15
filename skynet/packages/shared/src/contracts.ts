@@ -37,7 +37,7 @@ export type PlanStepState = z.infer<typeof PlanStepState>;
 // enough / fundamentally blocked), or the system tripped a guard (too long, too
 // many failures). Distinct from "question" (which resumes on an answer): the
 // human decides whether to help & resume, reassign, or stop.
-export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation"]);
+export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "feature-merge"]);
 export type HitlKind = z.infer<typeof HitlKind>;
 
 /** Default single-tenant workspace until real provisioning lands. */

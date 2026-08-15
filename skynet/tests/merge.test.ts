@@ -66,8 +66,8 @@ function harness(checkCmd?: string) {
   return { engine, calls, enqueueAndWait };
 }
 
-const req = (runId: string, agentBranch: string): MergeRequest => ({
-  runId, agentBranch, projectId: "payments", workspaceId: "cyberdyne",
+const req = (runId: string, agentBranch: string, extra: Partial<MergeRequest> = {}): MergeRequest => ({
+  runId, agentBranch, projectId: "payments", workspaceId: "cyberdyne", ...extra,
 });
 
 describe("MergeEngine", () => {
@@ -154,5 +154,108 @@ describe("MergeEngine", () => {
     // Merge commit was reset (HEAD~1) — integration branch tip is the base commit,
     // so the agent's file is not present on it.
     expect(() => git("cat-file", "-e", "skynet/integration/payments:feature.ts")).toThrow();
+  });
+});
+
+describe("MergeEngine — Feature-branch hierarchy", () => {
+  it("targets the task's Feature branch, not the project integration branch, when featureId is set", async () => {
+    git("checkout", "-b", "agent/t1", "main");
+    commit("a.ts", "export const a = 1;\n", "task 1");
+    git("checkout", "main");
+
+    const { calls, enqueueAndWait } = harness();
+    await enqueueAndWait(req("t1", "agent/t1", { featureId: "f-onboarding" }));
+
+    expect(calls.merged).toHaveLength(1);
+    expect(calls.merged[0]!.branch).toBe("skynet/feature/f-onboarding");
+    // Never touched the project integration branch.
+    expect(git("branch", "--list", "skynet/integration/payments").trim()).toBe("");
+    expect(git("cat-file", "-t", "skynet/feature/f-onboarding:a.ts").trim()).toBe("blob");
+  });
+
+  it("a task with no featureId is unaffected — still merges to the project integration branch", async () => {
+    git("checkout", "-b", "agent/plain", "main");
+    commit("b.ts", "export const b = 1;\n", "no feature");
+    git("checkout", "main");
+
+    const { calls, enqueueAndWait } = harness();
+    await enqueueAndWait(req("plain", "agent/plain"));
+
+    expect(calls.merged).toHaveLength(1);
+    expect(calls.merged[0]!.branch).toBe("skynet/integration/payments");
+  });
+
+  it("two sibling tasks under the same Feature both land on that Feature's branch, serialized like any project integration", async () => {
+    git("checkout", "-b", "agent/s1", "main");
+    commit("s1.ts", "export const s1 = 1;\n", "sibling 1");
+    git("checkout", "main");
+    git("checkout", "-b", "agent/s2", "main");
+    commit("s2.ts", "export const s2 = 1;\n", "sibling 2");
+    git("checkout", "main");
+
+    const { calls, enqueueAndWait } = harness();
+    await enqueueAndWait(req("s1", "agent/s1", { featureId: "f-x" }));
+    await enqueueAndWait(req("s2", "agent/s2", { featureId: "f-x" }));
+
+    expect(calls.merged).toHaveLength(2);
+    expect(calls.merged.every((m) => m.branch === "skynet/feature/f-x")).toBe(true);
+    expect(git("cat-file", "-t", "skynet/feature/f-x:s1.ts").trim()).toBe("blob");
+    expect(git("cat-file", "-t", "skynet/feature/f-x:s2.ts").trim()).toBe("blob");
+  });
+
+  it("a Feature branch and the project integration branch merge concurrently without racing on scratch worktrees", async () => {
+    // Regression: scratch worktree dirs used to be keyed by projectId alone, so
+    // two different target branches for the same project shared one scratch
+    // dir. Chains now serialize per TARGET branch, so two different targets for
+    // the same project run truly concurrently — the scratch path must follow.
+    git("checkout", "-b", "agent/int", "main");
+    commit("int.ts", "export const i = 1;\n", "plain task");
+    git("checkout", "main");
+    git("checkout", "-b", "agent/feat", "main");
+    commit("feat.ts", "export const f = 1;\n", "feature task");
+    git("checkout", "main");
+
+    const { calls, engine } = harness();
+    engine.enqueue(req("int", "agent/int"));
+    engine.enqueue(req("feat", "agent/feat", { featureId: "f-y" }));
+    const deadline = Date.now() + 5000;
+    while (calls.merged.length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+
+    expect(calls.merged).toHaveLength(2);
+    expect(new Set(calls.merged.map((m) => m.branch))).toEqual(
+      new Set(["skynet/integration/payments", "skynet/feature/f-y"]),
+    );
+    expect(git("cat-file", "-t", "skynet/integration/payments:int.ts").trim()).toBe("blob");
+    expect(git("cat-file", "-t", "skynet/feature/f-y:feat.ts").trim()).toBe("blob");
+  });
+
+  it("targetOverride (stage 2) merges the Feature branch directly into the given base, ignoring the project integration branch", async () => {
+    // Simulate stage 1 already having landed a task onto the Feature branch.
+    git("checkout", "-b", "skynet/feature/f-ship", "main");
+    commit("shipped.ts", "export const shipped = 1;\n", "feature work");
+    git("checkout", "main");
+
+    const { calls, enqueueAndWait } = harness();
+    await enqueueAndWait(req("feature-f-ship", "skynet/feature/f-ship", { featureId: "f-ship", targetOverride: "main" }));
+
+    expect(calls.merged).toHaveLength(1);
+    expect(calls.merged[0]!.branch).toBe("main");
+    expect(git("cat-file", "-t", "main:shipped.ts").trim()).toBe("blob");
+    // Never created/touched a project integration branch for this.
+    expect(git("branch", "--list", "skynet/integration/payments").trim()).toBe("");
+  });
+
+  it("a stage-2 conflict is escalated the same way a task-level conflict is", async () => {
+    git("checkout", "-b", "skynet/feature/f-conflict", "main");
+    commit("shared.txt", "feature version\n", "feature edits shared");
+    git("checkout", "main");
+    commit("shared.txt", "base moved on\n", "base edits shared after branch cut");
+
+    const { calls, enqueueAndWait } = harness();
+    await enqueueAndWait(req("feature-f-conflict", "skynet/feature/f-conflict", { featureId: "f-conflict", targetOverride: "main" }));
+
+    expect(calls.conflict).toHaveLength(1);
+    expect(calls.conflict[0]!.files).toContain("shared.txt");
+    expect(calls.merged).toHaveLength(0);
   });
 });

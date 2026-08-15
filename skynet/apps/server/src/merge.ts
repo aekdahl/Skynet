@@ -31,6 +31,16 @@ export interface MergeRequest {
   projectId: string;
   agentBranch: string;
   workspaceId: string;
+  /** The task's Feature (Task.featureId). When set, the merge target is the
+   *  Feature's shared branch instead of the project integration branch — every
+   *  task under a Feature merges/tests together on that branch before the
+   *  Feature merges up into the project base as a unit. */
+  featureId?: string;
+  /** Explicit merge target, overriding the featureId/projectId default. Used
+   *  for the second-stage "Feature branch → project base" merge, where
+   *  `agentBranch` IS the Feature branch and the target is the base branch
+   *  itself — not another integration/feature branch. */
+  targetOverride?: string;
 }
 
 export interface MergeCallbacks {
@@ -87,8 +97,27 @@ export class MergeEngine {
     return `skynet/integration/${projectId}`;
   }
 
+  /** Naming sibling to {@link integrationBranch}: the shared branch every one
+   *  of a Feature's task branches merges/tests into first, before the Feature
+   *  itself merges up into the project base as a unit. */
+  featureBranch(featureId: string): string {
+    return `skynet/feature/${featureId}`;
+  }
+
+  /** Lazily create a Feature's branch (off {@link baseBranch}) if it doesn't
+   *  exist yet, and return its name — so a task's worktree can branch FROM it
+   *  before any sibling task has actually merged into it. Idempotent. */
+  async ensureFeatureBranch(featureId: string): Promise<string> {
+    const branch = this.featureBranch(featureId);
+    await this.ensureBranch(branch);
+    return branch;
+  }
+
   enqueue(req: MergeRequest): void {
-    const branch = this.integrationBranch(req.projectId);
+    // Stage 2 (targetOverride) merges straight to that branch; stage 1 targets
+    // the task's Feature branch when it has one, else the project integration
+    // branch — same queue, same serialization, just a different destination.
+    const branch = req.targetOverride ?? (req.featureId ? this.featureBranch(req.featureId) : this.integrationBranch(req.projectId));
     const prev = this.chains.get(branch) ?? Promise.resolve();
     const next = prev
       .then(() => this.process(req, branch))
@@ -98,24 +127,29 @@ export class MergeEngine {
     this.chains.set(branch, next);
   }
 
-  private async ensureIntegrationBranch(branch: string): Promise<void> {
+  private async ensureBranch(branch: string): Promise<void> {
     const exists = await this.git(this.repo, "branch", "--list", branch);
     if (!exists) await this.git(this.repo, "branch", branch, this.baseBranch);
   }
 
-  /** Sanitized scratch worktree path for a project's integration merges. */
-  private scratchFor(projectId: string): string {
-    return join(this.scratchRoot, `integration-${projectId.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
+  /** Sanitized scratch worktree path for a merge target. Keyed by the TARGET
+   *  branch (not the project) — chains now serialize per branch, so a project
+   *  with several Feature branches merging concurrently must not have them
+   *  race on the same scratch dir. The "integration-" prefix is load-bearing:
+   *  the worktree GC sweep (orchestrator.gcWorktrees) skips paths with this
+   *  prefix as self-managed merge-engine scratch, never a zombie run worktree. */
+  private scratchFor(branch: string): string {
+    return join(this.scratchRoot, `integration-${branch.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
   }
 
   private async process(req: MergeRequest, branch: string): Promise<void> {
     this.cb.onLog(req.runId, `merge queue: integrating ${req.agentBranch} → ${branch}`);
-    await this.ensureIntegrationBranch(branch);
+    await this.ensureBranch(branch);
 
-    // A fresh scratch worktree holding the integration branch. --force covers a
+    // A fresh scratch worktree holding the target branch. --force covers a
     // leftover checkout of the branch elsewhere (e.g. pre-fix state where the
     // engine used to check it out in the shared repo).
-    const scratch = this.scratchFor(req.projectId);
+    const scratch = this.scratchFor(branch);
     await this.git(this.repo, "worktree", "remove", "--force", scratch).catch(() => undefined);
     await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
     await this.git(this.repo, "worktree", "add", "--force", scratch, branch);

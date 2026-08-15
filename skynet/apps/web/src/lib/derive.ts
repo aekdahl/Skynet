@@ -263,6 +263,7 @@ export const KIND_META: Record<HitlKind, { label: string; color: string }> = {
   diff: { label: "DIFF REVIEW", color: "var(--ok)" },
   merge: { label: "MERGE CONFLICT", color: "var(--danger)" },
   escalation: { label: "NEEDS HELP", color: "var(--danger)" },
+  "feature-merge": { label: "FEATURE MERGE", color: "var(--ok)" },
 };
 
 export const providerInfo = (

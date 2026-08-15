@@ -83,9 +83,9 @@ export function QueueCard({
 
       {item.flags && item.flags.length > 0 && (
         <div className="qcard-flags">
-          <span className="qcard-flags-label mono">{item.kind === "merge" ? "Conflicts in" : "Flagged"}</span>
+          <span className="qcard-flags-label mono">{item.kind === "merge" || item.kind === "feature-merge" ? "Conflicts in" : "Flagged"}</span>
           {item.flags.map((f, i) => (
-            <span key={i} className={"flag-chip" + (item.kind === "merge" ? " flag-file mono" : "")}>{f}</span>
+            <span key={i} className={"flag-chip" + (item.kind === "merge" || item.kind === "feature-merge" ? " flag-file mono" : "")}>{f}</span>
           ))}
         </div>
       )}
@@ -101,7 +101,7 @@ export function QueueCard({
         </>
       )}
 
-      {item.diff && (item.kind === "diff" || item.kind === "merge") && (
+      {item.diff && (item.kind === "diff" || item.kind === "merge" || item.kind === "feature-merge") && (
         <DiffView runId={item.runId} add={item.diff.add} del={item.diff.del} walkthrough={item.diff.walkthrough} />
       )}
 

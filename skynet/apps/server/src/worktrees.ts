@@ -274,6 +274,39 @@ export class WorktreeProvisioner {
     await this.removePath(this.pathFor(runId));
   }
 
+  /** Added/deleted line counts + touched files between two arbitrary refs —
+   *  unlike {@link diffStat}, needs no run worktree: `git diff` between two
+   *  refs is read-only against the shared repo. Used for a Feature branch's
+   *  diff against the project base (no agent worktree owns that comparison). */
+  async refDiffStat(fromRef: string, toRef: string): Promise<DiffStat> {
+    const stat: DiffStat = { add: 0, del: 0, files: [] };
+    try {
+      const out = await this.git(this.repo, "diff", "--numstat", `${fromRef}...${toRef}`);
+      for (const line of out.split("\n").filter(Boolean)) {
+        const [a, d, f] = line.split("\t");
+        stat.add += Number(a) || 0;
+        stat.del += Number(d) || 0;
+        if (f) stat.files.push(f);
+      }
+    } catch {
+      /* ignore — diff is best-effort metadata for the review */
+    }
+    return stat;
+  }
+
+  /** Full unified diff between two arbitrary refs — the ref-pair sibling of
+   *  {@link patch}. */
+  async refPatch(fromRef: string, toRef: string, maxBytes = 200_000): Promise<string> {
+    try {
+      const { stdout } = await exec(gitBin(), ["-C", this.repo, "diff", `${fromRef}...${toRef}`], {
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      return stdout.length > maxBytes ? stdout.slice(0, maxBytes) + "\n… (diff truncated — review the full branch)" : stdout;
+    } catch {
+      return "";
+    }
+  }
+
   // ── GC plumbing (see Orchestrator.gcWorktrees) ─────────────────────────────
 
   /**

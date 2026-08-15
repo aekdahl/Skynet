@@ -345,7 +345,7 @@ export class Operations {
     // exists — it's retired once the branch merges, so a diff/merge decision
     // can't be re-fetched afterward. Best-effort; the summary always remains.
     let capturedDiff: CapturedDiff | undefined;
-    if (item.kind === "diff" || item.kind === "merge") {
+    if (item.kind === "diff" || item.kind === "merge" || item.kind === "feature-merge") {
       const d = await this.orchestrator.runDiff(item.runId).catch(() => null);
       if (d && (d.patch || d.files.length > 0)) capturedDiff = { patch: d.patch, files: d.files };
     }
