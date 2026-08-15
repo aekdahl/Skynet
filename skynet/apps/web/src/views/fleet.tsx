@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ProviderId, ProviderInfo, Agent, SecretMeta } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
-import { providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy } from "../lib/derive";
+import { computeUsageRollup, fmtCost, fmtNum, providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy } from "../lib/derive";
 import { Blocked, PrimaryButton } from "../components/empty";
 import { useConfirm } from "../components/confirm";
 
@@ -258,6 +258,9 @@ export function FleetView({
   const takenNames = new Set(fleet.map((a) => a.name));
 
   const taskCountOf = (r: Agent) => runs.filter((a) => a.agentId === r.id).length;
+  // Vendor-reported cost/tokens, summed across this agent's runs (excludes
+  // archived — see computeUsageRollup). Computed once per render, not per card.
+  const usageByAgent = computeUsageRollup(runs).byAgent;
 
   const busyOf = (r: Agent) =>
     runs.find((a) => a.status !== "done" && a.agentId === r.id);
@@ -348,6 +351,15 @@ export function FleetView({
                 <>
                   {(() => {
                     const count = taskCountOf(r);
+                    const roll = usageByAgent[r.id];
+                    // "—" for genuinely no cost data (no runs, or none reported
+                    // one yet) — never 0, which would read as a real free run.
+                    const costLabel = roll?.costUsd != null ? fmtCost(roll.costUsd) : "—";
+                    const costTitle = !roll
+                      ? "No runs yet"
+                      : roll.costUsd != null
+                        ? `${fmtNum(roll.tokensIn)} in / ${fmtNum(roll.tokensOut)} out tokens${roll.uncostedRuns ? ` · ${roll.uncostedRuns} run${roll.uncostedRuns === 1 ? "" : "s"} not costed by the vendor` : ""}`
+                        : "Vendor doesn't report cost for this run";
                     return (
                       <>
                         <button
@@ -378,6 +390,9 @@ export function FleetView({
                             <span className="fleet-model mono">{r.model}</span>
                             <span className="fleet-histcount">
                               {count} task{count === 1 ? "" : "s"}
+                            </span>
+                            <span className="fleet-cost mono" title={costTitle}>
+                              {costLabel}
                             </span>
                           </div>
                         </button>

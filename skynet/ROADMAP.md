@@ -486,13 +486,26 @@ features below are white space.)
   pitch — "transport vs. generation," deep links that "hydrate state" instead of forcing a re-login.
   The underlying idea is sound and is genuinely missing; the "agent renders a whole spatial PWA on the
   fly" framing isn't — see the AG-UI note in Considerations for why we're not chasing that part.)*
-- [ ] **Operator ergonomics (P3 of [docs/ux-review.md](docs/ux-review.md)):** **⌘K command palette**
+- [~] **Operator ergonomics (P3 of [docs/ux-review.md](docs/ux-review.md)):** **⌘K command palette**
   (navigation + verbs: assign, approve latest gate, open project) · **keyboard-first Inbox**
   (j/k navigate, a/r/m approve/reject/modify, ↵ opens the run — `QueueView.selectedIdx` already
   exists; finish it + a visible shortcut bar) · **OS notifications + dock badge** on new gates
   (Electron; waiting-minutes are the product's core currency) · **Timeline lens depth** (zoom,
   brush, click-through) · **cost/usage roll-ups** (per-project header + per-runner in Fleet —
   pre-figures the team blueprint's budgets).
+  *(⌘K and keyboard-first Inbox were already shipped going into this pass. Landed this pass:
+  **cost/usage roll-ups** — one tested `computeUsageRollup` (`lib/derive.ts`), grouped by project
+  and by agent, `costUsd`/`durationMs` staying `null` (not 0) when nothing in the group reported
+  one; wired into the project header (replacing an ad hoc duplicate), new per-runner badges on
+  each Fleet card, and agent-detail's existing total fixed to distinguish "$0" from "vendor
+  doesn't report" instead of just hiding at 0. **OS notifications + dock badge** — the
+  notification-on-new-gate path (`notifyInbox`, gated behind an explicit Settings toggle) already
+  existed and needed no new code; what shipped is the Electron plumbing it was missing: a
+  `contextBridge` preload + IPC bridge for the dock/taskbar badge (live pending-HITL count) and
+  window focus/restore on notification click, plus a pre-existing `runId`/`agentId` field-name
+  mismatch in the service worker that silently broke deep-linking a click to the specific gate.
+  Still to do: **Timeline lens depth** (zoom, brush, click-through) — out of scope for this pass,
+  unverified/unscoped.)*
 
 **Memory v0 (thin moat, pulled forward from v4):**
 - [ ] Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory

@@ -1612,6 +1612,7 @@ button.fleet-cardhead:hover .fleet-rn { color: var(--accent); }
 button.fleet-cardhead:hover .fleet-caret { color: var(--accent); transform: translateX(2px); }
 .fleet-caret { flex: none; color: var(--muted); font-size: 15px; transition: transform 0.12s, color 0.12s; }
 .fleet-histcount { flex: none; color: var(--muted); font-size: 11px; font-family: var(--font-mono); }
+.fleet-cost { flex: none; color: var(--muted); font-size: 11px; font-family: var(--font-mono); }
 
 /* ── Agent detail view ────────────────────────────────────────────────────── */
 .agent-detail { max-width: 820px; }

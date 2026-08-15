@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useStore } from "../lib/store";
-import { fmtWait, providerInfo, runnerIdleLabel, runnerIsBusy, STATUS_META } from "../lib/derive";
+import { fmtCost, fmtWait, providerInfo, runnerIdleLabel, runnerIsBusy, STATUS_META } from "../lib/derive";
 import { StatusDot } from "../components/common";
 import { Blocked } from "../components/empty";
 import { ConfigForm } from "./fleet";
@@ -48,6 +48,9 @@ export function AgentDetailView({
   const activeCount = history.length - doneCount;
   const isBusy = runnerIsBusy(agent, runs);
   const tokens = history.reduce((s, a) => s + (a.usage ? a.usage.inputTokens + a.usage.outputTokens : 0), 0);
+  // Distinguish "no run here has reported a cost" from "$0" — a lifetime total
+  // that's genuinely zero should still show as $0.00, not be hidden.
+  const costKnown = history.some((a) => a.usage?.costUsd != null);
   const cost = history.reduce((s, a) => s + (a.usage?.costUsd ?? 0), 0);
 
   return (
@@ -129,9 +132,9 @@ export function AgentDetailView({
             <span>tokens</span>
           </div>
         )}
-        {cost > 0 && (
+        {costKnown && (
           <div className="ad-stat">
-            <b>${cost.toFixed(2)}</b>
+            <b>{fmtCost(cost)}</b>
             <span>cost</span>
           </div>
         )}
