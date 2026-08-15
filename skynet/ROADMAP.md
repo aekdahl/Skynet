@@ -187,21 +187,34 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     highest-priority task first instead of array order. (Drag-to-reorder stays the later polish.)
 
 ## v1 — Orchestration completeness & hardening
-- [~] **⭐ Browser tools for coding agents (MCP)** — *near-term priority.* Equip the Claude runner (then the
-  CLI runners) with a Chrome/Playwright **MCP** server so an agent can drive a real browser *within* a
-  coding task: reproduce a bug, verify a UI change end-to-end, or read live docs before editing. Wrap,
-  don't rebuild — a scoped MCP tool on the existing `runner-sdk` seam, **not** our own browser
-  automation; the existing HITL gate already governs tool approvals, so a nav/click can be gated like any
-  other tool. Opt-in per runner/workspace, off by default. Claude first (Agent SDK `mcpServers`), CLI
-  runners after. *(Pulls the browser slice of v3's "Tools via MCP" forward — it's the highest-leverage
-  tool for the code loop; verification/repro is where it pays off, and it composes with the live-preview
-  pipeline below.)* *Landed: the Claude half — `browserMcpServers()` (`runner-sdk/src/claude.ts`) wraps
-  `@playwright/mcp` over stdio, wired into the live query's `mcpServers` when `StartSpec.browser` is set
-  (a per-workspace `browserTools` toggle); tools surface as `mcp__browser__…`, outside the auto-allow set,
-  so every browser action gates through normal HITL approval like any other tool.* Still to do: **CLI
-  runners** (Codex/Gemini/Cursor/Copilot) — `cli-runner.ts` has no MCP wiring at all today, and vendor
-  support varies (several don't support MCP config yet), so this is a per-vendor investigation, not one
-  drop-in change.
+- [x] **⭐ Browser tools for coding agents (MCP)** — Equip every runner with a Chrome/Playwright **MCP**
+  server so an agent can drive a real browser *within* a coding task: reproduce a bug, verify a UI change
+  end-to-end, or read live docs before editing. Wrap, don't rebuild — a scoped MCP tool on the existing
+  `runner-sdk` seam, **not** our own browser automation; the existing HITL gate already governs tool
+  approvals, so a nav/click can be gated like any other tool. Opt-in per runner/workspace, off by default.
+  *(Pulls the browser slice of v3's "Tools via MCP" forward — it's the highest-leverage tool for the code
+  loop; verification/repro is where it pays off, and it composes with the live-preview pipeline below.)*
+  **Landed for every vendor except Hermes** (no evidence it supports MCP): the Claude half —
+  `browserMcpServers()` (`runner-sdk/src/claude.ts`) wraps `@playwright/mcp` over stdio, wired into the
+  live query's `mcpServers` when `StartSpec.browser` is set (a per-workspace `browserTools` toggle); tools
+  surface as `mcp__browser__…`, outside the auto-allow set, so every browser action gates through normal
+  HITL approval like any other tool. **The CLI runners: each vendor wires it its own way**, verified live
+  against the real CLI (not memory — several docs were stale) via the shared
+  `browserMcpServerSpec`/`mergeBrowserMcpConfig` helpers (`runner-sdk/src/cli-runner.ts`, same
+  `SKYNET_BROWSER_MCP_COMMAND` override Claude uses):
+  - **Codex** — no project-local config file at all; `-c mcp_servers.browser.*=…` per-invocation
+    overrides (verified against codex-cli 0.147.0) mean zero file writes, ever.
+  - **Gemini** — file-based only (`--help` has no config-override flag); `CliVendor.prepareWorktree`
+    (a new optional hook) writes `.gemini/settings.json` inside the run's own worktree, merged onto
+    whatever the repo itself commits there — never the operator's `~/.gemini/settings.json`.
+  - **Cursor** — file-based (`.cursor/mcp.json`) same as Gemini, but a freshly-added server also needs a
+    one-time approval a headless run can't satisfy interactively; granted via `--approve-mcps` on the
+    invocation (session-scoped) rather than the persistent, global `mcp enable`. Tool calls aren't
+    live-HITL-gated here specifically — matches cursor-agent's existing `--force` full-trust design in
+    this codebase (relies on Skynet's post-run diff review), not a new exception.
+  - **Copilot** — a real per-invocation flag, `--additional-mcp-config <json>` (verified against
+    `@github/copilot` 1.0.80); tool calls fall through the existing generic approval-prompt match, same
+    live gate as any other tool.
 - [ ] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** (+ **OpenCode**, which
   is ubiquitous across the competitor field, and **Kimi Code** — Moonshot AI's terminal coding agent, same
   CLI shape as Claude/Codex/Gemini, [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — then

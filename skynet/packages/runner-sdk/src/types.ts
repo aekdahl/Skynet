@@ -38,8 +38,12 @@ export interface StartSpec {
   /**
    * Opt-in: give the agent a real browser for this run (a Playwright/Chrome MCP
    * server exposed to the runner). Resolved by the orchestrator from the
-   * per-workspace `browserTools` setting; off by default. Only the Claude runner
-   * acts on it today — CLI runners ignore it until they grow MCP support. Browser
+   * per-workspace `browserTools` setting; off by default. Claude, Codex, Gemini,
+   * Cursor, and Copilot all act on it; Hermes doesn't (no evidence it supports
+   * MCP). Each vendor wires it its own way — see claude.ts's
+   * `browserMcpServers` and cli-runner.ts's `browserMcpServerSpec` /
+   * `CliVendor.prepareWorktree` for the per-vendor mechanics (some take a
+   * per-invocation flag, some need a worktree-local config file). Browser
    * actions still gate through the normal HITL approval flow.
    */
   browser?: boolean;

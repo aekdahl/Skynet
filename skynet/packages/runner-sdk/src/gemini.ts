@@ -16,10 +16,22 @@
 // env-overridable (GEMINI_BIN, GEMINI_EXTRA_ARGS — a later --output-format in
 // EXTRA wins). Missing binary or an auth failure falls back cleanly (see
 // cli-runner.ts); the default RUNNER=mock path never imports this module.
+//
+// Opt-in browser tooling (spec.browser): Gemini's MCP servers are FILE-based
+// only — there's no per-invocation flag (verified live against gemini-cli
+// 0.55.1: --help has nothing config-override-shaped; `gemini mcp add --scope
+// project` is the only way in, and it just writes .gemini/settings.json's
+// mcpServers key). prepareWorktree writes that file directly — same shape
+// `gemini mcp add` produces — into the run's OWN worktree (project scope), so
+// it never touches the operator's global ~/.gemini/settings.json and is
+// naturally cleaned up when the worktree is retired.
 
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ProviderId, Resolution } from "@skynet/shared";
 import {
   CliRunnerProvider,
+  mergeBrowserMcpConfig,
   usageFromJson,
   type CliEvent,
   type CliVendor,
@@ -58,6 +70,23 @@ export const gemini: CliVendor = {
   env(spec: StartSpec): Record<string, string> {
     // Per-workspace key injected by the orchestrator; empty → inherit ambient env.
     return spec.apiKey ? { GEMINI_API_KEY: spec.apiKey, GOOGLE_API_KEY: spec.apiKey } : {};
+  },
+
+  prepareWorktree(spec: StartSpec, cwd: string): void {
+    if (!spec.browser) return;
+    const dir = join(cwd, ".gemini");
+    const file = join(dir, "settings.json");
+    // Merge onto whatever the repo itself commits at .gemini/settings.json (if
+    // anything) rather than clobbering it — this only ever touches the run's
+    // own worktree, never the operator's ~/.gemini/settings.json.
+    let settings: Record<string, unknown> = {};
+    try {
+      settings = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    } catch {
+      /* no existing file, or unreadable — start fresh */
+    }
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, JSON.stringify(mergeBrowserMcpConfig(settings), null, 2));
   },
 
   buildArgs(spec: StartSpec): string[] {

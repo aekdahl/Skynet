@@ -83,6 +83,15 @@ export interface CliVendor {
   buildArgs(spec: StartSpec): string[];
   /** Extra env for the child process (API keys are usually inherited). */
   env?(spec: StartSpec): Record<string, string>;
+  /**
+   * Write anything the vendor needs into the worktree before spawning — e.g. a
+   * project-scoped MCP config file for a vendor whose MCP servers are file-
+   * based only (no per-invocation flag). Synchronous: writes here are a few
+   * small config files, so there's no need to make `launch()` async for a hook
+   * only some vendors implement. A vendor whose MCP config IS argv-based (see
+   * `browserMcpServerSpec`) has no reason to implement this at all.
+   */
+  prepareWorktree?(spec: StartSpec, cwd: string): void;
   /** The initial prompt to write to stdin once spawned, or null if the prompt
    *  is passed entirely via argv. */
   initialStdin?(spec: StartSpec): string | null;
@@ -94,6 +103,35 @@ export interface CliVendor {
   encodeDecision(decision: Resolution | undefined, ctx: ParseCtx): string | null;
   /** Serialize a chat/guidance message for stdin, or null if unsupported. */
   encodeMessage(text: string): string | null;
+}
+
+// ─── Opt-in browser tooling (shared across CLI vendors) ─────────────────────
+// Mirrors claude.ts's `browserMcpServers` (kept separate — never shared code —
+// so nothing here can touch the Claude path). When a run has `spec.browser` set
+// (from the per-workspace `browserTools` setting), each vendor that supports MCP
+// hands its CLI a Playwright/Chrome MCP server the same way: wrap Microsoft's
+// `@playwright/mcp`, headless + isolated, one shared name so it reads the same
+// across every vendor's logs. `SKYNET_BROWSER_MCP_COMMAND` overrides the launch
+// command (space-separated) for pinning a version, a private mirror, or a
+// Chrome-channel flavour — the SAME knob Claude uses, so one override covers the
+// whole fleet.
+export const BROWSER_MCP_NAME = "browser";
+export function browserMcpServerSpec(): { command: string; args: string[] } {
+  const override = process.env.SKYNET_BROWSER_MCP_COMMAND?.trim();
+  const parts = override
+    ? override.split(/\s+/).filter(Boolean)
+    : ["npx", "-y", "@playwright/mcp@latest", "--headless", "--isolated"];
+  return { command: parts[0] ?? "npx", args: parts.slice(1) };
+}
+/** Merge the browser MCP server into an already-parsed JSON config object's
+ *  `mcpServers` key — shared by every FILE-based vendor (Gemini, Cursor).
+ *  Preserves whatever else was in `existing` (e.g. servers the repo's own
+ *  committed config already declares). Codex/Copilot don't need this — their
+ *  MCP config is a per-invocation flag, no file involved. */
+export function mergeBrowserMcpConfig(existing: Record<string, unknown>): Record<string, unknown> {
+  const existingServers = existing.mcpServers as Record<string, unknown> | undefined;
+  const { command, args } = browserMcpServerSpec();
+  return { ...existing, mcpServers: { ...existingServers, [BROWSER_MCP_NAME]: { command, args } } };
 }
 
 class CliRunnerHandle implements RunnerHandle {
@@ -125,6 +163,14 @@ class CliRunnerHandle implements RunnerHandle {
 
   private launch() {
     const cwd = this.spec.cwd ?? process.cwd();
+    // Best-effort: a vendor's worktree prep (e.g. writing a browser-MCP config
+    // file) is opt-in tooling, never the run's actual task — a failure here
+    // logs and falls through to a plain run rather than failing the whole thing.
+    try {
+      this.vendor.prepareWorktree?.(this.spec, cwd);
+    } catch (err) {
+      this.events.onLog(this.runId, `browser-tools setup failed: ${(err as Error).message} — continuing without it`);
+    }
     // Opt-in OS write-confinement (SKYNET_RUNNER_SANDBOX). No-op unless enabled
     // and a sandbox tool is available; otherwise runs the vendor bin directly.
     const wrapped = wrapForSandbox(this.vendor.bin, this.vendor.buildArgs(this.spec), { cwd });
