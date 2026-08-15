@@ -10,9 +10,15 @@
 // the interactive CLI login this environment had — its case below documents
 // the STANDARD Claude-Code-SDK-style result shape the existing parser already
 // targets, not an independently-captured payload.
+//   - Copilot: @github/copilot 1.0.80 — a LIVE authenticated `copilot -p ...
+//     --output-format json` run against this environment's signed-in CLI (not
+//     a fixture guessed from docs). See packages/runner-sdk/src/copilot.ts's
+//     file header for the full capture notes (including the permission-denial
+//     behavior this vendor's approval gate is keyed off).
 import { describe, it, expect } from "vitest";
 import { codex } from "../packages/runner-sdk/src/codex.js";
 import { gemini } from "../packages/runner-sdk/src/gemini.js";
+import { buildUsage, durationFromResultUsage } from "../packages/runner-sdk/src/copilot.js";
 import { usageFromJson } from "../packages/runner-sdk/src/cli-runner.js";
 
 describe("Codex usage parsing (real TokenCountEvent shape)", () => {
@@ -112,5 +118,66 @@ describe("Cursor usage shape (standard Claude-Code-SDK-style result.usage — se
   it("the existing extraction (ev.usage ?? ev) reads a nested result.usage block", () => {
     const usage = usageFromJson({ input_tokens: 900, output_tokens: 210, total_cost_usd: 0.12 });
     expect(usage).toEqual({ inputTokens: 900, outputTokens: 210, costUsd: 0.12, turns: 0, durationMs: null });
+  });
+});
+
+describe("Copilot usage (real --output-format json shapes — see file header)", () => {
+  // A live `copilot -p "say hello" --output-format json` run. The assistant
+  // message carried a real outputTokens count; the terminal `result` line —
+  // which is NOT wrapped in the {data:...} envelope every other event uses —
+  // carried usage.totalApiDurationMs. Neither an input-token count nor a $
+  // cost appears anywhere in the stream; copilot.ts's onResult() sums
+  // outputTokens across every assistant.message it saw and passes that
+  // total, plus a turn count and the result's duration, into buildUsage().
+  const assistantMessage = {
+    type: "assistant.message",
+    data: {
+      messageId: "b44ff5e9-8850-4ea1-a632-fe44adbf3fcb",
+      model: "gpt-5-mini",
+      content: "Hello!",
+      toolRequests: [],
+      turnId: "0",
+      outputTokens: 238,
+    },
+  };
+  const result = {
+    type: "result",
+    timestamp: "2026-08-15T20:54:13.309Z",
+    sessionId: "38955f10-4602-401b-a053-13fa4256bc48",
+    exitCode: 0,
+    usage: {
+      premiumRequests: 0,
+      totalApiDurationMs: 3907,
+      sessionDurationMs: 7238,
+      codeChanges: { linesAdded: 0, linesRemoved: 0, filesModified: [] },
+    },
+  };
+
+  it("combines the summed outputTokens with the result's duration (real captured shape)", () => {
+    const durationMs = durationFromResultUsage(result.usage);
+    const usage = buildUsage(assistantMessage.data.outputTokens, 1, durationMs);
+    expect(usage).toEqual({ inputTokens: 0, outputTokens: 238, costUsd: null, turns: 1, durationMs: 3907 });
+  });
+
+  it("prefers totalApiDurationMs over sessionDurationMs when both are present", () => {
+    expect(durationFromResultUsage(result.usage)).toBe(3907);
+  });
+
+  it("falls back to sessionDurationMs when totalApiDurationMs is absent", () => {
+    expect(durationFromResultUsage({ sessionDurationMs: 5200, premiumRequests: 0 })).toBe(5200);
+  });
+
+  it("returns 0 (not undefined/NaN) when a result carries no duration at all", () => {
+    expect(durationFromResultUsage({ premiumRequests: 0 })).toBe(0);
+  });
+
+  it("never fabricates an input-token count or a $ cost — this protocol reports neither", () => {
+    const usage = buildUsage(500, 2, 9000);
+    expect(usage?.inputTokens).toBe(0);
+    expect(usage?.costUsd).toBeNull();
+  });
+
+  it("returns null when nothing was ever produced (no fake zero row)", () => {
+    expect(buildUsage(0, 0, 0)).toBeNull();
   });
 });
