@@ -113,6 +113,14 @@ const ALLOW = new Set<string>([
   // exercised against a real store + hub in task-linter-ops.test.ts, and the
   // model's structured-output parsing in task-linter.test.ts.
   "dismissTaskLint",
+  // Viewer-role session plumbing (fetchMe + the readOnly flag it derives) —
+  // called once at boot (StoreProvider), not from a user action a journey would
+  // drive. The role → scopes mapping is covered server-side by
+  // operator-seed.test.ts; the REST mutation gate it feeds by
+  // viewer-role-routes.test.ts. isReadOnlyPrincipal is a pure predicate over
+  // that shape, exercised directly wherever it's used (store.tsx), not via a
+  // journey.
+  "fetchMe", "setReadOnly", "isReadOnly", "isReadOnlyPrincipal",
 ]);
 
 describe("client API coverage", () => {

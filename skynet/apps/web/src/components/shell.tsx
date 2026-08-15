@@ -186,7 +186,7 @@ export function OpSidebar({
   setView: (v: ViewName) => void;
   onOpenProject: (id: string) => void;
 }) {
-  const { projects, runs, queue, workspaceSettings } = useStore();
+  const { projects, runs, queue, workspaceSettings, readOnly } = useStore();
   const queueCount = openQueue(queue).length;
   const mergeCount = readyMerges(runs).length;
   // Single source of truth for the highlight — see activeNav above.
@@ -284,11 +284,17 @@ export function OpSidebar({
           </button>
         ))}
       </div>
-      <div className="op-side-foot" title={operatorHandle() ? `Operator: ${operatorHandle()}` : undefined}>
+      <div
+        className="op-side-foot"
+        title={operatorHandle() ? `Operator: ${operatorHandle()}${readOnly ? " (read-only viewer)" : ""}` : undefined}
+      >
         <span className="op-avatar">{wsInitials(workspaceSettings?.name ?? "")}</span>
         <div>
           <div className="who">{workspaceSettings?.name || "Skynet"}</div>
-          <div className="role">{operatorHandle() || "Workspace"}</div>
+          <div className="role">
+            {operatorHandle() || "Workspace"}
+            {readOnly && <span className="op-role-viewer"> · Viewer</span>}
+          </div>
         </div>
       </div>
     </aside>

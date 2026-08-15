@@ -427,7 +427,7 @@ function RunsBoard({
   onAssign: () => void;
   onConfigureFleet: () => void;
 }) {
-  const { runs, tasks, projects, queue, fleet } = useStore();
+  const { runs, tasks, projects, queue, fleet, readOnly } = useStore();
   const oq = openQueue(queue);
   const idle = idleRunners(fleet, runs);
   const backlogCount = tasks.filter(
@@ -499,7 +499,7 @@ function RunsBoard({
           <div className="rb-stat rb-blocked"><span className="rb-v">{blockedCount}</span><span className="rb-k">needs you</span></div>
           <div className="rb-stat rb-done"><span className="rb-v">{doneCount}</span><span className="rb-k">done</span></div>
           {idle.length > 0 && (
-            <button className="rb-stat rb-idle" onClick={onAssign} title="Assign work to an idle agent">
+            <button className="rb-stat rb-idle" disabled={readOnly} onClick={onAssign} title="Assign work to an idle agent">
               <span className="rb-v">{idle.length}</span><span className="rb-k">idle · assign →</span>
             </button>
           )}
@@ -509,7 +509,7 @@ function RunsBoard({
             compact
             title="Nothing running"
             hint="Assign a task to an agent and it shows up here."
-            cta={{ label: "Assign work →", onClick: onAssign }}
+            cta={{ label: "Assign work →", onClick: onAssign, disabled: readOnly }}
           />
         ) : (
           <div className="rb-table">
