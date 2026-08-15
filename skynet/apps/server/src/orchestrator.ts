@@ -1137,7 +1137,7 @@ export class Orchestrator {
       // runner decides how to expose it (Claude → a Playwright MCP server).
       const { browserTools } = await this.fleetPolicy(project.workspaceId);
       const handle = await provider.start(
-        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, browser: browserTools, planModeGate: project.planModeGate },
+        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, browser: browserTools, planModeGate: project.planModeGate, disallowedTools: project.disallowedTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId, branch, baseRef, git });
@@ -1213,6 +1213,7 @@ export class Orchestrator {
           parentId,
           branchFromStep: stepIndex,
           apiKey,
+          disallowedTools: project?.disallowedTools,
         },
         this.events(),
       );
@@ -1335,6 +1336,7 @@ export class Orchestrator {
           cwd,
           apiKey,
           resumeSessionId,
+          disallowedTools: project?.disallowedTools,
         },
         this.events(),
       );
@@ -1456,7 +1458,7 @@ export class Orchestrator {
     await this.hub.runLog(runId, `re-acquired compute to deliver "${resolution.action}" — resuming in the run's worktree`);
     try {
       const handle = await provider.start(
-        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey },
+        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, disallowedTools: project?.disallowedTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId, branch: run.branch, baseRef: config.baseBranch, git });
@@ -1504,7 +1506,7 @@ export class Orchestrator {
     await this.hub.runLog(runId, "revising per review guidance");
     try {
       const handle = await provider.start(
-        { runId, projectId: run.projectId, task: revisePrompt, model: run.model, branch: run.branch, cwd, apiKey },
+        { runId, projectId: run.projectId, task: revisePrompt, model: run.model, branch: run.branch, cwd, apiKey, disallowedTools: project?.disallowedTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId: review.taskId, branch: run.branch, baseRef: review.baseRef, git: review.git });
@@ -1662,7 +1664,7 @@ export class Orchestrator {
     await this.hub.runLog(runId, reassign ? "reassigned to another runner after escalation" : "resuming after escalation with operator guidance");
     try {
       const handle = await provider.start(
-        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey },
+        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, disallowedTools: project?.disallowedTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId: ctx?.taskId ?? null, branch: run.branch, baseRef: ctx?.baseRef ?? this.baseBranchFor(project), git });
