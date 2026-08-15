@@ -468,7 +468,7 @@ features below are white space.)
 - [x] **Per-project agent instructions (house rules)** — a `Project.instructions` markdown field that rides *every* prompt an agent sees on that project (assignTask, forkAgent, review-revise, escalation resume, triage consult, auto-review consult) and Steward's grounding. Motivated by: "build agents in Skynet using a specific subset of packages, pre-written code, and structure" — that's a per-project policy, not a workspace boundary, and it lives on the project record for instant editability. Trims + normalizes empty → null; the read-only header shows a compact "ⓘ Instructions active" chip.
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.*
-- [ ] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third
+- [~] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third
   lane: when a request is better SHOWN than said (review a diff, browse the board, tune the fleet), the
   reply carries a **deep link straight into the exact web-app view** — project/task pre-focused —
   instead of trying to cram it into a chat bubble. The link mechanism already exists and is already
@@ -482,7 +482,17 @@ features below are white space.)
   click to it; **hosted/GCP (`public_ui`, 🏢 deferred)** is the one case that actually needs a
   signed-token flow — mint a short-lived, single-use exchange token per link that the app consumes on
   load to establish a normal session. Chat stays the command line, the web app stays the one canvas —
-  the link is the bridge, not a second interface to maintain. *(Prompted by an outside SOTA-routing
+  the link is the bridge, not a second interface to maintain. *(**Desktop half shipped:**
+  `app.setAsDefaultProtocolClient("skynet")` (`apps/desktop/main.cjs`), handling both delivery
+  mechanisms — macOS's `open-url` app event, and Windows/Linux's argv-based `second-instance` forward
+  (warm) / `process.argv` (cold launch, captured before `app.whenReady()`). A received
+  `skynet://agent/<runId>` translates onto the *existing* hash route verbatim (`apps/desktop/
+  deep-link.cjs`'s `skynetUrlToHash` — pure, unit-tested) and either navigates the already-loaded
+  window in place (`location.hash`, no reload) or rides into the initial `loadURL` on a cold launch.
+  `runLink()`'s counterpart `desktopRunLink(runId)` emits the `skynet://` form instead of
+  `PUBLIC_URL#/...` whenever `config.desktop` is set (`apps/server/src/telegram/index.ts`'s
+  `linkFor`) — the existing desktop flag (`SKYNET_DESKTOP=1`, already set by main.cjs), not a new one.
+  **Hosted/GCP signed-token-exchange path is still 🏢 deferred, untouched.**)* *(Prompted by an outside SOTA-routing
   pitch — "transport vs. generation," deep links that "hydrate state" instead of forcing a re-login.
   The underlying idea is sound and is genuinely missing; the "agent renders a whole spatial PWA on the
   fly" framing isn't — see the AG-UI note in Considerations for why we're not chasing that part.)*
