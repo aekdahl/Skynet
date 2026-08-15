@@ -261,7 +261,7 @@ export class Orchestrator {
    *  at a feature branch instead of `main` (they cut from it, sync to it, and PR
    *  against it), so the same repo may back two contexts on different bases. */
   private gitContextForRepo(repo: string, baseBranch: string = config.baseBranch): GitContext {
-    const key = `${repo} ${baseBranch}`;
+    const key = `${repo}::${baseBranch}`;
     let ctx = this.gitCtx.get(key);
     if (!ctx) {
       const worktrees = new WorktreeProvisioner(repo, baseBranch, config.worktreesDir);
