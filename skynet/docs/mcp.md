@@ -98,8 +98,22 @@ so an over-broad or leaked token still can't exceed its granted capabilities.
 
 **Tools** (grouped by required scope):
 
-- *observe (read)* — `get_snapshot`, `get_settings`, `list_projects`, `list_agents`, `get_agent`, `run_diff`, `list_tasks`, `list_features`, `list_milestones`, `list_hitl`, `list_audit`
+- *observe (read)* — `get_snapshot`, `get_settings`, `list_projects`, `list_agents`, `get_agent`, `run_diff`, `list_tasks`, `get_task`, `list_features`, `list_milestones`, `list_hitl`, `list_audit`, `get_audit`
 - *observe (blocking)* — `wait_for_hitl`, `wait_for_agent`
+
+**Summary vs. detail.** `list_agents` / `list_tasks` / `list_audit` / `get_snapshot`
+return compact, paginated summaries — no activity logs, task descriptions, or
+captured diff patches. A workspace's runs carry an unbounded tool-call history
+and its audit trail embeds full unified diffs; returning full records for every
+row on a *listing* call scales token cost with workspace history, not with what
+the caller asked for (a real deployment hit this: `list_agents`/`get_snapshot`
+became unusably large once the workspace had ~50 runs). Once you've found the
+one record you need, drill in with `get_agent` / `get_task` / `get_audit` for
+its full detail — `get_agent`'s log defaults to the most recent 100 entries
+(`logLimit`/`logOffset` to page further back). `list_agents`/`list_tasks`/
+`list_audit` default to 30 rows (`limit`/`offset` to page, capped at 200),
+exclude archived records, and every response reports `total`/`hasMore` so a
+short page is never mistaken for the whole list.
 - *author — workspace & projects* — `update_settings`, `create_project`, `update_project`
 - *author — backlog & board* — `create_task`, `update_task`, `transition_task` (move through the kanban), `force_task_done`, `move_task`, `reorder_task`, `archive_task`, `delete_task`, `import_github_issues`, `import_repo_file`
 - *author — roadmap* — `create_feature`, `update_feature`, `delete_feature`, `create_milestone`, `update_milestone`, `delete_milestone`

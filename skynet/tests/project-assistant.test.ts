@@ -147,6 +147,17 @@ describe("validateProjectAction — whitelist + project-scoped id resolution", (
     expect(a?.summary.length).toBeGreaterThan(0);
   });
 
+  it("set_roadmap_path — points the Roadmap tab at any non-empty path, no roadmap doc required in context", () => {
+    // Unlike edit_roadmap, this is the RECOVERY for ctx.roadmap being null — it
+    // must validate even when no doc was found at the default candidates.
+    const noRoadmapCtx: ProjectActionContext = { ...ctx, roadmap: null };
+    const a = validateProjectAction({ kind: "set_roadmap_path", path: "docs/PLAN.md" }, noRoadmapCtx);
+    expect(a).toMatchObject({ kind: "set_roadmap_path", path: "docs/PLAN.md" });
+    expect(a?.summary).toContain("docs/PLAN.md");
+    expect(validateProjectAction({ kind: "set_roadmap_path", path: "  " }, noRoadmapCtx)).toBeNull();
+    expect(validateProjectAction({ kind: "set_roadmap_path" }, noRoadmapCtx)).toBeNull();
+  });
+
   it("rejects unknown kinds", () => {
     expect(validateProjectAction({ kind: "delete_project" }, ctx)).toBeNull();
     expect(validateProjectAction({}, ctx)).toBeNull();

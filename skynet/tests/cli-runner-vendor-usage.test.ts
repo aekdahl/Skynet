@@ -5,6 +5,10 @@
 //   - Codex: codex-cli 0.147.0 — codex-rs/protocol/src/protocol.rs (TokenCountEvent).
 //   - Gemini: google-gemini/gemini-cli main — packages/core/src/output/
 //     stream-json-formatter.ts (StreamJsonFormatter.convertToStreamStats).
+//   - OpenCode: opencode-ai 1.18.18 — captured from real `opencode run --format
+//     json` invocations with a live ANTHROPIC_API_KEY (a plain reply, a bash
+//     tool call, a file write, and a fatal auth error), field names/nesting
+//     verbatim from those runs.
 // Cursor's --output-format stream-json is confirmed current via `cursor-agent
 // --help`, but a live authenticated run needs a separate CURSOR_API_KEY beyond
 // the interactive CLI login this environment had — its case below documents
@@ -13,6 +17,7 @@
 import { describe, it, expect } from "vitest";
 import { codex } from "../packages/runner-sdk/src/codex.js";
 import { gemini } from "../packages/runner-sdk/src/gemini.js";
+import { opencode } from "../packages/runner-sdk/src/opencode.js";
 import { usageFromJson } from "../packages/runner-sdk/src/cli-runner.js";
 
 describe("Codex usage parsing (real TokenCountEvent shape)", () => {
@@ -112,5 +117,103 @@ describe("Cursor usage shape (standard Claude-Code-SDK-style result.usage — se
   it("the existing extraction (ev.usage ?? ev) reads a nested result.usage block", () => {
     const usage = usageFromJson({ input_tokens: 900, output_tokens: 210, total_cost_usd: 0.12 });
     expect(usage).toEqual({ inputTokens: 900, outputTokens: 210, costUsd: 0.12, turns: 0, durationMs: null });
+  });
+});
+
+describe("OpenCode event parsing (real --format json shapes, see file header)", () => {
+  it("buildArgs: run, structured json, --auto (own-permission-config auto-reject workaround), model, task", () => {
+    const args = opencode.buildArgs({
+      runId: "r1",
+      projectId: "p1",
+      task: "fix the bug",
+      model: "anthropic/claude-sonnet-5",
+      branch: "agent/r1",
+    });
+    expect(args).toEqual(["run", "--format", "json", "--auto", "-m", "anthropic/claude-sonnet-5", "fix the bug"]);
+  });
+
+  it("a step_start event carries nothing useful — ignored", () => {
+    const line = JSON.stringify({
+      type: "step_start",
+      part: { id: "prt_1", messageID: "msg_1", sessionID: "ses_1", type: "step-start" },
+    });
+    expect(opencode.parseLine(line, {})).toEqual({ kind: "ignore" });
+  });
+
+  it("a text event → chat (the base decides log vs. chat-reply)", () => {
+    const line = JSON.stringify({
+      type: "text",
+      part: { id: "prt_2", type: "text", text: "PONG" },
+    });
+    expect(opencode.parseLine(line, {})).toEqual({ kind: "chat", text: "PONG" });
+  });
+
+  it("a completed tool_use → tool, labelled from state.title (real bash + write shapes)", () => {
+    const bash = JSON.stringify({
+      type: "tool_use",
+      part: { type: "tool", tool: "bash", state: { status: "completed", title: "echo hi-from-opencode" } },
+    });
+    expect(opencode.parseLine(bash, {})).toEqual({ kind: "tool", label: "echo hi-from-opencode" });
+
+    const write = JSON.stringify({
+      type: "tool_use",
+      part: { type: "tool", tool: "write", state: { status: "completed", title: "greet.txt" } },
+    });
+    expect(opencode.parseLine(write, {})).toEqual({ kind: "tool", label: "greet.txt" });
+  });
+
+  it("a rejected tool_use (permission denied) → a log line naming what failed, not a silent tool bump", () => {
+    const line = JSON.stringify({
+      type: "tool_use",
+      part: { type: "tool", tool: "bash", state: { status: "error", title: "echo x", error: "The user rejected permission to use this specific tool call." } },
+    });
+    expect(opencode.parseLine(line, {})).toEqual({
+      kind: "log",
+      line: "✕ echo x: The user rejected permission to use this specific tool call.",
+    });
+  });
+
+  it("step_finish tokens/cost are PER-STEP, not cumulative — parseLine accumulates them itself", () => {
+    const ctx = {};
+    const step1 = JSON.stringify({
+      type: "step_finish",
+      part: { type: "step-finish", reason: "tool-calls", tokens: { total: 8263, input: 3, output: 58, reasoning: 0, cache: { write: 334, read: 7868 } }, cost: 0.0014973 },
+    });
+    expect(opencode.parseLine(step1, ctx)).toEqual({
+      kind: "usage",
+      usage: { inputTokens: 3, outputTokens: 58, costUsd: 0.0014973, turns: 1, durationMs: null },
+    });
+
+    // A second step in the SAME run (same ctx) — its own small delta, but the
+    // reported usage must be the RUNNING SUM, matching onUsage's documented
+    // "cumulative totals for the run" contract.
+    const step2 = JSON.stringify({
+      type: "step_finish",
+      part: { type: "step-finish", reason: "stop", tokens: { total: 8302, input: 6, output: 20, reasoning: 0, cache: { write: 74, read: 8202 } }, cost: 0.0010187 },
+    });
+    expect(opencode.parseLine(step2, ctx)).toEqual({
+      kind: "usage",
+      usage: { inputTokens: 9, outputTokens: 78, costUsd: 0.002516, turns: 2, durationMs: null },
+    });
+  });
+
+  it("a fatal error event surfaces the vendor's own message (the process then exits non-zero — cli-runner.ts's base handles the actual failure)", () => {
+    const line = JSON.stringify({
+      type: "error",
+      error: { name: "APIError", data: { message: "API key is invalid.", statusCode: 401 } },
+    });
+    expect(opencode.parseLine(line, {})).toEqual({ kind: "log", line: "error: API key is invalid." });
+  });
+
+  it("a non-JSON line (e.g. the FSEvents startup warning) passes through as a raw log line", () => {
+    expect(opencode.parseLine("error: Error starting FSEvents stream", {})).toEqual({
+      kind: "log",
+      line: "error: Error starting FSEvents stream",
+    });
+  });
+
+  it("no live decision/message channel — run is one-shot headless (see file header)", () => {
+    expect(opencode.encodeDecision(undefined, {})).toBeNull();
+    expect(opencode.encodeMessage("anything")).toBeNull();
   });
 });

@@ -14,7 +14,7 @@
 //    its bundled implementation (forwarded verbatim as the CLI's
 //    `--disallowedTools` flag) — removes the tool from the model's context
 //    entirely, a categorical unavailability rather than a per-call gate.
-import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import type { ProviderId, Agent, Project, Task, ServerEvent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
@@ -134,8 +134,14 @@ describe("claude.ts: StartSpec.disallowedTools → SDK Options.disallowedTools",
     q.push([{ type: "system", session_id: "s1" }, { type: "result", subtype: "success", is_error: false, num_turns: 1 }]);
 
     await new ClaudeRunnerProvider().start({ ...baseSpec, disallowedTools: ["Bash"] }, fakeEvents());
+    // start() returns before query() is actually called — the main run is
+    // gated behind an async repo-hook scan (launch() awaits scanRepoHooks()
+    // before calling queryImpl(), fire-and-forget from the constructor; see
+    // claude.ts). Wait for the real call, same pattern as
+    // claude-runner-hooks.test.ts, rather than assuming it's synchronous with
+    // start() resolving.
+    await vi.waitFor(() => expect(q.fn).toHaveBeenCalledTimes(1), { timeout: 2000, interval: 20 });
 
-    expect(q.fn).toHaveBeenCalledTimes(1);
     const options = q.fn.mock.calls[0]![0]!.options as { disallowedTools?: string[] };
     expect(options.disallowedTools).toEqual(["Bash"]);
   });
@@ -146,6 +152,7 @@ describe("claude.ts: StartSpec.disallowedTools → SDK Options.disallowedTools",
     q.push([{ type: "system", session_id: "s1" }, { type: "result", subtype: "success", is_error: false, num_turns: 1 }]);
 
     await new ClaudeRunnerProvider().start({ ...baseSpec, disallowedTools: null }, fakeEvents());
+    await vi.waitFor(() => expect(q.fn).toHaveBeenCalledTimes(1), { timeout: 2000, interval: 20 });
 
     const options = q.fn.mock.calls[0]![0]!.options as { disallowedTools?: string[] };
     expect(options.disallowedTools).toBeUndefined();

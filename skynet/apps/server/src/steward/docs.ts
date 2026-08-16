@@ -74,6 +74,29 @@ export async function readProjectDocFromCandidates(
   return null;
 }
 
+/**
+ * The roadmap doc a project actually resolves to — shared by the roadmap API
+ * (operations.ts's getProjectRoadmap) and Steward's own grounding
+ * (prepareStewardCall), so "what Steward tells you the roadmap is" and "what
+ * the Roadmap tab shows" can never drift apart.
+ *
+ * `project.roadmapPath` (set via the Roadmap tab's "select a file" affordance,
+ * by the operator or by Steward's own confirmed set_roadmap_path action) is
+ * tried EXCLUSIVELY when present — not as a first-choice-then-fall-back, so an
+ * explicit override that's gone missing reads as "not found" for the file the
+ * operator actually chose, not a silent, confusing fall-back elsewhere. With
+ * no override, the default ROADMAP_PATHS candidates are tried in order.
+ */
+export function resolveRoadmapDoc(
+  workspaceId: string,
+  project: Project,
+  opts: { maxChars?: number } = {},
+): Promise<ProjectDoc | null> {
+  return project.roadmapPath
+    ? readProjectDoc(workspaceId, project, project.roadmapPath, opts)
+    : readProjectDocFromCandidates(workspaceId, project, ROADMAP_PATHS, opts);
+}
+
 /** Top-level file listing of a project's bound repo (best-effort — [] on any
  *  read failure, same as the GitHub branch always behaved; the local branch is
  *  now equally best-effort rather than throwing). */
