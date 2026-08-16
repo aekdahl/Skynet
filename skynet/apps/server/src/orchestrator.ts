@@ -11,12 +11,14 @@ import {
   type RunnerEvents,
   type RunnerHandle,
   type RunnerProvider,
+  type UntrustedRead,
 } from "@skynet/runner-sdk";
 import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
 import { resolveMergeTarget } from "./derive/merge-target.js";
 import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
+import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
 import { decisionResumePrompt } from "./decision-resume.js";
 import { config, now } from "./config.js";
@@ -424,7 +426,7 @@ export class Orchestrator {
         if (status === "done") return;
         void this.hub.runStatus(runId, status);
       },
-      onHitl: (runId, raise) => void this.raise(runId, raise),
+      onHitl: (runId, raise, untrustedReads) => void this.raise(runId, raise, untrustedReads),
       onCompleted: (runId, branch) => void this.complete(runId, branch),
       onFailed: (runId, reason) => void this.fail(runId, reason),
       onChatReply: (runId, text) => {
@@ -438,7 +440,7 @@ export class Orchestrator {
     };
   }
 
-  private async raise(runId: string, raise: HitlRaise): Promise<void> {
+  private async raise(runId: string, raise: HitlRaise, untrustedReads?: UntrustedRead[]): Promise<void> {
     const agent = await this.store.getRun(runId);
     if (!agent) return;
     // A clarifying `question` gets an optional no-operator-answer deadline so a
@@ -448,16 +450,46 @@ export class Orchestrator {
     // Enrich a command-approval gate with the safety classifier's real severity +
     // reason, so the operator sees WHY it's risky (not just a flat "medium"). The
     // runner already decided to gate; this only adds honest, specific context.
+    const rank = { low: 0, medium: 1, high: 2 } as const;
     let risk = raise.risk;
     const why = raise.why;
     let flags: string[] = [];
     if (raise.kind === "approval" && raise.command) {
       const verdict = classifyCommand(raise.command);
-      const rank = { low: 0, medium: 1, high: 2 } as const;
       if (rank[verdict.risk] > rank[risk]) risk = verdict.risk;
       // Surface the classifier's real reasons as scannable chips (not buried in
       // prose) so the operator sees exactly WHY this needs approval.
       if (verdict.risk !== "low") flags = verdict.reasons.filter((r) => !/read-only|no-op/i.test(r));
+    }
+    // Prompt-injection / tool-poisoning firewall: classifyCommand above judges
+    // the command by its OWN shape; this judges it by its CONTEXT — does it
+    // look like it's following an instruction embedded in something the agent
+    // read (a fetched page, a vendored file), rather than the operator's own
+    // task? Only runs when there's something to check (a command gate with a
+    // non-empty untrusted-read buffer) — most gates have neither, so this
+    // stays a rare extra consult, not a tax on every approval. The outcome is
+    // ALWAYS logged, even a benign one, so the firewall's activity is
+    // auditable and not just its hits. A failed/unreadable consult fails open
+    // (steered: false) — classifyCommand's own gate above still applies
+    // regardless, so a failed check only loses the extra scrutiny.
+    let steered = false;
+    if (raise.kind === "approval" && raise.command && untrustedReads?.length) {
+      try {
+        const verdict = await this.checkInjectionSteering(agent, raise.command, untrustedReads);
+        steered = verdict.steered;
+        await this.hub.runLog(
+          runId,
+          steered
+            ? `⚠ injection firewall: command looks steered by ${verdict.source ?? "untrusted content"} — ${verdict.reason}`
+            : `injection firewall: checked ${untrustedReads.length} untrusted read(s), no steering detected — ${verdict.reason}`,
+        );
+        if (steered) {
+          flags = [...flags, `prompt-injection-suspected${verdict.source ? `: ${verdict.source}` : ""}`];
+          if (rank.medium > rank[risk]) risk = "medium";
+        }
+      } catch (err) {
+        await this.hub.runLog(runId, `injection firewall check failed, failing open: ${(err as Error).message}`);
+      }
     }
     const item: HitlItem = {
       id: `q-${runId}-${++this.seq}`,
@@ -489,7 +521,7 @@ export class Orchestrator {
     // but we go through the SILENT hub path (`raiseAndAutoResolveHitl`) so no
     // `hitl.raised` event is published — Telegram/push subscribers only ping the
     // operator when a HUMAN is actually needed. `hitl.resolved` still fires.
-    if (raise.kind === "approval") {
+    if (raise.kind === "approval" && !steered) {
       const project = await this.store.getProject(agent.projectId);
       const auto = decideAutoApproval({
         command: raise.command,
@@ -779,6 +811,30 @@ export class Orchestrator {
       return;
     }
     await this.hub.raiseHitl(item);
+  }
+
+  /**
+   * Ask the run's OWN provider/model whether a about-to-run command looks
+   * steered by untrusted content the agent read earlier — a stateless
+   * one-shot `consult`, same pattern as `draftDiffWalkthrough`/`autoReview`.
+   * No `consult` support (most CLI runners today) → treated as "nothing to
+   * check", not an error; classifyCommand's own gate still applies.
+   */
+  private async checkInjectionSteering(
+    run: TaskRun,
+    command: string,
+    reads: UntrustedRead[],
+  ): Promise<{ steered: boolean; reason: string; source: string | null }> {
+    const provider = await this.getProvider(run.provider);
+    if (!provider.consult) {
+      return { steered: false, reason: "provider has no consult support — check skipped", source: null };
+    }
+    const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+    const reply = await provider.consult(
+      { task: run.name, model: run.model, cwd: config.runnerCwd, apiKey },
+      buildInjectionPrompt(command, reads),
+    );
+    return parseInjectionVerdict(reply);
   }
 
   /**

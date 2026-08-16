@@ -27,7 +27,7 @@ found these rare-to-absent), and where they live:
    cross-vendor, exposed as an **MCP memory server any tool can read/write, even outside Skynet**.
 2. **Cross-vendor consensus runs** (v1.5): same task on Claude + Codex + Gemini, auto-diff, keep/merge
    the winner — or have them peer-review each other.
-3. **Prompt-injection / tool-poisoning firewall** (v1): gate tool calls steered by untrusted content the
+3. **Prompt-injection / tool-poisoning firewall** (v1, landed): gate tool calls steered by untrusted content the
    agent read (issue / web page / dependency). The category's first agent-security layer.
 4. **Provably-improving fleet** (v5): measure which memory + task phrasings one-shot vs. churn, promote
    the winners, and show the user the curve.
@@ -404,8 +404,35 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     against historical runs before enabling it.
   - **Context-aware risk** — classify by *blast radius*, not string match: outside the worktree, touching
     secrets, git-history-destructive, package publish, DB migration, network egress.
-  - **⭐ Prompt-injection / tool-poisoning firewall** — detect when untrusted content the agent read (an
+  - [x] **⭐ Prompt-injection / tool-poisoning firewall** — detect when untrusted content the agent read (an
     issue, a web page, a dependency README) is steering its tool calls, and gate it. No competitor has this.
+    *Landed (v1): a structured LLM consult (`injection-firewall.ts`, same prompt-builder + safe-default-parser
+    pattern as `review-verdict.ts` — the model reads a `{steered, reason, source}` JSON field, never a
+    substring/regex classification of prose) judges whether a command-gate is following an instruction embedded
+    in content the agent read, distinct from `command-safety.ts`'s classifier (which judges a command's own
+    shape, not its origin). The Claude runner tracks a capped buffer of untrusted reads — any `WebFetch`, plus
+    `Read` scoped to `node_modules`/`vendor`/`.git` paths (a scoping heuristic for what's worth remembering;
+    the security judgment itself stays the LLM's job) — and hands it to `orchestrator.ts#raise()`, which runs
+    the check **before** the approval-policy auto-approve block and **forces a human gate on any steered
+    verdict, overriding the project's approval level** (a `trusted` project that would otherwise silently
+    auto-approve a low-risk command still gates it). The gate carries a `prompt-injection-suspected: <source>`
+    flag and a bumped risk floor; every check's outcome is logged — including a benign one — so the firewall's
+    activity is auditable, not just its hits. *Verified live* (not just unit tests): a real Claude agent doing
+    ordinary "get the app running" work read a vendored dependency's README containing a subtly-injected setup
+    instruction (`echo ... > .cache`, framed as ordinary docs, no "ignore your instructions" framing), followed
+    it as part of what it believed was legitimate setup, and the firewall correctly flagged the resulting
+    command as steered and parked it for a human — while a genuinely unrelated command earlier in the same run
+    (`node index.js`) was correctly judged not-steered and auto-approved as normal. Full test suite: pure-parser
+    unit tests + three end-to-end scenario tests (adversarial/benign/no-untrusted-reads) via the `providerOverride`
+    seam, proving the auto-approval-bypass property against a scripted provider, not just mocked JSON.
+    **Known v1 limits, stated plainly rather than overclaimed:** Claude-only — CLI vendors (Codex/Gemini/Cursor/
+    Copilot/Hermes) don't populate the buffer, since their event streams don't expose tool-result bodies today;
+    a task's own imported source text (e.g. a GitHub issue body) is not treated as untrusted, only content read
+    *during* the run; the `node_modules`/`vendor`/`.git` path heuristic is narrow by design and will miss other
+    untrusted local content; a failed/unreadable consult fails open (no extra scrutiny, but `command-safety.ts`'s
+    own gate still applies); and — as the live verification also showed — a sufficiently blunt injection often
+    gets refused by the model's own training before any tool call is even attempted, so this firewall is
+    defense-in-depth for the cases where the model *does* comply, not the only line of defense.*
   - **Tamper-evident audit** — hash-chained, append-only decision records (who saw which diff/command, what
     the policy said, what the agent did after); exportable to SIEM.
   - **⭐ Compliance evidence pack** — one-click signed "AI change report" for auditors (EU AI Act tailwind).
