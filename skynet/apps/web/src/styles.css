@@ -2123,6 +2123,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .audit-sep { opacity: 0.6; }
 .audit-detail { font-size: 13px; color: var(--muted); line-height: 1.5; text-wrap: pretty; }
 .audit-guidance { color: var(--text); border-left: 2px solid var(--line); padding-left: 12px; }
+.audit-memory-note { color: var(--text); border-left: 2px solid var(--accent, var(--line)); padding-left: 12px; }
 .audit-empty { text-align: center; padding: 80px 0; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 14px; }
 .audit-empty-mark { font-size: 32px; color: var(--faint); }
 /* audit maintenance controls */
