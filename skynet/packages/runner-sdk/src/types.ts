@@ -38,8 +38,12 @@ export interface StartSpec {
   /**
    * Opt-in: give the agent a real browser for this run (a Playwright/Chrome MCP
    * server exposed to the runner). Resolved by the orchestrator from the
-   * per-workspace `browserTools` setting; off by default. Only the Claude runner
-   * acts on it today — CLI runners ignore it until they grow MCP support. Browser
+   * per-workspace `browserTools` setting; off by default. Claude, Codex, Gemini,
+   * Cursor, and Copilot all act on it; Hermes doesn't (no evidence it supports
+   * MCP). Each vendor wires it its own way — see claude.ts's
+   * `browserMcpServers` and cli-runner.ts's `browserMcpServerSpec` /
+   * `CliVendor.prepareWorktree` for the per-vendor mechanics (some take a
+   * per-invocation flag, some need a worktree-local config file). Browser
    * actions still gate through the normal HITL approval flow.
    */
   browser?: boolean;
@@ -52,6 +56,30 @@ export interface StartSpec {
    * default. Only the Claude runner acts on it today.
    */
   planModeGate?: boolean;
+  /**
+   * Tool names this run may never use — resolved by the orchestrator from the
+   * project's `disallowedTools` setting, null/absent (the default) = no
+   * restriction. Only the Claude runner acts on it today (passed straight
+   * through to the SDK's own `disallowedTools`, which removes the tool from
+   * the model's context entirely, not just a per-call gate) — CLI vendors
+   * have no equivalent SDK primitive.
+   */
+  disallowedTools?: string[] | null;
+}
+
+/**
+ * One piece of content the agent read from outside the operator's own task
+ * during this run — a fetched URL, a vendored/dependency file — that the
+ * prompt-injection-steering check (apps/server/src/injection-firewall.ts)
+ * treats as untrusted. Populated only by providers that track it (today:
+ * the Claude runner, via a capped in-memory buffer on the handle); absent
+ * elsewhere.
+ */
+export interface UntrustedRead {
+  /** e.g. the fetched URL, or the file path that was read. */
+  source: string;
+  /** Clipped excerpt of what was actually read. */
+  snippet: string;
 }
 
 /**
@@ -74,8 +102,15 @@ export interface RunnerEvents {
   onProgress(runId: string, progress: number, plan: PlanStep[]): void;
   onHeartbeat(runId: string): void;
   onStatus(runId: string, status: TaskRunStatus): void;
-  /** TaskRun blocked on a human — orchestrator turns this into a HitlItem. */
-  onHitl(runId: string, raise: HitlRaise): void;
+  /**
+   * TaskRun blocked on a human — orchestrator turns this into a HitlItem.
+   * `untrustedReads` (when the provider tracks it) is the recent buffer of
+   * content the agent read from outside the operator's own task — a fetched
+   * URL, a vendored/dependency file — so the orchestrator can run the
+   * prompt-injection-steering check before deciding on auto-approval. Absent
+   * or empty just means "nothing to check," never a signal on its own.
+   */
+  onHitl(runId: string, raise: HitlRaise, untrustedReads?: UntrustedRead[]): void;
   onCompleted(runId: string, branch: string): void;
   /**
    * The runner could NOT execute (binary missing, auth failure, crash). This is
@@ -112,6 +147,18 @@ export interface RunnerHandle {
   /** Discuss without resolving — agent keeps working; reply via onChatReply. */
   message(text: string): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * Queue an informational note to ride the run's NEXT prompt/turn — no reply
+   * expected, and critically no extra turn of its own (unlike `message`, which
+   * blocks the session on a live chat round-trip). Optional: a provider that
+   * has no such mechanism just doesn't implement it, and the caller (Orchestrator
+   * .inform) reports the run as skipped rather than faking delivery. Where
+   * implemented: Claude (the Agent SDK's `shouldQuery:false` streaming-input
+   * message — appended to the transcript, merged into whichever real turn comes
+   * next) and the shared CLI runner base (buffered, prepended to the next stdin
+   * write the run would make anyway).
+   */
+  inform?(text: string): Promise<void>;
   /**
    * Best-effort snapshot of the provider's current session/conversation id —
    * for checkpointing (captured onto the `Checkpoint` record so a later restore

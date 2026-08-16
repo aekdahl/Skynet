@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { ProviderId, ProviderInfo, Agent, SecretMeta } from "@skynet/shared";
+import type { ProviderId, ProviderInfo, Agent, SecretMeta, TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
-import { providerInfo, providerReadiness, runnerIdleLabel, runnerIsBusy } from "../lib/derive";
+import { computeUsageRollup, fmtCost, fmtNum, providerInfo, providerReadiness, runnerIdleLabel, type UsageRollup } from "../lib/derive";
 import { Blocked, PrimaryButton } from "../components/empty";
 import { useConfirm } from "../components/confirm";
+import { toast } from "../components/toast";
 
 export function ConfigForm({
   initial,
@@ -239,6 +240,275 @@ export function suggestCloneName(base: string, taken: Set<string>): string {
   return cand;
 }
 
+/** Toast the informRuns() result — always name a real skip count rather than
+ *  a blanket "sent", since a queued note is a best-effort attachment (no live
+ *  session, or the runner doesn't support it, both skip honestly). */
+export function toastInformResult(informedCount: number, skippedCount: number): void {
+  if (informedCount === 0) {
+    toast(
+      skippedCount > 0
+        ? `Note not delivered — ${skippedCount} agent${skippedCount === 1 ? "" : "s"} had no active session to attach it to.`
+        : "Note not delivered.",
+    );
+    return;
+  }
+  toast(
+    `Note queued for ${informedCount} agent${informedCount === 1 ? "" : "s"}'s next turn` +
+      (skippedCount > 0 ? ` (${skippedCount} skipped — no active session)` : "") +
+      ".",
+    "success",
+  );
+}
+
+/**
+ * The `inform` note composer — shared by Fleet's multi-select and Project's
+ * whole-project bulk action. Purely presentational: the caller supplies how
+ * many targets are selected and what to do with the note text. No extra
+ * turn/API call to the agent happens here or anywhere downstream — this just
+ * collects the note and hands it to informRuns().
+ */
+export function InformComposer({
+  count,
+  countLabel,
+  onSend,
+  onCancel,
+}: {
+  /** How many runs this note would target, for the button label + empty-state. */
+  count: number;
+  /** Override the default "N agent(s)" wording (e.g. "this project's active agents"). */
+  countLabel?: string;
+  onSend: (note: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [note, setNote] = useState("");
+  const [sending, setSending] = useState(false);
+  const label = countLabel ?? `${count} agent${count === 1 ? "" : "s"}`;
+  return (
+    <div className="panel inform-panel">
+      <div className="panel-head">
+        📣 MASS INFORM — {label} selected
+      </div>
+      <p className="inform-hint">
+        Attaches to each selected agent's NEXT prompt — no extra turn, no reply expected. Nothing sends until it queues.
+      </p>
+      <textarea
+        className="qx-input inform-textarea"
+        rows={3}
+        autoFocus
+        placeholder="e.g. Heads up — the shared auth module moved to packages/auth; update imports if you touch it."
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+      />
+      <div className="qx-row">
+        <PrimaryButton
+          disabled={!note.trim() || count === 0 || sending}
+          reason={count === 0 ? "Select at least one agent first." : "Write a note to send."}
+          onClick={async () => {
+            setSending(true);
+            try {
+              await onSend(note.trim());
+            } finally {
+              setSending(false);
+            }
+          }}
+        >
+          {sending ? "Queuing…" : `Queue note for ${label}`}
+        </PrimaryButton>
+        <button className="btn btn-ghost" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Shared per-agent action handlers, passed down to both densities so neither
+// card/row duplicates the mutation logic.
+interface AgentActions {
+  onOpenAgent: (id: string) => void;
+  onOpenTask: (id: string) => void;
+  onConfigure: (r: Agent) => void;
+  onDuplicate: (r: Agent) => void;
+  onToggleReviewer: (r: Agent) => void;
+  onRetire: (r: Agent) => void;
+}
+
+// "—" for genuinely no cost data (no runs, or none reported one yet) — never
+// 0, which would read as a real free run. Shared by AgentCard + AgentRow so
+// both densities render the exact same "$0 vs vendor doesn't report" logic.
+function costOf(roll: UsageRollup | undefined): { label: string; title: string } {
+  const label = roll?.costUsd != null ? fmtCost(roll.costUsd) : "—";
+  const title = !roll
+    ? "No runs yet"
+    : roll.costUsd != null
+      ? `${fmtNum(roll.tokensIn)} in / ${fmtNum(roll.tokensOut)} out tokens${roll.uncostedRuns ? ` · ${roll.uncostedRuns} run${roll.uncostedRuns === 1 ? "" : "s"} not costed by the vendor` : ""}`
+      : "Vendor doesn't report cost for this run";
+  return { label, title };
+}
+
+// ─── Working now: a full card with live task context — unchanged from
+// before except it's always busy here (the idle branch moved to AgentRow,
+// below) ─────────────────────────────────────────────────────────────────
+function AgentCard({
+  r,
+  busy,
+  p,
+  count,
+  costRoll,
+  actions,
+  informMode,
+  informSelected,
+  onToggleInform,
+}: {
+  r: Agent;
+  busy: TaskRun;
+  p: ProviderInfo;
+  count: number;
+  // Vendor-reported cost/tokens summed across this agent's runs — see
+  // computeUsageRollup (lib/derive.ts). Undefined = no runs yet.
+  costRoll: UsageRollup | undefined;
+  actions: AgentActions;
+  // Mass inform (roadmap "Mass inform") — only meaningful here since only a
+  // BUSY agent has a live run to attach a note to; the idle AgentRow below
+  // never renders the picker at all. Optional so callers outside FleetView
+  // (none today) aren't forced to wire inform state through.
+  informMode?: boolean;
+  informSelected?: boolean;
+  onToggleInform?: () => void;
+}) {
+  const cost = costOf(costRoll);
+  return (
+    <div className="fleet-card fleet-busy">
+      {informMode && (
+        <label className="fleet-inform-pick" title="Include this agent in the note">
+          <input type="checkbox" checked={!!informSelected} onChange={onToggleInform} />
+        </label>
+      )}
+      <button className="fleet-cardhead" title="Open this agent's detail & task history" onClick={() => actions.onOpenAgent(r.id)}>
+        <div className="fleet-top">
+          <span className="fleet-prov" style={{ color: p.color }}>
+            {p.glyph}
+          </span>
+          <span className="fleet-rn mono">{r.name}</span>
+          <span className="fleet-state fleet-state-busy">
+            <span className="dot dot-running" />
+            busy
+          </span>
+          <span className="fleet-caret" aria-hidden="true">›</span>
+        </div>
+        <div className="fleet-meta">
+          <span className="fleet-pname">{p.name}</span>
+          <span className="fleet-model mono">{r.model}</span>
+          <span className="fleet-histcount">
+            {count} task{count === 1 ? "" : "s"}
+          </span>
+          <span className="fleet-cost mono" title={cost.title}>
+            {cost.label}
+          </span>
+        </div>
+      </button>
+      <button className="fleet-task fleet-task-link" onClick={() => actions.onOpenTask(busy.id)} title="Open this agent's live activity">
+        <span className="fleet-task-name">▸ {busy.name}</span>
+        <span className="fleet-task-cta">activity →</span>
+      </button>
+      <div className="fleet-task-bar" title={`${Math.round(busy.progress * 100)}% through its plan`}>
+        <div className="fleet-task-fill" style={{ width: `${Math.round(busy.progress * 100)}%` }} />
+      </div>
+      <div className="fleet-actions">
+        <button
+          className={"btn btn-ghost fleet-reviewer" + (r.canReview === false ? " off" : "")}
+          title={
+            r.canReview === false
+              ? "Reviewer off — this agent is never picked to review other agents' finished runs. Click to allow."
+              : "Reviewer on — this agent may auto-review other agents' finished runs (never its own). Click to disable."
+          }
+          aria-pressed={r.canReview !== false}
+          onClick={() => actions.onToggleReviewer(r)}
+        >
+          {r.canReview === false ? "Reviewer: off" : "Reviewer: on"}
+        </button>
+        <button className="btn btn-ghost" onClick={() => actions.onConfigure(r)}>
+          Configure
+        </button>
+        <button
+          className="btn btn-ghost"
+          title="Duplicate — create a new agent with the same provider & model (no history); you name it"
+          onClick={() => actions.onDuplicate(r)}
+        >
+          Duplicate
+        </button>
+        <Blocked disabled reason="Finish or reassign its task before retiring.">
+          <button className="btn btn-ghost btn-retire" disabled>
+            Retire
+          </button>
+        </Blocked>
+      </div>
+    </div>
+  );
+}
+
+// ─── Idle: a compact, scannable row instead of a full card — several
+// identical "idle 6d" cards carry no signal; a row reclaims the space for
+// what does (Working now, above). Idle time escalates to danger styling
+// past a day, so a genuinely stale agent doesn't read identically to one
+// that just finished a task a moment ago. ──────────────────────────────────
+const STALE_IDLE_MS = 24 * 60 * 60 * 1000;
+
+function AgentRow({
+  r,
+  p,
+  count,
+  costRoll,
+  now,
+  actions,
+}: {
+  r: Agent;
+  p: ProviderInfo;
+  count: number;
+  costRoll: UsageRollup | undefined;
+  now: number;
+  actions: AgentActions;
+}) {
+  const stale = r.idleSince != null && now - r.idleSince > STALE_IDLE_MS;
+  const cost = costOf(costRoll);
+  return (
+    <div className="fleet-idle-row">
+      <button className="fleet-idle-name" title="Open this agent's detail & task history" onClick={() => actions.onOpenAgent(r.id)}>
+        <span className="fleet-prov fleet-prov-sm" style={{ color: p.color }}>
+          {p.glyph}
+        </span>
+        <span className="fleet-rn mono">{r.name}</span>
+      </button>
+      <span className="fleet-idle-tasks mono">
+        {count} task{count === 1 ? "" : "s"}
+      </span>
+      <span className="fleet-idle-cost mono" title={cost.title}>
+        {cost.label}
+      </span>
+      <span className={"fleet-idle-time mono" + (stale ? " stale" : "")}>idle {runnerIdleLabel(r, now)}</span>
+      <span className="fleet-idle-actions">
+        <button
+          className={"icon-btn" + (r.canReview === false ? " off" : "")}
+          title={r.canReview === false ? "Reviewer off — click to allow" : "Reviewer on — click to disable"}
+          aria-pressed={r.canReview !== false}
+          onClick={() => actions.onToggleReviewer(r)}
+        >
+          ✓
+        </button>
+        <button className="icon-btn" title="Configure" onClick={() => actions.onConfigure(r)}>
+          ⚙
+        </button>
+        <button className="icon-btn" title="Duplicate" onClick={() => actions.onDuplicate(r)}>
+          ⧉
+        </button>
+        <button className="icon-btn icon-btn-danger" title="Retire this agent" onClick={() => actions.onRetire(r)}>
+          ⏻
+        </button>
+      </span>
+    </div>
+  );
+}
+
 export function FleetView({
   onOpenTask,
   onOpenAgent,
@@ -246,9 +516,14 @@ export function FleetView({
   onOpenTask: (id: string) => void;
   onOpenAgent: (id: string) => void;
 }) {
-  const { fleet, runs, providers, createAgent, updateAgent, deleteAgent } =
+  const { fleet, runs, providers, createAgent, updateAgent, deleteAgent, informRuns } =
     useStore();
   const confirm = useConfirm();
+  // Mass inform (roadmap "Mass inform"): pick a set of BUSY agents (only a
+  // live run has a next turn to ride a note on) and attach a note that rides
+  // each one's next prompt at no extra turn — see InformComposer below.
+  const [informMode, setInformMode] = useState(false);
+  const [informSelected, setInformSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   // The agent being duplicated: opens the same form pre-filled with its provider
@@ -258,15 +533,45 @@ export function FleetView({
   const takenNames = new Set(fleet.map((a) => a.name));
 
   const taskCountOf = (r: Agent) => runs.filter((a) => a.agentId === r.id).length;
+  // Vendor-reported cost/tokens, summed across this agent's runs (excludes
+  // archived — see computeUsageRollup). Computed once per render, not per card.
+  const usageByAgent = computeUsageRollup(runs).byAgent;
 
   const busyOf = (r: Agent) =>
     runs.find((a) => a.status !== "done" && a.agentId === r.id);
+
+  const actions: AgentActions = {
+    onOpenAgent,
+    onOpenTask,
+    onConfigure: (r) => {
+      setEditing(r.id);
+      setAdding(false);
+      setCloneFrom(null);
+    },
+    onDuplicate: (r) => {
+      setCloneFrom(r);
+      setAdding(false);
+      setEditing(null);
+    },
+    onToggleReviewer: (r) => updateAgent(r.id, { canReview: r.canReview === false }),
+    onRetire: async (r) => {
+      if (
+        await confirm({
+          title: "Retire this agent?",
+          body: `“${r.name}” is removed from the fleet — its run history is preserved, but it can't pick up new work.`,
+          confirmLabel: "Retire",
+          danger: true,
+        })
+      )
+        deleteAgent(r.id);
+    },
+  };
 
   // Group the fleet by label. Named groups sort alphabetically; the "Ungrouped"
   // bucket (agents with no label) always comes last. Order within a group keeps
   // the fleet's own order. A single-group fleet (all ungrouped — today's default)
   // renders exactly as before: one grid, no heading.
-  const UNGROUPED = " ungrouped"; // sentinel key that can't collide with a real label
+  const UNGROUPED = " ungrouped"; // sentinel key that can't collide with a real label
   const groups = new Map<string, Agent[]>();
   for (const a of fleet) {
     const key = a.label?.trim() || UNGROUPED;
@@ -279,6 +584,22 @@ export function FleetView({
   });
   const showHeadings = groupKeys.length > 1 || (groupKeys.length === 1 && groupKeys[0] !== UNGROUPED);
 
+  // A group's agents rendered as ConfigForm-in-place when being edited (both
+  // densities share this — editing always shows the full form, regardless of
+  // whether the agent was busy or idle a moment ago).
+  const renderEditable = (r: Agent) => (
+    <div key={r.id} className="fleet-card">
+      <ConfigForm
+        initial={r}
+        onSave={(u) => {
+          updateAgent(r.id, { model: u.model, name: u.name || undefined, label: u.label });
+          setEditing(null);
+        }}
+        onCancel={() => setEditing(null)}
+      />
+    </div>
+  );
+
   return (
     <section className="vw">
 
@@ -289,17 +610,49 @@ export function FleetView({
             {fleet.length} agent{fleet.length === 1 ? "" : "s"} configured · catalog: Claude, Codex, Gemini, Cursor, Copilot
           </p>
         </div>
-        <button
-          className="btn btn-primary"
-          onClick={() => {
-            setAdding(true);
-            setEditing(null);
-            setCloneFrom(null);
-          }}
-        >
-          + Add agent
-        </button>
+        <div className="fleet-head-actions">
+          {fleet.some((r) => !!busyOf(r)) && (
+            <button
+              className={"btn btn-ghost" + (informMode ? " on" : "")}
+              title="Select busy agents and attach a note that rides each one's next prompt — no extra turn, no reply expected."
+              onClick={() => {
+                setInformMode((v) => !v);
+                setInformSelected(new Set());
+              }}
+            >
+              📣 Mass inform
+            </button>
+          )}
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              setAdding(true);
+              setEditing(null);
+              setCloneFrom(null);
+            }}
+          >
+            + Add agent
+          </button>
+        </div>
       </div>
+      {informMode && (
+        <InformComposer
+          count={informSelected.size}
+          onCancel={() => {
+            setInformMode(false);
+            setInformSelected(new Set());
+          }}
+          onSend={async (note) => {
+            const runIds = fleet
+              .map((r) => (informSelected.has(r.id) ? busyOf(r)?.id : undefined))
+              .filter((id): id is string => !!id);
+            const { informed, skipped } = await informRuns({ note, runIds });
+            toastInformResult(informed.length, skipped.length);
+            setInformMode(false);
+            setInformSelected(new Set());
+          }}
+        />
+      )}
       {(adding || cloneFrom) && (
         <div className="panel cfg-panel">
           <div className="panel-head">{cloneFrom ? `DUPLICATE · ${cloneFrom.name}` : "NEW AGENT"}</div>
@@ -320,145 +673,93 @@ export function FleetView({
           />
         </div>
       )}
-      {groupKeys.map((gk) => (
-        <div key={gk} className="fleet-group">
-          {showHeadings && (
-            <div className="fleet-group-head">
-              <span className="fleet-group-name">{gk === UNGROUPED ? "Ungrouped" : gk}</span>
-              <span className="fleet-group-count mono">{groups.get(gk)!.length}</span>
-            </div>
-          )}
-          <div className="fleet-grid">
-            {groups.get(gk)!.map((r) => {
-          const busy = busyOf(r);
-          const p = providerInfo(providers, r.provider);
-          const isEditing = editing === r.id;
-          return (
-            <div key={r.id} className={"fleet-card" + (busy ? " fleet-busy" : "")}>
-              {isEditing ? (
-                <ConfigForm
-                  initial={r}
-                  onSave={(u) => {
-                    updateAgent(r.id, { model: u.model, name: u.name || undefined, label: u.label });
-                    setEditing(null);
-                  }}
-                  onCancel={() => setEditing(null)}
-                />
-              ) : (
-                <>
-                  {(() => {
-                    const count = taskCountOf(r);
-                    return (
-                      <>
-                        <button
-                          className="fleet-cardhead"
-                          title="Open this agent's detail & task history"
-                          onClick={() => onOpenAgent(r.id)}
-                        >
-                          <div className="fleet-top">
-                            <span className="fleet-prov" style={{ color: p.color }}>
-                              {p.glyph}
-                            </span>
-                            <span className="fleet-rn mono">{r.name}</span>
-                            {busy || runnerIsBusy(r, runs) ? (
-                              <span className="fleet-state fleet-state-busy">
-                                <span className="dot dot-running" />
-                                busy
-                              </span>
-                            ) : (
-                              <span className="fleet-state fleet-state-idle">
-                                <span className="dot dot-idle" />
-                                idle {runnerIdleLabel(r, now)}
-                              </span>
-                            )}
-                            <span className="fleet-caret" aria-hidden="true">›</span>
-                          </div>
-                          <div className="fleet-meta">
-                            <span className="fleet-pname">{p.name}</span>
-                            <span className="fleet-model mono">{r.model}</span>
-                            <span className="fleet-histcount">
-                              {count} task{count === 1 ? "" : "s"}
-                            </span>
-                          </div>
-                        </button>
-
-                        {/* Busy: keep the current task glanceable + one-click into it. */}
-                        {busy && (
-                          <button
-                            className="fleet-task fleet-task-link"
-                            onClick={() => onOpenTask(busy.id)}
-                            title="Open this agent's live activity"
-                          >
-                            <span className="fleet-task-name">▸ {busy.name}</span>
-                            <span className="fleet-task-cta">activity →</span>
-                          </button>
-                        )}
-                      </>
-                    );
-                  })()}
-                  <div className="fleet-actions">
-                    <button
-                      className={"btn btn-ghost fleet-reviewer" + (r.canReview === false ? " off" : "")}
-                      title={
-                        r.canReview === false
-                          ? "Reviewer off — this agent is never picked to review other agents' finished runs. Click to allow."
-                          : "Reviewer on — this agent may auto-review other agents' finished runs (never its own). Click to disable."
-                      }
-                      aria-pressed={r.canReview !== false}
-                      onClick={() => updateAgent(r.id, { canReview: r.canReview === false })}
-                    >
-                      {r.canReview === false ? "Reviewer: off" : "Reviewer: on"}
-                    </button>
-                    <button
-                      className="btn btn-ghost"
-                      onClick={() => {
-                        setEditing(r.id);
-                        setAdding(false);
-                        setCloneFrom(null);
-                      }}
-                    >
-                      Configure
-                    </button>
-                    <button
-                      className="btn btn-ghost"
-                      title="Duplicate — create a new agent with the same provider & model (no history); you name it"
-                      onClick={() => {
-                        setCloneFrom(r);
-                        setAdding(false);
-                        setEditing(null);
-                      }}
-                    >
-                      Duplicate
-                    </button>
-                    <Blocked disabled={!!busy} reason={busy ? "Finish or reassign its task before retiring." : undefined}>
-                      <button
-                        className="btn btn-ghost btn-retire"
-                        disabled={!!busy}
-                        title={busy ? undefined : "Retire this agent"}
-                        onClick={async () => {
-                          if (
-                            await confirm({
-                              title: "Retire this agent?",
-                              body: `“${r.name}” is removed from the fleet — its run history is preserved, but it can't pick up new work.`,
-                              confirmLabel: "Retire",
-                              danger: true,
-                            })
-                          )
-                            deleteAgent(r.id);
-                        }}
-                      >
-                        Retire
-                      </button>
-                    </Blocked>
+      {groupKeys.map((gk) => {
+        const groupAgents = groups.get(gk)!;
+        const busyAgents = groupAgents.filter((r) => busyOf(r));
+        const idleAgents = groupAgents.filter((r) => !busyOf(r));
+        const showSubLabels = busyAgents.length > 0 && idleAgents.length > 0;
+        return (
+          <div key={gk} className="fleet-group">
+            {showHeadings && (
+              <div className="fleet-group-head">
+                <span className="fleet-group-name">{gk === UNGROUPED ? "Ungrouped" : gk}</span>
+                <span className="fleet-group-count mono">{groupAgents.length}</span>
+              </div>
+            )}
+            {busyAgents.length > 0 && (
+              <div className="fleet-working">
+                {showSubLabels && (
+                  <div className="fleet-sub-label">
+                    Working now <span className="mono">{busyAgents.length}</span>
                   </div>
-                </>
-              )}
-            </div>
-          );
-            })}
+                )}
+                <div className="fleet-grid">
+                  {busyAgents.map((r) =>
+                    editing === r.id
+                      ? renderEditable(r)
+                      : (
+                        <AgentCard
+                          key={r.id}
+                          r={r}
+                          busy={busyOf(r)!}
+                          p={providerInfo(providers, r.provider)}
+                          count={taskCountOf(r)}
+                          costRoll={usageByAgent[r.id]}
+                          actions={actions}
+                          informMode={informMode}
+                          informSelected={informSelected.has(r.id)}
+                          onToggleInform={() =>
+                            setInformSelected((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(r.id)) next.delete(r.id);
+                              else next.add(r.id);
+                              return next;
+                            })
+                          }
+                        />
+                      ),
+                  )}
+                </div>
+              </div>
+            )}
+            {idleAgents.length > 0 && (
+              <div className="fleet-idle">
+                {showSubLabels && (
+                  <div className="fleet-sub-label">
+                    Idle <span className="mono">{idleAgents.length}</span>
+                  </div>
+                )}
+                <div className="fleet-idle-roster">
+                  {idleAgents.map((r) =>
+                    editing === r.id ? (
+                      <div key={r.id} className="fleet-idle-editing">
+                        <ConfigForm
+                          initial={r}
+                          onSave={(u) => {
+                            updateAgent(r.id, { model: u.model, name: u.name || undefined, label: u.label });
+                            setEditing(null);
+                          }}
+                          onCancel={() => setEditing(null)}
+                        />
+                      </div>
+                    ) : (
+                      <AgentRow
+                        key={r.id}
+                        r={r}
+                        p={providerInfo(providers, r.provider)}
+                        count={taskCountOf(r)}
+                        costRoll={usageByAgent[r.id]}
+                        now={now}
+                        actions={actions}
+                      />
+                    ),
+                  )}
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
     </section>
   );
 }

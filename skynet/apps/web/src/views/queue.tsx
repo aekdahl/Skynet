@@ -28,8 +28,12 @@ export function QueueCard({
 }) {
   const { resolveHitl, streamAgentMessage, readOnly } = useStore();
   const k = KIND_META[item.kind];
-  const [mode, setMode] = useState<null | "modify" | "chat">(null);
+  const [mode, setMode] = useState<null | "modify" | "chat" | "remember">(null);
   const [draft, setDraft] = useState("");
+  // Separate from `draft` (guidance TO the agent) — a memory note is a durable
+  // preference statement, not an instruction, and the two shouldn't bleed into
+  // each other if an operator switches panels mid-thought.
+  const [noteDraft, setNoteDraft] = useState("");
   const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
   const agentName = agent?.name ?? item.runId;
 
@@ -80,6 +84,7 @@ export function QueueCard({
       <p className="qcard-why">{item.why}</p>
 
       {item.command && <pre className="qcard-code">$ {item.command}</pre>}
+      {item.output && <pre className="qcard-code qcard-output">{item.output}</pre>}
 
       {item.flags && item.flags.length > 0 && (
         <div className="qcard-flags">
@@ -204,6 +209,48 @@ export function QueueCard({
           <button className="btn btn-ghost" onClick={onOpen}>
             Open agent
           </button>
+          {/* Approve-with-memory (roadmap: "the Inbox becomes how policy/memory
+              get authored"). Distinct from "Always allow" above — that writes a
+              real auto-approve RULE for this exact command; this captures a
+              free-form durable PREFERENCE ("this project prefers X"), which
+              applies to any of the four everyday gate kinds, not just commands.
+              One quiet toggle, not a forced field — never shown as the default,
+              never blocks Approve. */}
+          <button
+            className={"btn btn-ghost" + (mode === "remember" ? " btn-lit" : "")}
+            title="Approve and also note a durable preference for this project — captured for Memory v0 to adopt once it lands; nothing reads it back yet"
+            onClick={() => setMode(mode === "remember" ? null : "remember")}
+          >
+            + Also remember
+          </button>
+        </div>
+      )}
+
+      {mode === "remember" && (
+        <div className="qx">
+          <textarea
+            className="qx-input"
+            rows={2}
+            autoFocus
+            placeholder="A durable preference this decision suggests — e.g. “this project prefers snake_case for Python files”…"
+            value={noteDraft}
+            onChange={(e) => setNoteDraft(e.target.value)}
+          />
+          <div className="qx-row">
+            <button
+              className="btn btn-primary"
+              disabled={!noteDraft.trim()}
+              onClick={() => {
+                resolveHitl(item.id, "approve", { memoryNote: noteDraft.trim() });
+                setNoteDraft("");
+              }}
+            >
+              Approve &amp; remember
+            </button>
+            <button className="btn btn-ghost" onClick={() => setMode(null)}>
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 

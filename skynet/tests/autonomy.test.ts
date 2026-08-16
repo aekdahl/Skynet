@@ -364,7 +364,7 @@ describe("autonomy loop", () => {
         return { runId: spec.runId, provider: "claude", async pause() {}, async resume() {}, async message() {}, async stop() {} };
       },
       async consult(): Promise<string> {
-        await store.putHitl({ ...hitl, resolvedAt: 1, resolution: { action: "approve", optionIndex: null, guidance: null, by: "jordan", at: 1 } });
+        await store.putHitl({ ...hitl, resolvedAt: 1, resolution: { action: "approve", optionIndex: null, guidance: null, memoryNote: null, by: "jordan", at: 1 } });
         await store.putTask(mkTask({ state: "done", runId: "r1" }));
         return "FLAG: needs more tests";
       },

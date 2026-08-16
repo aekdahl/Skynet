@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Project } from "@skynet/shared";
 import * as api from "../lib/client";
+import { useStore } from "../lib/store";
 import { countStatuses, headingIsShipped, inline, parseMarkdown, renderBlocks, sectionsFromBlocks, type Block } from "../components/markdown";
 import { Ring } from "./project-grouping";
 
@@ -9,20 +10,79 @@ import { Ring } from "./project-grouping";
 // milestones, always in sync with what's actually in the repo. Shipped `##`
 // sections collapse to a ring; the first section that ISN'T fully done starts
 // open (the "current" phase); everything after stays collapsed.
+//
+// When neither default candidate exists, `Project.roadmapPath` lets the
+// operator (via RoadmapPathPicker below) — or Steward, via a confirmed
+// `set_roadmap_path` chat action, same field — point the tab at the real file.
 
-function RoadmapEmptyState({ result, onRetry }: { result: Exclude<api.ProjectRoadmapResult, { state: "ok" }>; onRetry: () => void }) {
+/** Typed a path + saved it, or cleared the override back to the default
+ *  candidates. The empty state for "not_found" — shown either because
+ *  there's no roadmap doc at all, or because an existing override now points
+ *  at a file that's gone missing (renamed/deleted since it was set). */
+function RoadmapPathPicker({ project, onSaved }: { project: Project; onSaved: () => void }) {
+  const { updateProject } = useStore();
+  const [path, setPath] = useState(project.roadmapPath ?? "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const save = async (next: string | null) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await updateProject(project.id, { roadmapPath: next });
+      onSaved();
+    } catch (e) {
+      setErr((e as Error)?.message || "Couldn't save that path.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="kb-empty">
+      {project.roadmapPath
+        ? `No file at "${project.roadmapPath}" in this repo anymore.`
+        : "No ROADMAP.md (or docs/ROADMAP.md) in this repo."}{" "}
+      Point this tab at the real one — or ask Steward, e.g. "the roadmap is at docs/PLAN.md".
+      <div className="prd-path-picker">
+        <input
+          className="qx-input"
+          placeholder="e.g. docs/PLAN.md"
+          value={path}
+          disabled={busy}
+          onChange={(e) => setPath(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && path.trim() && !busy && save(path.trim())}
+        />
+        <button className="btn btn-primary btn-sm" disabled={!path.trim() || busy} onClick={() => save(path.trim())}>
+          Use this file
+        </button>
+        {project.roadmapPath && (
+          <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setPath(""); void save(null); }}>
+            Clear override
+          </button>
+        )}
+      </div>
+      {err && <div className="prd-path-err">{err}</div>}
+    </div>
+  );
+}
+
+function RoadmapEmptyState({
+  result,
+  project,
+  onRetry,
+}: {
+  result: Exclude<api.ProjectRoadmapResult, { state: "ok" }>;
+  project: Project;
+  onRetry: () => void;
+}) {
   switch (result.state) {
     case "unbound":
       return <div className="kb-empty">Connect a local folder or GitHub repo in ⚙ Settings to show its roadmap here.</div>;
     case "missing_local_repo":
       return <div className="kb-empty">This project's local folder isn't on disk — reclone or fix the path in Settings.</div>;
     case "not_found":
-      return (
-        <div className="kb-empty">
-          No ROADMAP.md (or docs/ROADMAP.md) in this repo.
-          <button className="btn btn-ghost btn-sm" onClick={onRetry}>Retry</button>
-        </div>
-      );
+      return <RoadmapPathPicker project={project} onSaved={onRetry} />;
     case "github_error":
       return (
         <div className="kb-empty">
@@ -96,7 +156,7 @@ export function RoadmapDocView({ project }: { project: Project }) {
   }, [project.id]);
 
   if (doc === null) return <div className="kb-empty">Loading roadmap…</div>;
-  if (doc.state !== "ok") return <RoadmapEmptyState result={doc} onRetry={() => setNonce((n) => n + 1)} />;
+  if (doc.state !== "ok") return <RoadmapEmptyState result={doc} project={project} onRetry={() => setNonce((n) => n + 1)} />;
 
   const linkBase = project.repo ? `https://github.com/${project.repo}/blob/${project.baseBranch || "main"}/` : undefined;
   const blocks = parseMarkdown(doc.content);
