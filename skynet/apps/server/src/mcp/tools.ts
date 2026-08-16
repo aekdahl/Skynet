@@ -31,6 +31,16 @@ import { hasScope, type Principal, type Scope } from "../auth.js";
 import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
 import { projectScope } from "./project-scope.js";
+import {
+  DEFAULT_LOG_LIMIT,
+  MAX_LIST_LIMIT,
+  MAX_LOG_LIMIT,
+  paginate,
+  SNAPSHOT_CAP,
+  summarizeAudit,
+  summarizeRun,
+  summarizeTask,
+} from "./summarize.js";
 import { clampWait, waitForEvent } from "./watch.js";
 
 export interface McpDeps {
@@ -45,7 +55,8 @@ const INSTRUCTIONS = `Skynet orchestrates a fleet of coding runs across projects
 4. wait_for_hitl to block until an agent needs a human decision; read the change with run_diff, then resolve_hitl to answer it (requires the "approver" scope).
 5. wait_for_agent to block until an agent finishes or needs review.
 6. Move work across the board with transition_task (triage→todo, review→done, ongoing→todo to abandon); prioritize with move_task / reorder_task; group with features + milestones.
-Risky actions (approving diffs, pushing to GitHub) are gated behind HITL. A token without the "approver" scope can observe and drive runs but cannot resolve gates — a human must.`;
+Risky actions (approving diffs, pushing to GitHub) are gated behind HITL. A token without the "approver" scope can observe and drive runs but cannot resolve gates — a human must.
+list_agents / list_tasks / list_audit / get_snapshot return COMPACT SUMMARIES, not full records — no activity logs, descriptions, or captured diff patches, so listing a busy workspace stays cheap. Once you've found the ONE run/task/decision you care about, drill in with get_agent / get_task / get_audit for its full detail. get_agent's log defaults to the most recent entries (see logTotal/logTruncated) rather than a run's entire history.`;
 
 type Shape = z.ZodRawShape;
 type Args<S extends Shape> = z.infer<z.ZodObject<S>>;
@@ -208,24 +219,98 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   // ── observe ───────────────────────────────────────────────────────────────
   // The workspace-wide reads carry a `filter` so a project-scoped token sees
   // only its own projects' data; `get_agent` names a run and is gated instead.
-  tool("get_snapshot", "observe", "Full workspace snapshot: projects, runs, fleet runners, HITL queue, providers.", {}, () => operations.snapshot(ws), {
-    readOnly: true,
-    filter: (r) => projectAccess.filterSnapshot(r as Snapshot),
-  });
+  //
+  // list_agents / list_tasks / list_audit / get_snapshot are summarized +
+  // paginated (see summarize.ts) — a workspace's runs carry an unbounded
+  // activity log and its audit trail embeds full diff patches, so returning
+  // full records for EVERY row on a listing call scales token cost with
+  // workspace history, not with what the caller actually asked for. These
+  // three do their own project-confinement inline (selfGuarded) so filtering
+  // can happen BEFORE pagination — total/hasMore must reflect the token's
+  // own visible set, not the whole workspace's.
+  const pageArgs = {
+    limit: z.number().int().positive().max(MAX_LIST_LIMIT).optional(),
+    offset: z.number().int().nonnegative().optional(),
+  };
+  tool(
+    "get_snapshot",
+    "observe",
+    "Workspace overview: projects, fleet runners, HITL queue, providers, plus runs/tasks as compact summaries (same shape as list_agents/list_tasks — no activity logs or long text). Capped at 200 runs/tasks each (most recently active first); beyond that use list_agents/list_tasks with pagination, or get_agent/get_task for one record's full detail.",
+    {},
+    async () => {
+      // selfGuarded (not opts.filter): opts.filter only runs for project-restricted
+      // tokens (see tool()'s gate/filter branch below), which would skip
+      // summarization entirely for the common unrestricted case (human sessions,
+      // workspace-wide tokens) — exactly the callers this fix targets.
+      // filterSnapshot is a no-op when unrestricted, so this stays correct either way.
+      const snap = await projectAccess.filterSnapshot((await operations.snapshot(ws)) as Snapshot);
+      const runs = snap.runs.slice().sort((x, y) => y.lastHeartbeatAt - x.lastHeartbeatAt);
+      return {
+        ...snap,
+        runs: runs.slice(0, SNAPSHOT_CAP).map(summarizeRun),
+        runsTotal: runs.length,
+        tasks: snap.tasks.slice(0, SNAPSHOT_CAP).map(summarizeTask),
+        tasksTotal: snap.tasks.length,
+      };
+    },
+    { readOnly: true, selfGuarded: true },
+  );
   tool("list_projects", "observe", "List the workspace's projects.", {}, () => operations.listProjects(ws), {
     readOnly: true,
     filter: (r) => projectAccess.filterProjects(r as { id: string }[]),
   });
-  tool("list_agents", "observe", "List the workspace's runs (running, waiting, in review, done).", {}, () => operations.listRuns(ws), {
-    readOnly: true,
-    filter: (r) => projectAccess.filterByProjectId(r as { projectId: string }[]),
-  });
-  tool("get_agent", "observe", "Get one agent including its plan and recent activity log.", { runId: z.string() }, (a) => operations.getRun(ws, a.runId), { readOnly: true });
+  tool(
+    "list_agents",
+    "observe",
+    "List the workspace's runs as compact summaries (id, name, status, progress, current plan step, project/agent, cost) — NOT the full record, no activity log. Defaults to the 30 most recently active, excluding archived; filter with `status`, page with `limit`/`offset`. Use get_agent for one run's full detail.",
+    { status: z.array(TaskRunStatus).optional(), includeArchived: z.boolean().optional(), ...pageArgs },
+    async (a) => {
+      let runs = projectAccess.filterByProjectId(await operations.listRuns(ws));
+      if (!a.includeArchived) runs = runs.filter((r) => !r.archived);
+      if (a.status && a.status.length > 0) runs = runs.filter((r) => a.status!.includes(r.status));
+      runs = runs.slice().sort((x, y) => y.lastHeartbeatAt - x.lastHeartbeatAt);
+      const page = paginate(runs, a.limit, a.offset);
+      return { ...page, items: page.items.map(summarizeRun) };
+    },
+    { readOnly: true, selfGuarded: true },
+  );
+  tool(
+    "get_agent",
+    "observe",
+    "Get one agent's full detail: status, plan, usage, and its activity log (tool calls + outputs). The log defaults to the most recent 100 entries (see `logTotal`/`logTruncated`); page further back with `logLimit`/`logOffset`.",
+    {
+      runId: z.string(),
+      logLimit: z.number().int().positive().max(MAX_LOG_LIMIT).optional(),
+      logOffset: z.number().int().nonnegative().optional(),
+    },
+    async (a) => {
+      const run = await operations.getRun(ws, a.runId);
+      const logLimit = Math.min(a.logLimit ?? DEFAULT_LOG_LIMIT, MAX_LOG_LIMIT);
+      // Default offset tails the log (most recent entries) — an activity log's
+      // most useful default view is "what's happening now", not "what happened
+      // first". An explicit logOffset always wins.
+      const logOffset = a.logOffset ?? Math.max(0, run.log.length - logLimit);
+      const log = run.log.slice(logOffset, logOffset + logLimit);
+      return { ...run, log, logTotal: run.log.length, logTruncated: log.length < run.log.length };
+    },
+    { readOnly: true },
+  );
   tool("run_diff", "observe", "Get a run's working diff: the unified patch plus added/deleted line counts and changed files. Read this to see what a run actually changed before resolving its review gate.", { runId: z.string() }, (a) => operations.runDiff(ws, a.runId), { readOnly: true });
-  tool("list_tasks", "observe", "List the workspace's tasks (name, state, roadmap links). A project-scoped token sees only its projects' tasks.", {}, () => operations.listTasks(ws), {
-    readOnly: true,
-    filter: (r) => projectAccess.filterByProjectId(r as { projectId: string }[]),
-  });
+  tool(
+    "list_tasks",
+    "observe",
+    "List the workspace's tasks as compact summaries (id, text, state, project/run, autoPick) — NOT full detail, no description/assessment/lint text. Excludes archived by default; filter with `state`, page with `limit`/`offset`. Use get_task for one task's full detail.",
+    { state: z.array(TaskState).optional(), includeArchived: z.boolean().optional(), ...pageArgs },
+    async (a) => {
+      let tasks = projectAccess.filterByProjectId(await operations.listTasks(ws));
+      if (!a.includeArchived) tasks = tasks.filter((t) => !t.archived);
+      if (a.state && a.state.length > 0) tasks = tasks.filter((t) => a.state!.includes(t.state));
+      const page = paginate(tasks, a.limit, a.offset);
+      return { ...page, items: page.items.map(summarizeTask) };
+    },
+    { readOnly: true, selfGuarded: true },
+  );
+  tool("get_task", "observe", "Get one task's full detail: description, structured triage read-out (effort/risks), review verdict, and lint concerns — the full record list_tasks summarizes away.", { taskId: z.string() }, (a) => operations.getTask(ws, a.taskId), { readOnly: true });
   tool("list_features", "observe", "List the workspace's features (task groupings). Scoped tokens see only their projects'.", {}, () => operations.listFeatures(ws), {
     readOnly: true,
     filter: (r) => projectAccess.filterByProjectId(r as { projectId: string }[]),
@@ -238,10 +323,21 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     readOnly: true,
     filter: (r) => projectAccess.filterByRun(r as { runId: string }[]),
   });
-  tool("list_audit", "observe", "List resolved HITL decisions, newest first (the audit trail).", {}, () => operations.listAudit(ws), {
-    readOnly: true,
-    filter: (r) => projectAccess.filterByRun(r as { runId: string }[]),
-  });
+  tool(
+    "list_audit",
+    "observe",
+    "List resolved HITL decisions as compact summaries (action, kind, risk, diff stats), newest first — NOT the full payload, no rationale text or captured diff patch. Excludes archived by default; page with `limit`/`offset`. Use get_audit for one decision's full record.",
+    { includeArchived: z.boolean().optional(), ...pageArgs },
+    async (a) => {
+      let records = await projectAccess.filterByRun(await operations.listAudit(ws));
+      if (!a.includeArchived) records = records.filter((r) => !r.archived);
+      records = records.slice().sort((x, y) => y.at - x.at);
+      const page = paginate(records, a.limit, a.offset);
+      return { ...page, items: page.items.map(summarizeAudit) };
+    },
+    { readOnly: true, selfGuarded: true },
+  );
+  tool("get_audit", "observe", "Get one resolved HITL decision's full record: rationale, guidance, options, and — for a diff/merge decision — the captured unified diff patch. The full record list_audit summarizes away.", { hitlId: z.string() }, (a) => operations.getAuditRecord(ws, a.hitlId), { readOnly: true });
   tool(
     "get_settings",
     "observe",

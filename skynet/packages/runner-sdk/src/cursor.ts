@@ -5,7 +5,12 @@
 // the CLI's command-approval gate mapped to a HITL `approval` item, and chat /
 // decisions injected back into the live session over stdin.
 //
-//   cursor-agent -p --output-format stream-json --model <m> "<task>"
+//   cursor-agent -p --output-format stream-json --stream-partial-output --model <m> "<task>"
+//
+// --stream-partial-output adds token-level text deltas — previewed live via
+// onLogDelta, same "typing" path Claude has — on top of the assistant events
+// already parsed below (see onLine's `consolidated` check for how a delta
+// chunk is told apart from the complete message).
 //
 // Selected via RUNNER=cursor; Core wires orchestrator.getProvider(). The default
 // RUNNER=mock path never imports this file.
@@ -57,7 +62,10 @@ export function cursorArgs(spec: StartSpec, prompt: string, resumeChatId: string
   // fresh per-agent worktree, headless `-p` mode otherwise blocks forever on an
   // interactive trust prompt it can't answer. The operator's gate is preserved
   // by Skynet's own post-run diff review before anything merges.
-  const args = ["-p", "--output-format", "stream-json", "--force"];
+  // --stream-partial-output: token-level text deltas for live "typing" — see
+  // isConsolidatedAssistantEvent below for how a delta is told apart from the
+  // complete message (the CLI reuses the same event shape for both).
+  const args = ["-p", "--output-format", "stream-json", "--stream-partial-output", "--force"];
   // A freshly-written .cursor/mcp.json server needs one-time approval before
   // it loads in headless mode — see the file header for why this (not
   // `mcp enable`) is the right way to grant it.
@@ -95,6 +103,22 @@ function approvalOf(ev: Record<string, unknown>): { command: string } | null {
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null;
+
+/**
+ * With --stream-partial-output, cursor-agent reuses the SAME `{type:
+ * "assistant", message:{...}}` shape for both a per-chunk text delta AND the
+ * complete/consolidated message — there is no dedicated delta type on the
+ * wire. Verified against the shipped CLI's bundled source (2026.06.19 build,
+ * ~/.local/share/cursor-agent): a raw chunk always carries `timestamp_ms` and
+ * never `model_call_id`; the consolidated flush — emitted right before a tool
+ * call (with `model_call_id` set), or right before the final `result` (with
+ * `includeTimestamp: false`, so no `timestamp_ms` at all) — always violates
+ * one of those two. Without --stream-partial-output, only flush events are
+ * ever emitted, so this is always true then (a no-op for that case).
+ */
+export function isConsolidatedAssistantEvent(ev: Record<string, unknown>): boolean {
+  return typeof ev.model_call_id === "string" || ev.timestamp_ms === undefined;
+}
 
 // Pull display text + tool-call names out of an assistant message's content blocks.
 function readAssistant(message: unknown): { text: string; tools: string[] } {
@@ -268,9 +292,12 @@ class CursorRunnerHandle implements RunnerHandle {
     }
 
     if (type === "assistant") {
+      const consolidated = isConsolidatedAssistantEvent(ev);
       const { text, tools } = readAssistant(ev.message);
       if (text) {
-        if (this.pendingChat) {
+        if (!consolidated) {
+          this.events.onLogDelta?.(this.runId, text);
+        } else if (this.pendingChat) {
           this.pendingChat = false;
           this.events.onChatReply(this.runId, text);
         } else {

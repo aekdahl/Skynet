@@ -131,10 +131,18 @@ Findings from the July 2026 end-to-end audit. **P0 blocks release; P1 makes the 
 sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below.)
 
 **P0 — integrity & first impressions**
-1. [~] **Router + nav-state integrity** — make Settings/Acceptance/Simulation deep-linkable
-   (complete `parseHash`); derive the sidebar `.on` highlight purely from router state
-   (highlights currently accumulate — three "active" at once); give focus a distinct
-   `:focus-visible` ring instead of the active style; window title reflects view/project.
+1. [x] **Router + nav-state integrity** — `parseHash` (`apps/web/src/lib/routing.ts:19-47`) resolves
+   `#/settings`, `#/acceptance`, `#/simulation` deep links, and `DEV_ONLY_VIEWS`
+   (`apps/web/src/lib/dev.ts:25`) is empty, so nothing dev-gates them. The sidebar `.on` highlight
+   derives purely from router state through one function, `activeNav(view)`
+   (`apps/web/src/components/shell.tsx:36-66`) — every nav item's `.on` is `active === <key>`, never
+   an ad-hoc local predicate, so highlights can't accumulate. `:focus-visible`
+   (`styles.css:1849-1852`) is a separate outline from `.on`'s background/box-shadow treatment.
+   Window title reflects view/project/agent via a `useEffect` in `App.tsx:209-217`. *(One nuance:
+   the QA nav-section header carries `.on` too when Acceptance/Simulation is active — a
+   parent-section + child-item pair, deliberately styled differently (`styles.css:1858` just
+   recolors the header text, no outline/background) — not the original "three primary items lit
+   simultaneously" bug.)*
 2. [x] **Onboarding step 2 (GitHub) is a PLACEHOLDER** mid-wizard — removed the GitHub step
    from the wizard (now Workspace → Module map → Fleet). Integrations already owns the connect
    flow post-onboarding, so a first-run user never meets the unfinished App-install mid-wizard.
@@ -149,8 +157,20 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
    (provider picker, subway rows, task-grouping chips) were left on hover-title — they're
    multi-choice rows, not a single blocked CTA, so a permanent reason line under each would
    be noise, not signal.)*
-4. [ ] **Legibility floor** — ≥11px and `--muted` for any text that carries meaning; `--faint`
-   only for decoration (subway anchor labels, backlog subtitle, legends, picker hints).
+4. [x] **Legibility floor** — ≥11px and `--muted` for any text that carries meaning; `--faint`
+   only for decoration. Fixed the roadmap's two named offenders (subway anchor labels
+   `.swb-anchor-label`, backlog subtitle `.proj-backlog`) plus the rest of the same bug found on a
+   full sweep of `styles.css`: risk chips, eval scores, test tallies, the Runs-board header row and
+   status pills, subway track/station labels and counts, and every N/M-fraction readout across the
+   app (feature/milestone/first-run progress, roadmap phase counts). Legends and picker hints were
+   already compliant (`--muted` at 11px+, and genuinely decorative respectively) — left alone.
+   Judgment calls, left `--faint`: a bare "—" no-agent placeholder (a null-state glyph, not
+   information), per-log-line timestamps (a "when" annotation secondary to the log line's own
+   `--muted` text), the timeline's axis-tick labels and the subway diagram's dense per-station name
+   labels (both a chart/diagram-chrome convention, and — for the latter — a font-size bump risked
+   overlap in a tightly absolute-positioned layout with many instances per row), and structural
+   nav/palette section dividers (`OPERATE`/`CONFIGURE`, command-palette group headers) — grouping
+   chrome, not content.
 5. [x] **Persist the workspace name server-side** — rides `WorkspaceSettings` (the existing
    auto-scale settings record) as a `name` field; onboarding writes it via `PATCH
    /api/settings/fleet`, the sidebar/shell header read it from the live store
@@ -173,9 +193,12 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
    workspace's very first project also defaults Autonomy **off** (every project after defaults
    on, as before) — gated on the client's own project count at the moment the create form opens,
    not a server-side default change, so every other caller (MCP, API) is unaffected.
-10. [ ] **Fleet copy & guardrails** — "1 agents" pluralization; unify "+ Configure agent" vs
-    "Add to fleet"; move destructive **Retire** behind detail/overflow or confirm inline;
-    label the provider strip as the *catalog*, not configured.
+10. [x] **Fleet copy & guardrails** — "1 agent" pluralization fixed; the header CTA is now
+    "+ Add agent" (matched to the form's own "Add to fleet" submit, one verb across the whole
+    flow); Retire now confirms inline via the same danger-styled `useConfirm()` dialog used
+    elsewhere (Stop run, etc.), with copy verified against what `retireRunner` actually does
+    (history preserved, only the agent record removed; a busy agent is already 409-blocked);
+    the provider strip reads "catalog: Claude, Codex, …" instead of implying all five are configured.
 11. [x] **Inbox empty state teaches** — the empty state lists all four gate kinds (approval / plan
     review / diff review / merge conflict) with a one-line blurb each.
 12. [x] **Prioritize the backlog _and_ todo** — manual promote/demote (reorder) on **todo**
@@ -215,10 +238,34 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   - **Copilot** — a real per-invocation flag, `--additional-mcp-config <json>` (verified against
     `@github/copilot` 1.0.80); tool calls fall through the existing generic approval-prompt match, same
     live gate as any other tool.
-- [ ] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** (+ **OpenCode**, which
-  is ubiquitous across the competitor field, and **Kimi Code** — Moonshot AI's terminal coding agent, same
-  CLI shape as Claude/Codex/Gemini, [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — then
-  breadth reactively from the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
+- [~] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot, OpenCode** done;
+  **Kimi Code** (Moonshot AI's terminal coding agent, same CLI shape as Claude/Codex/Gemini,
+  [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) still to do; then breadth reactively from
+  the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
+  *Landed: Codex, Gemini, Cursor, and Copilot are all real, wired-up `CliRunnerProvider`s
+  (`orchestrator.ts`'s `getProvider` dynamic-imports each from `runner-sdk`), plus Hermes (not
+  originally named in this bullet) — five non-Claude vendors live today, each with real CLI
+  detection, argv/env wiring, and (per the CLI-usage-fidelity pass above) verified-current usage
+  parsing for Codex/Gemini/Cursor. **OpenCode landed** (`packages/runner-sdk/src/opencode.ts`,
+  `RUNNER=opencode`, npm `opencode-ai`) — drives `opencode run --format json`, a real NDJSON stream
+  verified live against 1.18.18 (a plain reply, a bash call, and a file write, each captured and locked
+  into `tests/cli-runner-vendor-usage.test.ts`); `usageFromJson` needed zero vendor-specific unwrapping
+  since its per-step `input`/`output`/`cost` fields already match the scanner's aliases — opencode.ts
+  accumulates them itself (OpenCode reports per-step deltas, not a running session total the way Codex
+  does). No live HITL gate: `run`'s non-interactive mode auto-*rejects* any `ask`-configured permission
+  instead of pausing for a decision (verified live — the rejection is stderr-only, never a stdout event),
+  so `--auto` avoids that trap and Skynet's own post-run diff review gates the merge, same as Hermes. The
+  model catalog uses OpenCode's own `provider/model` slugs (`anthropic/claude-opus-5` etc., defaulted to
+  Anthropic per its docs) passed straight through, like Hermes' slugs. Landed alongside two real bugs this
+  integration surfaced in the shared CLI base (`cli-runner.ts`), both verified live and fixed for every
+  vendor, not just this one: (1) `opencode run` hung indefinitely producing zero output on Node `spawn()`'s
+  default *open* stdin pipe, while completing instantly from an interactive shell or with stdin explicitly
+  closed — fixed via a new opt-in `CliVendor.closeStdin` flag; (2) the OpenCode binary resolves its working
+  directory from the inherited `PWD` env var rather than the OS cwd, so a stale `PWD` (spawn's `cwd` option
+  changes the real working directory but never syncs `PWD` to match) silently pointed it at the Skynet
+  server's own launch directory instead of the agent's worktree, writing real files there while `commitAll`
+  correctly saw a clean, unrelated worktree and reported "no changes to integrate" — fixed by setting `PWD`
+  to match `cwd` on every spawn.* Still to do: **Kimi Code** and reactive breadth from the candidate list.
 - [x] **Agent labels / custom grouping** — Fleet already supports both: a "Group" field
   (`label`) with a known-groups datalist, the fleet grid groups by label with headings, and
   editing an agent's name is already part of the same Configure form.
@@ -227,7 +274,6 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   `shouldQuery:false`; CLI runners buffer + prepend). A third interaction type (`inform`) alongside
   chat + resolve; optional "also remember" promotes the note to area/workspace memory (v4) so future
   agents inherit it too. Audited via existing streams.
-- [ ] Real **live-preview** pipeline (sandboxed per-branch URLs).
 - [~] **🔗 Per-project live preview — "see what it builds", any software.** Today's W5 preview is
   per-agent-*branch* and effectively static/web. Generalize to a **stable per-project preview of the
   integration branch** that handles any software, not just SPAs. **Proposed approach:**
@@ -247,7 +293,15 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     for every framework without per-recipe flags. **Shipped:** a `/p/<token>/` reverse proxy fronts the
     loopback dev server on Skynet's learned public origin (Host-rewritten, HMR WebSocket bridged), Vite
     recipes get `--base=/p/<token>/`, and `PreviewState.url` becomes the proxied URL when hosted (loopback
-    on desktop). Remaining Phase-2: the service-container runtime + auto-rebuild on merge.
+    on desktop). *Bug fixed: base-injection matched the literal word "vite" against the OUTER command,
+    but the common path resolves to `npm run dev` — the word never appears there, only inside the wrapped
+    script — so injection silently never fired for the typical project and every preview fell into the
+    regex-rewrite fallback (`preview-proxy.ts`'s `rewriteJsImports`), which can only re-prefix a path that
+    appears as a quoted string literal — never a runtime-computed one (`import(variable)`, e.g.
+    pdfjs-dist's fake-worker fallback), which is a structural blind spot no amount of regex tuning closes.
+    `injectViteBase`/`npmRunScriptName` (`project-preview.ts`) now look through the `npm run` wrapper at
+    the real script body, so base-mode — the actually-complete fix — applies to the common case too.*
+    Remaining Phase-2: the service-container runtime + auto-rebuild on merge.
     · **command** (CLI/lib/other) → run a command and surface **output/exit/artifacts** (no URL) —
     "preview" = run it and show the result. Covers "any software".
   - **Per project + per branch:** the project preview tracks the **integration branch** (what the fleet
@@ -299,8 +353,15 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   runners** — one container per agent, completing the v0 sandbox item's deferred
   half: memory/CPU caps (cgroups) and network egress allowlist (proxy). The
   command-deny, worktree write-confinement, and runtime cap already ship locally.
-- [ ] **Guided provider connect** — one-click "Connect Claude / Codex / …": in-app key entry + a live verify,
-  so onboarding never requires hand-authing each vendor CLI (the #1 friction rivals impose).
+- [x] **Guided provider connect** — one-click "Connect Claude / Codex / …": in-app key entry + a live verify,
+  so onboarding never requires hand-authing each vendor CLI (the #1 friction rivals impose). Key entry
+  already worked (`createCredential`/`setSecret`); landed the missing live-verify half — a cheap,
+  read-only, per-vendor call (`secrets/verify.ts`: Anthropic/OpenAI/Google `models` list, OpenRouter
+  auth-key check, Cursor `/v0/me`, GitHub `/user` for both `copilot` and a pinned GitHub PAT) confirms a
+  saved key actually authenticates rather than just being present. Never blocks the save itself (a key
+  can be valid but momentarily rate-limited); Settings shows a spinner → pass/fail badge with the
+  vendor's own error text, on both the main provider row and the "+ Add another key" form. Verified live
+  against real keys (good and deliberately-wrong) through the actual Settings UI.
 - [x] **Run escalation / hand-off — a stuck run halts for a human.** A run enters a first-class
   `escalation` HITL ("NEEDS HELP") three ways: the **agent hands off** itself when genuinely blocked
   (AskUserQuestion with header "ESCALATE" → detected by the runner), **too many failures**
@@ -334,14 +395,37 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   - Secrets at rest (local); 🏢 **observability** (hosted metrics/logging/tracing) + SIEM export of the audit.
 - [x] **Runner session-map cleanup** — `ClaudeRunnerProvider.sessions` (runId→sessionId, kept for fork resume) is now a bounded LRU (cap 500, evict-oldest via re-insertion-on-touch), not evict-on-completion as originally scoped: Fork stays available on ANY run indefinitely (no completion/archival ever disables the Fork button), so there's no lifecycle event that safely marks an entry as "will never be resumed again" — evicting on done/worktree-retire would silently break resume for the ordinary "fork a run I finished a while ago" case. Beyond the cap, a fork just starts a fresh (non-resumed) session — exactly what already happens today after a server restart, since this cache was never persisted. Small RAM/tech-debt fix; no behavior change for realistic single-operator volumes.
 - [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs) + **plan-mode gate (Claude)** — an opt-in per-project `planModeGate` sets `permissionMode: "plan"`; `ExitPlanMode` is intercepted and raised as a real `plan` HITL (the dead `HitlKind` finally has a producer), and everything but read-only investigation is denied outright until the operator approves it — genuinely no writes happen first + token-by-token streaming for Claude (`includePartialMessages` → a bus-only `run.log.delta` event, never persisted per-token → live "typing" in the run log, same finalized `run.log` write as before). **CLI usage fidelity firmed up** (re-verified against each vendor's CURRENT CLI, not assumed): Codex — fixed a real bug, `usageFromJson` scanned for a flat `usage`/`stats`/`tokens` key but codex-cli 0.147.0's `TokenCountEvent` nests real counts two levels deep (`msg.info.total_token_usage`), so usage was silently never reported; now unwrapped correctly. Gemini — `buildArgs` never actually requested JSON output, so text mode was the ONLY mode ever exercised and usage was never parsed despite the JSON-handling code already existing; now defaults to `--output-format stream-json` (verified against gemini-cli's `StreamJsonFormatter`). Cursor — `--output-format stream-json` confirmed current via `cursor-agent --help`; no bug found, left as-is.*
+  - [x] **Token-by-token streaming for the CLI runners** — shipped for the two vendors whose wire protocol actually carries per-chunk deltas; the other two don't and aren't forced. Gemini: `-p` non-interactive `stream-json` mode emits a `message`+`delta:true` event per chunk with no distinct "message complete" event on the wire (verified live against gemini-cli's `nonInteractiveCli.ts`, not just the `MessageEvent` type shape) — `gemini.ts#parseLine` now buffers chunks, previews each via `onLogDelta`, and flushes the buffer as one persisted line the moment the next non-delta event arrives (`CliVendor.parseLine` widened to return `CliEvent | CliEvent[]` so a flush can precede that event's own, in `cli-runner.ts`). Cursor: added `--stream-partial-output`; its wire format reuses the exact same `{type:"assistant"}` shape for both a raw chunk and the consolidated message with no dedicated delta type, so `cursor.ts#isConsolidatedAssistantEvent` tells them apart by field presence (`model_call_id` set, or `timestamp_ms` absent) — verified against the shipped CLI's own bundled source (no public repo to check against, no live `CURSOR_API_KEY` in the verifying environment either), not empirically confirmed against a captured live payload; treat as a good-faith reading worth re-checking if a `cursor-agent` update ever changes this. Codex: checked for real, not assumed — `codex exec --json`'s wire format (`codex-rs/exec/src/exec_events.rs`'s `ThreadEvent`, confirmed at the exact `rust-v0.147.0` tag already used for usage) only has `item.started`/`item.completed` lifecycle events for assistant messages, no delta variant; the raw internal protocol DOES have one (`AgentMessageContentDelta` in `codex-rs/protocol`) but `exec --json` doesn't expose it — not wired, nothing to force. Copilot: still text-mode only (see the item below) — no JSON stream to extract a delta from yet.
   Still to do:
   - **Per-runner tool + prompt policy** — surface `allowedTools`/`disallowedTools`, a project system prompt, and `settingSources` (CLAUDE.md) instead of the hardcoded auto-allow set + inline steering. Ties into v4 repo-native memory.
   - [x] **Structured diffs in gates/review** — shipped: `HitlItem.diff` (stat) is set in `raiseDiffReview` from `WorktreeManager.diffStat`, and the full unified patch is served on-demand by `GET /api/runs/:id/diff` (`orchestrator.ts#runDiff` → `worktrees.ts#patch`, a real `git diff` in the worktree) and rendered by `diff-view.tsx`'s `parseUnifiedDiff`. No vendor-specific patch-event plumbing exists (or is needed) — every runner's changes land in the same worktree, so one `git diff` covers Claude/Codex/Cursor/Gemini/Copilot alike.
-  - **Token-by-token streaming for the CLI runners** — Codex/Gemini/Cursor/Copilot NDJSON deltas → the same `run.log.delta` live-typing path Claude now has.
   - **Copilot usage/event fidelity** — `copilot` (v1.0.79) turns out to have a machine-readable mode after all (`--output-format json`, JSONL — this was previously undocumented here as text-only, now confirmed live), reporting output tokens + duration per turn, but no input-token count and no USD cost (it meters "premium requests"/AI credits, not $/token — a genuinely different billing model from the others). Adopting it isn't a usage-only change: the Copilot runner's approval-gate detection and tool/log lines are currently parsed from human-readable text, and `--output-format json` replaces ALL output with JSONL, so wiring usage means migrating that whole parser to structured events, not just adding a field extraction. Scoped out of the CLI-usage-fidelity fix as a separate, larger follow-up.
 - [~] **Review upgrades (adopted from the competitor sweep):**
-  - **Verifier gate** — run the project's tests/checks in the worktree and **block the merge on failure** as a
-    first-class gate (not just the pre-merge `checkCmd`); auto-commit on green. *(bernstein / MartinLoop-style.)*
+  - *Landed: **Verifier gate** (bernstein / MartinLoop-style) — the check-running + rollback-on-failure
+    mechanics already existed (`MergeEngine` ran `checkCmd` post-merge and reset the merge commit on
+    failure); what didn't was the GATE — a failure just logged a 200-char snippet and silently parked
+    the run in `review`, no human decision point. Now it raises a real `verifier` HITL (new `HitlKind`)
+    carrying the full check output (capped at 50KB, not 200 chars), with the same two-outcome
+    resolution shape `merge`/`diff` gates already use — no new one invented: approve retries the
+    merge + check (`git.merge.enqueue`), reject or modify bounces the agent to revise
+    (`reviseAfterReview`) with the output as guidance (typed guidance wins if the operator supplies
+    it; a plain reject falls back to the gate's own output — no typing required to un-stick a failed
+    build). `checkCmd` is now **per-project** (`Project.checkCmd`, falls back to the workspace-global
+    `SKYNET_CHECK_CMD`), threaded through `MergeRequest` rather than baked into the engine at
+    construction — `MergeEngine` is cached per (repo, baseBranch) and shared across every project on
+    that repo, so a project-level override resolved and passed per-`enqueue()` call is what keeps two
+    projects sharing a cache key (or a project editing its command later) from reading a stale/wrong
+    value. **"Auto-commit on green" needed no change** — `onMerged` already fired unconditionally past
+    a passing check; confirmed, not re-implemented. HITL rendering (Inbox card, run-detail context,
+    audit trail — the diff is now captured for verifier gates too, same as merge/diff, since the
+    agent's own worktree is still around even though the scratch integration worktree is gone —
+    and the Telegram card/keyboard) all extended to the new kind. Verified with 12 new deterministic
+    tests against real throwaway git repos (no LLM involved — this is a git/process feature end to
+    end): raise + full output, rollback, retry-raises-a-fresh-gate, reject-bounces-with-the-output-as-
+    guidance-then-a-fixed-revise-merges-clean, per-project override, and the on/no-checkCmd fallback
+    chain. Live-clicked the new project-settings field for real too. Not built: the gate itself doesn't
+    carry a diff stat/summary inline the way merge/diff gates do (only the check output) — the
+    underlying diff is still fetchable the same on-demand way, just not pre-computed on the card.*
   - *Landed: **every review is auto-reviewed** — a fleet agent judges each `review`-state task's diff/output
     and writes a structured verdict (approve/flag) to the task; the log line names the reviewer + reason, and
     the audit trail records who reviewed what. Auto-approve merges only when the project's autonomy toggle is
@@ -499,13 +583,19 @@ features below are white space.)
   pitch — "transport vs. generation," deep links that "hydrate state" instead of forcing a re-login.
   The underlying idea is sound and is genuinely missing; the "agent renders a whole spatial PWA on the
   fly" framing isn't — see the AG-UI note in Considerations for why we're not chasing that part.)*
-- [ ] **Operator ergonomics (P3 of [docs/ux-review.md](docs/ux-review.md)):** **⌘K command palette**
+- [~] **Operator ergonomics (P3 of [docs/ux-review.md](docs/ux-review.md)):** **⌘K command palette**
   (navigation + verbs: assign, approve latest gate, open project) · **keyboard-first Inbox**
   (j/k navigate, a/r/m approve/reject/modify, ↵ opens the run — `QueueView.selectedIdx` already
   exists; finish it + a visible shortcut bar) · **OS notifications + dock badge** on new gates
   (Electron; waiting-minutes are the product's core currency) · **Timeline lens depth** (zoom,
   brush, click-through) · **cost/usage roll-ups** (per-project header + per-runner in Fleet —
-  pre-figures the team blueprint's budgets).
+  pre-figures the team blueprint's budgets). *Landed: the **⌘K command palette** (`CommandPalette`,
+  ⌘K/Ctrl+K) — fuzzy-navigate to a view or project, or approve the most recent pending HITL gate —
+  and the **keyboard-first Inbox** — `QueueView.selectedIdx` now actually wired (j/k navigate, ↵
+  opens the run, a/r/m approve/reject/modify calling the same `store.resolveHitl` the card buttons
+  use), plus a dismissible shortcut hint bar. Both skip their shortcuts while the operator is typing
+  in a text field. Still to do: **OS notifications + dock badge**, **Timeline lens depth**,
+  **cost/usage roll-ups**.
 
 **Memory v0 (thin moat, pulled forward from v4):**
 - [ ] Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory
@@ -575,6 +665,15 @@ supervision layer, it doesn't host or resell those services.
   bootstrap token for sandbox deploys (e.g. Daytona). See [docs/mcp.md](docs/mcp.md).
   *(The browser/Chrome MCP tool is pulled forward to v1 — see above — since it serves the core code loop,
   not inbound triggers; the rest of the tool catalog lands here.)*
+  *Landed: **response-size fix** — `list_agents`/`list_tasks`/`list_audit`/`get_snapshot` were returning
+  full records (a run's entire tool-call log, a task's full assessment/lint text, an audit record's
+  captured diff patch) for every row, so listing scaled with workspace history rather than what the
+  caller asked for — one real deployment's `list_agents`/`list_tasks` became unusable at ~50 runs / 100
+  tasks. Now summary/detail-split like the rest of the product: list_* return compact, paginated
+  (`limit`/`offset`, default 30/cap 200) summaries excluding archived by default; two new tools,
+  `get_task` and `get_audit`, fill the drill-in gap for a single record's full detail (mirroring the
+  existing `get_agent`); `get_agent`'s log itself now defaults to the most recent 100 entries
+  (`logLimit`/`logOffset` to page further back) so even a single long-lived run can't blow the budget.*
 - [ ] **Feedback-loop responders (route back to the *originating* run)** — a CI failure, a PR review comment, or a
   merge conflict re-engages the **same** agent that produced the branch (self-healing), not a fresh run.
   *(Agent Orchestrator-style; ties directly to the responders below.)*

@@ -31,6 +31,14 @@ export interface MergeRequest {
   projectId: string;
   agentBranch: string;
   workspaceId: string;
+  // Effective check command for this run's PROJECT, already resolved (project
+  // override, else the workspace-global default) at enqueue time. Threaded per-
+  // request rather than baked into the engine at construction: a MergeEngine is
+  // cached per (repo, baseBranch) and shared across every project on that repo,
+  // so a project-level override can't live on `this.checkCmd` without either
+  // colliding with another project sharing the cache key or going stale after
+  // an operator edits it. Undefined → fall back to `this.checkCmd`.
+  checkCmd?: string;
 }
 
 export interface MergeCallbacks {
@@ -68,6 +76,8 @@ export class MergeEngine {
     private repo: string,
     private baseBranch: string,
     private cb: MergeCallbacks,
+    // Workspace-global default; per-project overrides ride MergeRequest.checkCmd
+    // instead (see its doc comment for why).
     private checkCmd?: string,
     scratchRoot?: string,
   ) {
@@ -151,7 +161,8 @@ export class MergeEngine {
         return;
       }
 
-      if (this.checkCmd) {
+      const checkCmd = req.checkCmd ?? this.checkCmd;
+      if (checkCmd) {
         // Run the operator-configured check under hard limits (timeout, output
         // cap, confined cwd, no inherited stdio) and refuse denylisted commands
         // outright. Env is preserved (an operator-set check needs the real
@@ -161,7 +172,7 @@ export class MergeEngine {
           await this.cb.onChecksFailed(req, output);
         };
         try {
-          assertApprovable(this.checkCmd);
+          assertApprovable(checkCmd);
         } catch (err) {
           if (err instanceof CommandDeniedError) {
             await bounce(`check command refused by safety policy: ${err.message}`);
@@ -169,7 +180,7 @@ export class MergeEngine {
           }
           throw err;
         }
-        const res = await runBounded(this.checkCmd, {
+        const res = await runBounded(checkCmd, {
           cwd: scratch,
           env: process.env as Record<string, string>,
         });

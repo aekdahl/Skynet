@@ -10,12 +10,16 @@
 // `result` event with flat token/duration totals (`stats.{input_tokens,
 // output_tokens,duration_ms}`, verified against google-gemini/gemini-cli's
 // StreamJsonFormatter) — so usage is actually reported, not just logged as
-// prose. The parser still falls back to text-line heuristics (tool calls,
-// confirmation prompts) for anything that isn't valid JSON, in case an
-// operator overrides GEMINI_EXTRA_ARGS back to text mode. Binary and argv are
-// env-overridable (GEMINI_BIN, GEMINI_EXTRA_ARGS — a later --output-format in
-// EXTRA wins). Missing binary or an auth failure falls back cleanly (see
-// cli-runner.ts); the default RUNNER=mock path never imports this module.
+// prose. Assistant text arrives as a run of `message`+`delta:true` chunks (no
+// distinct final event — see parseLine's flushDelta) and is previewed live via
+// onLogDelta while still landing as one persisted line, same as Claude's
+// token-by-token streaming. The parser still falls back to text-line
+// heuristics (tool calls, confirmation prompts) for anything that isn't valid
+// JSON, in case an operator overrides GEMINI_EXTRA_ARGS back to text mode.
+// Binary and argv are env-overridable (GEMINI_BIN, GEMINI_EXTRA_ARGS — a later
+// --output-format in EXTRA wins). Missing binary or an auth failure falls back
+// cleanly (see cli-runner.ts); the default RUNNER=mock path never imports this
+// module.
 //
 // Opt-in browser tooling (spec.browser): Gemini's MCP servers are FILE-based
 // only — there's no per-invocation flag (verified live against gemini-cli
@@ -46,6 +50,25 @@ const EXTRA = (process.env.GEMINI_EXTRA_ARGS ?? "").split(" ").filter(Boolean);
 const CONFIRM_RE = /\b(allow|apply this|proceed\??|confirm|\(y\/n\)|\[y\/n\]|yes\/no)\b/i;
 // Lines that indicate a tool / shell / edit is being run.
 const TOOL_RE = /^(?:\s*[▸✦●>*-]\s*)?(running|executing|tool|shell|run_shell|edit|write_file|replace|read_file|web_?fetch|google_search)\b/i;
+
+/** Flush any buffered delta chunks (ctx.geminiDelta) as ONE persisted `chat`
+ *  line — the "complete text still lands once the message finishes" half of
+ *  the onLogDelta contract. Called whenever a non-delta event line arrives,
+ *  since that's the only boundary the wire actually gives us (see parseLine). */
+function flushDelta(ctx: ParseCtx): CliEvent[] {
+  const buf = ctx.geminiDelta as string | undefined;
+  if (!buf) return [];
+  ctx.geminiDelta = undefined;
+  return [{ kind: "chat", text: buf }];
+}
+
+// Prepend a flush ahead of the current line's own event — but stay a single
+// bare CliEvent (not a 1-element array) in the overwhelmingly common case of
+// no pending flush, so callers/tests that don't care about delta-buffering
+// see the same shape as before this feature existed.
+function withFlush(flush: CliEvent[], ev: CliEvent): CliEvent | CliEvent[] {
+  return flush.length ? [...flush, ev] : ev;
+}
 
 function approvalRaise(command: string): HitlRaise {
   return {
@@ -97,41 +120,59 @@ export const gemini: CliVendor = {
     return ["-m", spec.model, "--output-format", "stream-json", ...EXTRA, "-p", spec.task];
   },
 
-  parseLine(line: string, ctx: ParseCtx): CliEvent {
+  parseLine(line: string, ctx: ParseCtx): CliEvent | CliEvent[] {
     // Structured mode (when --output-format json / stream-json is configured).
     if (line.startsWith("{")) {
       try {
         const obj = JSON.parse(line) as Record<string, unknown>;
         const type = String(obj.type ?? "");
+
+        // Token-level streaming: a `message` event with `delta: true` carries
+        // ONE incremental chunk of assistant text, not an accumulated snapshot
+        // — verified live against gemini-cli's nonInteractiveCli.ts (the `-p`
+        // non-interactive path this runner drives): each `GeminiEventType.
+        // Content` chunk is emitted immediately as `{type:"message",
+        // role:"assistant", content:<chunk>, delta:true}`. Unlike Claude's SDK,
+        // there is NO separate final "message complete" event on the wire —
+        // preview each chunk live, and buffer it so the complete text still
+        // lands as exactly one persisted line once the stream moves past it
+        // (flushDelta, below), matching the onLogDelta contract.
+        if (type === "message" && obj.role === "assistant" && obj.delta === true && typeof obj.content === "string") {
+          ctx.geminiDelta = ((ctx.geminiDelta as string | undefined) ?? "") + obj.content;
+          return { kind: "delta", text: obj.content };
+        }
+        const flush = flushDelta(ctx);
+
         if (/confirm|approval|permission/i.test(type)) {
           const cmd = typeof obj.command === "string" ? obj.command : String(obj.name ?? "");
           ctx.awaitingConfirm = true;
-          return { kind: "approval", raise: approvalRaise(cmd) };
+          return withFlush(flush, { kind: "approval", raise: approvalRaise(cmd) });
         }
         if (/tool|function|command|action/i.test(type)) {
           const label = String(obj.name ?? obj.command ?? type);
-          return { kind: "tool", label };
+          return withFlush(flush, { kind: "tool", label });
         }
         // Best-effort token/cost totals (stats/usage events in JSON mode).
         if (/stat|usage|token|metadata/i.test(type) || obj.usage || obj.stats) {
           const usage = usageFromJson(obj);
-          if (usage) return { kind: "usage", usage };
+          if (usage) return withFlush(flush, { kind: "usage", usage });
         }
         const text = obj.response ?? obj.text ?? obj.content ?? obj.message;
-        if (typeof text === "string" && text.trim()) return { kind: "chat", text: text.trim() };
-        return { kind: "ignore" };
+        if (typeof text === "string" && text.trim()) return withFlush(flush, { kind: "chat", text: text.trim() });
+        return flush.length ? flush : { kind: "ignore" };
       } catch {
         /* fall through to text handling */
       }
     }
 
     // Text mode.
+    const flush = flushDelta(ctx);
     if (CONFIRM_RE.test(line)) {
       ctx.awaitingConfirm = true;
-      return { kind: "approval", raise: approvalRaise(line) };
+      return withFlush(flush, { kind: "approval", raise: approvalRaise(line) });
     }
-    if (TOOL_RE.test(line)) return { kind: "tool", label: line };
-    return { kind: "log", line };
+    if (TOOL_RE.test(line)) return withFlush(flush, { kind: "tool", label: line });
+    return withFlush(flush, { kind: "log", line });
   },
 
   encodeDecision(decision: Resolution | undefined, ctx: ParseCtx): string | null {
