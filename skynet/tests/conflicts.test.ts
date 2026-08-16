@@ -49,4 +49,70 @@ describe("computeConflicts", () => {
     expect(familyOf(run("fork", [], { parentId: "p" }))).toBe("p");
     expect(familyOf(run("solo", []))).toBe("solo");
   });
+
+  it("familyOf without a run lookup stays single-hop (today's behavior, unchanged)", () => {
+    // No byId map — same as before this walked to root at all.
+    expect(familyOf(run("grandchild", [], { parentId: "child" }))).toBe("child");
+  });
+
+  it("familyOf walks a multi-level parentId chain to the root", () => {
+    const grandparent = run("grandparent", []);
+    const parent = run("parent", [], { parentId: "grandparent" });
+    const child = run("child", [], { parentId: "parent" });
+    const byId = new Map([grandparent, parent, child].map((r) => [r.id, r]));
+    expect(familyOf(grandparent, byId)).toBe("grandparent");
+    expect(familyOf(parent, byId)).toBe("grandparent");
+    expect(familyOf(child, byId)).toBe("grandparent");
+  });
+
+  it("familyOf stops at a missing/broken link rather than throwing", () => {
+    const orphan = run("orphan", [], { parentId: "nowhere" });
+    const byId = new Map([[orphan.id, orphan]]);
+    expect(familyOf(orphan, byId)).toBe("nowhere");
+  });
+
+  it("familyOf stops on a cycle rather than looping forever", () => {
+    const a = run("a", [], { parentId: "b" });
+    const b = run("b", [], { parentId: "a" });
+    const byId = new Map([a, b].map((r) => [r.id, r]));
+    // Terminates (doesn't hang) — the exact id it stops at isn't the point,
+    // only that a broken/cyclic chain can never infinite-loop the derive step.
+    expect(familyOf(a, byId)).toBe("a");
+    expect(familyOf(b, byId)).toBe("b");
+  });
+
+  it("a 3-level parentId chain (grandparent → parent → child) is one family — never flag each other", () => {
+    // A fork of a fork — already reachable today (the Fork action has no
+    // depth limit) — and, later, a worker→manager delegation chain.
+    expect(
+      computeConflicts([
+        run("grandparent", ["billing"]),
+        run("parent", ["billing"], { parentId: "grandparent" }),
+        run("child", ["billing"], { parentId: "parent" }),
+      ]),
+    ).toHaveLength(0);
+  });
+
+  it("a 3-level chain still flags against a genuinely unrelated run", () => {
+    const c = computeConflicts([
+      run("grandparent", ["billing"]),
+      run("parent", ["billing"], { parentId: "grandparent" }),
+      run("child", ["billing"], { parentId: "parent" }),
+      run("other", ["billing"]),
+    ]);
+    expect(c).toHaveLength(1);
+    expect(c[0]!.runIds.slice().sort()).toEqual(["child", "grandparent", "other", "parent"]);
+  });
+
+  it("a finished (done) parent is still walked to resolve its active child's family", () => {
+    // The done filter only applies to which runs CONTEND for a module — the
+    // id lookup for walking parentId is built from every run, active or not.
+    expect(
+      computeConflicts([
+        run("parent", ["billing"], { status: "done" }),
+        run("child", ["billing"], { parentId: "parent" }),
+        run("other", ["billing"]),
+      ]),
+    ).toHaveLength(1); // child vs other — parent is done, doesn't contend itself
+  });
 });

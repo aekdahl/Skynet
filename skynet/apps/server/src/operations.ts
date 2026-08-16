@@ -1134,6 +1134,7 @@ export class Operations {
       autoProvisioned: false, // an operator added this — the idle reaper leaves it alone
       canReview: true, // reviewer-eligible by default (never reviews its own runs)
       label: input.label?.trim() || null, // optional grouping bucket (empty → ungrouped)
+      role: "worker", // no manager provisioning exists yet — every runner is a worker
     };
     return this.hub.upsertAgent(runner);
   }

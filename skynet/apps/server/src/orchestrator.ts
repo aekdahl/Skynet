@@ -15,6 +15,7 @@ import {
 import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
+import { resolveMergeTarget } from "./derive/merge-target.js";
 import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
 import { decisionResumePrompt } from "./decision-resume.js";
@@ -288,6 +289,19 @@ export class Orchestrator {
    *  the server-global default (SKYNET_BASE_BRANCH || "main"). */
   private baseBranchFor(project?: Project | null): string {
     return project?.baseBranch ?? config.baseBranch;
+  }
+
+  /** Where `run`'s approved diff integrates first — see derive/merge-target.ts.
+   *  Resolves the run's direct parent + that parent's fleet runner and defers
+   *  the actual decision to the pure `resolveMergeTarget`. Currently always
+   *  returns `baseBranchFor(project)` in practice (nothing provisions a
+   *  manager-role agent yet), by design — see that module for why. */
+  private async mergeTargetBranchFor(run: TaskRun, project?: Project | null): Promise<string> {
+    const fallback = this.baseBranchFor(project);
+    if (!run.parentId) return fallback;
+    const parent = await this.store.getRun(run.parentId);
+    const parentRunner = parent?.agentId ? await this.store.getAgent(parent.agentId) : undefined;
+    return resolveMergeTarget(run, parent, parentRunner, fallback);
   }
 
   /** Resolve the git backend for a project: its own local repo when git-backed,
@@ -917,7 +931,10 @@ export class Orchestrator {
         const template = eligibleRunners[0]; // a busy runner on an allowed key
         if (settings.autoProvisionRunners && underCap && template && (await this.providerUsable(workspaceId, template.provider, template.credentialId))) {
           const id = `runner-auto-${++this.seq}`;
-          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true, label: template.label ?? null };
+          // Auto-scale clones capacity, not delegation — always 'worker'
+          // regardless of the template's role (no manager provisioning exists
+          // to make this reachable yet either way).
+          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true, label: template.label ?? null, role: "worker" };
           await this.hub.upsertAgent(runner);
           return { id, provider: template.provider, model: template.model, credentialId: template.credentialId ?? null };
         }
@@ -1002,7 +1019,7 @@ export class Orchestrator {
         );
       }
       const id = `runner-auto-${++this.seq}`;
-      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true, label: null };
+      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true, label: null, role: "worker" };
       await this.hub.upsertAgent(runner);
       return { id, provider, model, credentialId: credentialId ?? null };
     });
@@ -1762,10 +1779,11 @@ export class Orchestrator {
   }
 
   private async pushToGithub(git: GitContext, agent: TaskRun, repo: string, project?: Project | null): Promise<void> {
-    // The project's effective base branch — its own `baseBranch` when set (e.g. a
-    // feature branch this project stacks onto), else the global default. This is
-    // what the branch syncs to, is diffed against, and PRs into.
-    const base = this.baseBranchFor(project);
+    // What the branch syncs to, is diffed against, and PRs into — normally the
+    // project's effective base branch (its own `baseBranch` when set, else the
+    // global default), or the run's manager's branch first when it's a
+    // manager-delegated worker (see mergeTargetBranchFor; inert today).
+    const base = await this.mergeTargetBranchFor(agent, project);
     // Bring the branch up to the LATEST base before the PR opens, so it merges
     // cleanly and the reviewer/GitHub never hits a stale-base conflict at merge
     // time. On conflict, escalate for a human rebase instead of opening a broken PR.
@@ -1985,7 +2003,10 @@ export class Orchestrator {
     const project = await this.store.getProject(run.projectId);
     const git = this.gitContextFor(project);
     if (!git) throw new Error("This project has no git backend to update the branch from.");
-    const base = this.baseBranchFor(project);
+    // Re-sync against whatever this PR actually targets (recorded when it was
+    // opened via mergeTargetBranchFor) rather than recomputing — a manager-
+    // delegated worker's PR targets its manager's branch, not the project base.
+    const base = run.pr.base;
     let sync: { ok: boolean; conflicts?: string[]; depsChanged?: boolean };
     try {
       sync = await git.worktrees.mergeBase(run.id);
