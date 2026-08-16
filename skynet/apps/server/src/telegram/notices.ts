@@ -53,6 +53,18 @@ function fileLines(it: HitlItem, escFn: (s: string) => string, codeFn: (s: strin
   return out;
 }
 
+// A verifier gate's output can run to tens of KB (capped upstream by
+// Orchestrator.VERIFIER_OUTPUT_CAP) — Telegram messages cap at 4096 chars
+// total, so only the first few lines fit; "Open in the app" is the way to see
+// the rest (also rides the audit trail in full).
+const MAX_OUTPUT_LINES = 6;
+function outputSnippet(it: HitlItem): string | null {
+  if (!it.output) return null;
+  const lines = it.output.split("\n").filter((l) => l.trim());
+  const snippet = lines.slice(0, MAX_OUTPUT_LINES).join("\n");
+  return lines.length > MAX_OUTPUT_LINES ? `${snippet}\n…` : snippet;
+}
+
 const GATE_HEAD: Partial<Record<HitlItem["kind"], string>> = {
   diff: "Review the changes",
   merge: "A merge needs a look",
@@ -60,6 +72,7 @@ const GATE_HEAD: Partial<Record<HitlItem["kind"], string>> = {
   question: "A question for you",
   plan: "Review the plan",
   escalation: "A run stopped and needs help",
+  verifier: "Checks failed",
 };
 
 /** The gate heads-up body. `control` toggles the tappable-buttons hint vs the
@@ -73,6 +86,7 @@ export function gateNotice(it: HitlItem, names: Names, control: boolean, link?: 
     lines.push(...fileLines(it, (s) => s, (s) => s));
   } else if (it.command) lines.push(it.command);
   else if (it.kind === "question" && it.options?.length) lines.push(it.options.map((o, i) => `${i + 1}. ${o}`).join("\n"));
+  else if (outputSnippet(it)) lines.push(outputSnippet(it)!);
   else if (it.title) lines.push(it.title);
   lines.push(control ? "Approve or reject below 👇" : `Reply /approve ${it.id} or /reject ${it.id}`);
   if (link) lines.push(`Open in the app → ${link}`);
@@ -103,6 +117,8 @@ export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, l
     if (it.title) lines.push(esc(it.title));
     lines.push("<b>Choose one:</b>");
     lines.push(it.options.map((o, i) => `${i + 1}. ${esc(o)}`).join("\n"));
+  } else if (outputSnippet(it)) {
+    lines.push(`<pre>${esc(outputSnippet(it)!)}</pre>`);
   } else if (it.title) {
     lines.push(esc(it.title));
   }
@@ -150,7 +166,7 @@ export function gateKeyboard(it: HitlItem): InlineKeyboardMarkup {
       { text: "✏️ Request changes", callback_data: `hitl:modify:${it.id}` },
     ],
   ];
-  if (it.kind === "diff" || it.kind === "merge") {
+  if (it.kind === "diff" || it.kind === "merge" || it.kind === "verifier") {
     rows.push([{ text: "🔍 View diff", callback_data: `hitl:diff:${it.id}` }]);
   }
   rows.push([{ text: "⛔ Reject", callback_data: `hitl:reject:${it.id}` }]);

@@ -22,6 +22,7 @@ import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
 import { RoadmapDocView } from "./project-roadmap";
+import { InformComposer, toastInformResult } from "./fleet";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -425,9 +426,9 @@ function TaskCard({
                 </button>
               </>
             )}
-            <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>✎</button>
-            <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
-            <button className="kb-tool kb-tool-del" title="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
+            <button className="kb-tool" title="Edit task" aria-label="Edit task" onClick={() => setEditing(true)}>✎</button>
+            <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" aria-label="Archive task" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
+            <button className="kb-tool kb-tool-del" title="Delete task" aria-label="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
           </span>
         )}
       </div>
@@ -1008,9 +1009,14 @@ export function ProjectView({
     transitionTask,
     assignTask,
     reorderTask,
+    informRuns,
   } = useStore();
   const confirm = useConfirm();
   const noFleet = fleet.length === 0;
+  // Mass inform, whole-project mode: attach a note to every currently live run
+  // in this project — see InformComposer (fleet.tsx) for the shared UI.
+  const [informOpen, setInformOpen] = useState(false);
+  const liveProjectRunCount = runs.filter((r) => r.projectId === project.id && r.status !== "done").length;
   // Full autonomy merges every run's OWN diff with no review at all — even a
   // multi-agent "Trusted" project only merges unattended when a DIFFERENT
   // fleet agent LLM-reviews it favorably first. Switching to Full (but not
@@ -1131,6 +1137,9 @@ export function ProjectView({
   // Which branch this project stacks its runs/PRs onto. Blank = the global default
   // (usually main). Only meaningful for a git-backed / repo-bound project.
   const [baseBranch, setBaseBranch] = useState(project.baseBranch ?? "");
+  // Verifier gate: run in the scratch integration worktree after a successful
+  // merge, before it's committed. Blank = the global default (SKYNET_CHECK_CMD).
+  const [checkCmd, setCheckCmd] = useState(project.checkCmd ?? "");
   // Write task status back to the source (e.g. close/comment the linked GitHub
   // issue on done). Lives in this settings panel now; only meaningful with a repo.
   const [syncToSource, setSyncToSource] = useState(project.syncSourceStatus);
@@ -1141,9 +1150,10 @@ export function ProjectView({
     setGoal(project.goal);
     setInstructions(project.instructions ?? "");
     setBaseBranch(project.baseBranch ?? "");
+    setCheckCmd(project.checkCmd ?? "");
     setSyncToSource(project.syncSourceStatus);
     setFolded(false);
-  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch, project.syncSourceStatus]);
+  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch, project.checkCmd, project.syncSourceStatus]);
 
   return (
     <section className="projview">
@@ -1181,6 +1191,17 @@ export function ProjectView({
               />
             </label>
           )}
+          {hasRepo && (
+            <label className="projview-instructions-label mono">
+              Verifier gate — check command <span className="projview-instructions-hint">— run after a merge, before it's committed. A failing check undoes the merge and raises a gate with the full output instead of landing broken code. Blank = the workspace default, if one is set.</span>
+              <input
+                className="qx-input"
+                placeholder="e.g. pnpm test (workspace default, if any)"
+                value={checkCmd}
+                onChange={(e) => setCheckCmd(e.target.value)}
+              />
+            </label>
+          )}
           {project.repo && (
             <div className="projview-setting">
               <div className="projview-instructions-label mono">
@@ -1204,6 +1225,7 @@ export function ProjectView({
                   goal: goal.trim(),
                   instructions: nextInstructions,
                   baseBranch: baseBranch.trim() || null,
+                  checkCmd: checkCmd.trim() || null,
                   syncSourceStatus: syncToSource,
                 });
                 setEditing(false);
@@ -1218,6 +1240,7 @@ export function ProjectView({
                 setGoal(project.goal);
                 setInstructions(project.instructions ?? "");
                 setBaseBranch(project.baseBranch ?? "");
+                setCheckCmd(project.checkCmd ?? "");
                 setSyncToSource(project.syncSourceStatus);
                 setEditing(false);
               }}
@@ -1267,6 +1290,11 @@ export function ProjectView({
             {project.baseBranch && (
               <div className="mono proj-repo-line" title="Runs cut from and open PRs against this branch instead of the default.">
                 ⎇ stacks onto <b>{project.baseBranch}</b> · runs branch from it &amp; PR into it
+              </div>
+            )}
+            {project.checkCmd && (
+              <div className="mono proj-repo-line" title="Runs after a merge, before it's committed — a failure undoes the merge and raises a gate.">
+                ✓ verifier gate: <b>{project.checkCmd}</b>
               </div>
             )}
             {/* Repo bound but no local checkout → offer a server-side clone so
@@ -1340,6 +1368,15 @@ export function ProjectView({
                 ▶ Preview app
               </button>
             )}
+            {liveProjectRunCount > 0 && (
+              <button
+                className={"btn btn-ghost" + (informOpen ? " on" : "")}
+                title="Attach a note to every currently live run in this project — no extra turn, no reply expected."
+                onClick={() => setInformOpen((v) => !v)}
+              >
+                📣 Inform active agents
+              </button>
+            )}
             <button className="btn proj-config-btn" onClick={() => setEditing(true)} title="Project settings" aria-label="Project settings">⚙</button>
             {confirmDel ? (
               <span className="del-confirm">
@@ -1354,6 +1391,19 @@ export function ProjectView({
         </div>
       )}
 
+      {informOpen && (
+        <InformComposer
+          count={liveProjectRunCount}
+          countLabel={`this project's ${liveProjectRunCount} active agent${liveProjectRunCount === 1 ? "" : "s"}`}
+          onCancel={() => setInformOpen(false)}
+          onSend={async (note) => {
+            const { informed, skipped } = await informRuns({ note, projectId: project.id });
+            toastInformResult(informed.length, skipped.length);
+            setInformOpen(false);
+          }}
+        />
+      )}
+
       {(project.approvalRules?.length ?? 0) > 0 && (
         <div className="proj-approval-rules">
           <span className="proj-approval-rules-label mono">Always allowed</span>
@@ -1363,6 +1413,7 @@ export function ProjectView({
               <button
                 className="approval-rule-x"
                 title="Revoke — this command will ask again"
+                aria-label={`Revoke auto-approval for ${r.command}`}
                 onClick={() => removeApprovalRule(project.id, r.id)}
               >
                 ×
@@ -1374,7 +1425,7 @@ export function ProjectView({
 
       {lead && (
         <div className="proj-delivery">
-          <button className="proj-delivery-head" onClick={() => setFolded((f) => !f)}>
+          <button className="proj-delivery-head" onClick={() => setFolded((f) => !f)} aria-expanded={!folded}>
             <span className="fold-caret">{folded ? "▸" : "▾"}</span>
             <span className="proj-delivery-title">LIVE PREVIEW</span>
             <span className="proj-delivery-sub">

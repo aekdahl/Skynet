@@ -22,6 +22,7 @@ const PROVIDER_BIN: Partial<Record<ProviderId, string>> = {
   cursor: process.env.SKYNET_CURSOR_BIN || "cursor-agent",
   copilot: process.env.SKYNET_COPILOT_BIN || "copilot",
   hermes: process.env.SKYNET_HERMES_BIN || "hermes",
+  opencode: process.env.SKYNET_OPENCODE_BIN || "opencode",
 };
 
 const INSTALL_HINT: Record<ProviderId, string> = {
@@ -31,6 +32,7 @@ const INSTALL_HINT: Record<ProviderId, string> = {
   cursor: "Install the Cursor CLI (`cursor-agent`) and sign in, or set CURSOR_API_KEY.",
   copilot: "Install with `npm i -g @github/copilot` and authenticate with GitHub (`copilot`, then sign in), or set GITHUB_TOKEN.",
   hermes: "Install the Hermes Agent CLI (`hermes`, on PATH) and set a provider key (e.g. OPENROUTER_API_KEY).",
+  opencode: "Install with `npm i -g opencode-ai` and authenticate (`opencode auth login`), or set a provider key (e.g. ANTHROPIC_API_KEY).",
 };
 
 // Providers whose CLI is auto-installable via a package manager the server can
@@ -46,6 +48,7 @@ const INSTALL_COMMAND: Partial<Record<ProviderId, { packageManager: "npm"; comma
   // The GitHub Copilot CLI is now a standalone npm package (`@github/copilot`),
   // no longer a `gh` extension — so it installs through the same path as codex.
   copilot: { packageManager: "npm", command: "npm install -g @github/copilot" },
+  opencode: { packageManager: "npm", command: "npm install -g opencode-ai" },
 };
 
 const DOCS_URL: Partial<Record<ProviderId, string>> = {
@@ -55,6 +58,7 @@ const DOCS_URL: Partial<Record<ProviderId, string>> = {
   cursor: "https://docs.cursor.com/en/cli/overview",
   copilot: "https://docs.github.com/en/copilot/github-copilot-in-the-cli",
   hermes: "https://hermes-agent.nousresearch.com/",
+  opencode: "https://opencode.ai/docs/",
 };
 
 /** Is `bin` resolvable on the server's PATH? Cheap synchronous scan. */

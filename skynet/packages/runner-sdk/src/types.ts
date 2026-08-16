@@ -38,8 +38,12 @@ export interface StartSpec {
   /**
    * Opt-in: give the agent a real browser for this run (a Playwright/Chrome MCP
    * server exposed to the runner). Resolved by the orchestrator from the
-   * per-workspace `browserTools` setting; off by default. Only the Claude runner
-   * acts on it today — CLI runners ignore it until they grow MCP support. Browser
+   * per-workspace `browserTools` setting; off by default. Claude, Codex, Gemini,
+   * Cursor, and Copilot all act on it; Hermes doesn't (no evidence it supports
+   * MCP). Each vendor wires it its own way — see claude.ts's
+   * `browserMcpServers` and cli-runner.ts's `browserMcpServerSpec` /
+   * `CliVendor.prepareWorktree` for the per-vendor mechanics (some take a
+   * per-invocation flag, some need a worktree-local config file). Browser
    * actions still gate through the normal HITL approval flow.
    */
   browser?: boolean;
@@ -112,6 +116,18 @@ export interface RunnerHandle {
   /** Discuss without resolving — agent keeps working; reply via onChatReply. */
   message(text: string): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * Queue an informational note to ride the run's NEXT prompt/turn — no reply
+   * expected, and critically no extra turn of its own (unlike `message`, which
+   * blocks the session on a live chat round-trip). Optional: a provider that
+   * has no such mechanism just doesn't implement it, and the caller (Orchestrator
+   * .inform) reports the run as skipped rather than faking delivery. Where
+   * implemented: Claude (the Agent SDK's `shouldQuery:false` streaming-input
+   * message — appended to the transcript, merged into whichever real turn comes
+   * next) and the shared CLI runner base (buffered, prepended to the next stdin
+   * write the run would make anyway).
+   */
+  inform?(text: string): Promise<void>;
   /**
    * Best-effort snapshot of the provider's current session/conversation id —
    * for checkpointing (captured onto the `Checkpoint` record so a later restore
