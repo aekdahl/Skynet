@@ -16,6 +16,7 @@ export const ProviderId = z.enum([
   "cursor",
   "copilot",
   "hermes",
+  "opencode",
 ]);
 export type ProviderId = z.infer<typeof ProviderId>;
 

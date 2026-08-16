@@ -53,6 +53,10 @@ function writableRoots(cwd: string): string[] {
   for (const rel of [".cache", ".config", ".claude", ".codex", ".gemini", ".cursor", ".copilot", ".hermes", ".npm"]) {
     roots.push(join(home, rel));
   }
+  // OpenCode doesn't use a single top-level dot-dir like the others — it
+  // follows XDG layout, writing session/auth state under .local/share/opencode
+  // (its cache/config dirs already land under the broad .cache/.config above).
+  roots.push(join(home, ".local", "share", "opencode"));
   return [...new Set(roots)];
 }
 

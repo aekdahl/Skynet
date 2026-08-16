@@ -345,9 +345,11 @@ export class Orchestrator {
             return import("@skynet/runner-sdk/copilot").then((m) => new m.CopilotRunnerProvider());
           case "hermes":
             return import("@skynet/runner-sdk/hermes").then((m) => new m.HermesRunnerProvider());
+          case "opencode":
+            return import("@skynet/runner-sdk/opencode").then((m) => new m.OpenCodeRunnerProvider());
           default:
             // An unresolvable provider is a loud error — there is no mock fallback.
-            return Promise.reject(new Error(`Unknown runner provider "${id}" (expected claude|codex|gemini|cursor|copilot|hermes).`));
+            return Promise.reject(new Error(`Unknown runner provider "${id}" (expected claude|codex|gemini|cursor|copilot|hermes|opencode).`));
         }
       })();
       this.providers.set(id, p);
