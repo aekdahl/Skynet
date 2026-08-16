@@ -392,6 +392,7 @@ export function AuditView({
           <button
             className="kb-archive-head"
             onClick={() => setShowArchived((s) => !s)}
+            aria-expanded={showArchived}
           >
             {showArchived ? "▾" : "▸"} ARCHIVED · {archived.length}
           </button>

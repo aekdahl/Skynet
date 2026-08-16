@@ -231,7 +231,7 @@ export function StewardDock({
         <span className="steward-title mono">✦ STEWARD</span>
         <span className="steward-scope mono">{effFocusName ? `focused · ${effFocusName}` : "workspace"}</span>
         <span className="steward-spacer" />
-        <button className="btn btn-ghost btn-sm" onClick={onClose} title="Close Steward">✕</button>
+        <button className="btn btn-ghost btn-sm" onClick={onClose} title="Close Steward" aria-label="Close Steward">✕</button>
       </div>
       <div className="steward-thread" ref={threadRef}>
         {msgs.length === 0 && (
