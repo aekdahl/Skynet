@@ -1109,6 +1109,7 @@ export class Orchestrator {
       archived: false,
       pr: null,
       mergedAt: null,
+      flyDeployment: null,
     };
 
     // Resolve the runner provider first — fail fast (before mutating state) if

@@ -86,6 +86,33 @@ describe("verifyProviderCredential", () => {
     }
   });
 
+  it("fly — a good token hits the GraphQL viewer query and reports ok with the account email", async () => {
+    mockResponse(true, { data: { viewer: { email: "ops@acme.dev" } } });
+    const result = await verifyProviderCredential("fly", "fo1_good");
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/ops@acme\.dev/);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.fly.io/graphql");
+    const req = init as RequestInit;
+    expect(req.method).toBe("POST");
+    expect(req.headers).toMatchObject({ authorization: "Bearer fo1_good" });
+    expect(JSON.parse(req.body as string)).toEqual({ query: "{ viewer { email } }" });
+  });
+
+  it("fly — a rejected token surfaces GraphQL's own error, not a generic failure", async () => {
+    mockResponse(true, { errors: [{ message: "Unauthorized" }] });
+    const result = await verifyProviderCredential("fly", "fo1_bad");
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("Unauthorized");
+  });
+
+  it("fly — a non-200 (bad token) surfaces the HTTP status", async () => {
+    mockResponse(false, {});
+    const result = await verifyProviderCredential("fly", "fo1_bad");
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("401 Unauthorized");
+  });
+
   it("never throws on a network failure — comes back as {ok:false, message}", async () => {
     fetchMock.mockRejectedValue(new Error("getaddrinfo ENOTFOUND"));
     const result = await verifyProviderCredential("claude", "sk-ant-x");

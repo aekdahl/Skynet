@@ -928,6 +928,32 @@ function ProjectGithubAccount({ project, onChange }: { project: Project; onChang
   );
 }
 
+// Which Fly.io account this project's "Deploy to Fly.io" action authenticates
+// with. Same pattern as ProjectGithubAccount — hidden until there's a real
+// choice (at least one Fly account added in Integrations).
+function ProjectFlyAccount({ project, onChange }: { project: Project; onChange: (id: string | null) => void }) {
+  const [accounts, setAccounts] = useState<SecretMeta[]>([]);
+  useEffect(() => {
+    api.fetchSecrets().then(({ secrets }) => setAccounts(secrets.filter((s) => s.provider === "fly"))).catch(() => setAccounts([]));
+  }, []);
+  if (accounts.length === 0) return null;
+  return (
+    <label className="proj-approval" title="Which Fly.io account this project's 'Deploy to Fly.io' action uses. Manage accounts in Integrations.">
+      <span className="proj-approval-label mono">Fly</span>
+      <select
+        className="proj-approval-select"
+        value={project.flyCredentialId ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+      >
+        <option value="">Default connection</option>
+        {accounts.map((a) => (
+          <option key={a.id} value={a.id}>{a.name || "account"} · ····{a.last4}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 // Which provider keys this project may run agents on. Empty = any workspace key
 // (the default). Narrowing it confines BOTH what the fleet assigns here and what
 // a project-scoped MCP token may spin up. Hidden until there's a real choice
@@ -1122,6 +1148,7 @@ export function ProjectView({
   const [editing, setEditing] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [flyOpen, setFlyOpen] = useState(false);
   const [name, setName] = useState(project.name);
   const [goal, setGoal] = useState(project.goal);
   // The "house rules" — rides every agent prompt on this project (and Steward's
@@ -1334,10 +1361,20 @@ export function ProjectView({
               </span>
             </label>
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
+            <ProjectFlyAccount project={project} onChange={(id) => updateProject(project.id, { flyCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
             {project.repoPath && (
               <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
                 ▶ Preview app
+              </button>
+            )}
+            {project.repoPath && (
+              <button
+                className={"btn" + (project.flyDeployment?.status === "live" ? " proj-fly-live" : "")}
+                onClick={() => setFlyOpen(true)}
+                title="Deploy the integration branch to Fly.io — a REAL, persistent app with a shareable URL that keeps running independent of Skynet, until you stop it."
+              >
+                {project.flyDeployment?.status === "live" ? "● Live on Fly" : "⇪ Deploy to Fly.io"}
               </button>
             )}
             <button className="btn proj-config-btn" onClick={() => setEditing(true)} title="Project settings" aria-label="Project settings">⚙</button>
@@ -1537,6 +1574,7 @@ export function ProjectView({
 
 
       {previewOpen && <LivePreviewModal id={project.id} title={"Live preview · " + project.name} onClose={() => setPreviewOpen(false)} />}
+      {flyOpen && <FlyDeployModal project={project} onClose={() => setFlyOpen(false)} />}
     </section>
   );
 }
@@ -1723,6 +1761,158 @@ export function LivePreviewModal({
     <div className="lp-dock">
       <div className="lp-resize" onPointerDown={onResizeStart} title="Drag to resize" />
       {inner}
+    </div>
+  );
+}
+
+// ─── Deploy to Fly.io modal (persistent, human-triggered) ──────────────────
+// Deploys the project's integration branch to a REAL Fly.io app — a
+// shareable https://…fly.dev URL that keeps running independent of the local
+// Skynet process, until an operator explicitly stops it (never on restart,
+// never auto-torn-down). Distinct from "Preview app" above (that one is
+// ephemeral: a local dev server, gone the moment Skynet stops). Not iframed —
+// a real external app, meant to be opened and shared, not sandboxed.
+// See docs/live-preview.md §"Deploy to Fly.io".
+const FLY_STATUS_LABEL: Record<api.FlyDeployState["status"], string> = {
+  idle: "Not deployed",
+  deploying: "◐ Deploying…",
+  live: "● Live",
+  failed: "✕ Failed",
+  stopped: "Stopped",
+};
+
+function FlyDeployModal({ project, onClose }: { project: Project; onClose: () => void }) {
+  const confirm = useConfirm();
+  const [st, setSt] = useState<api.FlyDeployState | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const s = await api.flyDeployStatus(project.id);
+        if (alive) setSt(s);
+      } catch {
+        /* transient */
+      }
+    };
+    void tick();
+    const iv = setInterval(tick, 2000);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  }, [project.id]);
+
+  const logRef = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) el.scrollTop = el.scrollHeight;
+  }, [st?.logs, showLogs]);
+
+  const deploy = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setSt(await api.flyDeployStart(project.id));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const destroy = async () => {
+    const ok = await confirm({
+      title: "Stop & destroy this deployment?",
+      body: `This permanently destroys the Fly app "${st?.appName ?? ""}" — the URL stops resolving immediately. This can't be undone; redeploying creates a fresh app.`,
+      confirmLabel: "Destroy",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      setSt(await api.flyDeployStop(project.id));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const status = st?.status ?? "idle";
+  const deployed = status === "live" || status === "failed" || status === "stopped";
+
+  return (
+    <div className="lp-backdrop" onClick={onClose}>
+      <div className="lp-modal fly-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="lp-bar">
+          <span className="lp-title">Deploy to Fly.io · {project.name}</span>
+          <span className={"lp-status fly-status-" + status}>{FLY_STATUS_LABEL[status]}</span>
+          <span className="lp-spacer" />
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowLogs((s) => !s)}>Logs</button>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>✕ Close</button>
+        </div>
+        <div className="lp-body fly-body">
+          <p className="fly-note">
+            A <strong>real, persistent</strong> deployment — separate from "Preview app" (which is ephemeral: a local
+            dev server that stops the moment Skynet does). This one keeps running on Fly.io, with a real shareable
+            URL, until you explicitly stop it below.
+          </p>
+          {err && <div className="gh-warn">{err}</div>}
+          {status === "idle" && !busy && (
+            <div className="lp-placeholder">
+              <div className="lp-ph-msg">Not deployed yet. Deploys the integration branch (the fleet's merged, approved work).</div>
+              <button className="btn btn-primary" disabled={busy} onClick={() => void deploy()}>⇪ Deploy to Fly.io</button>
+            </div>
+          )}
+          {status === "deploying" && (
+            <div className="lp-placeholder">
+              <div className={"lp-ph-dot fly-status-" + status} />
+              <div className="lp-ph-msg">Building and deploying — this can take a minute or two.</div>
+            </div>
+          )}
+          {deployed && (
+            <div className="fly-details">
+              {st?.url && (
+                <div className="fly-row">
+                  <span className="fly-row-label">URL</span>
+                  <a className="fly-url mono" href={st.url} target="_blank" rel="noreferrer">{st.url} ↗</a>
+                </div>
+              )}
+              {st?.appName && (
+                <div className="fly-row"><span className="fly-row-label">App</span><span className="mono">{st.appName}</span></div>
+              )}
+              {st?.region && (
+                <div className="fly-row"><span className="fly-row-label">Region</span><span className="mono">{st.region}</span></div>
+              )}
+              {st?.branch && (
+                <div className="fly-row"><span className="fly-row-label">Branch</span><span className="mono">{st.branch}{st.sha ? ` @ ${st.sha.slice(0, 7)}` : ""}</span></div>
+              )}
+              {st?.deployedAt && (
+                <div className="fly-row"><span className="fly-row-label">Deployed</span><span>{new Date(st.deployedAt).toLocaleString()}</span></div>
+              )}
+              {status === "failed" && st?.error && <div className="gh-warn">{st.error}</div>}
+              <div className="fly-actions">
+                <button className="btn btn-primary" disabled={busy} onClick={() => void deploy()}>
+                  {status === "failed" ? "Retry deploy" : "↻ Redeploy"}
+                </button>
+                {st?.appName && (
+                  <button className="btn btn-danger" disabled={busy} onClick={() => void destroy()}>
+                    Stop & destroy
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {showLogs && (
+            <pre ref={logRef} className="lp-logs mono">{(st?.logs ?? []).join("\n") || "(no output yet)"}</pre>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

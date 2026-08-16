@@ -669,11 +669,110 @@ function GithubAccounts() {
   );
 }
 
+// Fly.io API tokens, so a project can deploy to a persistent, shareable Fly
+// app — see docs/live-preview.md §"Deploy to Fly.io". Stored as `fly`
+// credentials in the secret store, exactly like the additional GitHub
+// accounts above; a project picks one (or the default) in its settings.
+function FlyIcon() {
+  return (
+    <svg className="gh-octi" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+      <path d="M8 0a8 8 0 100 16A8 8 0 008 0zM5.5 5a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zm5 0a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM8 12.5c-1.7 0-3.16-.98-3.86-2.4-.14-.28.1-.6.4-.55 1.1.18 2.3.28 3.46.28 1.17 0 2.36-.1 3.46-.28.3-.05.54.27.4.55-.7 1.42-2.16 2.4-3.86 2.4z" />
+    </svg>
+  );
+}
+
+function FlyAccounts() {
+  const [accounts, setAccounts] = useState<SecretMeta[] | null>(null);
+  const [name, setName] = useState("");
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = () =>
+    api.fetchSecrets()
+      .then(({ secrets }) => setAccounts(secrets.filter((s) => s.provider === "fly")))
+      .catch(() => setAccounts([]));
+  useEffect(() => { void load(); }, []);
+
+  const add = async () => {
+    if (!name.trim() || !token.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.createCredential("fly", name.trim(), token.trim());
+      setName("");
+      setToken("");
+      await load();
+    } catch (e) {
+      setErr(e instanceof api.ApiError && e.status === 501 ? "Secret store is disabled — set SKYNET_MASTER_KEY." : `Couldn't add the account: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (id: string) => {
+    setBusy(true);
+    setErr(null);
+    try { await api.deleteSecret(id); await load(); }
+    catch (e) { setErr(`Couldn't remove: ${(e as Error).message}`); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="gh-card">
+      <div className="gh-card-head"><span className="gh-card-title">Fly.io accounts</span></div>
+      <p className="gh-card-sub">
+        Add a Fly.io API token so a project can "Deploy to Fly.io" — a real, persistent app with a
+        shareable URL that keeps running independent of Skynet. Get a token from{" "}
+        <code>fly tokens create deploy</code> or the Fly dashboard. Pick the account per project in its settings.
+      </p>
+      {err && <div className="gh-warn">{err}</div>}
+      {accounts && accounts.length > 0 && (
+        <div className="settings-list gh-acct-list">
+          {accounts.map((a) => (
+            <div className="mcp-tok-row" key={a.id}>
+              <div className="mcp-tok-main">
+                <div className="mcp-tok-top"><span className="settings-name">{a.name || "account"}</span></div>
+                <div className="mcp-tok-meta mono"><span className="mcp-tok-fp">····{a.last4}</span></div>
+              </div>
+              <button className="btn btn-ghost" disabled={busy} onClick={() => void remove(a.id)}>Remove</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="gh-acct-add">
+        <input
+          className="settings-input gh-acct-name"
+          placeholder="Name — e.g. Personal, Work org"
+          maxLength={60}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <input
+          type="password"
+          className="settings-input"
+          autoComplete="off"
+          placeholder="Fly.io API token (fo1_…)…"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+        />
+        <button className="btn btn-primary" disabled={busy || !name.trim() || !token.trim()} onClick={() => void add()}>
+          Add account
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function IntegrationsView() {
   const [github, setGithub] = useState<GithubConnection>(emptyConnection);
   const [appConfigured, setAppConfigured] = useState(false);
   const [brokerConfigured, setBrokerConfigured] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [flyCount, setFlyCount] = useState(0);
+  useEffect(() => {
+    api.fetchSecrets().then(({ secrets }) => setFlyCount(secrets.filter((s) => s.provider === "fly").length)).catch(() => setFlyCount(0));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -745,6 +844,20 @@ export function IntegrationsView() {
             )}
             {!github.connected && (
               <div className="gh-warn">Connect GitHub to let runs branch, push, and open PRs.</div>
+            )}
+          </IntegrationSection>
+        )}
+        {loaded && (
+          <IntegrationSection
+            icon={<FlyIcon />}
+            title="Fly.io"
+            statusLabel={flyCount > 0 ? "Connected" : "Not connected"}
+            statusOk={flyCount > 0}
+            summary={flyCount > 0 ? `${flyCount} account${flyCount === 1 ? "" : "s"}` : "Connect to deploy a persistent, shareable preview"}
+          >
+            <FlyAccounts />
+            {flyCount === 0 && (
+              <div className="gh-warn">Add a Fly.io API token to enable "Deploy to Fly.io" on a project.</div>
             )}
           </IntegrationSection>
         )}

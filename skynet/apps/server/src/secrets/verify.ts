@@ -14,6 +14,8 @@
 // token) — the cheapest real signal available for that credential shape.
 // `github` (a project-pinned PAT, not a fleet provider — see
 // CredentialProvider) shares Copilot's path since both are GitHub tokens.
+// `fly` (a project-pinned Fly.io API token, also not a fleet provider) is
+// verified via a cheap GraphQL viewer query — Fly has no plain GET whoami.
 
 import type { CredentialProvider } from "@skynet/shared";
 
@@ -60,6 +62,31 @@ const githubCheck = (apiKey: string) =>
     "Token authenticates with GitHub.",
   );
 
+/** Fly's REST auth check has no plain GET; the cheapest read-only signal is a
+ *  GraphQL `{ viewer { email } }` query against the token (never a mutation). */
+async function flyCheck(apiKey: string): Promise<VerifyCredentialResult> {
+  let res: Response;
+  try {
+    res = await fetch("https://api.fly.io/graphql", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ query: "{ viewer { email } }" }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch (err) {
+    return { ok: false, message: `Couldn't reach the Fly API: ${(err as Error).message}` };
+  }
+  const body = await res.text().catch(() => "");
+  if (!res.ok) return { ok: false, message: firstErrorMessage(body) ?? `${res.status} ${res.statusText}` };
+  try {
+    const parsed = JSON.parse(body) as { data?: { viewer?: { email?: string } }; errors?: Array<{ message?: string }> };
+    if (parsed.errors?.length) return { ok: false, message: parsed.errors[0]?.message ?? "Token rejected by Fly." };
+    return { ok: true, message: parsed.data?.viewer?.email ? `Token authenticates with Fly as ${parsed.data.viewer.email}.` : "Token authenticates with Fly." };
+  } catch {
+    return { ok: false, message: "Fly returned an unexpected response." };
+  }
+}
+
 const VERIFIERS: Record<CredentialProvider, (apiKey: string) => Promise<VerifyCredentialResult>> = {
   claude: (apiKey) =>
     checkEndpoint(
@@ -81,6 +108,7 @@ const VERIFIERS: Record<CredentialProvider, (apiKey: string) => Promise<VerifyCr
     checkEndpoint("https://api.cursor.com/v0/me", { authorization: `Bearer ${apiKey}` }, "Key authenticates with the Cursor API."),
   copilot: githubCheck,
   github: githubCheck,
+  fly: flyCheck,
 };
 
 /** Live-verify a decrypted key against its vendor. Never throws. */

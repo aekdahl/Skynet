@@ -2337,6 +2337,24 @@ button.firstrun-step:hover { border-color: var(--accent); }
   word-break: break-word;
 }
 
+/* ─── Deploy to Fly.io (persistent, human-triggered) ────────────────────── */
+.fly-modal { width: min(560px, 92vw); max-height: 85vh; }
+.fly-body { padding: 14px 16px; gap: 14px; overflow: auto; }
+.fly-note { font-size: 12px; color: var(--muted); line-height: 1.55; margin: 0; }
+.fly-status-idle, .lp-status.fly-status-idle { color: var(--muted); }
+.fly-status-deploying, .lp-status.fly-status-deploying { color: var(--warn); }
+.fly-status-live, .lp-status.fly-status-live { color: var(--ok); }
+.fly-status-failed, .lp-status.fly-status-failed { color: var(--danger, #e66); }
+.fly-status-stopped, .lp-status.fly-status-stopped { color: var(--muted); }
+.lp-ph-dot.fly-status-deploying { background: var(--warn); }
+.fly-details { display: flex; flex-direction: column; gap: 8px; }
+.fly-row { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; }
+.fly-row-label { width: 64px; flex: none; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+.fly-url { color: var(--accent); word-break: break-all; }
+.fly-actions { display: flex; gap: 8px; margin-top: 6px; }
+/* Toolbar button glow when a project has a live Fly deployment. */
+.proj-fly-live { border-color: var(--ok); color: var(--ok); }
+
 /* ─── Feature + milestone chips on task cards ─────────────────────────── */
 .kb-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
 .kb-feat-chip {

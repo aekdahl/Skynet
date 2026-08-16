@@ -42,6 +42,7 @@ const agent: TaskRun = {
   archived: false,
   pr: null,
   mergedAt: null,
+  flyDeployment: null,
 };
 
 const wire = <T>(v: T): unknown => JSON.parse(JSON.stringify(v));

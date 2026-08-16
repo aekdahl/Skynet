@@ -58,6 +58,15 @@ const ALLOW = new Set<string>([
   // live preview (Phase-1 v0) — spawns a real dev server + iframes it; a
   // stateful UI control surface with no offline journey (needs a repo + toolchain).
   "previewStatus", "previewStart", "previewStop", "previewRestart", "previewRefresh",
+  // Deploy to Fly.io — a REAL, persistent deployment (docs/live-preview.md);
+  // needs a real Fly.io account, network, and the flyctl binary, so no offline
+  // journey can exercise it. The descriptor/app-naming/collision-retry logic is
+  // unit-tested (fly-descriptor.test.ts) and the manager's full orchestration is
+  // exercised end-to-end against a real git repo + a fake flyctl binary
+  // (fly-deploy-static.test.ts); the credential round-trip is covered by
+  // credentials.test.ts and the live-verify call by secrets-verify.test.ts.
+  "flyDeployStatus", "flyDeployStart", "flyDeployStop",
+  "flyDeployRunStatus", "flyDeployRunStart", "flyDeployRunStop",
   // auth primitive (POST /api/auth/login) — the local/desktop build runs
   // open-auth (dev tokens), so no fleet journey signs in; auth is guarded by
   // auth-hardening.test.ts, not an operator journey.

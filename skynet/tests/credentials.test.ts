@@ -58,6 +58,29 @@ describe("provider credentials", () => {
     await expect(svc.setKey("w", "cred-bogus", "k", "op", 1)).rejects.toBeInstanceOf(UnknownCredentialError);
   });
 
+  // "fly" (a project-pinned Fly.io API token, like "github" a PAT) is NOT a
+  // fleet ProviderId — it only ever exists as a NAMED credential via
+  // createCredential, same as an additional GitHub account. See
+  // apps/web/src/views/integrations.tsx's FlyAccounts / GithubAccounts.
+  it("fly: a named credential round-trips through create/resolve/delete", async () => {
+    const meta = await svc.createCredential("w", "fly", "Personal", "fo1_abc123", "op", 1);
+    expect(meta).toMatchObject({ provider: "fly", name: "Personal", isDefault: false });
+    expect(await svc.resolve("w", meta.id)).toBe("fo1_abc123");
+    expect((await svc.list("w")).map((m) => m.provider)).toContain("fly");
+    await svc.delete("w", meta.id);
+    expect(await svc.resolve("w", meta.id)).toBeUndefined();
+  });
+  it("fly: setting a bare \"fly\" id (no prior named credential) is rejected — it's not a fleet ProviderId default", async () => {
+    await expect(svc.setKey("w", "fly", "fo1_x", "op", 1)).rejects.toBeInstanceOf(UnknownCredentialError);
+  });
+  it("fly and github credentials coexist independently in the same workspace", async () => {
+    const fly = await svc.createCredential("w", "fly", "Fly org", "fo1_x", "op", 1);
+    const gh = await svc.createCredential("w", "github", "Work GitHub", "ghp_x", "op", 2);
+    expect(await svc.resolve("w", fly.id)).toBe("fo1_x");
+    expect(await svc.resolve("w", gh.id)).toBe("ghp_x");
+    expect((await svc.list("w")).length).toBe(2);
+  });
+
   it("delete removes only the targeted credential", async () => {
     await svc.setKey("w", "claude", "sk-default", "op", 1);
     const biz = await svc.createCredential("w", "claude", "Biz", "sk-biz", "op", 2);
