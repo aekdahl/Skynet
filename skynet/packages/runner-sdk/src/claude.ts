@@ -8,12 +8,15 @@
 
 import {
   query,
+  resolveSettings,
   type CanUseTool,
   type Options,
   type PermissionResult,
   type Query,
   type SDKMessage,
   type SDKUserMessage,
+  type Settings,
+  type SettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
@@ -25,6 +28,34 @@ import type {
   RunnerProvider,
   StartSpec,
 } from "./types.js";
+
+// ─── Filesystem settings sources ───────────────────────────────────────────
+// Options.settingSources controls which of the CLI's own filesystem config the
+// SDK loads for a session. OMITTING it (the SDK's default) loads ALL of them —
+// including a repo's own `.claude/settings.json`, whose `hooks` block runs
+// arbitrary shell commands on matching lifecycle events (PreToolUse, Stop, …).
+// Those hooks are NOT gated by canUseTool below — canUseTool only intercepts
+// tool-call *permission*, not settings-defined hook *execution* — so leaving
+// settingSources unset means every run silently trusts whatever `cwd` (an
+// operator-cloned or agent-touched repo) happens to contain. This app treats
+// repo-authored shell as needing review everywhere else (see command-safety.ts,
+// the whole HITL-gate design); filesystem settings shouldn't be the one
+// exception. So every query() in this file sets settingSources explicitly:
+//
+//   - Isolated (no filesystem settings at all) for every side-query that has
+//     no per-action human review — the one-shot consult/repo-assistant helpers
+//     below. They don't need CLAUDE.md (the repo-assistant can just Read it),
+//     and there's no gate to catch a hook if one were loaded.
+//   - The MAIN agent run deliberately opts back in to 'project' — see
+//     PROJECT_SETTING_SOURCES below — so CLAUDE.md loads (the SDK's own doc:
+//     "Must include 'project' to load CLAUDE.md files"). Confirmed empirically
+//     via the SDK's resolveSettings() that 'project' is NOT separable from the
+//     same repo's `.claude/settings.json` hooks in this SDK version (0.3.179):
+//     asking for one loads the other. scanRepoHooks()/buildHookRaise() below
+//     close that gap with a mandatory approval gate, raised BEFORE the session
+//     (and any hooks) can start, whenever hooks are present.
+const NO_FS_SETTINGS: SettingSource[] = [];
+const PROJECT_SETTING_SOURCES: SettingSource[] = ["project"];
 
 // A push-driven async iterable of user messages — keeps the session live so we
 // can inject chat / modify-guidance mid-run (streaming input mode).
@@ -228,6 +259,8 @@ async function* oneShotConsultStream(opts: {
       maxTurns: 4,
       env: opts.env,
       includePartialMessages: true,
+      // Isolated — see the settingSources block near the top of this file.
+      settingSources: NO_FS_SETTINGS,
     },
   });
   yield* streamQueryText(q as AsyncIterable<SDKMessage>);
@@ -324,6 +357,10 @@ export function oneShotRepoAssistantStream(opts: {
       maxTurns: 14,
       env,
       includePartialMessages: true,
+      // Isolated — see the settingSources block near the top of this file.
+      // CLAUDE.md isn't auto-injected here, but the assistant can Read it like
+      // any other repo file if it's relevant to the question.
+      settingSources: NO_FS_SETTINGS,
     },
   });
   return streamQueryText(q as AsyncIterable<SDKMessage>);
@@ -552,6 +589,72 @@ function buildPlanRaise(input: Record<string, unknown>): HitlRaise {
   };
 }
 
+// ─── Repo-hook gate ─────────────────────────────────────────────────────────
+// The main run opts into settingSources: ['project'] (see the block near the
+// top of this file) so CLAUDE.md loads — which also loads the SAME repo's
+// `.claude/settings.json` `hooks`, real shell commands the SDK runs on
+// matching lifecycle events with NO canUseTool gate in front of them. Before
+// starting the session at all, scan for them with the SDK's own settings
+// merge engine (resolveSettings — same result the session itself would see,
+// no need to hand-parse JSON) and, if any exist, pause on an `approval` HITL —
+// the same kind/UI a risky Bash command already uses — so the operator sees
+// the exact command(s) and decides before anything can run.
+
+/** One `type: 'command'` hook, flattened for display. */
+interface HookCommandRef {
+  event: string;
+  matcher?: string;
+  command: string;
+}
+
+function collectHookCommands(hooks: Settings["hooks"]): HookCommandRef[] {
+  const out: HookCommandRef[] = [];
+  for (const [event, groups] of Object.entries(hooks ?? {})) {
+    for (const g of groups ?? []) {
+      for (const h of g.hooks ?? []) {
+        if (h.type === "command" && typeof h.command === "string") {
+          out.push({ event, matcher: g.matcher, command: h.command });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Resolve what settingSources: ['project'] would actually load for `cwd` and
+ * return any `type: 'command'` hooks it carries. Empty when the repo has none
+ * (the common case) or its settings can't be read (the SDK will hit the same
+ * problem when it loads for real — no separate failure mode to invent here).
+ */
+async function scanRepoHooks(cwd: string): Promise<HookCommandRef[]> {
+  try {
+    const resolved = await resolveSettingsImpl({ cwd, settingSources: PROJECT_SETTING_SOURCES });
+    return collectHookCommands(resolved.effective.hooks);
+  } catch {
+    return [];
+  }
+}
+
+// Turn the scanned hooks into an `approval` HITL — reject/approve semantics
+// identical to any other pending-action gate (see resume()); no new kind.
+function buildHookRaise(hooks: HookCommandRef[]): HitlRaise {
+  const list = hooks.map((h) => `[${h.event}${h.matcher ? `:${h.matcher}` : ""}] ${h.command}`).join("\n\n");
+  const n = hooks.length;
+  return {
+    kind: "approval",
+    title: `Repo defines ${n} lifecycle hook${n === 1 ? "" : "s"} — approve before this run starts`,
+    why: "This repo's .claude/settings.json declares shell-command hooks that run automatically on matching events (e.g. every tool call) — unlike a normal action, they are NOT covered by the per-action approval gate below. Approve to start the run with them active, or reject to stop before anything (including a hook) runs.",
+    risk: "high",
+    rationale: null,
+    command: list,
+    options: null,
+    recommended: null,
+    steps: null,
+    diff: null,
+  };
+}
+
 // Short human label of the chosen answer, for the activity log.
 function describeAnswer(q: ParsedQuestion, decision?: Resolution): string {
   if (decision?.action === "option" && decision.optionIndex != null) {
@@ -665,12 +768,19 @@ const MAX_SESSIONS = 500;
 let queryImpl: typeof query = query;
 let backoffMsImpl: (attempt: number) => number = retryBackoffMs;
 let maxSessionsImpl = MAX_SESSIONS;
+let resolveSettingsImpl: typeof resolveSettings = resolveSettings;
 export function __setClaudeTestHooks(
-  hooks: { query?: typeof query; backoffMs?: (n: number) => number; maxSessions?: number } | null,
+  hooks: {
+    query?: typeof query;
+    backoffMs?: (n: number) => number;
+    maxSessions?: number;
+    resolveSettings?: typeof resolveSettings;
+  } | null,
 ): void {
   queryImpl = hooks?.query ?? query;
   backoffMsImpl = hooks?.backoffMs ?? retryBackoffMs;
   maxSessionsImpl = hooks?.maxSessions ?? MAX_SESSIONS;
+  resolveSettingsImpl = hooks?.resolveSettings ?? resolveSettings;
 }
 
 class ClaudeRunnerHandle implements RunnerHandle {
@@ -839,6 +949,11 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // the SDK only ever emits whole `assistant` messages and the log jumps in
       // full-paragraph chunks instead of typing live.
       includePartialMessages: true,
+      // Deliberately re-enabled for CLAUDE.md — see the settingSources block
+      // near the top of this file. Gated by scanRepoHooks()/launch() below:
+      // the session (and any repo-defined hooks this also loads) doesn't start
+      // until that scan has run.
+      settingSources: PROJECT_SETTING_SOURCES,
       // Opt-in real browser (Playwright/Chrome MCP). Omitted unless the workspace
       // enabled it; its tools gate through canUseTool like any other non-read tool.
       ...(spec.browser ? { mcpServers: browserMcpServers(true) } : {}),
@@ -852,7 +967,6 @@ class ClaudeRunnerHandle implements RunnerHandle {
       ? { ...baseOptions, resume: resumeSessionId, forkSession: true }
       : baseOptions;
 
-    this.q = queryImpl({ prompt: this.input, options: firstOptions });
     this.hb = setInterval(() => this.events.onHeartbeat(this.runId), 5_000);
     // Wall-clock resource cap: force-fail a runaway/hung run so it can't hold
     // its slot and burn tokens forever. Armed once; survives session resume on
@@ -866,7 +980,45 @@ class ClaudeRunnerHandle implements RunnerHandle {
         void this.q?.interrupt().catch(() => undefined);
       }, capMs);
     }
-    this.bumpIdle(); // start the idle-stall watchdog (reset on every activity below)
+    // Start the idle-stall watchdog now — it also covers the hook-approval
+    // wait in launch() below, same as it already covers every other gate
+    // (ExitPlanMode, a Bash approval, …): none of them reset it either, since
+    // it only resets on a real SDK message (see bumpIdle()/drain()).
+    this.bumpIdle();
+    void this.launch(firstOptions);
+  }
+
+  /**
+   * Start the SDK session, gated on a repo-hook scan (see scanRepoHooks). A
+   * repo with no `.claude/settings.json` hooks launches immediately — the
+   * common case, and today's behavior. One that has them pauses on an
+   * `approval` HITL before the session (and its hooks) can run at all;
+   * rejecting stops the run before anything happens, same as declining any
+   * other pending action.
+   */
+  private async launch(firstOptions: Options): Promise<void> {
+    const hooks = await scanRepoHooks(this.spec.cwd ?? process.cwd());
+    if (this.finished) return; // stopped while the scan was in flight
+    if (hooks.length) {
+      const approved = await new Promise<boolean>((resolve) => {
+        // Reuses the same gate/resume() plumbing as every other pending
+        // action (see canUseTool above and resume() below) — "approve" falls
+        // through to resume()'s allow branch, "reject"/"modify" both deny.
+        this.gate = (r) => resolve(r.behavior === "allow");
+        this.gateInput = { hooks: hooks.map((h) => h.command) };
+        this.gateTool = "RepoHooks";
+        this.gateQuestion = null;
+        this.events.onStatus(this.runId, "waiting");
+        this.events.onHitl(this.runId, buildHookRaise(hooks));
+      });
+      if (this.finished) return; // stopped while parked on the gate
+      if (!approved) {
+        this.fail("operator did not approve this repo's lifecycle hooks — stopped before the session started");
+        return;
+      }
+      this.events.onLog(this.runId, `operator approved ${hooks.length} repo-defined lifecycle hook(s) — starting the session`);
+    }
+    this.q = queryImpl({ prompt: this.input, options: firstOptions });
     void this.consume();
   }
 
