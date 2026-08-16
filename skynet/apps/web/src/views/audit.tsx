@@ -4,6 +4,7 @@ import { useStore } from "../lib/store";
 import { fmtWait, KIND_META } from "../lib/derive";
 import { RiskChip } from "../components/hitl-context";
 import { DiffView } from "../components/diff-view";
+import { ComplianceReportExport } from "../components/compliance-export";
 import * as api from "../lib/client";
 
 // Decision audit trail (W8). The resolved-HITL history lives in its own
@@ -208,7 +209,7 @@ export function AuditView({
   now: number;
   onOpenTask: (id: string) => void;
 }) {
-  const { queue, auditRev, archiveAudit, deleteAudit, archiveAllAudit, clearAudit } = useStore();
+  const { queue, projects, auditRev, archiveAudit, deleteAudit, archiveAllAudit, clearAudit } = useStore();
   const [records, setRecords] = useState<AuditRecord[] | null>(null);
   const [error, setError] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -330,8 +331,10 @@ export function AuditView({
             decided what, when, and how.
           </p>
         </div>
-        {merged.length > 0 && (
-          <div className="audit-bulk">
+        <div className="audit-bulk">
+          <ComplianceReportExport projects={projects} />
+          {merged.length > 0 && (
+            <>
             {active.length > 0 && (
               <button className="btn btn-ghost btn-sm" onClick={() => void onArchiveAll()}>
                 ⊘ Archive all
@@ -355,8 +358,9 @@ export function AuditView({
                 Clear trail
               </button>
             )}
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </div>
 
       {error && (

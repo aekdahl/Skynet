@@ -2023,6 +2023,22 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .audit-del { color: var(--faint); }
 .audit-del:hover { color: var(--danger); border-color: var(--danger); }
 .audit-row-archived { opacity: 0.7; }
+/* compliance evidence pack export — a floating dropdown, not in normal flow,
+   so its content can never push the header wider than the viewport. */
+.compliance-export { position: relative; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.compliance-export-panel {
+  position: absolute; top: 100%; right: 0; z-index: 20; margin-top: 6px;
+  display: flex; flex-direction: column; gap: 10px; padding: 14px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  width: 340px; max-width: min(340px, calc(100vw - 32px));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.compliance-export-hint { font-size: 12px; color: var(--muted); line-height: 1.4; margin: 0; }
+.compliance-export-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.compliance-export-row label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); min-width: 0; flex: 1; }
+.compliance-export-row select, .compliance-export-row input { width: 100%; box-sizing: border-box; }
+.compliance-export-err { color: var(--danger); font-size: 12px; margin: 0; }
+.compliance-export-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* scrollbars */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
