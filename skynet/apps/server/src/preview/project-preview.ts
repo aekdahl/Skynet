@@ -51,6 +51,101 @@ export function previewEnv(extra: Record<string, string> = {}): NodeJS.ProcessEn
   return env;
 }
 
+/** `"npm run <script>"` → `<script>`, else null. Used to look up the actual
+ *  underlying command a wrapped recipe wraps, so base-injection can detect
+ *  Vite even though the literal word "vite" never appears in the wrapper.
+ *  PURE — tested. */
+export function npmRunScriptName(cmd: string): string | null {
+  const m = cmd.trim().match(/^npm\s+run\s+([^\s]+)/);
+  return m ? m[1]! : null;
+}
+
+/**
+ * Append `--base=/p/<token>/` to a recipe's command when it's Vite and
+ * doesn't already set one — see the header comment for why base-mode matters
+ * (it's the only complete fix for runtime-computed worker imports; regex
+ * rewriting in preview-proxy.ts is a best-effort fallback). `cmd` is almost
+ * always `npm run dev` (the heuristic path) — the literal word "vite" never
+ * appears there, only inside the wrapped script body — so Vite detection
+ * checks `wrappedScript` when `cmd` is an `npm run` wrapper, and the flag is
+ * passed through with `--` so npm forwards it to the script instead of
+ * consuming it itself. PURE — tested.
+ */
+export function injectViteBase(
+  recipe: { cmd: string; wrappedScript?: string },
+  token: string,
+  hasPublicOrigin: boolean,
+): { cmd: string; injected: boolean } {
+  const wrapperScript = npmRunScriptName(recipe.cmd);
+  const viteTarget = wrapperScript !== null ? recipe.wrappedScript : recipe.cmd;
+  if (!hasPublicOrigin || !viteTarget || !/(^|\s|\/)vite(\s|$)/.test(viteTarget) || /--base[=\s]/.test(viteTarget)) {
+    return { cmd: recipe.cmd, injected: false };
+  }
+  const flag = `--base=/p/${token}/`;
+  return { cmd: wrapperScript !== null ? `${recipe.cmd} -- ${flag}` : `${recipe.cmd} ${flag}`, injected: true };
+}
+
+/**
+ * The generated Vite config a preview is pointed at via `--config` when
+ * `injectViteFsAllow` fires — LOADS the project's own config (via Vite's own
+ * `loadConfigFromFile`, so plugins/aliases/etc. are untouched) and merges in
+ * an extra `server.fs.allow` entry. Needed because `ensureDeps`'s
+ * node_modules symlink (see its own comment) resolves OUTSIDE the preview
+ * worktree, past Vite's filesystem allow-list boundary — and nesting the
+ * worktree near/inside the repo does NOT fix this: Vite's workspace-root
+ * search stops at the first ancestor with its own package.json (the
+ * worktree's own checkout) regardless of physical placement, so it never
+ * climbs far enough to discover the real node_modules (verified empirically
+ * against a live Vite server, not assumed from its docs). Any `/@fs/`
+ * reference into node_modules then 403s — a worker, wasm, or an asset a
+ * package resolves via `import.meta.url` (pdfjs-dist's `pdf.worker` is the
+ * case that surfaced this) — independent of `injectViteBase` above, and in
+ * desktop/loopback mode too (this is Vite's own boundary check, not proxy-
+ * specific).
+ *
+ * `allow` must include the worktree root itself (`process.cwd()`), not just
+ * `extraAllowPaths` — Vite only computes its own default allow-list entry
+ * (the detected workspace root, normally the worktree root) when
+ * `server.fs.allow` is left `undefined`; explicitly setting it, even to add
+ * one more path, REPLACES that default rather than extending it, which
+ * without this would 403 the worktree's own files instead (verified live:
+ * the very regression this addition fixes). PURE — tested. */
+export function viteFsAllowConfigSource(extraAllowPaths: string[]): string {
+  const allow = JSON.stringify([".", ...extraAllowPaths]);
+  return `import { defineConfig, mergeConfig, loadConfigFromFile } from "vite";
+export default defineConfig(async (env) => {
+  const loaded = await loadConfigFromFile(env, undefined, process.cwd()).catch(() => null);
+  return mergeConfig(loaded?.config ?? {}, { server: { fs: { allow: ${allow} } } });
+});
+`;
+}
+
+/**
+ * Append `--config <configPath>` to `cmd` when the recipe is Vite, its
+ * node_modules is a symlink (the only case the fs.allow boundary bites — a
+ * freshly-installed real node_modules already lives inside the worktree, so
+ * needs nothing extra), and it doesn't already pass `--config` itself.
+ * Composes onto whatever `injectViteBase` already produced: reuses an
+ * existing `--` separator (an npm-run wrapper) instead of adding a second
+ * one. PURE — tested.
+ */
+export function injectViteFsAllow(
+  recipe: { cmd: string; wrappedScript?: string },
+  cmd: string,
+  configPath: string,
+  nmSymlinked: boolean,
+): { cmd: string; injected: boolean } {
+  const wrapperScript = npmRunScriptName(recipe.cmd);
+  const viteTarget = wrapperScript !== null ? recipe.wrappedScript : recipe.cmd;
+  if (!nmSymlinked || !viteTarget || !/(^|\s|\/)vite(\s|$)/.test(viteTarget) || /--config[=\s]/.test(viteTarget)) {
+    return { cmd, injected: false };
+  }
+  const flag = `--config ${JSON.stringify(configPath)}`;
+  const hasSeparator = / -- /.test(cmd) || cmd.trimEnd().endsWith("--");
+  const next = wrapperScript !== null && !hasSeparator ? `${cmd} -- ${flag}` : `${cmd} ${flag}`;
+  return { cmd: next, injected: true };
+}
+
 export type PreviewStatus = "idle" | "starting" | "live" | "failed" | "stopped";
 
 // Which slice of the project's work a PROJECT preview shows:
@@ -67,6 +162,12 @@ export interface PreviewRecipe {
   /** Where the app will listen; injected as PORT and used to health-check. */
   port: number;
   source: "descriptor" | "heuristic" | "agent";
+  /** The underlying script body when `cmd` is an `npm run <script>` wrapper
+   *  (e.g. "vite --host") — lets base-injection detect Vite even though the
+   *  literal word "vite" never appears in `cmd` itself. Undefined when `cmd`
+   *  isn't a wrapped npm script (a direct command, or the script couldn't be
+   *  looked up). */
+  wrappedScript?: string;
 }
 
 export interface PreviewState {
@@ -324,13 +425,32 @@ export class ProjectPreviewManager {
     }
   }
 
+  /** package.json's `scripts[name]` body, if the file and script both exist. */
+  private readPackageScript(dir: string, name: string): string | undefined {
+    const pkgPath = join(dir, "package.json");
+    if (!existsSync(pkgPath)) return undefined;
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { scripts?: Record<string, string> };
+      return pkg.scripts?.[name];
+    } catch {
+      return undefined; // malformed package.json
+    }
+  }
+
   /** Deterministic recipe: `.skynet/preview.json` descriptor, then a
    *  package.json script heuristic. No I/O beyond reading two files. */
   private resolveRecipeStatic(dir: string, port: number): PreviewRecipe | null {
     const d = this.readDescriptor(dir);
     if (d) {
       const cmd = d.dev || d.start;
-      if (cmd) return { cmd, port: d.port ?? port, source: "descriptor" };
+      if (cmd) {
+        // A human/agent-authored descriptor can itself be an `npm run <script>`
+        // wrapper — look up the real script body too, same as the heuristic
+        // path below, so Vite detection works here as well.
+        const scriptName = npmRunScriptName(cmd);
+        const wrappedScript = scriptName ? this.readPackageScript(dir, scriptName) : undefined;
+        return { cmd, port: d.port ?? port, source: "descriptor", ...(wrappedScript ? { wrappedScript } : {}) };
+      }
     }
     const pkgPath = join(dir, "package.json");
     if (existsSync(pkgPath)) {
@@ -338,7 +458,7 @@ export class ProjectPreviewManager {
         const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { scripts?: Record<string, string> };
         const scripts = pkg.scripts ?? {};
         const script = ["dev", "start", "serve", "preview"].find((s) => scripts[s]);
-        if (script) return { cmd: `npm run ${script}`, port, source: "heuristic" };
+        if (script) return { cmd: `npm run ${script}`, port, source: "heuristic", wrappedScript: scripts[script] };
       } catch {
         /* malformed package.json */
       }
@@ -826,18 +946,55 @@ export class ProjectPreviewManager {
 
       // When we'll serve this preview through the public `/p/<token>/` proxy
       // (hosted — a public origin is known), a Vite dev server must emit its
-      // asset + HMR URLs under that base, else they 404 off the prefix. Inject
+      // asset + HMR URLs under that base, else they 404 off the prefix (and
+      // anything Vite can't statically rewrite to a literal — a worker's own
+      // runtime `import(variable)`, e.g. pdfjs-dist's fake-worker fallback —
+      // ends up unprefixed no matter how good preview-proxy.ts's regexes get;
+      // base-mode is the only fix that actually covers those). Inject
       // `--base=/p/<token>/` for a Vite recipe that doesn't already set one.
       // A recipe for a nested monorepo can embed its OWN install step for a
       // sub-package ensureDeps()'s root-level symlink/install never reaches
       // (e.g. `cd apps/web && pnpm install && pnpm dev`) — unlike the root
       // install, nothing skips it once it's already warm, so it reran on
-      // every single start/restart. Strip it when it's provably a no-op.
-      let cmd = this.reconcileEmbeddedInstalls(p, recipe.cmd);
-      if (publicOrigin() && /(^|\s|\/)vite(\s|$)/.test(cmd) && !/--base[=\s]/.test(cmd)) {
-        cmd = `${cmd} --base=/p/${p.token}/`;
+      // every single start/restart. Strip it when it's provably a no-op —
+      // BEFORE base-injection, so the flag lands on the command that's
+      // actually going to run, not the pre-reconciled one.
+      const reconciledCmd = this.reconcileEmbeddedInstalls(p, recipe.cmd);
+      // `cmd` itself is almost always `npm run dev` (the heuristic path,
+      // resolveRecipeStatic) — the literal word "vite" never appears there,
+      // only inside the wrapped script body — so `injectViteBase` detects
+      // Vite off `recipe.wrappedScript` when this is an `npm run` wrapper.
+      // Detection still reads the original `recipe` (reconciliation only
+      // touches an embedded install prefix, never whether this IS Vite);
+      // only the base string it injects into is the reconciled command.
+      const { cmd: cmdWithBase, injected } = injectViteBase(
+        { ...recipe, cmd: reconciledCmd },
+        p.token,
+        Boolean(publicOrigin()),
+      );
+      if (injected) {
         p.baseInjected = true;
         this.log(p, `serving behind Skynet's proxy — added --base=/p/${p.token}/ for Vite`);
+      }
+
+      // `ensureDeps`'s node_modules symlink resolves outside this worktree,
+      // past Vite's fs.allow boundary — so any /@fs/ reference into it (a
+      // worker, wasm, or an import.meta.url-resolved asset; pdfjs-dist's
+      // pdf.worker is the case that surfaced this) 403s, independent of the
+      // base-mode fix above and in desktop/loopback mode too. See
+      // `injectViteFsAllow`'s own comment for why nesting the worktree
+      // doesn't help and a generated config does.
+      let nmSymlinked = false;
+      try {
+        nmSymlinked = lstatSync(join(p.dir, "node_modules")).isSymbolicLink();
+      } catch {
+        /* no node_modules yet, or not a link — nothing to extend */
+      }
+      const fsAllowConfigPath = join(p.dir, ".skynet-preview.vite.config.mjs");
+      const { cmd, injected: fsAllowInjected } = injectViteFsAllow(recipe, cmdWithBase, fsAllowConfigPath, nmSymlinked);
+      if (fsAllowInjected) {
+        await writeFile(fsAllowConfigPath, viteFsAllowConfigSource([spec.gitRepo]));
+        this.log(p, "extended Vite's fs.allow so node_modules symlinked from the checkout stays servable");
       }
       this.log(p, `▸ ${cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
 

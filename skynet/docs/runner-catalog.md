@@ -20,11 +20,11 @@ These run as a command-line process we can drive non-interactively. Ideal `runne
 | **Gemini CLI** | Google | ✅ adapter |
 | **Cursor Agent / Cursor CLI** | Cursor | ✅ adapter (CLI + background agents) |
 | **Copilot CLI / coding agent** | GitHub | ✅ adapter |
+| **OpenCode** | open source | ✅ adapter — provider-agnostic terminal agent; **ubiquitous** across the competitor field |
 | **Aider** | open source | ⭐ mature terminal pair-programmer; very automatable |
 | **OpenHands** (ex-OpenDevin) | open source | ⭐ headless agent runtime; strong fit |
 | **Goose** | Block | ⭐ open-source CLI agent, MCP-native |
 | **Amp** | Sourcegraph | ⭐ CLI agent |
-| **OpenCode** | open source | ⭐ provider-agnostic terminal agent; **ubiquitous** across the competitor field |
 | **Crush** | Charm | ◻ OSS TUI coding agent, rising |
 | **Antigravity** (`agy`) | Google | ◻ agentic IDE/CLI; appears in claw / CCC adapters |
 | **Auggie CLI** | Augment | ◻ Augment's CLI agent (distinct from the IDE in Tier 3) |
