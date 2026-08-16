@@ -1971,6 +1971,7 @@ button.rb-proj:hover { color: var(--accent); }
 .op-pitem .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .op-side-foot { margin-top: auto; display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-top: 1px solid var(--line-soft); }
 .op-side-foot .who { font-size: 12px; } .op-side-foot .role { font-size: 11px; color: var(--muted); }
+.op-role-viewer { color: var(--warn); font-weight: 600; }
 
 .op-statusbar { height: 28px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 10px 0 12px; background: var(--panel); border-top: 1px solid var(--line); font-family: var(--font-mono); font-size: 11px; color: var(--muted); position: relative; z-index: 30; }
 .op-sb-wrap { position: relative; }

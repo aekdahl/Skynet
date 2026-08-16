@@ -9,7 +9,7 @@
 import { describe, it, expect } from "vitest";
 import type { FastifyRequest } from "fastify";
 import { authenticate } from "../apps/server/src/auth.js";
-import { isGuardedPath, isPublicLogin, requiresAuth } from "../apps/server/src/auth-guard.js";
+import { isGuardedPath, isPublicLogin, requiredScope, requiresAuth } from "../apps/server/src/auth-guard.js";
 import { isCorsOriginAllowed } from "../apps/server/src/cors-policy.js";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 
@@ -87,6 +87,51 @@ describe("DEF-007: the /api prefix guard is case-insensitive", () => {
     expect(requiresAuth("/assets/app.js")).toBe(false);
     expect(requiresAuth("/ws")).toBe(false);
     expect(requiresAuth("/")).toBe(false);
+  });
+});
+
+describe("requiredScope: the viewer-role mutation gate", () => {
+  it("never requires a scope for reads (GET/HEAD), on /api or /mcp", () => {
+    expect(requiredScope("GET", "/api/snapshot")).toBeNull();
+    expect(requiredScope("GET", "/api/projects/p-1/roadmap")).toBeNull();
+    expect(requiredScope("HEAD", "/api/snapshot")).toBeNull();
+  });
+
+  it("excludes /mcp entirely — every tool call there is already scope-gated per-tool", () => {
+    expect(requiredScope("POST", "/mcp")).toBeNull();
+    expect(requiredScope("POST", "/MCP")).toBeNull();
+  });
+
+  it("exempts personal auth actions and the dry-run/judge endpoints", () => {
+    expect(requiredScope("POST", "/api/auth/logout")).toBeNull();
+    expect(requiredScope("POST", "/api/telegram/simulate")).toBeNull();
+    expect(requiredScope("POST", "/api/simulation/grade")).toBeNull();
+    expect(requiredScope("POST", "/api/simulation/judge")).toBeNull();
+    expect(requiredScope("POST", "/api/steward/chat")).toBeNull();
+    expect(requiredScope("POST", "/api/steward/chat/stream")).toBeNull();
+  });
+
+  it("requires \"approver\" for HITL resolve and every merge-decision route", () => {
+    expect(requiredScope("POST", "/api/hitl/h-1/resolve")).toBe("approver");
+    expect(requiredScope("POST", "/api/merges/r-1/merge")).toBe("approver");
+    expect(requiredScope("POST", "/api/merges/r-1/rework")).toBe("approver");
+    expect(requiredScope("POST", "/api/merges/r-1/update-branch")).toBe("approver");
+    expect(requiredScope("POST", "/api/merges/r-1/dismiss")).toBe("approver");
+  });
+
+  it("defaults every other non-GET /api route to \"author\"", () => {
+    expect(requiredScope("POST", "/api/projects")).toBe("author");
+    expect(requiredScope("PATCH", "/api/projects/p-1")).toBe("author");
+    expect(requiredScope("DELETE", "/api/projects/p-1")).toBe("author");
+    expect(requiredScope("POST", "/api/projects/p-1/tasks/t-1/assign")).toBe("author");
+    expect(requiredScope("PUT", "/api/settings/env")).toBe("author");
+    expect(requiredScope("POST", "/api/credentials")).toBe("author");
+    expect(requiredScope("PUT", "/api/github/pat")).toBe("author");
+  });
+
+  it("is case-insensitive on the path, matching the DEF-007 guard's own convention", () => {
+    expect(requiredScope("POST", "/API/Hitl/h-1/Resolve")).toBe("approver");
+    expect(requiredScope("POST", "/API/Projects")).toBe("author");
   });
 });
 

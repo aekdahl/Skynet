@@ -90,6 +90,14 @@ export const config = {
   adminPassword: process.env.SKYNET_ADMIN_PASSWORD || undefined,
   adminWorkspace: process.env.SKYNET_ADMIN_WORKSPACE || undefined,
 
+  // Optional second account: a read-only login (Principal.scopes: ["observe"]
+  // at login — see auth/operators.ts). Independent of the admin vars above;
+  // set alone or alongside them. No invite/user-management UI exists yet, so
+  // this env seed is the only way to stand up a viewer on a hosted deploy.
+  viewerEmail: (process.env.SKYNET_VIEWER_EMAIL || "").toLowerCase() || undefined,
+  viewerPassword: process.env.SKYNET_VIEWER_PASSWORD || undefined,
+  viewerWorkspace: process.env.SKYNET_VIEWER_WORKSPACE || undefined,
+
   // ── MCP bootstrap token (headless / sandbox deploys) ───────────────────────
   // In a sandbox (e.g. Daytona) there is no human to log in and mint a token,
   // so the creating agent injects a strong random secret here at boot; Skynet

@@ -26,7 +26,7 @@ export function QueueCard({
   // the mount-time effect run never fires it.
   modifyTrigger?: number;
 }) {
-  const { resolveHitl, streamAgentMessage } = useStore();
+  const { resolveHitl, streamAgentMessage, readOnly } = useStore();
   const k = KIND_META[item.kind];
   const [mode, setMode] = useState<null | "modify" | "chat">(null);
   const [draft, setDraft] = useState("");
@@ -117,11 +117,12 @@ export function QueueCard({
           <button
             className="btn"
             title="Hand this run to a different runner to retry fresh"
+            disabled={readOnly}
             onClick={() => resolveHitl(item.id, "reassign", { guidance: draft.trim() })}
           >
             Reassign
           </button>
-          <button className="btn btn-danger" onClick={() => resolveHitl(item.id, "reject")}>
+          <button className="btn btn-danger" disabled={readOnly} onClick={() => resolveHitl(item.id, "reject")}>
             Stop run
           </button>
           <button
@@ -140,6 +141,7 @@ export function QueueCard({
             <button
               key={i}
               className={"btn" + (i === item.recommended ? " btn-primary" : "")}
+              disabled={readOnly}
               onClick={() => resolveHitl(item.id, "option", { optionIndex: i })}
             >
               “{opt}”
@@ -166,6 +168,7 @@ export function QueueCard({
         <div className="qcard-actions">
           <button
             className="btn btn-primary"
+            disabled={readOnly}
             onClick={() => resolveHitl(item.id, "approve")}
           >
             Approve
@@ -174,6 +177,7 @@ export function QueueCard({
             <button
               className="btn btn-ghost"
               title="Approve now and always auto-approve this exact command in this project"
+              disabled={readOnly}
               onClick={() => resolveHitl(item.id, "approve", { remember: true })}
             >
               Always allow
@@ -181,6 +185,7 @@ export function QueueCard({
           )}
           <button
             className="btn btn-danger"
+            disabled={readOnly}
             onClick={() => resolveHitl(item.id, "reject")}
           >
             Reject
@@ -216,6 +221,7 @@ export function QueueCard({
           <div className="qx-row">
             <button
               className="btn btn-primary"
+              disabled={readOnly}
               onClick={() =>
                 resolveHitl(item.id, "modify", { guidance: draft.trim() })
               }

@@ -544,11 +544,24 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   the 4 named examples wasn't attempted either — that's the still-separately-tracked v0.5
   "Legibility floor" item (#4 above).
 - [ ] 🏢 Auth: **SSO/OIDC**.
-- [ ] 🏢 **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
+- [x] 🏢 **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
   everything (projects, runs, HITL, audit) but mutate nothing (no assign / resolve / transition /
-  settings / provider keys). Wrap, don't rebuild: reuse the existing scoped-principal model — service
-  tokens already carry `observe`/`author`/`approver` scopes, so extend the same scopes to human
-  sessions rather than a parallel permission system. *(Multi-user — hosted/team only.)*
+  settings / provider keys). Wrapped, not rebuilt: `OperatorRecord.role` (`"admin" | "viewer"`,
+  `auth/operators.ts`) maps to `Principal.scopes: ["observe"]` at login — a viewer rides the exact
+  same `hasScope()` checks a scoped service token already did, no parallel permission system. The
+  real work was the audit: `hasScope()` previously ran ONLY inside the MCP layer (`mcp/tools.ts`),
+  so every REST mutation route a human hits was actually gated by nothing but "has a session." A new
+  classifier, `requiredScope()` (`auth-guard.ts`), now runs in the shared `/api` `onRequest` hook
+  (`api.ts`) and requires `"author"` (default) or `"approver"` (HITL resolve + the four merge-decision
+  routes) on every non-GET `/api` route — `/mcp` is untouched, it's already gated per-tool at finer
+  grain. Web: a `readOnly` flag rides the store (from `GET /api/auth/me`, refreshed across
+  snapshot/reconnect); `client.ts`'s `req()` blocks every mutation call client-side BEFORE it reaches
+  the network (a friendly toast, not a bare 403), and the Inbox's resolve buttons, Home's "Assign
+  work" CTA, and a Settings banner grey out — the server-side gate is the actual boundary, this is
+  UX. Dev/test seeds a demo `viewer@cyberdyne.dev` (pw `skynet`) alongside the existing admin pair;
+  production gets an equivalent `SKYNET_VIEWER_EMAIL`/`_PASSWORD`/`_WORKSPACE` env seed (mirrors the
+  existing admin seed — there's still no invite/user-management UI, so this is the only way to stand
+  one up on a hosted deploy today). *(Multi-user — hosted/team only.)*
 - [ ] 🏢 **Time-limited admin promotion** — temporarily elevate a viewer to admin for a bounded,
   auto-expiring window (break-glass / sudo-style), then revert to their base role automatically; every
   promotion + expiry is audited. Depends on the read-only role above.
