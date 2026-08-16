@@ -113,6 +113,16 @@ const ALLOW = new Set<string>([
   // exercised against a real store + hub in task-linter-ops.test.ts, and the
   // model's structured-output parsing in task-linter.test.ts.
   "dismissTaskLint",
+  // `inform` — mass-select runs (explicit ids and/or a whole project's live
+  // runs) and attach a note that rides each one's next prompt, no extra turn
+  // (a third interaction type alongside chat + resolve). Exercising it for
+  // real needs a LIVE run on a real provider (a note only means anything once
+  // it rides an actual next turn) — no offline journey can produce that. The
+  // Operations/Orchestrator wiring (multi-run, project targeting, union
+  // dedup, skip-when-not-live) is exercised against a real store + hub in
+  // inform.test.ts; the delivery mechanics (Claude's shouldQuery:false, the
+  // CLI buffer+prepend) in claude-inform.test.ts / cli-inform.test.ts.
+  "informRuns",
 ]);
 
 describe("client API coverage", () => {

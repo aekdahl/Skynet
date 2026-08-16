@@ -1582,7 +1582,17 @@ button.kb-done:hover { opacity: 1; }
 
 /* ===== fleet ===== */
 .fleet-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+.fleet-head-actions { display: flex; align-items: center; gap: 8px; }
+.fleet-head-actions .btn-ghost.on { background: var(--raised); border-color: var(--accent); color: var(--accent); }
 .fleet-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--sp); }
+/* Mass-inform pick: a checkbox row at the top of a card in select mode. Idle
+   agents show disabled + a note instead of a live-run target. */
+.fleet-inform-pick { display: flex; align-items: center; gap: 8px; padding-bottom: 2px; }
+.fleet-inform-idle { font-size: 11px; color: var(--faint, var(--muted)); }
+/* The `inform` note composer (Fleet multi-select + Project whole-project). */
+.inform-panel { display: flex; flex-direction: column; gap: 10px; margin-bottom: var(--sp); }
+.inform-hint { font-size: 12px; color: var(--muted); margin: 0; }
+.inform-textarea { resize: vertical; min-height: 60px; }
 /* Custom grouping: a labeled bucket of agents. Stacked groups get spacing + a
    small heading; a single ungrouped fleet renders headless (see showHeadings). */
 .fleet-group { display: flex; flex-direction: column; gap: 12px; }

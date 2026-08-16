@@ -99,6 +99,13 @@ export interface Store extends StoreState {
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
+  // `inform` — mass-select runs (explicit ids and/or a whole project's live
+  // runs) + a note that rides each one's next prompt, no extra turn.
+  informRuns: (body: {
+    note: string;
+    runIds?: string[];
+    projectId?: string;
+  }) => Promise<{ informed: string[]; skipped: Array<{ runId: string; reason: string }> }>;
   forkAgent: (id: string) => Promise<void>;
   // Checkpoint / restore (extends fork/resume, W6). Checkpoints aren't part of
   // the WS-synced snapshot (per-run, lazily fetched like a diff) — create/
@@ -463,6 +470,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return reply;
       },
       streamAgentMessage: (id, text, onDelta) => api.streamAgentMessage(id, text, onDelta),
+      informRuns: (body) => api.informRuns(body),
       forkAgent: async (id) => {
         try {
           await api.forkAgent(id);

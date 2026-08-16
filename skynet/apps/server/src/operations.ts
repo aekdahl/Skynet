@@ -21,6 +21,7 @@ import type {
   CreateTaskRequest,
   Feature,
   HitlItem,
+  InformRequest,
   Milestone,
   Project,
   ProviderInfo,
@@ -414,6 +415,43 @@ export class Operations {
   async *chatAgentStream(ws: string, runId: string, text: string): AsyncGenerator<string> {
     await this.getRun(ws, runId); // 404 unless it's in this workspace
     yield* this.orchestrator.chatStream(runId, text);
+  }
+  /**
+   * `inform` — mass-select a set of runs (explicit ids, a whole project's live
+   * runs, or both) and attach a note that rides each one's NEXT prompt, at no
+   * extra turn (see Orchestrator.inform). Never blocks on the runs actually
+   * reading it, never routes through a HITL gate. Reports per-run whether the
+   * note was actually queued (`informed`) or couldn't be (`skipped` — no live
+   * session, or the runner doesn't support it), so the caller can be honest
+   * with the operator about partial delivery rather than a blanket "sent".
+   */
+  async informRuns(
+    ws: string,
+    input: InformRequest,
+  ): Promise<{ informed: string[]; skipped: Array<{ runId: string; reason: string }> }> {
+    const note = input.note.trim();
+    if (!note) throw new Error("Note text is required.");
+    const ids = new Set<string>(input.runIds);
+    if (input.projectId) {
+      await this.getProject(ws, input.projectId); // 404 unless it's in this workspace
+      for (const id of await this.orchestrator.liveRunIdsForProject(input.projectId)) ids.add(id);
+    }
+    if (ids.size === 0) {
+      throw new Error("No runs to inform — select at least one agent, or a project with active runs.");
+    }
+    const informed: string[] = [];
+    const skipped: Array<{ runId: string; reason: string }> = [];
+    for (const runId of ids) {
+      const run = await this.store.getRun(runId);
+      if (!run || run.workspaceId !== ws) {
+        skipped.push({ runId, reason: "not found" });
+        continue;
+      }
+      const ok = await this.orchestrator.inform(runId, note);
+      if (ok) informed.push(runId);
+      else skipped.push({ runId, reason: "not live — no active session to attach the note to" });
+    }
+    return { informed, skipped };
   }
   async forkAgent(ws: string, runId: string): Promise<TaskRun> {
     await this.getRun(ws, runId);

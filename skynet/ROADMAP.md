@@ -256,11 +256,22 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 - [x] **Agent labels / custom grouping** — Fleet already supports both: a "Group" field
   (`label`) with a known-groups datalist, the fleet grid groups by label with headings, and
   editing an agent's name is already part of the same Configure form.
-- [ ] **Mass inform** — select multiple agents (or a whole project / area / manager-family) and attach a
-  note that rides the *next* prompt each already receives — **no extra turn, ~free** (Claude SDK
-  `shouldQuery:false`; CLI runners buffer + prepend). A third interaction type (`inform`) alongside
-  chat + resolve; optional "also remember" promotes the note to area/workspace memory (v4) so future
-  agents inherit it too. Audited via existing streams.
+- [~] **Mass inform** — select multiple agents (or a whole project) and attach a note that rides the
+  *next* prompt each already receives — **no extra turn, ~free**. **Shipped:** a third interaction
+  type (`inform`) alongside chat + resolve, never a HITL gate — `POST /api/runs/inform` (`{note,
+  runIds?, projectId?}`, the two sets union) queues the note per matched live run and reports
+  informed/skipped honestly (never fakes delivery). Delivery is provider-specific and optional on
+  `RunnerHandle` (a provider that doesn't implement it is just skipped): **Claude** pushes onto the
+  live SDK session with `shouldQuery:false` — appended to the transcript, merged into whichever real
+  turn comes next, verified live (a note asking for a marker comment landed in the generated file with
+  no extra turn logged). **CLI runners** (Codex/Gemini/Hermes, via the shared `cli-runner.ts` base, and
+  Cursor) buffer the note and prepend it to the next real stdin write / spawned follow-up turn — proven
+  against a real subprocess in tests; live-verified against `cursor-agent` too, which surfaced a real
+  vendor quirk (its one-shot `-p` process doesn't appear to read injected stdin mid-turn, so the note
+  only reliably rides a *fresh* follow-up turn, not a live one — `cursor.ts` now hooks both paths).
+  Copilot doesn't implement `inform` yet (same bespoke-handle shape as Cursor; left for a follow-up).
+  **Remaining:** the Fleet/Project UI ships (multi-select on Fleet, whole-project on the project page);
+  optional "also remember" → area/workspace memory promotion is still v4, not started.
 - [~] **🔗 Per-project live preview — "see what it builds", any software.** Today's W5 preview is
   per-agent-*branch* and effectively static/web. Generalize to a **stable per-project preview of the
   integration branch** that handles any software, not just SPAs. **Proposed approach:**

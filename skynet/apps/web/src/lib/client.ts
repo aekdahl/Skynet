@@ -151,6 +151,16 @@ export function sendAgentMessage(id: string, text: string) {
   return req<{ reply: string }>("POST", `/api/runs/${id}/messages`, { text });
 }
 
+// `inform` — mass-select runs (explicit ids and/or a whole project's live
+// runs) + a note that rides each one's next prompt, no extra turn.
+export function informRuns(body: { note: string; runIds?: string[]; projectId?: string }) {
+  return req<{ informed: string[]; skipped: Array<{ runId: string; reason: string }> }>(
+    "POST",
+    "/api/runs/inform",
+    body,
+  );
+}
+
 /**
  * Streaming chat: POST the question and read the text/plain reply as it streams,
  * calling `onDelta` with each chunk. Resolves with the full reply. Falls back to

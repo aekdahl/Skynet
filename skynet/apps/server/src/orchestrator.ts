@@ -2233,6 +2233,44 @@ export class Orchestrator {
     });
   }
 
+  // ── inform ─────────────────────────────────────────────────────────────────
+  // A third interaction type alongside chat (a real extra turn, above) and
+  // resolve (a HITL decision, elsewhere): a note that rides a live run's NEXT
+  // prompt at no extra turn of its own — no reply expected, nothing to resolve,
+  // never routed through raise(). Delivery is the runner's job (RunnerHandle
+  // .inform, optional); this just finds the live handle and logs the attempt.
+
+  /**
+   * Queue `note` on `runId`'s next turn. Returns false (never throws) when the
+   * run has no live session or its runner doesn't implement `inform` — a
+   * finished/queued/no-longer-live run has nothing to ride, and we never fake
+   * delivery by falling back to a real chat turn (that would defeat the whole
+   * point: no extra turn, ~free). Always logged, so the audit trail shows
+   * exactly what was (or wasn't) delivered.
+   */
+  async inform(runId: string, note: string): Promise<boolean> {
+    const live = this.live.get(runId);
+    if (!live?.handle.inform) {
+      await this.hub.runLog(runId, `ℹ note (not delivered — no live session to attach it to): ${note}`);
+      return false;
+    }
+    await this.hub.runLog(runId, `ℹ note queued for the next turn: ${note}`);
+    await live.handle.inform(note);
+    return true;
+  }
+
+  /** Every currently-live run id belonging to `projectId` — the resolved set
+   *  for "inform this whole project"'s bulk-select. Only live runs are
+   *  meaningful targets (a finished/queued run has no next turn to ride). */
+  async liveRunIdsForProject(projectId: string): Promise<string[]> {
+    const ids: string[] = [];
+    for (const runId of this.live.keys()) {
+      const run = await this.store.getRun(runId);
+      if (run?.projectId === projectId) ids.push(runId);
+    }
+    return ids;
+  }
+
   /**
    * BYOK intent-parse path for the Telegram conversational bridge. Interpret a
    * natural-language operator message using the operator's OWN provider key —
