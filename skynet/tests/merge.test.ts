@@ -166,6 +166,33 @@ describe("MergeEngine", () => {
     // so the agent's file is not present on it.
     expect(() => git("cat-file", "-e", "skynet/integration/payments:feature.ts")).toThrow();
   });
+
+  it("MergeRequest.checkCmd (per-project, resolved by the caller) overrides the engine's constructor default", async () => {
+    git("checkout", "-b", "agent/override", "main");
+    commit("feature.ts", "export const z = 3;\n", "add feature");
+    git("checkout", "main");
+
+    // Engine constructed with a PASSING global default...
+    const { calls, enqueueAndWait } = harness("true");
+    // ...but this request's resolved project checkCmd fails — proves the
+    // per-request value wins, not the engine-level one baked in at construction.
+    await enqueueAndWait({ ...req("a-override", "agent/override"), checkCmd: "exit 1" });
+
+    expect(calls.checksFailed).toHaveLength(1);
+    expect(calls.merged).toHaveLength(0);
+  });
+
+  it("MergeRequest.checkCmd falls back to the engine's constructor default when absent", async () => {
+    git("checkout", "-b", "agent/fallback", "main");
+    commit("feature.ts", "export const w = 4;\n", "add feature");
+    git("checkout", "main");
+
+    const { calls, enqueueAndWait } = harness("exit 1"); // global default fails
+    await enqueueAndWait(req("a-fallback", "agent/fallback")); // no per-request override
+
+    expect(calls.checksFailed).toHaveLength(1);
+    expect(calls.merged).toHaveLength(0);
+  });
 });
 
 // Feature-scoped branch batching (ROADMAP.md): tasks under the same Feature

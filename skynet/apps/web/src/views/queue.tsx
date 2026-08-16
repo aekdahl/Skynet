@@ -80,6 +80,7 @@ export function QueueCard({
       <p className="qcard-why">{item.why}</p>
 
       {item.command && <pre className="qcard-code">$ {item.command}</pre>}
+      {item.output && <pre className="qcard-code qcard-output">{item.output}</pre>}
 
       {item.flags && item.flags.length > 0 && (
         <div className="qcard-flags">
