@@ -91,6 +91,18 @@ describe("rewriteJsImports", () => {
       `const w = new URL("/p/abc123/@fs/data/worktrees/preview/node_modules/pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url)`,
     );
   });
+  it("re-prefixes new URL(…) even with Vite's injected /* @vite-ignore */ comment before the literal", () => {
+    const js = `const w = new URL(/* @vite-ignore */ "/@fs/data/worktrees/preview/node_modules/pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url)`;
+    expect(rewriteJsImports(js, P)).toBe(
+      `const w = new URL(/* @vite-ignore */ "/p/abc123/@fs/data/worktrees/preview/node_modules/pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url)`,
+    );
+  });
+  it("re-prefixes a dynamic import(…) even with a /* @vite-ignore */ comment before the literal", () => {
+    const js = `await import(/* @vite-ignore */ "/@fs/data/worktrees/preview/node_modules/pdfjs-dist/build/pdf.worker.min.mjs")`;
+    expect(rewriteJsImports(js, P)).toBe(
+      `await import(/* @vite-ignore */ "/p/abc123/@fs/data/worktrees/preview/node_modules/pdfjs-dist/build/pdf.worker.min.mjs")`,
+    );
+  });
 });
 
 describe("public origin learning", () => {

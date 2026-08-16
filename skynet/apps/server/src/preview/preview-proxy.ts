@@ -58,6 +58,13 @@ export function stripPreviewPrefix(url: string, token: string): string {
   return url;
 }
 
+// Vite's own `vite:worker-import-meta-url` transform sometimes injects a
+// `/* @vite-ignore */` block comment between the opening paren and the string
+// literal (e.g. `new URL(/* @vite-ignore */ "/@fs/…", import.meta.url)`) to
+// suppress its own dynamic-import warning. Tolerate one here so a literal
+// path preceded by such a comment still gets re-prefixed.
+const OPT_COMMENT = "(?:/\\*.*?\\*/\\s*)?";
+
 /** Re-prefix root-absolute ES-module specifiers in a JS body: `from "/…"` (static
  *  imports/re-exports), bare `import "/…"` (side-effect imports), dynamic
  *  `import("/…")`, and `new URL("/…", import.meta.url)` (Vite's transform for a
@@ -72,8 +79,17 @@ export function stripPreviewPrefix(url: string, token: string): string {
  *  or `"/@fs/…"` — so it applies both inside inline `<script>` blocks
  *  (react-refresh preamble) and to whole standalone `.js`/`.jsx` module
  *  responses. Skips protocol-relative, absolute-URL, relative, and
- *  already-prefixed specifiers (only a single leading `/` qualifies). PURE —
- *  tested. */
+ *  already-prefixed specifiers (only a single leading `/` qualifies).
+ *
+ *  IMPORTANT — this is inherently incomplete: it only catches a path that
+ *  appears as a quoted string LITERAL directly in one of these four shapes.
+ *  A runtime-computed specifier — `import(someVariable)`, e.g. pdfjs-dist's
+ *  `_setupFakeWorker()` doing `import(this.workerSrc)` — can never be caught
+ *  by text rewriting, because the value doesn't exist as text until the code
+ *  runs. The robust fix for that class is serving the dev server itself in
+ *  base-prefixed mode (`--base=/p/<token>/`, see project-preview.ts) so Vite
+ *  bakes the correct prefix into every reference itself; this function is a
+ *  best-effort fallback for when that isn't possible. PURE — tested. */
 export function rewriteJsImports(js: string, prefix: string): string {
   const reprefix = (path: string): string | null =>
     path === prefix || path.startsWith(prefix + "/") ? null : prefix + path;
@@ -82,17 +98,17 @@ export function rewriteJsImports(js: string, prefix: string): string {
       const r = reprefix(path);
       return r ? `from ${q}${r}${q}` : m;
     })
-    .replace(/\bimport\s*\(\s*("|')(\/(?!\/)[^"']*)\1/g, (m, q, path) => {
+    .replace(new RegExp(`\\bimport\\s*\\(\\s*${OPT_COMMENT}("|')(/(?!/)[^"']*)\\1`, "g"), (m, q, path) => {
       const r = reprefix(path);
-      return r ? `import(${q}${r}${q}` : m;
+      return r ? m.replace(`${q}${path}${q}`, `${q}${r}${q}`) : m;
     })
     .replace(/\bimport\s*("|')(\/(?!\/)[^"']*)\1/g, (m, q, path) => {
       const r = reprefix(path);
       return r ? `import ${q}${r}${q}` : m;
     })
-    .replace(/\bnew\s+URL\s*\(\s*("|')(\/(?!\/)[^"']*)\1\s*,\s*import\.meta\.url\s*\)/g, (m, q, path) => {
+    .replace(new RegExp(`\\bnew\\s+URL\\s*\\(\\s*${OPT_COMMENT}("|')(/(?!/)[^"']*)\\1\\s*,\\s*import\\.meta\\.url\\s*\\)`, "g"), (m, q, path) => {
       const r = reprefix(path);
-      return r ? `new URL(${q}${r}${q}, import.meta.url)` : m;
+      return r ? m.replace(`${q}${path}${q}`, `${q}${r}${q}`) : m;
     });
 }
 

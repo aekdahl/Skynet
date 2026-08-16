@@ -437,6 +437,8 @@ export function updateProject(
     // Where the Roadmap tab reads its doc from; null clears back to the
     // default ROADMAP.md/docs/ROADMAP.md candidates.
     roadmapPath?: string | null;
+    // Verifier gate command; null clears back to the global default.
+    checkCmd?: string | null;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);

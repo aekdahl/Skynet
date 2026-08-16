@@ -150,6 +150,8 @@ export interface Store extends StoreState {
       // Where the Roadmap tab reads its doc from; null clears back to the
       // default ROADMAP.md/docs/ROADMAP.md candidates.
       roadmapPath?: string | null;
+      // Verifier gate command; null clears back to the global default.
+      checkCmd?: string | null;
     },
   ) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;
