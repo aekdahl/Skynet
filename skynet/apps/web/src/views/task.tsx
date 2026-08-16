@@ -397,21 +397,32 @@ export function TaskDetail({
             </>
           )}
           <div className="panel-head">
-            PLAN{" "}
-            <span className="panel-sub">
-              {doneCount}/{agent.plan.length}
-            </span>
+            PLAN
+            {agent.plan.length > 0 && (
+              <span className="panel-sub">
+                {doneCount}/{agent.plan.length}
+              </span>
+            )}
           </div>
-          <ol className="plan">
-            {agent.plan.map((p, i) => (
-              <li key={i} className={"plan-step " + p.state}>
-                <span className="plan-mark">
-                  {p.state === "done" ? "✓" : p.state === "now" ? "▸" : "·"}
-                </span>
-                {p.text}
-              </li>
-            ))}
-          </ol>
+          {agent.plan.length > 0 ? (
+            <ol className="plan">
+              {agent.plan.map((p, i) => (
+                <li key={i} className={"plan-step " + p.state}>
+                  <span className="plan-mark">
+                    {p.state === "done" ? "✓" : p.state === "now" ? "▸" : "·"}
+                  </span>
+                  {p.text}
+                </li>
+              ))}
+            </ol>
+          ) : (
+            // Not "0/0" (a misleading fraction) or a blank <ol> — plan steps
+            // only ever come from Claude's task-tracking tools today, so an
+            // empty array is either a run that hasn't broken its work down
+            // yet OR a vendor that never reports one; this message is honest
+            // either way instead of implying one's on its way.
+            <p className="plan-empty">No step-by-step plan for this run.</p>
+          )}
           <div className="panel-head">
             MODIFIED MODULES <span className="panel-sub">{agent.modules.length}</span>
           </div>

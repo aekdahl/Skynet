@@ -24,7 +24,7 @@ import {
   oneShotTextStream,
 } from "@skynet/runner-sdk/claude";
 import { buildUnifiedDiff } from "./diff.js";
-import { KEY_DOCS, MAX_DOC_CHARS, ROADMAP_PATHS, contentHash, listProjectRoot, readProjectDoc, readProjectDocFromCandidates } from "./docs.js";
+import { KEY_DOCS, MAX_DOC_CHARS, contentHash, listProjectRoot, readProjectDoc, resolveRoadmapDoc } from "./docs.js";
 import { secretService } from "../secrets/index.js";
 import { settingsContext } from "../settings/env-settings.js";
 import type { Store } from "../store/store.js";
@@ -67,9 +67,11 @@ const SYSTEM =
   '  {"kind":"set_task_feature","taskId":"<id>","featureId":"<feature id, or null to unlink>"}\n' +
   '  {"kind":"set_feature_milestone","featureId":"<feature id>","milestoneId":"<milestone id, or null to detach>"}\n' +
   '  {"kind":"edit_roadmap","path":"<the ROADMAP.md path shown in REPO CONTENT>","content":"<the ENTIRE new file>"}\n' +
+  '  {"kind":"set_roadmap_path","path":"<repo-relative path to the real roadmap doc>"}\n' +
   "Notes on edit_roadmap: only propose this when the operator explicitly asks to change the roadmap DOC (ROADMAP.md) — NOT for add_feature/add_milestone, which are unrelated task-grouping records, not the file. " +
   "`content` MUST be the complete file: reproduce every unchanged line verbatim, and change only what the operator asked for — no reformatting, no fixing unrelated typos — so the diff the operator reviews shows exactly the intended edit and nothing else. " +
   "`path` must be exactly the ROADMAP.md path shown under REPO CONTENT; if no roadmap doc was shown there, say so instead of guessing a path or inventing content.\n" +
+  "Notes on set_roadmap_path: the Roadmap tab only ever looks at ROADMAP.md or docs/ROADMAP.md by default; if PROJECT STATUS shows no roadmap doc AND the operator tells you the real file (e.g. \"it's actually PLAN.md\" or \"docs/product-roadmap.md\"), propose this to point the tab at it — this only changes WHERE the tab reads from, it never edits file content (use edit_roadmap for that, once the path is set). Only use the exact path the operator named — never guess or invent one they didn't say.\n" +
   "Notes on the roadmap actions (features + milestones): a FEATURE groups tasks; a MILESTONE is a dated release/checkpoint that features roll up into — that's a separate, DB-tracked roadmap grouping, distinct from the ROADMAP.md file edit_roadmap edits. " +
   "Use the feature ids from the FEATURES list and milestone ids from the MILESTONES list in PROJECT STATUS; if the operator names one that isn't listed, propose add_feature/add_milestone to create it (you can create it and link in the same batch), and never invent an id. " +
   "For `targetAt` prefer an epoch-ms timestamp for the date the operator gives.\n" +
@@ -129,7 +131,8 @@ export type ProjectActionKind =
   | "add_milestone"
   | "set_task_feature"
   | "set_feature_milestone"
-  | "edit_roadmap";
+  | "edit_roadmap"
+  | "set_roadmap_path";
 
 export interface AssistantAction {
   kind: ProjectActionKind;
@@ -419,6 +422,15 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
         summary: `Update ${path} — ${add} added, ${del} removed line${add + del === 1 ? "" : "s"}`,
       };
     }
+    case "set_roadmap_path": {
+      // Doesn't require ctx.roadmap — this is exactly the recovery for when
+      // it's null (no doc at the default candidates). Not existence-checked
+      // here (no repo access at validation time — see docs.ts's PURE contract
+      // this validator follows); a wrong path just shows "not found" again on
+      // the Roadmap tab, the same honest failure a human typing one in gets.
+      const path = str(o.path);
+      return path ? { kind, path, summary: `Point the Roadmap tab at ${path}` } : null;
+    }
     default:
       return null;
   }
@@ -649,7 +661,7 @@ export async function prepareStewardCall(
   // binding, so edit_roadmap always has the real current file to diff against
   // even when the local tool-loop path (below) is what actually answers the
   // question. Best-effort: a read failure just means no edit_roadmap this turn.
-  const roadmapDoc = await readProjectDocFromCandidates(workspaceId, project, ROADMAP_PATHS).catch(() => null);
+  const roadmapDoc = await resolveRoadmapDoc(workspaceId, project).catch(() => null);
   const actionCtx: ProjectActionContext = {
     project: { id: project.id, name: project.name },
     tasks: projectTasks.map((t) => ({ id: t.id, text: t.text, state: t.state })),

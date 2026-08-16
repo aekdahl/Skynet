@@ -18,10 +18,20 @@
 // Auth: the Copilot CLI needs a signed-in `gh`/Copilot subscription (or
 // GH_TOKEN). When the binary is missing or unauthenticated the runner degrades
 // cleanly — it surfaces the reason and completes, so the lifecycle never hangs.
+//
+// Opt-in browser tooling (spec.browser): unlike Cursor/Gemini, the Copilot CLI
+// takes MCP config as a real per-invocation flag — `--additional-mcp-config
+// <json>` (verified live against @github/copilot 1.0.80: --help says it
+// "augments config from ~/.copilot/mcp-config.json for this session", i.e.
+// session-scoped, no file ever written). Same {mcpServers:{...}} shape every
+// other vendor's config uses. Tool calls from it fall through the CLI's
+// existing generic APPROVAL_PROMPT match below — same live gate as any other
+// tool, no special-casing needed.
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
+import { BROWSER_MCP_NAME, browserMcpServerSpec } from "./cli-runner.js";
 import type {
   HitlRaise,
   RunnerEvents,
@@ -33,6 +43,28 @@ import type {
 const COPILOT_BIN = process.env.SKYNET_COPILOT_BIN || "copilot";
 
 const mapModel = (m: string): string | undefined => (m.trim() ? m.trim() : undefined);
+
+/** Pure argv builder for one `copilot -p` turn — pulled out of spawnTurn so
+ *  it's directly testable without spawning a real process. */
+export function copilotArgs(
+  spec: StartSpec,
+  prompt: string,
+  opts: { resumeSession: boolean; primary: boolean },
+): string[] {
+  const model = mapModel(spec.model);
+  const args = ["-p", prompt, "--no-color"];
+  if (model) args.push("--model", model);
+  // Continue the prior session for follow-up (chat / decision) turns.
+  if (opts.resumeSession && !opts.primary) args.push("--continue");
+  if (spec.browser) {
+    const { command, args: mcpArgs } = browserMcpServerSpec();
+    args.push(
+      "--additional-mcp-config",
+      JSON.stringify({ mcpServers: { [BROWSER_MCP_NAME]: { command, args: mcpArgs } } }),
+    );
+  }
+  return args;
+}
 
 // Lines that signal the agent is invoking a tool / running a command — used to
 // advance progress and (when they carry a command) to label the HITL gate.
@@ -75,11 +107,7 @@ class CopilotRunnerHandle implements RunnerHandle {
 
   /** Launch one `copilot -p` turn. `primary` turns drive the task to completion. */
   private spawnTurn(prompt: string, primary: boolean) {
-    const model = mapModel(this.spec.model);
-    const args = ["-p", prompt, "--no-color"];
-    if (model) args.push("--model", model);
-    // Continue the prior session for follow-up (chat / decision) turns.
-    if (this.resumeSession && !primary) args.push("--continue");
+    const args = copilotArgs(this.spec, prompt, { resumeSession: this.resumeSession, primary });
 
     let child: ChildProcess;
     try {

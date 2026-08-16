@@ -635,7 +635,7 @@ function FleetAutomationSection() {
             </label>
             <label
               className="proj-autonomy"
-              title="Give Claude runners a real browser (a Playwright/Chrome MCP server) so an agent can reproduce a bug, verify a UI change, or read live docs. Browser actions still gate for approval. Off by default; Claude runners only for now."
+              title="Give agents a real browser (a Playwright/Chrome MCP server) so they can reproduce a bug, verify a UI change, or read live docs. Browser actions still gate for approval. Off by default. Works for Claude, Codex, Gemini, Cursor, and Copilot runners; not Hermes."
             >
               <input
                 type="checkbox"
@@ -685,7 +685,13 @@ function AdvancedSettingsSection() {
 
   if (!open) {
     return (
-      <div className="settings-setup adv-toggle" onClick={() => setOpen(true)} role="button" tabIndex={0}>
+      <div
+        className="settings-setup adv-toggle"
+        onClick={() => setOpen(true)}
+        onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), setOpen(true))}
+        role="button"
+        tabIndex={0}
+      >
         <div className="settings-setup-text">
           <div className="settings-setup-title">Advanced</div>
           <div className="settings-setup-sub">
