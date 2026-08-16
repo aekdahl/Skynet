@@ -275,6 +275,27 @@ export class Operations {
     return agent;
   }
 
+  /** Fetch one task scoped to the workspace, or throw NotFoundError (404). The
+   *  full-detail counterpart to listTasks — see mcp/summarize.ts for why the
+   *  MCP list tool doesn't just return this shape for every task up front. */
+  async getTask(ws: string, taskId: string): Promise<Task> {
+    const task = await this.store.getTask(taskId);
+    if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    return task;
+  }
+
+  /** Fetch one resolved HITL decision scoped to the workspace, or throw
+   *  NotFoundError (404) — the full-payload (incl. captured diff patch)
+   *  counterpart to listAudit's summarized rows. No dedicated store method for
+   *  a single record (the audit trail is append-only and not typically huge in
+   *  COUNT, just per-record size), so this filters listAudit — fine at
+   *  realistic workspace scale. */
+  async getAuditRecord(ws: string, hitlId: string): Promise<AuditRecord> {
+    const record = (await this.store.listAudit(ws)).find((r) => r.hitlId === hitlId);
+    if (!record) throw new NotFoundError("AuditRecord");
+    return record;
+  }
+
   /** Fetch a project scoped to the workspace, or throw NotFoundError (404). */
   async getProject(ws: string, projectId: string): Promise<Project> {
     const project = await this.store.getProject(projectId);
@@ -343,10 +364,12 @@ export class Operations {
       at: now(),
     };
     // Capture the real diff into the audit record now, while the worktree still
-    // exists — it's retired once the branch merges, so a diff/merge decision
-    // can't be re-fetched afterward. Best-effort; the summary always remains.
+    // exists — it's retired once the branch merges, so a diff/merge/verifier
+    // decision can't be re-fetched afterward. Best-effort; the summary always
+    // remains. (A verifier gate's agent worktree is still around — only the
+    // scratch INTEGRATION worktree the check ran in was torn down.)
     let capturedDiff: CapturedDiff | undefined;
-    if (item.kind === "diff" || item.kind === "merge") {
+    if (item.kind === "diff" || item.kind === "merge" || item.kind === "verifier") {
       const d = await this.orchestrator.runDiff(item.runId).catch(() => null);
       if (d && (d.patch || d.files.length > 0)) capturedDiff = { patch: d.patch, files: d.files };
     }
@@ -562,6 +585,8 @@ export class Operations {
       syncSourceStatus: !!(repo && input.importGithubIssues),
       // Optional: stack this project's runs/PRs onto a branch; else the global default.
       baseBranch: input.baseBranch?.trim() || null,
+      // Verifier gate command is set later in project settings, else the global default.
+      checkCmd: null,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
@@ -1168,6 +1193,7 @@ export class Operations {
       autoProvisioned: false, // an operator added this — the idle reaper leaves it alone
       canReview: true, // reviewer-eligible by default (never reviews its own runs)
       label: input.label?.trim() || null, // optional grouping bucket (empty → ungrouped)
+      role: "worker", // no manager provisioning exists yet — every runner is a worker
     };
     return this.hub.upsertAgent(runner);
   }

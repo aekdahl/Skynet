@@ -184,6 +184,7 @@ export class Hub {
         options: item.options,
         recommended: item.recommended,
         diff: item.diff,
+        output: item.output,
       },
     });
     // Only publish `resolved` — a `raised` event here would ping Telegram/push.
@@ -253,9 +254,10 @@ export class Hub {
         options: item.options,
         recommended: item.recommended,
         diff: item.diff,
+        output: item.output,
         // The real change reviewed, captured at decision time — the worktree is
         // retired after merge, so the audit can't re-fetch it later. Only present
-        // for diff/merge decisions; the patch is size-capped upstream.
+        // for diff/merge/verifier decisions; the patch is size-capped upstream.
         files: capturedDiff?.files,
         patch: capturedDiff?.patch,
       },

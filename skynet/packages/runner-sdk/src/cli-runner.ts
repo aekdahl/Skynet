@@ -11,7 +11,7 @@
 // when the binary or auth is missing — lives here once. This file is internal:
 // only ./codex and ./gemini are exported as package subpaths.
 
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution, Usage } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
@@ -35,6 +35,7 @@ export type CliEvent =
   | { kind: "chat"; text: string } // assistant prose (reply to a `message()`)
   | { kind: "approval"; raise: HitlRaise } // blocked on a human → HITL gate
   | { kind: "usage"; usage: Usage } // token/cost totals the CLI reported
+  | { kind: "delta"; text: string } // token-level "typing" chunk — live preview only, never persisted itself (see RunnerEvents.onLogDelta)
   | { kind: "ignore" }; // noise we deliberately drop
 
 /**
@@ -86,9 +87,26 @@ export interface CliVendor {
   /** The initial prompt to write to stdin once spawned, or null if the prompt
    *  is passed entirely via argv. */
   initialStdin?(spec: StartSpec): string | null;
-  /** Map one stdout line to a neutral event. Throw-safe: the base falls back to
-   *  logging the raw line if this throws. */
-  parseLine(line: string, ctx: ParseCtx): CliEvent;
+  /**
+   * True when this vendor's non-interactive process hangs indefinitely on an
+   * OPEN stdin pipe — Node's `spawn()` default. Verified live for OpenCode: its
+   * `run` command completes instantly when invoked from a shell (stdin
+   * inherited/already closed) but hangs producing zero output when spawned with
+   * Node's default piped stdio, and completes instantly again once stdin is
+   * closed (`stdio: ["ignore", …]`) at spawn time. Unset/false preserves every
+   * other vendor's existing behavior.
+   */
+  readonly closeStdin?: boolean;
+  /**
+   * Map one stdout line to a neutral event, or several — a vendor whose wire
+   * protocol has no distinct "message complete" marker (see gemini.ts) needs to
+   * flush a buffered `delta` run as a real `chat`/`log` line the moment the NEXT
+   * line's event closes it out, and one stdout line can only produce one parsed
+   * moment in time, not two independent ones later. Most vendors just return a
+   * single event. Throw-safe: the base falls back to logging the raw line if
+   * this throws.
+   */
+  parseLine(line: string, ctx: ParseCtx): CliEvent | CliEvent[];
   /** Serialize an operator decision for the CLI's stdin. Return null when the
    *  CLI can't accept a mid-run decision (the base then just unblocks + logs). */
   encodeDecision(decision: Resolution | undefined, ctx: ParseCtx): string | null;
@@ -99,7 +117,7 @@ export interface CliVendor {
 class CliRunnerHandle implements RunnerHandle {
   readonly runId: string;
   readonly provider: ProviderId;
-  private child?: ChildProcessWithoutNullStreams;
+  private child?: ChildProcess;
   private gateOpen = false;
   private pendingChat = false;
   // Informational notes queued via `inform()`, not yet ridden out on a real
@@ -134,12 +152,24 @@ class CliRunnerHandle implements RunnerHandle {
     // and a sandbox tool is available; otherwise runs the vendor bin directly.
     const wrapped = wrapForSandbox(this.vendor.bin, this.vendor.buildArgs(this.spec), { cwd });
     if (wrapped.note) this.events.onLog(this.runId, wrapped.note);
-    let child: ChildProcessWithoutNullStreams;
+    let child: ChildProcess;
     try {
       child = spawn(wrapped.bin, wrapped.args, {
         cwd,
-        env: { ...process.env, ...(this.vendor.env?.(this.spec) ?? {}) },
-        // Default stdio is "pipe" for all three streams.
+        // `spawn`'s `cwd` option changes the child's REAL working directory but
+        // never touches the inherited `PWD` env var — it stays whatever the
+        // Skynet server process itself was launched from. Verified live: a
+        // Bun-compiled vendor binary (OpenCode) resolves its own project
+        // directory from `PWD` rather than the OS cwd, so a stale inherited
+        // `PWD` silently pointed it at the SERVER's launch directory instead of
+        // the agent's worktree — writing real files there instead of failing
+        // loudly. Overriding PWD to match `cwd` here is strictly more correct
+        // for every vendor, not just the one that surfaced the bug.
+        env: { ...process.env, PWD: cwd, ...(this.vendor.env?.(this.spec) ?? {}) },
+        // Default stdio is "pipe" for all three streams — except a vendor that
+        // opts into closeStdin (see CliVendor), whose stdin is closed at spawn
+        // time instead (stdout/stderr stay piped either way).
+        ...(this.vendor.closeStdin ? { stdio: ["ignore", "pipe", "pipe"] as const } : {}),
       });
     } catch (err) {
       this.fallback(`could not launch ${this.vendor.bin}: ${(err as Error).message}. ${this.vendor.installHint}`);
@@ -163,8 +193,9 @@ class CliRunnerHandle implements RunnerHandle {
       this.fallback(`${this.vendor.bin} unavailable: ${(err as Error).message}. ${this.vendor.installHint}`),
     );
 
-    createInterface({ input: child.stdout }).on("line", (line) => this.onLine(line));
-    createInterface({ input: child.stderr }).on("line", (line) => {
+    // stdout/stderr are always piped (only stdin's mode varies, see above).
+    createInterface({ input: child.stdout! }).on("line", (line) => this.onLine(line));
+    createInterface({ input: child.stderr! }).on("line", (line) => {
       this.stderrTail.push(line);
       if (this.stderrTail.length > 12) this.stderrTail.shift();
     });
@@ -188,12 +219,17 @@ class CliRunnerHandle implements RunnerHandle {
     this.bumpIdle(); // stdout activity = progress → reset the stall watchdog
     const line = raw.trimEnd();
     if (!line) return;
-    let ev: CliEvent;
+    let evs: CliEvent[];
     try {
-      ev = this.vendor.parseLine(line, this.ctx);
+      const parsed = this.vendor.parseLine(line, this.ctx);
+      evs = Array.isArray(parsed) ? parsed : [parsed];
     } catch {
-      ev = { kind: "log", line };
+      evs = [{ kind: "log", line }];
     }
+    for (const ev of evs) this.applyEvent(ev);
+  }
+
+  private applyEvent(ev: CliEvent) {
     switch (ev.kind) {
       case "log":
         this.events.onLog(this.runId, ev.line);
@@ -217,6 +253,9 @@ class CliRunnerHandle implements RunnerHandle {
         break;
       case "usage":
         this.events.onUsage?.(this.runId, ev.usage);
+        break;
+      case "delta":
+        this.events.onLogDelta?.(this.runId, ev.text);
         break;
       case "ignore":
         break;
@@ -346,7 +385,7 @@ class CliRunnerHandle implements RunnerHandle {
     const child = this.child;
     if (!child || child.killed) return;
     try {
-      child.stdin.end();
+      child.stdin?.end();
     } catch {
       /* ignore */
     }

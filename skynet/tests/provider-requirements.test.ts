@@ -30,6 +30,15 @@ describe("providerRequirements", () => {
     expect(providerRequirements("copilot").cliLogin).toBe(true);
   });
 
+  it("marks opencode as a CLI needing the opencode binary + a provider key (Anthropic-first)", () => {
+    const r = providerRequirements("opencode");
+    expect(r.runtime).toBe("cli");
+    expect(r.bin).toBe("opencode");
+    expect(r.authEnvVars[0]).toBe("ANTHROPIC_API_KEY");
+    expect(r.cliLogin).toBe(false);
+    expect(r.docsUrl).toContain("opencode");
+  });
+
   it("attaches binOnPath per provider (null for the SDK provider)", () => {
     const augmented = withProviderRequirements([
       { id: "claude", name: "Claude", glyph: "✱", color: "#000", models: ["opus-4.8"] },

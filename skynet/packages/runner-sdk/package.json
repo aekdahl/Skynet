@@ -38,6 +38,10 @@
       "types": "./dist/hermes.d.ts",
       "default": "./dist/hermes.js"
     },
+    "./opencode": {
+      "types": "./dist/opencode.d.ts",
+      "default": "./dist/opencode.js"
+    },
     "./sandbox": {
       "types": "./dist/sandbox.d.ts",
       "default": "./dist/sandbox.js"

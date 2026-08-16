@@ -11,7 +11,7 @@
 // Same test-hook seam as claude-runner-retry.test.ts: pnpm gives runner-sdk
 // its own copy of the SDK, so a plain vi.mock wouldn't reach claude.ts's
 // import — __setClaudeTestHooks swaps the query() implementation instead.
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { ClaudeRunnerProvider, __setClaudeTestHooks } from "../packages/runner-sdk/src/claude.js";
 import type { RunnerEvents } from "../packages/runner-sdk/src/types.js";
 
@@ -57,6 +57,14 @@ describe("ClaudeRunnerHandle.inform", () => {
     const provider = new ClaudeRunnerProvider();
     const handle = await provider.start(spec, fakeEvents());
     expect(handle.inform).toBeTypeOf("function");
+
+    // start() now returns before query() is actually called — the main run
+    // is gated behind an async repo-hook scan (launch() awaits scanRepoHooks()
+    // before calling queryImpl(), fire-and-forget from the constructor; see
+    // claude.ts). Wait for the real call, same pattern as
+    // claude-runner-hooks.test.ts, rather than assuming it's synchronous with
+    // start() resolving.
+    await vi.waitFor(() => expect(queryCalls.length).toBeGreaterThan(0), { timeout: 2000, interval: 20 });
 
     // Drain the input stream we captured — one shared iterator, pulled in
     // order, exactly like the real query() would consume it.
