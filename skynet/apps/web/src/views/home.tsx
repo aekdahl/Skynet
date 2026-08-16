@@ -67,6 +67,12 @@ function GetStarted({
   const [goal, setGoal] = useState("");
   const [repo, setRepo] = useState("");
   const [repoPath, setRepoPath] = useState("");
+  // Chat-only: no worktree, no diff review, no merge — an agent just runs and
+  // reports back. Lets a brand-new operator try Skynet with zero git literacy
+  // instead of connecting a repo first. Explicit opt-in (a checkbox), not just
+  // a side effect of having nothing to pick — see the disabled/reason logic
+  // below, which no longer depends on `hasRepos` once this is checked.
+  const [chatOnly, setChatOnly] = useState(false);
   const repos = useConnectedRepos();
   const hasRepos = (repos?.length ?? 0) > 0;
   return (
@@ -123,21 +129,33 @@ function GetStarted({
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
             />
-            <div className="rp-label">Local folder <span className="rp-hint">· agents work here</span></div>
-            <FolderPicker value={repoPath} onChange={setRepoPath} />
-            {!repoPath && <RepoPicker repos={repos} value={repo} onChange={setRepo} />}
+            {!chatOnly && (
+              <>
+                <div className="rp-label">Local folder <span className="rp-hint">· agents work here</span></div>
+                <FolderPicker value={repoPath} onChange={setRepoPath} />
+                {!repoPath && <RepoPicker repos={repos} value={repo} onChange={setRepo} />}
+              </>
+            )}
+            <label className="gs-chatonly">
+              <input
+                type="checkbox"
+                checked={chatOnly}
+                onChange={(e) => setChatOnly(e.target.checked)}
+              />
+              No repo — chat only <span className="rp-hint">· the agent just runs and reports back; no diff review, no merge</span>
+            </label>
             <div className="qx-row">
               <PrimaryButton
-                disabled={!name.trim() || (!repoPath && hasRepos && !repo)}
+                disabled={!name.trim() || (!chatOnly && !repoPath && hasRepos && !repo)}
                 reason={
                   !name.trim()
                     ? "Name your project to continue."
-                    : "Pick a local folder or a connected repo."
+                    : "Pick a local folder or a connected repo, or check “No repo — chat only”."
                 }
                 onClick={() =>
                   onCreate(name.trim(), goal.trim() || "No goal set yet.", {
-                    repo: repoPath ? undefined : repo || undefined,
-                    repoPath: repoPath || undefined,
+                    repo: chatOnly || repoPath ? undefined : repo || undefined,
+                    repoPath: chatOnly ? undefined : repoPath || undefined,
                   })
                 }
               >

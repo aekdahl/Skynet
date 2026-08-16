@@ -12,7 +12,9 @@ import {
   type RunnerHandle,
   type RunnerProvider,
 } from "@skynet/runner-sdk";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
 import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
@@ -42,6 +44,11 @@ interface LiveAgent {
   /** The git backend (worktrees + merge queue) this agent is integrating into,
    *  resolved from its project's repo. Unset in the Phase 0 / no-repo flow. */
   git?: GitContext;
+  /** A private per-run tmp dir this orchestrator created for a chat-only run
+   *  (no bound repo, no operator-configured SKYNET_RUNNER_CWD) — mutually
+   *  exclusive with `git`. Removed on completion/failure/stop; never set for a
+   *  git-backed run or one using the operator's own shared runnerCwd. */
+  scratchCwd?: string;
   /** Set when a question this agent raised went unanswered and was auto-resolved
    *  by the no-operator-answer timeout. If it then finishes with no change, it's
    *  surfaced as needs-attention rather than a silent "done". */
@@ -508,6 +515,9 @@ export class Orchestrator {
     this.escalations.delete(runId);
     // A successful turn proves the run's key works — clear any breaker on it.
     this.clearDepletedKey(await this.store.getRun(runId).catch(() => undefined));
+    // Chat-only run (no bound repo — see LiveAgent.scratchCwd): mutually
+    // exclusive with `git`, so this never races the diff/merge branches below.
+    await this.releaseScratchCwd(live?.scratchCwd);
 
     // Real loop: the agent ran in an isolated worktree → commit its diff onto
     // its branch and raise a review. Approving it enqueues the branch onto the
@@ -630,6 +640,7 @@ export class Orchestrator {
     await this.hub.runStatus(runId, "review"); // visible needs-attention, NOT "done"
     await this.moveTaskToReview(live?.taskId); // don't strand the card in Ongoing
     if (live?.git) await live.git.worktrees.retire(runId).catch(() => undefined);
+    await this.releaseScratchCwd(live?.scratchCwd);
     this.live.delete(runId);
   }
 
@@ -1009,21 +1020,46 @@ export class Orchestrator {
 
   /**
    * Provision the runner's working directory. Without an integration repo this
-   * is the shared config.runnerCwd (Phase 0). With one configured, isolation is
-   * REQUIRED: a fresh worktree on `branch`. If that fails we throw rather than
-   * silently dropping runs into a shared dir where their branches would
-   * collide — the caller surfaces it as a failed agent.
+   * is the operator-configured config.runnerCwd (Phase 0) when set, else a
+   * fresh, isolated per-run scratch dir (chat-only mode: a project with no
+   * bound repo) — never the server process's own cwd, and never shared with
+   * another run. With a repo configured, isolation is REQUIRED: a fresh
+   * worktree on `branch`. If that fails we throw rather than silently dropping
+   * runs into a shared dir where their branches would collide — the caller
+   * surfaces it as a failed agent.
    */
   private async provisionCwd(
     git: GitContext | undefined,
     runId: string,
     branch: string,
     baseRef?: string,
-  ): Promise<{ cwd: string | undefined; baseRef?: string }> {
-    if (!git) return { cwd: config.runnerCwd };
+  ): Promise<{ cwd: string | undefined; baseRef?: string; scratchCwd?: string }> {
+    if (!git) {
+      if (config.runnerCwd) return { cwd: config.runnerCwd };
+      const scratchCwd = await this.scratchCwdFor(runId);
+      return { cwd: scratchCwd, scratchCwd };
+    }
     const prov = await git.worktrees.provision(runId, branch, { baseRef });
     await this.hub.runLog(runId, `worktree ready on ${branch} (from ${prov.baseRef})`);
     return { cwd: prov.cwd, baseRef: prov.baseRef };
+  }
+
+  /** A private, per-run scratch directory for a chat-only run (no bound repo,
+   *  no operator-configured SKYNET_RUNNER_CWD). Isolates the agent's file
+   *  access to a throwaway tmp dir instead of falling back to the server
+   *  process's own working directory — the previous behavior when `cwd` was
+   *  left `undefined` (every runner-sdk provider defaults an unset cwd to
+   *  `process.cwd()`). Caller is responsible for removing it once the run
+   *  ends (see the `scratchCwd` cleanup at each `live` teardown site). */
+  private async scratchCwdFor(runId: string): Promise<string> {
+    const safe = runId.replace(/[^a-zA-Z0-9._-]/g, "_");
+    return mkdtemp(join(tmpdir(), `skynet-chat-${safe}-`));
+  }
+
+  /** Best-effort removal of a chat-only run's scratch dir, if it had one. */
+  private async releaseScratchCwd(scratchCwd: string | undefined): Promise<void> {
+    if (!scratchCwd) return;
+    await rm(scratchCwd, { recursive: true, force: true }).catch(() => undefined);
   }
 
   // ── assignTask ────────────────────────────────────────────────────────────
@@ -1122,11 +1158,15 @@ export class Orchestrator {
     // Git backend for this project's repo (local repoPath, else global) — drives
     // the isolated worktree + which merge queue this agent integrates into.
     const git = this.gitContextFor(project);
+    let scratchCwd: string | undefined;
     try {
       // Isolated worktree cut from LATEST main: provisionCwd fetches origin and
       // branches from origin/<base> (no baseRef passed), so every run starts on
       // the newest human-merged state — not a stale local integration branch.
-      const { cwd, baseRef } = await this.provisionCwd(git, runId, branch);
+      // With no bound repo (chat-only), this instead mints a private scratch dir.
+      const prov = await this.provisionCwd(git, runId, branch);
+      const { cwd, baseRef } = prov;
+      scratchCwd = prov.scratchCwd;
       // Inject this workspace's provider key (env fallback when none is stored).
       const apiKey = await secretService.resolve(project.workspaceId, runner.credentialId ?? runner.provider);
       // The agent gets the full brief: the short name plus the longer
@@ -1140,8 +1180,9 @@ export class Orchestrator {
         { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, browser: browserTools, planModeGate: project.planModeGate },
         this.events(),
       );
-      this.live.set(runId, { handle, agentId: runner.id, taskId, branch, baseRef, git });
+      this.live.set(runId, { handle, agentId: runner.id, taskId, branch, baseRef, git, scratchCwd });
     } catch (err) {
+      await this.releaseScratchCwd(scratchCwd);
       await this.failStartup(runId, runner.id, (err as Error).message);
       throw err;
     }
@@ -1198,9 +1239,12 @@ export class Orchestrator {
     if (project) await this.hub.upsertProject({ ...project, runIds: [...project.runIds, runId] });
 
     const git = this.gitContextFor(project);
+    let scratchCwd: string | undefined;
     try {
       // A fork branches from its parent (family-internal integration, §7).
-      const { cwd, baseRef } = await this.provisionCwd(git, runId, agent.branch, parent.branch);
+      const prov = await this.provisionCwd(git, runId, agent.branch, parent.branch);
+      const { cwd, baseRef } = prov;
+      scratchCwd = prov.scratchCwd;
       const apiKey = await secretService.resolve(parent.workspaceId, runner.credentialId ?? runner.provider);
       const handle = await provider.start(
         {
@@ -1216,8 +1260,9 @@ export class Orchestrator {
         },
         this.events(),
       );
-      this.live.set(runId, { handle, agentId: runner.id, taskId: null, branch: agent.branch, baseRef, git });
+      this.live.set(runId, { handle, agentId: runner.id, taskId: null, branch: agent.branch, baseRef, git, scratchCwd });
     } catch (err) {
+      await this.releaseScratchCwd(scratchCwd);
       await this.failStartup(runId, runner.id, (err as Error).message);
       throw err;
     }
@@ -1580,6 +1625,7 @@ export class Orchestrator {
       this.live.delete(runId);
       const git = this.escalations.get(runId)?.git ?? live?.git;
       if (git) await git.worktrees.retire(runId).catch(() => undefined);
+      await this.releaseScratchCwd(live?.scratchCwd);
       this.escalations.delete(runId);
       this.failCounts.delete(runId);
       await this.hub.runStatus(runId, "done");
@@ -2280,6 +2326,7 @@ export class Orchestrator {
     await this.freeRunner(live?.agentId ?? agent.agentId ?? null);
     const ctx = live?.git ?? (await this.gitContextForAgent(runId).catch(() => undefined));
     if (ctx) await ctx.worktrees.retire(runId).catch(() => undefined);
+    await this.releaseScratchCwd(live?.scratchCwd);
     await this.hub.runLog(runId, reason);
     this.live.delete(runId);
   }

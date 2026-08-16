@@ -1269,6 +1269,14 @@ export function ProjectView({
                 ⎇ stacks onto <b>{project.baseBranch}</b> · runs branch from it &amp; PR into it
               </div>
             )}
+            {!hasRepo && (
+              <div
+                className="mono proj-repo-line proj-chatonly-line"
+                title="No worktree, no diff review, no merge — an agent just runs and reports back."
+              >
+                💬 chat only — no repo connected
+              </div>
+            )}
             {/* Repo bound but no local checkout → offer a server-side clone so
                 agents have code to work on (needed on a headless/GCP instance;
                 also handy on desktop instead of the folder picker). */}

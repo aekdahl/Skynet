@@ -438,8 +438,21 @@ features below are white space.)
 - [ ] **Design tokens published** (type scale, 8px rhythm, motion behind `prefers-reduced-motion`, one focus ring, semantic palette kept separate from the accent); **a11y pass** (icon-button labels, visible focus, keyboard walkthrough of assign→decide→merge); explicit **Inbox-first mobile/PWA shell**.
 
 **Easier to use than anyone else:**
-- [ ] **Repo-optional / chat-only mode** — a runner with **no worktree and no merge**; try Skynet in 30s,
-  no git literacy. Widens the funnel (also in Considerations).
+- [x] **Repo-optional / chat-only mode** — a runner with **no worktree and no merge**; try Skynet in 30s,
+  no git literacy. *(Landed: this was already ~90% built as orchestrator.ts's own pre-existing "Phase 0"
+  path — a project with no bound repo (`gitContextFor` resolves `undefined`) already skipped
+  `WorktreeProvisioner` entirely and completed via the no-diff/no-merge branch in `complete()`; project
+  creation and onboarding never hard-required a repo either. What actually shipped: (1) a real safety
+  fix — a chat-only run's `cwd` previously fell through to `config.runnerCwd` (`undefined` by default)
+  → every runner-sdk provider's own fallback to `process.cwd()`, i.e. the **server's own working
+  directory** — replaced with a private per-run scratch tmp dir (`scratchCwdFor`/`LiveAgent.scratchCwd`),
+  minted before start and removed on every teardown path (complete/fail/escalation-reject/stop); (2) an
+  explicit, labeled UI choice — a "No repo — chat only" checkbox on Home's `GetStarted` form and a
+  matching "Chat only" tab on `NewProjectCard` (previously an empty local-folder field silently, silently
+  fell through to no-repo with zero explanation) — plus a "💬 chat only — no repo connected" line on the
+  project header so it's never ambiguous why diff-review/merge never show up. Verified live end-to-end
+  (real browser, real Cursor CLI attempt — auth failure correctly routed through the existing `fail()`
+  path, scratch dir confirmed created then removed) and via `tests/chat-only-run.test.ts`.)*
 - [x] **Task linter v0 (assistive)** — *pulled forward from v5:* "vague task → touches 3 modules, split into
   3?"; "no 'done' defined?". The ease differentiator **nobody has** — lowers the skill floor, not just setup.
   *(Landed: a background, fire-and-forget consult right after `createTask`/text-editing `updateTask` — same
@@ -654,9 +667,6 @@ memory (v4) + thin runner adapters.
   a chip even renders) is the part that actually matters and stays regardless of transport; swapping
   the wire format later is a no-op to that boundary. Not chasing this now — "wrap, don't rebuild" cuts
   against adopting a nascent protocol for a problem our envelope already solves.
-- **Repo-optional / chat-only mode** — a repo should *not* be hard-required. A "just chat with an
-  agent" mode is mechanically a runner with **no worktree and no merge**; it widens the funnel to try
-  Skynet. Not the core money bet, but cheap to allow.
 - **Cross-repo / multi-repo atomic changes** — a coordinated change spanning several repos. A gap **no
   local tool** fills today (cloud-only: Oz/Devin); a bigger future bet, flagged so we don't foreclose it.
 - **No-telemetry / keys-never-leave-host guarantee** — make the local-first privacy stance an *explicit,
