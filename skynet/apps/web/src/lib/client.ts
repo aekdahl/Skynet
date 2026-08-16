@@ -213,6 +213,16 @@ export function sendAgentMessage(id: string, text: string) {
   return req<{ reply: string }>("POST", `/api/runs/${id}/messages`, { text });
 }
 
+// `inform` — mass-select runs (explicit ids and/or a whole project's live
+// runs) + a note that rides each one's next prompt, no extra turn.
+export function informRuns(body: { note: string; runIds?: string[]; projectId?: string }) {
+  return req<{ informed: string[]; skipped: Array<{ runId: string; reason: string }> }>(
+    "POST",
+    "/api/runs/inform",
+    body,
+  );
+}
+
 /**
  * Streaming chat: POST the question and read the text/plain reply as it streams,
  * calling `onDelta` with each chunk. Resolves with the full reply. Falls back to
@@ -321,6 +331,15 @@ export function reworkPr(runId: string, guidance: string, comment?: string) {
 }
 export function dismissPr(runId: string) {
   return req<unknown>("POST", `/api/merges/${runId}/dismiss`);
+}
+// Feature-scoped branch batching's aggregate PR — one per completed Feature
+// (see orchestrator.ts's checkFeatureCompletion), not per task. Only merge +
+// dismiss are supported — no rework/update-branch for a batch.
+export function mergeFeaturePr(featureId: string, method: "merge" | "squash" | "rebase" = "squash") {
+  return req<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }>("POST", `/api/features/${featureId}/pr/merge`, { method });
+}
+export function dismissFeaturePr(featureId: string) {
+  return req<unknown>("POST", `/api/features/${featureId}/pr/dismiss`);
 }
 export function pauseAgent(id: string) {
   return req<unknown>("POST", `/api/runs/${id}/pause`);
@@ -496,6 +515,11 @@ export function updateProject(
     syncSourceStatus?: boolean;
     // Branch to stack runs/PRs onto; null clears back to the global default.
     baseBranch?: string | null;
+    // Where the Roadmap tab reads its doc from; null clears back to the
+    // default ROADMAP.md/docs/ROADMAP.md candidates.
+    roadmapPath?: string | null;
+    // Verifier gate command; null clears back to the global default.
+    checkCmd?: string | null;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
@@ -624,7 +648,8 @@ export interface AssistantAction {
     | "add_milestone"
     | "set_task_feature"
     | "set_feature_milestone"
-    | "edit_roadmap";
+    | "edit_roadmap"
+    | "set_roadmap_path";
   summary: string;
   taskId?: string;
   text?: string;

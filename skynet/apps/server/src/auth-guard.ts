@@ -80,7 +80,7 @@ function isExemptMutation(method: string, path: string): boolean {
  * "approver" is reserved for the HITL/merge decision gates it names by name.
  */
 export function requiredScope(method: string, url: string): Scope | null {
-  const path = url.toLowerCase().split("?")[0];
+  const path = url.toLowerCase().split("?")[0] ?? "";
   if (!path.startsWith("/api")) return null; // /mcp: self-gated per tool call
   if (method === "GET" || method === "HEAD") return null;
   if (isExemptMutation(method, path)) return null;

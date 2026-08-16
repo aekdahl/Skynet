@@ -66,9 +66,20 @@ function harness(checkCmd?: string) {
   return { engine, calls, enqueueAndWait };
 }
 
-const req = (runId: string, agentBranch: string): MergeRequest => ({
-  runId, agentBranch, projectId: "payments", workspaceId: "cyberdyne",
+const req = (runId: string, agentBranch: string, featureId?: string): MergeRequest => ({
+  runId, agentBranch, projectId: "payments", workspaceId: "cyberdyne", ...(featureId ? { featureId } : {}),
 });
+
+// Poll a condition until true (short interval — these are in-memory array
+// lengths, not I/O), for asserting on two concurrently-enqueued merges whose
+// completion order isn't determined by the test.
+async function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor: condition never became true");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
 
 describe("MergeEngine", () => {
   it("merges a non-conflicting agent branch onto the integration branch", async () => {
@@ -154,5 +165,124 @@ describe("MergeEngine", () => {
     // Merge commit was reset (HEAD~1) — integration branch tip is the base commit,
     // so the agent's file is not present on it.
     expect(() => git("cat-file", "-e", "skynet/integration/payments:feature.ts")).toThrow();
+  });
+
+  it("MergeRequest.checkCmd (per-project, resolved by the caller) overrides the engine's constructor default", async () => {
+    git("checkout", "-b", "agent/override", "main");
+    commit("feature.ts", "export const z = 3;\n", "add feature");
+    git("checkout", "main");
+
+    // Engine constructed with a PASSING global default...
+    const { calls, enqueueAndWait } = harness("true");
+    // ...but this request's resolved project checkCmd fails — proves the
+    // per-request value wins, not the engine-level one baked in at construction.
+    await enqueueAndWait({ ...req("a-override", "agent/override"), checkCmd: "exit 1" });
+
+    expect(calls.checksFailed).toHaveLength(1);
+    expect(calls.merged).toHaveLength(0);
+  });
+
+  it("MergeRequest.checkCmd falls back to the engine's constructor default when absent", async () => {
+    git("checkout", "-b", "agent/fallback", "main");
+    commit("feature.ts", "export const w = 4;\n", "add feature");
+    git("checkout", "main");
+
+    const { calls, enqueueAndWait } = harness("exit 1"); // global default fails
+    await enqueueAndWait(req("a-fallback", "agent/fallback")); // no per-request override
+
+    expect(calls.checksFailed).toHaveLength(1);
+    expect(calls.merged).toHaveLength(0);
+  });
+});
+
+// Feature-scoped branch batching (ROADMAP.md): tasks under the same Feature
+// merge into a shared `skynet/feature/<id>` branch first, and only once every
+// one is done does that branch merge up into the project's normal integration
+// branch — one PR instead of N. Two tiers, same MergeEngine, distinguished by
+// `MergeRequest.featureId` (destination override) — see `targetBranchFor`.
+describe("MergeEngine — feature-scoped branch batching", () => {
+  it("targetBranchFor resolves to the feature branch when featureId is set, else the project's default", () => {
+    const { engine } = harness();
+    expect(engine.targetBranchFor(req("a", "agent/a", "f-1"))).toBe("skynet/feature/f-1");
+    expect(engine.targetBranchFor(req("a", "agent/a"))).toBe("skynet/integration/payments");
+  });
+
+  it("batches two tasks into a shared feature branch, then merges that branch up into the project's integration branch", async () => {
+    git("checkout", "-b", "agent/task-1", "main");
+    commit("a.ts", "export const a = 1;\n", "task 1");
+    git("checkout", "main");
+    git("checkout", "-b", "agent/task-2", "main");
+    commit("b.ts", "export const b = 2;\n", "task 2");
+    git("checkout", "main");
+
+    const { calls, enqueueAndWait } = harness();
+    // Step 1: both tasks merge into the SAME feature branch (destination
+    // override via featureId) — a normal per-run merge in every other respect.
+    await enqueueAndWait(req("task-1", "agent/task-1", "f-checkout"));
+    await enqueueAndWait(req("task-2", "agent/task-2", "f-checkout"));
+    expect(calls.merged).toHaveLength(2);
+    expect(calls.merged.every((m) => m.branch === "skynet/feature/f-checkout")).toBe(true);
+    expect(git("cat-file", "-t", "skynet/feature/f-checkout:a.ts").trim()).toBe("blob");
+    expect(git("cat-file", "-t", "skynet/feature/f-checkout:b.ts").trim()).toBe("blob");
+    // The project's own integration branch doesn't exist yet — nothing has
+    // targeted it (this is exactly the PR-count reduction: neither task opened
+    // its own PR/merge here).
+    expect(() => git("rev-parse", "--verify", "skynet/integration/payments")).toThrow();
+
+    // Step 2: once every task is done, the feature branch itself merges up —
+    // agentBranch is the feature branch (the SOURCE), featureId unset (the
+    // DESTINATION is the project's normal integration branch).
+    await enqueueAndWait(req("task-2", "skynet/feature/f-checkout")); // anchor runId, any of the batch's own
+    expect(calls.merged).toHaveLength(3);
+    expect(calls.merged[2]!.branch).toBe("skynet/integration/payments");
+    // Both tasks' work landed on the project's integration branch in ONE merge.
+    expect(git("cat-file", "-t", "skynet/integration/payments:a.ts").trim()).toBe("blob");
+    expect(git("cat-file", "-t", "skynet/integration/payments:b.ts").trim()).toBe("blob");
+  });
+
+  it("a conflict merging the feature branch up is reported against the project's integration branch, not the feature branch", async () => {
+    // Set up a real conflict: the project's integration branch and the feature
+    // branch both edit the same file differently.
+    git("checkout", "-b", "skynet/integration/payments", "main");
+    commit("shared.txt", "on main line\n", "integration edits shared");
+    git("checkout", "main");
+    git("checkout", "-b", "skynet/feature/f-conflict", "main");
+    commit("shared.txt", "on feature line\n", "feature edits shared");
+    git("checkout", "main");
+
+    const { calls, enqueueAndWait } = harness();
+    await enqueueAndWait(req("anchor", "skynet/feature/f-conflict"));
+
+    expect(calls.conflict).toHaveLength(1);
+    expect(calls.conflict[0]!.files).toContain("shared.txt");
+    expect(calls.conflict[0]!.req.agentBranch).toBe("skynet/feature/f-conflict");
+  });
+
+  it("two different feature branches merge concurrently without colliding on the same scratch worktree", async () => {
+    // Regression test: scratchFor() used to be keyed by projectId alone, so two
+    // targets under the same project (its integration branch, plus any number
+    // of feature branches) raced on the SAME scratch worktree path. Now keyed
+    // by the target branch — each gets its own chain (enqueue) AND its own
+    // scratch path, so concurrent merges to different feature branches under
+    // the same project can't corrupt each other.
+    git("checkout", "-b", "agent/x", "main");
+    commit("x.ts", "export const x = 1;\n", "task x");
+    git("checkout", "main");
+    git("checkout", "-b", "agent/y", "main");
+    commit("y.ts", "export const y = 1;\n", "task y");
+    git("checkout", "main");
+
+    const { calls, engine } = harness();
+    // Enqueue both WITHOUT awaiting between them — they run concurrently on
+    // separate chains (different target branches), racing in real time.
+    engine.enqueue(req("x", "agent/x", "f-alpha"));
+    engine.enqueue(req("y", "agent/y", "f-beta"));
+    await waitFor(() => calls.merged.length + calls.conflict.length + calls.mergeFailed.length >= 2);
+
+    expect(calls.merged).toHaveLength(2);
+    expect(calls.conflict).toHaveLength(0);
+    expect(calls.mergeFailed).toHaveLength(0);
+    expect(git("cat-file", "-t", "skynet/feature/f-alpha:x.ts").trim()).toBe("blob");
+    expect(git("cat-file", "-t", "skynet/feature/f-beta:y.ts").trim()).toBe("blob");
   });
 });

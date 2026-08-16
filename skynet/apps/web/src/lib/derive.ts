@@ -9,6 +9,7 @@ import type {
   Agent,
   Task,
   TaskState,
+  Feature,
 } from "@skynet/shared";
 
 // ─── time formatting ───────────────────────────────────────────────────────
@@ -172,6 +173,14 @@ export const readyMerges = (runs: TaskRun[]) =>
     .filter((r) => r.pr?.state === "open" && !r.pr.dismissed)
     .sort((a, b) => (b.pr!.openedAt ?? 0) - (a.pr!.openedAt ?? 0));
 
+// Features whose aggregate PR is open and awaiting a human merge decision
+// (feature-scoped branch batching — one PR per completed Feature, not per
+// task). Same shape/sort as readyMerges, over the already-synced store list.
+export const readyFeatureMerges = (features: Feature[]) =>
+  features
+    .filter((f) => f.pr?.state === "open" && !f.pr.dismissed)
+    .sort((a, b) => (b.pr!.openedAt ?? 0) - (a.pr!.openedAt ?? 0));
+
 // ─── runner / fleet derivations ──────────────────────────────────────────────
 
 export const runnerIsBusy = (runner: Agent, runs: TaskRun[]) =>
@@ -263,6 +272,7 @@ export const KIND_META: Record<HitlKind, { label: string; color: string }> = {
   diff: { label: "DIFF REVIEW", color: "var(--ok)" },
   merge: { label: "MERGE CONFLICT", color: "var(--danger)" },
   escalation: { label: "NEEDS HELP", color: "var(--danger)" },
+  verifier: { label: "CHECKS FAILED", color: "var(--danger)" },
 };
 
 export const providerInfo = (

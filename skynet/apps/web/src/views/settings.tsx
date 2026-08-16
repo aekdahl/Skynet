@@ -690,7 +690,13 @@ function AdvancedSettingsSection() {
 
   if (!open) {
     return (
-      <div className="settings-setup adv-toggle" onClick={() => setOpen(true)} role="button" tabIndex={0}>
+      <div
+        className="settings-setup adv-toggle"
+        onClick={() => setOpen(true)}
+        onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), setOpen(true))}
+        role="button"
+        tabIndex={0}
+      >
         <div className="settings-setup-text">
           <div className="settings-setup-title">Advanced</div>
           <div className="settings-setup-sub">

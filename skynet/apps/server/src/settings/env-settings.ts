@@ -53,6 +53,7 @@ export const ENV_FIELDS: EnvField[] = [
   { key: "SKYNET_CURSOR_BIN", group: "Vendor CLI paths", label: "Cursor binary", type: "text", hint: "Path/name of the cursor-agent CLI.", placeholder: "cursor-agent" },
   { key: "SKYNET_COPILOT_BIN", group: "Vendor CLI paths", label: "Copilot binary", type: "text", hint: "Path/name of the Copilot CLI.", placeholder: "copilot" },
   { key: "SKYNET_HERMES_BIN", group: "Vendor CLI paths", label: "Hermes binary", type: "text", hint: "Path/name of the Hermes CLI.", placeholder: "hermes" },
+  { key: "SKYNET_OPENCODE_BIN", group: "Vendor CLI paths", label: "OpenCode binary", type: "text", hint: "Path/name of the OpenCode CLI.", placeholder: "opencode" },
 ];
 
 const FIELD_BY_KEY = new Map(ENV_FIELDS.map((f) => [f.key, f]));
