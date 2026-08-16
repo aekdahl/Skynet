@@ -117,6 +117,18 @@ export interface RunnerHandle {
   message(text: string): Promise<void>;
   stop(): Promise<void>;
   /**
+   * Queue an informational note to ride the run's NEXT prompt/turn — no reply
+   * expected, and critically no extra turn of its own (unlike `message`, which
+   * blocks the session on a live chat round-trip). Optional: a provider that
+   * has no such mechanism just doesn't implement it, and the caller (Orchestrator
+   * .inform) reports the run as skipped rather than faking delivery. Where
+   * implemented: Claude (the Agent SDK's `shouldQuery:false` streaming-input
+   * message — appended to the transcript, merged into whichever real turn comes
+   * next) and the shared CLI runner base (buffered, prepended to the next stdin
+   * write the run would make anyway).
+   */
+  inform?(text: string): Promise<void>;
+  /**
    * Best-effort snapshot of the provider's current session/conversation id —
    * for checkpointing (captured onto the `Checkpoint` record so a later restore
    * can resume it via `StartSpec.resumeSessionId`). Undefined when the provider

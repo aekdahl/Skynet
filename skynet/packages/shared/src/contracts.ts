@@ -356,6 +356,12 @@ export const Project = z.object({
   // (e.g. close/comment the GitHub issue on done). Outward-facing, so off by
   // default. See docs/task-source-sync.md.
   syncSourceStatus: z.boolean().default(false),
+  // Override for where the Roadmap tab reads its doc from, when it isn't at
+  // either default candidate (steward/docs.ts's ROADMAP_PATHS —
+  // "ROADMAP.md"/"docs/ROADMAP.md"). Set by the operator (or Steward,
+  // confirmed) via a "select a file" affordance when the default lookup comes
+  // up empty. null = use the default candidates, unchanged behavior.
+  roadmapPath: z.string().nullable().default(null),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -500,6 +506,15 @@ export const Feature = z.object({
   order: z.number().int().optional(),
   archived: z.boolean().default(false),
   createdAt: Timestamp,
+  // The aggregate PR for this feature's batched tasks — feature-scoped branch
+  // batching (see merge.ts's `targetBranchFor`): tasks under this feature merge
+  // into a shared `skynet/feature/<id>` branch, and once every one is done this
+  // is set to the single PR opened for the whole batch (feature branch → project
+  // base), rather than one PR per task. A dedicated field, not reused per-task
+  // `TaskRun.pr` slots — by the time the aggregate PR opens, every sibling run
+  // has already gone through its own completion/worktree-retire, so writing a
+  // fresh open PR onto those records would leave stale, unmergeable duplicates.
+  pr: PullRequest.nullable().default(null),
 });
 export type Feature = z.infer<typeof Feature>;
 
@@ -604,6 +619,15 @@ export const HitlItem = z.object({
   // System-computed, scannable chips for the decision: the safety classifier's
   // risk reasons (approval) or the conflicting files (merge). Not runner-supplied.
   flags: z.array(z.string()).default([]),
+  // `merge`-kind only, feature-scoped branch batching (merge.ts's `targetBranchFor`):
+  // set when this conflict is merging a FEATURE branch itself UP into the
+  // project's base (once every task under it is done) — retrying on approve
+  // must re-merge THIS ref, never the resolving run's own branch (there's no
+  // single "owning run" for that step, unlike a task merging INTO its feature
+  // branch, which re-derives correctly from the task's own `featureId` on
+  // retry — same as `agent.branch` already does today). Null for every HITL
+  // today — additive, no behavior change to existing records.
+  sourceBranchOverride: z.string().nullable().default(null),
 });
 export type HitlItem = z.infer<typeof HitlItem>;
 
@@ -743,6 +767,17 @@ export type ResolveRequest = z.infer<typeof ResolveRequest>;
 
 export const ChatRequest = z.object({ text: z.string().min(1) });
 
+// `inform` — a third interaction type alongside chat (a real extra turn) and
+// resolve (a HITL decision): a note that rides each targeted run's NEXT prompt
+// at no extra turn — never a fresh round-trip query, never a HITL gate. Select
+// explicit run ids, a whole project's live runs, or both (the two sets union).
+export const InformRequest = z.object({
+  note: z.string().min(1),
+  runIds: z.array(z.string()).default([]),
+  projectId: z.string().optional(),
+});
+export type InformRequest = z.infer<typeof InformRequest>;
+
 // ─── Ready-to-merge actions ──────────────────────────────────────────────────
 /** Merge an open PR from the ready list. `method` = the GitHub merge strategy. */
 export const MergePrRequest = z.object({
@@ -821,6 +856,7 @@ export const UpdateProjectRequest = z.object({
   // empty = all keys). See Project.enabledRunnerCredentialIds.
   enabledRunnerCredentialIds: z.array(z.string()).optional(),
   syncSourceStatus: z.boolean().optional(), // write status changes back to the source of truth
+  roadmapPath: z.string().nullable().optional(), // see Project.roadmapPath; null clears → default candidates
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 
@@ -893,8 +929,12 @@ export type UpdateMilestoneRequest = z.infer<typeof UpdateMilestoneRequest>;
 // after the operator confirms the diff in chat. `baselineHash` (always) and
 // `baselineSha` (GitHub-bound projects only) pin the edit to the exact content
 // it was drafted against, so a concurrent change is refused, not clobbered.
+// `path` isn't restricted to the two default candidates: Project.roadmapPath
+// can point the doc at any file, and validateProjectAction's edit_roadmap
+// case (steward/assistant.ts) already refuses a path that doesn't match the
+// resolved doc's own — this schema doesn't need a second, stricter opinion.
 export const UpdateProjectRoadmapRequest = z.object({
-  path: z.enum(["ROADMAP.md", "docs/ROADMAP.md"]),
+  path: z.string().min(1),
   content: z.string().min(1),
   baselineHash: z.string().min(1),
   baselineSha: z.string().optional(),

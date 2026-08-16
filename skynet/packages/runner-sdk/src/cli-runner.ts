@@ -158,6 +158,11 @@ class CliRunnerHandle implements RunnerHandle {
   private child?: ChildProcess;
   private gateOpen = false;
   private pendingChat = false;
+  // Informational notes queued via `inform()`, not yet ridden out on a real
+  // stdin write. Drained (and prepended) by `writeStdin` the next time ANYTHING
+  // else writes to the CLI's stdin — never flushed on its own, so queuing a
+  // note never spawns an extra CLI turn.
+  private pendingNotes: string[] = [];
   private progress = 0;
   private finished = false;
   private hb?: ReturnType<typeof setInterval>;
@@ -352,6 +357,15 @@ class CliRunnerHandle implements RunnerHandle {
 
   private writeStdin(payload: string | null) {
     const stdin = this.child?.stdin;
+    // Only drain queued notes once we know this write will actually land —
+    // otherwise a stalled/dead stdin would silently swallow a note that never
+    // got the chance to ride anything. Prepend so the note reads as context
+    // ahead of whatever real message triggered this write.
+    if (this.pendingNotes.length > 0 && stdin?.writable) {
+      const notes = this.pendingNotes.map((n) => `[OPERATOR NOTE — informational, no reply needed] ${n}`).join("\n");
+      payload = payload ? `${notes}\n${payload}` : notes;
+      this.pendingNotes = [];
+    }
     if (!payload || !stdin || !stdin.writable) return;
     try {
       stdin.write(payload.endsWith("\n") ? payload : `${payload}\n`);
@@ -390,6 +404,19 @@ class CliRunnerHandle implements RunnerHandle {
       // CLI runs one-shot — can't chat mid-run; acknowledge instead of hanging.
       this.events.onChatReply(this.runId, `re: "${text}" — noted; ${this.vendor.id} runs headless, factoring it into the next step.`);
     }
+  }
+
+  /**
+   * Queue an informational note for the next stdin write this run would make
+   * anyway (a decision, guidance, or chat message) — never writes on its own,
+   * so it never spawns an extra CLI invocation/turn. These vendors are one-shot
+   * per turn: unlike Claude's live session, there's no "merge into the
+   * transcript" primitive, so we buffer here and prepend in `writeStdin`.
+   * Dropped (not queued) once the run has finished — nothing left to ride.
+   */
+  async inform(text: string) {
+    if (this.finished) return;
+    this.pendingNotes.push(text);
   }
 
   async stop() {

@@ -99,6 +99,13 @@ export interface Store extends StoreState {
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
+  // `inform` — mass-select runs (explicit ids and/or a whole project's live
+  // runs) + a note that rides each one's next prompt, no extra turn.
+  informRuns: (body: {
+    note: string;
+    runIds?: string[];
+    projectId?: string;
+  }) => Promise<{ informed: string[]; skipped: Array<{ runId: string; reason: string }> }>;
   forkAgent: (id: string) => Promise<void>;
   // Checkpoint / restore (extends fork/resume, W6). Checkpoints aren't part of
   // the WS-synced snapshot (per-run, lazily fetched like a diff) — create/
@@ -113,6 +120,9 @@ export interface Store extends StoreState {
   updatePrBranch: (runId: string) => Promise<{ updated: boolean; conflicts?: string[] }>;
   reworkPr: (runId: string, guidance: string, comment?: string) => Promise<void>;
   dismissPr: (runId: string) => Promise<void>;
+  // Feature-scoped branch batching's aggregate PR — merge/dismiss only.
+  mergeFeaturePr: (featureId: string, method?: "merge" | "squash" | "rebase") => Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }>;
+  dismissFeaturePr: (featureId: string) => Promise<void>;
   // Local optimistic flip after a key is set/cleared in Settings (the snapshot
   // recomputes availability from the secret store on next load).
   setProviderAvailable: (id: string, available: boolean) => void;
@@ -147,6 +157,9 @@ export interface Store extends StoreState {
       syncSourceStatus?: boolean;
       // Branch to stack runs/PRs onto; null clears back to the global default.
       baseBranch?: string | null;
+      // Where the Roadmap tab reads its doc from; null clears back to the
+      // default ROADMAP.md/docs/ROADMAP.md candidates.
+      roadmapPath?: string | null;
       // Verifier gate command; null clears back to the global default.
       checkCmd?: string | null;
     },
@@ -463,6 +476,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return reply;
       },
       streamAgentMessage: (id, text, onDelta) => api.streamAgentMessage(id, text, onDelta),
+      informRuns: (body) => api.informRuns(body),
       forkAgent: async (id) => {
         try {
           await api.forkAgent(id);
@@ -508,6 +522,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       dismissPr: async (runId) => {
         await api.dismissPr(runId);
+      },
+      mergeFeaturePr: (featureId, method) => api.mergeFeaturePr(featureId, method),
+      dismissFeaturePr: async (featureId) => {
+        await api.dismissFeaturePr(featureId);
       },
       setProviderAvailable: (id, available) => {
         setState((s) => ({

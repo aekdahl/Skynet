@@ -143,6 +143,10 @@ class CursorRunnerHandle implements RunnerHandle {
   private pendingChat = false;
   /** Set while the agent is blocked on a command-approval gate. */
   private gateCommand: string | null = null;
+  // Notes queued via inform(), ridden out on the next LIVE stdin write (see
+  // writeStdin). Never flushed by spawning a fresh turn on their own — a note
+  // queued while no child is alive just waits for one, same as cli-runner.ts.
+  private pendingNotes: string[] = [];
   private hb?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -194,6 +198,15 @@ class CursorRunnerHandle implements RunnerHandle {
 
   /** Launch one cursor-agent turn. `primary` turns drive the task to completion. */
   private spawnTurn(prompt: string, primary: boolean) {
+    // cursor-agent is one-shot per turn (each follow-up spawns a FRESH process,
+    // not a write to a still-live one) — so a queued note rides here too, not
+    // just writeStdin. Still never spawns a turn by itself: this only enriches
+    // a turn some OTHER real trigger (chat, resumed guidance) was starting anyway.
+    if (this.pendingNotes.length > 0) {
+      const notes = this.pendingNotes.map((n) => `[OPERATOR NOTE — informational, no reply needed] ${n}`).join("\n");
+      prompt = `${notes}\n${prompt}`;
+      this.pendingNotes = [];
+    }
     const args = cursorArgs(this.spec, prompt, this.resumeChatId);
 
     let child: ChildProcess;
@@ -407,6 +420,23 @@ class CursorRunnerHandle implements RunnerHandle {
     }
   }
 
+  /**
+   * Queue an informational note for the NEXT thing that would talk to
+   * cursor-agent anyway — a live stdin write (writeStdin, e.g. a y/n decision
+   * answer) if the current turn's process is still alive, or the prompt of the
+   * next spawned turn (spawnTurn, e.g. a chat follow-up) otherwise. Never
+   * triggers either on its own. cursor-agent is one-shot per turn — unlike
+   * Claude's persistent session, a "live" turn here is usually short-lived, so
+   * spawnTurn is the channel that actually lands the note in practice
+   * (verified live: a note queued while a turn was still running never made it
+   * — the turn finished and the next chat spawned a fresh process — before
+   * this also hooked spawnTurn). Dropped once the run has finished.
+   */
+  async inform(text: string) {
+    if (this.finished) return;
+    this.pendingNotes.push(text);
+  }
+
   async stop() {
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
@@ -440,6 +470,11 @@ class CursorRunnerHandle implements RunnerHandle {
   }
 
   private writeStdin(text: string) {
+    if (this.pendingNotes.length > 0 && this.child?.stdin?.writable) {
+      const notes = this.pendingNotes.map((n) => `[OPERATOR NOTE — informational, no reply needed] ${n}`).join("\n");
+      text = `${notes}\n${text}`;
+      this.pendingNotes = [];
+    }
     if (this.child?.stdin?.writable) {
       this.child.stdin.write(text.endsWith("\n") ? text : `${text}\n`);
     }

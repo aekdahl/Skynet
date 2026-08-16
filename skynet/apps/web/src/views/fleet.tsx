@@ -5,6 +5,7 @@ import * as api from "../lib/client";
 import { providerInfo, providerReadiness, runnerIdleLabel } from "../lib/derive";
 import { Blocked, PrimaryButton } from "../components/empty";
 import { useConfirm } from "../components/confirm";
+import { toast } from "../components/toast";
 
 export function ConfigForm({
   initial,
@@ -239,6 +240,88 @@ export function suggestCloneName(base: string, taken: Set<string>): string {
   return cand;
 }
 
+/** Toast the informRuns() result — always name a real skip count rather than
+ *  a blanket "sent", since a queued note is a best-effort attachment (no live
+ *  session, or the runner doesn't support it, both skip honestly). */
+export function toastInformResult(informedCount: number, skippedCount: number): void {
+  if (informedCount === 0) {
+    toast(
+      skippedCount > 0
+        ? `Note not delivered — ${skippedCount} agent${skippedCount === 1 ? "" : "s"} had no active session to attach it to.`
+        : "Note not delivered.",
+    );
+    return;
+  }
+  toast(
+    `Note queued for ${informedCount} agent${informedCount === 1 ? "" : "s"}'s next turn` +
+      (skippedCount > 0 ? ` (${skippedCount} skipped — no active session)` : "") +
+      ".",
+    "success",
+  );
+}
+
+/**
+ * The `inform` note composer — shared by Fleet's multi-select and Project's
+ * whole-project bulk action. Purely presentational: the caller supplies how
+ * many targets are selected and what to do with the note text. No extra
+ * turn/API call to the agent happens here or anywhere downstream — this just
+ * collects the note and hands it to informRuns().
+ */
+export function InformComposer({
+  count,
+  countLabel,
+  onSend,
+  onCancel,
+}: {
+  /** How many runs this note would target, for the button label + empty-state. */
+  count: number;
+  /** Override the default "N agent(s)" wording (e.g. "this project's active agents"). */
+  countLabel?: string;
+  onSend: (note: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [note, setNote] = useState("");
+  const [sending, setSending] = useState(false);
+  const label = countLabel ?? `${count} agent${count === 1 ? "" : "s"}`;
+  return (
+    <div className="panel inform-panel">
+      <div className="panel-head">
+        📣 MASS INFORM — {label} selected
+      </div>
+      <p className="inform-hint">
+        Attaches to each selected agent's NEXT prompt — no extra turn, no reply expected. Nothing sends until it queues.
+      </p>
+      <textarea
+        className="qx-input inform-textarea"
+        rows={3}
+        autoFocus
+        placeholder="e.g. Heads up — the shared auth module moved to packages/auth; update imports if you touch it."
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+      />
+      <div className="qx-row">
+        <PrimaryButton
+          disabled={!note.trim() || count === 0 || sending}
+          reason={count === 0 ? "Select at least one agent first." : "Write a note to send."}
+          onClick={async () => {
+            setSending(true);
+            try {
+              await onSend(note.trim());
+            } finally {
+              setSending(false);
+            }
+          }}
+        >
+          {sending ? "Queuing…" : `Queue note for ${label}`}
+        </PrimaryButton>
+        <button className="btn btn-ghost" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Shared per-agent action handlers, passed down to both densities so neither
 // card/row duplicates the mutation logic.
 interface AgentActions {
@@ -253,9 +336,36 @@ interface AgentActions {
 // ─── Working now: a full card with live task context — unchanged from
 // before except it's always busy here (the idle branch moved to AgentRow,
 // below) ─────────────────────────────────────────────────────────────────
-function AgentCard({ r, busy, p, count, actions }: { r: Agent; busy: TaskRun; p: ProviderInfo; count: number; actions: AgentActions }) {
+function AgentCard({
+  r,
+  busy,
+  p,
+  count,
+  actions,
+  informMode,
+  informSelected,
+  onToggleInform,
+}: {
+  r: Agent;
+  busy: TaskRun;
+  p: ProviderInfo;
+  count: number;
+  actions: AgentActions;
+  // Mass inform (roadmap "Mass inform") — only meaningful here since only a
+  // BUSY agent has a live run to attach a note to; the idle AgentRow below
+  // never renders the picker at all. Optional so callers outside FleetView
+  // (none today) aren't forced to wire inform state through.
+  informMode?: boolean;
+  informSelected?: boolean;
+  onToggleInform?: () => void;
+}) {
   return (
     <div className="fleet-card fleet-busy">
+      {informMode && (
+        <label className="fleet-inform-pick" title="Include this agent in the note">
+          <input type="checkbox" checked={!!informSelected} onChange={onToggleInform} />
+        </label>
+      )}
       <button className="fleet-cardhead" title="Open this agent's detail & task history" onClick={() => actions.onOpenAgent(r.id)}>
         <div className="fleet-top">
           <span className="fleet-prov" style={{ color: p.color }}>
@@ -367,9 +477,14 @@ export function FleetView({
   onOpenTask: (id: string) => void;
   onOpenAgent: (id: string) => void;
 }) {
-  const { fleet, runs, providers, createAgent, updateAgent, deleteAgent } =
+  const { fleet, runs, providers, createAgent, updateAgent, deleteAgent, informRuns } =
     useStore();
   const confirm = useConfirm();
+  // Mass inform (roadmap "Mass inform"): pick a set of BUSY agents (only a
+  // live run has a next turn to ride a note on) and attach a note that rides
+  // each one's next prompt at no extra turn — see InformComposer below.
+  const [informMode, setInformMode] = useState(false);
+  const [informSelected, setInformSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   // The agent being duplicated: opens the same form pre-filled with its provider
@@ -453,17 +568,49 @@ export function FleetView({
             {fleet.length} agent{fleet.length === 1 ? "" : "s"} configured · catalog: Claude, Codex, Gemini, Cursor, Copilot
           </p>
         </div>
-        <button
-          className="btn btn-primary"
-          onClick={() => {
-            setAdding(true);
-            setEditing(null);
-            setCloneFrom(null);
-          }}
-        >
-          + Add agent
-        </button>
+        <div className="fleet-head-actions">
+          {fleet.some((r) => !!busyOf(r)) && (
+            <button
+              className={"btn btn-ghost" + (informMode ? " on" : "")}
+              title="Select busy agents and attach a note that rides each one's next prompt — no extra turn, no reply expected."
+              onClick={() => {
+                setInformMode((v) => !v);
+                setInformSelected(new Set());
+              }}
+            >
+              📣 Mass inform
+            </button>
+          )}
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              setAdding(true);
+              setEditing(null);
+              setCloneFrom(null);
+            }}
+          >
+            + Add agent
+          </button>
+        </div>
       </div>
+      {informMode && (
+        <InformComposer
+          count={informSelected.size}
+          onCancel={() => {
+            setInformMode(false);
+            setInformSelected(new Set());
+          }}
+          onSend={async (note) => {
+            const runIds = fleet
+              .map((r) => (informSelected.has(r.id) ? busyOf(r)?.id : undefined))
+              .filter((id): id is string => !!id);
+            const { informed, skipped } = await informRuns({ note, runIds });
+            toastInformResult(informed.length, skipped.length);
+            setInformMode(false);
+            setInformSelected(new Set());
+          }}
+        />
+      )}
       {(adding || cloneFrom) && (
         <div className="panel cfg-panel">
           <div className="panel-head">{cloneFrom ? `DUPLICATE · ${cloneFrom.name}` : "NEW AGENT"}</div>
@@ -516,6 +663,16 @@ export function FleetView({
                           p={providerInfo(providers, r.provider)}
                           count={taskCountOf(r)}
                           actions={actions}
+                          informMode={informMode}
+                          informSelected={informSelected.has(r.id)}
+                          onToggleInform={() =>
+                            setInformSelected((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(r.id)) next.delete(r.id);
+                              else next.add(r.id);
+                              return next;
+                            })
+                          }
                         />
                       ),
                   )}

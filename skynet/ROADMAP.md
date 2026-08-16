@@ -269,11 +269,22 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 - [x] **Agent labels / custom grouping** — Fleet already supports both: a "Group" field
   (`label`) with a known-groups datalist, the fleet grid groups by label with headings, and
   editing an agent's name is already part of the same Configure form.
-- [ ] **Mass inform** — select multiple agents (or a whole project / area / manager-family) and attach a
-  note that rides the *next* prompt each already receives — **no extra turn, ~free** (Claude SDK
-  `shouldQuery:false`; CLI runners buffer + prepend). A third interaction type (`inform`) alongside
-  chat + resolve; optional "also remember" promotes the note to area/workspace memory (v4) so future
-  agents inherit it too. Audited via existing streams.
+- [~] **Mass inform** — select multiple agents (or a whole project) and attach a note that rides the
+  *next* prompt each already receives — **no extra turn, ~free**. **Shipped:** a third interaction
+  type (`inform`) alongside chat + resolve, never a HITL gate — `POST /api/runs/inform` (`{note,
+  runIds?, projectId?}`, the two sets union) queues the note per matched live run and reports
+  informed/skipped honestly (never fakes delivery). Delivery is provider-specific and optional on
+  `RunnerHandle` (a provider that doesn't implement it is just skipped): **Claude** pushes onto the
+  live SDK session with `shouldQuery:false` — appended to the transcript, merged into whichever real
+  turn comes next, verified live (a note asking for a marker comment landed in the generated file with
+  no extra turn logged). **CLI runners** (Codex/Gemini/Hermes, via the shared `cli-runner.ts` base, and
+  Cursor) buffer the note and prepend it to the next real stdin write / spawned follow-up turn — proven
+  against a real subprocess in tests; live-verified against `cursor-agent` too, which surfaced a real
+  vendor quirk (its one-shot `-p` process doesn't appear to read injected stdin mid-turn, so the note
+  only reliably rides a *fresh* follow-up turn, not a live one — `cursor.ts` now hooks both paths).
+  Copilot doesn't implement `inform` yet (same bespoke-handle shape as Cursor; left for a follow-up).
+  **Remaining:** the Fleet/Project UI ships (multi-select on Fleet, whole-project on the project page);
+  optional "also remember" → area/workspace memory promotion is still v4, not started.
 - [~] **🔗 Per-project live preview — "see what it builds", any software.** Today's W5 preview is
   per-agent-*branch* and effectively static/web. Generalize to a **stable per-project preview of the
   integration branch** that handles any software, not just SPAs. **Proposed approach:**
@@ -329,10 +340,24 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     live preview is reachable from a phone** (Host-rewrite → Vite allowedHosts, HMR WS bridged, Vite
     `--base` injected). **Still to do:** Phase 2 remainder (service-container runtime + auto-rebuild on
     merge) & Phase 3 (command/artifacts, "any software").
-  - **Perf — warm-worktree dep caching:** a fresh preview installs deps each start (~20s for a
-    nested monorepo whose recipe embeds `install`, since the built-in root-level provisioning doesn't
-    cover a sub-package). Cache/skip the reinstall when the reused worktree already has `node_modules`
-    (and the lockfile is unchanged) so restarts are near-instant.
+  - [x] **Perf — warm-worktree dep caching, nested sub-packages.** The root-level path (ensureDeps's
+    symlink/install, reconcileDepsOnRefresh's root reinstall) was already correct — untouched here.
+    The actual gap: a recipe for a nested monorepo can embed its OWN install directly in `recipe.cmd`
+    (`cd apps/web && pnpm install && pnpm dev`) for a sub-package the root-level provisioning never
+    reaches, and that embedded install reran on every single start/restart with nothing to skip it.
+    `project-preview.ts`'s `reconcileEmbeddedInstalls` now detects a `cd <dir> && <pm install> &&`
+    segment (`EMBEDDED_INSTALL_RE`) and strips it when that sub-package's `node_modules` already
+    exists and its lockfile is content-identical (SHA-256, not mtime — the worktree's own
+    `checkout --detach && reset --hard` on every restart touches every tracked file's mtime whether
+    or not it changed, so mtime would always read "stale" here) to the one from the last successful
+    install *in this reused worktree* (`.skynet/preview-installs/<slug>.hash`, written by a step
+    spliced into the command's own `&&` chain — the only way to know the install actually exited 0,
+    since a `cmd` that also starts a long-running dev server never itself exits). The same warm check
+    now also gates `reconcileDepsOnRefresh`'s nested case, so a merge-triggered refresh only re-runs a
+    sub-package's install when the diff actually touched *its* manifest, not any dep-file anywhere.
+    Verified against a real nested-monorepo fixture (real `npm install`, not mocked): cold start
+    installs, warm restart skips it (`▸ cd apps/web && node server.js` — no install segment at all),
+    a dependency bump makes it reinstall again.
 - [~] **🔁 Task ↔ source-of-truth sync.** Tasks imported from an external source (GitHub issues, repo
   files, a tracker) should update the source when their Skynet status changes. **Approach:** a
   `Task.source` provenance link (set at import) + a `SyncSink` adapter seam (one per source kind),
@@ -484,23 +509,27 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   auto-expiring window (break-glass / sudo-style), then revert to their base role automatically; every
   promotion + expiry is audited. Depends on the read-only role above.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap, additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
-- [ ] 🔗⛓ **Feature-scoped branch hierarchy — branch out from branches.** Today every task's agent branch
-  cuts from the project's single integration branch and merges straight back to it
-  (`MergeEngine.integrationBranch(projectId)` is keyed only by `projectId` — one merge target per
-  project, no sub-grouping). When a Feature has several tasks/subtasks, group their branches under a
-  **feature branch** first — so the whole feature merges there and can be tested/reviewed as a unit —
-  and only that feature branch later merges up into the project base. **Reuses**: the branch-from-branch
-  mechanism already proven by agent `fork()` (`orchestrator.ts` passes a parent run's branch as `baseRef`
-  into `WorktreeProvisioner.provision()`), extended from today's 1-parent→1-child fork to N sibling tasks
-  under one Feature; and live-preview's existing arbitrary-branch pinning (a per-run preview already pins
-  to `ref: opts.branch`, and `latest` mode already octopus-combines several run branches) — a feature
-  branch just becomes another pinnable ref, no new preview plumbing. **New work, concentrated in the merge
-  engine**: a feature-branch naming scheme (e.g. `skynet/feature/${featureId}`); `MergeRequest` keyed by
-  `featureId` for the first-stage merge (today it's `projectId`-only); orchestrator wiring so a task under
-  a Feature passes the feature branch as `baseRef` (today only `fork()` does this, for a single parent);
-  and a human-gated "merge feature branch → project base" step once every task in the Feature is done —
-  reusing the same diff/verifier-gate/auto-review machinery **Guided merge** above already composes, just
-  retargeted to a feature-vs-base diff instead of task-vs-base. A different axis from **Structural
+- [~] 🔗⛓ **Feature-scoped branch hierarchy — branch out from branches.** When a Task has `featureId` set,
+  its approved diff now merges into a shared `skynet/feature/<id>` branch (`MergeEngine.targetBranchFor`,
+  generalized from the old `integrationBranch(projectId)` — `MergeRequest.featureId` picks the
+  destination) instead of straight to the project's integration branch or its own PR. Once every task
+  under that Feature is done, Skynet closes the batch: for a GitHub-bound project, ONE aggregate PR
+  (`openPrForFeature`, `Feature.pr` — a dedicated field, not reused per-task `TaskRun.pr` slots, since by
+  batch-close time every task's own worktree/review state is already retired); for a local-only project,
+  the feature branch merges up into the project's real integration branch. Conflicts at either stage
+  reuse the existing `merge`-kind HITL unchanged (`raiseMergeHitl`/`raiseMergeFailedHitl`, now
+  feature-aware via `isFeatureUpMerge` + `HitlItem.sourceBranchOverride` so a retry re-targets correctly
+  either way — a real correctness bug an adversarial design review caught before it shipped, not after).
+  Ready-to-merge gets a parallel `mergeReadyFeaturePr`/`dismissReadyFeaturePr` (merge + dismiss only — no
+  rework/update-branch for a batch; a stale/conflicting feature PR surfaces as a normal GitHub conflict on
+  the PR itself, and requesting changes means a follow-up task under the same feature). Verified end to
+  end against real git repos (`tests/merge.test.ts`, including a concurrency regression test for a scratch-
+  worktree collision the implementation surfaced and fixed) plus orchestrator-level ready-to-merge
+  coverage (`tests/ready-merge.test.ts`). **Deliberately NOT built** (scoped out, not silently missing):
+  tasks under a Feature still branch from the project base at *assign* time, same as always — they do
+  **not** branch from the feature branch itself (the `fork()`-style `baseRef` chaining the original sketch
+  above envisioned). That's real added complexity for a benefit the actual ask ("fewer PRs for related
+  work") doesn't need; only the merge *destination* changed. A different axis from **Structural
   agent-hierarchy hooks** just above (that's agent *role* — worker/manager; this is *Feature/task*
   grouping) — complementary, not dependent.
 
@@ -564,7 +593,7 @@ features below are white space.)
 - [x] **Task grouping & per-project roadmap** — a level *above* the task board. **Features** group related tasks (⊞ chip on cards; a lens listing each feature's mini 6-column count + progress bar); **milestones** are planned releases per project (◉ chip; a Roadmap lens with target-date badges and rolled-up features/tasks — "in Nd" / "today" / "Nd late"). Same-project scoping is enforced by the server (cross-project links refuse) and by the Steward/Telegram validators. Drove by: "roadmap formed from items in all stages of kanban marked with planned releases + milestones." Steward + Telegram both speak the seven grouping actions (`create_feature`, `set_task_feature`, `archive_feature`, `create_milestone`, `set_feature_milestone`, `set_task_milestone`, `mark_milestone_shipped`) — same confirm-first envelope task actions use.
 - [x] **Per-project agent instructions (house rules)** — a `Project.instructions` markdown field that rides *every* prompt an agent sees on that project (assignTask, forkAgent, review-revise, escalation resume, triage consult, auto-review consult) and Steward's grounding. Motivated by: "build agents in Skynet using a specific subset of packages, pre-written code, and structure" — that's a per-project policy, not a workspace boundary, and it lives on the project record for instant editability. Trims + normalizes empty → null; the read-only header shows a compact "ⓘ Instructions active" chip.
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
-- [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.*
+- [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.* Also landed: the Roadmap tab's "reads ROADMAP.md" lookup used to dead-end when a repo kept its plan somewhere else — `Project.roadmapPath` now lets the operator (a picker on the tab's empty state) or Steward (`set_roadmap_path`, confirm-first, e.g. "the roadmap is at docs/PLAN.md") point it at any repo-relative file; `resolveRoadmapDoc` is the single place both the tab's API and Steward's own grounding resolve through, so they can't drift.
 - [ ] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third
   lane: when a request is better SHOWN than said (review a diff, browse the board, tune the fleet), the
   reply carries a **deep link straight into the exact web-app view** — project/task pre-focused —

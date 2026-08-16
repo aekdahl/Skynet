@@ -63,12 +63,19 @@ function createInputStream() {
   const buffer: SDKUserMessage[] = [];
   let waiting: ((r: IteratorResult<SDKUserMessage>) => void) | null = null;
   let closed = false;
-  const wrap = (text: string): SDKUserMessage =>
-    ({ type: "user", parent_tool_use_id: null, message: { role: "user", content: text } } as SDKUserMessage);
+  const wrap = (text: string, opts?: { shouldQuery?: boolean }): SDKUserMessage =>
+    ({
+      type: "user",
+      parent_tool_use_id: null,
+      message: { role: "user", content: text },
+      // Present only when explicitly false — `shouldQuery` defaults to a real
+      // turn, so omit the field for every normal push (chat, guidance, …).
+      ...(opts?.shouldQuery === false ? { shouldQuery: false } : {}),
+    } as SDKUserMessage);
   return {
-    push(text: string) {
+    push(text: string, opts?: { shouldQuery?: boolean }) {
       if (closed) return;
-      const msg = wrap(text);
+      const msg = wrap(text, opts);
       if (waiting) { waiting({ value: msg, done: false }); waiting = null; }
       else buffer.push(msg);
     },
@@ -1379,6 +1386,21 @@ class ClaudeRunnerHandle implements RunnerHandle {
     }
     this.pendingChat = true;
     this.input.push(text);
+  }
+
+  /**
+   * Queue an informational note for the run's NEXT prompt — no reply, no extra
+   * turn. Pushed with `shouldQuery: false`: the SDK appends it to the session
+   * transcript without triggering an assistant turn on its own, merging it into
+   * whichever real turn comes next (a chat message, resumed guidance, or the
+   * model's own continuation). Safe to call even while a permission gate is
+   * open — unlike `message`, nothing here waits on a reply, so there's no gate
+   * deadlock to route around. A finished session has nothing left to ride, so
+   * the note is dropped rather than queued into a closed input.
+   */
+  async inform(text: string) {
+    if (this.finished) return;
+    this.input.push(`[OPERATOR NOTE — informational, no reply needed] ${text}`, { shouldQuery: false });
   }
 
   /**

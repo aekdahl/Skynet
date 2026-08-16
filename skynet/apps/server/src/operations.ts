@@ -21,6 +21,7 @@ import type {
   CreateTaskRequest,
   Feature,
   HitlItem,
+  InformRequest,
   Milestone,
   Project,
   ProviderInfo,
@@ -56,7 +57,7 @@ import {
   type ChatTurn,
 } from "./project-assistant.js";
 import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
-import { contentHash, readProjectDoc, readProjectDocFromCandidates, ROADMAP_PATHS } from "./steward/docs.js";
+import { contentHash, readProjectDoc, resolveRoadmapDoc } from "./steward/docs.js";
 import { commitLocalRepoFile } from "./local-repo-write.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
@@ -415,6 +416,43 @@ export class Operations {
     await this.getRun(ws, runId); // 404 unless it's in this workspace
     yield* this.orchestrator.chatStream(runId, text);
   }
+  /**
+   * `inform` — mass-select a set of runs (explicit ids, a whole project's live
+   * runs, or both) and attach a note that rides each one's NEXT prompt, at no
+   * extra turn (see Orchestrator.inform). Never blocks on the runs actually
+   * reading it, never routes through a HITL gate. Reports per-run whether the
+   * note was actually queued (`informed`) or couldn't be (`skipped` — no live
+   * session, or the runner doesn't support it), so the caller can be honest
+   * with the operator about partial delivery rather than a blanket "sent".
+   */
+  async informRuns(
+    ws: string,
+    input: InformRequest,
+  ): Promise<{ informed: string[]; skipped: Array<{ runId: string; reason: string }> }> {
+    const note = input.note.trim();
+    if (!note) throw new Error("Note text is required.");
+    const ids = new Set<string>(input.runIds);
+    if (input.projectId) {
+      await this.getProject(ws, input.projectId); // 404 unless it's in this workspace
+      for (const id of await this.orchestrator.liveRunIdsForProject(input.projectId)) ids.add(id);
+    }
+    if (ids.size === 0) {
+      throw new Error("No runs to inform — select at least one agent, or a project with active runs.");
+    }
+    const informed: string[] = [];
+    const skipped: Array<{ runId: string; reason: string }> = [];
+    for (const runId of ids) {
+      const run = await this.store.getRun(runId);
+      if (!run || run.workspaceId !== ws) {
+        skipped.push({ runId, reason: "not found" });
+        continue;
+      }
+      const ok = await this.orchestrator.inform(runId, note);
+      if (ok) informed.push(runId);
+      else skipped.push({ runId, reason: "not live — no active session to attach the note to" });
+    }
+    return { informed, skipped };
+  }
   async forkAgent(ws: string, runId: string): Promise<TaskRun> {
     await this.getRun(ws, runId);
     return this.orchestrator.fork(runId);
@@ -457,6 +495,30 @@ export class Operations {
   async dismissReadyPr(ws: string, runId: string): Promise<void> {
     await this.getRun(ws, runId);
     return this.orchestrator.dismissReadyPr(ws, runId);
+  }
+
+  // ── Ready-to-merge, feature-scoped batches (feature-scoped branch batching) ─
+  /** Fetch a feature scoped to the workspace, or throw NotFoundError (404). */
+  private async getFeatureScoped(ws: string, featureId: string): Promise<Feature> {
+    const feature = await this.store.getFeature(featureId);
+    if (!feature || feature.workspaceId !== ws) throw new NotFoundError("Feature");
+    return feature;
+  }
+  /** Features whose aggregate PR is open and awaiting a human merge decision. */
+  listReadyFeaturePrs(ws: string): Promise<Feature[]> {
+    return this.orchestrator.listReadyFeaturePrs(ws);
+  }
+  async mergeReadyFeaturePr(
+    ws: string,
+    featureId: string,
+    method: "merge" | "squash" | "rebase",
+  ): Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }> {
+    await this.getFeatureScoped(ws, featureId);
+    return this.orchestrator.mergeReadyFeaturePr(ws, featureId, method);
+  }
+  async dismissReadyFeaturePr(ws: string, featureId: string): Promise<void> {
+    await this.getFeatureScoped(ws, featureId);
+    return this.orchestrator.dismissReadyFeaturePr(ws, featureId);
   }
   async archiveAgent(ws: string, runId: string, archived: boolean): Promise<TaskRun> {
     await this.getRun(ws, runId);
@@ -547,6 +609,9 @@ export class Operations {
       syncSourceStatus: !!(repo && input.importGithubIssues),
       // Optional: stack this project's runs/PRs onto a branch; else the global default.
       baseBranch: input.baseBranch?.trim() || null,
+      // No override at creation — set later, once the operator (or Steward)
+      // discovers the default ROADMAP.md/docs/ROADMAP.md candidates are wrong.
+      roadmapPath: null,
       // Verifier gate command is set later in project settings, else the global default.
       checkCmd: null,
     };
@@ -579,7 +644,13 @@ export class Operations {
       patch.baseBranch === undefined
         ? {}
         : { baseBranch: patch.baseBranch?.trim() ? patch.baseBranch.trim() : null };
-    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions, ...baseBranch });
+    // Same again for the roadmap doc override: empty/whitespace clears back to
+    // null (= the default ROADMAP.md/docs/ROADMAP.md candidates).
+    const roadmapPath =
+      patch.roadmapPath === undefined
+        ? {}
+        : { roadmapPath: patch.roadmapPath?.trim() ? patch.roadmapPath.trim() : null };
+    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions, ...baseBranch, ...roadmapPath });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     return updated;
   }
@@ -1018,6 +1089,7 @@ export class Operations {
       order: inProject.length,
       archived: false,
       createdAt: now(),
+      pr: null,
     };
     return this.hub.upsertFeature(feature);
   }
@@ -1082,7 +1154,7 @@ export class Operations {
     if (!project.repoPath && !project.repo) return { state: "unbound" };
     if (project.repoPath && !existsSync(project.repoPath)) return { state: "missing_local_repo" };
     try {
-      const doc = await readProjectDocFromCandidates(ws, project, ROADMAP_PATHS);
+      const doc = await resolveRoadmapDoc(ws, project);
       return doc
         ? { state: "ok", path: doc.path, content: doc.content, source: doc.source, ...(doc.sha ? { sha: doc.sha } : {}) }
         : { state: "not_found" };
