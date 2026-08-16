@@ -17,6 +17,9 @@ import {
   type WorkspaceSettings,
   type UpdateWorkspaceSettingsRequest,
   type VerifyCredentialResult,
+  type CommandPolicy,
+  type PolicyVersion,
+  type PolicyDryRunResult,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 
@@ -323,6 +326,24 @@ export function fetchWorkspaceSettings() {
 /** Update the live workspace fleet policy. */
 export function updateWorkspaceSettings(patch: UpdateWorkspaceSettingsRequest) {
   return req<WorkspaceSettings>("PATCH", "/api/settings/fleet", patch);
+}
+
+// Command policy: the versioned, per-workspace command-safety classifier.
+/** The active policy — the shipped default if no custom version was ever saved. */
+export function fetchCommandPolicy() {
+  return req<CommandPolicy>("GET", "/api/settings/command-policy");
+}
+/** Version history, newest first. Empty = still on the shipped default. */
+export function fetchCommandPolicyVersions() {
+  return req<PolicyVersion[]>("GET", "/api/settings/command-policy/versions");
+}
+/** Replay history through an unsaved, proposed policy — what would change. */
+export function dryRunCommandPolicy(policy: CommandPolicy, limit?: number) {
+  return req<PolicyDryRunResult>("POST", "/api/settings/command-policy/dry-run", { policy, limit });
+}
+/** Save a new active policy version (previous version stays inspectable). */
+export function saveCommandPolicyVersion(policy: CommandPolicy, label: string | null) {
+  return req<PolicyVersion>("POST", "/api/settings/command-policy/versions", { policy, label });
 }
 
 // Provider secrets (Settings). `env` = providers a server env var supplies a

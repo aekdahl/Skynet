@@ -15,6 +15,7 @@ import {
 import { basename } from "node:path";
 import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
+import { resolveActivePolicy } from "./command-policy.js";
 import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
 import { decisionResumePrompt } from "./decision-resume.js";
@@ -408,8 +409,9 @@ export class Orchestrator {
     let risk = raise.risk;
     const why = raise.why;
     let flags: string[] = [];
+    const policy = await resolveActivePolicy(this.store, agent.workspaceId);
     if (raise.kind === "approval" && raise.command) {
-      const verdict = classifyCommand(raise.command);
+      const verdict = classifyCommand(raise.command, policy);
       const rank = { low: 0, medium: 1, high: 2 } as const;
       if (rank[verdict.risk] > rank[risk]) risk = verdict.risk;
       // Surface the classifier's real reasons as scannable chips (not buried in
@@ -450,6 +452,7 @@ export class Orchestrator {
         command: raise.command,
         level: project?.approvalLevel ?? "trusted",
         rules: project?.approvalRules ?? [],
+        policy,
       });
       if (auto) {
         const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: auto.by, at: now() };

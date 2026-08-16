@@ -13,6 +13,7 @@ import type {
   HitlItem,
   Milestone,
   Module,
+  PolicyVersion,
   Project,
   ProviderInfo,
   Agent,
@@ -109,6 +110,16 @@ export interface Store {
   // durable-Store pattern as the GitHub connection; undefined until first set.
   getWorkspaceSettings(workspaceId: string): Promise<WorkspaceSettings | undefined>;
   putWorkspaceSettings(settings: WorkspaceSettings): Promise<void>;
+
+  // Command policy versions — versioned, per-workspace, git-like history of the
+  // command-safety classification policy. listPolicyVersions is newest-first;
+  // exactly one version per workspace has `active: true`. putPolicyVersion, when
+  // given an `active: true` version, deactivates any other active version for
+  // that workspace as part of the same write (so callers never see two actives).
+  listPolicyVersions(workspaceId: string): Promise<PolicyVersion[]>;
+  getPolicyVersion(id: string): Promise<PolicyVersion | undefined>;
+  getActivePolicyVersion(workspaceId: string): Promise<PolicyVersion | undefined>;
+  putPolicyVersion(version: PolicyVersion): Promise<PolicyVersion>;
   // A PAT's sealed ciphertext (pat auth mode). Server-side only; never part of
   // the GithubConnection contract. Sealed/opened by the GithubService.
   getGithubToken(workspaceId: string): Promise<string | undefined>;

@@ -83,6 +83,11 @@ const ALLOW = new Set<string>([
   // covered server-side by fleet-autoscale.test.ts + mcp.test.ts; no offline
   // operator journey drives the Settings toggle.
   "fetchWorkspaceSettings", "updateWorkspaceSettings",
+  // command policy (versioned, per-workspace command-safety classifier) — a
+  // settings control-plane surface like the fleet policy above; covered
+  // server-side by command-policy.test.ts (default/override/dry-run/versioning).
+  // No offline operator journey edits the Settings rule editor.
+  "fetchCommandPolicy", "fetchCommandPolicyVersions", "dryRunCommandPolicy", "saveCommandPolicyVersion",
   // escape hatch — bypasses HUMAN_TRANSITIONS to force a task done; parse +
   // sync-run behavior covered by task-transitions.test.ts (server side).
   // No happy-path journey exercises it because the normal review → done path

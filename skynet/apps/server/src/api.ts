@@ -13,9 +13,11 @@ import {
   CreateMilestoneRequest,
   CreateProjectRequest,
   CreateTaskRequest,
+  DryRunPolicyRequest,
   ProviderId,
   ResolveRequest,
   ChatRequest,
+  SavePolicyVersionRequest,
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
@@ -168,6 +170,23 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     } catch (err) {
       return fail(reply, err);
     }
+  });
+
+  // Command policy: the versioned, per-workspace command-safety classifier
+  // (ROADMAP.md — "policy as code"). View the active policy + version history,
+  // dry-run a proposed edit against real command history, then save it as a
+  // new active version. No custom version saved yet = the shipped default.
+  app.get("/api/settings/command-policy", (req) => ops.getActiveCommandPolicy(ws(req)));
+  app.get("/api/settings/command-policy/versions", (req) => ops.listCommandPolicyVersions(ws(req)));
+  app.post("/api/settings/command-policy/dry-run", async (req, reply) => {
+    const body = DryRunPolicyRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    return ops.dryRunCommandPolicy(ws(req), body.data);
+  });
+  app.post("/api/settings/command-policy/versions", async (req, reply) => {
+    const body = SavePolicyVersionRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    return ops.saveCommandPolicyVersion(ws(req), body.data, req.principal!.operatorId);
   });
 
   // Advanced env settings (desktop only). A strict whitelist of operator knobs

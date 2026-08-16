@@ -14,18 +14,23 @@ import type {
   TaskRun,
   AuditRecord,
   Checkpoint,
+  CommandPolicy,
   ConfigureRunnerRequest,
   CreateFeatureRequest,
   CreateMilestoneRequest,
   CreateProjectRequest,
   CreateTaskRequest,
+  DryRunPolicyRequest,
   Feature,
   HitlItem,
   Milestone,
+  PolicyDryRunResult,
+  PolicyVersion,
   Project,
   ProviderInfo,
   ResolveRequest,
   Resolution,
+  SavePolicyVersionRequest,
   Agent,
   Snapshot,
   Task,
@@ -42,6 +47,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
 import { normalizeCommand, rememberableRisk } from "./approval-policy.js";
+import { dryRunPolicy, resolveActivePolicy, savePolicyVersion } from "./command-policy.js";
 import { config, now } from "./config.js";
 import { computeParallelismNudge } from "./derive/parallelism.js";
 import { generateAgentName } from "./fleet-names.js";
@@ -224,6 +230,27 @@ export class Operations {
     await this.store.putWorkspaceSettings(next);
     return next;
   }
+
+  // ── command policy (versioned, per-workspace command-safety classifier) ────
+  /** The workspace's currently active command policy — the shipped default if
+   *  it has never saved a custom version. */
+  getActiveCommandPolicy(ws: string): Promise<CommandPolicy> {
+    return resolveActivePolicy(this.store, ws);
+  }
+  /** Full version history, newest first. Empty = still on the shipped default. */
+  listCommandPolicyVersions(ws: string): Promise<PolicyVersion[]> {
+    return this.store.listPolicyVersions(ws);
+  }
+  /** Replay the workspace's historical commands through an unsaved, proposed
+   *  policy and report what would change vs. the currently active policy. */
+  dryRunCommandPolicy(ws: string, req: DryRunPolicyRequest): Promise<PolicyDryRunResult> {
+    return dryRunPolicy(this.store, ws, req.policy, req.limit);
+  }
+  /** Save a new active policy version (git-like — the previous active version
+   *  stays inspectable, just no longer active). */
+  saveCommandPolicyVersion(ws: string, req: SavePolicyVersionRequest, operatorId: string): Promise<PolicyVersion> {
+    return savePolicyVersion(this.store, ws, req.policy, operatorId, req.label ?? null);
+  }
   listProviders(ws: string): Promise<ProviderInfo[]> {
     return this.store.listProviders().then((p) => withSecretAvailability(p, ws));
   }
@@ -332,7 +359,7 @@ export class Operations {
     // denylist server-side and refuse before recording any decision. GATE-risk
     // commands still approve; only hard-DENY patterns (e.g. `rm -rf /`) throw.
     if (input.action === "approve" && item.kind === "approval" && item.command) {
-      assertApprovable(item.command); // throws CommandDeniedError → 422, nothing recorded
+      assertApprovable(item.command, await resolveActivePolicy(this.store, ws)); // throws CommandDeniedError → 422, nothing recorded
     }
     const resolution: Resolution = {
       action: input.action,
@@ -359,7 +386,7 @@ export class Operations {
       // only for rememberable (low/medium, non-deny) commands — boundary/high-risk
       // ops can never become a persistent auto-approval. De-duped by command.
       if (input.remember && input.action === "approve" && item.kind === "approval" && item.command) {
-        await this.rememberApproval(item.runId, item.command, operatorId);
+        await this.rememberApproval(ws, item.runId, item.command, operatorId);
       }
     }
     return resolved ?? item;
@@ -369,8 +396,8 @@ export class Operations {
    *  the command is rememberable (low/medium, non-deny) and not already stored.
    *  Best-effort — a non-rememberable command or a missing project is a silent
    *  no-op (the approval itself already succeeded). */
-  private async rememberApproval(runId: string, command: string, operatorId: string): Promise<void> {
-    const cap = rememberableRisk(command);
+  private async rememberApproval(ws: string, runId: string, command: string, operatorId: string): Promise<void> {
+    const cap = rememberableRisk(command, await resolveActivePolicy(this.store, ws));
     if (!cap) return; // high-risk / boundary ops can never become a standing rule
     const run = await this.store.getRun(runId);
     const project = run ? await this.store.getProject(run.projectId) : undefined;
