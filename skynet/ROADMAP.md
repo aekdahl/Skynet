@@ -547,7 +547,27 @@ features below are white space.)
   nav list is now two labeled groups — Operate (Home/Inbox/Audit/Projects/Fleet/Ready to merge)
   and Configure (Integrations/Roadmap/Settings) — reusing the existing `.op-navsec` label style;
   active-item highlighting and routing unchanged (confirmed live).)*
-- [ ] **Humanized time** + stale-heartbeat styling (no raw "79062s ago"); honest empty-**PLAN** state; **provider identity** (real marks + names, not abstract glyphs).
+- [x] **Humanized time** + stale-heartbeat styling (no raw "79062s ago"); honest empty-**PLAN** state; **provider identity** (real marks + names, not abstract glyphs).
+  *(Investigated first — the raw-seconds text itself was already fixed everywhere: every elapsed/heartbeat/
+  waited display in the app (Home's Runs board, task/agent detail, the live-preview freshness label, fleet
+  idle time) already routes through `fmtWait` (`lib/derive.ts`), which single-unit-rounds ("42s"/"15m"/"2h"/
+  "3d"). What was actually missing: **stale-heartbeat styling** — a `running`/`paused` row's elapsed-since-
+  START time keeps growing whether or not the process is still alive, so a silently-hung agent read as
+  healthy. Added `STALE_HEARTBEAT_SEC = 60` (Home's `RunsBoard`): 12x the ~5s heartbeat cadence (so ordinary
+  jitter never false-flags) but a full two minutes' notice before the server's own reaper
+  (`SKYNET_AGENT_REAP_MS`, 180s default) would presume the run dead and escalate it — an amber pulsing dot +
+  chip recolor, distinct from the red "needs you" (an open gate) and blue "running" (healthy) tags. **Empty-
+  PLAN state** — `TaskDetail`'s PLAN panel showed a misleading "0/0" fraction over a blank `<ol>` for any run
+  with `plan: []` (the permanent state for every non-Claude vendor, and the initial state for a fresh Claude
+  run); now an honest "No step-by-step plan for this run." **Provider identity** — most surfaces
+  (`agent-detail.tsx`, `fleet.tsx`, `project.tsx`'s kb-elig-agent chip) already paired a colored glyph with
+  the real vendor name; the one real gap was Home's Runs board, the app's single most prominent live view,
+  whose Agent cell showed a bare runner name with no vendor color/mark at all — added the colored glyph
+  (`providerInfo`) next to it, vendor name in the tooltip. No new logo assets sourced — reused the existing
+  colored-glyph system already used everywhere else rather than risk an unverified trademark usage. Verified
+  live: real `fmtWait` call sites confirmed unaffected; the three fixes confirmed visually (synthetic
+  markup — no run can exist in this sandbox without a live provider credential, confirmed via a real
+  `assignTask` 409 "No credential for any available agent" before any `TaskRun` record is even created).)*
 - [ ] **Design tokens published** (type scale, 8px rhythm, motion behind `prefers-reduced-motion`, one focus ring, semantic palette kept separate from the accent); **a11y pass** (icon-button labels, visible focus, keyboard walkthrough of assign→decide→merge); explicit **Inbox-first mobile/PWA shell**.
 
 **Easier to use than anyone else:**
