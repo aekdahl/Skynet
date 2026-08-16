@@ -338,6 +338,7 @@ export class Operations {
       action: input.action,
       optionIndex: input.optionIndex ?? null,
       guidance: input.guidance ?? null,
+      targetBranch: input.targetBranch?.trim() || null,
       by: operatorId,
       at: now(),
     };

@@ -3,6 +3,12 @@
 // provider's `consult` (grounded on the actual patch), and the resulting diff
 // HITL carries it. A provider with no `consult`, or one that replies with
 // something unreadable, must never block the gate from raising.
+//
+// raiseDiffReview also drafts the guided-merge brief (merge-brief.ts) via a
+// SECOND, concurrent consult with its own system framing — this suite pins
+// the walkthrough's OWN call precisely (by routing the mock's reply on
+// `spec.system`), so it stays a clean regression test for the walkthrough
+// alone rather than silently coupling to the brief's behavior.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -12,11 +18,13 @@ import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import type { ProviderId, Project, Agent, Task, HitlItem } from "@skynet/shared";
 import type { ConsultSpec, RunnerEvents, RunnerHandle, RunnerProvider, StartSpec } from "@skynet/runner-sdk";
 import type { Bus } from "../apps/server/src/bus.js";
+import { DIFF_WALKTHROUGH_SYSTEM } from "../apps/server/src/diff-walkthrough.js";
 
 class NullBus implements Bus { publish(): void {} subscribe(): () => void { return () => {}; } }
 
 const WALKTHROUGH_JSON =
   '{"summary":"Adds a greeting file.","comments":[{"file":"greeting.txt","line":1,"note":"the actual change"}]}';
+const BRIEF_JSON = '{"summary":"Adds a greeting file.","risks":[],"mitigations":[]}';
 
 class EditOnceProvider implements RunnerProvider {
   readonly id: ProviderId = "claude";
@@ -29,9 +37,15 @@ class EditOnceProvider implements RunnerProvider {
   }
   // Only wired up when a reply was configured — pins the "no consult support"
   // path (most CLI runners today) alongside the "consult but unreadable" path.
+  // raiseDiffReview fires this for BOTH the walkthrough and the merge-brief
+  // draft; route on `spec.system` so a configured "unreadable"/`null` reply
+  // still exercises both call sites uniformly, and a configured GOOD reply
+  // doesn't cross-contaminate (the walkthrough reply would incidentally also
+  // parse as a valid, empty-risk brief, which would mask a real bug).
   consult = this.consultReply != null
     ? async (spec: ConsultSpec): Promise<string> => {
         this.consultCalls.push(spec);
+        if (this.consultReply === WALKTHROUGH_JSON) return spec.system === DIFF_WALKTHROUGH_SYSTEM ? WALKTHROUGH_JSON : BRIEF_JSON;
         return this.consultReply!;
       }
     : undefined;
@@ -86,17 +100,19 @@ describe("diff HITL — agent-authored walkthrough", () => {
 
     expect(item.diff?.walkthrough?.summary).toBe("Adds a greeting file.");
     expect(item.diff?.walkthrough?.comments).toEqual([{ file: "greeting.txt", line: 1, note: "the actual change" }]);
-    // Grounded on the ACTUAL diff, not a description of it — the real patch
-    // text (the added line) must have reached the consult as context.
-    expect(provider.consultCalls).toHaveLength(1);
-    expect(provider.consultCalls[0]?.context).toContain("hello");
-    expect(provider.consultCalls[0]?.context).toContain("greeting.txt");
+    // Two concurrent consults (walkthrough + guided-merge brief, see the
+    // suite-level comment) — grounded on the ACTUAL diff either way.
+    expect(provider.consultCalls).toHaveLength(2);
+    const walkthroughCall = provider.consultCalls.find((c) => c.system === DIFF_WALKTHROUGH_SYSTEM);
+    expect(walkthroughCall?.context).toContain("hello");
+    expect(walkthroughCall?.context).toContain("greeting.txt");
   });
 
   it("raises the gate with no walkthrough when the provider has no consult support (most CLI runners today)", async () => {
     const provider = new EditOnceProvider(null);
     const item = await setup(provider);
     expect(item.diff?.walkthrough).toBeNull();
+    expect(item.diff?.mergeBrief).toBeNull(); // same fallback for the brief's own consult
     expect(item.diff?.add).toBeGreaterThan(0); // the gate itself is unaffected
   });
 
@@ -104,6 +120,7 @@ describe("diff HITL — agent-authored walkthrough", () => {
     const provider = new EditOnceProvider("not json at all");
     const item = await setup(provider);
     expect(item.diff?.walkthrough).toBeNull();
+    expect(item.diff?.mergeBrief).toBeNull();
     expect(item.diff?.files).toEqual(["greeting.txt"]);
   });
 });

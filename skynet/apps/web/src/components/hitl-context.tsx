@@ -47,7 +47,7 @@ export function HitlContext({ q, runName, openDiff = false }: { q: HitlItem; run
         <div className="hitl-ctx-row hitl-ctx-diff">
           <span className="hitl-ctx-label">Change</span>
           <span className="hitl-ctx-val">
-            <DiffView runId={q.runId} add={q.diff.add} del={q.diff.del} walkthrough={q.diff.walkthrough} defaultOpen={openDiff} />
+            <DiffView runId={q.runId} add={q.diff.add} del={q.diff.del} walkthrough={q.diff.walkthrough} mergeBrief={q.diff.mergeBrief} defaultOpen={openDiff} />
           </span>
         </div>
       )}

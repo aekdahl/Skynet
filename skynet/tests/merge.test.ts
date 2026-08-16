@@ -66,8 +66,8 @@ function harness(checkCmd?: string) {
   return { engine, calls, enqueueAndWait };
 }
 
-const req = (runId: string, agentBranch: string): MergeRequest => ({
-  runId, agentBranch, projectId: "payments", workspaceId: "cyberdyne",
+const req = (runId: string, agentBranch: string, targetBranch?: string): MergeRequest => ({
+  runId, agentBranch, projectId: "payments", workspaceId: "cyberdyne", targetBranch,
 });
 
 describe("MergeEngine", () => {
@@ -154,5 +154,74 @@ describe("MergeEngine", () => {
     // Merge commit was reset (HEAD~1) — integration branch tip is the base commit,
     // so the agent's file is not present on it.
     expect(() => git("cat-file", "-e", "skynet/integration/payments:feature.ts")).toThrow();
+  });
+
+  // ── Guided merge: operator-chosen target branch ─────────────────────────
+  it("merges into a chosen target branch instead of the project's default integration branch", async () => {
+    git("checkout", "-b", "agent/to-release", "main");
+    commit("feature.ts", "export const x = 1;\n", "add feature");
+    git("checkout", "main");
+
+    const { calls, enqueueAndWait } = harness();
+    await enqueueAndWait(req("a-release", "agent/to-release", "release/v2"));
+
+    expect(calls.merged).toHaveLength(1);
+    expect(calls.merged[0]!.branch).toBe("release/v2");
+    // The default integration branch was never created/touched.
+    expect(git("branch", "--list", "skynet/integration/payments").trim()).toBe("");
+    expect(git("cat-file", "-t", "release/v2:feature.ts").trim()).toBe("blob");
+  });
+
+  it("creates the target branch off baseBranch when it doesn't exist yet, same as the default", async () => {
+    git("checkout", "-b", "agent/fresh-target", "main");
+    commit("feature.ts", "export const x = 1;\n", "add feature");
+    git("checkout", "main");
+    // "release/v3" doesn't exist anywhere yet.
+    expect(git("branch", "--list", "release/v3").trim()).toBe("");
+
+    const { calls, enqueueAndWait } = harness();
+    await enqueueAndWait(req("a-fresh", "agent/fresh-target", "release/v3"));
+
+    expect(calls.merged).toHaveLength(1);
+    expect(git("cat-file", "-t", "release/v3:feature.ts").trim()).toBe("blob");
+    // Created off baseBranch ("main"), same ancestry rule as the default path.
+    expect(git("merge-base", "--is-ancestor", "main", "release/v3")).toBe("");
+  });
+
+  it("an unset targetBranch is unaffected — same default integration branch as before", async () => {
+    git("checkout", "-b", "agent/default-path", "main");
+    commit("feature.ts", "export const x = 1;\n", "add feature");
+    git("checkout", "main");
+
+    const { calls, enqueueAndWait } = harness();
+    await enqueueAndWait(req("a-default", "agent/default-path")); // no targetBranch
+
+    expect(calls.merged).toHaveLength(1);
+    expect(calls.merged[0]!.branch).toBe("skynet/integration/payments");
+  });
+
+  it("two merges for the SAME project into DIFFERENT target branches run as independent chains without stomping each other's scratch worktree", async () => {
+    git("checkout", "-b", "agent/one", "main");
+    commit("one.ts", "export const one = 1;\n", "one");
+    git("checkout", "main");
+    git("checkout", "-b", "agent/two", "main");
+    commit("two.ts", "export const two = 2;\n", "two");
+    git("checkout", "main");
+
+    const { calls, engine } = harness();
+    // Fire both concurrently — distinct target branches, so distinct chains
+    // (see MergeEngine.enqueue keying by branch) that may overlap in time.
+    engine.enqueue(req("a-one", "agent/one", "release/one"));
+    engine.enqueue(req("a-two", "agent/two", "release/two"));
+    const deadline = Date.now() + 10_000;
+    while (calls.merged.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    expect(calls.merged).toHaveLength(2);
+    expect(calls.mergeFailed).toHaveLength(0);
+    expect(calls.conflict).toHaveLength(0);
+    expect(git("cat-file", "-t", "release/one:one.ts").trim()).toBe("blob");
+    expect(git("cat-file", "-t", "release/two:two.ts").trim()).toBe("blob");
   });
 });

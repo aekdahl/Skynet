@@ -350,6 +350,19 @@ kbd {
 .dv-walkthrough-badge { font-size: 10px; letter-spacing: 0.04em; color: var(--violet); }
 .dv-walkthrough-text { margin: 4px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--text); }
 .dv-walkthrough-hint { margin: 4px 0 0; font-size: 11px; color: var(--muted); }
+/* Guided merge brief — sits above even the walkthrough: it's what a reviewer
+   decides ON, synthesized from the diff + auto-review verdict + check config. */
+.dv-brief {
+  margin-top: 6px; padding: 8px 10px; border: 1px solid color-mix(in oklch, var(--info), transparent 65%);
+  border-radius: 8px; background: color-mix(in oklch, var(--info), transparent 94%);
+}
+.dv-brief-badge { font-size: 10px; letter-spacing: 0.04em; color: var(--info); }
+.dv-brief-summary { margin: 4px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--text); }
+.dv-brief-section { margin-top: 6px; }
+.dv-brief-label { font-size: 10px; letter-spacing: 0.04em; color: var(--muted); }
+.dv-brief-list { margin: 2px 0 0; padding-left: 16px; font-size: 12px; line-height: 1.5; color: var(--text); }
+.dv-brief-risks li::marker { color: var(--warn); }
+.dv-brief-mitigations li::marker { color: var(--ok); }
 .dv-comment {
   margin: 0; padding: 3px 12px; font-size: 11.5px; line-height: 1.4; color: var(--text);
   background: color-mix(in oklch, var(--violet), transparent 92%);
@@ -373,6 +386,10 @@ kbd {
   color: var(--danger); background: color-mix(in oklch, var(--danger), transparent 90%);
 }
 .qcard-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding-top: 2px; }
+/* Guided merge — the target-branch picker on a diff/merge gate. */
+.qcard-branch { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.qcard-branch-label { font-size: 11px; letter-spacing: 0.04em; color: var(--muted); white-space: nowrap; }
+.qcard-branch-input { flex: 1; min-width: 0; }
 
 .btn {
   display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;

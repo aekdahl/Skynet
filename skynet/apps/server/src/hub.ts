@@ -175,6 +175,9 @@ export class Hub {
       payload: {
         optionIndex: resolution.optionIndex,
         guidance: resolution.guidance,
+        // Guided merge — the branch a policy-driven auto-approve integrated
+        // into (diff/merge only; null when the default applied, or n/a).
+        targetBranch: resolution.targetBranch,
         kind: item.kind,
         title: item.title,
         why: item.why,
@@ -244,6 +247,9 @@ export class Hub {
       payload: {
         optionIndex: resolution.optionIndex,
         guidance: resolution.guidance,
+        // Guided merge — the operator's chosen integration branch (diff/merge
+        // approvals only; null otherwise, or when the default was left as-is).
+        targetBranch: resolution.targetBranch,
         kind: item.kind,
         title: item.title,
         why: item.why,

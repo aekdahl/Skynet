@@ -357,7 +357,7 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     raises. Stored on `HitlItem.diff.walkthrough` and rendered above the raw patch in the Inbox/run-detail diff
     view; a failed/unsupported draft (most CLI runners today have no `consult`) never blocks the gate — the
     raw diff is always there regardless. *(Octomux-style.)*
-- [ ] **🔬⭐ Guided merge — understand-then-merge, to any branch.** Merging today is a single approve on the
+- [~] **🔬⭐ Guided merge — understand-then-merge, to any branch.** Merging today is a single approve on the
   diff HITL. Make it a **guided experience**: before anything merges, Skynet presents a plain-English **merge
   brief** — what the change *does*, which files/modules it touches, the **risks** (blast radius: writes outside
   the worktree, secrets, DB migrations, public-API/contract changes, new deps, history-destructive ops) and the
@@ -369,6 +369,28 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   **auto-review verdict** above into one review→merge surface; records the whole brief + decision to the
   tamper-evident audit (feeds the **compliance evidence pack**); and reuses the existing merge engine — only the
   **target-branch selection** and the synthesized brief are new. Human-gated end to end; nothing self-merges.
+  **Shipped:** `MergeRequest.targetBranch` (`merge.ts`) — the local merge queue integrates into an
+  operator-chosen branch, creating it off `baseBranch` if it doesn't exist yet, same as the default
+  (`MergeEngine.enqueue`/`ensureIntegrationBranch`); each distinct target branch runs its own serialized chain
+  + scratch worktree, so two branches for the same project never stomp each other. The merge brief itself
+  (`merge-brief.ts`) is a stateless consult — same discipline as the diff walkthrough — grounded on the real
+  patch, drafted alongside the walkthrough BEFORE the diff HITL raises (`Orchestrator.draftMergeBrief`,
+  `HitlItem.diff.mergeBrief`) and composing the task's recorded auto-review verdict + whether the project runs
+  checks after merge as SYSTEM-known mitigations (never asked of the model — only genuinely new risk framing
+  comes from the consult). `HitlItem.diff.defaultTargetBranch` is computed unconditionally (GitHub PR base when
+  connected, else the local integration branch) so the picker's default always matches where a plain approve
+  would go; a `merge` retry gate (post-conflict/failure) carries the originally-attempted branch forward. The
+  Inbox card (`queue.tsx`) renders the brief above the raw patch and a free-text "Merge into" field (chosen
+  over a dropdown — no branch-listing endpoint exists yet, so free-text avoids inventing one); the choice rides
+  `Resolution.targetBranch` through resolve → deliver → the audit trail (`hub.ts` records it alongside the
+  brief, which is already captured via `HitlItem.diff`). Verified against a live model + a real local git
+  repo end to end: a real diff drafted a genuine brief, and approving into a fresh non-default branch actually
+  landed the merge there. **Deliberately out of scope, to keep this landable:** the GitHub PR flow's base
+  branch isn't operator-choosable yet (a different mechanism from the local merge queue — a non-default choice
+  there logs an honest note instead of silently applying or silently dropping); the compact run-detail
+  quick-approve (`task.tsx`) keeps the default branch with no picker (the full guided surface is the Inbox
+  card, which has the room for it); "Verifier gate" itself is still unbuilt (see above) — the brief notes the
+  project's post-merge check command when one is configured, nothing more.
 - [ ] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** content max-width /
   purposeful two-column layouts (views left-hug at 1440 today) · stop amber doing triple duty
   (brand + primary + "waiting" status — move caution to its own hue; never encode status by hue

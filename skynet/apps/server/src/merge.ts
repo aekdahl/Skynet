@@ -31,6 +31,10 @@ export interface MergeRequest {
   projectId: string;
   agentBranch: string;
   workspaceId: string;
+  // Guided merge — merge into this branch instead of the project's default
+  // integration branch (creating it off `baseBranch` if it doesn't exist yet,
+  // same as the default). Unset = today's behavior, unchanged.
+  targetBranch?: string;
 }
 
 export interface MergeCallbacks {
@@ -88,7 +92,7 @@ export class MergeEngine {
   }
 
   enqueue(req: MergeRequest): void {
-    const branch = this.integrationBranch(req.projectId);
+    const branch = req.targetBranch || this.integrationBranch(req.projectId);
     const prev = this.chains.get(branch) ?? Promise.resolve();
     const next = prev
       .then(() => this.process(req, branch))
@@ -103,9 +107,14 @@ export class MergeEngine {
     if (!exists) await this.git(this.repo, "branch", branch, this.baseBranch);
   }
 
-  /** Sanitized scratch worktree path for a project's integration merges. */
-  private scratchFor(projectId: string): string {
-    return join(this.scratchRoot, `integration-${projectId.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
+  /** Sanitized scratch worktree path for a project's integration merges —
+   *  keyed by BOTH project and target branch: with guided merge, one project
+   *  can have multiple chains (one per distinct target branch, see enqueue())
+   *  running concurrently, and each needs its own scratch dir or they'd
+   *  stomp on each other's worktree checkout. */
+  private scratchFor(projectId: string, branch: string): string {
+    const safe = (s: string) => s.replace(/[^a-zA-Z0-9._-]/g, "_");
+    return join(this.scratchRoot, `integration-${safe(projectId)}-${safe(branch)}`);
   }
 
   private async process(req: MergeRequest, branch: string): Promise<void> {
@@ -115,7 +124,7 @@ export class MergeEngine {
     // A fresh scratch worktree holding the integration branch. --force covers a
     // leftover checkout of the branch elsewhere (e.g. pre-fix state where the
     // engine used to check it out in the shared repo).
-    const scratch = this.scratchFor(req.projectId);
+    const scratch = this.scratchFor(req.projectId, branch);
     await this.git(this.repo, "worktree", "remove", "--force", scratch).catch(() => undefined);
     await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
     await this.git(this.repo, "worktree", "add", "--force", scratch, branch);
