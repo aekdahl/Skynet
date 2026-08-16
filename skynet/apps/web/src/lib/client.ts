@@ -444,6 +444,9 @@ export function updateProject(
     syncSourceStatus?: boolean;
     // Branch to stack runs/PRs onto; null clears back to the global default.
     baseBranch?: string | null;
+    // Where the Roadmap tab reads its doc from; null clears back to the
+    // default ROADMAP.md/docs/ROADMAP.md candidates.
+    roadmapPath?: string | null;
     // Verifier gate command; null clears back to the global default.
     checkCmd?: string | null;
   },
@@ -574,7 +577,8 @@ export interface AssistantAction {
     | "add_milestone"
     | "set_task_feature"
     | "set_feature_milestone"
-    | "edit_roadmap";
+    | "edit_roadmap"
+    | "set_roadmap_path";
   summary: string;
   taskId?: string;
   text?: string;

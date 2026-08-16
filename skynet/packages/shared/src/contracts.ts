@@ -356,6 +356,12 @@ export const Project = z.object({
   // (e.g. close/comment the GitHub issue on done). Outward-facing, so off by
   // default. See docs/task-source-sync.md.
   syncSourceStatus: z.boolean().default(false),
+  // Override for where the Roadmap tab reads its doc from, when it isn't at
+  // either default candidate (steward/docs.ts's ROADMAP_PATHS —
+  // "ROADMAP.md"/"docs/ROADMAP.md"). Set by the operator (or Steward,
+  // confirmed) via a "select a file" affordance when the default lookup comes
+  // up empty. null = use the default candidates, unchanged behavior.
+  roadmapPath: z.string().nullable().default(null),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -832,6 +838,7 @@ export const UpdateProjectRequest = z.object({
   // empty = all keys). See Project.enabledRunnerCredentialIds.
   enabledRunnerCredentialIds: z.array(z.string()).optional(),
   syncSourceStatus: z.boolean().optional(), // write status changes back to the source of truth
+  roadmapPath: z.string().nullable().optional(), // see Project.roadmapPath; null clears → default candidates
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 
@@ -904,8 +911,12 @@ export type UpdateMilestoneRequest = z.infer<typeof UpdateMilestoneRequest>;
 // after the operator confirms the diff in chat. `baselineHash` (always) and
 // `baselineSha` (GitHub-bound projects only) pin the edit to the exact content
 // it was drafted against, so a concurrent change is refused, not clobbered.
+// `path` isn't restricted to the two default candidates: Project.roadmapPath
+// can point the doc at any file, and validateProjectAction's edit_roadmap
+// case (steward/assistant.ts) already refuses a path that doesn't match the
+// resolved doc's own — this schema doesn't need a second, stricter opinion.
 export const UpdateProjectRoadmapRequest = z.object({
-  path: z.enum(["ROADMAP.md", "docs/ROADMAP.md"]),
+  path: z.string().min(1),
   content: z.string().min(1),
   baselineHash: z.string().min(1),
   baselineSha: z.string().optional(),

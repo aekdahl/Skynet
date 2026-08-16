@@ -119,6 +119,13 @@ export function StewardDock({
           .then(() => {
             window.dispatchEvent(new CustomEvent("skynet:roadmap-updated", { detail: { projectId } }));
           });
+      case "set_roadmap_path":
+        // A plain project field via the normal store path, but an open Roadmap
+        // tab needs the same live-refetch nudge edit_roadmap gives it — it isn't
+        // driven by project.roadmapPath directly, it refetches on this event.
+        return updateProject(projectId, { roadmapPath: a.path ?? null }).then(() => {
+          window.dispatchEvent(new CustomEvent("skynet:roadmap-updated", { detail: { projectId } }));
+        });
       default: {
         // Exhaustiveness guard: every ProjectActionKind Steward can propose MUST
         // have a case here. Without it a confirmed action silently no-ops (the
