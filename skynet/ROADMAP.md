@@ -173,9 +173,12 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
    workspace's very first project also defaults Autonomy **off** (every project after defaults
    on, as before) — gated on the client's own project count at the moment the create form opens,
    not a server-side default change, so every other caller (MCP, API) is unaffected.
-10. [ ] **Fleet copy & guardrails** — "1 agents" pluralization; unify "+ Configure agent" vs
-    "Add to fleet"; move destructive **Retire** behind detail/overflow or confirm inline;
-    label the provider strip as the *catalog*, not configured.
+10. [x] **Fleet copy & guardrails** — "1 agent" pluralization fixed; the header CTA is now
+    "+ Add agent" (matched to the form's own "Add to fleet" submit, one verb across the whole
+    flow); Retire now confirms inline via the same danger-styled `useConfirm()` dialog used
+    elsewhere (Stop run, etc.), with copy verified against what `retireRunner` actually does
+    (history preserved, only the agent record removed; a busy agent is already 409-blocked);
+    the provider strip reads "catalog: Claude, Codex, …" instead of implying all five are configured.
 11. [x] **Inbox empty state teaches** — the empty state lists all four gate kinds (approval / plan
     review / diff review / merge conflict) with a one-line blurb each.
 12. [x] **Prioritize the backlog _and_ todo** — manual promote/demote (reorder) on **todo**
@@ -202,10 +205,16 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   runners** (Codex/Gemini/Cursor/Copilot) — `cli-runner.ts` has no MCP wiring at all today, and vendor
   support varies (several don't support MCP config yet), so this is a per-vendor investigation, not one
   drop-in change.
-- [ ] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** (+ **OpenCode**, which
+- [~] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot** (+ **OpenCode**, which
   is ubiquitous across the competitor field, and **Kimi Code** — Moonshot AI's terminal coding agent, same
   CLI shape as Claude/Codex/Gemini, [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — then
   breadth reactively from the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
+  *Landed: Codex, Gemini, Cursor, and Copilot are all real, wired-up `CliRunnerProvider`s
+  (`orchestrator.ts`'s `getProvider` dynamic-imports each from `runner-sdk`), plus Hermes (not
+  originally named in this bullet) — five non-Claude vendors live today, each with real CLI
+  detection, argv/env wiring, and (per the CLI-usage-fidelity pass above) verified-current usage
+  parsing for Codex/Gemini/Cursor.* Still to do: **OpenCode**, **Kimi Code**, and reactive breadth
+  from the candidate list.
 - [x] **Agent labels / custom grouping** — Fleet already supports both: a "Group" field
   (`label`) with a known-groups datalist, the fleet grid groups by label with headings, and
   editing an agent's name is already part of the same Configure form.
@@ -214,7 +223,6 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   `shouldQuery:false`; CLI runners buffer + prepend). A third interaction type (`inform`) alongside
   chat + resolve; optional "also remember" promotes the note to area/workspace memory (v4) so future
   agents inherit it too. Audited via existing streams.
-- [ ] Real **live-preview** pipeline (sandboxed per-branch URLs).
 - [~] **🔗 Per-project live preview — "see what it builds", any software.** Today's W5 preview is
   per-agent-*branch* and effectively static/web. Generalize to a **stable per-project preview of the
   integration branch** that handles any software, not just SPAs. **Proposed approach:**
@@ -286,8 +294,15 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   runners** — one container per agent, completing the v0 sandbox item's deferred
   half: memory/CPU caps (cgroups) and network egress allowlist (proxy). The
   command-deny, worktree write-confinement, and runtime cap already ship locally.
-- [ ] **Guided provider connect** — one-click "Connect Claude / Codex / …": in-app key entry + a live verify,
-  so onboarding never requires hand-authing each vendor CLI (the #1 friction rivals impose).
+- [x] **Guided provider connect** — one-click "Connect Claude / Codex / …": in-app key entry + a live verify,
+  so onboarding never requires hand-authing each vendor CLI (the #1 friction rivals impose). Key entry
+  already worked (`createCredential`/`setSecret`); landed the missing live-verify half — a cheap,
+  read-only, per-vendor call (`secrets/verify.ts`: Anthropic/OpenAI/Google `models` list, OpenRouter
+  auth-key check, Cursor `/v0/me`, GitHub `/user` for both `copilot` and a pinned GitHub PAT) confirms a
+  saved key actually authenticates rather than just being present. Never blocks the save itself (a key
+  can be valid but momentarily rate-limited); Settings shows a spinner → pass/fail badge with the
+  vendor's own error text, on both the main provider row and the "+ Add another key" form. Verified live
+  against real keys (good and deliberately-wrong) through the actual Settings UI.
 - [x] **Run escalation / hand-off — a stuck run halts for a human.** A run enters a first-class
   `escalation` HITL ("NEEDS HELP") three ways: the **agent hands off** itself when genuinely blocked
   (AskUserQuestion with header "ESCALATE" → detected by the runner), **too many failures**
@@ -486,13 +501,19 @@ features below are white space.)
   pitch — "transport vs. generation," deep links that "hydrate state" instead of forcing a re-login.
   The underlying idea is sound and is genuinely missing; the "agent renders a whole spatial PWA on the
   fly" framing isn't — see the AG-UI note in Considerations for why we're not chasing that part.)*
-- [ ] **Operator ergonomics (P3 of [docs/ux-review.md](docs/ux-review.md)):** **⌘K command palette**
+- [~] **Operator ergonomics (P3 of [docs/ux-review.md](docs/ux-review.md)):** **⌘K command palette**
   (navigation + verbs: assign, approve latest gate, open project) · **keyboard-first Inbox**
   (j/k navigate, a/r/m approve/reject/modify, ↵ opens the run — `QueueView.selectedIdx` already
   exists; finish it + a visible shortcut bar) · **OS notifications + dock badge** on new gates
   (Electron; waiting-minutes are the product's core currency) · **Timeline lens depth** (zoom,
   brush, click-through) · **cost/usage roll-ups** (per-project header + per-runner in Fleet —
-  pre-figures the team blueprint's budgets).
+  pre-figures the team blueprint's budgets). *Landed: the **⌘K command palette** (`CommandPalette`,
+  ⌘K/Ctrl+K) — fuzzy-navigate to a view or project, or approve the most recent pending HITL gate —
+  and the **keyboard-first Inbox** — `QueueView.selectedIdx` now actually wired (j/k navigate, ↵
+  opens the run, a/r/m approve/reject/modify calling the same `store.resolveHitl` the card buttons
+  use), plus a dismissible shortcut hint bar. Both skip their shortcuts while the operator is typing
+  in a text field. Still to do: **OS notifications + dock badge**, **Timeline lens depth**,
+  **cost/usage roll-ups**.
 
 **Memory v0 (thin moat, pulled forward from v4):**
 - [ ] Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory
