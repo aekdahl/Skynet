@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNow, useStore } from "./lib/store";
 import { initialView, onNavigate } from "./pwa/launch"; // [pwa] Inbox-first launch + push deep-link
+import { setDesktopBadge, focusDesktopWindow } from "./lib/desktop"; // [desktop] dock badge + window focus, no-op outside Electron
+import { openQueue } from "./lib/derive";
 import { parseHash, toHash } from "./lib/routing"; // [w7] deep links
 import { gateView } from "./lib/dev"; // dev-only pages hidden from release builds
 import { TitleBar, OpSidebar, OpStatusBar, ConnectingShell } from "./components/shell";
@@ -119,9 +121,13 @@ export function App() {
 
   // [pwa] A push / notification click (relayed by the service worker) or a
   // manifest shortcut navigates the app in-place — usually to the Inbox.
+  // [desktop] Also ask the Electron shell to restore/focus the window — a
+  // clicked OS notification lands here whether or not the app was foregrounded,
+  // and only the main process can un-minimize/raise it. No-op outside Electron.
   useEffect(
     () =>
       onNavigate((v, navRunId) => {
+        focusDesktopWindow();
         if (navRunId) {
           setFrom(v);
           setRunId(navRunId);
@@ -132,6 +138,13 @@ export function App() {
       }),
     [],
   );
+
+  // [desktop] Keep the dock/taskbar badge in sync with the open HITL count —
+  // "waiting-minutes are the product's core currency," so the badge should
+  // reflect it live, not just at connect. No-op outside Electron.
+  useEffect(() => {
+    setDesktopBadge(openQueue(store.queue).length);
+  }, [store.queue]);
 
   // [w7] Keep the URL hash in sync with router state (shareable deep links).
   useEffect(() => {

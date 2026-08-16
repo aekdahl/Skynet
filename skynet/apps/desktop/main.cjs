@@ -10,7 +10,7 @@
 // (ELECTRON_RUN_AS_NODE=1) for crash isolation and so we don't ship a second
 // Node runtime. We wait for /health, then load the SPA it serves.
 
-const { app, BrowserWindow, shell, dialog, nativeImage } = require("electron");
+const { app, BrowserWindow, shell, dialog, nativeImage, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const path = require("node:path");
@@ -278,7 +278,11 @@ function createWindow() {
     ...(mac
       ? { trafficLightPosition: { x: 14, y: 13 } }
       : { titleBarOverlay: { color: "#000000", symbolColor: "#9aa4b2", height: 40 } }),
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, "preload.cjs"),
+    },
   });
 
   // Open external links (docs, provider sites) in the real browser, not in-app.
@@ -301,6 +305,36 @@ function createWindow() {
   pendingDeepLink = null;
   win.loadURL(hash ? `${base}${hash}` : base);
 }
+
+// Dock/taskbar badge — driven by the renderer's live pending-HITL count (see
+// apps/web/src/lib/desktop.ts + App.tsx). macOS gets the dock's own text badge;
+// app.setBadgeCount covers Linux (Unity) and is a harmless no-op elsewhere
+// (Windows has no badge-count API — an overlay icon would be the equivalent,
+// not implemented here).
+function setDockBadge(count) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  if (process.platform === "darwin" && app.dock) {
+    app.dock.setBadge(n > 0 ? String(n) : "");
+    return;
+  }
+  try {
+    app.setBadgeCount(n);
+  } catch {
+    /* unsupported on this platform — no-op */
+  }
+}
+
+ipcMain.on("skynet:badge", (_event, count) => setDockBadge(count));
+
+// Restore + focus the window — used when a clicked OS notification lands here
+// (see App.tsx's onNavigate) so the app comes forward even if it was minimized
+// or behind other windows, not just "not quit."
+ipcMain.on("skynet:focus", () => {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+});
 
 function checkForUpdates() {
   if (!app.isPackaged) return;

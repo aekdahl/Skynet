@@ -19,6 +19,7 @@ import {
   type VerifyCredentialResult,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
+import { toast } from "../components/toast";
 
 // ─── auth ───────────────────────────────────────────────────────────────────
 // The session token drives both REST (Bearer) and the WS (?token=). It's set by
@@ -27,6 +28,46 @@ import { parseStewardStream, type StewardReply } from "./steward-stream";
 const TOKEN_KEY = "skynet_token";
 const token = () =>
   (typeof localStorage !== "undefined" && localStorage.getItem(TOKEN_KEY)) || "dev-cyberdyne";
+
+// The current session's principal, mirrored from `GET /api/auth/me` — a
+// human login carries no `scopes` (full authority) UNLESS it's a viewer
+// account (server: auth/operators.ts maps role "viewer" → scopes: ["observe"]
+// at login). `Principal` isn't a shared type (it's server-only, apps/server/
+// src/auth.ts) so this mirrors just the shape the client needs, by hand — same
+// pattern as AssistantAction's kind union below.
+export interface Principal {
+  workspaceId: string;
+  operatorId: string;
+  scopes?: string[];
+}
+
+let readOnly = false;
+/** Set once per boot (StoreProvider, after `GET /api/auth/me` resolves) — the
+ *  client-side half of the viewer gate. The REAL gate is server-side (every
+ *  mutation route 403s a scoped-without-author principal — see auth-guard.ts's
+ *  requiredScope); this just stops the request before it leaves the browser,
+ *  with a message that explains why, instead of a bare 403 surfacing wherever
+ *  the call happened to be made from. */
+export function setReadOnly(v: boolean): void {
+  readOnly = v;
+}
+export function isReadOnly(): boolean {
+  return readOnly;
+}
+
+// Mirrors auth-guard.ts's requiredScope() exemptions (a personal auth action,
+// and the dry-run/judge endpoints that only read + call an LLM) — so a viewer
+// isn't blocked client-side from something the server would actually allow.
+// Kept in sync by hand; drifting just means an occasional needless toast (the
+// server 403 never fires the other way, since it's the authoritative check).
+const READONLY_EXEMPT = new Set([
+  "/api/auth/logout",
+  "/api/telegram/simulate",
+  "/api/simulation/grade",
+  "/api/simulation/judge",
+  "/api/steward/chat",
+  "/api/steward/chat/stream",
+]);
 
 /**
  * Exchange operator credentials for a session token (the one public route,
@@ -73,6 +114,10 @@ export async function verifyMfa(challengeId: string, code: string): Promise<void
 // ─── REST helpers ─────────────────────────────────────────────────────────
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+  if (readOnly && method !== "GET" && !READONLY_EXEMPT.has(path)) {
+    toast("You're signed in as a viewer — read-only.");
+    throw new ApiError(403, "Viewer sessions are read-only.");
+  }
   const headers: Record<string, string> = { authorization: `Bearer ${token()}` };
   if (body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(path, {
@@ -95,6 +140,23 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+}
+
+/** Who am I? — resolves the current token's principal. Called once at boot
+ *  (StoreProvider) so the app knows whether this session is read-only before
+ *  anything tries to mutate. GET, so it's never itself blocked by the guard
+ *  above. */
+export async function fetchMe(): Promise<Principal> {
+  const { principal } = await req<{ principal: Principal }>("GET", "/api/auth/me");
+  return principal;
+}
+
+/** A viewer session (Principal.scopes set, and "author" not among them) —
+ *  mirrors the server's hasScope() semantics: undefined scopes = full
+ *  authority, so only an EXPLICITLY scoped-without-author principal reads as
+ *  read-only. */
+export function isReadOnlyPrincipal(principal: Principal): boolean {
+  return principal.scopes !== undefined && !principal.scopes.includes("author");
 }
 
 export async function fetchSnapshot(): Promise<Snapshot> {
@@ -141,7 +203,7 @@ export function clearAudit() {
 // HITL
 export function resolveHitl(
   id: string,
-  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean },
+  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; memoryNote?: string },
 ) {
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
 }
@@ -444,6 +506,8 @@ export function updateProject(
     autonomy?: boolean;
     approvalLevel?: string;
     planModeGate?: boolean;
+    // Tool names to block for this project's agents; null clears the restriction.
+    disallowedTools?: string[] | null;
     repoPath?: string | null;
     // null clears the field back to "no project rules".
     instructions?: string | null;

@@ -8,7 +8,7 @@
 //   3. Operations normalizes create/update: blank / whitespace-only clears the
 //      field back to null (unambiguous "no rules" state).
 import { describe, it, expect } from "vitest";
-import type { Project, Task, TaskRun, ServerEvent } from "@skynet/shared";
+import type { Agent, Project, Task, TaskRun, ServerEvent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { withInstructions } from "../apps/server/src/orchestrator.js";
 import { statusContext } from "../apps/server/src/steward/assistant.js";
@@ -170,6 +170,93 @@ describe("Operations — instructions create + update normalization", () => {
     const after = await ops.updateProject(DEFAULT_WORKSPACE, p.id, { autonomy: false });
     expect(after.instructions).toBe("Rules stay");
     expect(after.autonomy).toBe(false);
+  });
+});
+
+// ── 4) Orchestrator — the wiring itself: does instructions actually reach
+// the StartSpec a runner receives? (1)-(3) above prove withInstructions() is
+// correct and that Steward sees it, but not that assignTask/forkAgent (or any
+// other call site) actually CALL it on the real request path — that's the
+// gap this section closes. A RecordingProvider stands in for a real runner
+// and captures every StartSpec handed to provider.start(); vendor-neutral, so
+// this also proves the wiring for every CLI vendor (they receive the exact
+// same StartSpec.task the orchestrator already built — see
+// packages/runner-sdk/src/{codex,gemini,hermes}.ts, which pass spec.task
+// through to argv verbatim, and cursor.ts/copilot.ts/claude.ts, which
+// interpolate it into their own prompt template unchanged).
+
+class RecordingProvider2 implements RunnerProvider {
+  readonly id: ProviderId = "claude";
+  specs: StartSpec[] = [];
+  async start(spec: StartSpec, _events: RunnerEvents): Promise<RunnerHandle> {
+    this.specs.push(spec);
+    return { runId: spec.runId, provider: this.id, async pause() {}, async resume() {}, async message() {}, async stop() {} };
+  }
+}
+
+async function setupRecording() {
+  const store = new MemoryStore();
+  const hub = new Hub(store, new NullBus());
+  const provider = new RecordingProvider2();
+  const orchestrator = new Orchestrator(store, hub, provider);
+  const ops = new Operations({ store, hub, orchestrator });
+  // A fleet runner to assign onto — RecordingProvider2 never actually runs
+  // anything, but assignTask still needs one to acquire.
+  const runner: Agent = {
+    id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1",
+    provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0,
+  } as Agent;
+  await store.putAgent(runner);
+  return { store, ops, orchestrator, provider };
+}
+
+describe("Orchestrator — StartSpec.task actually carries Project.instructions", () => {
+  it("assignTask: the runner's StartSpec.task is prefixed with the PROJECT INSTRUCTIONS banner", async () => {
+    const { ops, provider } = await setupRecording();
+    const p = await ops.createProject(DEFAULT_WORKSPACE, {
+      name: "Acme",
+      goal: "",
+      instructions: "Always use tabs, never semicolons.",
+    });
+    const t = await ops.createTask(DEFAULT_WORKSPACE, p.id, { text: "Add a health check endpoint" });
+    await ops.assignTask(DEFAULT_WORKSPACE, p.id, t.id);
+
+    expect(provider.specs).toHaveLength(1);
+    const { task } = provider.specs[0]!;
+    expect(task).toContain("=== PROJECT INSTRUCTIONS");
+    expect(task).toContain("Always use tabs, never semicolons.");
+    expect(task).toContain("Add a health check endpoint");
+  });
+
+  it("assignTask: a project with no instructions is a true no-op (no banner)", async () => {
+    const { ops, provider } = await setupRecording();
+    const p = await ops.createProject(DEFAULT_WORKSPACE, { name: "Acme", goal: "" });
+    const t = await ops.createTask(DEFAULT_WORKSPACE, p.id, { text: "Add a health check endpoint" });
+    await ops.assignTask(DEFAULT_WORKSPACE, p.id, t.id);
+
+    const { task } = provider.specs[0]!;
+    expect(task).not.toContain("PROJECT INSTRUCTIONS");
+    expect(task).toContain("Add a health check endpoint");
+  });
+
+  it("forkAgent: the fork's StartSpec.task ALSO carries the project's instructions", async () => {
+    const { ops, provider } = await setupRecording();
+    const p = await ops.createProject(DEFAULT_WORKSPACE, {
+      name: "Acme",
+      goal: "",
+      instructions: "Use @acme/agents for all new agent code.",
+    });
+    const t = await ops.createTask(DEFAULT_WORKSPACE, p.id, { text: "Add a health check endpoint" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, p.id, t.id);
+    provider.specs.length = 0; // only care about the fork's own spec below
+
+    const forked = await ops.forkAgent(DEFAULT_WORKSPACE, run.id);
+
+    expect(provider.specs).toHaveLength(1);
+    const { task } = provider.specs[0]!;
+    expect(task).toContain("=== PROJECT INSTRUCTIONS");
+    expect(task).toContain("Use @acme/agents for all new agent code.");
+    expect(forked.parentId).toBe(run.id);
   });
 });
 

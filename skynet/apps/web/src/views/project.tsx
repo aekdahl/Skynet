@@ -5,8 +5,11 @@ import * as api from "../lib/client";
 import { Blocked, PrimaryButton } from "../components/empty";
 import {
   agentsForProject,
+  computeUsageRollup,
   curStep,
+  fmtCost,
   fmtDurMs,
+  fmtNum,
   fmtWait,
   openQueue,
   STATUS_META,
@@ -832,18 +835,6 @@ function AddTaskCard({
 // holds — no extra fetch. Shown above the kanban/timeline lens toggle. Cells
 // that have no data (vendor didn't report tokens/cost) render as "—", not 0,
 // so a missing signal doesn't look like a zeroed real one.
-
-function fmtNum(n: number): string {
-  if (n < 1_000) return String(n);
-  if (n < 1_000_000) return (n / 1_000).toFixed(n < 10_000 ? 1 : 0) + "k";
-  return (n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0) + "M";
-}
-function fmtCost(usd: number): string {
-  if (usd < 0.01) return "<$0.01";
-  if (usd < 1) return "$" + usd.toFixed(2);
-  if (usd < 100) return "$" + usd.toFixed(2);
-  return "$" + Math.round(usd).toLocaleString();
-}
 function ProjectStats({
   project,
   runs,
@@ -858,15 +849,15 @@ function ProjectStats({
   const projTasks = tasks.filter((t) => t.projectId === project.id && !t.archived);
   const projRuns = runs.filter((r) => r.projectId === project.id && !r.archived);
   // Vendor-reported usage sums (nulls stay nulls — a missing signal, not 0).
-  let inTok = 0, outTok = 0, dur = 0, usdKnown = false, usdTotal = 0, durKnown = false;
-  for (const r of projRuns) {
-    const u = r.usage;
-    if (!u) continue;
-    inTok += u.inputTokens;
-    outTok += u.outputTokens;
-    if (u.costUsd != null) { usdKnown = true; usdTotal += u.costUsd; }
-    if (u.durationMs != null) { durKnown = true; dur += u.durationMs; }
-  }
+  // computeUsageRollup already excludes archived runs; passing all `runs` (not
+  // projRuns) keeps its own filter as the single source of truth.
+  const roll = computeUsageRollup(runs).byProject[project.id];
+  const inTok = roll?.tokensIn ?? 0;
+  const outTok = roll?.tokensOut ?? 0;
+  const usdKnown = roll?.costUsd != null;
+  const usdTotal = roll?.costUsd ?? 0;
+  const durKnown = roll?.durationMs != null;
+  const dur = roll?.durationMs ?? 0;
   // Which provider · model pairs actually ran on this project (dedup for the
   // "Models used" tile). Empty for a fresh project — display renders "—" then.
   const modelPairs = new Set<string>();
@@ -969,6 +960,70 @@ function ProjectRunnerKeys({ project, onChange }: { project: Project; onChange: 
             <input type="checkbox" checked={enabled.includes(c.id)} onChange={() => toggle(c.id)} />
             <span className="proj-keys-name">{c.label}</span>
             {c.last4 && <span className="proj-keys-fp mono">····{c.last4}</span>}
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+// Built-in tools sensible to offer as a checkbox deny-list — the risky/mutating
+// surface (shell, file writes, network egress). Read-only tools (Read/Glob/
+// Grep/LS/NotebookRead) and Skynet's own control-flow tools (TodoWrite/
+// TaskCreate/TaskUpdate/AskUserQuestion/ExitPlanMode — the PLAN panel and HITL
+// question/plan gates depend on them) are deliberately left off: blocking one
+// of those wouldn't just remove a capability, it'd break Skynet's own
+// machinery for this project's runs.
+const DENYABLE_TOOLS: Array<{ id: string; hint: string }> = [
+  { id: "Bash", hint: "shell commands" },
+  { id: "Write", hint: "create/overwrite files" },
+  { id: "Edit", hint: "modify files" },
+  { id: "MultiEdit", hint: "batch file edits" },
+  { id: "NotebookEdit", hint: "edit Jupyter notebooks" },
+  { id: "WebFetch", hint: "fetch a URL" },
+  { id: "WebSearch", hint: "search the web" },
+];
+
+// Which tools this project's agents may never use (see Project.disallowedTools)
+// — passed straight to the SDK's own disallowedTools, which removes the tool
+// from the model's context entirely (not a per-call HITL gate). Claude runner
+// only. Empty/null = no restriction (the default).
+function ProjectToolAccess({ project, onChange }: { project: Project; onChange: (tools: string[] | null) => void }) {
+  const denied = project.disallowedTools ?? [];
+  // A tool set via the API/MCP that isn't in the curated list — still shown
+  // (and removable) so toggling a curated checkbox never silently drops it.
+  const extra = denied.filter((id) => !DENYABLE_TOOLS.some((t) => t.id === id));
+  const toggle = (id: string) => {
+    const next = denied.includes(id) ? denied.filter((x) => x !== id) : [...denied, id];
+    onChange(next.length ? next : null);
+  };
+  const summary = denied.length === 0 ? "All tools" : `${denied.length} blocked`;
+  return (
+    <details className="proj-keys">
+      <summary
+        className="proj-keys-summary"
+        title="Tool names this project's agents may never use — removed from the model entirely, not just gated per call. Claude runner only."
+      >
+        <span className="proj-approval-label mono">Tools</span>
+        <span className="proj-keys-value">{summary}</span>
+      </summary>
+      <div className="proj-keys-menu">
+        <div className="proj-keys-hint">
+          {denied.length === 0
+            ? "Agents may use every tool. Block a tool to make it categorically unavailable."
+            : "These tools are unavailable to this project's agents (Claude runner only)."}
+        </div>
+        {DENYABLE_TOOLS.map((t) => (
+          <label key={t.id} className="proj-keys-item">
+            <input type="checkbox" checked={denied.includes(t.id)} onChange={() => toggle(t.id)} />
+            <span className="proj-keys-name">{t.id}</span>
+            <span className="proj-keys-fp">{t.hint}</span>
+          </label>
+        ))}
+        {extra.map((id) => (
+          <label key={id} className="proj-keys-item" title="Set outside this list (API/MCP) — uncheck to remove.">
+            <input type="checkbox" checked onChange={() => toggle(id)} />
+            <span className="proj-keys-name mono">{id}</span>
           </label>
         ))}
       </div>
@@ -1363,6 +1418,7 @@ export function ProjectView({
             </label>
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
+            <ProjectToolAccess project={project} onChange={(tools) => updateProject(project.id, { disallowedTools: tools })} />
             {project.repoPath && (
               <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
                 ▶ Preview app

@@ -360,6 +360,8 @@ export class Operations {
       action: input.action,
       optionIndex: input.optionIndex ?? null,
       guidance: input.guidance ?? null,
+      // Approve-with-memory — only meaningful alongside an actual approval.
+      memoryNote: input.action === "approve" ? (input.memoryNote?.trim() || null) : null,
       by: operatorId,
       at: now(),
     };
@@ -592,6 +594,8 @@ export class Operations {
       approvalRules: [],
       // Plan-mode gating is off by default — set later in project settings.
       planModeGate: false,
+      // No tool restriction at creation — set later in project settings.
+      disallowedTools: null,
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo,

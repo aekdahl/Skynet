@@ -44,6 +44,7 @@ const mkResolution = (): Resolution => ({
   action: "approve",
   optionIndex: null,
   guidance: null,
+  memoryNote: null,
   by: "policy:trusted",
   at: 200,
 });

@@ -27,7 +27,7 @@ found these rare-to-absent), and where they live:
    cross-vendor, exposed as an **MCP memory server any tool can read/write, even outside Skynet**.
 2. **Cross-vendor consensus runs** (v1.5): same task on Claude + Codex + Gemini, auto-diff, keep/merge
    the winner — or have them peer-review each other.
-3. **Prompt-injection / tool-poisoning firewall** (v1): gate tool calls steered by untrusted content the
+3. **Prompt-injection / tool-poisoning firewall** (v1, landed): gate tool calls steered by untrusted content the
    agent read (issue / web page / dependency). The category's first agent-security layer.
 4. **Provably-improving fleet** (v5): measure which memory + task phrasings one-shot vs. churn, promote
    the winners, and show the user the curve.
@@ -404,8 +404,35 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     against historical runs before enabling it.
   - **Context-aware risk** — classify by *blast radius*, not string match: outside the worktree, touching
     secrets, git-history-destructive, package publish, DB migration, network egress.
-  - **⭐ Prompt-injection / tool-poisoning firewall** — detect when untrusted content the agent read (an
+  - [x] **⭐ Prompt-injection / tool-poisoning firewall** — detect when untrusted content the agent read (an
     issue, a web page, a dependency README) is steering its tool calls, and gate it. No competitor has this.
+    *Landed (v1): a structured LLM consult (`injection-firewall.ts`, same prompt-builder + safe-default-parser
+    pattern as `review-verdict.ts` — the model reads a `{steered, reason, source}` JSON field, never a
+    substring/regex classification of prose) judges whether a command-gate is following an instruction embedded
+    in content the agent read, distinct from `command-safety.ts`'s classifier (which judges a command's own
+    shape, not its origin). The Claude runner tracks a capped buffer of untrusted reads — any `WebFetch`, plus
+    `Read` scoped to `node_modules`/`vendor`/`.git` paths (a scoping heuristic for what's worth remembering;
+    the security judgment itself stays the LLM's job) — and hands it to `orchestrator.ts#raise()`, which runs
+    the check **before** the approval-policy auto-approve block and **forces a human gate on any steered
+    verdict, overriding the project's approval level** (a `trusted` project that would otherwise silently
+    auto-approve a low-risk command still gates it). The gate carries a `prompt-injection-suspected: <source>`
+    flag and a bumped risk floor; every check's outcome is logged — including a benign one — so the firewall's
+    activity is auditable, not just its hits. *Verified live* (not just unit tests): a real Claude agent doing
+    ordinary "get the app running" work read a vendored dependency's README containing a subtly-injected setup
+    instruction (`echo ... > .cache`, framed as ordinary docs, no "ignore your instructions" framing), followed
+    it as part of what it believed was legitimate setup, and the firewall correctly flagged the resulting
+    command as steered and parked it for a human — while a genuinely unrelated command earlier in the same run
+    (`node index.js`) was correctly judged not-steered and auto-approved as normal. Full test suite: pure-parser
+    unit tests + three end-to-end scenario tests (adversarial/benign/no-untrusted-reads) via the `providerOverride`
+    seam, proving the auto-approval-bypass property against a scripted provider, not just mocked JSON.
+    **Known v1 limits, stated plainly rather than overclaimed:** Claude-only — CLI vendors (Codex/Gemini/Cursor/
+    Copilot/Hermes) don't populate the buffer, since their event streams don't expose tool-result bodies today;
+    a task's own imported source text (e.g. a GitHub issue body) is not treated as untrusted, only content read
+    *during* the run; the `node_modules`/`vendor`/`.git` path heuristic is narrow by design and will miss other
+    untrusted local content; a failed/unreadable consult fails open (no extra scrutiny, but `command-safety.ts`'s
+    own gate still applies); and — as the live verification also showed — a sufficiently blunt injection often
+    gets refused by the model's own training before any tool call is even attempted, so this firewall is
+    defense-in-depth for the cases where the model *does* comply, not the only line of defense.*
   - **Tamper-evident audit** — hash-chained, append-only decision records (who saw which diff/command, what
     the policy said, what the agent did after); exportable to SIEM.
   - **⭐ Compliance evidence pack** — one-click signed "AI change report" for auditors (EU AI Act tailwind).
@@ -415,16 +442,43 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     and memory get authored); async / mobile / delegated approval + escalation SLAs + a 2-person rule for high risk.
     *Landed groundwork: **MCP push notifications** — an MCP client sees new HITL gates + review-needed events
     live over `notifications/message` (workspace-scoped, approver-hint on scoped tokens); wait-for-hitl
-    long-poll remains as the reliable fallback for stateless HTTP clients. Steward-side approve-in-flow +
-    `approve-with-rule` still to do.*
+    long-poll remains as the reliable fallback for stateless HTTP clients. **`approve-with-rule` turns out to
+    already be shipped** (found, not built, while scoping this item) — "Always allow" on a command-approval
+    gate writes a standing per-project `ApprovalRule` (exact command, risk-capped), and `decideAutoApproval`
+    is consulted on every new command gate (`orchestrator.raise()`), so an identical future command
+    auto-approves without asking again; a real precursor to the fuller policy-as-code engine above, not a
+    stub. **`approve-with-memory` in-flow capture landed**: a quiet "+ Also remember" toggle on any of the
+    four everyday gate kinds (approval/plan/diff/merge) lets an operator attach a durable-preference note to
+    an approve, alongside (not instead of) the command-specific rule button — `Resolution.memoryNote`,
+    threaded through `ResolveRequest`/MCP's `resolve_hitl` for free, persisted on the resolution and the
+    audit trail (rendered in the Audit view) so the intent isn't lost. This is UI + plumbing only: Memory v0
+    (below) and the broader policy-as-code engine above haven't landed, so nothing reads the note back or
+    enforces it yet — it's a queue of operator intent waiting for either to adopt as a write path. Steward-side
+    approve-in-flow and policy-driven gate *batching* still to do.*
   - Secrets at rest (local); 🏢 **observability** (hosted metrics/logging/tracing) + SIEM export of the audit.
 - [x] **Runner session-map cleanup** — `ClaudeRunnerProvider.sessions` (runId→sessionId, kept for fork resume) is now a bounded LRU (cap 500, evict-oldest via re-insertion-on-touch), not evict-on-completion as originally scoped: Fork stays available on ANY run indefinitely (no completion/archival ever disables the Fork button), so there's no lifecycle event that safely marks an entry as "will never be resumed again" — evicting on done/worktree-retire would silently break resume for the ordinary "fork a run I finished a while ago" case. Beyond the cap, a fork just starts a fresh (non-resumed) session — exactly what already happens today after a server restart, since this cache was never persisted. Small RAM/tech-debt fix; no behavior change for realistic single-operator volumes.
 - [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs) + **plan-mode gate (Claude)** — an opt-in per-project `planModeGate` sets `permissionMode: "plan"`; `ExitPlanMode` is intercepted and raised as a real `plan` HITL (the dead `HitlKind` finally has a producer), and everything but read-only investigation is denied outright until the operator approves it — genuinely no writes happen first + token-by-token streaming for Claude (`includePartialMessages` → a bus-only `run.log.delta` event, never persisted per-token → live "typing" in the run log, same finalized `run.log` write as before). **CLI usage fidelity firmed up** (re-verified against each vendor's CURRENT CLI, not assumed): Codex — fixed a real bug, `usageFromJson` scanned for a flat `usage`/`stats`/`tokens` key but codex-cli 0.147.0's `TokenCountEvent` nests real counts two levels deep (`msg.info.total_token_usage`), so usage was silently never reported; now unwrapped correctly. Gemini — `buildArgs` never actually requested JSON output, so text mode was the ONLY mode ever exercised and usage was never parsed despite the JSON-handling code already existing; now defaults to `--output-format stream-json` (verified against gemini-cli's `StreamJsonFormatter`). Cursor — `--output-format stream-json` confirmed current via `cursor-agent --help`; no bug found, left as-is.*
   - [x] **Token-by-token streaming for the CLI runners** — shipped for the two vendors whose wire protocol actually carries per-chunk deltas; the other two don't and aren't forced. Gemini: `-p` non-interactive `stream-json` mode emits a `message`+`delta:true` event per chunk with no distinct "message complete" event on the wire (verified live against gemini-cli's `nonInteractiveCli.ts`, not just the `MessageEvent` type shape) — `gemini.ts#parseLine` now buffers chunks, previews each via `onLogDelta`, and flushes the buffer as one persisted line the moment the next non-delta event arrives (`CliVendor.parseLine` widened to return `CliEvent | CliEvent[]` so a flush can precede that event's own, in `cli-runner.ts`). Cursor: added `--stream-partial-output`; its wire format reuses the exact same `{type:"assistant"}` shape for both a raw chunk and the consolidated message with no dedicated delta type, so `cursor.ts#isConsolidatedAssistantEvent` tells them apart by field presence (`model_call_id` set, or `timestamp_ms` absent) — verified against the shipped CLI's own bundled source (no public repo to check against, no live `CURSOR_API_KEY` in the verifying environment either), not empirically confirmed against a captured live payload; treat as a good-faith reading worth re-checking if a `cursor-agent` update ever changes this. Codex: checked for real, not assumed — `codex exec --json`'s wire format (`codex-rs/exec/src/exec_events.rs`'s `ThreadEvent`, confirmed at the exact `rust-v0.147.0` tag already used for usage) only has `item.started`/`item.completed` lifecycle events for assistant messages, no delta variant; the raw internal protocol DOES have one (`AgentMessageContentDelta` in `codex-rs/protocol`) but `exec --json` doesn't expose it — not wired, nothing to force. Copilot: still text-mode only (see the item below) — no JSON stream to extract a delta from yet.
   Still to do:
   - **Per-runner tool + prompt policy** — surface `allowedTools`/`disallowedTools`, a project system prompt, and `settingSources` (CLAUDE.md) instead of the hardcoded auto-allow set + inline steering. Ties into v4 repo-native memory.
+    *Landed: `disallowedTools` (Claude only)* — `Project.disallowedTools` is a per-project deny-list (a
+    deny-list, not an allow-list: an allow-list risks silently stranding an agent that needs a tool nobody
+    thought to list) threaded through `StartSpec` into the SDK's own `Options.disallowedTools`. Confirmed via
+    the installed SDK's bundled implementation (not just the type doc) that this is forwarded verbatim as the
+    CLI's own `--disallowedTools` flag — the tool is removed from the model's context entirely, a categorical
+    unavailability, distinct from (and with no interaction/double-gating with) the existing
+    `canUseTool`/`AUTO_ALLOW` mid-run HITL gate, which only decides whether an *already-available* tool call
+    needs human review. UI: a checkbox picker (`ProjectToolAccess`, `project.tsx`, mirrors `ProjectRunnerKeys`)
+    over the risky/mutating built-ins (Bash, Write, Edit, MultiEdit, NotebookEdit, WebFetch, WebSearch);
+    Skynet's own control-flow tools (TodoWrite/TaskCreate/TaskUpdate/AskUserQuestion/ExitPlanMode — the PLAN
+    panel + HITL plan/question gates depend on them) are deliberately left off the curated list so the UI
+    can't casually break Skynet's own machinery, though the underlying field accepts any tool name (a value
+    set via the API/MCP outside the curated list still shows up, removable). Not yet done: a full
+    `allowedTools` allow-list (deferred on purpose — land the simpler, safer deny-list primitive first) and
+    `settingSources` (CLAUDE.md, scoped as a separate change).
   - [x] **Structured diffs in gates/review** — shipped: `HitlItem.diff` (stat) is set in `raiseDiffReview` from `WorktreeManager.diffStat`, and the full unified patch is served on-demand by `GET /api/runs/:id/diff` (`orchestrator.ts#runDiff` → `worktrees.ts#patch`, a real `git diff` in the worktree) and rendered by `diff-view.tsx`'s `parseUnifiedDiff`. No vendor-specific patch-event plumbing exists (or is needed) — every runner's changes land in the same worktree, so one `git diff` covers Claude/Codex/Cursor/Gemini/Copilot alike.
-  - **Copilot usage/event fidelity** — `copilot` (v1.0.79) turns out to have a machine-readable mode after all (`--output-format json`, JSONL — this was previously undocumented here as text-only, now confirmed live), reporting output tokens + duration per turn, but no input-token count and no USD cost (it meters "premium requests"/AI credits, not $/token — a genuinely different billing model from the others). Adopting it isn't a usage-only change: the Copilot runner's approval-gate detection and tool/log lines are currently parsed from human-readable text, and `--output-format json` replaces ALL output with JSONL, so wiring usage means migrating that whole parser to structured events, not just adding a field extraction. Scoped out of the CLI-usage-fidelity fix as a separate, larger follow-up.
+  - **Token-by-token streaming for the CLI runners** — Codex/Gemini/Cursor NDJSON deltas → the same `run.log.delta` live-typing path Claude now has (Copilot's JSON mode is per-turn, not per-chunk — see below, nothing to stream yet).
+  - [x] **Copilot usage/event fidelity** — shipped: the Copilot runner now drives `copilot -p ... --output-format json` and dispatches on real structured events instead of regex-matching human-readable text, confirmed live against copilot 1.0.80. The approval gate is a genuine protocol finding, not an assumption: non-interactive `-p` mode has no stdin-driven approval channel at all, so the CLI never emits `permission.requested` there — a tool needing permission is auto-denied immediately (`tool.execution_complete` with `error.code:"denied"`) and the model just adapts inline, all within one continuous turn (verified live: asking the agent to write a file was silently denied twice — the `create` tool, then a `bash > file` fallback — before it gave its own honest "permission denied" answer, no external stimulus). So the gate is keyed off that denial instead: Skynet raises the HITL the CLI itself couldn't, and approving replays the same action as a follow-up turn with that one call's permission scoped in via `--allow-tool` (a specific `shell(cmd)`/`write(path)` pattern, never a blanket `--allow-all-tools`) — verified end-to-end against a real authenticated run, including the file actually landing on the approved retry. Usage: `assistant.message.outputTokens` summed across the run + the terminal `result.usage.totalApiDurationMs`; input tokens and cost stay unreported (0/null) — genuinely absent from this protocol, not a gap (Copilot meters "premium requests"/AI credits, not $/token). Two adjacent bugs fixed along the way: a follow-up turn after a gate decision was missing `--continue` (the condition excluded exactly the turns that needed it, so an approved retry silently lost all prior task context — reproducible in the old text-mode parser too); and turn continuity now uses an explicit per-run `--session-id` instead of `--continue`'s ambient "most recently active session on the host," which would let two concurrent Skynet runs' follow-up turns cross-contaminate each other's conversations.
 - [~] **Review upgrades (adopted from the competitor sweep):**
   - *Landed: **Verifier gate** (bernstein / MartinLoop-style) — the check-running + rollback-on-failure
     mechanics already existed (`MergeEngine` ran `checkCmd` post-merge and reset the merge commit on
@@ -529,11 +583,24 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   the 4 named examples wasn't attempted either — that's the still-separately-tracked v0.5
   "Legibility floor" item (#4 above).
 - [ ] 🏢 Auth: **SSO/OIDC**.
-- [ ] 🏢 **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
+- [x] 🏢 **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
   everything (projects, runs, HITL, audit) but mutate nothing (no assign / resolve / transition /
-  settings / provider keys). Wrap, don't rebuild: reuse the existing scoped-principal model — service
-  tokens already carry `observe`/`author`/`approver` scopes, so extend the same scopes to human
-  sessions rather than a parallel permission system. *(Multi-user — hosted/team only.)*
+  settings / provider keys). Wrapped, not rebuilt: `OperatorRecord.role` (`"admin" | "viewer"`,
+  `auth/operators.ts`) maps to `Principal.scopes: ["observe"]` at login — a viewer rides the exact
+  same `hasScope()` checks a scoped service token already did, no parallel permission system. The
+  real work was the audit: `hasScope()` previously ran ONLY inside the MCP layer (`mcp/tools.ts`),
+  so every REST mutation route a human hits was actually gated by nothing but "has a session." A new
+  classifier, `requiredScope()` (`auth-guard.ts`), now runs in the shared `/api` `onRequest` hook
+  (`api.ts`) and requires `"author"` (default) or `"approver"` (HITL resolve + the four merge-decision
+  routes) on every non-GET `/api` route — `/mcp` is untouched, it's already gated per-tool at finer
+  grain. Web: a `readOnly` flag rides the store (from `GET /api/auth/me`, refreshed across
+  snapshot/reconnect); `client.ts`'s `req()` blocks every mutation call client-side BEFORE it reaches
+  the network (a friendly toast, not a bare 403), and the Inbox's resolve buttons, Home's "Assign
+  work" CTA, and a Settings banner grey out — the server-side gate is the actual boundary, this is
+  UX. Dev/test seeds a demo `viewer@cyberdyne.dev` (pw `skynet`) alongside the existing admin pair;
+  production gets an equivalent `SKYNET_VIEWER_EMAIL`/`_PASSWORD`/`_WORKSPACE` env seed (mirrors the
+  existing admin seed — there's still no invite/user-management UI, so this is the only way to stand
+  one up on a hosted deploy today). *(Multi-user — hosted/team only.)*
 - [ ] 🏢 **Time-limited admin promotion** — temporarily elevate a viewer to admin for a bounded,
   auto-expiring window (break-glass / sudo-style), then revert to their base role automatically; every
   promotion + expiry is audited. Depends on the read-only role above.
@@ -640,7 +707,7 @@ features below are white space.)
   hint on Home's Runs board, the one place idle-runner count and backlog depth already show together; the CTA
   reuses the existing Fleet nav entry point, no new fleet-scaling logic.
 - [x] **Task grouping & per-project roadmap** — a level *above* the task board. **Features** group related tasks (⊞ chip on cards; a lens listing each feature's mini 6-column count + progress bar); **milestones** are planned releases per project (◉ chip; a Roadmap lens with target-date badges and rolled-up features/tasks — "in Nd" / "today" / "Nd late"). Same-project scoping is enforced by the server (cross-project links refuse) and by the Steward/Telegram validators. Drove by: "roadmap formed from items in all stages of kanban marked with planned releases + milestones." Steward + Telegram both speak the seven grouping actions (`create_feature`, `set_task_feature`, `archive_feature`, `create_milestone`, `set_feature_milestone`, `set_task_milestone`, `mark_milestone_shipped`) — same confirm-first envelope task actions use.
-- [x] **Per-project agent instructions (house rules)** — a `Project.instructions` markdown field that rides *every* prompt an agent sees on that project (assignTask, forkAgent, review-revise, escalation resume, triage consult, auto-review consult) and Steward's grounding. Motivated by: "build agents in Skynet using a specific subset of packages, pre-written code, and structure" — that's a per-project policy, not a workspace boundary, and it lives on the project record for instant editability. Trims + normalizes empty → null; the read-only header shows a compact "ⓘ Instructions active" chip.
+- [x] **Per-project agent instructions (house rules)** — a `Project.instructions` markdown field that rides *every* prompt an agent sees on that project (assignTask, forkAgent, checkpoint restore, decision resume, review-revise, escalation resume, triage consult, auto-review consult) and Steward's grounding, via one shared `withInstructions()` prefix applied to `StartSpec.task` — vendor-neutral, so it reaches CLI runners too without per-vendor code. Motivated by: "build agents in Skynet using a specific subset of packages, pre-written code, and structure" — that's a per-project policy, not a workspace boundary, and it lives on the project record for instant editability. Trims + normalizes empty → null; the read-only header shows a compact "ⓘ Instructions active" chip. *(Re-verified end-to-end — `tests/project-instructions.test.ts` + `tests/instructions-prompt-wiring.test.ts` now pin the orchestrator → StartSpec.task → per-vendor prompt/argv chain, not just the `withInstructions()` primitive.)*
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.* Also landed: the Roadmap tab's "reads ROADMAP.md" lookup used to dead-end when a repo kept its plan somewhere else — `Project.roadmapPath` now lets the operator (a picker on the tab's empty state) or Steward (`set_roadmap_path`, confirm-first, e.g. "the roadmap is at docs/PLAN.md") point it at any repo-relative file; `resolveRoadmapDoc` is the single place both the tab's API and Steward's own grounding resolve through, so they can't drift.
 - [~] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third
@@ -682,8 +749,17 @@ features below are white space.)
   and the **keyboard-first Inbox** — `QueueView.selectedIdx` now actually wired (j/k navigate, ↵
   opens the run, a/r/m approve/reject/modify calling the same `store.resolveHitl` the card buttons
   use), plus a dismissible shortcut hint bar. Both skip their shortcuts while the operator is typing
-  in a text field. Still to do: **OS notifications + dock badge**, **Timeline lens depth**,
-  **cost/usage roll-ups**.
+  in a text field. **Cost/usage roll-ups** — one tested `computeUsageRollup` (`lib/derive.ts`),
+  grouped by project and by agent, `costUsd`/`durationMs` staying `null` (not 0) when nothing in the
+  group reported one; wired into the project header (replacing an ad hoc duplicate), new per-runner
+  badges on each Fleet card, and agent-detail's existing total fixed to distinguish "$0" from
+  "vendor doesn't report" instead of just hiding at 0. **OS notifications + dock badge** — the
+  notification-on-new-gate path (`notifyInbox`, gated behind an explicit Settings toggle) already
+  existed and needed no new code; what shipped is the Electron plumbing it was missing: a
+  `contextBridge` preload + IPC bridge for the dock/taskbar badge (live pending-HITL count) and
+  window focus/restore on notification click, plus a pre-existing `runId`/`agentId` field-name
+  mismatch in the service worker that silently broke deep-linking a click to the specific gate.
+  Still to do: **Timeline lens depth** (zoom, brush, click-through) — unverified/unscoped.*
 
 **Memory v0 (thin moat, pulled forward from v4):**
 - [ ] Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory

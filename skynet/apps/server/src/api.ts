@@ -32,8 +32,8 @@ import {
 import { installProviderCli } from "./provider-install.js";
 import { installCommandFor } from "./provider-requirements.js";
 import { readFile } from "node:fs/promises";
-import { authenticate, type Principal } from "./auth.js";
-import { requiresAuth } from "./auth-guard.js";
+import { authenticate, hasScope, type Principal } from "./auth.js";
+import { requiresAuth, requiredScope } from "./auth-guard.js";
 import { config, RESTART_EXIT_CODE } from "./config.js";
 import { listDir } from "./fs-browse.js";
 import {
@@ -95,6 +95,13 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     const principal = await authenticate(req);
     if (!principal) return reply.code(401).send({ error: "Unauthorized" });
     req.principal = principal;
+    // Viewer role (read-only humans) + scoped service tokens: a mutation route
+    // needs the scope it's classified under (auth-guard.ts's requiredScope) —
+    // full-authority principals (scopes undefined) always pass hasScope().
+    const scope = requiredScope(req.method, req.url);
+    if (scope && !hasScope(principal, scope)) {
+      return reply.code(403).send({ error: `Forbidden: this action requires the "${scope}" scope.` });
+    }
   });
 
   // ── reads (workspace-scoped) ──────────────────────────────────────────────

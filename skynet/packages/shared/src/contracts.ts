@@ -307,6 +307,15 @@ export const Project = z.object({
   // a human wants to see the approach BEFORE anything changes. Only the Claude
   // runner acts on it today.
   planModeGate: z.boolean().default(false),
+  // Tool names this project's agents may never use (e.g. "Bash") — passed to
+  // the SDK's own `disallowedTools`, which removes the tool from the model's
+  // context entirely (not just gated per-call). A deny-list, not an allow-list:
+  // an allow-list risks silently breaking an agent that needs a tool nobody
+  // thought to list, so the safer default is "everything except what's named
+  // here". null/empty = no restriction (today's behavior, unchanged). Only the
+  // Claude runner acts on it today — CLI vendors have no equivalent SDK
+  // primitive (see runner-sdk/src/claude.ts).
+  disallowedTools: z.array(z.string()).nullable().default(null),
   // A project binds to a repository one of two ways (they can coexist):
   //  • repoPath — an absolute local folder the runs work in. When it contains
   //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
@@ -580,6 +589,16 @@ export const Resolution = z.object({
   action: ResolveAction,
   optionIndex: z.number().int().nullable().default(null), // for 'option'
   guidance: z.string().nullable().default(null), // for 'modify'
+  // Approve-with-memory (roadmap: "the Inbox becomes how policy/memory get
+  // authored") — an operator's own words on a durable project/workspace
+  // preference this decision suggests, captured in-flow alongside 'approve'.
+  // Distinct from the command-specific "Always allow" rule (see ApprovalRule
+  // above): this applies to any gate kind, not just exact commands, and isn't
+  // an auto-approval — it's a fact for Memory v0 to adopt as a write path once
+  // it lands (ROADMAP.md "Memory v0"). Until then this is plumbing only:
+  // persisted on the resolution + audit trail so the intent isn't lost, but
+  // nothing reads it back or injects it into a runner yet.
+  memoryNote: z.string().nullable().default(null),
   by: z.string(), // operator id — audit trail
   at: Timestamp,
 });
@@ -762,6 +781,8 @@ export const ResolveRequest = z.object({
   // "approve always" rule for this exact command to the project (only honored for
   // rememberable — low/medium, non-deny — commands). Ignored otherwise.
   remember: z.boolean().optional(),
+  // Approve-with-memory — see Resolution.memoryNote. Only honored on `approve`.
+  memoryNote: z.string().optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
 
@@ -844,6 +865,9 @@ export const UpdateProjectRequest = z.object({
   autonomy: z.boolean().optional(),
   approvalLevel: ApprovalLevel.optional(),
   planModeGate: z.boolean().optional(), // see Project.planModeGate
+  // Tool names to block for this project's agents. `null` clears back to "no
+  // restriction". See Project.disallowedTools.
+  disallowedTools: z.array(z.string()).nullable().optional(),
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
   // Project-scoped agent guidance. `null` clears the field back to "no rules".
