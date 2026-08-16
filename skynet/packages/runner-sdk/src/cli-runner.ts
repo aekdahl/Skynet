@@ -35,6 +35,7 @@ export type CliEvent =
   | { kind: "chat"; text: string } // assistant prose (reply to a `message()`)
   | { kind: "approval"; raise: HitlRaise } // blocked on a human → HITL gate
   | { kind: "usage"; usage: Usage } // token/cost totals the CLI reported
+  | { kind: "delta"; text: string } // token-level "typing" chunk — live preview only, never persisted itself (see RunnerEvents.onLogDelta)
   | { kind: "ignore" }; // noise we deliberately drop
 
 /**
@@ -86,9 +87,16 @@ export interface CliVendor {
   /** The initial prompt to write to stdin once spawned, or null if the prompt
    *  is passed entirely via argv. */
   initialStdin?(spec: StartSpec): string | null;
-  /** Map one stdout line to a neutral event. Throw-safe: the base falls back to
-   *  logging the raw line if this throws. */
-  parseLine(line: string, ctx: ParseCtx): CliEvent;
+  /**
+   * Map one stdout line to a neutral event, or several — a vendor whose wire
+   * protocol has no distinct "message complete" marker (see gemini.ts) needs to
+   * flush a buffered `delta` run as a real `chat`/`log` line the moment the NEXT
+   * line's event closes it out, and one stdout line can only produce one parsed
+   * moment in time, not two independent ones later. Most vendors just return a
+   * single event. Throw-safe: the base falls back to logging the raw line if
+   * this throws.
+   */
+  parseLine(line: string, ctx: ParseCtx): CliEvent | CliEvent[];
   /** Serialize an operator decision for the CLI's stdin. Return null when the
    *  CLI can't accept a mid-run decision (the base then just unblocks + logs). */
   encodeDecision(decision: Resolution | undefined, ctx: ParseCtx): string | null;
@@ -183,12 +191,17 @@ class CliRunnerHandle implements RunnerHandle {
     this.bumpIdle(); // stdout activity = progress → reset the stall watchdog
     const line = raw.trimEnd();
     if (!line) return;
-    let ev: CliEvent;
+    let evs: CliEvent[];
     try {
-      ev = this.vendor.parseLine(line, this.ctx);
+      const parsed = this.vendor.parseLine(line, this.ctx);
+      evs = Array.isArray(parsed) ? parsed : [parsed];
     } catch {
-      ev = { kind: "log", line };
+      evs = [{ kind: "log", line }];
     }
+    for (const ev of evs) this.applyEvent(ev);
+  }
+
+  private applyEvent(ev: CliEvent) {
     switch (ev.kind) {
       case "log":
         this.events.onLog(this.runId, ev.line);
@@ -212,6 +225,9 @@ class CliRunnerHandle implements RunnerHandle {
         break;
       case "usage":
         this.events.onUsage?.(this.runId, ev.usage);
+        break;
+      case "delta":
+        this.events.onLogDelta?.(this.runId, ev.text);
         break;
       case "ignore":
         break;
