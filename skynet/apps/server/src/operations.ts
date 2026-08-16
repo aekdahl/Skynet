@@ -338,6 +338,11 @@ export class Operations {
       action: input.action,
       optionIndex: input.optionIndex ?? null,
       guidance: input.guidance ?? null,
+      // Guided merge: only meaningful on a `diff` approve (Orchestrator.deliver
+      // reads it there and nowhere else) — passed through unconditionally like
+      // guidance/optionIndex above rather than kind-gated here, so the audit
+      // record still shows exactly what the operator submitted either way.
+      targetBranch: input.targetBranch ?? null,
       by: operatorId,
       at: now(),
     };

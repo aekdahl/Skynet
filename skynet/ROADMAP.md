@@ -357,7 +357,7 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     raises. Stored on `HitlItem.diff.walkthrough` and rendered above the raw patch in the Inbox/run-detail diff
     view; a failed/unsupported draft (most CLI runners today have no `consult`) never blocks the gate — the
     raw diff is always there regardless. *(Octomux-style.)*
-- [ ] **🔬⭐ Guided merge — understand-then-merge, to any branch.** Merging today is a single approve on the
+- [~] **🔬⭐ Guided merge — understand-then-merge, to any branch.** Merging today is a single approve on the
   diff HITL. Make it a **guided experience**: before anything merges, Skynet presents a plain-English **merge
   brief** — what the change *does*, which files/modules it touches, the **risks** (blast radius: writes outside
   the worktree, secrets, DB migrations, public-API/contract changes, new deps, history-destructive ops) and the
@@ -369,6 +369,32 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   **auto-review verdict** above into one review→merge surface; records the whole brief + decision to the
   tamper-evident audit (feeds the **compliance evidence pack**); and reuses the existing merge engine — only the
   **target-branch selection** and the synthesized brief are new. Human-gated end to end; nothing self-merges.
+  *Landed: the merge brief + target-branch picker, both ends fully wired. `MergeBrief` (`{summary, risks,
+  mitigations}`) is drafted by `draftMergeBrief` — a SEPARATE stateless `consult` from the diff walkthrough
+  (same grounding/JSON discipline, deliberately not folded into one call so the already-shipped walkthrough
+  stays untouched), stored on `HitlItem.diff.brief`, rendered above the walkthrough in the diff-review UI.
+  `HitlItem.targetBranch` carries the gate's real default (the local integration branch or the GitHub base
+  branch, whichever `deliver()` would actually route to) so the picker shows a concrete value, not a vague
+  placeholder; an operator override travels via `Resolution.targetBranch` → `MergeRequest.targetBranch` (both
+  the local `MergeEngine.enqueue` path and the GitHub PR path's base branch) or the PR base, validated with
+  git's own `check-ref-format` before it ever reaches a git argv position. A merge-conflict retry gate
+  automatically carries the ORIGINAL diff-approve's target forward (no re-asking). Verified for real (no
+  mocks): a live Copilot CLI agent's diff approved with a hand-typed non-default target branch — the branch
+  didn't exist yet, was created off the base, and the project's default integration branch was never even
+  created; the audit trail recorded "Merged into `<branch>`." Composition of the OTHER two signals is
+  deliberately surface-level, not baked into the brief's prompt: the auto-review verdict is produced
+  ASYNCHRONOUSLY, often after this brief already drafted (a second reviewer agent reacts to the very gate this
+  brief is part of raising — the brief can't wait on a signal that doesn't exist yet without lying about it
+  when absent), so it's meant to render live from `Task.reviewVerdict` alongside the brief instead — not yet
+  wired into the UI, tracked below. The verifier gate doesn't exist on this branch at all (see the adjacent
+  bullet above, still unchecked) — nothing to compose yet; the design leaves an explicit seam for it.
+  Still to do: thread the live auto-review verdict onto the diff-review card (a small, independent web-only
+  follow-up — the data already exists on `Task.reviewVerdict`); wire the verifier-gate result into the brief
+  once that gate lands. **Naming-collision note for whoever reconciles the open Feature-branch-hierarchy PRs**
+  (#442/#446): both independently add their OWN target-branch generalization to `MergeRequest`
+  (`targetBranchFor`/`targetOverride`+`featureId`) — this landed a third, `targetBranch`, since neither had
+  merged yet when this was built. Whichever lands first should absorb the others' field name during
+  reconciliation rather than the three coexisting.*
 - [ ] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** content max-width /
   purposeful two-column layouts (views left-hug at 1440 today) · stop amber doing triple duty
   (brand + primary + "waiting" status — move caution to its own hue; never encode status by hue

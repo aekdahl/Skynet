@@ -91,11 +91,12 @@ describe("contracts round-trip", () => {
   });
 
   it("every ServerEvent variant round-trips through its discriminated union", () => {
-    const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "op-1", at: 5 };
+    const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, by: "op-1", at: 5 };
     const hitl: HitlItem = {
       id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "billing", kind: "approval",
       title: "t", why: "w", risk: "medium", raisedAt: 1, expiresAt: null, resolvedAt: null, resolution: null,
       command: "deploy", options: null, recommended: null, steps: null, diff: null, rationale: null, flags: [],
+      targetBranch: null,
     };
     const events: ServerEvent[] = [
       { type: "run.started", run: agent },

@@ -125,6 +125,13 @@ export function TaskDetail({
   // stale pick can't carry over. (Immediate-resolve-on-click was confusing next
   // to the Send button — it read as select-then-send but wasn't.)
   const [picked, setPicked] = useState<number | null>(null);
+  // Guided merge: an operator override for the open diff gate's merge target —
+  // blank means "use the gate's own default" (q.targetBranch). Reset whenever
+  // a different gate arrives, same reasoning as `picked` above.
+  const [targetBranch, setTargetBranch] = useState("");
+  useEffect(() => {
+    setTargetBranch("");
+  }, [q?.id]);
   // Copy the whole log as timestamped plain text (line + any folded detail).
   const copyLog = () => {
     const text = agent.log
@@ -582,7 +589,12 @@ export function TaskDetail({
                       ))
                     ) : (
                       <>
-                        <button className="btn btn-sm btn-primary" onClick={() => resolveHitl(q.id, "approve")}>
+                        <button
+                          className="btn btn-sm btn-primary"
+                          onClick={() =>
+                            resolveHitl(q.id, "approve", targetBranch.trim() ? { targetBranch: targetBranch.trim() } : undefined)
+                          }
+                        >
                           Approve
                         </button>
                         <button className="btn btn-sm btn-danger" onClick={() => resolveHitl(q.id, "reject")}>
@@ -594,6 +606,21 @@ export function TaskDetail({
                       {showDiff ? "Hide details" : "Details"}
                     </button>
                   </span>
+                </div>
+              )}
+              {/* Guided merge: pick a merge target other than the gate's own
+                  default (shown as the placeholder) — same picker as the Inbox
+                  card, see queue.tsx's QueueCard for the full rationale. */}
+              {q && q.kind === "diff" && (
+                <div className="qcard-target">
+                  <label className="qcard-target-label mono" htmlFor={`target-${q.id}`}>Merge into</label>
+                  <input
+                    id={`target-${q.id}`}
+                    className="qcard-target-input mono"
+                    placeholder={q.targetBranch ?? "default"}
+                    value={targetBranch}
+                    onChange={(e) => setTargetBranch(e.target.value)}
+                  />
                 </div>
               )}
               {q && showDiff && <HitlContext q={q} runName={agent.name} openDiff />}

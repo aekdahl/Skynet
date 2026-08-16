@@ -145,6 +145,28 @@ export const MergeBriefing = z.object({
 });
 export type MergeBriefing = z.infer<typeof MergeBriefing>;
 
+// Guided merge (ROADMAP: "understand-then-merge, to any branch") — NOT the same
+// thing as `MergeBriefing` above. `MergeBriefing` is a POST-hoc decision aid on
+// an already-opened ready-to-merge PR card (heuristic risk + the auto-review
+// verdict, no LLM call of its own). `MergeBrief` is drafted BEFORE the diff HITL
+// raises — a stateless `consult` grounded on the real diff, same discipline as
+// the diff walkthrough / auto-review verdict (structured field, never prose
+// classification). Lives on `DiffSummary.brief`, rendered above the raw patch.
+// No `filesTouched` field: the sibling `DiffSummary.files` already carries the
+// real, deterministic file list — never asked of the model (never trust a
+// hallucinated file list any more than a hallucinated citation).
+export const MergeBrief = z.object({
+  summary: z.string(), // plain-English: what this diff does + its blast radius
+  // Concrete risks (blast radius): writes outside the worktree, secrets, DB
+  // migrations, public-API/contract changes, new deps, history-destructive ops.
+  // Model-authored; an empty list is honest, never padded.
+  risks: z.array(z.string()).default([]),
+  // Mitigations ALREADY in place (a passing test, a scoped diff, an existing
+  // gate) — not a to-do list, a record of what already reduces the risk above.
+  mitigations: z.array(z.string()).default([]),
+});
+export type MergeBrief = z.infer<typeof MergeBrief>;
+
 export const PullRequest = z.object({
   number: z.number().int(),
   url: z.string(),
@@ -542,6 +564,10 @@ export const DiffSummary = z.object({
   // gates that carry no file list stay valid.
   files: z.array(z.string()).default([]),
   walkthrough: DiffWalkthrough.nullable().default(null),
+  // Guided merge: the synthesized risk/mitigation brief (see MergeBrief above).
+  // Null when the draft failed or the provider doesn't support `consult` —
+  // same graceful-degradation contract as `walkthrough`.
+  brief: MergeBrief.nullable().default(null),
 });
 export type DiffSummary = z.infer<typeof DiffSummary>;
 
@@ -553,6 +579,11 @@ export const Resolution = z.object({
   action: ResolveAction,
   optionIndex: z.number().int().nullable().default(null), // for 'option'
   guidance: z.string().nullable().default(null), // for 'modify'
+  // Guided merge: the operator's chosen merge target (a `diff` approve only —
+  // ignored elsewhere). Null → the gate's own `targetBranch` default applies
+  // (today's behavior, unchanged). A non-null value here is what actually
+  // ships to `MergeRequest.targetBranch` / the GitHub PR base.
+  targetBranch: z.string().nullable().default(null),
   by: z.string(), // operator id — audit trail
   at: Timestamp,
 });
@@ -586,6 +617,17 @@ export const HitlItem = z.object({
   // System-computed, scannable chips for the decision: the safety classifier's
   // risk reasons (approval) or the conflicting files (merge). Not runner-supplied.
   flags: z.array(z.string()).default([]),
+  // Guided merge (diff/merge kinds only): the branch this gate will merge into
+  // if approved as-is. Set at raise time to the project's real default
+  // (`MergeEngine.integrationBranch` / the GitHub base branch) so the operator
+  // sees a concrete value, not a vague placeholder — the target-branch picker
+  // prefills from this and an operator override travels via
+  // `Resolution.targetBranch`. A `merge`-kind retry gate carries forward
+  // whatever its originating diff-approve actually targeted (see
+  // Orchestrator.raiseMergeHitl/raiseMergeFailedHitl), so a conflict-retry
+  // continues targeting the same place without asking again. Null for every
+  // other kind.
+  targetBranch: z.string().nullable().default(null),
 });
 export type HitlItem = z.infer<typeof HitlItem>;
 
@@ -714,6 +756,11 @@ export const ResolveRequest = z.object({
   // "approve always" rule for this exact command to the project (only honored for
   // rememberable — low/medium, non-deny — commands). Ignored otherwise.
   remember: z.boolean().optional(),
+  // Guided merge: an operator-chosen merge target on a `diff` approve (a feature
+  // stack, a release branch — anything other than the gate's own default).
+  // Ignored for every other kind/action. Validated server-side as a real git ref
+  // before it's ever used (Orchestrator.deliver / MergeEngine).
+  targetBranch: z.string().optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
 

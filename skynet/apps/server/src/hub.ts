@@ -175,6 +175,11 @@ export class Hub {
       payload: {
         optionIndex: resolution.optionIndex,
         guidance: resolution.guidance,
+        // Guided merge: the operator's chosen target (or null → the gate's own
+        // default applied) — `diff` below already carries the synthesized brief
+        // (item.diff.brief), so the audit captures the full understand-then-
+        // merge decision: what the operator was shown, and where they sent it.
+        targetBranch: resolution.targetBranch,
         kind: item.kind,
         title: item.title,
         why: item.why,
@@ -244,6 +249,11 @@ export class Hub {
       payload: {
         optionIndex: resolution.optionIndex,
         guidance: resolution.guidance,
+        // Guided merge: the operator's chosen target (or null → the gate's own
+        // default applied) — `diff` below already carries the synthesized brief
+        // (item.diff.brief), so the audit captures the full understand-then-
+        // merge decision: what the operator was shown, and where they sent it.
+        targetBranch: resolution.targetBranch,
         kind: item.kind,
         title: item.title,
         why: item.why,

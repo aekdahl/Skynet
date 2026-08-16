@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, Risk, Feature, Milestone, DiffWalkthrough } from "@skynet/shared";
+import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, Risk, Feature, Milestone, DiffWalkthrough } from "@skynet/shared";
 import { WorkspaceSettings } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -17,11 +17,12 @@ import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
 import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
+import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./merge-brief.js";
 import { decisionResumePrompt } from "./decision-resume.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
-import { MergeEngine, type MergeRequest } from "./merge.js";
+import { MergeEngine, isValidGitRefName, type MergeRequest } from "./merge.js";
 import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { providerUsableFromEnv } from "./provider-env.js";
 import { secretService } from "./secrets/index.js";
@@ -435,6 +436,11 @@ export class Orchestrator {
       steps: raise.steps ?? null,
       diff: raise.diff ?? null,
       flags: raise.kind === "escalation" ? [...flags, "agent"] : flags,
+      // Guided merge's target-branch picker only exists on the diff HITL
+      // Orchestrator.raiseDiffReview raises directly — a runner-sourced gate
+      // (approval/question/plan/escalation, and any `diff`/`merge` a runner
+      // somehow raised itself) never carries one.
+      targetBranch: null,
     };
     // Auto-approve a reversible, in-sandbox command gate per the project's
     // approval policy (see approval-policy.ts), so the operator isn't asked to
@@ -452,7 +458,7 @@ export class Orchestrator {
         rules: project?.approvalRules ?? [],
       });
       if (auto) {
-        const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: auto.by, at: now() };
+        const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, by: auto.by, at: now() };
         await this.hub.runLog(runId, `auto-approved (${auto.by}): ${item.command ?? item.title}`);
         await this.hub.raiseAndAutoResolveHitl(item, resolution);
         await this.deliver(item, resolution);
@@ -484,6 +490,7 @@ export class Orchestrator {
       action: "reject",
       optionIndex: null,
       guidance: null,
+      targetBranch: null,
       by: "system:timeout",
       at: now(),
     };
@@ -685,10 +692,19 @@ export class Orchestrator {
     await this.hub.runModifiedFiles(runId, stat.files);
     const risk: Risk = stat.del > 200 || stat.files.length > 40 ? "high" : "medium";
     // Drafted BEFORE the item is raised — the reviewer should never see a diff
-    // gate that later "pops in" a walkthrough. Best-effort: any failure (no
-    // consult support, no credential, unreadable reply) yields null and the
-    // gate raises exactly as it did before this existed.
+    // gate that later "pops in" a walkthrough/brief. Best-effort: any failure
+    // (no consult support, no credential, unreadable reply) yields null and the
+    // gate raises exactly as it did before either of these existed.
     const walkthrough = await this.draftDiffWalkthrough(agent, project?.instructions, stat.files, patch);
+    const brief = await this.draftMergeBrief(agent, project?.instructions, patch);
+    // Guided merge's default target — what this gate merges into if approved
+    // as-is. Mirrors the SAME routing `deliver()` will actually use: the local
+    // git backend's own integration branch when one resolves, else the
+    // project's effective base branch (the GitHub-PR path's default). A
+    // best-effort snapshot at raise time — deliver() re-derives the real
+    // routing at approve time regardless, this is only what the operator SEES.
+    const git = this.gitContextFor(project);
+    const targetBranchDefault = git ? git.merge.integrationBranch(agent.projectId) : this.baseBranchFor(project);
     const item: HitlItem = {
       id: `q-diff-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
@@ -709,8 +725,9 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: stat.add, del: stat.del, modules, files: stat.files, walkthrough },
+      diff: { add: stat.add, del: stat.del, modules, files: stat.files, walkthrough, brief },
       flags: [],
+      targetBranch: targetBranchDefault,
     };
     // `full` autonomy (see ApprovalLevel in @skynet/shared) skips even a diff's
     // OWN human decision, unconditionally — no second agent, no LLM consult.
@@ -723,9 +740,10 @@ export class Orchestrator {
     // diff for a human even at this level. Recorded via the SILENT hub path —
     // same pattern as the command-gate auto-approver in raise() — so it's a
     // real audited decision, not a human notification that immediately
-    // self-cancels.
+    // self-cancels. targetBranch stays null — full autonomy always merges to
+    // the gate's own default, never a guided-merge override (nobody chose one).
     if (project?.approvalLevel === "full" && project.autonomy && risk !== "high") {
-      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "policy:full-autonomy", at: now() };
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, by: "policy:full-autonomy", at: now() };
       await this.hub.runLog(runId, `auto-merged (policy:full-autonomy): ${item.title}`);
       await this.hub.raiseAndAutoResolveHitl(item, resolution);
       await this.deliver(item, resolution);
@@ -764,6 +782,43 @@ export class Orchestrator {
         DIFF_WALKTHROUGH_INSTRUCTION,
       );
       return parseDiffWalkthrough(reply, files);
+    } catch {
+      return null; // best-effort — a draft failure never blocks the review
+    }
+  }
+
+  /**
+   * Guided merge (ROADMAP: "understand-then-merge, to any branch"): ask the
+   * run's OWN provider/model to synthesize a risk/mitigation brief — a
+   * SEPARATE stateless `consult` from `draftDiffWalkthrough` above (same
+   * pattern, deliberately not folded into one call: the walkthrough is an
+   * already-shipped, independently-tested artifact this composes rather than
+   * rewrites). Grounded on the real patch. Empty patch, no `consult` support,
+   * or an unreadable reply → no brief, not an error — the diff HITL always
+   * still has the raw diff regardless.
+   */
+  private async draftMergeBrief(
+    run: TaskRun,
+    projectInstructions: string | null | undefined,
+    patch: string,
+  ): Promise<MergeBrief | null> {
+    if (!patch) return null;
+    try {
+      const provider = await this.getProvider(run.provider);
+      if (!provider.consult) return null;
+      const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+      const reply = await provider.consult(
+        {
+          task: withInstructions(projectInstructions, run.name),
+          model: run.model,
+          cwd: config.runnerCwd,
+          apiKey,
+          context: patch,
+          system: MERGE_BRIEF_SYSTEM,
+        },
+        MERGE_BRIEF_INSTRUCTION,
+      );
+      return parseMergeBrief(reply);
     } catch {
       return null; // best-effort — a draft failure never blocks the review
     }
@@ -1372,17 +1427,30 @@ export class Orchestrator {
         const project = await this.store.getProject(agent.projectId);
         const git = this.gitContextFor(project);
         const conn = await githubService.get(agent.workspaceId);
+        // Guided merge: the operator's FRESH choice on this decision, else
+        // whatever this gate itself already carries (its raise-time default for
+        // a first diff-approve, or the ORIGINAL diff-approve's choice carried
+        // forward for a merge-conflict retry — see raiseMergeHitl /
+        // raiseMergeFailedHitl). Never fabricated here.
+        const targetBranch = resolution.targetBranch || item.targetBranch || undefined;
         // GitHub PR flow: workspace connected, project bound to one repo, and a
         // worktree to push from. Otherwise fall back to the local merge queue
         // (against the project's own repo when git-backed, else the global one).
         if (conn?.connected && project?.repo && git) {
-          await this.pushToGithub(git, agent, project.repo, project);
+          await this.pushToGithub(git, agent, project.repo, project, targetBranch);
           return;
         }
         if (git) {
           await this.hub.runStatus(runId, "review");
-          await this.hub.runLog(runId, item.kind === "merge" ? "retrying merge after reconciliation" : "diff approved — queued for merge");
-          git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId });
+          await this.hub.runLog(
+            runId,
+            item.kind === "merge"
+              ? "retrying merge after reconciliation"
+              : targetBranch
+                ? `diff approved — queued for merge into ${targetBranch}`
+                : "diff approved — queued for merge",
+          );
+          git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId, targetBranch });
           return;
         }
       }
@@ -1563,6 +1631,7 @@ export class Orchestrator {
       steps: null,
       diff: null,
       flags: [source],
+      targetBranch: null,
     };
     await this.hub.runStatus(runId, "waiting");
     await this.hub.raiseHitl(item);
@@ -1738,11 +1807,26 @@ export class Orchestrator {
     return { patch, add: stat.add, del: stat.del, files: stat.files };
   }
 
-  private async pushToGithub(git: GitContext, agent: TaskRun, repo: string, project?: Project | null): Promise<void> {
-    // The project's effective base branch — its own `baseBranch` when set (e.g. a
-    // feature branch this project stacks onto), else the global default. This is
-    // what the branch syncs to, is diffed against, and PRs into.
-    const base = this.baseBranchFor(project);
+  private async pushToGithub(
+    git: GitContext,
+    agent: TaskRun,
+    repo: string,
+    project?: Project | null,
+    targetBranch?: string,
+  ): Promise<void> {
+    // Guided merge: an explicit target overrides the project's effective base
+    // branch (its own `baseBranch` when set — e.g. a feature branch this
+    // project stacks onto — else the global default). Whichever wins is what
+    // the branch syncs to, is diffed against, and the PR opens against.
+    // Validated the same way MergeEngine validates its own targetBranch
+    // (git's own ref-name check) — this is the first place an operator-typed
+    // string reaches the GitHub API's base-branch argument.
+    if (targetBranch && !(await isValidGitRefName(targetBranch))) {
+      await this.hub.runLog(agent.id, `invalid target branch "${targetBranch}" — not a legal git ref name; not opening a PR.`);
+      await this.escalate(agent.id, `"${targetBranch}" isn't a valid branch name — re-approve with a different target.`, "conflict");
+      return;
+    }
+    const base = targetBranch || this.baseBranchFor(project);
     // Bring the branch up to the LATEST base before the PR opens, so it merges
     // cleanly and the reviewer/GitHub never hits a stale-base conflict at merge
     // time. On conflict, escalate for a human rebase instead of opening a broken PR.
@@ -2038,8 +2122,12 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, brief: null },
       flags: [reason],
+      // Carry the ORIGINAL diff-approve's target forward — approving this retry
+      // gate continues targeting the same place without asking again (deliver()
+      // reads item.targetBranch when the retry's own resolution has none).
+      targetBranch: req.targetBranch ?? null,
     });
   }
 
@@ -2066,8 +2154,10 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, brief: null },
       flags: files, // the conflicting files — shown as chips
+      // See raiseMergeFailedHitl — same target-branch continuity.
+      targetBranch: req.targetBranch ?? null,
     });
   }
 
@@ -2799,7 +2889,7 @@ export class Orchestrator {
     const verdict = { decision, reason, by: reviewer, at };
     const withVerdict = await this.hub.upsertTask({ ...freshTask, reviewVerdict: verdict });
     if (decision === "approve" && canResolve) {
-      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "autonomy", at };
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, by: "autonomy", at };
       const resolved = await this.hub.resolveHitl(hitl.id, resolution);
       if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(hitl, resolution);
       // Once an agent has approved a review-state task, move it to `done` and

@@ -31,6 +31,14 @@ export interface MergeRequest {
   projectId: string;
   agentBranch: string;
   workspaceId: string;
+  // Guided merge (ROADMAP: "understand-then-merge, to any branch"). Unset →
+  // exactly today's behavior (`integrationBranch(projectId)`). Set → merges
+  // into this branch instead — created off `baseBranch` if it doesn't exist
+  // yet (same as the default integration branch already is), so an operator
+  // can target a feature stack or release branch that hasn't been cut. Always
+  // validated via `isValidGitRefName` before it's ever used as a git argument
+  // — this is the first place an OPERATOR-typed string reaches argv here.
+  targetBranch?: string;
 }
 
 export interface MergeCallbacks {
@@ -57,6 +65,26 @@ const gitReason = (err: unknown): string => {
   const line = text.split("\n").find((l) => l.trim()) ?? "unknown git error";
   return line.replace(/^(fatal|error):\s*/i, "").slice(0, 200);
 };
+
+/**
+ * Guided merge's target-branch picker is the FIRST place an operator-typed
+ * string reaches a git argv position (`merge`, `worktree add`, `branch`) —
+ * everywhere else a branch name is one Skynet itself generated. `git
+ * check-ref-format` is git's own authoritative validator for "is this a legal
+ * ref name", so we defer to it rather than reinvent a regex; a leading `-` is
+ * rejected up front since some subcommands would otherwise read it as a flag
+ * (argument-injection, not just a malformed name — check-ref-format alone
+ * allows a leading dash in some positions, so this is an extra belt).
+ */
+export async function isValidGitRefName(name: string): Promise<boolean> {
+  if (!name || name.startsWith("-")) return false;
+  try {
+    await exec(gitBin(), ["check-ref-format", "--branch", name]);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export class MergeEngine {
   // One promise chain per integration branch → serialized merges.
@@ -88,7 +116,11 @@ export class MergeEngine {
   }
 
   enqueue(req: MergeRequest): void {
-    const branch = this.integrationBranch(req.projectId);
+    // Guided merge: an explicit target overrides the project's default
+    // integration branch. Chains are keyed by the ACTUAL branch being merged
+    // into, so two different targets for the same project serialize
+    // independently instead of contending on one queue.
+    const branch = req.targetBranch || this.integrationBranch(req.projectId);
     const prev = this.chains.get(branch) ?? Promise.resolve();
     const next = prev
       .then(() => this.process(req, branch))
@@ -103,19 +135,33 @@ export class MergeEngine {
     if (!exists) await this.git(this.repo, "branch", branch, this.baseBranch);
   }
 
-  /** Sanitized scratch worktree path for a project's integration merges. */
-  private scratchFor(projectId: string): string {
-    return join(this.scratchRoot, `integration-${projectId.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
+  /** Sanitized scratch worktree path for merges into this branch. Keyed by the
+   *  TARGET branch, not just the project — a project's default integration
+   *  branch and an operator-chosen alternate target now merge concurrently
+   *  without both processes racing on the same scratch checkout. */
+  private scratchFor(branch: string): string {
+    return join(this.scratchRoot, `integration-${branch.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
   }
 
   private async process(req: MergeRequest, branch: string): Promise<void> {
+    // The FIRST place an operator-typed string reaches a git argv position —
+    // reject anything git itself wouldn't accept as a branch name before it's
+    // ever used, rather than let a malformed/hostile value reach `git merge`,
+    // `worktree add`, or `branch`. Skynet's own generated default
+    // (integrationBranch) never needs this check; only an explicit override does.
+    if (req.targetBranch && !(await isValidGitRefName(req.targetBranch))) {
+      const reason = `invalid target branch "${req.targetBranch}" — not a legal git ref name`;
+      this.cb.onLog(req.runId, reason);
+      await this.cb.onMergeFailed(req, reason);
+      return;
+    }
     this.cb.onLog(req.runId, `merge queue: integrating ${req.agentBranch} → ${branch}`);
     await this.ensureIntegrationBranch(branch);
 
     // A fresh scratch worktree holding the integration branch. --force covers a
     // leftover checkout of the branch elsewhere (e.g. pre-fix state where the
     // engine used to check it out in the shared repo).
-    const scratch = this.scratchFor(req.projectId);
+    const scratch = this.scratchFor(branch);
     await this.git(this.repo, "worktree", "remove", "--force", scratch).catch(() => undefined);
     await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
     await this.git(this.repo, "worktree", "add", "--force", scratch, branch);

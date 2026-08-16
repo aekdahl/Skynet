@@ -155,4 +155,73 @@ describe("MergeEngine", () => {
     // so the agent's file is not present on it.
     expect(() => git("cat-file", "-e", "skynet/integration/payments:feature.ts")).toThrow();
   });
+
+  // Guided merge (ROADMAP: "understand-then-merge, to any branch"). The
+  // "unset behaves exactly as today" half is already covered by every test
+  // above (none of them set `targetBranch`) — these cover the new half: an
+  // explicit target, its validation, and the concurrency fix it required.
+  describe("guided merge — targetBranch", () => {
+    it("merges into an explicit target branch instead of the project's default integration branch", async () => {
+      git("checkout", "-b", "agent/feat", "main");
+      commit("widget.ts", "export const w = 1;\n", "add widget");
+      git("checkout", "main");
+
+      const { calls, enqueueAndWait } = harness();
+      await enqueueAndWait({ ...req("a-feat", "agent/feat"), targetBranch: "release/v2" });
+
+      expect(calls.merged).toHaveLength(1);
+      expect(calls.merged[0]!.branch).toBe("release/v2"); // NOT skynet/integration/payments
+      // The target didn't exist — created off `main` (mirrors integrationBranch's
+      // own "create on demand" behavior), so an operator can target a feature
+      // stack or release branch that hasn't been cut yet.
+      expect(git("cat-file", "-t", "release/v2:widget.ts").trim()).toBe("blob");
+      // The project's actual default integration branch was never touched.
+      expect(() => git("rev-parse", "--verify", "skynet/integration/payments")).toThrow();
+    });
+
+    it("rejects an invalid target branch name before touching git — never a phantom conflict", async () => {
+      git("checkout", "-b", "agent/bad-target", "main");
+      commit("x.ts", "export const x = 1;\n", "x");
+      git("checkout", "main");
+
+      const { calls, enqueueAndWait } = harness();
+      await enqueueAndWait({ ...req("a-bad-target", "agent/bad-target"), targetBranch: "--upload-pack=evil" });
+
+      expect(calls.mergeFailed).toHaveLength(1);
+      expect(calls.mergeFailed[0]!.reason).toMatch(/invalid target branch/i);
+      expect(calls.merged).toHaveLength(0);
+      expect(calls.conflict).toHaveLength(0);
+      // Never created as a branch, never merged into.
+      expect(() => git("rev-parse", "--verify", "--upload-pack=evil")).toThrow();
+    });
+
+    it("two different target branches for the same project merge concurrently without racing on the scratch worktree", async () => {
+      // Regression for the bug this feature would otherwise reintroduce: the
+      // scratch dir used to be keyed by projectId alone, so two concurrent
+      // merges for the same project (now genuinely possible once a project can
+      // have more than one live target) would fight over one checkout.
+      git("checkout", "-b", "agent/one", "main");
+      commit("one.ts", "export const one = 1;\n", "one");
+      git("checkout", "-b", "agent/two", "main");
+      commit("two.ts", "export const two = 2;\n", "two");
+      git("checkout", "main");
+
+      const { engine, calls } = harness();
+      engine.enqueue(req("a-one", "agent/one")); // → default integration branch
+      engine.enqueue({ ...req("a-two", "agent/two"), targetBranch: "release/v3" }); // → a different target, same project
+
+      const deadline = Date.now() + 10_000;
+      while (calls.merged.length < 2 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      expect(calls.merged).toHaveLength(2);
+      expect(calls.conflict).toHaveLength(0);
+      expect(calls.mergeFailed).toHaveLength(0);
+      const branches = calls.merged.map((m) => m.branch).sort();
+      expect(branches).toEqual(["release/v3", "skynet/integration/payments"]);
+      expect(git("cat-file", "-t", "skynet/integration/payments:one.ts").trim()).toBe("blob");
+      expect(git("cat-file", "-t", "release/v3:two.ts").trim()).toBe("blob");
+    });
+  });
 });

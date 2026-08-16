@@ -31,6 +31,11 @@ export function QueueCard({
   const [mode, setMode] = useState<null | "modify" | "chat">(null);
   const [draft, setDraft] = useState("");
   const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
+  // Guided merge: an operator override for this diff's merge target — blank
+  // means "use the gate's own default" (item.targetBranch, shown as the
+  // placeholder), so leaving it untouched behaves exactly as before this existed.
+  const [targetBranch, setTargetBranch] = useState("");
+  const approveArgs = () => (targetBranch.trim() ? { targetBranch: targetBranch.trim() } : undefined);
   const agentName = agent?.name ?? item.runId;
 
   useEffect(() => {
@@ -102,7 +107,24 @@ export function QueueCard({
       )}
 
       {item.diff && (item.kind === "diff" || item.kind === "merge") && (
-        <DiffView runId={item.runId} add={item.diff.add} del={item.diff.del} walkthrough={item.diff.walkthrough} />
+        <DiffView runId={item.runId} add={item.diff.add} del={item.diff.del} walkthrough={item.diff.walkthrough} brief={item.diff.brief} />
+      )}
+
+      {/* Guided merge: pick a merge target other than the gate's own default
+          (shown as the placeholder) — a feature stack, a release branch. Only
+          on a fresh diff-approve; a merge-conflict retry reuses whatever the
+          original approve chose (Orchestrator.raiseMergeHitl), no picker needed. */}
+      {item.kind === "diff" && (
+        <div className="qcard-target">
+          <label className="qcard-target-label mono" htmlFor={`target-${item.id}`}>Merge into</label>
+          <input
+            id={`target-${item.id}`}
+            className="qcard-target-input mono"
+            placeholder={item.targetBranch ?? "default"}
+            value={targetBranch}
+            onChange={(e) => setTargetBranch(e.target.value)}
+          />
+        </div>
       )}
 
       {item.kind === "escalation" ? (
@@ -165,7 +187,7 @@ export function QueueCard({
         <div className="qcard-actions">
           <button
             className="btn btn-primary"
-            onClick={() => resolveHitl(item.id, "approve")}
+            onClick={() => resolveHitl(item.id, "approve", approveArgs())}
           >
             Approve
           </button>

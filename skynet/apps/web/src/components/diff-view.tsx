@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { DiffWalkthrough } from "@skynet/shared";
+import type { DiffWalkthrough, MergeBrief } from "@skynet/shared";
 import { fetchRunDiff, type RunDiff } from "../lib/client";
 
 // A GitHub-style unified-diff viewer for a diff/merge review gate. The patch is
@@ -88,6 +88,7 @@ export function DiffView({
   add,
   del,
   walkthrough,
+  brief,
   defaultOpen = false,
 }: {
   // Live mode: fetch the patch lazily by runId (the Inbox review gate).
@@ -103,6 +104,10 @@ export function DiffView({
   // it wasn't drafted (older gate, no consult support, or the draft failed) —
   // the raw diff below is always complete on its own regardless.
   walkthrough?: DiffWalkthrough | null;
+  // Guided merge: the synthesized risk/mitigation brief (Orchestrator.
+  // draftMergeBrief), drafted the same way and under the same graceful-
+  // degradation contract as `walkthrough` — null is normal, not an error.
+  brief?: MergeBrief | null;
   defaultOpen?: boolean;
 }) {
   const isStatic = patch !== undefined;
@@ -141,6 +146,32 @@ export function DiffView({
 
   return (
     <div className="dv-wrap">
+      {brief && (brief.risks.length > 0 || brief.mitigations.length > 0 || brief.summary) && (
+        <div className="dv-brief">
+          <span className="dv-brief-badge mono" title="Synthesized before this gate raised — grounded on the real diff">MERGE BRIEF</span>
+          <p className="dv-brief-text">{brief.summary}</p>
+          {brief.risks.length > 0 && (
+            <div className="dv-brief-section">
+              <span className="dv-brief-label mono">Risks</span>
+              <ul className="dv-brief-list dv-brief-risks">
+                {brief.risks.map((r, i) => (
+                  <li key={i}>{r}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {brief.mitigations.length > 0 && (
+            <div className="dv-brief-section">
+              <span className="dv-brief-label mono">Mitigations already in place</span>
+              <ul className="dv-brief-list dv-brief-mitigations">
+                {brief.mitigations.map((m, i) => (
+                  <li key={i}>{m}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
       {walkthrough && (
         <div className="dv-walkthrough">
           <span className="dv-walkthrough-badge mono" title="Drafted by the agent that made this change">AGENT SUMMARY</span>

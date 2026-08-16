@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AuditRecord, ResolveAction } from "@skynet/shared";
+import type { AuditRecord, DiffWalkthrough, MergeBrief, ResolveAction } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { fmtWait, KIND_META } from "../lib/derive";
 import { RiskChip } from "../components/hitl-context";
@@ -35,6 +35,7 @@ const isResolveAction = (a: string): a is ResolveAction =>
 function payloadOf(p: unknown): {
   optionIndex: number | null;
   guidance: string | null;
+  targetBranch: string | null;
   kind: string | null;
   title: string | null;
   why: string | null;
@@ -44,7 +45,7 @@ function payloadOf(p: unknown): {
   options: string[] | null;
   files: string[] | null;
   patch: string | null;
-  diff: { add: number; del: number } | null;
+  diff: { add: number; del: number; walkthrough: DiffWalkthrough | null; brief: MergeBrief | null } | null;
 } {
   const o = (p ?? {}) as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
@@ -54,6 +55,9 @@ function payloadOf(p: unknown): {
   return {
     optionIndex: typeof o.optionIndex === "number" ? o.optionIndex : null,
     guidance: str(o.guidance),
+    // Guided merge: the operator's chosen target, snapshotted at decision time
+    // (see hub.ts's audit payload) — the run/branch it actually landed on.
+    targetBranch: str(o.targetBranch),
     kind: str(o.kind),
     title: str(o.title),
     why: str(o.why),
@@ -63,7 +67,15 @@ function payloadOf(p: unknown): {
     options: strArr(o.options),
     files: strArr(o.files),
     patch: str(o.patch),
-    diff: d && typeof d === "object" ? { add: Number(d.add) || 0, del: Number(d.del) || 0 } : null,
+    diff:
+      d && typeof d === "object"
+        ? {
+            add: Number(d.add) || 0,
+            del: Number(d.del) || 0,
+            walkthrough: (d.walkthrough as DiffWalkthrough | null | undefined) ?? null,
+            brief: (d.brief as MergeBrief | null | undefined) ?? null,
+          }
+        : null,
   };
 }
 
@@ -154,6 +166,8 @@ function AuditRow({
             files={p.files ?? []}
             add={p.diff?.add ?? 0}
             del={p.diff?.del ?? 0}
+            walkthrough={p.diff?.walkthrough ?? null}
+            brief={p.diff?.brief ?? null}
           />
         </div>
       )}
@@ -167,6 +181,12 @@ function AuditRow({
       {chosen && <p className="audit-detail">Chose “{chosen}”.</p>}
       {p.guidance && (
         <p className="audit-detail audit-guidance">“{p.guidance}”</p>
+      )}
+      {/* Guided merge: the target branch actually chosen for this decision. */}
+      {(kind === "diff" || kind === "merge") && p.targetBranch && (
+        <p className="audit-detail">
+          Merged into <code className="mono">{p.targetBranch}</code>.
+        </p>
       )}
 
       <div className="audit-actions">

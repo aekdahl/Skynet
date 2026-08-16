@@ -86,17 +86,28 @@ describe("diff HITL — agent-authored walkthrough", () => {
 
     expect(item.diff?.walkthrough?.summary).toBe("Adds a greeting file.");
     expect(item.diff?.walkthrough?.comments).toEqual([{ file: "greeting.txt", line: 1, note: "the actual change" }]);
+    // Guided merge (ROADMAP: "understand-then-merge, to any branch") drafts its
+    // own brief the SAME way, as a SEPARATE consult call (draftMergeBrief) —
+    // deliberately not folded into the walkthrough's, see orchestrator.ts. The
+    // fixture reply happens to have a `summary` field and no `risks`/
+    // `mitigations`, so it parses as a valid (if sparse) brief too.
+    expect(item.diff?.brief?.summary).toBe("Adds a greeting file.");
+    expect(item.diff?.brief?.risks).toEqual([]);
+    expect(item.diff?.brief?.mitigations).toEqual([]);
     // Grounded on the ACTUAL diff, not a description of it — the real patch
-    // text (the added line) must have reached the consult as context.
-    expect(provider.consultCalls).toHaveLength(1);
-    expect(provider.consultCalls[0]?.context).toContain("hello");
-    expect(provider.consultCalls[0]?.context).toContain("greeting.txt");
+    // text (the added line) must have reached BOTH consults as context.
+    expect(provider.consultCalls).toHaveLength(2);
+    for (const call of provider.consultCalls) {
+      expect(call.context).toContain("hello");
+      expect(call.context).toContain("greeting.txt");
+    }
   });
 
   it("raises the gate with no walkthrough when the provider has no consult support (most CLI runners today)", async () => {
     const provider = new EditOnceProvider(null);
     const item = await setup(provider);
     expect(item.diff?.walkthrough).toBeNull();
+    expect(item.diff?.brief).toBeNull();
     expect(item.diff?.add).toBeGreaterThan(0); // the gate itself is unaffected
   });
 
@@ -104,6 +115,7 @@ describe("diff HITL — agent-authored walkthrough", () => {
     const provider = new EditOnceProvider("not json at all");
     const item = await setup(provider);
     expect(item.diff?.walkthrough).toBeNull();
+    expect(item.diff?.brief).toBeNull();
     expect(item.diff?.files).toEqual(["greeting.txt"]);
   });
 });

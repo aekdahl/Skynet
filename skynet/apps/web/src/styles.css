@@ -341,6 +341,20 @@ kbd {
 .dv-del .dv-sign { color: var(--danger); }
 .dv-hunk { background: var(--bg); color: var(--info); }
 .dv-hunk .dv-code { color: var(--info); }
+/* Guided merge brief — sits ABOVE the walkthrough (the bigger-picture risk
+   framing first, code-level narrative second), same "reads even collapsed"
+   placement rule. Warn-toned to read distinctly from the walkthrough's violet. */
+.dv-brief {
+  margin-top: 6px; padding: 8px 10px; border: 1px solid color-mix(in oklch, var(--warn), transparent 65%);
+  border-radius: 8px; background: color-mix(in oklch, var(--warn), transparent 94%);
+}
+.dv-brief-badge { font-size: 10px; letter-spacing: 0.04em; color: var(--warn); }
+.dv-brief-text { margin: 4px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--text); }
+.dv-brief-section { margin-top: 6px; }
+.dv-brief-label { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.dv-brief-list { margin: 3px 0 0; padding-left: 16px; font-size: 12px; line-height: 1.5; color: var(--text); }
+.dv-brief-risks li::marker { color: var(--danger); }
+.dv-brief-mitigations li::marker { color: var(--ok); }
 /* Agent-authored walkthrough — sits above the raw diff so the summary reads
    even when the patch itself is still collapsed. */
 .dv-walkthrough {
@@ -373,6 +387,16 @@ kbd {
   color: var(--danger); background: color-mix(in oklch, var(--danger), transparent 90%);
 }
 .qcard-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding-top: 2px; }
+
+/* Guided merge — target-branch picker on a diff-review card. */
+.qcard-target { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.qcard-target-label { font-size: 11px; color: var(--muted); }
+.qcard-target-input {
+  flex: 1; min-width: 0; font-size: 12px; background: var(--raised); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px;
+}
+.qcard-target-input:focus { outline: none; border-color: var(--accent); }
+.qcard-target-input::placeholder { color: var(--faint); }
 
 .btn {
   display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
