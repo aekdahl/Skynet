@@ -55,6 +55,21 @@ export interface StartSpec {
 }
 
 /**
+ * One piece of content the agent read from outside the operator's own task
+ * during this run — a fetched URL, a vendored/dependency file — that the
+ * prompt-injection-steering check (apps/server/src/injection-firewall.ts)
+ * treats as untrusted. Populated only by providers that track it (today:
+ * the Claude runner, via a capped in-memory buffer on the handle); absent
+ * elsewhere.
+ */
+export interface UntrustedRead {
+  /** e.g. the fetched URL, or the file path that was read. */
+  source: string;
+  /** Clipped excerpt of what was actually read. */
+  snippet: string;
+}
+
+/**
  * Callbacks a running agent emits. The orchestrator maps these 1:1 onto the
  * `ServerEvent` union and persists as it goes.
  */
@@ -74,8 +89,15 @@ export interface RunnerEvents {
   onProgress(runId: string, progress: number, plan: PlanStep[]): void;
   onHeartbeat(runId: string): void;
   onStatus(runId: string, status: TaskRunStatus): void;
-  /** TaskRun blocked on a human — orchestrator turns this into a HitlItem. */
-  onHitl(runId: string, raise: HitlRaise): void;
+  /**
+   * TaskRun blocked on a human — orchestrator turns this into a HitlItem.
+   * `untrustedReads` (when the provider tracks it) is the recent buffer of
+   * content the agent read from outside the operator's own task — a fetched
+   * URL, a vendored/dependency file — so the orchestrator can run the
+   * prompt-injection-steering check before deciding on auto-approval. Absent
+   * or empty just means "nothing to check," never a signal on its own.
+   */
+  onHitl(runId: string, raise: HitlRaise, untrustedReads?: UntrustedRead[]): void;
   onCompleted(runId: string, branch: string): void;
   /**
    * The runner could NOT execute (binary missing, auth failure, crash). This is

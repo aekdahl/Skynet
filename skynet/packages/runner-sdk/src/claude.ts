@@ -24,6 +24,7 @@ import type {
   RunnerHandle,
   RunnerProvider,
   StartSpec,
+  UntrustedRead,
 } from "./types.js";
 
 // A push-driven async iterable of user messages — keeps the session live so we
@@ -364,6 +365,22 @@ function toolResultText(content: unknown): string {
   return content == null ? "" : JSON.stringify(content);
 }
 
+// Which tool calls feed the untrusted-read buffer for the injection-steering
+// check, and what to key them by. Scoped narrowly on purpose: WebFetch (any
+// URL — the whole point of fetching a page is reading content Skynet doesn't
+// control) and Read of a path that looks like vendored/dependency code (a
+// malicious README is the textbook tool-poisoning vector). This is a SCOPING
+// heuristic only — deciding what's worth remembering — not the security
+// judgment itself, which stays the LLM's job in injection-firewall.ts.
+const UNTRUSTED_READ_PATH_RE = /(^|\/)(node_modules|vendor|\.git)(\/|$)/;
+function untrustedReadSource(name: string, input: Record<string, unknown>): string | null {
+  if (name === "WebFetch" && typeof input.url === "string") return input.url;
+  if (name === "Read" && typeof input.file_path === "string" && UNTRUSTED_READ_PATH_RE.test(input.file_path)) {
+    return input.file_path;
+  }
+  return null;
+}
+
 // One-line summary for the activity log (▸ Edit README.md, ▸ Bash: pnpm test, …).
 function describeTool(name: string, input: Record<string, unknown>): string {
   const fp = typeof input.file_path === "string" ? input.file_path.split("/").pop() : undefined;
@@ -691,7 +708,13 @@ class ClaudeRunnerHandle implements RunnerHandle {
   // didn't opt into plan mode.
   private planApproved = false;
   private sdkEnv: Record<string, string> = {}; // resolved auth env, reused for side-queries
-  private pendingTools = new Map<string, string>(); // tool_use id → tool name, to pair outputs
+  private pendingTools = new Map<string, { name: string; input: Record<string, unknown> }>(); // tool_use id → call, to pair outputs
+  // Recent content read from outside the operator's own task (WebFetch results,
+  // vendored-file Reads) — see untrustedReadSource(). Capped so a long run
+  // doesn't grow this unboundedly; only the most recent reads are relevant to
+  // "did the NEXT command follow an embedded instruction."
+  private untrustedReads: UntrustedRead[] = [];
+  private static readonly MAX_UNTRUSTED_READS = 8;
   private pendingChat = false;
   private progress = 0;
   private plan: PlanStep[] = []; // real steps, from the agent's task-tracking tools
@@ -787,6 +810,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
         this.events.onHitl(
           this.runId,
           escalation ?? (question ? buildQuestionRaise(question) : this.buildRaise(toolName, input)),
+          this.untrustedReads.length ? this.untrustedReads.slice() : undefined,
         );
       });
     };
@@ -906,6 +930,11 @@ class ClaudeRunnerHandle implements RunnerHandle {
       steps: null,
       diff: null,
     };
+  }
+
+  private trackUntrustedRead(source: string, output: string) {
+    this.untrustedReads.push({ source, snippet: clip(output, 2000) });
+    if (this.untrustedReads.length > ClaudeRunnerHandle.MAX_UNTRUSTED_READS) this.untrustedReads.shift();
   }
 
   private bump() {
@@ -1057,7 +1086,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
             else { this.lastRationale = text; this.events.onLog(this.runId, text); }
           }
           for (const t of tools) {
-            if (t.id) this.pendingTools.set(t.id, t.name);
+            if (t.id) this.pendingTools.set(t.id, { name: t.name, input: t.input });
             // The agent's task-tracking tools are its plan — feed them to the PLAN
             // panel + progress instead of logging them as tool lines / bumping the
             // synthetic bar.
@@ -1079,10 +1108,15 @@ class ClaudeRunnerHandle implements RunnerHandle {
           for (const b of blocks) {
             if (b.type !== "tool_result") continue;
             const id = typeof b.tool_use_id === "string" ? b.tool_use_id : "";
-            const name = (id && this.pendingTools.get(id)) || "tool";
+            const pending = id ? this.pendingTools.get(id) : undefined;
+            const name = pending?.name || "tool";
             if (id) this.pendingTools.delete(id);
             const out = toolResultText(b.content);
             this.events.onLog(this.runId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)");
+            if (pending && !b.is_error) {
+              const src = untrustedReadSource(pending.name, pending.input);
+              if (src) this.trackUntrustedRead(src, out);
+            }
           }
         } else if (msg.type === "result") {
           // The SDK emits a result even for an errored turn (is_error / non-success
