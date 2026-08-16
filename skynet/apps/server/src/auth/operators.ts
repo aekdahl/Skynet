@@ -33,6 +33,13 @@ export interface OperatorRecord {
 export interface OperatorDirectory {
   /** Verify credentials; returns the Principal on success, undefined otherwise. */
   verify(email: string, password: string): Principal | undefined;
+  /** The login email for an ALREADY-AUTHENTICATED identity — used by the
+   *  elevate flow (auth/routes.ts) to re-verify a password without asking the
+   *  browser to remember/re-type the email (Principal itself carries no email,
+   *  only operatorId). Keyed by (workspaceId, operatorId): operatorId alone
+   *  isn't globally unique (e.g. the dev seed's "viewer" exists in one
+   *  workspace, "jordan"/"kyle" in different ones). */
+  findEmail(workspaceId: string, operatorId: string): string | undefined;
 }
 
 const SCRYPT_KEYLEN = 64;
@@ -62,11 +69,21 @@ export function makeOperator(
   };
 }
 
+const identityKey = (workspaceId: string, operatorId: string): string => `${workspaceId}:${operatorId}`;
+
 export class MemoryOperatorDirectory implements OperatorDirectory {
   private byEmail = new Map<string, OperatorRecord>();
+  private byIdentity = new Map<string, OperatorRecord>();
 
   constructor(records: OperatorRecord[]) {
-    for (const r of records) this.byEmail.set(r.email.toLowerCase(), r);
+    for (const r of records) {
+      this.byEmail.set(r.email.toLowerCase(), r);
+      this.byIdentity.set(identityKey(r.workspaceId, r.operatorId), r);
+    }
+  }
+
+  findEmail(workspaceId: string, operatorId: string): string | undefined {
+    return this.byIdentity.get(identityKey(workspaceId, operatorId))?.email;
   }
 
   verify(email: string, password: string): Principal | undefined {

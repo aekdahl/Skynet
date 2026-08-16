@@ -39,6 +39,9 @@ export interface Principal {
   workspaceId: string;
   operatorId: string;
   scopes?: string[];
+  // Set only while a time-limited admin promotion is active on this session
+  // (server: auth/sessions.ts's resolve()) — the timestamp it auto-reverts at.
+  elevatedUntil?: number;
 }
 
 let readOnly = false;
@@ -62,6 +65,7 @@ export function isReadOnly(): boolean {
 // server 403 never fires the other way, since it's the authoritative check).
 const READONLY_EXEMPT = new Set([
   "/api/auth/logout",
+  "/api/auth/elevate",
   "/api/telegram/simulate",
   "/api/simulation/grade",
   "/api/simulation/judge",
@@ -157,6 +161,28 @@ export async function fetchMe(): Promise<Principal> {
  *  read-only. */
 export function isReadOnlyPrincipal(principal: Principal): boolean {
   return principal.scopes !== undefined && !principal.scopes.includes("author");
+}
+
+/** Time-limited admin promotion (ROADMAP.md) — self-service, sudo-style:
+ *  re-verify the CURRENT session's own password for a bounded full-authority
+ *  window on it. Returns when it reverts; the caller should re-fetch /me
+ *  (isReadOnlyPrincipal will read false while it's live) and schedule a
+ *  revert at that timestamp. */
+export async function elevate(password: string, ttlMs?: number): Promise<{ elevatedUntil: number }> {
+  return req("POST", "/api/auth/elevate", ttlMs ? { password, ttlMs } : { password });
+}
+
+export interface ElevationEvent {
+  workspaceId: string;
+  operatorId: string;
+  at: number;
+  expiresAt: number;
+  ttlMs: number;
+}
+
+/** The elevation audit trail — newest first, append-only server-side. */
+export async function fetchElevations(): Promise<ElevationEvent[]> {
+  return req("GET", "/api/auth/elevations");
 }
 
 export async function fetchSnapshot(): Promise<Snapshot> {

@@ -55,15 +55,19 @@ function isApproverDecision(method: string, path: string): boolean {
   return /^\/api\/hitl\/[^/]+\/resolve$/.test(path) || /^\/api\/merges\/[^/]+\/(merge|rework|update-branch|dismiss)$/.test(path);
 }
 
-/** Requests that don't touch domain state: a personal auth action (logout),
- *  or a dry-run/judge endpoint that only reads + calls an LLM, never writes
- *  (the Telegram/Simulation QA harnesses, and Steward's own chat — Steward
- *  only PROPOSES an action here; a human/viewer confirming it is a separate,
- *  gated call to the action's own route). */
+/** Requests that don't touch domain state: personal auth actions (logout,
+ *  elevate — see auth/routes.ts), or a dry-run/judge endpoint that only reads
+ *  + calls an LLM, never writes (the Telegram/Simulation QA harnesses, and
+ *  Steward's own chat — Steward only PROPOSES an action here; a human/viewer
+ *  confirming it is a separate, gated call to the action's own route).
+ *  `elevate` is the one exemption that's load-bearing rather than a
+ *  convenience: it's the mechanism a viewer uses to ESCAPE the "author" gate
+ *  below, so it can't itself require "author" — that would be circular. */
 function isExemptMutation(method: string, path: string): boolean {
   if (path === "/api/auth/logout") return true;
   if (method !== "POST") return false;
   return (
+    path === "/api/auth/elevate" ||
     path === "/api/telegram/simulate" ||
     path === "/api/simulation/grade" ||
     path === "/api/simulation/judge" ||
@@ -80,7 +84,8 @@ function isExemptMutation(method: string, path: string): boolean {
  * "approver" is reserved for the HITL/merge decision gates it names by name.
  */
 export function requiredScope(method: string, url: string): Scope | null {
-  const path = url.toLowerCase().split("?")[0];
+  const q = url.indexOf("?");
+  const path = (q < 0 ? url : url.slice(0, q)).toLowerCase();
   if (!path.startsWith("/api")) return null; // /mcp: self-gated per tool call
   if (method === "GET" || method === "HEAD") return null;
   if (isExemptMutation(method, path)) return null;

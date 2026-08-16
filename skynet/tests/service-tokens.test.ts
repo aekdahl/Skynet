@@ -160,7 +160,15 @@ describe("auth resolution wires in service tokens", () => {
     const serviceTokens = new MemoryServiceTokenStore();
     // AUTH_REQUIRED defaults off in test env, so pass sessions too to prove the
     // service-token path (not the dev open-default) is what resolves the token.
-    configureAuth({ sessions: { create: async () => { throw new Error("unused"); }, resolve: async () => undefined, destroy: async () => {} }, serviceTokens });
+    configureAuth({
+      sessions: {
+        create: async () => { throw new Error("unused"); },
+        resolve: async () => undefined,
+        destroy: async () => {},
+        elevate: async () => undefined,
+      },
+      serviceTokens,
+    });
     const created = await serviceTokens.create({ workspaceId: "resistance", operatorId: "mcp:x", scopes: ["approver"], label: "x" });
 
     const principal = await resolvePrincipal(created.token);

@@ -92,6 +92,12 @@ export interface StoreState {
   // Undefined until GET /api/auth/me resolves at boot; the client-side mutation
   // guard (client.ts's req()) is the enforcement, this is just for UI greying.
   readOnly?: boolean;
+  // Time-limited admin promotion (ROADMAP.md) — set while an elevation window
+  // is live on this session (null otherwise). Drives the countdown + the
+  // auto-revert timer below; `readOnly` itself already reflects the elevated
+  // state (the server resolves an elevated principal with scopes: undefined),
+  // this is only for the UI to show/count down/proactively re-check.
+  elevatedUntil?: number | null;
 }
 
 export interface Store extends StoreState {
@@ -222,6 +228,11 @@ export interface Store extends StoreState {
   // Exchange operator credentials for a session token, then reconnect with it.
   login: (email: string, password: string) => Promise<api.LoginResult>;
   verifyMfa: (challengeId: string, code: string) => Promise<void>;
+  // Time-limited admin promotion — re-verify the CURRENT session's own
+  // password for a bounded full-authority window (sudo-style). Throws on a
+  // wrong password (ApiError). No page reload: readOnly/elevatedUntil update
+  // in place so the UI reflects it immediately.
+  elevate: (password: string, ttlMs?: number) => Promise<void>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -410,9 +421,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const loadSnapshot = useRef(() => {
     api
       .fetchSnapshot()
-      // fromSnapshot() is a wholesale replace — thread readOnly through so a
-      // reload/retry doesn't drop it back to "unknown" between fetchMe() calls.
-      .then((snap) => setState((s) => ({ ...fromSnapshot(snap), readOnly: s.readOnly })))
+      // fromSnapshot() is a wholesale replace — thread readOnly/elevatedUntil
+      // through so a reload/retry doesn't drop them back to "unknown" between
+      // fetchMe() calls.
+      .then((snap) => setState((s) => ({ ...fromSnapshot(snap), readOnly: s.readOnly, elevatedUntil: s.elevatedUntil })))
       .catch((err) => {
         // The WS snapshot will seed state if the REST seed fails — but never
         // swallow silently: a schema/contract drift makes fetchSnapshot reject
@@ -435,7 +447,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .then((principal) => {
         const ro = api.isReadOnlyPrincipal(principal);
         api.setReadOnly(ro);
-        if (!cancelled) setState((s) => ({ ...s, readOnly: ro }));
+        if (!cancelled) setState((s) => ({ ...s, readOnly: ro, elevatedUntil: principal.elevatedUntil ?? null }));
       })
       .catch((err) => console.error("[store] fetchMe failed:", err));
 
@@ -443,7 +455,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       (msg) => {
         if (cancelled) return;
         if (msg.type === "snapshot") {
-          setState((s) => ({ ...fromSnapshot(msg.state), readOnly: s.readOnly }));
+          setState((s) => ({ ...fromSnapshot(msg.state), readOnly: s.readOnly, elevatedUntil: s.elevatedUntil }));
         } else {
           // A newly-raised HITL is the "needs you" moment → fire an Inbox alert.
           // notifyInbox no-ops unless the operator turned alerts on (lib/alerts).
@@ -467,6 +479,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       connRef.current = null;
     };
   }, []);
+
+  // Time-limited admin promotion: schedule the auto-revert. The server is what
+  // actually enforces the window (auth/sessions.ts's resolve() re-checks it on
+  // every request regardless of this timer) — this only makes the CLIENT
+  // proactively re-fetch /me and flip back to read-only the moment it lapses,
+  // instead of the UI silently believing it's still elevated until the next
+  // mutation attempt gets a surprise 403.
+  useEffect(() => {
+    if (!state.elevatedUntil) return;
+    const ms = state.elevatedUntil - Date.now();
+    if (ms <= 0) return; // already lapsed — the next fetchMe() naturally reflects it
+    const t = setTimeout(() => {
+      api
+        .fetchMe()
+        .then((principal) => {
+          const ro = api.isReadOnlyPrincipal(principal);
+          api.setReadOnly(ro);
+          setState((s) => ({ ...s, readOnly: ro, elevatedUntil: principal.elevatedUntil ?? null }));
+        })
+        .catch(() => undefined);
+    }, ms);
+    return () => clearTimeout(t);
+  }, [state.elevatedUntil]);
 
   const store = useMemo<Store>(() => {
     return {
@@ -684,6 +719,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await api.verifyMfa(challengeId, code);
         // Session set — re-init the whole app with the new token.
         location.reload();
+      },
+      elevate: async (password, ttlMs) => {
+        await api.elevate(password, ttlMs);
+        // Re-fetch rather than trusting the elevate response alone — /me is the
+        // single source of truth the boot effect already uses, so this can't
+        // drift from it.
+        const principal = await api.fetchMe();
+        const ro = api.isReadOnlyPrincipal(principal);
+        api.setReadOnly(ro);
+        setState((s) => ({ ...s, readOnly: ro, elevatedUntil: principal.elevatedUntil ?? null }));
       },
     };
   }, [state]);

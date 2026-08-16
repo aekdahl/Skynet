@@ -5,10 +5,17 @@
 // behind SessionStore. Uses the same `redis` client as the Redis bus (W1).
 
 import { createClient, type RedisClientType } from "redis";
+import { now } from "../config.js";
 import type { Principal } from "../auth.js";
 import { newSession, type Session, type SessionStore } from "./sessions.js";
 
 const keyFor = (token: string) => `sess:${token}`;
+// A companion key rather than folding elevatedUntil into the principal blob
+// above: Redis's native per-key TTL already gives the bounded window for
+// free (no manual timestamp comparison needed on read), and the session's
+// own value/TTL are untouched — elevating never re-serializes or re-times
+// the base session.
+const elevKeyFor = (token: string) => `sess:elev:${token}`;
 
 export class RedisSessionStore implements SessionStore {
   private ready?: Promise<RedisClientType>;
@@ -39,15 +46,31 @@ export class RedisSessionStore implements SessionStore {
     const client = await this.client();
     const raw = await client.get(keyFor(token));
     if (!raw) return undefined; // missing or already expired by Redis
+    let principal: Principal;
     try {
-      return JSON.parse(raw) as Principal;
+      principal = JSON.parse(raw) as Principal;
     } catch {
       return undefined;
     }
+    const elevRaw = await client.get(elevKeyFor(token));
+    if (elevRaw) return { ...principal, scopes: undefined, elevatedUntil: Number(elevRaw) };
+    return principal;
+  }
+
+  async elevate(token: string, ttlMs: number): Promise<{ expiresAt: number } | undefined> {
+    const client = await this.client();
+    const raw = await client.get(keyFor(token));
+    if (!raw) return undefined; // session missing/expired — nothing to elevate
+    const expiresAt = now() + ttlMs;
+    // The VALUE is the absolute expiresAt (for the caller/countdown UI); the
+    // key's own PX is what actually enforces the window server-side.
+    await client.set(elevKeyFor(token), String(expiresAt), { PX: ttlMs });
+    return { expiresAt };
   }
 
   async destroy(token: string): Promise<void> {
     const client = await this.client();
     await client.del(keyFor(token));
+    await client.del(elevKeyFor(token)); // harmless no-op if never elevated
   }
 }

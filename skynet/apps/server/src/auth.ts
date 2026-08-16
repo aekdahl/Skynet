@@ -41,6 +41,12 @@ export interface Principal {
   // so a project-scoped token can neither touch nor see other projects' work.
   // Mirrors the `scopes` capability model, but on the project axis.
   projectIds?: string[];
+  // Set ONLY by SessionStore.resolve() while a time-limited admin promotion
+  // (ROADMAP.md) is active on this session — the moment this timestamp passes,
+  // resolve() reverts to the session's base (stored) principal on its own; no
+  // logout/re-login involved. See auth/sessions.ts, auth/routes.ts's
+  // POST /api/auth/elevate.
+  elevatedUntil?: number;
 }
 
 /** True if the principal may exercise `scope`. Humans (no scopes) always may. */

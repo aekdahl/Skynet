@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { TaskRun, Project } from "@skynet/shared";
 import type { WsPhase } from "../lib/client";
-import { useStore } from "../lib/store";
+import { useStore, useNow } from "../lib/store";
 import {
   fmtWait,
   idleRunners,
@@ -177,6 +177,80 @@ export function ConnectingShell({
   );
 }
 
+// Time-limited admin promotion (ROADMAP.md) — self-service, sudo-style: a
+// viewer re-enters their own password for a bounded full-authority window on
+// their current session, which auto-reverts on its own (no logout involved;
+// see store.tsx's revert timer). Lives in the sidebar footer, right where the
+// "· Viewer" badge already sits.
+function ElevateBadge({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const { readOnly, elevatedUntil } = useStore();
+  const now = useNow(1000);
+
+  if (elevatedUntil && elevatedUntil > now) {
+    const left = fmtWait(Math.round((elevatedUntil - now) / 1000));
+    return (
+      <span className="op-role-elevated" title="Time-limited admin promotion — reverts to Viewer automatically">
+        {" "}
+        · Admin ({left} left)
+      </span>
+    );
+  }
+  if (!readOnly) return null;
+  return (
+    <>
+      <span className="op-role-viewer"> · Viewer</span>
+      <button className="op-elevate-toggle" onClick={onToggle} aria-expanded={open}>
+        Elevate
+      </button>
+    </>
+  );
+}
+
+function ElevateForm({ onClose }: { onClose: () => void }) {
+  const { elevate } = useStore();
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!password.trim() || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await elevate(password.trim());
+      onClose();
+    } catch (e) {
+      setErr((e as Error)?.message || "Incorrect password.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="op-elevate-form">
+      <input
+        type="password"
+        className="qx-input"
+        placeholder="Your password"
+        autoFocus
+        value={password}
+        disabled={busy}
+        onChange={(e) => setPassword(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && submit()}
+      />
+      <div className="op-elevate-row">
+        <button className="btn btn-primary btn-sm" disabled={!password.trim() || busy} onClick={submit}>
+          Elevate
+        </button>
+        <button className="btn btn-ghost btn-sm" disabled={busy} onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+      {err && <div className="op-elevate-err">{err}</div>}
+    </div>
+  );
+}
+
 export function OpSidebar({
   view,
   setView,
@@ -200,6 +274,7 @@ export function OpSidebar({
   const devTools = devToolsEnabled();
   const showQa = devTools || qaActive;
   const [qaOpen, setQaOpen] = useState(qaActive);
+  const [elevateOpen, setElevateOpen] = useState(false);
 
   const dotColor = (p: Project) => {
     const pa = runs.filter((a) => a.projectId === p.id);
@@ -293,10 +368,11 @@ export function OpSidebar({
           <div className="who">{workspaceSettings?.name || "Skynet"}</div>
           <div className="role">
             {operatorHandle() || "Workspace"}
-            {readOnly && <span className="op-role-viewer"> · Viewer</span>}
+            <ElevateBadge open={elevateOpen} onToggle={() => setElevateOpen((o) => !o)} />
           </div>
         </div>
       </div>
+      {elevateOpen && <ElevateForm onClose={() => setElevateOpen(false)} />}
     </aside>
   );
 }

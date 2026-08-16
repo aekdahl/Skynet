@@ -33,6 +33,7 @@ import { MemorySessionStore, type SessionStore } from "./auth/sessions.js";
 import { StoreServiceTokenStore } from "./auth/service-tokens.js";
 import { seedBootstrapToken } from "./auth/bootstrap.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
+import { MemoryElevationLog } from "./auth/elevation-log.js";
 import { registerAuthRoutes, registerServiceTokenRoutes } from "./auth/routes.js";
 import { mfaEnabled, ensureRecoveryCodes } from "./auth/mfa.js";
 import { startTelegramBridge } from "./telegram/index.js";
@@ -116,6 +117,10 @@ async function main() {
   }
   const seededOperators = seedOperators();
   const operators = new MemoryOperatorDirectory(seededOperators);
+  // Time-limited admin promotion's audit trail (ROADMAP.md) — in-memory only
+  // for now, same footing as the operator directory itself (no Postgres-backed
+  // directory exists yet either).
+  const elevationLog = new MemoryElevationLog();
   // Scoped API tokens for MCP / programmatic access. Persisted through the
   // domain Store (file on desktop, Postgres hosted) as a hash + last-4 — so a
   // token minted in Settings survives a restart, and the raw secret is never
@@ -175,7 +180,7 @@ async function main() {
 
   app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: "per-runner", sessions: config.sessions }));
 
-  await registerAuthRoutes(app, { sessions, operators });
+  await registerAuthRoutes(app, { sessions, operators, elevationLog });
   await registerServiceTokenRoutes(app, { serviceTokens, operations });
   await registerApi(app, { operations, orchestrator });
   // MCP endpoint (Streamable HTTP) — runs drive Skynet through the same

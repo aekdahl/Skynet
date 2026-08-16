@@ -396,9 +396,27 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   production gets an equivalent `SKYNET_VIEWER_EMAIL`/`_PASSWORD`/`_WORKSPACE` env seed (mirrors the
   existing admin seed — there's still no invite/user-management UI, so this is the only way to stand
   one up on a hosted deploy today). *(Multi-user — hosted/team only.)*
-- [ ] 🏢 **Time-limited admin promotion** — temporarily elevate a viewer to admin for a bounded,
+- [x] 🏢 **Time-limited admin promotion** — temporarily elevate a viewer to admin for a bounded,
   auto-expiring window (break-glass / sudo-style), then revert to their base role automatically; every
-  promotion + expiry is audited. Depends on the read-only role above.
+  promotion + expiry is audited. Depends on the read-only role above. Self-service, sudo-style: a
+  logged-in viewer re-enters their OWN password (`POST /api/auth/elevate`) to widen ONLY their own
+  current session — no "promote someone else" path. `SessionStore` (`auth/sessions.ts`, all three
+  backends: memory/Postgres/Redis) gained `elevate(token, ttlMs)`; `resolve()` re-checks the window
+  on every call (the same sweep-on-access idiom `expiresAt` already used) and returns the session's
+  BASE principal with full authority (`scopes: undefined`) while it's live, reverting on its own —
+  no logout, no timer required, provably can't outlast the window even across a restart. Bundled a
+  real pre-existing bug fix: `PostgresSessionStore` was silently dropping `scopes` on every resolve
+  (a Postgres-backed viewer login would have resolved as full authority) — fixed as a prerequisite,
+  since "revert to base role" is meaningless if the base role was never persisted. A small append-only
+  `ElevationLog` (`auth/elevation-log.ts`, in-memory) records every grant with its own `expiresAt` —
+  deliberately NOT folded into the HITL audit trail (`AuditRecord`'s `hitlId`/`runId` are structurally
+  required and every existing consumer is keyed to a resolved HITL decision) — and has no delete/clear
+  route, unlike that trail. Web: a countdown badge + inline password prompt in the sidebar footer
+  (`· Viewer` → `Elevate` → `· Admin (Nm left)`), and a client-side timer that proactively re-fetches
+  `/api/auth/me` the moment the window lapses so the UI flips back on its own. Verified live end-to-end
+  against a real dev server: pre-elevate mutation 403s, elevate succeeds, the SAME mutation succeeds
+  mid-window, and — after the window lapses with no action taken — the identical token 403s again while
+  `/api/auth/me` still resolves (never logged out); the elevation log showed every grant, newest first.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap, additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
 - [ ] 🔗⛓ **Feature-scoped branch hierarchy — branch out from branches.** Today every task's agent branch
   cuts from the project's single integration branch and merges straight back to it

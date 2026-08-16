@@ -121,6 +121,13 @@ const ALLOW = new Set<string>([
   // that shape, exercised directly wherever it's used (store.tsx), not via a
   // journey.
   "fetchMe", "setReadOnly", "isReadOnly", "isReadOnlyPrincipal",
+  // Time-limited admin promotion (ROADMAP.md) — needs a real password
+  // re-verify against the operator directory, so no offline journey exercises
+  // it; covered server-side by admin-promotion.test.ts (the elevate route,
+  // TTL clamp, wrong-password rejection) and sessions.test.ts (the
+  // resolve()/elevate() interplay). fetchElevations reads the append-only
+  // audit trail the same route writes — no operator journey drives it either.
+  "elevate", "fetchElevations",
 ]);
 
 describe("client API coverage", () => {

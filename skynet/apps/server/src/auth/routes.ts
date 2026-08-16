@@ -14,6 +14,7 @@ import { mfaEnabled, createChallenge, verifyChallenge } from "./mfa.js";
 import type { SessionStore } from "./sessions.js";
 import type { ServiceTokenStore } from "./service-tokens.js";
 import type { OperatorDirectory } from "./operators.js";
+import type { ElevationLog } from "./elevation-log.js";
 
 const LoginRequest = z.object({
   email: z.string().min(1),
@@ -24,6 +25,13 @@ const LoginRequest = z.object({
 const MfaRequest = z.object({
   challengeId: z.string().min(1),
   code: z.string().min(1),
+});
+
+// Time-limited admin promotion: re-verify the CURRENT session's own password.
+// ttlMs is a request, not a grant — the route clamps it to elevationMaxTtlMs.
+const ElevateRequest = z.object({
+  password: z.string().min(1),
+  ttlMs: z.number().int().positive().optional(),
 });
 
 // Mirrors the Scope tuple in auth.ts. A minted token is narrowed to this subset.
@@ -39,6 +47,7 @@ const CreateServiceTokenRequest = z.object({
 export interface AuthRouteDeps {
   sessions: SessionStore;
   operators: OperatorDirectory;
+  elevationLog: ElevationLog;
 }
 
 function setSessionCookie(reply: FastifyReply, token: string, expiresAt: number): void {
@@ -55,7 +64,7 @@ function clearSessionCookie(reply: FastifyReply): void {
 }
 
 export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): Promise<void> {
-  const { sessions, operators } = deps;
+  const { sessions, operators, elevationLog } = deps;
 
   // Public — the one /api route reachable without an existing token.
   // Issue a session (httpOnly cookie + body token). Shared by the direct-login
@@ -119,6 +128,45 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
 
   // Authenticated — who am I? (the hook has already set req.principal or 401'd).
   app.get("/api/auth/me", async (req: FastifyRequest) => ({ principal: req.principal }));
+
+  // Time-limited admin promotion (ROADMAP.md) — self-service, sudo-style: the
+  // caller re-proves they own THIS account (their own password, again) and, if
+  // correct, their CURRENT session gets a bounded full-authority window.
+  // Deliberately narrow: only elevates the session that's already authenticated
+  // as this operator — there's no "promote someone else" path here.
+  app.post("/api/auth/elevate", async (req: FastifyRequest, reply: FastifyReply) => {
+    const body = ElevateRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    const principal = req.principal!;
+    const email = operators.findEmail(principal.workspaceId, principal.operatorId);
+    if (!email) return reply.code(403).send({ error: "Elevation isn't available for this session." });
+    const verified = operators.verify(email, body.data.password);
+    // Re-verifying by email could in principle resolve a DIFFERENT operator
+    // record than the one currently signed in (e.g. two accounts sharing an
+    // email is a directory bug, not something to trust silently) — require an
+    // exact identity match, not just "some password matched some record".
+    if (!verified || verified.operatorId !== principal.operatorId || verified.workspaceId !== principal.workspaceId) {
+      return reply.code(401).send({ error: "Incorrect password." });
+    }
+    const token = cookieToken(req.headers.cookie) ?? tokenFrom(req.headers.authorization, undefined);
+    if (!token) return reply.code(401).send({ error: "No active session to elevate." });
+    const ttlMs = Math.min(body.data.ttlMs ?? config.elevationTtlMs, config.elevationMaxTtlMs);
+    const result = await sessions.elevate(token, ttlMs);
+    if (!result) return reply.code(401).send({ error: "Session not found or expired." });
+    await elevationLog.record({
+      workspaceId: principal.workspaceId,
+      operatorId: principal.operatorId,
+      at: now(),
+      expiresAt: result.expiresAt,
+      ttlMs,
+    });
+    return { elevatedUntil: result.expiresAt };
+  });
+
+  // The elevation audit trail — append-only (no archive/delete route; see
+  // elevation-log.ts). Any authenticated principal in the workspace may read
+  // it, same visibility as GET /api/audit.
+  app.get("/api/auth/elevations", async (req: FastifyRequest) => elevationLog.list(req.principal!.workspaceId));
 }
 
 /**

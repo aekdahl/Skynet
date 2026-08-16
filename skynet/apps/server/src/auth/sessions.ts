@@ -11,18 +11,33 @@ import type { Principal } from "../auth.js";
 
 export interface Session {
   token: string;
+  // The session's BASE principal, exactly as issued at login — never mutated.
+  // This is what resolve() reverts to once an elevation window lapses, with no
+  // directory re-lookup needed at revert time.
   principal: Principal;
   createdAt: number;
   expiresAt: number;
+  // Time-limited admin promotion (ROADMAP.md): set by elevate(), null when not
+  // elevated. resolve() checks this against `now()` on every call (the same
+  // sweep-on-access idiom `expiresAt` already uses below) — the window can
+  // never be exceeded even if nothing polls it, and reverting needs no timer.
+  elevatedUntil: number | null;
 }
 
 export interface SessionStore {
   /** Issue a session for a freshly authenticated principal. */
   create(principal: Principal, ttlMs: number): Promise<Session>;
-  /** Resolve a live session; undefined if missing or expired. */
+  /** Resolve a live session; undefined if missing or expired. Returns the
+   *  base principal, UNLESS a live elevation window is active — then returns
+   *  it with full authority (scopes: undefined) plus `elevatedUntil` so the
+   *  caller can render a countdown. */
   resolve(token: string): Promise<Principal | undefined>;
   /** Invalidate a session (logout). */
   destroy(token: string): Promise<void>;
+  /** Grant a bounded full-authority window on an existing session (self-service,
+   *  sudo-style — the caller has already re-verified the operator's password).
+   *  Returns the new `expiresAt`, or undefined if the session is missing/expired. */
+  elevate(token: string, ttlMs: number): Promise<{ expiresAt: number } | undefined>;
 }
 
 /** Mint a fresh opaque token + timestamps. Shared by every adapter. */
@@ -33,6 +48,7 @@ export function newSession(principal: Principal, ttlMs: number): Session {
     principal,
     createdAt,
     expiresAt: createdAt + ttlMs,
+    elevatedUntil: null,
   };
 }
 
@@ -52,7 +68,18 @@ export class MemorySessionStore implements SessionStore {
       this.sessions.delete(token); // expired — sweep on access
       return undefined;
     }
+    if (s.elevatedUntil != null && now() < s.elevatedUntil) {
+      return { ...s.principal, scopes: undefined, elevatedUntil: s.elevatedUntil };
+    }
     return s.principal;
+  }
+
+  async elevate(token: string, ttlMs: number): Promise<{ expiresAt: number } | undefined> {
+    const s = this.sessions.get(token);
+    if (!s || now() >= s.expiresAt) return undefined;
+    const expiresAt = now() + ttlMs;
+    s.elevatedUntil = expiresAt;
+    return { expiresAt };
   }
 
   async destroy(token: string): Promise<void> {
