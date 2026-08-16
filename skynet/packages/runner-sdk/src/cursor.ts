@@ -18,11 +18,27 @@
 // Auth: cursor-agent needs CURSOR_API_KEY (or a signed-in CLI). When the binary
 // is missing or unauthenticated the runner degrades cleanly — it surfaces the
 // reason and completes, so the orchestrator lifecycle never hangs.
+//
+// Opt-in browser tooling (spec.browser): cursor-agent's MCP servers are FILE-
+// based (.cursor/mcp.json project-local, or ~/.cursor/mcp.json global —
+// verified live against cursor-agent 2026.06.19; `cursor-agent mcp` has no
+// "add via flag for one run" option). prepareBrowserMcp writes that file into
+// the run's OWN worktree, same shape `cursor-agent mcp add` would. A freshly-
+// added server still needs a one-time approval before it loads in headless
+// mode — normally `cursor-agent mcp enable <name>`, which persists into
+// GLOBAL state, so instead we pass `--approve-mcps` on the invocation itself
+// (session-scoped, never touches ~/.cursor). This matches the SAME trust
+// level `--force` already gives every other tool below — cursor-agent is the
+// one vendor this codebase runs fully unattended, relying on Skynet's post-run
+// diff review rather than a live per-action gate (see `--force` below); a
+// live-gated browser tool would be an inconsistent exception, not a safer one.
 
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
-import { usageFromJson } from "./cli-runner.js";
+import { mergeBrowserMcpConfig, usageFromJson } from "./cli-runner.js";
 import type {
   HitlRaise,
   RunnerEvents,
@@ -37,6 +53,29 @@ const CURSOR_BIN = process.env.SKYNET_CURSOR_BIN || "cursor-agent";
 // Our fleet model strings already use those slugs, so pass through; only drop a
 // blank so the CLI falls back to its configured default.
 const mapModel = (m: string): string | undefined => (m.trim() ? m.trim() : undefined);
+
+/** Pure argv builder for one cursor-agent turn — pulled out of spawnTurn so
+ *  it's directly testable without spawning a real process. */
+export function cursorArgs(spec: StartSpec, prompt: string, resumeChatId: string | undefined): string[] {
+  const model = mapModel(spec.model);
+  // `-f` (force) also satisfies cursor-agent's "Workspace Trust" gate: in a
+  // fresh per-agent worktree, headless `-p` mode otherwise blocks forever on an
+  // interactive trust prompt it can't answer. The operator's gate is preserved
+  // by Skynet's own post-run diff review before anything merges.
+  // --stream-partial-output: token-level text deltas for live "typing" — see
+  // isConsolidatedAssistantEvent below for how a delta is told apart from the
+  // complete message (the CLI reuses the same event shape for both).
+  const args = ["-p", "--output-format", "stream-json", "--stream-partial-output", "--force"];
+  // A freshly-written .cursor/mcp.json server needs one-time approval before
+  // it loads in headless mode — see the file header for why this (not
+  // `mcp enable`) is the right way to grant it.
+  if (spec.browser) args.push("--approve-mcps");
+  if (model) args.push("--model", model);
+  // Continue the parent/own chat when we have an id (fork or follow-up turn).
+  if (resumeChatId) args.push("--resume", resumeChatId);
+  args.push(prompt);
+  return args;
+}
 
 // Tool/command events whose names we treat as read-only — logged but never gated.
 const READ_ONLY = new Set(["read", "ls", "glob", "grep", "search", "list", "read_file"]);
@@ -120,7 +159,29 @@ class CursorRunnerHandle implements RunnerHandle {
     this.events.onStatus(this.runId, "running");
     this.events.onLog(this.runId, `picked up "${spec.task}" on ${spec.branch}`);
     this.hb = setInterval(() => this.events.onHeartbeat(this.runId), 5_000);
+    if (spec.browser) this.prepareBrowserMcp();
     this.spawnTurn(this.initialPrompt(), true);
+  }
+
+  /** Best-effort: write .cursor/mcp.json into the worktree so the browser MCP
+   *  server is available. A failure here just means the run proceeds without
+   *  browser tools — never worth failing the whole task over. */
+  private prepareBrowserMcp() {
+    try {
+      const cwd = this.spec.cwd ?? process.cwd();
+      const dir = join(cwd, ".cursor");
+      const file = join(dir, "mcp.json");
+      let existing: Record<string, unknown> = {};
+      try {
+        existing = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      } catch {
+        /* no existing file, or unreadable — start fresh */
+      }
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, JSON.stringify(mergeBrowserMcpConfig(existing), null, 2));
+    } catch (err) {
+      this.events.onLog(this.runId, `browser-tools setup failed: ${(err as Error).message} — continuing without it`);
+    }
   }
 
   private initialPrompt(): string {
@@ -146,19 +207,7 @@ class CursorRunnerHandle implements RunnerHandle {
       prompt = `${notes}\n${prompt}`;
       this.pendingNotes = [];
     }
-    const model = mapModel(this.spec.model);
-    // `-f` (force) also satisfies cursor-agent's "Workspace Trust" gate: in a
-    // fresh per-agent worktree, headless `-p` mode otherwise blocks forever on an
-    // interactive trust prompt it can't answer. The operator's gate is preserved
-    // by Skynet's own post-run diff review before anything merges.
-    // --stream-partial-output: token-level text deltas for live "typing" — see
-    // onLine's isConsolidated check for how a chunk is told apart from the
-    // complete message (the CLI reuses the same event shape for both).
-    const args = ["-p", "--output-format", "stream-json", "--stream-partial-output", "--force"];
-    if (model) args.push("--model", model);
-    // Continue the parent/own chat when we have an id (fork or follow-up turn).
-    if (this.resumeChatId) args.push("--resume", this.resumeChatId);
-    args.push(prompt);
+    const args = cursorArgs(this.spec, prompt, this.resumeChatId);
 
     let child: ChildProcess;
     try {
