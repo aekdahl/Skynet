@@ -27,6 +27,10 @@ export const PROVIDER_ENV_VARS: Record<ProviderId, readonly string[]> = {
   // Hermes is provider-agnostic; OpenRouter is its recommended key, but any of
   // these provider keys in the ambient env also make it usable.
   hermes: ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"],
+  // OpenCode is provider-agnostic too; its docs recommend Anthropic by default
+  // ("although Anthropic is recommended…"), and it picks up any of these from
+  // the ambient env the same way it picks up ANTHROPIC_API_KEY automatically.
+  opencode: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"],
 };
 
 /** The primary API-key env var per provider (its value is injectable as the key). */

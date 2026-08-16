@@ -16,6 +16,7 @@ import {
   ProviderId,
   ResolveRequest,
   ChatRequest,
+  InformRequest,
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
@@ -324,6 +325,20 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // `inform` — mass-select runs (explicit ids and/or a whole project's live
+  // runs) and attach a note that rides each one's NEXT prompt, no extra turn.
+  // A third interaction type alongside chat (above) and resolve (HITL) — not a
+  // HITL gate itself, so this never touches /api/hitl.
+  app.post("/api/runs/inform", async (req, reply) => {
+    const body = InformRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.informRuns(ws(req), body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/runs/:id/fork", async (req, reply) => {
     try {
       return await ops.forkAgent(ws(req), req.params.id);
@@ -397,6 +412,28 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string } }>("/api/merges/:id/dismiss", async (req, reply) => {
     try {
       await ops.dismissReadyPr(ws(req), req.params.id);
+      return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Feature-scoped branch batching's aggregate PR — one per completed Feature,
+  // not per task (see orchestrator.ts's checkFeatureCompletion). Only Merge +
+  // Dismiss: no Rework/Update-branch for a batch (see the plan).
+  app.get("/api/features/pr/ready", (req) => ops.listReadyFeaturePrs(ws(req)));
+  app.post<{ Params: { id: string } }>("/api/features/:id/pr/merge", async (req, reply) => {
+    const body = MergePrRequest.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.mergeReadyFeaturePr(ws(req), req.params.id, body.data.method);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/features/:id/pr/dismiss", async (req, reply) => {
+    try {
+      await ops.dismissReadyFeaturePr(ws(req), req.params.id);
       return { ok: true };
     } catch (err) {
       return fail(reply, err);

@@ -187,12 +187,19 @@ describe("ClaudeRunnerProvider session cache (fork resume)", () => {
     // p1 was the least-recently-used entry when p3 pushed the cache (cap 2)
     // past its bound — it's the one that must have been evicted, not p2/p3.
 
+    // start() itself only constructs the handle — the actual query() call now
+    // happens after an async repo-hook scan (launch(), see claude.ts), so wait
+    // for it to land rather than reading q.fn synchronously after start().
+    let before = q.fn.mock.calls.length;
     await provider.start({ ...spec, runId: "fork-of-p1", parentId: "p1" }, fakeEvents());
+    await vi.waitFor(() => expect(q.fn.mock.calls.length).toBeGreaterThan(before), { timeout: 2000, interval: 20 });
     const forkOfEvicted = lastQueryOptions(q.fn);
     expect(forkOfEvicted.resume).toBeUndefined(); // evicted — starts fresh, doesn't error
     expect(forkOfEvicted.forkSession).toBeUndefined();
 
+    before = q.fn.mock.calls.length;
     await provider.start({ ...spec, runId: "fork-of-p3", parentId: "p3" }, fakeEvents());
+    await vi.waitFor(() => expect(q.fn.mock.calls.length).toBeGreaterThan(before), { timeout: 2000, interval: 20 });
     const forkOfRecent = lastQueryOptions(q.fn);
     expect(forkOfRecent.resume).toBe("s3"); // still cached — real resume
     expect(forkOfRecent.forkSession).toBe(true);

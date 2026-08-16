@@ -49,11 +49,21 @@
 // Auth: the Copilot CLI needs a signed-in `gh`/Copilot subscription (or
 // GH_TOKEN). When the binary is missing or unauthenticated the runner degrades
 // cleanly — it surfaces the reason and completes, so the lifecycle never hangs.
+//
+// Opt-in browser tooling (spec.browser): unlike Cursor/Gemini, the Copilot CLI
+// takes MCP config as a real per-invocation flag — `--additional-mcp-config
+// <json>` (verified live against @github/copilot 1.0.80: --help says it
+// "augments config from ~/.copilot/mcp-config.json for this session", i.e.
+// session-scoped, no file ever written). Same {mcpServers:{...}} shape every
+// other vendor's config uses. A denied browser-tool call falls through this
+// runner's own denied-tool → HITL gate below — same live gate as any other
+// tool, no special-casing needed.
 
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution, Usage } from "@skynet/shared";
+import { BROWSER_MCP_NAME, browserMcpServerSpec } from "./cli-runner.js";
 import type {
   HitlRaise,
   RunnerEvents,
@@ -65,6 +75,34 @@ import type {
 const COPILOT_BIN = process.env.SKYNET_COPILOT_BIN || "copilot";
 
 const mapModel = (m: string): string | undefined => (m.trim() ? m.trim() : undefined);
+
+/** Pure argv builder for one `copilot -p` turn's TASK-scoped flags — pulled
+ *  out of spawnTurn so it's directly testable without spawning a real
+ *  process. `--session-id`/`--allow-tool` are appended by spawnTurn itself
+ *  (instance-owned state: the session id lives for the runner's whole
+ *  lifetime, allowTool is decided per-retry), not part of this pure builder.
+ *  `resumeSession` is accepted for interface parity with the other CLI
+ *  runners' argv builders — JSON mode's continuity comes entirely from
+ *  `--session-id`, so it's unused here. */
+export function copilotArgs(
+  spec: StartSpec,
+  prompt: string,
+  opts: { resumeSession: boolean; primary: boolean },
+): string[] {
+  void opts.resumeSession;
+  void opts.primary;
+  const model = mapModel(spec.model);
+  const args = ["-p", prompt, "--output-format", "json"];
+  if (model) args.push("--model", model);
+  if (spec.browser) {
+    const { command, args: mcpArgs } = browserMcpServerSpec();
+    args.push(
+      "--additional-mcp-config",
+      JSON.stringify({ mcpServers: { [BROWSER_MCP_NAME]: { command, args: mcpArgs } } }),
+    );
+  }
+  return args;
+}
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null;
@@ -207,9 +245,10 @@ class CopilotRunnerHandle implements RunnerHandle {
    *  completion. `allowTool`, when set, scopes this ONE turn's permission for
    *  a previously-denied call the operator just approved. */
   private spawnTurn(prompt: string, primary: boolean, allowTool?: string) {
-    const model = mapModel(this.spec.model);
-    const args = ["-p", prompt, "--output-format", "json", "--session-id", this.sessionId];
-    if (model) args.push("--model", model);
+    // resumeSession is unused by copilotArgs (JSON mode's continuity is
+    // --session-id, appended below) — passed for interface parity, see its
+    // own doc comment.
+    const args = [...copilotArgs(this.spec, prompt, { resumeSession: !primary, primary }), "--session-id", this.sessionId];
     if (allowTool) args.push("--allow-tool", allowTool);
 
     let child: ChildProcess;
