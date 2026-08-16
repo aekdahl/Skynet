@@ -2636,13 +2636,26 @@ export class Orchestrator {
         await ctx.worktrees.removeAt(wt.path).catch(() => undefined);
         stats.worktreesRemoved++;
       }
-      // 2. Integrated agent branches nobody live is using.
+      // 2. Integrated agent branches nobody live is using — the project
+      // integration branch AND every project's feature branches (a task under
+      // a Feature merges there first, via targetBranchFor, never straight into
+      // the integration branch — see checkFeatureCompletion).
       for (const p of ps) {
         const merged = await ctx.worktrees.mergedAgentBranches(ctx.merge.integrationBranch(p.id)).catch(() => []);
         for (const name of merged) {
           if (liveBranches.has(name)) continue;
           await ctx.worktrees.deleteBranch(name).catch(() => undefined);
           stats.branchesDeleted++;
+        }
+        const features = await this.store.listFeatures(p.workspaceId).catch(() => [] as Feature[]);
+        for (const f of features) {
+          if (f.projectId !== p.id) continue;
+          const mergedF = await ctx.worktrees.mergedAgentBranches(`${FEATURE_BRANCH_PREFIX}${f.id}`).catch(() => []);
+          for (const name of mergedF) {
+            if (liveBranches.has(name)) continue;
+            await ctx.worktrees.deleteBranch(name).catch(() => undefined);
+            stats.branchesDeleted++;
+          }
         }
       }
     }
