@@ -65,7 +65,6 @@ export function isReadOnly(): boolean {
 // server 403 never fires the other way, since it's the authoritative check).
 const READONLY_EXEMPT = new Set([
   "/api/auth/logout",
-  "/api/auth/elevate",
   "/api/telegram/simulate",
   "/api/simulation/grade",
   "/api/simulation/judge",
@@ -163,24 +162,32 @@ export function isReadOnlyPrincipal(principal: Principal): boolean {
   return principal.scopes !== undefined && !principal.scopes.includes("author");
 }
 
-/** Time-limited admin promotion (ROADMAP.md) — self-service, sudo-style:
- *  re-verify the CURRENT session's own password for a bounded full-authority
- *  window on it. Returns when it reverts; the caller should re-fetch /me
- *  (isReadOnlyPrincipal will read false while it's live) and schedule a
- *  revert at that timestamp. */
-export async function elevate(password: string, ttlMs?: number): Promise<{ elevatedUntil: number }> {
-  return req("POST", "/api/auth/elevate", ttlMs ? { password, ttlMs } : { password });
-}
-
-export interface ElevationEvent {
-  workspaceId: string;
+/** A workspace operator, as a non-secret summary (admin-promotion picker). */
+export interface OperatorSummary {
   operatorId: string;
-  at: number;
-  expiresAt: number;
-  ttlMs: number;
+  email: string;
+  role: "admin" | "viewer";
 }
 
-/** The elevation audit trail — newest first, append-only server-side. */
+/** This workspace's roster — admin-only (see GET /api/operators). */
+export async function fetchOperators(): Promise<OperatorSummary[]> {
+  return req("GET", "/api/operators");
+}
+
+/** Time-limited admin promotion (ROADMAP.md) — ADMIN-granted, never
+ *  self-service: promote a named viewer to a bounded full-authority window.
+ *  Only an admin's session can call this (the server checks the caller's
+ *  PERSISTED role, not just their current scopes). */
+export async function promoteOperator(operatorId: string, ttlMs?: number): Promise<{ operatorId: string; expiresAt: number }> {
+  return req("POST", `/api/operators/${encodeURIComponent(operatorId)}/promote`, ttlMs ? { ttlMs } : {});
+}
+
+export type ElevationEvent =
+  | { kind: "grant"; workspaceId: string; operatorId: string; grantedBy: string; at: number; expiresAt: number; ttlMs: number }
+  | { kind: "expiry"; workspaceId: string; operatorId: string; at: number; expiresAt: number };
+
+/** The elevation audit trail (grants AND observed expiries) — newest first,
+ *  append-only server-side. */
 export async function fetchElevations(): Promise<ElevationEvent[]> {
   return req("GET", "/api/auth/elevations");
 }

@@ -228,11 +228,14 @@ export interface Store extends StoreState {
   // Exchange operator credentials for a session token, then reconnect with it.
   login: (email: string, password: string) => Promise<api.LoginResult>;
   verifyMfa: (challengeId: string, code: string) => Promise<void>;
-  // Time-limited admin promotion — re-verify the CURRENT session's own
-  // password for a bounded full-authority window (sudo-style). Throws on a
-  // wrong password (ApiError). No page reload: readOnly/elevatedUntil update
-  // in place so the UI reflects it immediately.
-  elevate: (password: string, ttlMs?: number) => Promise<void>;
+  // Time-limited admin promotion (ROADMAP.md) — ADMIN-granted: promote a
+  // named viewer to a bounded full-authority window. Only callable by an
+  // admin session (the server enforces the caller's PERSISTED role). Doesn't
+  // touch the CALLER's own readOnly/elevatedUntil — granting someone else a
+  // promotion never changes your own session.
+  promoteOperator: (operatorId: string, ttlMs?: number) => Promise<{ expiresAt: number }>;
+  fetchOperators: () => Promise<api.OperatorSummary[]>;
+  fetchElevations: () => Promise<api.ElevationEvent[]>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -481,11 +484,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Time-limited admin promotion: schedule the auto-revert. The server is what
-  // actually enforces the window (auth/sessions.ts's resolve() re-checks it on
-  // every request regardless of this timer) — this only makes the CLIENT
-  // proactively re-fetch /me and flip back to read-only the moment it lapses,
-  // instead of the UI silently believing it's still elevated until the next
-  // mutation attempt gets a surprise 403.
+  // actually enforces the window (auth/elevations.ts's activeUntil() re-checks
+  // it on every request regardless of this timer) — this only makes the
+  // CLIENT proactively re-fetch /me and flip back to read-only the moment it
+  // lapses, instead of the UI silently believing it's still elevated until
+  // the next mutation attempt gets a surprise 403.
   useEffect(() => {
     if (!state.elevatedUntil) return;
     const ms = state.elevatedUntil - Date.now();
@@ -502,6 +505,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }, ms);
     return () => clearTimeout(t);
   }, [state.elevatedUntil]);
+
+  // A promotion is ADMIN-granted, on a DIFFERENT browser session than the one
+  // that grants it — unlike the revert above, there's no local action to hang
+  // a proactive re-check off of. Poll /me while this session is read-only so a
+  // just-promoted viewer sees it land without a manual reload; stops the
+  // moment it's no longer read-only (the revert timer above takes over then).
+  useEffect(() => {
+    if (!state.readOnly) return;
+    const t = setInterval(() => {
+      api
+        .fetchMe()
+        .then((principal) => {
+          const ro = api.isReadOnlyPrincipal(principal);
+          api.setReadOnly(ro);
+          setState((s) => (s.readOnly === ro && s.elevatedUntil === (principal.elevatedUntil ?? null)
+            ? s
+            : { ...s, readOnly: ro, elevatedUntil: principal.elevatedUntil ?? null }));
+        })
+        .catch(() => undefined);
+    }, 20_000);
+    return () => clearInterval(t);
+  }, [state.readOnly]);
 
   const store = useMemo<Store>(() => {
     return {
@@ -720,16 +745,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         // Session set — re-init the whole app with the new token.
         location.reload();
       },
-      elevate: async (password, ttlMs) => {
-        await api.elevate(password, ttlMs);
-        // Re-fetch rather than trusting the elevate response alone — /me is the
-        // single source of truth the boot effect already uses, so this can't
-        // drift from it.
-        const principal = await api.fetchMe();
-        const ro = api.isReadOnlyPrincipal(principal);
-        api.setReadOnly(ro);
-        setState((s) => ({ ...s, readOnly: ro, elevatedUntil: principal.elevatedUntil ?? null }));
-      },
+      promoteOperator: (operatorId, ttlMs) => api.promoteOperator(operatorId, ttlMs),
+      fetchOperators: () => api.fetchOperators(),
+      fetchElevations: () => api.fetchElevations(),
     };
   }, [state]);
 

@@ -165,7 +165,6 @@ describe("auth resolution wires in service tokens", () => {
         create: async () => { throw new Error("unused"); },
         resolve: async () => undefined,
         destroy: async () => {},
-        elevate: async () => undefined,
       },
       serviceTokens,
     });

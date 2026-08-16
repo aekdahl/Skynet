@@ -98,13 +98,13 @@ export const config = {
   viewerPassword: process.env.SKYNET_VIEWER_PASSWORD || undefined,
   viewerWorkspace: process.env.SKYNET_VIEWER_WORKSPACE || undefined,
 
-  // Time-limited admin promotion (ROADMAP.md) — self-service, sudo-style: a
-  // logged-in viewer re-verifies their OWN password (POST /api/auth/elevate)
-  // to get a bounded full-authority window on their existing session, which
-  // auto-reverts on its own once the window lapses (auth/sessions.ts's
-  // resolve(), no logout involved). elevationTtlMs is the default window when
-  // the caller doesn't request one; elevationMaxTtlMs caps whatever it asks
-  // for, so a client can request a shorter window but never a longer one.
+  // Time-limited admin promotion (ROADMAP.md) — an existing ADMIN grants a
+  // named viewer a bounded full-authority window (POST
+  // /api/operators/:id/promote), which auto-reverts on its own once it lapses
+  // (auth/elevations.ts's activeUntil(), checked on every request — no
+  // manual revert). elevationTtlMs is the default window when the request
+  // doesn't specify one; elevationMaxTtlMs caps whatever it asks for, so a
+  // caller can request a shorter window but never a longer one.
   elevationTtlMs: Number(process.env.SKYNET_ELEVATION_TTL_MS ?? 15 * 60 * 1000),
   elevationMaxTtlMs: Number(process.env.SKYNET_ELEVATION_MAX_TTL_MS ?? 60 * 60 * 1000),
 

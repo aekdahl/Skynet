@@ -104,14 +104,15 @@ describe("requiredScope: the viewer-role mutation gate", () => {
 
   it("exempts personal auth actions and the dry-run/judge endpoints", () => {
     expect(requiredScope("POST", "/api/auth/logout")).toBeNull();
-    // Load-bearing, not a convenience: /api/auth/elevate is how a viewer
-    // ESCAPES the "author" gate below — it can't itself require "author".
-    expect(requiredScope("POST", "/api/auth/elevate")).toBeNull();
     expect(requiredScope("POST", "/api/telegram/simulate")).toBeNull();
     expect(requiredScope("POST", "/api/simulation/grade")).toBeNull();
     expect(requiredScope("POST", "/api/simulation/judge")).toBeNull();
     expect(requiredScope("POST", "/api/steward/chat")).toBeNull();
     expect(requiredScope("POST", "/api/steward/chat/stream")).toBeNull();
+  });
+
+  it("requires \"author\" for admin promotion — no exemption; the CALLER (an admin) already has it, a viewer never does", () => {
+    expect(requiredScope("POST", "/api/operators/v-1/promote")).toBe("author");
   });
 
   it("requires \"approver\" for HITL resolve and every merge-decision route", () => {

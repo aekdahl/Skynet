@@ -1,23 +1,26 @@
-// Time-limited admin promotion (ROADMAP.md) — self-service, sudo-style: a
-// viewer re-verifies their OWN password (POST /api/auth/elevate) for a
-// bounded full-authority window on their CURRENT session, which auto-reverts
-// on its own once the window lapses (no logout/re-login). Depends on the
-// read-only viewer role (a prior ROADMAP item): elevating only matters for a
-// session that started out SCOPED.
+// Time-limited admin promotion (ROADMAP.md) — ADMIN-granted, never
+// self-service: an existing admin promotes a NAMED viewer to a bounded
+// full-authority window (POST /api/operators/:operatorId/promote). Depends on
+// the read-only viewer role (a prior ROADMAP item): promoting only matters
+// for an operator whose base role is scoped.
 //
-// Two layers: MemorySessionStore's resolve()/elevate() interplay in isolation
-// (no HTTP), then the real route end-to-end via app.inject (mirrors
-// tests/viewer-role-routes.test.ts's pattern).
+// Three layers: MemoryElevationStore's grant()/activeUntil()/list()
+// interplay in isolation (no HTTP), auth.ts's resolvePrincipal() merging a
+// live grant into a session-resolved principal, then the real routes
+// end-to-end via app.inject (mirrors tests/viewer-role-routes.test.ts's
+// pattern) — including the loophole this design is built to close: a
+// CURRENTLY-ELEVATED viewer's live scopes look identical to a real admin's,
+// so the promote route must check the caller's PERSISTED role, not their
+// live scopes, or an elevated viewer could re-grant/self-extend indefinitely.
 import { describe, it, expect, beforeAll } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
-import { hasScope } from "../apps/server/src/auth.js";
+import { configureAuth, resolvePrincipal, hasScope } from "../apps/server/src/auth.js";
 import { MemorySessionStore } from "../apps/server/src/auth/sessions.js";
 import { MemoryOperatorDirectory, makeOperator } from "../apps/server/src/auth/operators.js";
-import { MemoryElevationLog } from "../apps/server/src/auth/elevation-log.js";
+import { MemoryElevationStore } from "../apps/server/src/auth/elevations.js";
 import { registerAuthRoutes } from "../apps/server/src/auth/routes.js";
 import { registerApi } from "../apps/server/src/api.js";
-import { configureAuth } from "../apps/server/src/auth.js";
 import { Hub } from "../apps/server/src/hub.js";
 import { Orchestrator } from "../apps/server/src/orchestrator.js";
 import { Operations } from "../apps/server/src/operations.js";
@@ -40,88 +43,116 @@ class NullProvider implements RunnerProvider {
   }
 }
 
-describe("MemorySessionStore: elevate()/resolve() interplay", () => {
-  it("a viewer session resolves scoped, then full-authority once elevated, then reverts on its own after the window lapses", async () => {
-    const sessions = new MemorySessionStore();
-    const session = await sessions.create({ workspaceId: DEFAULT_WORKSPACE, operatorId: "v", scopes: ["observe"] }, 60_000);
+describe("MemoryElevationStore: grant()/activeUntil()/list() interplay", () => {
+  it("a grant is active until it lapses, then activeUntil sweeps it and logs a separate expiry event", async () => {
+    const store = new MemoryElevationStore();
+    const { expiresAt } = await store.grant(DEFAULT_WORKSPACE, "v", "admin-1", 60_000);
+    expect(expiresAt).toBeGreaterThan(Date.now());
+    expect(await store.activeUntil(DEFAULT_WORKSPACE, "v")).toBe(expiresAt);
 
-    const before = await sessions.resolve(session.token);
+    const events = await store.list(DEFAULT_WORKSPACE);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: "grant", operatorId: "v", grantedBy: "admin-1", expiresAt });
+  });
+
+  it("an already-lapsed grant (negative ttl) reads as inactive immediately and logs its own expiry entry", async () => {
+    const store = new MemoryElevationStore();
+    const { expiresAt } = await store.grant(DEFAULT_WORKSPACE, "v", "admin-1", -1);
+
+    expect(await store.activeUntil(DEFAULT_WORKSPACE, "v")).toBeNull();
+    const events = await store.list(DEFAULT_WORKSPACE);
+    // Newest first: the expiry (observed just now, on the activeUntil() call
+    // above) precedes the grant that was recorded a moment earlier.
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ kind: "expiry", operatorId: "v", expiresAt });
+    expect(events[1]).toMatchObject({ kind: "grant", operatorId: "v", expiresAt });
+    // A second read after the sweep is a no-op — no duplicate expiry entries.
+    expect(await store.activeUntil(DEFAULT_WORKSPACE, "v")).toBeNull();
+    expect(await store.list(DEFAULT_WORKSPACE)).toHaveLength(2);
+  });
+
+  it("re-granting replaces the previous active window rather than stacking", async () => {
+    const store = new MemoryElevationStore();
+    await store.grant(DEFAULT_WORKSPACE, "v", "admin-1", 60_000);
+    const second = await store.grant(DEFAULT_WORKSPACE, "v", "admin-2", 5_000);
+    expect(await store.activeUntil(DEFAULT_WORKSPACE, "v")).toBe(second.expiresAt);
+  });
+
+  it("an operator with no grant reads as inactive, no crash", async () => {
+    const store = new MemoryElevationStore();
+    expect(await store.activeUntil(DEFAULT_WORKSPACE, "nobody")).toBeNull();
+  });
+
+  it("workspaces are isolated — a grant/list in one never leaks into another", async () => {
+    const store = new MemoryElevationStore();
+    await store.grant(DEFAULT_WORKSPACE, "v", "admin-1", 60_000);
+    expect(await store.activeUntil("resistance", "v")).toBeNull();
+    expect(await store.list("resistance")).toEqual([]);
+  });
+});
+
+describe("resolvePrincipal: an admin-granted elevation is checked on EVERY session resolve", () => {
+  it("a viewer's session resolves scoped, then full-authority once granted, then reverts on its own after the window lapses", async () => {
+    const sessions = new MemorySessionStore();
+    const elevations = new MemoryElevationStore();
+    const session = await sessions.create({ workspaceId: DEFAULT_WORKSPACE, operatorId: "v", scopes: ["observe"] }, 60_000);
+    configureAuth({ sessions, elevations });
+
+    const before = await resolvePrincipal(session.token);
     expect(before?.scopes).toEqual(["observe"]);
     expect(hasScope(before!, "author")).toBe(false);
 
-    const result = await sessions.elevate(session.token, 10_000);
-    expect(result?.expiresAt).toBeGreaterThan(Date.now());
+    const { expiresAt } = await elevations.grant(DEFAULT_WORKSPACE, "v", "admin-1", 10_000);
 
-    const during = await sessions.resolve(session.token);
+    const during = await resolvePrincipal(session.token);
     expect(during?.scopes).toBeUndefined(); // full authority
-    expect(during?.elevatedUntil).toBe(result!.expiresAt);
+    expect(during?.elevatedUntil).toBe(expiresAt);
     expect(hasScope(during!, "author")).toBe(true);
     expect(hasScope(during!, "admin")).toBe(true);
-
     // Base identity is preserved throughout — elevation only widens scope.
     expect(during?.workspaceId).toBe(DEFAULT_WORKSPACE);
     expect(during?.operatorId).toBe("v");
-  });
 
-  it("an already-lapsed window (negative ttl) reverts immediately — no separate sweep/cleanup needed", async () => {
-    const sessions = new MemorySessionStore();
-    const session = await sessions.create({ workspaceId: DEFAULT_WORKSPACE, operatorId: "v", scopes: ["observe"] }, 60_000);
-    await sessions.elevate(session.token, -1); // already in the past
-
-    const after = await sessions.resolve(session.token);
+    await elevations.grant(DEFAULT_WORKSPACE, "v", "admin-1", -1); // force it into the past
+    const after = await resolvePrincipal(session.token);
     expect(after?.scopes).toEqual(["observe"]); // reverted to base — no logout involved
     expect(after?.elevatedUntil).toBeUndefined();
   });
 
-  it("a full-authority (admin) session can also elevate — harmless no-op, still full authority", async () => {
-    const sessions = new MemorySessionStore();
-    const session = await sessions.create({ workspaceId: DEFAULT_WORKSPACE, operatorId: "a" }, 60_000);
-    await sessions.elevate(session.token, 10_000);
-    const resolved = await sessions.resolve(session.token);
-    expect(resolved?.scopes).toBeUndefined();
-  });
-
-  it("elevate() on a missing or already-expired session returns undefined", async () => {
-    const sessions = new MemorySessionStore();
-    expect(await sessions.elevate("no-such-token", 10_000)).toBeUndefined();
-
-    const expired = await sessions.create({ workspaceId: DEFAULT_WORKSPACE, operatorId: "v", scopes: ["observe"] }, -1);
-    expect(await sessions.elevate(expired.token, 10_000)).toBeUndefined();
+  it("elevation is never applied to a dev-token or service-token principal — only session-resolved (human) ones", async () => {
+    const elevations = new MemoryElevationStore();
+    // "jordan" is the dev-token operatorId for DEFAULT_WORKSPACE (auth.ts's
+    // TOKENS map) — grant it an elevation and confirm the dev-token path
+    // (which never touches `sessions`/`elevations`) is unaffected either way.
+    await elevations.grant(DEFAULT_WORKSPACE, "jordan", "admin-1", 60_000);
+    configureAuth({ elevations });
+    const resolved = await resolvePrincipal("dev-cyberdyne");
+    expect(resolved?.elevatedUntil).toBeUndefined();
   });
 });
 
-describe("operators.findEmail — identity lookup for the elevate flow", () => {
-  it("resolves the login email for an already-authenticated (workspaceId, operatorId)", () => {
-    const dir = new MemoryOperatorDirectory([
-      makeOperator("viewer", DEFAULT_WORKSPACE, "viewer@cyberdyne.dev", "skynet", "viewer"),
-      makeOperator("viewer", "resistance", "other-viewer@resistance.dev", "skynet", "viewer"),
-    ]);
-    // Same operatorId, different workspace — must not cross-resolve.
-    expect(dir.findEmail(DEFAULT_WORKSPACE, "viewer")).toBe("viewer@cyberdyne.dev");
-    expect(dir.findEmail("resistance", "viewer")).toBe("other-viewer@resistance.dev");
-    expect(dir.findEmail(DEFAULT_WORKSPACE, "nobody")).toBeUndefined();
-  });
-});
+const ADMIN_EMAIL = "admin@cyberdyne.dev";
+const ADMIN_PASSWORD = "admin-pw";
+const VIEWER_EMAIL = "viewer@cyberdyne.dev";
+const VIEWER_PASSWORD = "viewer-pw";
+const OTHER_VIEWER_EMAIL = "other-viewer@cyberdyne.dev";
+const OTHER_VIEWER_PASSWORD = "other-viewer-pw";
 
-const EMAIL = "viewer@cyberdyne.dev";
-const PASSWORD = "correct-horse-battery-staple";
-const WRONG_ORIGIN_EMAIL = "admin@cyberdyne.dev";
-
-describe("POST /api/auth/elevate — real Fastify app, real session store", () => {
+describe("POST /api/operators/:operatorId/promote — real Fastify app, real stores", () => {
   let app: FastifyInstance;
-  let sessions: MemorySessionStore;
-  let elevationLog: MemoryElevationLog;
+  let elevations: MemoryElevationStore;
   const ORIG_TTL = config.elevationTtlMs;
   const ORIG_MAX_TTL = config.elevationMaxTtlMs;
 
   beforeAll(async () => {
-    sessions = new MemorySessionStore();
+    const sessions = new MemorySessionStore();
     const operators = new MemoryOperatorDirectory([
-      makeOperator("viewer", DEFAULT_WORKSPACE, EMAIL, PASSWORD, "viewer"),
-      makeOperator("admin", DEFAULT_WORKSPACE, WRONG_ORIGIN_EMAIL, "other-pw"),
+      makeOperator("admin", DEFAULT_WORKSPACE, ADMIN_EMAIL, ADMIN_PASSWORD, "admin"),
+      makeOperator("viewer", DEFAULT_WORKSPACE, VIEWER_EMAIL, VIEWER_PASSWORD, "viewer"),
+      makeOperator("viewer2", DEFAULT_WORKSPACE, OTHER_VIEWER_EMAIL, OTHER_VIEWER_PASSWORD, "viewer"),
     ]);
-    elevationLog = new MemoryElevationLog();
-    configureAuth({ sessions });
+    elevations = new MemoryElevationStore();
+    configureAuth({ sessions, elevations });
 
     const store = new MemoryStore({ seed: false });
     const hub = new Hub(store, new NullBus());
@@ -129,7 +160,7 @@ describe("POST /api/auth/elevate — real Fastify app, real session store", () =
     const operations = new Operations({ store, hub, orchestrator });
 
     app = Fastify();
-    await registerAuthRoutes(app, { sessions, operators, elevationLog });
+    await registerAuthRoutes(app, { sessions, operators, elevations });
     await registerApi(app, { operations, orchestrator });
     app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: "Not found" }));
     await app.ready();
@@ -138,90 +169,122 @@ describe("POST /api/auth/elevate — real Fastify app, real session store", () =
     config.elevationMaxTtlMs = 10 * 60_000;
   });
 
-  const loginAsViewer = async (): Promise<string> => {
-    const res = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: EMAIL, password: PASSWORD } });
+  const login = async (email: string, password: string): Promise<string> => {
+    const res = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email, password } });
     expect(res.statusCode).toBe(200);
     return (res.json() as { token: string }).token;
   };
+  const mutate = (token: string) =>
+    app.inject({ method: "POST", url: "/api/projects", headers: { authorization: `Bearer ${token}` }, payload: { name: "P", goal: "g" } });
+  const promote = (token: string, targetOperatorId: string, ttlMs?: number) =>
+    app.inject({
+      method: "POST",
+      url: `/api/operators/${targetOperatorId}/promote`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: ttlMs ? { ttlMs } : {},
+    });
 
-  it("before elevating: reads work, a mutation is refused (viewer scope)", async () => {
-    const token = await loginAsViewer();
+  it("before promoting: the viewer reads work, a mutation is refused (viewer scope)", async () => {
+    const token = await login(VIEWER_EMAIL, VIEWER_PASSWORD);
     const read = await app.inject({ method: "GET", url: "/api/snapshot", headers: { authorization: `Bearer ${token}` } });
     expect(read.statusCode).toBe(200);
-    const mutate = await app.inject({ method: "POST", url: "/api/projects", headers: { authorization: `Bearer ${token}` }, payload: {} });
-    expect(mutate.statusCode).toBe(403);
+    expect((await mutate(token)).statusCode).toBe(403);
   });
 
-  it("correct password elevates the session; the same mutation now succeeds; /me reflects it", async () => {
-    const token = await loginAsViewer();
+  it("a viewer cannot promote itself or anyone else — never self-service", async () => {
+    const viewerToken = await login(VIEWER_EMAIL, VIEWER_PASSWORD);
+    const self = await promote(viewerToken, "viewer");
+    expect(self.statusCode).toBe(403);
+    const other = await promote(viewerToken, "viewer2");
+    expect(other.statusCode).toBe(403);
+    // Neither attempt actually granted anything.
+    expect(await elevations.activeUntil(DEFAULT_WORKSPACE, "viewer")).toBeNull();
+    expect(await elevations.activeUntil(DEFAULT_WORKSPACE, "viewer2")).toBeNull();
+  });
 
-    const elevate = await app.inject({
-      method: "POST",
-      url: "/api/auth/elevate",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { password: PASSWORD },
-    });
-    expect(elevate.statusCode).toBe(200);
-    const { elevatedUntil } = elevate.json() as { elevatedUntil: number };
-    expect(elevatedUntil).toBeGreaterThan(Date.now());
+  it("an admin promotes a named viewer; that viewer's SAME session now succeeds at the mutation; /me reflects it", async () => {
+    const adminToken = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const viewerToken = await login(VIEWER_EMAIL, VIEWER_PASSWORD);
 
-    const me = await app.inject({ method: "GET", url: "/api/auth/me", headers: { authorization: `Bearer ${token}` } });
+    const res = await promote(adminToken, "viewer");
+    expect(res.statusCode).toBe(200);
+    const { expiresAt } = res.json() as { expiresAt: number };
+    expect(expiresAt).toBeGreaterThan(Date.now());
+
+    const me = await app.inject({ method: "GET", url: "/api/auth/me", headers: { authorization: `Bearer ${viewerToken}` } });
     const principal = (me.json() as { principal: { scopes?: string[]; elevatedUntil?: number } }).principal;
     expect(principal.scopes).toBeUndefined();
-    expect(principal.elevatedUntil).toBe(elevatedUntil);
+    expect(principal.elevatedUntil).toBe(expiresAt);
 
-    const mutate = await app.inject({
-      method: "POST",
-      url: "/api/projects",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { name: "P", goal: "g" },
-    });
-    expect(mutate.statusCode).not.toBe(403);
+    expect((await mutate(viewerToken)).statusCode).not.toBe(403);
 
-    const events = await elevationLog.list(DEFAULT_WORKSPACE);
-    expect(events[0]).toMatchObject({ workspaceId: DEFAULT_WORKSPACE, operatorId: "viewer", expiresAt: elevatedUntil });
+    const events = await elevations.list(DEFAULT_WORKSPACE);
+    expect(events[0]).toMatchObject({ kind: "grant", operatorId: "viewer", grantedBy: "admin", expiresAt });
   });
 
-  it("wrong password is refused; the session stays scoped", async () => {
-    const token = await loginAsViewer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/auth/elevate",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { password: "not-the-password" },
-    });
-    expect(res.statusCode).toBe(401);
-    const mutate = await app.inject({ method: "POST", url: "/api/projects", headers: { authorization: `Bearer ${token}` }, payload: {} });
-    expect(mutate.statusCode).toBe(403); // still a viewer
+  it("a CURRENTLY-ELEVATED viewer still cannot grant a promotion — the persisted role is checked, not the live scope", async () => {
+    const adminToken = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const viewerToken = await login(VIEWER_EMAIL, VIEWER_PASSWORD);
+    expect((await promote(adminToken, "viewer")).statusCode).toBe(200); // viewer is now elevated
+
+    // The elevated viewer's OWN principal now has scopes: undefined — same
+    // shape as a real admin's — but the promote route must still refuse it.
+    const me = await app.inject({ method: "GET", url: "/api/auth/me", headers: { authorization: `Bearer ${viewerToken}` } });
+    expect((me.json() as { principal: { scopes?: string[] } }).principal.scopes).toBeUndefined();
+
+    const selfExtend = await promote(viewerToken, "viewer");
+    expect(selfExtend.statusCode).toBe(403);
+    const promoteOther = await promote(viewerToken, "viewer2");
+    expect(promoteOther.statusCode).toBe(403);
+    expect(await elevations.activeUntil(DEFAULT_WORKSPACE, "viewer2")).toBeNull();
+  });
+
+  it("promoting an unknown operator 404s", async () => {
+    const adminToken = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    expect((await promote(adminToken, "nobody")).statusCode).toBe(404);
+  });
+
+  it("promoting an operator who is already an admin is refused (nothing to promote)", async () => {
+    const adminToken = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const res = await promote(adminToken, "admin");
+    expect(res.statusCode).toBe(400);
   });
 
   it("a requested TTL beyond elevationMaxTtlMs is clamped, not honored verbatim", async () => {
-    const token = await loginAsViewer();
+    const adminToken = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
     const before = Date.now();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/auth/elevate",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { password: PASSWORD, ttlMs: 24 * 60 * 60 * 1000 }, // 1 day — way over the 10m cap
-    });
+    const res = await promote(adminToken, "viewer2", 24 * 60 * 60 * 1000); // 1 day — way over the 10m cap
     expect(res.statusCode).toBe(200);
-    const { elevatedUntil } = res.json() as { elevatedUntil: number };
-    expect(elevatedUntil).toBeLessThanOrEqual(before + config.elevationMaxTtlMs + 2000);
+    const { expiresAt } = res.json() as { expiresAt: number };
+    expect(expiresAt).toBeLessThanOrEqual(before + config.elevationMaxTtlMs + 2000);
   });
 
-  it("GET /api/auth/elevations returns this workspace's grants, newest first", async () => {
+  it("GET /api/operators is admin-only — a viewer is refused, an admin sees the non-secret roster", async () => {
+    const viewerToken = await login(VIEWER_EMAIL, VIEWER_PASSWORD);
+    expect((await app.inject({ method: "GET", url: "/api/operators", headers: { authorization: `Bearer ${viewerToken}` } })).statusCode).toBe(403);
+
+    const adminToken = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const res = await app.inject({ method: "GET", url: "/api/operators", headers: { authorization: `Bearer ${adminToken}` } });
+    expect(res.statusCode).toBe(200);
+    const roster = res.json() as Array<{ operatorId: string; email: string; role: string }>;
+    expect(roster.find((o) => o.operatorId === "viewer")).toMatchObject({ email: VIEWER_EMAIL, role: "viewer" });
+    // Never leaks salt/hash.
+    for (const o of roster) expect(Object.keys(o).sort()).toEqual(["email", "operatorId", "role"]);
+  });
+
+  it("GET /api/auth/elevations returns this workspace's grant + expiry events, newest first", async () => {
     const res = await app.inject({ method: "GET", url: "/api/auth/elevations", headers: { authorization: "Bearer dev-cyberdyne" } });
     expect(res.statusCode).toBe(200);
-    const events = res.json() as Array<{ operatorId: string; at: number; expiresAt: number }>;
+    const events = res.json() as Array<{ at: number }>;
     expect(events.length).toBeGreaterThan(0);
     for (let i = 1; i < events.length; i++) expect(events[i - 1].at).toBeGreaterThanOrEqual(events[i].at);
   });
 
   it("logging out does not clear the elevation log (it's append-only, no delete route exists)", async () => {
-    const eventsBefore = (await elevationLog.list(DEFAULT_WORKSPACE)).length;
-    const token = await loginAsViewer();
+    const eventsBefore = (await elevations.list(DEFAULT_WORKSPACE)).length;
+    const token = await login(VIEWER_EMAIL, VIEWER_PASSWORD);
     await app.inject({ method: "POST", url: "/api/auth/logout", headers: { authorization: `Bearer ${token}` } });
-    expect((await elevationLog.list(DEFAULT_WORKSPACE)).length).toBe(eventsBefore);
+    expect((await elevations.list(DEFAULT_WORKSPACE)).length).toBe(eventsBefore);
   });
 
   it("no /api route exists to archive/delete an elevation event", async () => {

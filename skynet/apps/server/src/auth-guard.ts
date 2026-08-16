@@ -55,19 +55,15 @@ function isApproverDecision(method: string, path: string): boolean {
   return /^\/api\/hitl\/[^/]+\/resolve$/.test(path) || /^\/api\/merges\/[^/]+\/(merge|rework|update-branch|dismiss)$/.test(path);
 }
 
-/** Requests that don't touch domain state: personal auth actions (logout,
- *  elevate — see auth/routes.ts), or a dry-run/judge endpoint that only reads
- *  + calls an LLM, never writes (the Telegram/Simulation QA harnesses, and
- *  Steward's own chat — Steward only PROPOSES an action here; a human/viewer
- *  confirming it is a separate, gated call to the action's own route).
- *  `elevate` is the one exemption that's load-bearing rather than a
- *  convenience: it's the mechanism a viewer uses to ESCAPE the "author" gate
- *  below, so it can't itself require "author" — that would be circular. */
+/** Requests that don't touch domain state: a personal auth action (logout),
+ *  or a dry-run/judge endpoint that only reads + calls an LLM, never writes
+ *  (the Telegram/Simulation QA harnesses, and Steward's own chat — Steward
+ *  only PROPOSES an action here; a human/viewer confirming it is a separate,
+ *  gated call to the action's own route). */
 function isExemptMutation(method: string, path: string): boolean {
   if (path === "/api/auth/logout") return true;
   if (method !== "POST") return false;
   return (
-    path === "/api/auth/elevate" ||
     path === "/api/telegram/simulate" ||
     path === "/api/simulation/grade" ||
     path === "/api/simulation/judge" ||
@@ -82,6 +78,14 @@ function isExemptMutation(method: string, path: string): boolean {
  * for a non-GET /api route is "author" (create/assign/fork/chat/stop/archive,
  * configure fleet runners/providers — the SCOPES doc comment in auth.ts);
  * "approver" is reserved for the HITL/merge decision gates it names by name.
+ *
+ * Admin promotion (POST /api/operators/:id/promote) is deliberately NOT
+ * exempted — it needs no escape hatch the way self-service elevation would
+ * have: the CALLER here is already an admin (full authority, no scopes), so
+ * it passes the default "author" requirement naturally, while a viewer (only
+ * "observe") is correctly blocked from ever reaching it. The route's own
+ * handler adds a SECOND, stronger check on top (the caller's PERSISTED role,
+ * not just their current scope) — see auth/routes.ts.
  */
 export function requiredScope(method: string, url: string): Scope | null {
   const q = url.indexOf("?");

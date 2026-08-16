@@ -16,6 +16,7 @@ import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { config } from "./config.js";
 import type { SessionStore } from "./auth/sessions.js";
 import type { ServiceTokenStore } from "./auth/service-tokens.js";
+import type { ElevationStore } from "./auth/elevations.js";
 
 /**
  * Capability scopes carried by a service token (MCP / API access). Human logins
@@ -41,11 +42,11 @@ export interface Principal {
   // so a project-scoped token can neither touch nor see other projects' work.
   // Mirrors the `scopes` capability model, but on the project axis.
   projectIds?: string[];
-  // Set ONLY by SessionStore.resolve() while a time-limited admin promotion
-  // (ROADMAP.md) is active on this session — the moment this timestamp passes,
-  // resolve() reverts to the session's base (stored) principal on its own; no
-  // logout/re-login involved. See auth/sessions.ts, auth/routes.ts's
-  // POST /api/auth/elevate.
+  // Set ONLY by resolvePrincipal() below while an admin-granted, time-limited
+  // promotion (ROADMAP.md) is active for this operator — the moment this
+  // timestamp passes, resolution reverts to the base (stored session)
+  // principal on its own; no logout/re-login, no manual revert. See
+  // auth/elevations.ts, auth/routes.ts's POST /api/operators/:id/promote.
   elevatedUntil?: number;
 }
 
@@ -84,11 +85,17 @@ export const SESSION_COOKIE = "skynet_session";
 // configureAuth runs.
 let sessions: SessionStore | undefined;
 let serviceTokens: ServiceTokenStore | undefined;
+let elevations: ElevationStore | undefined;
 
 /** Wire the auth backends (called once at bootstrap). */
-export function configureAuth(opts: { sessions?: SessionStore; serviceTokens?: ServiceTokenStore }): void {
+export function configureAuth(opts: {
+  sessions?: SessionStore;
+  serviceTokens?: ServiceTokenStore;
+  elevations?: ElevationStore;
+}): void {
   sessions = opts.sessions;
   serviceTokens = opts.serviceTokens;
+  elevations = opts.elevations;
 }
 
 /** Extract a token from an Authorization header or a ?token= query value. */
@@ -121,7 +128,18 @@ export async function resolvePrincipal(token?: string): Promise<Principal | unde
   if (token) {
     if (dev && TOKENS[token]) return TOKENS[token]; // dev tokens never resolve in prod
     const fromSession = await sessions?.resolve(token);
-    if (fromSession) return fromSession;
+    if (fromSession) {
+      // Time-limited admin promotion (ROADMAP.md) — checked on EVERY request
+      // for a session-resolved (human) principal, never for dev/service
+      // tokens: elevation is a fact about an OPERATOR, granted by an admin,
+      // and only ever narrows/widens the "viewer" concept those other token
+      // kinds don't have. A live grant returns full authority + the deadline
+      // (for the UI's countdown); an expired one is swept by activeUntil()
+      // itself, so this naturally reverts with no action here.
+      const elevatedUntil = await elevations?.activeUntil(fromSession.workspaceId, fromSession.operatorId);
+      if (elevatedUntil != null) return { ...fromSession, scopes: undefined, elevatedUntil };
+      return fromSession;
+    }
     // Service/API tokens (MCP + programmatic access). Real credentials, so they
     // resolve in production too — unlike the dev conveniences above.
     const fromServiceToken = await serviceTokens?.resolve(token);
