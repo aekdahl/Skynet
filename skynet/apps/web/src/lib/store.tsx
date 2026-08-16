@@ -147,6 +147,8 @@ export interface Store extends StoreState {
       syncSourceStatus?: boolean;
       // Branch to stack runs/PRs onto; null clears back to the global default.
       baseBranch?: string | null;
+      // Verifier gate command; null clears back to the global default.
+      checkCmd?: string | null;
     },
   ) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;

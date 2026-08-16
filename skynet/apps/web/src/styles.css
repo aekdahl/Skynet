@@ -292,6 +292,9 @@ kbd {
 .hitl-ctx-val { color: var(--text); min-width: 0; line-height: 1.5; }
 .hitl-ctx-cmd { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: 12px; color: var(--text); background: var(--line-soft); padding: 8px 10px; border-radius: 6px; }
 .hitl-ctx-reason .hitl-ctx-val { color: var(--muted); font-style: italic; }
+/* Check output (verifier) can run much longer than a command — scroll it
+   instead of blowing out the gate card. */
+.hitl-ctx-output { max-height: 320px; overflow-y: auto; }
 
 /* Risk severity chip */
 .risk-chip { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
@@ -303,6 +306,9 @@ kbd {
   background: var(--bg); border: 1px solid var(--line-soft); border-radius: 6px;
   padding: 10px 14px; overflow-x: auto;
 }
+/* Check output (verifier) can run much longer than a command — wrap + scroll
+   instead of blowing out the card. */
+.qcard-output { white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
 .qcard-steps { padding-left: 20px; display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
 .qcard-steps li::marker { font-family: var(--font-mono); color: var(--faint); }
 .qcard-diff { display: flex; align-items: center; gap: 14px; font-family: var(--font-mono); font-size: 12px; }

@@ -37,7 +37,11 @@ export type PlanStepState = z.infer<typeof PlanStepState>;
 // enough / fundamentally blocked), or the system tripped a guard (too long, too
 // many failures). Distinct from "question" (which resumes on an answer): the
 // human decides whether to help & resume, reassign, or stop.
-export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation"]);
+// "verifier" = the project's check command failed AFTER a diff/merge gate was
+// already approved and the merge itself succeeded — the merge commit is undone
+// (MergeEngine.process's bounce) pending this decision: approve retries the
+// merge+check, reject/modify bounces the agent to revise with the check output.
+export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "verifier"]);
 export type HitlKind = z.infer<typeof HitlKind>;
 
 /** Default single-tenant workspace until real provisioning lands. */
@@ -316,6 +320,13 @@ export const Project = z.object({
   // feature branch to STACK a project's work onto that branch instead of main —
   // every run branches off it and its PRs target it.
   baseBranch: z.string().nullable().default(null),
+  // Command run in a scratch worktree after a successful merge, before it's
+  // committed to the integration branch — the project's tests/checks (the
+  // Verifier gate). null → the server-global default (SKYNET_CHECK_CMD), same
+  // "project override, else global default" convention as `baseBranch`. A
+  // failing check undoes the merge commit and raises a `verifier` HITL instead
+  // of silently landing broken code; a passing check auto-commits (unchanged).
+  checkCmd: z.string().nullable().default(null),
   // Free-form markdown that rides EVERY agent prompt on this project — the
   // "house rules" for this codebase (which packages to use, code structure,
   // conventions the agent should follow). Steward also sees it in its
@@ -583,6 +594,12 @@ export const HitlItem = z.object({
   recommended: z.number().int().nullable().default(null), // question — index
   steps: z.array(z.string()).nullable().default(null), // plan
   diff: DiffSummary.nullable().default(null), // diff
+  // Captured command/check output (verifier). Unlike `diff` (re-fetchable from
+  // the agent's worktree on demand, so never stored raw), a failed check runs in
+  // a SCRATCH integration worktree that's torn down immediately after — there's
+  // nothing left to re-fetch from later, so the (capped) output is captured onto
+  // the gate itself at raise time.
+  output: z.string().nullable().default(null), // verifier
   // System-computed, scannable chips for the decision: the safety classifier's
   // risk reasons (approval) or the conflicting files (merge). Not runner-supplied.
   flags: z.array(z.string()).default([]),
@@ -791,6 +808,7 @@ export const UpdateProjectRequest = z.object({
   instructions: z.string().nullable().optional(),
   githubCredentialId: z.string().nullable().optional(), // pick the GitHub account (null clears → default)
   baseBranch: z.string().nullable().optional(), // stack onto a branch; null clears → global default
+  checkCmd: z.string().nullable().optional(), // Verifier gate command; null clears → global default
 
   // Which provider keys the project may run on (secret-store credential ids;
   // empty = all keys). See Project.enabledRunnerCredentialIds.

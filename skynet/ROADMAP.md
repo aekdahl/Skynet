@@ -370,8 +370,31 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   - [x] **Structured diffs in gates/review** — shipped: `HitlItem.diff` (stat) is set in `raiseDiffReview` from `WorktreeManager.diffStat`, and the full unified patch is served on-demand by `GET /api/runs/:id/diff` (`orchestrator.ts#runDiff` → `worktrees.ts#patch`, a real `git diff` in the worktree) and rendered by `diff-view.tsx`'s `parseUnifiedDiff`. No vendor-specific patch-event plumbing exists (or is needed) — every runner's changes land in the same worktree, so one `git diff` covers Claude/Codex/Cursor/Gemini/Copilot alike.
   - **Copilot usage/event fidelity** — `copilot` (v1.0.79) turns out to have a machine-readable mode after all (`--output-format json`, JSONL — this was previously undocumented here as text-only, now confirmed live), reporting output tokens + duration per turn, but no input-token count and no USD cost (it meters "premium requests"/AI credits, not $/token — a genuinely different billing model from the others). Adopting it isn't a usage-only change: the Copilot runner's approval-gate detection and tool/log lines are currently parsed from human-readable text, and `--output-format json` replaces ALL output with JSONL, so wiring usage means migrating that whole parser to structured events, not just adding a field extraction. Scoped out of the CLI-usage-fidelity fix as a separate, larger follow-up.
 - [~] **Review upgrades (adopted from the competitor sweep):**
-  - **Verifier gate** — run the project's tests/checks in the worktree and **block the merge on failure** as a
-    first-class gate (not just the pre-merge `checkCmd`); auto-commit on green. *(bernstein / MartinLoop-style.)*
+  - *Landed: **Verifier gate** (bernstein / MartinLoop-style) — the check-running + rollback-on-failure
+    mechanics already existed (`MergeEngine` ran `checkCmd` post-merge and reset the merge commit on
+    failure); what didn't was the GATE — a failure just logged a 200-char snippet and silently parked
+    the run in `review`, no human decision point. Now it raises a real `verifier` HITL (new `HitlKind`)
+    carrying the full check output (capped at 50KB, not 200 chars), with the same two-outcome
+    resolution shape `merge`/`diff` gates already use — no new one invented: approve retries the
+    merge + check (`git.merge.enqueue`), reject or modify bounces the agent to revise
+    (`reviseAfterReview`) with the output as guidance (typed guidance wins if the operator supplies
+    it; a plain reject falls back to the gate's own output — no typing required to un-stick a failed
+    build). `checkCmd` is now **per-project** (`Project.checkCmd`, falls back to the workspace-global
+    `SKYNET_CHECK_CMD`), threaded through `MergeRequest` rather than baked into the engine at
+    construction — `MergeEngine` is cached per (repo, baseBranch) and shared across every project on
+    that repo, so a project-level override resolved and passed per-`enqueue()` call is what keeps two
+    projects sharing a cache key (or a project editing its command later) from reading a stale/wrong
+    value. **"Auto-commit on green" needed no change** — `onMerged` already fired unconditionally past
+    a passing check; confirmed, not re-implemented. HITL rendering (Inbox card, run-detail context,
+    audit trail — the diff is now captured for verifier gates too, same as merge/diff, since the
+    agent's own worktree is still around even though the scratch integration worktree is gone —
+    and the Telegram card/keyboard) all extended to the new kind. Verified with 12 new deterministic
+    tests against real throwaway git repos (no LLM involved — this is a git/process feature end to
+    end): raise + full output, rollback, retry-raises-a-fresh-gate, reject-bounces-with-the-output-as-
+    guidance-then-a-fixed-revise-merges-clean, per-project override, and the on/no-checkCmd fallback
+    chain. Live-clicked the new project-settings field for real too. Not built: the gate itself doesn't
+    carry a diff stat/summary inline the way merge/diff gates do (only the check output) — the
+    underlying diff is still fetchable the same on-demand way, just not pre-computed on the card.*
   - *Landed: **every review is auto-reviewed** — a fleet agent judges each `review`-state task's diff/output
     and writes a structured verdict (approve/flag) to the task; the log line names the reviewer + reason, and
     the audit trail records who reviewed what. Auto-approve merges only when the project's autonomy toggle is
