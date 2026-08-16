@@ -74,7 +74,8 @@ describe("MCP tool core", () => {
         "update_milestone", "delete_milestone", "delete_feature",
         "pause_agent", "resume_agent", "run_diff",
         "import_github_issues", "import_repo_file",
-        "list_tasks", "list_features", "list_milestones",
+        "list_tasks", "get_task", "list_features", "list_milestones",
+        "list_audit", "get_audit",
       ]),
     );
 
@@ -88,7 +89,7 @@ describe("MCP tool core", () => {
     const moved = json(await client.callTool({ name: "transition_task", arguments: { taskId: task.id, to: "triage" } }));
     expect(moved.state).toBe("triage");
     const tasks = json(await client.callTool({ name: "list_tasks", arguments: {} }));
-    expect(tasks.find((t: { id: string }) => t.id === task.id).state).toBe("triage");
+    expect(tasks.items.find((t: { id: string }) => t.id === task.id).state).toBe("triage");
 
     // An illegal jump (triage → done) is refused, not applied.
     const bad = await client.callTool({ name: "transition_task", arguments: { taskId: task.id, to: "done" } });
@@ -161,9 +162,15 @@ describe("MCP project scoping", () => {
   };
   const project = (id: string) => Project.parse({ id, workspaceId: DEFAULT_WORKSPACE, name: `Proj ${id}`, goal: "", runIds: [], status: "active" });
   const task = (id: string, projectId: string) => Task.parse({ id, workspaceId: DEFAULT_WORKSPACE, projectId, text: id, state: "todo" });
-  // Only id + projectId are read by the scope filter; putRun stores as-is, so a
-  // minimal record is enough (a full TaskRun.parse would need ~15 fields).
-  const run = (id: string, projectId: string) => ({ id, workspaceId: DEFAULT_WORKSPACE, projectId } as unknown as TaskRun);
+  // The scope filter only reads id + projectId, but summarizeRun (list_agents/
+  // get_snapshot) now reads a handful more — still far short of a full
+  // TaskRun.parse (~15 fields, including several with no default).
+  const run = (id: string, projectId: string) =>
+    ({
+      id, workspaceId: DEFAULT_WORKSPACE, projectId,
+      name: id, status: "running", agentId: null, provider: "claude", model: "haiku-4.5",
+      progress: 0, plan: [], startedAt: 0, lastHeartbeatAt: 0, branch: `agent/${id}`,
+    } as unknown as TaskRun);
 
   /** Seed two projects (A allowed, B not) with a task + run each, directly in the store. */
   async function seedTwoProjects(store: Awaited<ReturnType<typeof connect>>["store"]) {
@@ -183,7 +190,8 @@ describe("MCP project scoping", () => {
     expect(projects.map((p: { id: string }) => p.id)).toEqual(["A"]);
 
     const runs = json(await client.callTool({ name: "list_agents", arguments: {} }));
-    expect(runs.map((r: { id: string }) => r.id)).toEqual(["ra"]);
+    expect(runs.items.map((r: { id: string }) => r.id)).toEqual(["ra"]);
+    expect(runs.total).toBe(1);
 
     const snap = json(await client.callTool({ name: "get_snapshot", arguments: {} }));
     expect(snap.projects.map((p: { id: string }) => p.id)).toEqual(["A"]);
@@ -407,5 +415,154 @@ describe("MCP push notifications", () => {
     await new Promise((r) => setTimeout(r, 50));
     // No skynet.hitl push should have arrived — the item was already resolved.
     expect(logs.filter((l) => l.logger === "skynet.hitl")).toEqual([]);
+  });
+});
+
+// Regression coverage for the response-size fix: list_agents/list_tasks/
+// list_audit/get_snapshot must never leak the heavy fields (log, description,
+// captured diff patch) that made them unusable at real workspace scale — and
+// the get_agent/get_task/get_audit drill-in tools must still return them.
+describe("MCP response shaping (summary/detail + pagination)", () => {
+  const fullRun = (id: string, overrides: Partial<TaskRun> = {}): TaskRun =>
+    ({
+      id, workspaceId: DEFAULT_WORKSPACE, projectId: "P", name: `Run ${id}`,
+      status: "running", agentId: "r1", provider: "claude", model: "sonnet-5",
+      progress: 0.5, plan: [{ text: "step 1", state: "done" }, { text: "step 2", state: "now" }, { text: "step 3", state: "todo" }],
+      startedAt: 1000, lastHeartbeatAt: 2000, branch: `agent/${id}`,
+      log: [{ at: 1000, line: "picked up" }, { at: 1500, line: "▸ Bash: pnpm test", detail: "a".repeat(5000) }],
+      usage: null, modifiedFiles: [], modules: [], visual: false, previewUrl: null,
+      dependsOn: [], parentId: null, branchFromStep: null, archived: false, pr: null, mergedAt: null,
+      credentialId: null,
+      ...overrides,
+    } as unknown as TaskRun);
+
+  it("list_agents omits the activity log and full plan; get_agent returns them", async () => {
+    const { client, store } = await connect(author);
+    await store.putProject(Project.parse({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" }));
+    await store.putRun(fullRun("r1"));
+
+    const list = json(await client.callTool({ name: "list_agents", arguments: {} }));
+    expect(list.total).toBe(1);
+    const summary = list.items[0];
+    expect(summary).not.toHaveProperty("log");
+    expect(summary).not.toHaveProperty("plan");
+    expect(summary).toMatchObject({ id: "r1", status: "running", currentStep: "step 2", planDone: 1, planTotal: 3 });
+
+    const full = json(await client.callTool({ name: "get_agent", arguments: { runId: "r1" } }));
+    expect(full.log).toHaveLength(2);
+    expect(full.log[1].detail).toHaveLength(5000);
+    expect(full.plan).toHaveLength(3);
+  });
+
+  it("list_agents filters by status, paginates, and excludes archived by default", async () => {
+    const { client, store } = await connect(author);
+    await store.putProject(Project.parse({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" }));
+    await store.putRun(fullRun("running-1", { status: "running", lastHeartbeatAt: 3000 }));
+    await store.putRun(fullRun("done-1", { status: "done", lastHeartbeatAt: 2000 }));
+    await store.putRun(fullRun("archived-1", { status: "done", archived: true, lastHeartbeatAt: 1000 }));
+
+    const onlyRunning = json(await client.callTool({ name: "list_agents", arguments: { status: ["running"] } }));
+    expect(onlyRunning.items.map((r: { id: string }) => r.id)).toEqual(["running-1"]);
+
+    const defaultView = json(await client.callTool({ name: "list_agents", arguments: {} }));
+    expect(defaultView.items.map((r: { id: string }) => r.id)).toEqual(["running-1", "done-1"]); // archived excluded, most-recent first
+
+    const withArchived = json(await client.callTool({ name: "list_agents", arguments: { includeArchived: true, limit: 2 } }));
+    expect(withArchived.total).toBe(3);
+    expect(withArchived.items).toHaveLength(2);
+    expect(withArchived.hasMore).toBe(true);
+
+    const page2 = json(await client.callTool({ name: "list_agents", arguments: { includeArchived: true, limit: 2, offset: 2 } }));
+    expect(page2.items.map((r: { id: string }) => r.id)).toEqual(["archived-1"]);
+    expect(page2.hasMore).toBe(false);
+  });
+
+  it("get_agent's log defaults to the tail and reports the true total", async () => {
+    const { client, store } = await connect(author);
+    await store.putProject(Project.parse({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" }));
+    const log = Array.from({ length: 5 }, (_, i) => ({ at: i, line: `line ${i}` }));
+    await store.putRun(fullRun("r1", { log }));
+
+    const tailed = json(await client.callTool({ name: "get_agent", arguments: { runId: "r1", logLimit: 2 } }));
+    expect(tailed.log.map((l: { line: string }) => l.line)).toEqual(["line 3", "line 4"]); // tail, not head
+    expect(tailed.logTotal).toBe(5);
+    expect(tailed.logTruncated).toBe(true);
+
+    const paged = json(await client.callTool({ name: "get_agent", arguments: { runId: "r1", logLimit: 2, logOffset: 0 } }));
+    expect(paged.log.map((l: { line: string }) => l.line)).toEqual(["line 0", "line 1"]); // explicit offset wins over the tail default
+  });
+
+  it("list_tasks omits description/assessment/lint text; get_task returns it", async () => {
+    const { client, store } = await connect(author);
+    await store.putProject(Project.parse({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" }));
+    await store.putTask(
+      Task.parse({
+        id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "P", text: "t1", state: "triage",
+        description: "a very long brief the agent gets, but not the list view".repeat(20),
+        assessmentEffort: "large",
+        assessmentRisks: ["touches billing", "no tests"],
+        reviewVerdict: { decision: "flag", reason: "needs another pass", by: "reviewer-1", at: 0 },
+        lint: { concerns: [{ kind: "vague", note: "unclear scope" }], at: 0, dismissed: false },
+      }),
+    );
+
+    const list = json(await client.callTool({ name: "list_tasks", arguments: {} }));
+    const summary = list.items[0];
+    expect(summary).not.toHaveProperty("description");
+    expect(summary).not.toHaveProperty("assessmentRisks");
+    expect(summary).toMatchObject({ id: "t1", hasDescription: true, assessmentEffort: "large", riskCount: 2, reviewDecision: "flag", lintConcernCount: 1 });
+
+    const full = json(await client.callTool({ name: "get_task", arguments: { taskId: "t1" } }));
+    expect(full.description).toContain("very long brief");
+    expect(full.assessmentRisks).toEqual(["touches billing", "no tests"]);
+    expect(full.lint.concerns[0].note).toBe("unclear scope");
+  });
+
+  it("list_tasks filters by state and pages", async () => {
+    const { client, store } = await connect(author);
+    await store.putProject(Project.parse({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" }));
+    await store.putTask(Task.parse({ id: "t-todo", workspaceId: DEFAULT_WORKSPACE, projectId: "P", text: "t-todo", state: "todo" }));
+    await store.putTask(Task.parse({ id: "t-done", workspaceId: DEFAULT_WORKSPACE, projectId: "P", text: "t-done", state: "done" }));
+
+    const onlyTodo = json(await client.callTool({ name: "list_tasks", arguments: { state: ["todo"] } }));
+    expect(onlyTodo.items.map((t: { id: string }) => t.id)).toEqual(["t-todo"]);
+    expect(onlyTodo.total).toBe(1);
+  });
+
+  it("list_audit summarizes away the captured diff patch and rationale; get_audit returns them", async () => {
+    const { client, store } = await connect(author);
+    await store.putProject(Project.parse({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" }));
+    await store.putRun(fullRun("r1"));
+    const bigPatch = "diff --git a/big.ts b/big.ts\n" + "+ line\n".repeat(2000); // the kind of payload that made list_audit unusable
+    await store.recordAudit({
+      workspaceId: DEFAULT_WORKSPACE, hitlId: "h1", runId: "r1", action: "approve", operatorId: "op-1", at: 500,
+      payload: {
+        kind: "diff", title: "Review diff", risk: "medium", rationale: "looks safe",
+        diff: { add: 12, del: 3, modules: ["api"], files: ["big.ts"] },
+        files: ["big.ts"], patch: bigPatch,
+      },
+    });
+
+    const list = json(await client.callTool({ name: "list_audit", arguments: {} }));
+    const summary = list.items[0];
+    expect(summary).not.toHaveProperty("payload");
+    expect(summary).toMatchObject({ hitlId: "h1", action: "approve", kind: "diff", risk: "medium", diffFiles: 1, diffAdd: 12, diffDel: 3 });
+
+    const full = json(await client.callTool({ name: "get_audit", arguments: { hitlId: "h1" } }));
+    expect(full.payload.patch).toBe(bigPatch);
+    expect(full.payload.rationale).toBe("looks safe");
+  });
+
+  it("get_snapshot embeds run/task SUMMARIES, not full records", async () => {
+    const { client, store } = await connect(author);
+    await store.putProject(Project.parse({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" }));
+    await store.putRun(fullRun("r1"));
+    await store.putTask(Task.parse({ id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "P", text: "t1", state: "todo", description: "long brief" }));
+
+    const snap = json(await client.callTool({ name: "get_snapshot", arguments: {} }));
+    expect(snap.runs[0]).not.toHaveProperty("log");
+    expect(snap.tasks[0]).not.toHaveProperty("description");
+    expect(snap.runsTotal).toBe(1);
+    expect(snap.tasksTotal).toBe(1);
   });
 });

@@ -274,6 +274,27 @@ export class Operations {
     return agent;
   }
 
+  /** Fetch one task scoped to the workspace, or throw NotFoundError (404). The
+   *  full-detail counterpart to listTasks — see mcp/summarize.ts for why the
+   *  MCP list tool doesn't just return this shape for every task up front. */
+  async getTask(ws: string, taskId: string): Promise<Task> {
+    const task = await this.store.getTask(taskId);
+    if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    return task;
+  }
+
+  /** Fetch one resolved HITL decision scoped to the workspace, or throw
+   *  NotFoundError (404) — the full-payload (incl. captured diff patch)
+   *  counterpart to listAudit's summarized rows. No dedicated store method for
+   *  a single record (the audit trail is append-only and not typically huge in
+   *  COUNT, just per-record size), so this filters listAudit — fine at
+   *  realistic workspace scale. */
+  async getAuditRecord(ws: string, hitlId: string): Promise<AuditRecord> {
+    const record = (await this.store.listAudit(ws)).find((r) => r.hitlId === hitlId);
+    if (!record) throw new NotFoundError("AuditRecord");
+    return record;
+  }
+
   /** Fetch a project scoped to the workspace, or throw NotFoundError (404). */
   async getProject(ws: string, projectId: string): Promise<Project> {
     const project = await this.store.getProject(projectId);

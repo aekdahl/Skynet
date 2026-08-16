@@ -652,6 +652,15 @@ supervision layer, it doesn't host or resell those services.
   bootstrap token for sandbox deploys (e.g. Daytona). See [docs/mcp.md](docs/mcp.md).
   *(The browser/Chrome MCP tool is pulled forward to v1 — see above — since it serves the core code loop,
   not inbound triggers; the rest of the tool catalog lands here.)*
+  *Landed: **response-size fix** — `list_agents`/`list_tasks`/`list_audit`/`get_snapshot` were returning
+  full records (a run's entire tool-call log, a task's full assessment/lint text, an audit record's
+  captured diff patch) for every row, so listing scaled with workspace history rather than what the
+  caller asked for — one real deployment's `list_agents`/`list_tasks` became unusable at ~50 runs / 100
+  tasks. Now summary/detail-split like the rest of the product: list_* return compact, paginated
+  (`limit`/`offset`, default 30/cap 200) summaries excluding archived by default; two new tools,
+  `get_task` and `get_audit`, fill the drill-in gap for a single record's full detail (mirroring the
+  existing `get_agent`); `get_agent`'s log itself now defaults to the most recent 100 entries
+  (`logLimit`/`logOffset` to page further back) so even a single long-lived run can't blow the budget.*
 - [ ] **Feedback-loop responders (route back to the *originating* run)** — a CI failure, a PR review comment, or a
   merge conflict re-engages the **same** agent that produced the branch (self-healing), not a fresh run.
   *(Agent Orchestrator-style; ties directly to the responders below.)*
