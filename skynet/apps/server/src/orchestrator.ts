@@ -2470,6 +2470,7 @@ export class Orchestrator {
       diff: null,
       output: capped,
       flags: [],
+      sourceBranchOverride: null,
     });
   }
 
