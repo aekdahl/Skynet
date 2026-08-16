@@ -131,10 +131,18 @@ Findings from the July 2026 end-to-end audit. **P0 blocks release; P1 makes the 
 sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below.)
 
 **P0 — integrity & first impressions**
-1. [~] **Router + nav-state integrity** — make Settings/Acceptance/Simulation deep-linkable
-   (complete `parseHash`); derive the sidebar `.on` highlight purely from router state
-   (highlights currently accumulate — three "active" at once); give focus a distinct
-   `:focus-visible` ring instead of the active style; window title reflects view/project.
+1. [x] **Router + nav-state integrity** — `parseHash` (`apps/web/src/lib/routing.ts:19-47`) resolves
+   `#/settings`, `#/acceptance`, `#/simulation` deep links, and `DEV_ONLY_VIEWS`
+   (`apps/web/src/lib/dev.ts:25`) is empty, so nothing dev-gates them. The sidebar `.on` highlight
+   derives purely from router state through one function, `activeNav(view)`
+   (`apps/web/src/components/shell.tsx:36-66`) — every nav item's `.on` is `active === <key>`, never
+   an ad-hoc local predicate, so highlights can't accumulate. `:focus-visible`
+   (`styles.css:1849-1852`) is a separate outline from `.on`'s background/box-shadow treatment.
+   Window title reflects view/project/agent via a `useEffect` in `App.tsx:209-217`. *(One nuance:
+   the QA nav-section header carries `.on` too when Acceptance/Simulation is active — a
+   parent-section + child-item pair, deliberately styled differently (`styles.css:1858` just
+   recolors the header text, no outline/background) — not the original "three primary items lit
+   simultaneously" bug.)*
 2. [x] **Onboarding step 2 (GitHub) is a PLACEHOLDER** mid-wizard — removed the GitHub step
    from the wizard (now Workspace → Module map → Fleet). Integrations already owns the connect
    flow post-onboarding, so a first-run user never meets the unfinished App-install mid-wizard.
@@ -149,8 +157,20 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
    (provider picker, subway rows, task-grouping chips) were left on hover-title — they're
    multi-choice rows, not a single blocked CTA, so a permanent reason line under each would
    be noise, not signal.)*
-4. [ ] **Legibility floor** — ≥11px and `--muted` for any text that carries meaning; `--faint`
-   only for decoration (subway anchor labels, backlog subtitle, legends, picker hints).
+4. [x] **Legibility floor** — ≥11px and `--muted` for any text that carries meaning; `--faint`
+   only for decoration. Fixed the roadmap's two named offenders (subway anchor labels
+   `.swb-anchor-label`, backlog subtitle `.proj-backlog`) plus the rest of the same bug found on a
+   full sweep of `styles.css`: risk chips, eval scores, test tallies, the Runs-board header row and
+   status pills, subway track/station labels and counts, and every N/M-fraction readout across the
+   app (feature/milestone/first-run progress, roadmap phase counts). Legends and picker hints were
+   already compliant (`--muted` at 11px+, and genuinely decorative respectively) — left alone.
+   Judgment calls, left `--faint`: a bare "—" no-agent placeholder (a null-state glyph, not
+   information), per-log-line timestamps (a "when" annotation secondary to the log line's own
+   `--muted` text), the timeline's axis-tick labels and the subway diagram's dense per-station name
+   labels (both a chart/diagram-chrome convention, and — for the latter — a font-size bump risked
+   overlap in a tightly absolute-positioned layout with many instances per row), and structural
+   nav/palette section dividers (`OPERATE`/`CONFIGURE`, command-palette group headers) — grouping
+   chrome, not content.
 5. [x] **Persist the workspace name server-side** — rides `WorkspaceSettings` (the existing
    auto-scale settings record) as a `name` field; onboarding writes it via `PATCH
    /api/settings/fleet`, the sidebar/shell header read it from the live store
