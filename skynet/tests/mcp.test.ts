@@ -394,7 +394,7 @@ describe("MCP push notifications", () => {
       risk: "low",
       expiresAt: null,
       resolvedAt: 100,
-      resolution: { action: "approve", optionIndex: null, guidance: null, by: "op-1", at: 100 },
+      resolution: { action: "approve", optionIndex: null, guidance: null, memoryNote: null, by: "op-1", at: 100 },
       rationale: null,
       command: null,
       options: null,

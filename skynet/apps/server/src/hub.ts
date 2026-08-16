@@ -175,6 +175,7 @@ export class Hub {
       payload: {
         optionIndex: resolution.optionIndex,
         guidance: resolution.guidance,
+        memoryNote: resolution.memoryNote,
         kind: item.kind,
         title: item.title,
         why: item.why,
@@ -244,6 +245,7 @@ export class Hub {
       payload: {
         optionIndex: resolution.optionIndex,
         guidance: resolution.guidance,
+        memoryNote: resolution.memoryNote,
         kind: item.kind,
         title: item.title,
         why: item.why,

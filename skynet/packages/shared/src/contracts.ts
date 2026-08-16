@@ -553,6 +553,16 @@ export const Resolution = z.object({
   action: ResolveAction,
   optionIndex: z.number().int().nullable().default(null), // for 'option'
   guidance: z.string().nullable().default(null), // for 'modify'
+  // Approve-with-memory (roadmap: "the Inbox becomes how policy/memory get
+  // authored") — an operator's own words on a durable project/workspace
+  // preference this decision suggests, captured in-flow alongside 'approve'.
+  // Distinct from the command-specific "Always allow" rule (see ApprovalRule
+  // above): this applies to any gate kind, not just exact commands, and isn't
+  // an auto-approval — it's a fact for Memory v0 to adopt as a write path once
+  // it lands (ROADMAP.md "Memory v0"). Until then this is plumbing only:
+  // persisted on the resolution + audit trail so the intent isn't lost, but
+  // nothing reads it back or injects it into a runner yet.
+  memoryNote: z.string().nullable().default(null),
   by: z.string(), // operator id — audit trail
   at: Timestamp,
 });
@@ -714,6 +724,8 @@ export const ResolveRequest = z.object({
   // "approve always" rule for this exact command to the project (only honored for
   // rememberable — low/medium, non-deny — commands). Ignored otherwise.
   remember: z.boolean().optional(),
+  // Approve-with-memory — see Resolution.memoryNote. Only honored on `approve`.
+  memoryNote: z.string().optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
 

@@ -35,6 +35,7 @@ const isResolveAction = (a: string): a is ResolveAction =>
 function payloadOf(p: unknown): {
   optionIndex: number | null;
   guidance: string | null;
+  memoryNote: string | null;
   kind: string | null;
   title: string | null;
   why: string | null;
@@ -54,6 +55,7 @@ function payloadOf(p: unknown): {
   return {
     optionIndex: typeof o.optionIndex === "number" ? o.optionIndex : null,
     guidance: str(o.guidance),
+    memoryNote: str(o.memoryNote),
     kind: str(o.kind),
     title: str(o.title),
     why: str(o.why),
@@ -167,6 +169,11 @@ function AuditRow({
       {chosen && <p className="audit-detail">Chose “{chosen}”.</p>}
       {p.guidance && (
         <p className="audit-detail audit-guidance">“{p.guidance}”</p>
+      )}
+      {p.memoryNote && (
+        <p className="audit-detail audit-memory-note" title="Captured for Memory v0 to adopt once it lands — not yet read back by anything">
+          📝 Remembered: “{p.memoryNote}”
+        </p>
       )}
 
       <div className="audit-actions">

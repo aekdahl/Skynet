@@ -452,7 +452,7 @@ export class Orchestrator {
         rules: project?.approvalRules ?? [],
       });
       if (auto) {
-        const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: auto.by, at: now() };
+        const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, memoryNote: null, by: auto.by, at: now() };
         await this.hub.runLog(runId, `auto-approved (${auto.by}): ${item.command ?? item.title}`);
         await this.hub.raiseAndAutoResolveHitl(item, resolution);
         await this.deliver(item, resolution);
@@ -484,6 +484,7 @@ export class Orchestrator {
       action: "reject",
       optionIndex: null,
       guidance: null,
+      memoryNote: null,
       by: "system:timeout",
       at: now(),
     };
@@ -725,7 +726,7 @@ export class Orchestrator {
     // real audited decision, not a human notification that immediately
     // self-cancels.
     if (project?.approvalLevel === "full" && project.autonomy && risk !== "high") {
-      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "policy:full-autonomy", at: now() };
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, memoryNote: null, by: "policy:full-autonomy", at: now() };
       await this.hub.runLog(runId, `auto-merged (policy:full-autonomy): ${item.title}`);
       await this.hub.raiseAndAutoResolveHitl(item, resolution);
       await this.deliver(item, resolution);
@@ -2799,7 +2800,7 @@ export class Orchestrator {
     const verdict = { decision, reason, by: reviewer, at };
     const withVerdict = await this.hub.upsertTask({ ...freshTask, reviewVerdict: verdict });
     if (decision === "approve" && canResolve) {
-      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "autonomy", at };
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, memoryNote: null, by: "autonomy", at };
       const resolved = await this.hub.resolveHitl(hitl.id, resolution);
       if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(hitl, resolution);
       // Once an agent has approved a review-state task, move it to `done` and
