@@ -271,10 +271,7 @@ export class Orchestrator {
         {
           onMerged: (req) => this.completeMerged(req.runId, req.agentBranch),
           onConflict: (req, files) => this.raiseMergeHitl(req, files),
-          onChecksFailed: async (req, out) => {
-            await this.hub.runLog(req.runId, `checks failed: ${out.slice(0, 200)}`);
-            await this.hub.runStatus(req.runId, "review");
-          },
+          onChecksFailed: (req, out) => this.raiseVerifierFailedHitl(req, out),
           onMergeFailed: (req, reason) => this.raiseMergeFailedHitl(req, reason),
           onLog: (id, line) => void this.hub.runLog(id, line),
         },
@@ -436,6 +433,7 @@ export class Orchestrator {
       recommended: raise.recommended ?? null,
       steps: raise.steps ?? null,
       diff: raise.diff ?? null,
+      output: null,
       flags: raise.kind === "escalation" ? [...flags, "agent"] : flags,
     };
     // Auto-approve a reversible, in-sandbox command gate per the project's
@@ -712,6 +710,7 @@ export class Orchestrator {
       recommended: null,
       steps: null,
       diff: { add: stat.add, del: stat.del, modules, files: stat.files, walkthrough },
+      output: null,
       flags: [],
     };
     // `full` autonomy (see ApprovalLevel in @skynet/shared) skips even a diff's
@@ -1365,10 +1364,11 @@ export class Orchestrator {
       return;
     }
 
-    // diff-approve / merge-retry → integrate the agent's branch. This is the
-    // post-approval half of the `approveBeforePush` guardrail: the diff review
-    // gated here, so reaching this point means an operator approved the push.
-    if (resolution.action === "approve" && (item.kind === "diff" || item.kind === "merge")) {
+    // diff-approve / merge-retry / verifier-retry → integrate the agent's
+    // branch. This is the post-approval half of the `approveBeforePush`
+    // guardrail: the diff review gated here, so reaching this point means an
+    // operator approved the push (or a failed merge/check is being retried).
+    if (resolution.action === "approve" && (item.kind === "diff" || item.kind === "merge" || item.kind === "verifier")) {
       const agent = await this.store.getRun(runId);
       if (agent) {
         const project = await this.store.getProject(agent.projectId);
@@ -1383,19 +1383,39 @@ export class Orchestrator {
         }
         if (git) {
           await this.hub.runStatus(runId, "review");
-          await this.hub.runLog(runId, item.kind === "merge" ? "retrying merge after reconciliation" : "diff approved — queued for merge");
-          git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId });
+          await this.hub.runLog(
+            runId,
+            item.kind === "merge"
+              ? "retrying merge after reconciliation"
+              : item.kind === "verifier"
+                ? "retrying merge + checks"
+                : "diff approved — queued for merge",
+          );
+          // Verifier gate is per-project (Project.checkCmd, else the
+          // workspace-global config.checkCmd) — resolved here, not baked into
+          // the cached MergeEngine, so it can never go stale or leak across
+          // projects sharing a (repo, baseBranch) cache key. See
+          // MergeRequest.checkCmd's doc comment.
+          const checkCmd = project?.checkCmd?.trim() || undefined;
+          git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId, checkCmd });
           return;
         }
       }
     }
 
-    // Review feedback loop: a `modify` on a finished run's diff/merge review is a
-    // request to revise before it can merge. Compute was freed for the review, so
-    // there's no live handle — re-acquire one and resume the run in its worktree
-    // with the guidance (reviseAfterReview), rather than silently dropping it.
-    if ((item.kind === "diff" || item.kind === "merge") && resolution.action === "modify" && !this.live.has(runId)) {
-      await this.reviseAfterReview(runId, resolution.guidance ?? "");
+    // Review feedback loop: a `modify` on a finished run's diff/merge review, or
+    // a `modify`/`reject` on a failed verifier gate (a check failure's own
+    // output IS actionable guidance — reject needs no typed text to still bounce
+    // the agent). Compute was freed for the review, so there's no live handle —
+    // re-acquire one and resume the run in its worktree with the guidance
+    // (reviseAfterReview), rather than silently dropping it.
+    if (
+      (((item.kind === "diff" || item.kind === "merge") && resolution.action === "modify") ||
+        (item.kind === "verifier" && (resolution.action === "modify" || resolution.action === "reject"))) &&
+      !this.live.has(runId)
+    ) {
+      const guidance = resolution.guidance?.trim() || (item.kind === "verifier" ? item.output ?? "" : "");
+      await this.reviseAfterReview(runId, guidance);
       return;
     }
 
@@ -1564,6 +1584,7 @@ export class Orchestrator {
       recommended: null,
       steps: null,
       diff: null,
+      output: null,
       flags: [source],
     };
     await this.hub.runStatus(runId, "waiting");
@@ -2016,6 +2037,12 @@ export class Orchestrator {
     return queue.some((q) => q.runId === runId && q.kind === "merge" && q.resolvedAt == null);
   }
 
+  /** Same one-at-a-time dedup as {@link hasOpenMergeGate}, for verifier gates. */
+  private async hasOpenVerifierGate(workspaceId: string, runId: string): Promise<boolean> {
+    const queue = await this.store.listQueue(workspaceId);
+    return queue.some((q) => q.runId === runId && q.kind === "verifier" && q.resolvedAt == null);
+  }
+
   /** Merge couldn't run (NOT a textual conflict) → an honest gate with git's
    *  real reason, never a phantom "Merge conflict — 0 files". */
   private async raiseMergeFailedHitl(req: MergeRequest, reason: string): Promise<void> {
@@ -2041,6 +2068,7 @@ export class Orchestrator {
       recommended: null,
       steps: null,
       diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null },
+      output: null,
       flags: [reason],
     });
   }
@@ -2069,7 +2097,59 @@ export class Orchestrator {
       recommended: null,
       steps: null,
       diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null },
+      output: null,
       flags: files, // the conflicting files — shown as chips
+    });
+  }
+
+  // Cap on the check output carried on a verifier gate — generous enough for a
+  // real stack trace / failing-test summary, bounded so a runaway command can't
+  // bloat the HitlItem that rides every WS snapshot/delta. runBounded already
+  // caps total captured output further upstream (SKYNET_CMD_MAX_OUTPUT_BYTES);
+  // this is specifically about what's fit to put in front of an operator.
+  private static readonly VERIFIER_OUTPUT_CAP = 50_000;
+
+  /**
+   * The project's check command failed AFTER a successful merge — MergeEngine
+   * already undid the merge commit (`bounce`) before calling this, so the
+   * integration branch is exactly as it was. Raise a real `verifier` gate
+   * carrying the full (capped) output, instead of silently parking the run in
+   * review with a truncated log line: approve retries the merge + check
+   * (`deliver()`), reject/modify bounces the agent to revise with the output as
+   * guidance (also `deliver()`) — the same two-outcome shape `merge` already
+   * uses, not a new one.
+   */
+  private async raiseVerifierFailedHitl(req: MergeRequest, output: string): Promise<void> {
+    const agent = await this.store.getRun(req.runId);
+    if (!agent) return;
+    const firstLine = output.split("\n").find((l) => l.trim())?.trim().slice(0, 200) ?? "no output";
+    await this.hub.runLog(req.runId, `checks failed: ${firstLine}`);
+    await this.hub.runStatus(req.runId, "review");
+    if (await this.hasOpenVerifierGate(agent.workspaceId, req.runId)) return;
+    const capped =
+      output.length > Orchestrator.VERIFIER_OUTPUT_CAP
+        ? output.slice(0, Orchestrator.VERIFIER_OUTPUT_CAP) + "\n… (output truncated — see the full run log)"
+        : output;
+    await this.hub.raiseHitl({
+      id: `q-verifier-${req.runId}-${++this.seq}`,
+      workspaceId: agent.workspaceId,
+      runId: req.runId,
+      kind: "verifier",
+      title: "Checks failed — merge undone",
+      why: `${req.agentBranch}'s checks failed after merging; the merge commit was undone. Approve to retry the merge + checks, or reject/modify to send the agent the output as revision guidance.`,
+      risk: "high",
+      raisedAt: now(),
+      expiresAt: null,
+      resolvedAt: null,
+      resolution: null,
+      rationale: null,
+      command: null,
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: null,
+      output: capped,
+      flags: [],
     });
   }
 

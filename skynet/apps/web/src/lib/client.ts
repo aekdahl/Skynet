@@ -434,6 +434,8 @@ export function updateProject(
     syncSourceStatus?: boolean;
     // Branch to stack runs/PRs onto; null clears back to the global default.
     baseBranch?: string | null;
+    // Verifier gate command; null clears back to the global default.
+    checkCmd?: string | null;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
