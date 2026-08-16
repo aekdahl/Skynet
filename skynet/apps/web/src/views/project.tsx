@@ -5,8 +5,11 @@ import * as api from "../lib/client";
 import { Blocked, PrimaryButton } from "../components/empty";
 import {
   agentsForProject,
+  computeUsageRollup,
   curStep,
+  fmtCost,
   fmtDurMs,
+  fmtNum,
   fmtWait,
   openQueue,
   STATUS_META,
@@ -832,18 +835,6 @@ function AddTaskCard({
 // holds — no extra fetch. Shown above the kanban/timeline lens toggle. Cells
 // that have no data (vendor didn't report tokens/cost) render as "—", not 0,
 // so a missing signal doesn't look like a zeroed real one.
-
-function fmtNum(n: number): string {
-  if (n < 1_000) return String(n);
-  if (n < 1_000_000) return (n / 1_000).toFixed(n < 10_000 ? 1 : 0) + "k";
-  return (n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0) + "M";
-}
-function fmtCost(usd: number): string {
-  if (usd < 0.01) return "<$0.01";
-  if (usd < 1) return "$" + usd.toFixed(2);
-  if (usd < 100) return "$" + usd.toFixed(2);
-  return "$" + Math.round(usd).toLocaleString();
-}
 function ProjectStats({
   project,
   runs,
@@ -858,15 +849,15 @@ function ProjectStats({
   const projTasks = tasks.filter((t) => t.projectId === project.id && !t.archived);
   const projRuns = runs.filter((r) => r.projectId === project.id && !r.archived);
   // Vendor-reported usage sums (nulls stay nulls — a missing signal, not 0).
-  let inTok = 0, outTok = 0, dur = 0, usdKnown = false, usdTotal = 0, durKnown = false;
-  for (const r of projRuns) {
-    const u = r.usage;
-    if (!u) continue;
-    inTok += u.inputTokens;
-    outTok += u.outputTokens;
-    if (u.costUsd != null) { usdKnown = true; usdTotal += u.costUsd; }
-    if (u.durationMs != null) { durKnown = true; dur += u.durationMs; }
-  }
+  // computeUsageRollup already excludes archived runs; passing all `runs` (not
+  // projRuns) keeps its own filter as the single source of truth.
+  const roll = computeUsageRollup(runs).byProject[project.id];
+  const inTok = roll?.tokensIn ?? 0;
+  const outTok = roll?.tokensOut ?? 0;
+  const usdKnown = roll?.costUsd != null;
+  const usdTotal = roll?.costUsd ?? 0;
+  const durKnown = roll?.durationMs != null;
+  const dur = roll?.durationMs ?? 0;
   // Which provider · model pairs actually ran on this project (dedup for the
   // "Models used" tile). Empty for a fresh project — display renders "—" then.
   const modelPairs = new Set<string>();

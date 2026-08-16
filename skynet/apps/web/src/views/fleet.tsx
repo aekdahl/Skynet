@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ProviderId, ProviderInfo, Agent, SecretMeta, TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
-import { providerInfo, providerReadiness, runnerIdleLabel } from "../lib/derive";
+import { computeUsageRollup, fmtCost, fmtNum, providerInfo, providerReadiness, runnerIdleLabel, type UsageRollup } from "../lib/derive";
 import { Blocked, PrimaryButton } from "../components/empty";
 import { useConfirm } from "../components/confirm";
 import { toast } from "../components/toast";
@@ -333,6 +333,19 @@ interface AgentActions {
   onRetire: (r: Agent) => void;
 }
 
+// "—" for genuinely no cost data (no runs, or none reported one yet) — never
+// 0, which would read as a real free run. Shared by AgentCard + AgentRow so
+// both densities render the exact same "$0 vs vendor doesn't report" logic.
+function costOf(roll: UsageRollup | undefined): { label: string; title: string } {
+  const label = roll?.costUsd != null ? fmtCost(roll.costUsd) : "—";
+  const title = !roll
+    ? "No runs yet"
+    : roll.costUsd != null
+      ? `${fmtNum(roll.tokensIn)} in / ${fmtNum(roll.tokensOut)} out tokens${roll.uncostedRuns ? ` · ${roll.uncostedRuns} run${roll.uncostedRuns === 1 ? "" : "s"} not costed by the vendor` : ""}`
+      : "Vendor doesn't report cost for this run";
+  return { label, title };
+}
+
 // ─── Working now: a full card with live task context — unchanged from
 // before except it's always busy here (the idle branch moved to AgentRow,
 // below) ─────────────────────────────────────────────────────────────────
@@ -341,6 +354,7 @@ function AgentCard({
   busy,
   p,
   count,
+  costRoll,
   actions,
   informMode,
   informSelected,
@@ -350,6 +364,9 @@ function AgentCard({
   busy: TaskRun;
   p: ProviderInfo;
   count: number;
+  // Vendor-reported cost/tokens summed across this agent's runs — see
+  // computeUsageRollup (lib/derive.ts). Undefined = no runs yet.
+  costRoll: UsageRollup | undefined;
   actions: AgentActions;
   // Mass inform (roadmap "Mass inform") — only meaningful here since only a
   // BUSY agent has a live run to attach a note to; the idle AgentRow below
@@ -359,6 +376,7 @@ function AgentCard({
   informSelected?: boolean;
   onToggleInform?: () => void;
 }) {
+  const cost = costOf(costRoll);
   return (
     <div className="fleet-card fleet-busy">
       {informMode && (
@@ -383,6 +401,9 @@ function AgentCard({
           <span className="fleet-model mono">{r.model}</span>
           <span className="fleet-histcount">
             {count} task{count === 1 ? "" : "s"}
+          </span>
+          <span className="fleet-cost mono" title={cost.title}>
+            {cost.label}
           </span>
         </div>
       </button>
@@ -433,8 +454,23 @@ function AgentCard({
 // that just finished a task a moment ago. ──────────────────────────────────
 const STALE_IDLE_MS = 24 * 60 * 60 * 1000;
 
-function AgentRow({ r, p, count, now, actions }: { r: Agent; p: ProviderInfo; count: number; now: number; actions: AgentActions }) {
+function AgentRow({
+  r,
+  p,
+  count,
+  costRoll,
+  now,
+  actions,
+}: {
+  r: Agent;
+  p: ProviderInfo;
+  count: number;
+  costRoll: UsageRollup | undefined;
+  now: number;
+  actions: AgentActions;
+}) {
   const stale = r.idleSince != null && now - r.idleSince > STALE_IDLE_MS;
+  const cost = costOf(costRoll);
   return (
     <div className="fleet-idle-row">
       <button className="fleet-idle-name" title="Open this agent's detail & task history" onClick={() => actions.onOpenAgent(r.id)}>
@@ -445,6 +481,9 @@ function AgentRow({ r, p, count, now, actions }: { r: Agent; p: ProviderInfo; co
       </button>
       <span className="fleet-idle-tasks mono">
         {count} task{count === 1 ? "" : "s"}
+      </span>
+      <span className="fleet-idle-cost mono" title={cost.title}>
+        {cost.label}
       </span>
       <span className={"fleet-idle-time mono" + (stale ? " stale" : "")}>idle {runnerIdleLabel(r, now)}</span>
       <span className="fleet-idle-actions">
@@ -494,6 +533,9 @@ export function FleetView({
   const takenNames = new Set(fleet.map((a) => a.name));
 
   const taskCountOf = (r: Agent) => runs.filter((a) => a.agentId === r.id).length;
+  // Vendor-reported cost/tokens, summed across this agent's runs (excludes
+  // archived — see computeUsageRollup). Computed once per render, not per card.
+  const usageByAgent = computeUsageRollup(runs).byAgent;
 
   const busyOf = (r: Agent) =>
     runs.find((a) => a.status !== "done" && a.agentId === r.id);
@@ -662,6 +704,7 @@ export function FleetView({
                           busy={busyOf(r)!}
                           p={providerInfo(providers, r.provider)}
                           count={taskCountOf(r)}
+                          costRoll={usageByAgent[r.id]}
                           actions={actions}
                           informMode={informMode}
                           informSelected={informSelected.has(r.id)}
@@ -700,7 +743,15 @@ export function FleetView({
                         />
                       </div>
                     ) : (
-                      <AgentRow key={r.id} r={r} p={providerInfo(providers, r.provider)} count={taskCountOf(r)} now={now} actions={actions} />
+                      <AgentRow
+                        key={r.id}
+                        r={r}
+                        p={providerInfo(providers, r.provider)}
+                        count={taskCountOf(r)}
+                        costRoll={usageByAgent[r.id]}
+                        now={now}
+                        actions={actions}
+                      />
                     ),
                   )}
                 </div>

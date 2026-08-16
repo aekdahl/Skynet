@@ -99,7 +99,7 @@ self.addEventListener("push", (event) => {
     badge: "/icon.svg",
     tag: data.tag || "skynet-inbox",
     renotify: true,
-    data: { url: `/?view=${view}&source=push`, view, agentId: data.agentId || null },
+    data: { url: `/?view=${view}&source=push`, view, runId: data.runId || null },
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
@@ -114,7 +114,7 @@ self.addEventListener("notificationclick", (event) => {
       // Focus an existing tab and tell it to navigate to the Inbox in-place.
       for (const client of clients) {
         if ("focus" in client) {
-          client.postMessage({ type: "skynet:navigate", view, agentId: data.agentId || null });
+          client.postMessage({ type: "skynet:navigate", view, runId: data.runId || null });
           return client.focus();
         }
       }

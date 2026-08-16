@@ -700,8 +700,17 @@ features below are white space.)
   and the **keyboard-first Inbox** — `QueueView.selectedIdx` now actually wired (j/k navigate, ↵
   opens the run, a/r/m approve/reject/modify calling the same `store.resolveHitl` the card buttons
   use), plus a dismissible shortcut hint bar. Both skip their shortcuts while the operator is typing
-  in a text field. Still to do: **OS notifications + dock badge**, **Timeline lens depth**,
-  **cost/usage roll-ups**.
+  in a text field. **Cost/usage roll-ups** — one tested `computeUsageRollup` (`lib/derive.ts`),
+  grouped by project and by agent, `costUsd`/`durationMs` staying `null` (not 0) when nothing in the
+  group reported one; wired into the project header (replacing an ad hoc duplicate), new per-runner
+  badges on each Fleet card, and agent-detail's existing total fixed to distinguish "$0" from
+  "vendor doesn't report" instead of just hiding at 0. **OS notifications + dock badge** — the
+  notification-on-new-gate path (`notifyInbox`, gated behind an explicit Settings toggle) already
+  existed and needed no new code; what shipped is the Electron plumbing it was missing: a
+  `contextBridge` preload + IPC bridge for the dock/taskbar badge (live pending-HITL count) and
+  window focus/restore on notification click, plus a pre-existing `runId`/`agentId` field-name
+  mismatch in the service worker that silently broke deep-linking a click to the specific gate.
+  Still to do: **Timeline lens depth** (zoom, brush, click-through) — unverified/unscoped.*
 
 **Memory v0 (thin moat, pulled forward from v4):**
 - [ ] Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory
