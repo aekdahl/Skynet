@@ -242,7 +242,15 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     for every framework without per-recipe flags. **Shipped:** a `/p/<token>/` reverse proxy fronts the
     loopback dev server on Skynet's learned public origin (Host-rewritten, HMR WebSocket bridged), Vite
     recipes get `--base=/p/<token>/`, and `PreviewState.url` becomes the proxied URL when hosted (loopback
-    on desktop). Remaining Phase-2: the service-container runtime + auto-rebuild on merge.
+    on desktop). *Bug fixed: base-injection matched the literal word "vite" against the OUTER command,
+    but the common path resolves to `npm run dev` — the word never appears there, only inside the wrapped
+    script — so injection silently never fired for the typical project and every preview fell into the
+    regex-rewrite fallback (`preview-proxy.ts`'s `rewriteJsImports`), which can only re-prefix a path that
+    appears as a quoted string literal — never a runtime-computed one (`import(variable)`, e.g.
+    pdfjs-dist's fake-worker fallback), which is a structural blind spot no amount of regex tuning closes.
+    `injectViteBase`/`npmRunScriptName` (`project-preview.ts`) now look through the `npm run` wrapper at
+    the real script body, so base-mode — the actually-complete fix — applies to the common case too.*
+    Remaining Phase-2: the service-container runtime + auto-rebuild on merge.
     · **command** (CLI/lib/other) → run a command and surface **output/exit/artifacts** (no URL) —
     "preview" = run it and show the result. Covers "any software".
   - **Per project + per branch:** the project preview tracks the **integration branch** (what the fleet
