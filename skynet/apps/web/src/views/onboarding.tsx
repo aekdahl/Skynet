@@ -211,7 +211,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                     <select className="ob-fleet-select" value={row.model} onChange={(e) => patchRow(i, { model: e.target.value })} disabled={models.length === 0}>
                       {models.map((m) => <option key={m} value={m}>{m}</option>)}
                     </select>
-                    <button className="ob-fleet-del" title="Remove agent" onClick={() => removeRow(i)}>×</button>
+                    <button className="ob-fleet-del" title="Remove agent" aria-label="Remove agent" onClick={() => removeRow(i)}>×</button>
                   </div>
                 );
               })}

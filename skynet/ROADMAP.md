@@ -491,14 +491,43 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   **auto-review verdict** above into one review→merge surface; records the whole brief + decision to the
   tamper-evident audit (feeds the **compliance evidence pack**); and reuses the existing merge engine — only the
   **target-branch selection** and the synthesized brief are new. Human-gated end to end; nothing self-merges.
-- [ ] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** content max-width /
-  purposeful two-column layouts (views left-hug at 1440 today) · stop amber doing triple duty
-  (brand + primary + "waiting" status — move caution to its own hue; never encode status by hue
-  alone) · replace unicode nav glyphs with one 16px stroke icon set (Lucide-style, terminal tone) ·
-  **motion tokens** (120/200ms ease-out: view/lens crossfade, card enter, gate-resolve collapse,
-  subway merge draw-in; respect `prefers-reduced-motion`) · one interactive-surface state rule
-  (hover/active/focus consistent on every clickable, absent on everything else) · **a11y pass**
-  (aria-labels on icon buttons, focus-visible everywhere, contrast audit vs the P0 type floor).
+- [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** *Landed:* **amber
+  untangled** — `--accent` (brand/primary) and `--warn` (caution/waiting status) were an accidental
+  hex duplicate (`#FFB224` both, not just visually close); `--warn` is now a genuinely distinct
+  golden-yellow (`#E8C64A`, ~8° hue shift). The handful of singular "look here, a decision is
+  needed" signals (topbar/nav needs-you counts, the home NEEDS YOU strip title) are pinned to
+  `--accent` explicitly so the rarest, most-actionable signal keeps the brand hue; every other
+  `--warn` consumer (risk chips, wait pills, log lines, timeline bars, ~20 selectors) shifts
+  automatically. **Nav icons** — the 12 unicode glyphs in `shell.tsx` (⌂⊙❑▤◇⇲⑂◈⚙✓◐▾▸) replaced with
+  a hand-inlined 16px Lucide stroke set (`components/icons.tsx`, path data only, no new
+  dependency — matches the app's existing hand-inlined-`<svg>` pattern rather than adding an icon
+  library for a dozen icons). **Motion tokens** — `--motion-fast` (120ms) / `--motion-base` (200ms),
+  both ease-out; migrated ~24 scattered ad-hoc transition durations onto them, incl. the one
+  roadmap-named transition that actually exists in the code — queue.tsx's HITL-resolve fade+slide
+  (`.qcard.leaving`, the "gate-resolve collapse") — now on `--motion-base` and wrapped in
+  `prefers-reduced-motion`. The other three named transitions (view/lens crossfade, card-enter,
+  subway-merge draw-in) were searched for by name and behavior and don't exist as implemented CSS
+  anywhere in the codebase today — nothing to migrate; building them would be new animated
+  features, out of scope here. **Interactive-surface state rule** — every `.btn` variant gained a
+  real `:active` press state (none existed anywhere before) plus `:focus-visible`; a global,
+  low-specificity `button/a/input/select/textarea/[role=button]/[tabindex]:focus-visible` fallback
+  now rings every interactive element that had no bespoke treatment (more specific existing rules,
+  e.g. `.op-navitem`, still win). Spot-checked ~15 `:hover` selectors for stray hover-without-
+  `cursor:pointer`; found none. **a11y** — `aria-label` added to 9 icon-only buttons that had none
+  (modal closes, task edit/archive/delete, agent remove, approval-rule revoke), `aria-expanded`
+  added to 4 disclosure toggles missing it, and one `role="button"` div (Settings' Advanced toggle)
+  fixed to respond to Enter/Space, not just click. Fixed 3 of the 4 legibility-floor violations
+  ux-review.md named (subway start/ship labels 9.5px→11px + `--muted`, backlog subtitle, folder-
+  picker hint — the 4th, the timeline legend, was already fixed by an earlier pass). *Verified
+  live* (screenshots + keyboard-tab + injected-swatch color check) in the running app, not just
+  reviewed in source. *Deliberately not done:* content max-width — every view already has a
+  max-width + centered wrapper (`.vw`, `.overview`, `.projview`, `.queue`, `.detail`, `.audit`,
+  `.map`), so the roadmap's "views left-hug at 1440" framing was stale; the real remaining ask —
+  *purposeful* two-column layouts for the still-sparse views (Fleet: cards + an aggregate stats
+  column; Integrations: a real catalog grid) — is a bigger, judgment-heavy layout redesign, not a
+  CSS-token fix, and belongs in its own PR. A full sweep of the ~90 other `--faint` usages beyond
+  the 4 named examples wasn't attempted either — that's the still-separately-tracked v0.5
+  "Legibility floor" item (#4 above).
 - [ ] 🏢 Auth: **SSO/OIDC**.
 - [ ] 🏢 **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
   everything (projects, runs, HITL, audit) but mutate nothing (no assign / resolve / transition /
@@ -560,7 +589,27 @@ features below are white space.)
   nav list is now two labeled groups — Operate (Home/Inbox/Audit/Projects/Fleet/Ready to merge)
   and Configure (Integrations/Roadmap/Settings) — reusing the existing `.op-navsec` label style;
   active-item highlighting and routing unchanged (confirmed live).)*
-- [ ] **Humanized time** + stale-heartbeat styling (no raw "79062s ago"); honest empty-**PLAN** state; **provider identity** (real marks + names, not abstract glyphs).
+- [x] **Humanized time** + stale-heartbeat styling (no raw "79062s ago"); honest empty-**PLAN** state; **provider identity** (real marks + names, not abstract glyphs).
+  *(Investigated first — the raw-seconds text itself was already fixed everywhere: every elapsed/heartbeat/
+  waited display in the app (Home's Runs board, task/agent detail, the live-preview freshness label, fleet
+  idle time) already routes through `fmtWait` (`lib/derive.ts`), which single-unit-rounds ("42s"/"15m"/"2h"/
+  "3d"). What was actually missing: **stale-heartbeat styling** — a `running`/`paused` row's elapsed-since-
+  START time keeps growing whether or not the process is still alive, so a silently-hung agent read as
+  healthy. Added `STALE_HEARTBEAT_SEC = 60` (Home's `RunsBoard`): 12x the ~5s heartbeat cadence (so ordinary
+  jitter never false-flags) but a full two minutes' notice before the server's own reaper
+  (`SKYNET_AGENT_REAP_MS`, 180s default) would presume the run dead and escalate it — an amber pulsing dot +
+  chip recolor, distinct from the red "needs you" (an open gate) and blue "running" (healthy) tags. **Empty-
+  PLAN state** — `TaskDetail`'s PLAN panel showed a misleading "0/0" fraction over a blank `<ol>` for any run
+  with `plan: []` (the permanent state for every non-Claude vendor, and the initial state for a fresh Claude
+  run); now an honest "No step-by-step plan for this run." **Provider identity** — most surfaces
+  (`agent-detail.tsx`, `fleet.tsx`, `project.tsx`'s kb-elig-agent chip) already paired a colored glyph with
+  the real vendor name; the one real gap was Home's Runs board, the app's single most prominent live view,
+  whose Agent cell showed a bare runner name with no vendor color/mark at all — added the colored glyph
+  (`providerInfo`) next to it, vendor name in the tooltip. No new logo assets sourced — reused the existing
+  colored-glyph system already used everywhere else rather than risk an unverified trademark usage. Verified
+  live: real `fmtWait` call sites confirmed unaffected; the three fixes confirmed visually (synthetic
+  markup — no run can exist in this sandbox without a live provider credential, confirmed via a real
+  `assignTask` 409 "No credential for any available agent" before any `TaskRun` record is even created).)*
 - [ ] **Design tokens published** (type scale, 8px rhythm, motion behind `prefers-reduced-motion`, one focus ring, semantic palette kept separate from the accent); **a11y pass** (icon-button labels, visible focus, keyboard walkthrough of assign→decide→merge); explicit **Inbox-first mobile/PWA shell**.
 
 **Easier to use than anyone else:**
