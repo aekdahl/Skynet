@@ -270,6 +270,15 @@ export function reworkPr(runId: string, guidance: string, comment?: string) {
 export function dismissPr(runId: string) {
   return req<unknown>("POST", `/api/merges/${runId}/dismiss`);
 }
+// Feature-scoped branch batching's aggregate PR — one per completed Feature
+// (see orchestrator.ts's checkFeatureCompletion), not per task. Only merge +
+// dismiss are supported — no rework/update-branch for a batch.
+export function mergeFeaturePr(featureId: string, method: "merge" | "squash" | "rebase" = "squash") {
+  return req<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }>("POST", `/api/features/${featureId}/pr/merge`, { method });
+}
+export function dismissFeaturePr(featureId: string) {
+  return req<unknown>("POST", `/api/features/${featureId}/pr/dismiss`);
+}
 export function pauseAgent(id: string) {
   return req<unknown>("POST", `/api/runs/${id}/pause`);
 }

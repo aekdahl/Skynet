@@ -99,6 +99,13 @@ const ALLOW = new Set<string>([
   // Operations/Orchestrator path (with a stub GitHub service). No end-to-end
   // fleet journey opens a real PR, so they're allowlisted rather than simulated.
   "mergePr", "updatePrBranch", "reworkPr", "dismissPr",
+  // Feature-scoped branch batching's aggregate PR (one per completed Feature,
+  // not per task) — same stub-GitHub Operations/Orchestrator harness, in
+  // ready-merge.test.ts's "feature-scoped batches" suite; the underlying
+  // git-merge tiers (task → feature branch → project base) are covered end to
+  // end with real repos in merge.test.ts. No fleet journey completes an entire
+  // multi-task feature batch, so allowlisted like the per-run actions above.
+  "mergeFeaturePr", "dismissFeaturePr",
   // Checkpoint / snapshot-restore — creates a real git commit + pinned ref and,
   // on restore, stops the live handle and relaunches the provider with a
   // resumed SDK session. No offline journey can exercise the worktree

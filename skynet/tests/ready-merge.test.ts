@@ -3,7 +3,7 @@
 // rework, or no-op. These drive the real Operations/Orchestrator path with a
 // stubbed GitHub service (no network), asserting the list + each action.
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import type { Agent, Project, Task, TaskRun, ServerEvent, PullRequest } from "@skynet/shared";
+import type { Agent, Feature, Project, Task, TaskRun, ServerEvent, PullRequest } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 
 // Stub the GitHub barrel: the orchestrator only uses `githubService` from it.
@@ -148,5 +148,76 @@ describe("ready-to-merge", () => {
     const { store, orch } = await setup();
     await store.putRun(mkRun({ pr: null }));
     await expect(orch.mergeReadyPr(DEFAULT_WORKSPACE, "r1", "squash")).rejects.toThrow(/no open pr/i);
+  });
+});
+
+// Feature-scoped branch batching's aggregate PR (one per completed Feature,
+// not per task — see orchestrator.ts's checkFeatureCompletion). Same
+// stubbed-GitHub Operations/Orchestrator harness as the per-run tests above;
+// the underlying git-merge tiers themselves are covered end to end with real
+// repos in merge.test.ts.
+describe("ready-to-merge — feature-scoped batches", () => {
+  const featurePr: PullRequest = {
+    number: 43, url: "https://github.com/acme/app/pull/43", repo: "acme/app",
+    branch: "skynet/feature/f1", base: "main", state: "open", openedAt: 1000,
+    briefing: { summary: "Checkout — 5+/1− across 2 file(s), 2 task(s): do X, do Y", impact: "Touches api/x", risk: "low", recommendation: "merge", rationale: "No flagged tasks in this batch.", by: "heuristic" },
+    dismissed: false,
+  };
+  const mkFeature = (over: Partial<Feature> = {}): Feature => ({
+    id: "f1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "Checkout",
+    description: null, status: "active", milestoneId: null, archived: false, createdAt: 0,
+    pr: featurePr, ...over,
+  });
+
+  beforeEach(() => {
+    (githubService.mergePr as ReturnType<typeof vi.fn>).mockClear().mockResolvedValue({ merged: true });
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockClear().mockResolvedValue({ state: "open", checks: "none", mergeable: true });
+  });
+
+  it("lists a feature whose aggregate PR is open, and hides it once set aside (no-op)", async () => {
+    const { store, orch } = await setup();
+    await store.putFeature(mkFeature());
+
+    expect((await orch.listReadyFeaturePrs(DEFAULT_WORKSPACE)).map((f) => f.id)).toEqual(["f1"]);
+
+    await orch.dismissReadyFeaturePr(DEFAULT_WORKSPACE, "f1");
+    expect(await orch.listReadyFeaturePrs(DEFAULT_WORKSPACE)).toEqual([]); // set aside — gone from the list
+    expect((await store.getFeature("f1"))?.pr?.dismissed).toBe(true); // PR untouched on GitHub, just hidden
+  });
+
+  it("merge → marks the feature shipped, PR marked merged — no per-run worktree/review reconciliation needed (already happened in step 1)", async () => {
+    const { store, orch } = await setup();
+    await store.putFeature(mkFeature());
+
+    const res = await orch.mergeReadyFeaturePr(DEFAULT_WORKSPACE, "f1", "squash");
+    expect(res.merged).toBe(true);
+    expect(githubService.mergePr).toHaveBeenCalledWith(DEFAULT_WORKSPACE, "acme/app", 43, "squash");
+    const fresh = await store.getFeature("f1");
+    expect(fresh?.status).toBe("shipped");
+    expect(fresh?.pr?.state).toBe("merged");
+    expect(await orch.listReadyFeaturePrs(DEFAULT_WORKSPACE)).toEqual([]); // no longer open
+  });
+
+  it("merge blocked → classifies a CONFLICT (base moved) and keeps the feature PR ready, status untouched", async () => {
+    (githubService.mergePr as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ merged: false, reason: "not mergeable" });
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "open", checks: "passing", mergeable: false });
+    const { store, orch } = await setup();
+    await store.putFeature(mkFeature());
+
+    const res = await orch.mergeReadyFeaturePr(DEFAULT_WORKSPACE, "f1", "squash");
+    expect(res.merged).toBe(false);
+    expect(res.blocked).toBe("conflict");
+    expect(res.reason).toMatch(/conflicts with main/i);
+    const fresh = await store.getFeature("f1");
+    expect(fresh?.pr?.state).toBe("open"); // unchanged — still fixable
+    expect(fresh?.status).toBe("active"); // not shipped — merge didn't happen
+    expect((await orch.listReadyFeaturePrs(DEFAULT_WORKSPACE)).map((f) => f.id)).toEqual(["f1"]);
+  });
+
+  it("rejects an action on a feature with no open PR", async () => {
+    const { store, orch } = await setup();
+    await store.putFeature(mkFeature({ pr: null }));
+    await expect(orch.mergeReadyFeaturePr(DEFAULT_WORKSPACE, "f1", "squash")).rejects.toThrow(/no open pr/i);
+    await expect(orch.dismissReadyFeaturePr(DEFAULT_WORKSPACE, "f1")).rejects.toThrow(/no pr/i);
   });
 });

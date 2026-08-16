@@ -120,6 +120,9 @@ export interface Store extends StoreState {
   updatePrBranch: (runId: string) => Promise<{ updated: boolean; conflicts?: string[] }>;
   reworkPr: (runId: string, guidance: string, comment?: string) => Promise<void>;
   dismissPr: (runId: string) => Promise<void>;
+  // Feature-scoped branch batching's aggregate PR — merge/dismiss only.
+  mergeFeaturePr: (featureId: string, method?: "merge" | "squash" | "rebase") => Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }>;
+  dismissFeaturePr: (featureId: string) => Promise<void>;
   // Local optimistic flip after a key is set/cleared in Settings (the snapshot
   // recomputes availability from the secret store on next load).
   setProviderAvailable: (id: string, available: boolean) => void;
@@ -519,6 +522,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       dismissPr: async (runId) => {
         await api.dismissPr(runId);
+      },
+      mergeFeaturePr: (featureId, method) => api.mergeFeaturePr(featureId, method),
+      dismissFeaturePr: async (featureId) => {
+        await api.dismissFeaturePr(featureId);
       },
       setProviderAvailable: (id, available) => {
         setState((s) => ({

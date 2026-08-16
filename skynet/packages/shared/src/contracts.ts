@@ -506,6 +506,15 @@ export const Feature = z.object({
   order: z.number().int().optional(),
   archived: z.boolean().default(false),
   createdAt: Timestamp,
+  // The aggregate PR for this feature's batched tasks — feature-scoped branch
+  // batching (see merge.ts's `targetBranchFor`): tasks under this feature merge
+  // into a shared `skynet/feature/<id>` branch, and once every one is done this
+  // is set to the single PR opened for the whole batch (feature branch → project
+  // base), rather than one PR per task. A dedicated field, not reused per-task
+  // `TaskRun.pr` slots — by the time the aggregate PR opens, every sibling run
+  // has already gone through its own completion/worktree-retire, so writing a
+  // fresh open PR onto those records would leave stale, unmergeable duplicates.
+  pr: PullRequest.nullable().default(null),
 });
 export type Feature = z.infer<typeof Feature>;
 
@@ -610,6 +619,15 @@ export const HitlItem = z.object({
   // System-computed, scannable chips for the decision: the safety classifier's
   // risk reasons (approval) or the conflicting files (merge). Not runner-supplied.
   flags: z.array(z.string()).default([]),
+  // `merge`-kind only, feature-scoped branch batching (merge.ts's `targetBranchFor`):
+  // set when this conflict is merging a FEATURE branch itself UP into the
+  // project's base (once every task under it is done) — retrying on approve
+  // must re-merge THIS ref, never the resolving run's own branch (there's no
+  // single "owning run" for that step, unlike a task merging INTO its feature
+  // branch, which re-derives correctly from the task's own `featureId` on
+  // retry — same as `agent.branch` already does today). Null for every HITL
+  // today — additive, no behavior change to existing records.
+  sourceBranchOverride: z.string().nullable().default(null),
 });
 export type HitlItem = z.infer<typeof HitlItem>;
 

@@ -496,23 +496,27 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   auto-expiring window (break-glass / sudo-style), then revert to their base role automatically; every
   promotion + expiry is audited. Depends on the read-only role above.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap, additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
-- [ ] 🔗⛓ **Feature-scoped branch hierarchy — branch out from branches.** Today every task's agent branch
-  cuts from the project's single integration branch and merges straight back to it
-  (`MergeEngine.integrationBranch(projectId)` is keyed only by `projectId` — one merge target per
-  project, no sub-grouping). When a Feature has several tasks/subtasks, group their branches under a
-  **feature branch** first — so the whole feature merges there and can be tested/reviewed as a unit —
-  and only that feature branch later merges up into the project base. **Reuses**: the branch-from-branch
-  mechanism already proven by agent `fork()` (`orchestrator.ts` passes a parent run's branch as `baseRef`
-  into `WorktreeProvisioner.provision()`), extended from today's 1-parent→1-child fork to N sibling tasks
-  under one Feature; and live-preview's existing arbitrary-branch pinning (a per-run preview already pins
-  to `ref: opts.branch`, and `latest` mode already octopus-combines several run branches) — a feature
-  branch just becomes another pinnable ref, no new preview plumbing. **New work, concentrated in the merge
-  engine**: a feature-branch naming scheme (e.g. `skynet/feature/${featureId}`); `MergeRequest` keyed by
-  `featureId` for the first-stage merge (today it's `projectId`-only); orchestrator wiring so a task under
-  a Feature passes the feature branch as `baseRef` (today only `fork()` does this, for a single parent);
-  and a human-gated "merge feature branch → project base" step once every task in the Feature is done —
-  reusing the same diff/verifier-gate/auto-review machinery **Guided merge** above already composes, just
-  retargeted to a feature-vs-base diff instead of task-vs-base. A different axis from **Structural
+- [~] 🔗⛓ **Feature-scoped branch hierarchy — branch out from branches.** When a Task has `featureId` set,
+  its approved diff now merges into a shared `skynet/feature/<id>` branch (`MergeEngine.targetBranchFor`,
+  generalized from the old `integrationBranch(projectId)` — `MergeRequest.featureId` picks the
+  destination) instead of straight to the project's integration branch or its own PR. Once every task
+  under that Feature is done, Skynet closes the batch: for a GitHub-bound project, ONE aggregate PR
+  (`openPrForFeature`, `Feature.pr` — a dedicated field, not reused per-task `TaskRun.pr` slots, since by
+  batch-close time every task's own worktree/review state is already retired); for a local-only project,
+  the feature branch merges up into the project's real integration branch. Conflicts at either stage
+  reuse the existing `merge`-kind HITL unchanged (`raiseMergeHitl`/`raiseMergeFailedHitl`, now
+  feature-aware via `isFeatureUpMerge` + `HitlItem.sourceBranchOverride` so a retry re-targets correctly
+  either way — a real correctness bug an adversarial design review caught before it shipped, not after).
+  Ready-to-merge gets a parallel `mergeReadyFeaturePr`/`dismissReadyFeaturePr` (merge + dismiss only — no
+  rework/update-branch for a batch; a stale/conflicting feature PR surfaces as a normal GitHub conflict on
+  the PR itself, and requesting changes means a follow-up task under the same feature). Verified end to
+  end against real git repos (`tests/merge.test.ts`, including a concurrency regression test for a scratch-
+  worktree collision the implementation surfaced and fixed) plus orchestrator-level ready-to-merge
+  coverage (`tests/ready-merge.test.ts`). **Deliberately NOT built** (scoped out, not silently missing):
+  tasks under a Feature still branch from the project base at *assign* time, same as always — they do
+  **not** branch from the feature branch itself (the `fork()`-style `baseRef` chaining the original sketch
+  above envisioned). That's real added complexity for a benefit the actual ask ("fewer PRs for related
+  work") doesn't need; only the merge *destination* changed. A different axis from **Structural
   agent-hierarchy hooks** just above (that's agent *role* — worker/manager; this is *Feature/task*
   grouping) — complementary, not dependent.
 
