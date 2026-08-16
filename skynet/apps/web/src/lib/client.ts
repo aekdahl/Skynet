@@ -444,6 +444,8 @@ export function updateProject(
     autonomy?: boolean;
     approvalLevel?: string;
     planModeGate?: boolean;
+    // Tool names to block for this project's agents; null clears the restriction.
+    disallowedTools?: string[] | null;
     repoPath?: string | null;
     // null clears the field back to "no project rules".
     instructions?: string | null;

@@ -56,6 +56,15 @@ export interface StartSpec {
    * default. Only the Claude runner acts on it today.
    */
   planModeGate?: boolean;
+  /**
+   * Tool names this run may never use — resolved by the orchestrator from the
+   * project's `disallowedTools` setting, null/absent (the default) = no
+   * restriction. Only the Claude runner acts on it today (passed straight
+   * through to the SDK's own `disallowedTools`, which removes the tool from
+   * the model's context entirely, not just a per-call gate) — CLI vendors
+   * have no equivalent SDK primitive.
+   */
+  disallowedTools?: string[] | null;
 }
 
 /**

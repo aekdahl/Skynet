@@ -956,6 +956,13 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // the SDK only ever emits whole `assistant` messages and the log jumps in
       // full-paragraph chunks instead of typing live.
       includePartialMessages: true,
+      // Project-scoped tool deny-list (Project.disallowedTools). Passed straight
+      // to the SDK's own disallowedTools, which removes the tool from the
+      // model's context entirely — a categorical unavailability, not a per-call
+      // HITL gate (that's canUseTool/AUTO_ALLOW above, a separate question:
+      // "should THIS call be auto-run or reviewed", not "can this tool run at
+      // all"). Undefined/empty = no restriction, unchanged behavior.
+      disallowedTools: spec.disallowedTools ?? undefined,
       // Deliberately re-enabled for CLAUDE.md — see the settingSources block
       // near the top of this file. Gated by scanRepoHooks()/launch() below:
       // the session (and any repo-defined hooks this also loads) doesn't start
@@ -968,6 +975,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.baseOptions = baseOptions;
     if (spec.browser) this.events.onLog(this.runId, "browser tools enabled (Playwright MCP) — browser actions gate for approval");
     if (spec.planModeGate) this.events.onLog(this.runId, "plan mode enabled — the agent will propose a plan and pause for approval before making changes");
+    if (spec.disallowedTools?.length) this.events.onLog(this.runId, `tool restriction enabled — this project's agents may not use: ${spec.disallowedTools.join(", ")}`);
 
     // A fork inherits its parent's context via resume; a fresh run doesn't.
     const firstOptions: Options = resumeSessionId

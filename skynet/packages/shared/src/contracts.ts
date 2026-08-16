@@ -307,6 +307,15 @@ export const Project = z.object({
   // a human wants to see the approach BEFORE anything changes. Only the Claude
   // runner acts on it today.
   planModeGate: z.boolean().default(false),
+  // Tool names this project's agents may never use (e.g. "Bash") — passed to
+  // the SDK's own `disallowedTools`, which removes the tool from the model's
+  // context entirely (not just gated per-call). A deny-list, not an allow-list:
+  // an allow-list risks silently breaking an agent that needs a tool nobody
+  // thought to list, so the safer default is "everything except what's named
+  // here". null/empty = no restriction (today's behavior, unchanged). Only the
+  // Claude runner acts on it today — CLI vendors have no equivalent SDK
+  // primitive (see runner-sdk/src/claude.ts).
+  disallowedTools: z.array(z.string()).nullable().default(null),
   // A project binds to a repository one of two ways (they can coexist):
   //  • repoPath — an absolute local folder the runs work in. When it contains
   //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
@@ -844,6 +853,9 @@ export const UpdateProjectRequest = z.object({
   autonomy: z.boolean().optional(),
   approvalLevel: ApprovalLevel.optional(),
   planModeGate: z.boolean().optional(), // see Project.planModeGate
+  // Tool names to block for this project's agents. `null` clears back to "no
+  // restriction". See Project.disallowedTools.
+  disallowedTools: z.array(z.string()).nullable().optional(),
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
   // Project-scoped agent guidance. `null` clears the field back to "no rules".

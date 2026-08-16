@@ -592,6 +592,8 @@ export class Operations {
       approvalRules: [],
       // Plan-mode gating is off by default — set later in project settings.
       planModeGate: false,
+      // No tool restriction at creation — set later in project settings.
+      disallowedTools: null,
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo,
