@@ -9,7 +9,15 @@
   --faint: #596172;
   --accent: #FFB224;
   --ok: #3DD68C;
-  --warn: #FFB224;
+  /* Distinct from --accent on purpose (was an accidental #FFB224 duplicate —
+     "amber does three jobs": brand + primary + caution status shared one hue,
+     degrading status scanning). A genuinely separate golden-yellow (~8° hue
+     shift, not just dimmer) for ambient/repeated caution status — risk chips,
+     wait pills, log lines, timeline bars. The handful of singular "look here,
+     a decision is needed" signals (the topbar/nav needs-you counts, the home
+     NEEDS YOU strip title) stay pinned to --accent explicitly — see their
+     rules below — so the rare, most-actionable signal keeps the brand hue. */
+  --warn: #E8C64A;
   --danger: #FF5D5D;
   --info: #5EA2FF;
   --violet: #A78BFA;
@@ -18,8 +26,26 @@
   --sp: 16px;
   --card-pad: 20px;
   --fs: 14px;
+  /* Shared UI-feedback timing (hover/focus micro-interactions and small
+     reveals) — previously ad hoc, scattered as 0.12s/0.14s/0.15s/0.18s/0.2s/
+     0.35s across individual selectors. NOT used for the slow, deliberate
+     animations that stay their own speed on purpose: .bar-fill's 0.6s width
+     fill (a progress readout, not UI feedback) and the pulse/blink/shimmer
+     "still alive" loops (@keyframes pulse/blink/pvpulse/sk-shimmer/pipe-pulse). */
+  --motion-fast: 120ms ease-out;
+  --motion-base: 200ms ease-out;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
+/* Baseline keyboard-focus ring for every interactive element — previously only
+   a handful of components (op-navitem, a few :focus-visible one-offs) had a
+   deliberate ring; everything else fell back to the browser default (visible,
+   but visually inconsistent with the app). Low specificity (element/attribute
+   selectors) on purpose: any component with its own more-specific
+   :focus-visible rule (a class selector) keeps winning without touching it. */
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible,
+textarea:focus-visible, [role="button"]:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
 html, body { height: 100%; }
 body {
   background: var(--bg);
@@ -90,7 +116,9 @@ kbd {
 /* ---------- status dots ---------- */
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
 .dot-running { background: var(--ok); box-shadow: 0 0 8px color-mix(in oklch, var(--ok), transparent 40%); }
-.dot-waiting { background: var(--warn); box-shadow: 0 0 8px color-mix(in oklch, var(--warn), transparent 40%); animation: pulse 1.6s ease-in-out infinite; }
+/* The "needs you" dot (topbar stat, subway legend) — pinned to --accent, not
+   --warn: it's the rare, singular "look here" signal, not ambient status. */
+.dot-waiting { background: var(--accent); box-shadow: 0 0 8px color-mix(in oklch, var(--accent), transparent 40%); animation: pulse 1.6s ease-in-out infinite; }
 .dot-review  { background: var(--info); }
 .dot-paused  { background: var(--muted); }
 .dot-done    { background: var(--faint); }
@@ -155,7 +183,7 @@ kbd {
      overflow the viewport. min-width:0 lets it shrink so the inner ellipsis
      engages; overflow:hidden keeps any stray content inside the rounded border. */
   min-width: 0; overflow: hidden;
-  transition: border-color 0.15s ease, transform 0.15s ease;
+  transition: border-color var(--motion-fast), transform var(--motion-fast);
 }
 .proj:hover { border-color: var(--faint); transform: translateY(-1px); }
 .proj-done { opacity: 0.55; }
@@ -213,7 +241,7 @@ kbd {
   text-align: left; font-family: var(--font-ui); color: var(--text);
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   padding: var(--card-pad); cursor: pointer; display: flex; flex-direction: column; gap: 11px;
-  transition: border-color 0.15s ease;
+  transition: border-color var(--motion-fast);
 }
 .pa-card:hover { border-color: var(--faint); }
 .pa-top { display: flex; align-items: center; gap: 10px; }
@@ -256,10 +284,14 @@ kbd {
 .qcard {
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   padding: var(--card-pad); display: flex; flex-direction: column; gap: 12px;
-  transition: opacity 0.35s ease, transform 0.35s ease, border-color 0.15s ease;
+  /* The "gate-resolve collapse" — a resolved HITL item (queue.tsx's `resolved`
+     prop → .leaving below) fades + slides out on the base tier; border-color
+     (hover/select, no real motion) stays on the fast tier. */
+  transition: opacity var(--motion-base), transform var(--motion-base), border-color var(--motion-fast);
 }
 .qcard.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 8px 32px rgba(0,0,0,0.35); }
 .qcard.leaving { opacity: 0; transform: translateX(32px); }
+@media (prefers-reduced-motion: reduce) { .qcard { transition: border-color var(--motion-fast); } .qcard.leaving { opacity: 1; transform: none; } }
 .qcard-head { display: flex; align-items: center; gap: 12px; }
 .kind-chip {
   font-family: var(--font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
@@ -292,17 +324,23 @@ kbd {
 .hitl-ctx-val { color: var(--text); min-width: 0; line-height: 1.5; }
 .hitl-ctx-cmd { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: 12px; color: var(--text); background: var(--line-soft); padding: 8px 10px; border-radius: 6px; }
 .hitl-ctx-reason .hitl-ctx-val { color: var(--muted); font-style: italic; }
+/* Check output (verifier) can run much longer than a command — scroll it
+   instead of blowing out the gate card. */
+.hitl-ctx-output { max-height: 320px; overflow-y: auto; }
 
 /* Risk severity chip */
 .risk-chip { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
 .risk-chip.risk-high { color: var(--danger); border-color: var(--danger); }
 .risk-chip.risk-medium { color: var(--warn); border-color: var(--warn); }
-.risk-chip.risk-low { color: var(--faint); }
+.risk-chip.risk-low { color: var(--muted); }
 .qcard-code {
   font-family: var(--font-mono); font-size: 12px; color: var(--text);
   background: var(--bg); border: 1px solid var(--line-soft); border-radius: 6px;
   padding: 10px 14px; overflow-x: auto;
 }
+/* Check output (verifier) can run much longer than a command — wrap + scroll
+   instead of blowing out the card. */
+.qcard-output { white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
 .qcard-steps { padding-left: 20px; display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
 .qcard-steps li::marker { font-family: var(--font-mono); color: var(--faint); }
 .qcard-diff { display: flex; align-items: center; gap: 14px; font-family: var(--font-mono); font-size: 12px; }
@@ -379,16 +417,25 @@ kbd {
   font-family: var(--font-ui); font-size: 13px; font-weight: 500;
   background: var(--raised); color: var(--text); border: 1px solid var(--line);
   border-radius: 7px; padding: 8px 14px; cursor: pointer; min-height: 36px;
-  transition: border-color 0.12s ease, background 0.12s ease;
+  transition: border-color var(--motion-fast), background var(--motion-fast), transform var(--motion-fast);
 }
 .btn:hover { border-color: var(--faint); }
+/* Every .btn variant shares one press + focus-visible treatment — previously
+   neither existed anywhere in the file (hover was the only interactive state
+   consistently styled). Active is a subtle scale so it reads as "pressed"
+   without competing with the hover/focus color cues below. */
+.btn:active { transform: scale(0.98); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .btn-primary { background: var(--accent); color: #0B0D11; border-color: var(--accent); font-weight: 600; }
 .btn-primary:hover { border-color: var(--accent); filter: brightness(1.08); }
+.btn-primary:focus-visible { outline-color: var(--text); }
 .btn-primary kbd { color: #0B0D11; background: rgba(255,255,255,0.25); border-color: transparent; }
 .btn-danger { color: var(--danger); }
 .btn-danger:hover { border-color: var(--danger); }
+.btn-danger:focus-visible { outline-color: var(--danger); }
 .btn-ghost { background: none; color: var(--muted); border-color: transparent; }
 .btn-ghost:hover { color: var(--text); border-color: var(--line); }
+@media (prefers-reduced-motion: reduce) { .btn:active { transform: none; } }
 .rec {
   font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
   background: rgba(0,0,0,0.25); border-radius: 3px; padding: 2px 5px;
@@ -452,7 +499,8 @@ kbd {
 .plan-mark { font-family: var(--font-mono); width: 14px; flex: none; }
 .plan-step.done .plan-mark { color: var(--ok); }
 .plan-step.now .plan-mark { color: var(--accent); }
-.plan ~ .panel-head { margin-top: 20px; }
+.plan ~ .panel-head, .plan-empty ~ .panel-head { margin-top: 20px; }
+.plan-empty { color: var(--muted); font-size: 12px; font-style: italic; margin: 4px 0 8px; }
 /* Triage assessment above PLAN in a run's left column — the agent-written note
    from the autonomy triage step, plus the duration estimate in the panel-head. */
 .task-triage-note { font-size: 13px; line-height: 1.5; color: var(--muted); margin: -6px 0 16px; white-space: pre-wrap; }
@@ -462,7 +510,7 @@ kbd {
 .log-line { color: var(--muted); white-space: pre-wrap; }
 .log-time { color: var(--faint); font-size: 10.5px; user-select: none; }
 .log-time-block { display: block; margin-bottom: 2px; }
-.log-copy { flex: none; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; cursor: pointer; transition: color 0.14s ease, border-color 0.14s ease; }
+.log-copy { flex: none; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; cursor: pointer; transition: color var(--motion-fast), border-color var(--motion-fast); }
 .log-copy:hover { color: var(--text); border-color: var(--faint); }
 .log-hitl { color: var(--warn); }
 .log-warn { color: var(--danger); }
@@ -549,7 +597,7 @@ button.chip:hover { border-color: var(--faint); }
 
 .sw-task-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .sw-tname { font-size: 12px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sw-trunner { font-size: 10px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sw-trunner { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sw-track { display: flex; align-items: center; }
 .sw-station { position: relative; width: 12px; height: 12px; border-radius: 50%; flex: none; }
 .sw-done { background: var(--ok); }
@@ -562,8 +610,8 @@ button.chip:hover { border-color: var(--faint); }
 .sw-seg-done { background: var(--ok); }
 .sw-label { position: absolute; top: 19px; left: 50%; transform: translateX(-50%); font-family: var(--font-mono); font-size: 10px; white-space: nowrap; }
 .sw-label-waiting { color: var(--warn); } .sw-label-running { color: var(--ok); }
-.sw-label-review { color: var(--info); } .sw-label-done { color: var(--faint); }
-.sw-count { font-size: 11px; color: var(--faint); text-align: right; }
+.sw-label-review { color: var(--info); } .sw-label-done { color: var(--muted); }
+.sw-count { font-size: 11px; color: var(--muted); text-align: right; }
 
 /* branching subway */
 /* Horizontal scroll when the line has more stations than fit — the diagram sets
@@ -577,7 +625,7 @@ button.chip:hover { border-color: var(--faint); }
   font-family: var(--font-ui); color: var(--text);
 }
 .swb-name:hover .sw-tname { color: var(--accent); }
-.swb-count { position: absolute; right: 0; font-size: 11px; color: var(--faint); }
+.swb-count { position: absolute; right: 0; font-size: 11px; color: var(--muted); }
 .swb-canvas { position: absolute; left: 274px; right: 56px; top: 0; bottom: 0; }
 .swb-seg { position: absolute; height: 2px; background: var(--line); margin-top: -1px; }
 .swb-seg-done { background: var(--ok); }
@@ -609,7 +657,7 @@ button.chip:hover { border-color: var(--faint); }
 .swb-start-done { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in oklch, var(--ok), transparent 82%); }
 .swb-end { background: var(--panel); border: 2px solid var(--faint); }
 .swb-end-live { border-color: var(--ok); box-shadow: 0 0 10px color-mix(in oklch, var(--ok), transparent 55%); }
-.swb-anchor-label { position: absolute; transform: translateX(-50%); font-size: 9.5px; letter-spacing: 0.06em; color: var(--faint); white-space: nowrap; }
+.swb-anchor-label { position: absolute; transform: translateX(-50%); font-size: 11px; letter-spacing: 0.06em; color: var(--muted); white-space: nowrap; }
 /* rejoin the main path (END) — green once a subtree merges, grey while pending */
 .swb-fold {
   position: absolute; z-index: 1;
@@ -623,7 +671,7 @@ button.chip:hover { border-color: var(--faint); }
 }
 /* a parent station a fork branched off from (re-pointed) */
 .sw-repoint { outline: 2px solid color-mix(in oklch, var(--violet), transparent 20%); outline-offset: 2px; }
-.sw-label-muted { color: var(--faint); }
+.sw-label-muted { color: var(--muted); }
 /* queued (not-yet-run) stops — the lookahead: what's ahead of an agent + what's
    left to completion. Hollow, dashed segment leading in, muted label. */
 .swb-seg-pending { background: none; border-top: 2px dashed color-mix(in oklch, var(--faint), transparent 45%); height: 0; }
@@ -632,7 +680,7 @@ button.chip:hover { border-color: var(--faint); }
 /* "+N more" overflow chip — collapses a long backlog into one marker so the
    diagram stays readable; solid dot, small pill label. */
 .swb-st.sw-more { width: 8px; height: 8px; background: color-mix(in oklch, var(--faint), transparent 40%); border: none; border-radius: 50%; cursor: default; }
-.sw-label-more { color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
+.sw-label-more { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
 /* an idle agent (a track with only a queue) / the shared lane's marker */
 .sw-dot-idle { width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--faint); background: none; display: inline-block; flex: none; }
 .swb-name-lane { opacity: 0.85; }
@@ -900,7 +948,7 @@ button.kb-done:hover { opacity: 1; }
 .kb-done-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
 /* archive control on a board card */
-.kb-archive { flex: none; background: none; border: none; color: var(--faint); cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 5px; border-radius: 5px; opacity: 0; transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease; }
+.kb-archive { flex: none; background: none; border: none; color: var(--faint); cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 5px; border-radius: 5px; opacity: 0; transition: opacity var(--motion-fast), color var(--motion-fast), background var(--motion-fast); }
 .pa-card:hover .kb-archive, .kb-done:hover .kb-archive, .kb-card:hover .kb-archive { opacity: 1; }
 
 /* ── 6-stage pipeline board ─────────────────────────────────────────────── */
@@ -1035,8 +1083,8 @@ button.kb-done:hover { opacity: 1; }
   font-size: 12.5px; color: var(--muted); cursor: pointer;
 }
 .proj-autonomy-cb { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-.proj-autonomy-switch { position: relative; width: 34px; height: 20px; border-radius: 20px; background: var(--line); flex: none; transition: background 0.15s ease; }
-.proj-autonomy-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform 0.15s ease, background 0.15s ease; }
+.proj-autonomy-switch { position: relative; width: 34px; height: 20px; border-radius: 20px; background: var(--line); flex: none; transition: background var(--motion-fast); }
+.proj-autonomy-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform var(--motion-fast), background var(--motion-fast); }
 .proj-autonomy-cb:checked + .proj-autonomy-switch { background: var(--accent); }
 .proj-autonomy-cb:checked + .proj-autonomy-switch::after { transform: translateX(14px); background: var(--bg); }
 .proj-autonomy-cb:focus-visible + .proj-autonomy-switch { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -1070,7 +1118,7 @@ button.kb-done:hover { opacity: 1; }
 .proj-keys-value { color: var(--muted); }
 .proj-keys[open] .proj-keys-summary { border-color: var(--accent); }
 .proj-keys-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 220px; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 10px 30px rgb(0 0 0 / 0.35); }
-.proj-keys-hint { font-size: 11px; color: var(--faint); margin-bottom: 4px; line-height: 1.4; }
+.proj-keys-hint { font-size: 11px; color: var(--muted); margin-bottom: 4px; line-height: 1.4; }
 .proj-keys-item { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink); cursor: pointer; padding: 2px 0; }
 .proj-keys-item input { flex: none; }
 .proj-keys-name { flex: 1; }
@@ -1125,7 +1173,7 @@ button.kb-done:hover { opacity: 1; }
 .acc-step-bad { color: var(--text); }
 .acc-step-skip .acc-step-mark { color: var(--faint); }
 .acc-step-skip { color: var(--muted); }
-.acc-tally-skip { color: var(--faint); }
+.acc-tally-skip { color: var(--muted); }
 .acc-step-detail { color: var(--muted); font-size: 11px; }
 
 /* Simulation — LLM behavioral judge verdict */
@@ -1138,7 +1186,7 @@ button.kb-done:hover { opacity: 1; }
 .sim-judge-badge { font-family: var(--font-mono); font-size: 11px; font-weight: 600; }
 .sim-judge-pass .sim-judge-badge { color: var(--ok); }
 .sim-judge-fail .sim-judge-badge { color: var(--danger); }
-.sim-judge-score { color: var(--faint); }
+.sim-judge-score { color: var(--muted); }
 .sim-judge-summary { color: var(--text); }
 .sim-judge-findings { margin: 8px 0 0; padding-left: 18px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
 
@@ -1303,7 +1351,7 @@ button.kb-done:hover { opacity: 1; }
 .md-fold-title { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
 .md-fold-summary:hover .md-fold-title { color: var(--accent); }
 .md-fold-summary:hover .md-fold-caret { color: var(--accent); }
-.md-fold-count { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
+.md-fold-count { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
 .md-fold-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 .md-fold-body { padding-bottom: 4px; }
 
@@ -1330,7 +1378,7 @@ button.kb-done:hover { opacity: 1; }
 .placeholder-note { display: flex; align-items: flex-start; gap: 9px; margin: 10px 0; padding: 9px 11px; font-size: 12px; line-height: 1.45; color: var(--text); background: repeating-linear-gradient(45deg, color-mix(in oklch, var(--warn), transparent 90%), color-mix(in oklch, var(--warn), transparent 90%) 9px, transparent 9px, transparent 18px), color-mix(in oklch, var(--warn), transparent 92%); border: 1px solid color-mix(in oklch, var(--warn), transparent 55%); border-radius: 8px; }
 .placeholder-note-tag { flex: none; font-family: var(--font-mono); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; color: var(--bg); background: var(--warn); border-radius: 4px; padding: 2px 6px; margin-top: 1px; }
 .placeholder-note-text { color: var(--muted); }
-.proj-backlog { font-size: 11px; color: var(--faint); padding-top: 2px; }
+.proj-backlog { font-size: 11px; color: var(--muted); padding-top: 2px; }
 .proj-merged { font-size: 11px; color: var(--ok, var(--muted)); padding-top: 2px; }
 
 /* ===== MCP access (Settings) ===== */
@@ -1487,7 +1535,7 @@ button.kb-done:hover { opacity: 1; }
 .dlv-pillval { font-family: var(--font-mono); font-weight: 600; background: #fff; border: 1px solid #D4D8E0; border-radius: 12px; padding: 2px 10px; }
 .dlv-toggle { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #3A4150; }
 .dlv-switch { width: 34px; height: 19px; border-radius: 12px; background: #C2C8D4; position: relative; }
-.dlv-switch i { position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; transition: left 0.2s; }
+.dlv-switch i { position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; transition: left var(--motion-base); }
 .dlv-switch.dlv-on { background: #2E5BE0; } .dlv-switch.dlv-on i { left: 17px; }
 .dlv-note { font-family: var(--font-mono); font-size: 10px; color: #1F8A4C; }
 /* sparkline / chart */
@@ -1553,7 +1601,7 @@ button.kb-done:hover { opacity: 1; }
 
 /* ===== backlog CRUD ===== */
 .kb-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
-.kb-card-tools { display: flex; gap: 4px; flex: none; opacity: 0; transition: opacity 0.12s ease; }
+.kb-card-tools { display: flex; gap: 4px; flex: none; opacity: 0; transition: opacity var(--motion-fast); }
 .kb-card:hover .kb-card-tools { opacity: 1; }
 .kb-tool { background: none; border: none; cursor: pointer; color: var(--faint); font-size: 14px; line-height: 1; padding: 2px 4px; border-radius: 4px; font-family: var(--font-ui); }
 .kb-tool:hover:not(:disabled) { color: var(--text); background: var(--raised); }
@@ -1576,7 +1624,17 @@ button.kb-done:hover { opacity: 1; }
 
 /* ===== fleet ===== */
 .fleet-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+.fleet-head-actions { display: flex; align-items: center; gap: 8px; }
+.fleet-head-actions .btn-ghost.on { background: var(--raised); border-color: var(--accent); color: var(--accent); }
 .fleet-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--sp); }
+/* Mass-inform pick: a checkbox row at the top of a card in select mode. Idle
+   agents show disabled + a note instead of a live-run target. */
+.fleet-inform-pick { display: flex; align-items: center; gap: 8px; padding-bottom: 2px; }
+.fleet-inform-idle { font-size: 11px; color: var(--faint, var(--muted)); }
+/* The `inform` note composer (Fleet multi-select + Project whole-project). */
+.inform-panel { display: flex; flex-direction: column; gap: 10px; margin-bottom: var(--sp); }
+.inform-hint { font-size: 12px; color: var(--muted); margin: 0; }
+.inform-textarea { resize: vertical; min-height: 60px; }
 /* Custom grouping: a labeled bucket of agents. Stacked groups get spacing + a
    small heading; a single ungrouped fleet renders headless (see showHeadings). */
 .fleet-group { display: flex; flex-direction: column; gap: 12px; }
@@ -1597,10 +1655,10 @@ button.kb-done:hover { opacity: 1; }
 .fleet-model { font-size: 11px; color: var(--muted); }
 .fleet-task { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 7px 10px; background: var(--raised); border-radius: 7px; }
 /* Clickable "what it's running" line → opens the agent's live activity. */
-button.fleet-task-link { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid transparent; font: inherit; text-align: left; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+button.fleet-task-link { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid transparent; font: inherit; text-align: left; cursor: pointer; transition: background var(--motion-fast), border-color var(--motion-fast); }
 button.fleet-task-link:hover { background: var(--hover, var(--raised)); border-color: var(--border); }
 .fleet-task-link .fleet-task-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fleet-task-link .fleet-task-cta { flex: none; font-size: 11px; color: var(--muted, var(--faint)); opacity: 0; transition: opacity 0.12s; }
+.fleet-task-link .fleet-task-cta { flex: none; font-size: 11px; color: var(--muted, var(--faint)); opacity: 0; transition: opacity var(--motion-fast); }
 button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
 .fleet-actions { display: flex; flex-wrap: wrap; gap: 6px 8px; border-top: 1px solid var(--line-soft); padding-top: 11px; }
 .fleet-actions .btn { padding: 6px 10px; font-size: 12px; min-height: 30px; }
@@ -1610,8 +1668,42 @@ button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
 button.fleet-cardhead { display: flex; flex-direction: column; gap: 11px; width: 100%; padding: 0; margin: 0; border: none; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 button.fleet-cardhead:hover .fleet-rn { color: var(--accent); }
 button.fleet-cardhead:hover .fleet-caret { color: var(--accent); transform: translateX(2px); }
-.fleet-caret { flex: none; color: var(--muted); font-size: 15px; transition: transform 0.12s, color 0.12s; }
+.fleet-caret { flex: none; color: var(--muted); font-size: 15px; transition: transform var(--motion-fast), color var(--motion-fast); }
 .fleet-histcount { flex: none; color: var(--muted); font-size: 11px; font-family: var(--font-mono); }
+.fleet-cost { flex: none; color: var(--muted); font-size: 11px; font-family: var(--font-mono); }
+/* Progress through the busy agent's plan — a thin fill bar under the task link. */
+.fleet-task-bar { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.fleet-task-fill { height: 100%; background: var(--ok); border-radius: 2px; transition: width 0.3s ease; }
+
+/* Density split within a group: busy agents keep the full-card grid above
+   (.fleet-working reuses .fleet-grid); idle agents collapse to scannable rows
+   below — several identical "idle 6d" cards carry no signal, so give that
+   space back to whatever IS happening. */
+.fleet-working + .fleet-idle { margin-top: 18px; }
+.fleet-sub-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); margin-bottom: 8px; }
+.fleet-sub-label .mono { font-weight: 400; letter-spacing: 0; }
+.fleet-idle-roster { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; overflow: hidden; }
+.fleet-idle-row { display: grid; grid-template-columns: 1fr auto auto auto auto; align-items: center; gap: 14px; padding: 9px 16px; border-bottom: 1px solid var(--line-soft); }
+.fleet-idle-row:last-child { border-bottom: none; }
+.fleet-idle-row:hover { background: var(--raised); }
+.fleet-idle-name { display: flex; align-items: center; gap: 9px; min-width: 0; border: none; background: none; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.fleet-idle-name:hover .fleet-rn { color: var(--accent); }
+.fleet-idle-name .fleet-rn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fleet-prov-sm { font-size: 13px; }
+.fleet-idle-tasks { color: var(--muted); font-size: 11.5px; justify-self: end; }
+.fleet-idle-cost { color: var(--muted); font-size: 11.5px; justify-self: end; font-family: var(--font-mono); }
+.fleet-idle-time { color: var(--muted); font-size: 11.5px; justify-self: end; }
+/* Past a day idle escalates in weight/color — "idle 6d" shouldn't read like "idle 2m". */
+.fleet-idle-time.stale { color: var(--danger); opacity: 0.85; font-weight: 600; }
+.fleet-idle-actions { display: flex; gap: 4px; justify-self: end; }
+.icon-btn { width: 24px; height: 24px; border-radius: 6px; border: none; background: none; color: var(--faint); font-size: 12.5px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.icon-btn:hover { color: var(--text); background: var(--line-soft); }
+.icon-btn.off { opacity: 0.4; }
+.icon-btn-danger:hover { color: var(--danger); }
+/* Editing an idle row in place: a full-width panel inline in the roster —
+   NOT a card-grid cell (an .fleet-idle-row's wide grid columns break badly
+   squeezed into a narrow card column). */
+.fleet-idle-editing { padding: 16px 18px; background: var(--raised); }
 
 /* ── Agent detail view ────────────────────────────────────────────────────── */
 .agent-detail { max-width: 820px; }
@@ -1634,7 +1726,7 @@ button.fleet-cardhead:hover .fleet-caret { color: var(--accent); transform: tran
 .ad-h2 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 10px; }
 .ad-hist { display: flex; flex-direction: column; gap: 4px; }
 .ad-hist-empty { font-size: 13px; color: var(--muted); padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
-button.ad-hist-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); font: inherit; text-align: left; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+button.ad-hist-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); font: inherit; text-align: left; cursor: pointer; transition: background var(--motion-fast), border-color var(--motion-fast); }
 button.ad-hist-row:hover { border-color: var(--border); background: var(--raised); }
 .ad-hist-name { flex: 1; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ad-hist-state { flex: none; font-size: 11px; }
@@ -1698,12 +1790,13 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .needs-strip { display: flex; flex-direction: column; gap: 10px; }
 .needs-clear { flex-direction: row; align-items: center; gap: 9px; font-size: 13px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 15px; }
 .needs-strip-head { display: flex; align-items: baseline; justify-content: space-between; }
-.needs-strip-title { font-family: var(--font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em; color: var(--warn); white-space: nowrap; }
+/* Section headline, same "pin to --accent" reasoning as .dot-waiting above. */
+.needs-strip-title { font-family: var(--font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em; color: var(--accent); white-space: nowrap; }
 .needs-strip-hint { color: var(--muted); font-weight: 400; letter-spacing: 0.04em; margin-left: 6px; }
 .needs-strip-all { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 12px; color: var(--accent); font-weight: 500; }
 .needs-strip-all:hover { text-decoration: underline; }
 .needs-row { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 6px; scrollbar-width: thin; }
-.blocker { flex: 0 0 320px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; text-align: left; font-family: var(--font-ui); color: var(--text); transition: border-color 0.14s ease, transform 0.14s ease; }
+.blocker { flex: 0 0 320px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; text-align: left; font-family: var(--font-ui); color: var(--text); transition: border-color var(--motion-fast), transform var(--motion-fast); }
 .blocker:hover { border-color: color-mix(in oklch, var(--accent), transparent 45%); transform: translateY(-1px); }
 .blocker:hover .blocker-cta { color: var(--accent); }
 .blocker-hot { border-color: color-mix(in oklch, var(--warn), transparent 55%); }
@@ -1758,7 +1851,7 @@ button.rb-stat:hover .rb-v { color: var(--accent); }
   display: grid; grid-template-columns: 1.5fr 0.85fr 1fr 140px 100px;
   column-gap: 14px; font-size: 12.5px;
 }
-.rb-hcell { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.rb-hcell { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .rb-cell {
   padding: 10px 0; border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; min-width: 0;
   background: none; border-left: none; border-right: none; border-top: none; font-family: var(--font-ui); font-size: inherit; color: var(--text); text-align: left;
@@ -1769,18 +1862,22 @@ button.rb-cell:hover { color: var(--accent); }
 .rb-proj { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
 button.rb-proj:hover { color: var(--accent); }
 .rb-pill {
+  display: inline-flex; align-items: center; gap: 5px;
   font-family: var(--font-mono); font-size: 11px; color: var(--text); background: var(--raised-2, var(--raised));
   border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; cursor: pointer;
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 100%; overflow: hidden; white-space: nowrap;
 }
 .rb-pill:hover { border-color: var(--accent); color: var(--accent); }
+/* The vendor's own mark (colored glyph) — a real identity signal, not the
+   fleet runner's custom name alone. */
+.rb-prov-glyph { flex: none; font-size: 12px; line-height: 1; }
 .rb-off { color: var(--faint); }
 .rb-time { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
 
 .rb-chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; }
 .rb-tag-running { color: var(--info); border-color: color-mix(in oklch, var(--info), transparent 55%); background: color-mix(in oklch, var(--info), transparent 92%); }
 .rb-tag-blocked { color: var(--danger); border-color: color-mix(in oklch, var(--danger), transparent 45%); background: color-mix(in oklch, var(--danger), transparent 88%); }
-.rb-tag-paused { color: var(--faint); border-color: var(--line); }
+.rb-tag-paused { color: var(--muted); border-color: var(--line); }
 .rb-tag-done { color: var(--ok); border-color: color-mix(in oklch, var(--ok), transparent 55%); background: color-mix(in oklch, var(--ok), transparent 92%); }
 /* Split-flap flip — plays only on rows whose status text actually changed
    since the last render (see the prevFlap ref in RunsBoard), not on every
@@ -1791,8 +1888,18 @@ button.rb-proj:hover { color: var(--accent); }
   50%  { transform: scaleY(0.08); opacity: 0.3; }
   100% { transform: scaleY(1); opacity: 1; }
 }
+/* No heartbeat in a while (see STALE_HEARTBEAT_SEC in home.tsx) — overrides
+   the tag's own color so "running" and "paused" both read as suspect the
+   same way, distinct from --danger (an open gate genuinely needs a decision)
+   and --info (a healthy, actively-heartbeating run). */
+.rb-chip.rb-stale { color: var(--warn); border-color: color-mix(in oklch, var(--warn), transparent 45%); background: color-mix(in oklch, var(--warn), transparent 88%); }
+.rb-stale-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); flex: none; animation: rb-stale-pulse 1.6s ease-in-out infinite; }
+@keyframes rb-stale-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
 
-.rb-backlog-note { font-size: 12px; color: var(--faint); padding: 12px 0 14px; }
+.rb-backlog-note { font-size: 12px; color: var(--muted); padding: 12px 0 14px; }
 .rb-backlog-note button { background: none; border: none; padding: 0; font-family: inherit; font-size: inherit; color: var(--accent); cursor: pointer; }
 .rb-backlog-note button:hover { text-decoration: underline; }
 
@@ -1838,8 +1945,9 @@ button.rb-proj:hover { color: var(--accent); }
 .op-ws-name { font-size: 13px; font-weight: 600; flex: 1; }
 .op-nav { padding: 10px 8px; display: flex; flex-direction: column; gap: 1px; }
 .op-navitem { display: flex; align-items: center; gap: 11px; padding: 8px 11px; border-radius: 7px; color: var(--muted); border: none; background: none; text-align: left; font-family: var(--font-ui); font-size: 13px; width: 100%; cursor: pointer; }
-.op-navitem .ic { width: 16px; text-align: center; opacity: 0.85; }
-.op-navitem .badge { margin-left: auto; font-family: var(--font-mono); font-size: 10px; background: var(--warn); color: #0B0D11; border-radius: 9px; padding: 1px 7px; font-weight: 600; }
+.op-navitem .ic { width: 16px; height: 16px; flex: none; display: inline-flex; align-items: center; justify-content: center; opacity: 0.85; }
+/* Inbox/Ready-to-merge nav counts — same "pin to --accent" reasoning above. */
+.op-navitem .badge { margin-left: auto; font-family: var(--font-mono); font-size: 10px; background: var(--accent); color: #0B0D11; border-radius: 9px; padding: 1px 7px; font-weight: 600; }
 /* Current view (router-derived, exactly one at a time): raised bg + accent
    marker + bolder label so it reads as selected, not merely hovered. */
 .op-navitem.on { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
@@ -1856,7 +1964,7 @@ button.rb-proj:hover { color: var(--accent); }
 .op-navsec-toggle { display: flex; align-items: center; width: 100%; gap: 8px; background: none; border: none; text-align: left; font-family: var(--font-ui); text-transform: inherit; cursor: pointer; }
 .op-navsec-toggle:hover { color: var(--muted); }
 .op-navsec-toggle.on { color: var(--muted); }
-.op-navsec-caret { margin-left: auto; font-size: 9px; line-height: 1; }
+.op-navsec-caret { margin-left: auto; width: 13px; height: 13px; display: inline-flex; flex: none; }
 .op-nav-sub { padding-top: 2px; padding-bottom: 2px; }
 .op-plist { padding: 0 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1; }
 .op-pitem { display: flex; align-items: center; gap: 9px; padding: 6px 11px; border-radius: 6px; color: var(--muted); font-size: 12px; background: none; border: none; text-align: left; width: 100%; cursor: pointer; }
@@ -1865,6 +1973,7 @@ button.rb-proj:hover { color: var(--accent); }
 .op-pitem .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .op-side-foot { margin-top: auto; display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-top: 1px solid var(--line-soft); }
 .op-side-foot .who { font-size: 12px; } .op-side-foot .role { font-size: 11px; color: var(--muted); }
+.op-role-viewer { color: var(--warn); font-weight: 600; }
 
 .op-statusbar { height: 28px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 10px 0 12px; background: var(--panel); border-top: 1px solid var(--line); font-family: var(--font-mono); font-size: 11px; color: var(--muted); position: relative; z-index: 30; }
 .op-sb-wrap { position: relative; }
@@ -1903,7 +2012,7 @@ button.rb-proj:hover { color: var(--accent); }
 .firstrun { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 12px 14px; margin-bottom: 14px; }
 .firstrun-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
 .firstrun-title { font-family: var(--font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em; color: var(--accent); }
-.firstrun-sub { font-size: 11px; color: var(--faint); }
+.firstrun-sub { font-size: 11px; color: var(--muted); }
 .firstrun-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 @media (max-width: 760px) { .firstrun-steps { grid-template-columns: 1fr 1fr; } }
 .firstrun-step { display: flex; align-items: flex-start; gap: 10px; text-align: left; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font: inherit; }
@@ -2014,6 +2123,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .audit-sep { opacity: 0.6; }
 .audit-detail { font-size: 13px; color: var(--muted); line-height: 1.5; text-wrap: pretty; }
 .audit-guidance { color: var(--text); border-left: 2px solid var(--line); padding-left: 12px; }
+.audit-memory-note { color: var(--text); border-left: 2px solid var(--accent, var(--line)); padding-left: 12px; }
 .audit-empty { text-align: center; padding: 80px 0; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 14px; }
 .audit-empty-mark { font-size: 32px; color: var(--faint); }
 /* audit maintenance controls */
@@ -2085,9 +2195,9 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .gh-rule-label { font-size: 13.5px; font-weight: 500; margin-bottom: 3px; }
 .gh-rule-desc { color: var(--muted); font-size: 12px; line-height: 1.55; }
 .gh-rule-desc.is-off { color: var(--danger); }
-.gh-switch { flex: none; width: 38px; height: 22px; border-radius: 12px; border: none; cursor: pointer; position: relative; background: var(--line); transition: background .15s; margin-top: 2px; }
+.gh-switch { flex: none; width: 38px; height: 22px; border-radius: 12px; border: none; cursor: pointer; position: relative; background: var(--line); transition: background var(--motion-fast); margin-top: 2px; }
 .gh-switch.on { background: var(--accent); }
-.gh-switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.gh-switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform var(--motion-fast); }
 .gh-switch.on::after { transform: translateX(16px); }
 .gh-warn { font-size: 11.5px; color: var(--warn); margin-top: 14px; line-height: 1.5; }
 .gh-row { display: flex; gap: 10px; align-items: center; margin-top: 16px; }
@@ -2152,7 +2262,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
   .ob-steplist { flex-direction: row; flex-wrap: wrap; }
 }
 .ob-progress { display: flex; gap: 8px; justify-content: center; margin-bottom: 28px; }
-.ob-pip { width: 30px; height: 3px; border-radius: 2px; background: var(--line); transition: background .2s; }
+.ob-pip { width: 30px; height: 3px; border-radius: 2px; background: var(--line); transition: background var(--motion-base); }
 .ob-pip.on { background: var(--accent); }
 .ob-pip.done { background: var(--ok); }
 .ob-step-tag { font-family: var(--font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); text-align: center; }
@@ -2164,7 +2274,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .ob-mods { display: flex; flex-wrap: wrap; gap: 8px; }
 .ob-mod-chip { font-size: 11px; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 16px; padding: 5px 12px; }
 .ob-prov-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-.ob-prov { display: flex; align-items: center; gap: 10px; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--text); font-family: var(--font-ui); font-size: 13px; transition: border-color .15s, background .15s; }
+.ob-prov { display: flex; align-items: center; gap: 10px; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--text); font-family: var(--font-ui); font-size: 13px; transition: border-color var(--motion-fast), background var(--motion-fast); }
 .ob-prov:hover:not(:disabled) { border-color: var(--faint); }
 .ob-prov.on { background: var(--raised); }
 .ob-prov:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -2178,9 +2288,9 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .ob-fleet-glyph { font-size: 16px; width: 18px; text-align: center; flex: none; }
 .ob-fleet-select { flex: 1; min-width: 0; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--text); font-family: var(--font-ui); font-size: 13px; cursor: pointer; }
 .ob-fleet-select:disabled { opacity: 0.5; cursor: not-allowed; }
-.ob-fleet-del { flex: none; width: 32px; height: 32px; background: none; border: 1px solid var(--line); border-radius: 8px; color: var(--faint); font-size: 18px; line-height: 1; cursor: pointer; transition: color .12s, border-color .12s, background .12s; }
+.ob-fleet-del { flex: none; width: 32px; height: 32px; background: none; border: 1px solid var(--line); border-radius: 8px; color: var(--faint); font-size: 18px; line-height: 1; cursor: pointer; transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast); }
 .ob-fleet-del:hover { color: var(--danger); border-color: var(--danger); background: var(--raised); }
-.ob-fleet-add { align-self: flex-start; margin-top: 2px; background: none; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-family: var(--font-ui); font-size: 13px; padding: 9px 14px; cursor: pointer; transition: color .12s, border-color .12s; }
+.ob-fleet-add { align-self: flex-start; margin-top: 2px; background: none; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-family: var(--font-ui); font-size: 13px; padding: 9px 14px; cursor: pointer; transition: color var(--motion-fast), border-color var(--motion-fast); }
 .ob-fleet-add:hover:not(:disabled) { color: var(--text); border-color: var(--faint); }
 .ob-fleet-add:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -2197,7 +2307,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .gh-int-title { font-size: 15px; font-weight: 600; }
 .gh-int-spacer { flex: 1; }
 .gh-int-summary { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
-.gh-chev { color: var(--faint); font-size: 17px; line-height: 1; transition: transform .18s; display: inline-block; }
+.gh-chev { color: var(--faint); font-size: 17px; line-height: 1; transition: transform var(--motion-base); display: inline-block; }
 .gh-chev.open { transform: rotate(90deg); }
 .gh-int-body { margin-top: 12px; }
 .gh-pill-off { color: var(--muted); border-color: var(--line); }
@@ -2240,7 +2350,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .asst-propose-label { font-size: 12.5px; color: var(--ink); flex: 1; min-width: 0; }
 .asst-propose-actions { display: flex; gap: 6px; }
 .asst-propose-done { font-size: 12.5px; color: var(--ok); }
-.asst-propose-done.muted { color: var(--faint); }
+.asst-propose-done.muted { color: var(--muted); }
 .asst-input { display: flex; gap: 8px; align-items: flex-end; }
 .asst-input .qx-input { flex: 1; }
 /* Auto-grow textarea: starts as a one-row input, expands into a text block as
@@ -2283,7 +2393,8 @@ button.firstrun-step:hover { border-color: var(--accent); }
 :root.steward-open .op-ws { justify-content: center; padding: 13px 0; }
 :root.steward-open .op-ws-name { display: none; }
 :root.steward-open .op-navitem { justify-content: center; gap: 0; padding: 8px 0; font-size: 0; }
-:root.steward-open .op-navitem .ic { font-size: 15px; width: auto; }
+/* Icon-only rail: a touch larger since there's no adjacent label to anchor to. */
+:root.steward-open .op-navitem .ic { width: 18px; height: 18px; }
 :root.steward-open .op-navitem .badge { display: none; }
 :root.steward-open .op-navsec,
 :root.steward-open .op-navsec-caret,
@@ -2299,7 +2410,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 @media (max-width: 900px) { .steward-dock { width: 100vw; max-width: 100vw; } :root.steward-open .main { padding-right: 0; } }
 /* Drag handle on the dock's left edge to resize the pane. */
 .lp-resize { position: absolute; left: 0; top: 0; bottom: 0; width: 9px; cursor: ew-resize; z-index: 2; touch-action: none; }
-.lp-resize::after { content: ""; position: absolute; left: 3px; top: 50%; transform: translateY(-50%); width: 3px; height: 44px; border-radius: 3px; background: var(--line); opacity: 0; transition: opacity .12s; }
+.lp-resize::after { content: ""; position: absolute; left: 3px; top: 50%; transform: translateY(-50%); width: 3px; height: 44px; border-radius: 3px; background: var(--line); opacity: 0; transition: opacity var(--motion-fast); }
 .lp-resize:hover::after, .lp-resize:active::after { opacity: 1; background: var(--accent); }
 .lp-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); flex-wrap: wrap; }
 .lp-title { font-weight: 600; font-size: 13px; }
@@ -2470,14 +2581,17 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .fcard-ms { font-size: 10.5px; font-family: var(--font-mono); color: var(--violet); border: 1px solid color-mix(in oklch, var(--violet), transparent 62%); border-radius: 20px; padding: 1px 7px; flex: none; }
 .fcard-pct { font-size: 12.5px; font-weight: 600; color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
 .fcard-sum { font-size: 12px; color: var(--muted); }
-.fcard-sum-empty { color: var(--faint); }
+.fcard-sum-empty { color: var(--muted); }
 .fcard-body { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
 .tag { font-size: 10.5px; padding: 1px 7px; border-radius: 20px; font-family: var(--font-mono); flex: none; }
 .tag-ship { color: var(--ok); border: 1px solid color-mix(in oklch, var(--ok), transparent 62%); }
 .tag-pause { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn), transparent 62%); }
 
 /* ── Project Roadmap tab: ROADMAP.md read straight from the repo ─────────── */
-.prd-source { font-size: 11px; color: var(--faint); margin-bottom: 14px; }
+.prd-path-picker { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.prd-path-picker .qx-input { flex: 1; max-width: 320px; }
+.prd-path-err { font-size: 11.5px; color: var(--danger); margin-top: 6px; }
+.prd-source { font-size: 11px; color: var(--muted); margin-bottom: 14px; }
 .prd-lead { margin-bottom: 4px; }
 .prd-spine { display: flex; flex-direction: column; }
 .prd-phase { border-top: 1px solid var(--line-soft); }
@@ -2490,7 +2604,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .prd-phase-summary:hover .prd-phase-caret { color: var(--accent); }
 .prd-phase-shipped .prd-phase-title { color: var(--muted); }
 .prd-phase-pill { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent), transparent 55%); background: color-mix(in oklch, var(--accent), transparent 88%); border-radius: 999px; padding: 2px 8px; flex: none; }
-.prd-phase-frac { flex: none; font-size: 11px; color: var(--faint); }
+.prd-phase-frac { flex: none; font-size: 11px; color: var(--muted); }
 .prd-phase-body { padding: 0 4px 20px 46px; }
 
 /* ── Roadmap: milestone columns on a time track ──────────────────────────── */
@@ -2512,12 +2626,12 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .mcard-when.late { color: var(--danger); }
 .mcard-when.ship { color: var(--ok); }
 .mcard-feats { display: flex; flex-direction: column; gap: 11px; }
-.mcard-empty { color: var(--faint); font-size: 12px; font-style: italic; }
+.mcard-empty { color: var(--muted); font-size: 12px; font-style: italic; }
 .mcard-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .feat-mini-lbl { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin-bottom: 5px; }
 .feat-mini-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .feat-mini-direct { color: var(--muted); font-style: italic; }
-.feat-mini-lbl .mono { color: var(--faint); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
+.feat-mini-lbl .mono { color: var(--muted); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
 .mcard-expand { background: none; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); font: inherit; font-size: 12px; padding: 6px; cursor: pointer; }
 .mcard-expand:hover { color: var(--text); border-color: var(--faint); }
 .mcard-body { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
@@ -2578,7 +2692,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .pf-progress-fill {
   height: 100%;
   background: var(--ok, #2ea043);
-  transition: width 0.2s ease;
+  transition: width var(--motion-base);
 }
 .pf-progress-lbl {
   min-width: 32px;

@@ -56,7 +56,7 @@ export const config = {
   sessions: (process.env.SESSIONS || undefined) as "memory" | "postgres" | "redis" | undefined,
   // Working directory for a real runner (the target repo / agent worktree).
   // Each agent executes on its fleet runner's own provider
-  // (claude/codex/gemini/cursor/copilot/hermes); there is no mock and no global
+  // (claude/codex/gemini/cursor/copilot/hermes/opencode); there is no mock and no global
   // RUNNER override — a runner runs only if its provider has a credential (or is
   // a CLI-login provider), else nothing runs.
   runnerCwd: process.env.SKYNET_RUNNER_CWD || undefined,
@@ -94,6 +94,14 @@ export const config = {
   adminEmail: (process.env.SKYNET_ADMIN_EMAIL || "").toLowerCase() || undefined,
   adminPassword: process.env.SKYNET_ADMIN_PASSWORD || undefined,
   adminWorkspace: process.env.SKYNET_ADMIN_WORKSPACE || undefined,
+
+  // Optional second account: a read-only login (Principal.scopes: ["observe"]
+  // at login — see auth/operators.ts). Independent of the admin vars above;
+  // set alone or alongside them. No invite/user-management UI exists yet, so
+  // this env seed is the only way to stand up a viewer on a hosted deploy.
+  viewerEmail: (process.env.SKYNET_VIEWER_EMAIL || "").toLowerCase() || undefined,
+  viewerPassword: process.env.SKYNET_VIEWER_PASSWORD || undefined,
+  viewerWorkspace: process.env.SKYNET_VIEWER_WORKSPACE || undefined,
 
   // ── MCP bootstrap token (headless / sandbox deploys) ───────────────────────
   // In a sandbox (e.g. Daytona) there is no human to log in and mint a token,

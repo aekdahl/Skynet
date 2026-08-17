@@ -65,7 +65,7 @@ describe("full run pipeline: owning task reaches done on merge", () => {
     expect(t?.state).toBe("review");
 
     const item = (await openDiff())!;
-    const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "jordan", at: Date.now() };
+    const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, memoryNote: null, by: "jordan", at: Date.now() };
     const r = await hub.resolveHitl(item.id, resolution);
     if (r?.resolution?.at === resolution.at) await orchestrator.deliver(item, resolution);
 
@@ -106,7 +106,7 @@ describe("full run pipeline: owning task reaches done on merge", () => {
     await store.putTask({ ...t, runId: "MISMATCH" });
 
     const item = (await openDiff())!;
-    const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, by: "jordan", at: Date.now() };
+    const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, memoryNote: null, by: "jordan", at: Date.now() };
     const r = await hub.resolveHitl(item.id, resolution);
     if (r?.resolution?.at === resolution.at) await orchestrator.deliver(item, resolution);
 

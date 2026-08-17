@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import type { TaskRun, Project } from "@skynet/shared";
+import type { TaskRun, Project, ProviderInfo } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import {
   agentsForProject,
@@ -12,6 +12,7 @@ import {
   modName,
   openQueue,
   projectShipped,
+  providerInfo,
   providerReadiness,
   runnerName,
   waitedSecs,
@@ -372,17 +373,31 @@ export function HomeView({
 // list — idle capacity and the unassigned backlog are single-number stats,
 // not rows; drilling into a project's own page still shows that project's map.
 const DONE_CAP = 8;
+// A live run heartbeats every ~5s (CliRunnerHandle / the Claude runner's own
+// interval); the server's own reaper (SKYNET_AGENT_REAP_MS) presumes a
+// running/waiting agent dead after 180s of silence and escalates it. 60s is
+// the visual early-warning line: 12x the normal cadence (so ordinary jitter
+// never false-flags a healthy run), but a full two minutes' notice before the
+// reaper would actually act — the operator sees "this looks stuck" before
+// Skynet decides it IS stuck.
+const STALE_HEARTBEAT_SEC = 60;
 type RunTag = "running" | "blocked" | "paused" | "done";
 interface RunRow {
   run: TaskRun;
   agentId: string | null;
   agentName: string;
+  /** The vendor the run's agent is actually on — a real mark (colored glyph)
+   *  + name, not just the fleet runner's own custom label. */
+  provider: ProviderInfo;
   projectId: string;
   projectName: string;
   tag: RunTag;
   statusLabel: string;
   timeLabel: string;
   sortKey: number;
+  /** No heartbeat in over STALE_HEARTBEAT_SEC — never true for a finished run
+   *  (no heartbeat concept once done). */
+  stale: boolean;
 }
 const TAG_RANK: Record<RunTag, number> = { blocked: 0, running: 1, paused: 2, done: 3 };
 
@@ -405,7 +420,7 @@ function ParallelismNudgeBanner({ onConfigureFleet }: { onConfigureFleet: () => 
       <button className="parallel-nudge-cta" onClick={onConfigureFleet}>
         Add agent →
       </button>
-      <button className="approval-rule-x parallel-nudge-x" title="Dismiss" onClick={() => setDismissed(true)}>
+      <button className="approval-rule-x parallel-nudge-x" title="Dismiss" aria-label="Dismiss" onClick={() => setDismissed(true)}>
         ×
       </button>
     </div>
@@ -427,7 +442,7 @@ function RunsBoard({
   onAssign: () => void;
   onConfigureFleet: () => void;
 }) {
-  const { runs, tasks, projects, queue, fleet } = useStore();
+  const { runs, tasks, projects, queue, fleet, readOnly, providers } = useStore();
   const oq = openQueue(queue);
   const idle = idleRunners(fleet, runs);
   const backlogCount = tasks.filter(
@@ -457,9 +472,15 @@ function RunsBoard({
       run: r,
       agentId: r.agentId,
       agentName: runnerName(r, fleet),
+      provider: providerInfo(providers, r.provider),
       projectId: r.projectId,
       projectName: project?.name ?? "—",
       tag, statusLabel, timeLabel, sortKey,
+      // "running" already computes elapsed-since-START above, which keeps
+      // growing whether or not the process is actually still alive — check
+      // the heartbeat itself so a silently-hung agent (still shows "running",
+      // growing elapsed time) doesn't read as healthy.
+      stale: r.status !== "done" && heartbeatSecs(r, now) > STALE_HEARTBEAT_SEC,
     };
   };
 
@@ -499,7 +520,7 @@ function RunsBoard({
           <div className="rb-stat rb-blocked"><span className="rb-v">{blockedCount}</span><span className="rb-k">needs you</span></div>
           <div className="rb-stat rb-done"><span className="rb-v">{doneCount}</span><span className="rb-k">done</span></div>
           {idle.length > 0 && (
-            <button className="rb-stat rb-idle" onClick={onAssign} title="Assign work to an idle agent">
+            <button className="rb-stat rb-idle" disabled={readOnly} onClick={onAssign} title="Assign work to an idle agent">
               <span className="rb-v">{idle.length}</span><span className="rb-k">idle · assign →</span>
             </button>
           )}
@@ -509,7 +530,7 @@ function RunsBoard({
             compact
             title="Nothing running"
             hint="Assign a task to an agent and it shows up here."
-            cta={{ label: "Assign work →", onClick: onAssign }}
+            cta={{ label: "Assign work →", onClick: onAssign, disabled: readOnly }}
           />
         ) : (
           <div className="rb-table">
@@ -528,7 +549,10 @@ function RunsBoard({
                 </button>
                 <div className="rb-cell rb-agent">
                   {row.agentId ? (
-                    <button className="rb-pill" onClick={() => onOpenAgent(row.agentId!)}>
+                    <button className="rb-pill" onClick={() => onOpenAgent(row.agentId!)} title={row.provider.name}>
+                      <span className="rb-prov-glyph" style={{ color: row.provider.color }} aria-hidden="true">
+                        {row.provider.glyph}
+                      </span>
                       {row.agentName}
                     </button>
                   ) : (
@@ -536,7 +560,13 @@ function RunsBoard({
                   )}
                 </div>
                 <button className="rb-cell rb-statuscell" onClick={() => onOpenTask(row.run.id)}>
-                  <span className={"rb-chip rb-tag-" + row.tag + (flips.has(row.run.id) ? " rb-flip" : "")}>
+                  <span
+                    className={
+                      "rb-chip rb-tag-" + row.tag + (flips.has(row.run.id) ? " rb-flip" : "") + (row.stale ? " rb-stale" : "")
+                    }
+                    title={row.stale ? `No heartbeat for ${fmtWait(heartbeatSecs(row.run, now))} — may be stuck` : undefined}
+                  >
+                    {row.stale && <span className="rb-stale-dot" aria-hidden="true" />}
                     {row.statusLabel}
                   </span>
                 </button>
