@@ -109,6 +109,14 @@ const VERIFIERS: Record<CredentialProvider, (apiKey: string) => Promise<VerifyCr
   copilot: githubCheck,
   github: githubCheck,
   fly: flyCheck,
+  // OpenCode's stored credential is injected as ANTHROPIC_API_KEY (see
+  // provider-env.ts) — the same key `claude` verifies, so reuse that check.
+  opencode: (apiKey) =>
+    checkEndpoint(
+      "https://api.anthropic.com/v1/models",
+      { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      "Key authenticates with the Anthropic API (OpenCode's recommended default provider).",
+    ),
 };
 
 /** Live-verify a decrypted key against its vendor. Never throws. */

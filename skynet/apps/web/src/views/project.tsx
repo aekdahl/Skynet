@@ -5,8 +5,11 @@ import * as api from "../lib/client";
 import { Blocked, PrimaryButton } from "../components/empty";
 import {
   agentsForProject,
+  computeUsageRollup,
   curStep,
+  fmtCost,
   fmtDurMs,
+  fmtNum,
   fmtWait,
   openQueue,
   STATUS_META,
@@ -22,6 +25,7 @@ import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
 import { RoadmapDocView } from "./project-roadmap";
+import { InformComposer, toastInformResult } from "./fleet";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -425,9 +429,9 @@ function TaskCard({
                 </button>
               </>
             )}
-            <button className="kb-tool" title="Edit task" onClick={() => setEditing(true)}>✎</button>
-            <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
-            <button className="kb-tool kb-tool-del" title="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
+            <button className="kb-tool" title="Edit task" aria-label="Edit task" onClick={() => setEditing(true)}>✎</button>
+            <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" aria-label="Archive task" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
+            <button className="kb-tool kb-tool-del" title="Delete task" aria-label="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
           </span>
         )}
       </div>
@@ -831,18 +835,6 @@ function AddTaskCard({
 // holds — no extra fetch. Shown above the kanban/timeline lens toggle. Cells
 // that have no data (vendor didn't report tokens/cost) render as "—", not 0,
 // so a missing signal doesn't look like a zeroed real one.
-
-function fmtNum(n: number): string {
-  if (n < 1_000) return String(n);
-  if (n < 1_000_000) return (n / 1_000).toFixed(n < 10_000 ? 1 : 0) + "k";
-  return (n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0) + "M";
-}
-function fmtCost(usd: number): string {
-  if (usd < 0.01) return "<$0.01";
-  if (usd < 1) return "$" + usd.toFixed(2);
-  if (usd < 100) return "$" + usd.toFixed(2);
-  return "$" + Math.round(usd).toLocaleString();
-}
 function ProjectStats({
   project,
   runs,
@@ -857,15 +849,15 @@ function ProjectStats({
   const projTasks = tasks.filter((t) => t.projectId === project.id && !t.archived);
   const projRuns = runs.filter((r) => r.projectId === project.id && !r.archived);
   // Vendor-reported usage sums (nulls stay nulls — a missing signal, not 0).
-  let inTok = 0, outTok = 0, dur = 0, usdKnown = false, usdTotal = 0, durKnown = false;
-  for (const r of projRuns) {
-    const u = r.usage;
-    if (!u) continue;
-    inTok += u.inputTokens;
-    outTok += u.outputTokens;
-    if (u.costUsd != null) { usdKnown = true; usdTotal += u.costUsd; }
-    if (u.durationMs != null) { durKnown = true; dur += u.durationMs; }
-  }
+  // computeUsageRollup already excludes archived runs; passing all `runs` (not
+  // projRuns) keeps its own filter as the single source of truth.
+  const roll = computeUsageRollup(runs).byProject[project.id];
+  const inTok = roll?.tokensIn ?? 0;
+  const outTok = roll?.tokensOut ?? 0;
+  const usdKnown = roll?.costUsd != null;
+  const usdTotal = roll?.costUsd ?? 0;
+  const durKnown = roll?.durationMs != null;
+  const dur = roll?.durationMs ?? 0;
   // Which provider · model pairs actually ran on this project (dedup for the
   // "Models used" tile). Empty for a fresh project — display renders "—" then.
   const modelPairs = new Set<string>();
@@ -1001,6 +993,70 @@ function ProjectRunnerKeys({ project, onChange }: { project: Project; onChange: 
   );
 }
 
+// Built-in tools sensible to offer as a checkbox deny-list — the risky/mutating
+// surface (shell, file writes, network egress). Read-only tools (Read/Glob/
+// Grep/LS/NotebookRead) and Skynet's own control-flow tools (TodoWrite/
+// TaskCreate/TaskUpdate/AskUserQuestion/ExitPlanMode — the PLAN panel and HITL
+// question/plan gates depend on them) are deliberately left off: blocking one
+// of those wouldn't just remove a capability, it'd break Skynet's own
+// machinery for this project's runs.
+const DENYABLE_TOOLS: Array<{ id: string; hint: string }> = [
+  { id: "Bash", hint: "shell commands" },
+  { id: "Write", hint: "create/overwrite files" },
+  { id: "Edit", hint: "modify files" },
+  { id: "MultiEdit", hint: "batch file edits" },
+  { id: "NotebookEdit", hint: "edit Jupyter notebooks" },
+  { id: "WebFetch", hint: "fetch a URL" },
+  { id: "WebSearch", hint: "search the web" },
+];
+
+// Which tools this project's agents may never use (see Project.disallowedTools)
+// — passed straight to the SDK's own disallowedTools, which removes the tool
+// from the model's context entirely (not a per-call HITL gate). Claude runner
+// only. Empty/null = no restriction (the default).
+function ProjectToolAccess({ project, onChange }: { project: Project; onChange: (tools: string[] | null) => void }) {
+  const denied = project.disallowedTools ?? [];
+  // A tool set via the API/MCP that isn't in the curated list — still shown
+  // (and removable) so toggling a curated checkbox never silently drops it.
+  const extra = denied.filter((id) => !DENYABLE_TOOLS.some((t) => t.id === id));
+  const toggle = (id: string) => {
+    const next = denied.includes(id) ? denied.filter((x) => x !== id) : [...denied, id];
+    onChange(next.length ? next : null);
+  };
+  const summary = denied.length === 0 ? "All tools" : `${denied.length} blocked`;
+  return (
+    <details className="proj-keys">
+      <summary
+        className="proj-keys-summary"
+        title="Tool names this project's agents may never use — removed from the model entirely, not just gated per call. Claude runner only."
+      >
+        <span className="proj-approval-label mono">Tools</span>
+        <span className="proj-keys-value">{summary}</span>
+      </summary>
+      <div className="proj-keys-menu">
+        <div className="proj-keys-hint">
+          {denied.length === 0
+            ? "Agents may use every tool. Block a tool to make it categorically unavailable."
+            : "These tools are unavailable to this project's agents (Claude runner only)."}
+        </div>
+        {DENYABLE_TOOLS.map((t) => (
+          <label key={t.id} className="proj-keys-item">
+            <input type="checkbox" checked={denied.includes(t.id)} onChange={() => toggle(t.id)} />
+            <span className="proj-keys-name">{t.id}</span>
+            <span className="proj-keys-fp">{t.hint}</span>
+          </label>
+        ))}
+        {extra.map((id) => (
+          <label key={id} className="proj-keys-item" title="Set outside this list (API/MCP) — uncheck to remove.">
+            <input type="checkbox" checked onChange={() => toggle(id)} />
+            <span className="proj-keys-name mono">{id}</span>
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export function ProjectView({
   project,
   now,
@@ -1034,9 +1090,14 @@ export function ProjectView({
     transitionTask,
     assignTask,
     reorderTask,
+    informRuns,
   } = useStore();
   const confirm = useConfirm();
   const noFleet = fleet.length === 0;
+  // Mass inform, whole-project mode: attach a note to every currently live run
+  // in this project — see InformComposer (fleet.tsx) for the shared UI.
+  const [informOpen, setInformOpen] = useState(false);
+  const liveProjectRunCount = runs.filter((r) => r.projectId === project.id && r.status !== "done").length;
   // Full autonomy merges every run's OWN diff with no review at all — even a
   // multi-agent "Trusted" project only merges unattended when a DIFFERENT
   // fleet agent LLM-reviews it favorably first. Switching to Full (but not
@@ -1158,6 +1219,9 @@ export function ProjectView({
   // Which branch this project stacks its runs/PRs onto. Blank = the global default
   // (usually main). Only meaningful for a git-backed / repo-bound project.
   const [baseBranch, setBaseBranch] = useState(project.baseBranch ?? "");
+  // Verifier gate: run in the scratch integration worktree after a successful
+  // merge, before it's committed. Blank = the global default (SKYNET_CHECK_CMD).
+  const [checkCmd, setCheckCmd] = useState(project.checkCmd ?? "");
   // Write task status back to the source (e.g. close/comment the linked GitHub
   // issue on done). Lives in this settings panel now; only meaningful with a repo.
   const [syncToSource, setSyncToSource] = useState(project.syncSourceStatus);
@@ -1168,9 +1232,10 @@ export function ProjectView({
     setGoal(project.goal);
     setInstructions(project.instructions ?? "");
     setBaseBranch(project.baseBranch ?? "");
+    setCheckCmd(project.checkCmd ?? "");
     setSyncToSource(project.syncSourceStatus);
     setFolded(false);
-  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch, project.syncSourceStatus]);
+  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch, project.checkCmd, project.syncSourceStatus]);
 
   return (
     <section className="projview">
@@ -1208,6 +1273,17 @@ export function ProjectView({
               />
             </label>
           )}
+          {hasRepo && (
+            <label className="projview-instructions-label mono">
+              Verifier gate — check command <span className="projview-instructions-hint">— run after a merge, before it's committed. A failing check undoes the merge and raises a gate with the full output instead of landing broken code. Blank = the workspace default, if one is set.</span>
+              <input
+                className="qx-input"
+                placeholder="e.g. pnpm test (workspace default, if any)"
+                value={checkCmd}
+                onChange={(e) => setCheckCmd(e.target.value)}
+              />
+            </label>
+          )}
           {project.repo && (
             <div className="projview-setting">
               <div className="projview-instructions-label mono">
@@ -1231,6 +1307,7 @@ export function ProjectView({
                   goal: goal.trim(),
                   instructions: nextInstructions,
                   baseBranch: baseBranch.trim() || null,
+                  checkCmd: checkCmd.trim() || null,
                   syncSourceStatus: syncToSource,
                 });
                 setEditing(false);
@@ -1245,6 +1322,7 @@ export function ProjectView({
                 setGoal(project.goal);
                 setInstructions(project.instructions ?? "");
                 setBaseBranch(project.baseBranch ?? "");
+                setCheckCmd(project.checkCmd ?? "");
                 setSyncToSource(project.syncSourceStatus);
                 setEditing(false);
               }}
@@ -1294,6 +1372,11 @@ export function ProjectView({
             {project.baseBranch && (
               <div className="mono proj-repo-line" title="Runs cut from and open PRs against this branch instead of the default.">
                 ⎇ stacks onto <b>{project.baseBranch}</b> · runs branch from it &amp; PR into it
+              </div>
+            )}
+            {project.checkCmd && (
+              <div className="mono proj-repo-line" title="Runs after a merge, before it's committed — a failure undoes the merge and raises a gate.">
+                ✓ verifier gate: <b>{project.checkCmd}</b>
               </div>
             )}
             {/* Repo bound but no local checkout → offer a server-side clone so
@@ -1363,6 +1446,7 @@ export function ProjectView({
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectFlyAccount project={project} onChange={(id) => updateProject(project.id, { flyCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
+            <ProjectToolAccess project={project} onChange={(tools) => updateProject(project.id, { disallowedTools: tools })} />
             {project.repoPath && (
               <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
                 ▶ Preview app
@@ -1375,6 +1459,15 @@ export function ProjectView({
                 title="Deploy the integration branch to Fly.io — a REAL, persistent app with a shareable URL that keeps running independent of Skynet, until you stop it."
               >
                 {project.flyDeployment?.status === "live" ? "● Live on Fly" : "⇪ Deploy to Fly.io"}
+              </button>
+            )}
+            {liveProjectRunCount > 0 && (
+              <button
+                className={"btn btn-ghost" + (informOpen ? " on" : "")}
+                title="Attach a note to every currently live run in this project — no extra turn, no reply expected."
+                onClick={() => setInformOpen((v) => !v)}
+              >
+                📣 Inform active agents
               </button>
             )}
             <button className="btn proj-config-btn" onClick={() => setEditing(true)} title="Project settings" aria-label="Project settings">⚙</button>
@@ -1391,6 +1484,19 @@ export function ProjectView({
         </div>
       )}
 
+      {informOpen && (
+        <InformComposer
+          count={liveProjectRunCount}
+          countLabel={`this project's ${liveProjectRunCount} active agent${liveProjectRunCount === 1 ? "" : "s"}`}
+          onCancel={() => setInformOpen(false)}
+          onSend={async (note) => {
+            const { informed, skipped } = await informRuns({ note, projectId: project.id });
+            toastInformResult(informed.length, skipped.length);
+            setInformOpen(false);
+          }}
+        />
+      )}
+
       {(project.approvalRules?.length ?? 0) > 0 && (
         <div className="proj-approval-rules">
           <span className="proj-approval-rules-label mono">Always allowed</span>
@@ -1400,6 +1506,7 @@ export function ProjectView({
               <button
                 className="approval-rule-x"
                 title="Revoke — this command will ask again"
+                aria-label={`Revoke auto-approval for ${r.command}`}
                 onClick={() => removeApprovalRule(project.id, r.id)}
               >
                 ×
@@ -1411,7 +1518,7 @@ export function ProjectView({
 
       {lead && (
         <div className="proj-delivery">
-          <button className="proj-delivery-head" onClick={() => setFolded((f) => !f)}>
+          <button className="proj-delivery-head" onClick={() => setFolded((f) => !f)} aria-expanded={!folded}>
             <span className="fold-caret">{folded ? "▸" : "▾"}</span>
             <span className="proj-delivery-title">LIVE PREVIEW</span>
             <span className="proj-delivery-sub">

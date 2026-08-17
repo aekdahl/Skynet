@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ComponentType, type SVGProps } from "react";
 import type { TaskRun, Project } from "@skynet/shared";
 import type { WsPhase } from "../lib/client";
 import { useStore } from "../lib/store";
@@ -14,6 +14,21 @@ import { StatusDot } from "./common";
 import { operatorHandle } from "../lib/firstrun";
 import { devToolsEnabled } from "../lib/dev";
 import type { ViewName } from "../App";
+import {
+  HomeIcon,
+  InboxIcon,
+  AuditIcon,
+  ProjectsIcon,
+  FleetIcon,
+  MergeIcon,
+  IntegrationsIcon,
+  RoadmapIcon,
+  SettingsIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  AcceptanceIcon,
+  SimulationIcon,
+} from "./icons";
 
 // The single source of truth for the sidebar highlight. Exactly one primary nav
 // key is "current" for a given router state (or none), so highlights can never
@@ -186,7 +201,7 @@ export function OpSidebar({
   setView: (v: ViewName) => void;
   onOpenProject: (id: string) => void;
 }) {
-  const { projects, runs, queue, workspaceSettings } = useStore();
+  const { projects, runs, queue, workspaceSettings, readOnly } = useStore();
   const queueCount = openQueue(queue).length;
   const mergeCount = readyMerges(runs).length;
   // Single source of truth for the highlight — see activeNav above.
@@ -211,13 +226,13 @@ export function OpSidebar({
 
   const item = (
     label: string,
-    ic: string,
+    Ic: ComponentType<SVGProps<SVGSVGElement>>,
     onClick: () => void,
     active: boolean,
     badge?: number,
   ) => (
     <button className={"op-navitem" + (active ? " on" : "")} onClick={onClick}>
-      <span className="ic">{ic}</span> {label}
+      <span className="ic"><Ic /></span> {label}
       {badge != null && badge > 0 && <span className="badge">{badge}</span>}
     </button>
   );
@@ -234,24 +249,24 @@ export function OpSidebar({
       <nav className="op-nav">
         {item(
           "Home",
-          "⌂",
+          HomeIcon,
           () => setView("home"),
           active === "home",
         )}
-        {item("Inbox", "⊙", () => setView("queue"), active === "queue", queueCount)}
-        {item("Audit", "❑", () => setView("audit"), active === "audit")}
-        {item("Projects", "▤", () => setView("projects"), active === "projects")}
-        {item("Fleet", "◇", () => setView("fleet"), active === "fleet")}
-        {item("Ready to merge", "⇲", () => setView("merges"), active === "merges", mergeCount)}
+        {item("Inbox", InboxIcon, () => setView("queue"), active === "queue", queueCount)}
+        {item("Audit", AuditIcon, () => setView("audit"), active === "audit")}
+        {item("Projects", ProjectsIcon, () => setView("projects"), active === "projects")}
+        {item("Fleet", FleetIcon, () => setView("fleet"), active === "fleet")}
+        {item("Ready to merge", MergeIcon, () => setView("merges"), active === "merges", mergeCount)}
       </nav>
       <div className="op-navsec">CONFIGURE</div>
       <nav className="op-nav">
-        {item("Integrations", "⑂", () => setView("integrations"), active === "integrations")}
+        {item("Integrations", IntegrationsIcon, () => setView("integrations"), active === "integrations")}
         {/* TEMP (pre-launch): Roadmap shown in ALL builds so it's visible on the
             deployed GCP release. Restore `devTools &&` here + re-add "roadmap" to
             DEV_ONLY_VIEWS (lib/dev) to hide it again before launch. */}
-        {item("Roadmap", "◈", () => setView("roadmap"), active === "roadmap")}
-        {item("Settings", "⚙", () => setView("settings"), active === "settings")}
+        {item("Roadmap", RoadmapIcon, () => setView("roadmap"), active === "roadmap")}
+        {item("Settings", SettingsIcon, () => setView("settings"), active === "settings")}
       </nav>
       {showQa && (
         <>
@@ -261,12 +276,14 @@ export function OpSidebar({
             onClick={() => setQaOpen((o) => !o)}
           >
             QA &amp; TESTING
-            <span className="op-navsec-caret">{qaOpen || qaActive ? "▾" : "▸"}</span>
+            <span className="op-navsec-caret">
+              {qaOpen || qaActive ? <ChevronDownIcon /> : <ChevronRightIcon />}
+            </span>
           </button>
           {(qaOpen || qaActive) && (
             <nav className="op-nav op-nav-sub">
-              {item("Acceptance", "✓", () => setView("acceptance"), active === "acceptance")}
-              {item("Simulation", "◐", () => setView("simulation"), active === "simulation")}
+              {item("Acceptance", AcceptanceIcon, () => setView("acceptance"), active === "acceptance")}
+              {item("Simulation", SimulationIcon, () => setView("simulation"), active === "simulation")}
             </nav>
           )}
         </>
@@ -284,11 +301,17 @@ export function OpSidebar({
           </button>
         ))}
       </div>
-      <div className="op-side-foot" title={operatorHandle() ? `Operator: ${operatorHandle()}` : undefined}>
+      <div
+        className="op-side-foot"
+        title={operatorHandle() ? `Operator: ${operatorHandle()}${readOnly ? " (read-only viewer)" : ""}` : undefined}
+      >
         <span className="op-avatar">{wsInitials(workspaceSettings?.name ?? "")}</span>
         <div>
           <div className="who">{workspaceSettings?.name || "Skynet"}</div>
-          <div className="role">{operatorHandle() || "Workspace"}</div>
+          <div className="role">
+            {operatorHandle() || "Workspace"}
+            {readOnly && <span className="op-role-viewer"> · Viewer</span>}
+          </div>
         </div>
       </div>
     </aside>

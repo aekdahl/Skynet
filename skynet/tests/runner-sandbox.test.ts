@@ -55,3 +55,20 @@ describe("hermes provider registration", () => {
     expect(entry!.models.length).toBeGreaterThan(0);
   });
 });
+
+describe("opencode provider registration", () => {
+  it("is a valid ProviderId and appears in the default catalog", () => {
+    expect(ProviderId.safeParse("opencode").success).toBe(true);
+    const entry = DEFAULT_PROVIDERS.find((p) => p.id === "opencode");
+    expect(entry).toBeDefined();
+    expect(entry!.models.length).toBeGreaterThan(0);
+  });
+
+  it("the OS sandbox whitelists opencode's XDG state dir (.local/share/opencode)", () => {
+    process.env[KEY] = "1";
+    const w = wrapForSandbox("opencode", ["run", "--format", "json", "do X"], { cwd: "/work/wt" });
+    if (w.sandboxed) {
+      expect(w.args.some((a) => a.includes(".local/share/opencode") || a.includes(".local\\share\\opencode"))).toBe(true);
+    }
+  });
+});
