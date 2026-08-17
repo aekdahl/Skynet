@@ -231,6 +231,30 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     return { ok: true };
   });
 
+  // One-click signed "AI change report" (ROADMAP: Compliance evidence pack) —
+  // a project, a run, a date range, or the whole workspace (all query params
+  // optional/omittable). Always returns the signed JSON; the web client
+  // renders it to Markdown client-side (shared/compliance.ts) for the
+  // one-click download, so there's exactly one canonical rendering, usable
+  // both here and in tests, with no server-side templating to maintain.
+  app.get<{ Querystring: { projectId?: string; runId?: string; from?: string; to?: string } }>(
+    "/api/compliance/report",
+    async (req, reply) => {
+      const q = req.query;
+      const num = (v: string | undefined) => (v ? Number(v) : undefined);
+      try {
+        return await ops.generateComplianceReport(ws(req), req.principal!.operatorId, {
+          projectId: q.projectId || null,
+          runId: q.runId || null,
+          from: num(q.from) ?? null,
+          to: num(q.to) ?? null,
+        });
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
   // ── HITL ───────────────────────────────────────────────────────────────
   app.post<{ Params: { id: string } }>("/api/hitl/:id/resolve", async (req, reply) => {
     const body = ResolveRequest.safeParse(req.body);

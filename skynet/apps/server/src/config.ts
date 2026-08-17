@@ -43,6 +43,11 @@ export const config = {
   // Path for STORE=file (zero-dependency JSON persistence; default cwd-relative).
   // The desktop app points this at its per-user data directory.
   dbPath: process.env.SKYNET_DB_PATH || "skynet-data.json",
+  // Where this installation's compliance-report signing keypair lives (see
+  // apps/server/src/compliance/signing.ts). Defaults next to the data file —
+  // same "just a file on disk, no native deps" trust model as STORE=file
+  // itself. The private key never leaves this file / this host.
+  complianceKeyPath: process.env.SKYNET_COMPLIANCE_KEY_PATH || undefined,
   // No silent default: pick the fan-out backbone explicitly (BUS=memory for
   // single-process dev/tests; BUS=redis to fan out across replicas).
   bus: (process.env.BUS || undefined) as "memory" | "redis" | undefined,

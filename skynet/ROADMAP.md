@@ -436,6 +436,17 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   - **Tamper-evident audit** — hash-chained, append-only decision records (who saw which diff/command, what
     the policy said, what the agent did after); exportable to SIEM.
   - **⭐ Compliance evidence pack** — one-click signed "AI change report" for auditors (EU AI Act tailwind).
+    *Landed: a project / run / date-range-scoped report built entirely from the existing tamper-evident
+    `AuditRecord` trail — no new decision-recording path. Every approved diff/merge, who approved it (a
+    human operator, a standing approval policy, or a fleet agent's auto-review — attributed to the real
+    reviewer + reason via `Task.reviewVerdict`) and why, and the risk classification in effect at decision
+    time. Ed25519-signed (Node's built-in `crypto`, no new dependency, deliberately not a PKI — a
+    per-installation keypair, private key never leaves the host) so tampering with the exported document is
+    detectable offline from the document alone (content-hash + signature, both embedded). Rendered to
+    Markdown (`packages/shared/src/compliance.ts` — one canonical renderer shared by server tests and the
+    web client) for the one-click download; JSON is the signed source of truth. Verified against a real
+    git-backed run (human + policy-approved changes, both correctly attributed). SIEM export (line above)
+    stays a separate, deferred 🏢 hosted-only feature — this is local, single-operator, one-click.*
   - **Unified HITL Inbox at SOTA** — one inbox across *all* vendors (structurally impossible for single-tool
     rivals); policy-driven auto-triage (auto-approve policy-safe, batch similar gates); **approve-with-memory /
     approve-with-rule** (an approval can write a policy or memory fact in-flow — the Inbox becomes *how* policy

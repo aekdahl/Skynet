@@ -17,6 +17,7 @@ import {
   type WorkspaceSettings,
   type UpdateWorkspaceSettingsRequest,
   type VerifyCredentialResult,
+  SignedComplianceReport,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -231,6 +232,29 @@ export function archiveAllAudit() {
 }
 export function clearAudit() {
   return req<unknown>("DELETE", "/api/audit");
+}
+
+// One-click signed "AI change report" (ROADMAP: Compliance evidence pack).
+// Scope is all-optional query params — omit everything for the whole
+// workspace. Parsed defensively like fetchAudit: a malformed response (a
+// server predating this route, or a future breaking change) throws a clear
+// error rather than handing the caller a half-shaped object to render.
+export async function fetchComplianceReport(scope: {
+  projectId?: string | null;
+  runId?: string | null;
+  from?: number | null;
+  to?: number | null;
+}): Promise<SignedComplianceReport> {
+  const params = new URLSearchParams();
+  if (scope.projectId) params.set("projectId", scope.projectId);
+  if (scope.runId) params.set("runId", scope.runId);
+  if (scope.from != null) params.set("from", String(scope.from));
+  if (scope.to != null) params.set("to", String(scope.to));
+  const qs = params.toString();
+  const raw = await req<unknown>("GET", `/api/compliance/report${qs ? `?${qs}` : ""}`);
+  const parsed = SignedComplianceReport.safeParse(raw);
+  if (!parsed.success) throw new Error("The compliance report the server returned didn't match the expected shape.");
+  return parsed.data;
 }
 
 // HITL
