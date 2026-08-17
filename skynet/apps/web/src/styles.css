@@ -2036,6 +2036,8 @@ button.rb-proj:hover { color: var(--accent); }
 .gs-step-txt span { font-size: 12.5px; color: var(--muted); }
 .gs-cta { font-size: 15px; padding: 12px 22px; margin-top: 6px; }
 .gs-form { width: 100%; display: flex; flex-direction: column; gap: 10px; text-align: left; margin-top: 6px; }
+.gs-chatonly { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.gs-chatonly input { flex: none; }
 .gs-secondary { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 13px; color: var(--muted); margin-top: 2px; }
 .gs-secondary:hover { color: var(--accent); }
 
@@ -2243,6 +2245,8 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .np-reponame { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono); }
 .np-private { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; align-self: flex-start; }
 .np-private-label { font-size: 12.5px; color: var(--muted); }
+/* Chat-only bind mode — no worktree, no diff review, no merge */
+.np-chatonly-note { font-size: 12.5px; line-height: 1.5; color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 /* Governance row in the create-project form — Approvals + Autonomy up front. */
 .np-governance { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
 /* Confirm gate before creating a real repo */
