@@ -76,8 +76,12 @@ describe("Claude: spec.task (with instructions already prefixed) reaches the SDK
     __setClaudeTestHooks({ query: q as never });
 
     await new ClaudeRunnerProvider().start({ ...baseSpec, apiKey: "test-key" }, fakeEvents());
-
-    expect(q).toHaveBeenCalledTimes(1);
+    // start() returns before query() is actually called — the main run is
+    // gated behind an async repo-hook scan (launch() awaits scanRepoHooks()
+    // before calling queryImpl(), fire-and-forget from the constructor; see
+    // claude.ts). Wait for the real call rather than assuming it's
+    // synchronous with start() resolving.
+    await vi.waitFor(() => expect(q).toHaveBeenCalledTimes(1), { timeout: 2000, interval: 20 });
     const call = q.mock.calls[0]![0] as { prompt: AsyncIterable<{ message: { content: string } }> };
     const iter = call.prompt[Symbol.asyncIterator]();
     const { value: firstMessage } = await iter.next();

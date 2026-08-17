@@ -16,6 +16,19 @@ export function runLink(baseUrl: string, runId: string): string | undefined {
   return baseUrl ? `${baseUrl}/#/agent/${runId}` : undefined;
 }
 
+/** Desktop-only counterpart to `runLink` — a `skynet://` OS-protocol link
+ *  instead of `PUBLIC_URL#/...`. The desktop app registers `skynet` as its
+ *  default protocol client (apps/desktop/main.cjs) and translates the same
+ *  `agent/<runId>` shape straight back into the hash route on receipt
+ *  (apps/desktop/deep-link.cjs), so it needs no base URL / token at all — the
+ *  app is already running locally as the single operator, and the OS just
+ *  routes the click to it. Unconditional (never returns undefined): unlike
+ *  the hosted case, there's no "is a base URL configured?" question on
+ *  desktop — the protocol is always the same. */
+export function desktopRunLink(runId: string): string {
+  return `skynet://agent/${runId}`;
+}
+
 /** Escape text for Telegram HTML parse_mode (only &, <, > matter). */
 export function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
