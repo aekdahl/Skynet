@@ -129,6 +129,15 @@ const ALLOW = new Set<string>([
   // exercised against a real store + hub in task-linter-ops.test.ts, and the
   // model's structured-output parsing in task-linter.test.ts.
   "dismissTaskLint",
+  // Compliance evidence pack (ROADMAP: one-click signed "AI change report") —
+  // needs real resolved HITL history + a live server-side Ed25519 signing key
+  // to produce anything meaningful; no offline journey can synthesize an
+  // audit trail worth exporting. Report generation, scoping (project/run/date
+  // range), approver classification, and signature tamper-detection are all
+  // exercised server-side against a real Store in compliance-report.test.ts;
+  // verified manually against a live run's real audit trail (see the PR that
+  // landed this for the trace).
+  "fetchComplianceReport",
   // Viewer-role session plumbing (fetchMe + the readOnly flag it derives) —
   // called once at boot (StoreProvider), not from a user action a journey would
   // drive. The role → scopes mapping is covered server-side by
@@ -137,6 +146,15 @@ const ALLOW = new Set<string>([
   // that shape, exercised directly wherever it's used (store.tsx), not via a
   // journey.
   "fetchMe", "setReadOnly", "isReadOnly", "isReadOnlyPrincipal",
+  // Time-limited admin promotion (ROADMAP.md) — ADMIN-granted: promoting a
+  // viewer needs a real second operator + a real persisted-role check, so no
+  // offline journey exercises it (there's no "am I an admin" fixture a
+  // journey can assume); covered server-side by admin-promotion.test.ts (the
+  // promote route, the persisted-role gate, TTL clamp, an already-elevated
+  // viewer can't re-grant). fetchOperators/fetchElevations read the roster
+  // and the append-only audit trail those same routes write — no operator
+  // journey drives either.
+  "fetchOperators", "promoteOperator", "fetchElevations",
   // `inform` — mass-select runs (explicit ids and/or a whole project's live
   // runs) and attach a note that rides each one's next prompt, no extra turn
   // (a third interaction type alongside chat + resolve). Exercising it for

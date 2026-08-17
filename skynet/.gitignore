@@ -13,6 +13,9 @@ coverage/
 # live-preview checkouts (per-project/run worktrees the preview engine spawns)
 .skynet-worktrees/
 
+# this installation's compliance-report signing keypair (private key — never commit)
+.skynet-compliance-key.json
+
 # Playwright e2e artifacts
 /playwright-report/
 /test-results/

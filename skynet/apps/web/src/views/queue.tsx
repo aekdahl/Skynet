@@ -36,6 +36,14 @@ export function QueueCard({
   const [noteDraft, setNoteDraft] = useState("");
   const [msgs, setMsgs] = useState<Array<{ who: "you" | "agent"; text: string }>>([]);
   const agentName = agent?.name ?? item.runId;
+  // Guided merge — the target branch this diff/merge approval integrates
+  // into. Prefilled with the gate's own default (the project's integration
+  // branch, the GitHub PR base, or — on a merge retry — whatever branch that
+  // attempt already targeted) so a plain Approve behaves exactly like today
+  // unless the operator edits it.
+  const isMergeable = item.kind === "diff" || item.kind === "merge";
+  const [branchDraft, setBranchDraft] = useState(() => item.diff?.defaultTargetBranch ?? "");
+  const approveExtra = isMergeable && branchDraft.trim() ? { targetBranch: branchDraft.trim() } : undefined;
 
   useEffect(() => {
     if (modifyTrigger) setMode((m) => (m === "modify" ? null : "modify"));
@@ -106,8 +114,21 @@ export function QueueCard({
         </>
       )}
 
-      {item.diff && (item.kind === "diff" || item.kind === "merge") && (
-        <DiffView runId={item.runId} add={item.diff.add} del={item.diff.del} walkthrough={item.diff.walkthrough} />
+      {item.diff && isMergeable && (
+        <DiffView runId={item.runId} add={item.diff.add} del={item.diff.del} walkthrough={item.diff.walkthrough} mergeBrief={item.diff.mergeBrief} />
+      )}
+
+      {item.diff && isMergeable && !resolved && (
+        <label className="qcard-branch">
+          <span className="qcard-branch-label mono">Merge into</span>
+          <input
+            className="qx-input qcard-branch-input mono"
+            value={branchDraft}
+            onChange={(e) => setBranchDraft(e.target.value)}
+            placeholder={item.diff.defaultTargetBranch ?? "(default)"}
+            spellCheck={false}
+          />
+        </label>
       )}
 
       {item.kind === "escalation" ? (
@@ -173,7 +194,7 @@ export function QueueCard({
           <button
             className="btn btn-primary"
             disabled={readOnly}
-            onClick={() => resolveHitl(item.id, "approve")}
+            onClick={() => resolveHitl(item.id, "approve", approveExtra)}
           >
             Approve
           </button>

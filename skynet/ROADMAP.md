@@ -457,6 +457,17 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   - **Tamper-evident audit** — hash-chained, append-only decision records (who saw which diff/command, what
     the policy said, what the agent did after); exportable to SIEM.
   - **⭐ Compliance evidence pack** — one-click signed "AI change report" for auditors (EU AI Act tailwind).
+    *Landed: a project / run / date-range-scoped report built entirely from the existing tamper-evident
+    `AuditRecord` trail — no new decision-recording path. Every approved diff/merge, who approved it (a
+    human operator, a standing approval policy, or a fleet agent's auto-review — attributed to the real
+    reviewer + reason via `Task.reviewVerdict`) and why, and the risk classification in effect at decision
+    time. Ed25519-signed (Node's built-in `crypto`, no new dependency, deliberately not a PKI — a
+    per-installation keypair, private key never leaves the host) so tampering with the exported document is
+    detectable offline from the document alone (content-hash + signature, both embedded). Rendered to
+    Markdown (`packages/shared/src/compliance.ts` — one canonical renderer shared by server tests and the
+    web client) for the one-click download; JSON is the signed source of truth. Verified against a real
+    git-backed run (human + policy-approved changes, both correctly attributed). SIEM export (line above)
+    stays a separate, deferred 🏢 hosted-only feature — this is local, single-operator, one-click.*
   - **Unified HITL Inbox at SOTA** — one inbox across *all* vendors (structurally impossible for single-tool
     rivals); policy-driven auto-triage (auto-approve policy-safe, batch similar gates); **approve-with-memory /
     approve-with-rule** (an approval can write a policy or memory fact in-flow — the Inbox becomes *how* policy
@@ -554,7 +565,7 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     raises. Stored on `HitlItem.diff.walkthrough` and rendered above the raw patch in the Inbox/run-detail diff
     view; a failed/unsupported draft (most CLI runners today have no `consult`) never blocks the gate — the
     raw diff is always there regardless. *(Octomux-style.)*
-- [ ] **🔬⭐ Guided merge — understand-then-merge, to any branch.** Merging today is a single approve on the
+- [~] **🔬⭐ Guided merge — understand-then-merge, to any branch.** Merging today is a single approve on the
   diff HITL. Make it a **guided experience**: before anything merges, Skynet presents a plain-English **merge
   brief** — what the change *does*, which files/modules it touches, the **risks** (blast radius: writes outside
   the worktree, secrets, DB migrations, public-API/contract changes, new deps, history-destructive ops) and the
@@ -566,6 +577,28 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   **auto-review verdict** above into one review→merge surface; records the whole brief + decision to the
   tamper-evident audit (feeds the **compliance evidence pack**); and reuses the existing merge engine — only the
   **target-branch selection** and the synthesized brief are new. Human-gated end to end; nothing self-merges.
+  **Shipped:** `MergeRequest.targetBranch` (`merge.ts`) — the local merge queue integrates into an
+  operator-chosen branch, creating it off `baseBranch` if it doesn't exist yet, same as the default
+  (`MergeEngine.enqueue`/`ensureIntegrationBranch`); each distinct target branch runs its own serialized chain
+  + scratch worktree, so two branches for the same project never stomp each other. The merge brief itself
+  (`merge-brief.ts`) is a stateless consult — same discipline as the diff walkthrough — grounded on the real
+  patch, drafted alongside the walkthrough BEFORE the diff HITL raises (`Orchestrator.draftMergeBrief`,
+  `HitlItem.diff.mergeBrief`) and composing the task's recorded auto-review verdict + whether the project runs
+  checks after merge as SYSTEM-known mitigations (never asked of the model — only genuinely new risk framing
+  comes from the consult). `HitlItem.diff.defaultTargetBranch` is computed unconditionally (GitHub PR base when
+  connected, else the local integration branch) so the picker's default always matches where a plain approve
+  would go; a `merge` retry gate (post-conflict/failure) carries the originally-attempted branch forward. The
+  Inbox card (`queue.tsx`) renders the brief above the raw patch and a free-text "Merge into" field (chosen
+  over a dropdown — no branch-listing endpoint exists yet, so free-text avoids inventing one); the choice rides
+  `Resolution.targetBranch` through resolve → deliver → the audit trail (`hub.ts` records it alongside the
+  brief, which is already captured via `HitlItem.diff`). Verified against a live model + a real local git
+  repo end to end: a real diff drafted a genuine brief, and approving into a fresh non-default branch actually
+  landed the merge there. **Deliberately out of scope, to keep this landable:** the GitHub PR flow's base
+  branch isn't operator-choosable yet (a different mechanism from the local merge queue — a non-default choice
+  there logs an honest note instead of silently applying or silently dropping); the compact run-detail
+  quick-approve (`task.tsx`) keeps the default branch with no picker (the full guided surface is the Inbox
+  card, which has the room for it); "Verifier gate" itself is still unbuilt (see above) — the brief notes the
+  project's post-merge check command when one is configured, nothing more.
 - [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** *Landed:* **amber
   untangled** — `--accent` (brand/primary) and `--warn` (caution/waiting status) were an accidental
   hex duplicate (`#FFB224` both, not just visually close); `--warn` is now a genuinely distinct
@@ -622,9 +655,40 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   production gets an equivalent `SKYNET_VIEWER_EMAIL`/`_PASSWORD`/`_WORKSPACE` env seed (mirrors the
   existing admin seed — there's still no invite/user-management UI, so this is the only way to stand
   one up on a hosted deploy today). *(Multi-user — hosted/team only.)*
-- [ ] 🏢 **Time-limited admin promotion** — temporarily elevate a viewer to admin for a bounded,
+- [x] 🏢 **Time-limited admin promotion** — temporarily elevate a viewer to admin for a bounded,
   auto-expiring window (break-glass / sudo-style), then revert to their base role automatically; every
-  promotion + expiry is audited. Depends on the read-only role above.
+  promotion + expiry is audited. Depends on the read-only role above. **Admin-granted, never
+  self-service**: an existing admin promotes a NAMED viewer (`POST /api/operators/:operatorId/promote`)
+  — there is no "elevate my own session" path at all. Keyed by OPERATOR, not by session token (the
+  granting admin has no access to the target's session, and the target may not even be logged in yet):
+  a new `ElevationStore` (`auth/elevations.ts`, in-memory) tracks the live grant and is checked by
+  `auth.ts`'s `resolvePrincipal()` on EVERY session-resolved request — the same "wherever a Principal
+  is resolved" seam session-TTL sweeping already uses — so an expired grant reverts transparently on
+  the next request, no manual step, and no backend-specific (Postgres/Redis) plumbing at all (dropped
+  entirely from `SessionStore`, which now has no elevation concept — one in-memory store covers every
+  session backend). The route's OWN check is what actually closes the self-service loophole: a
+  currently-elevated viewer's live `scopes` look identical to a real admin's, so it verifies the
+  CALLER's PERSISTED role in the operator directory (`OperatorDirectory.getByIdentity`), not their
+  current scope — an elevated viewer cannot re-grant or self-extend, verified explicitly. Every grant
+  AND every LAZILY-OBSERVED expiry (sweep-on-access, first request past the deadline) is its own
+  audit entry — deliberately NOT folded into the HITL audit trail (`AuditRecord`'s `hitlId`/`runId`
+  are structurally required and every existing consumer is keyed to a resolved HITL decision) — with
+  no delete/archive route, same as before. Bundled a real pre-existing bug fix along the way:
+  `PostgresSessionStore` was silently dropping `scopes` on every resolve (a Postgres-backed viewer
+  login would have resolved as full authority) — independent of this feature, fixed regardless.
+  Web: a "Access" section in Settings (admin-only, hidden from a currently-elevated viewer even
+  though their live scopes would otherwise qualify) lists the workspace's viewer accounts + the
+  grant/expiry history and lets an admin promote one; the sidebar's `· Viewer` → `· Admin (Nm left)`
+  countdown is unchanged (no button — a promoted viewer's OWN session picks it up on its next
+  request, or within ~20s via a light client-side poll while read-only, no reload needed). Verified
+  live end-to-end against a real dev server: a viewer's mutation 403s; the viewer itself attempting
+  `/promote` on any operator (including itself) 403s; an admin promotes the viewer and the SAME
+  viewer token's identical mutation now succeeds mid-window; the now-elevated viewer's OWN attempt to
+  promote a second viewer STILL 403s (the persisted-role check firing, not the live-scope one); after
+  the window lapses with no action taken, the identical token 403s again while `/api/auth/me` still
+  resolves (never logged out); the elevation log showed both the grant and, once observed, its
+  expiry — newest first. The Settings "Access" section was confirmed rendering that exact live
+  grant/expiry data (roster + promotion history, correctly labeled) end to end.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap, additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
 - [~] 🔗⛓ **Feature-scoped branch hierarchy — branch out from branches.** When a Task has `featureId` set,
   its approved diff now merges into a shared `skynet/feature/<id>` branch (`MergeEngine.targetBranchFor`,
@@ -701,8 +765,21 @@ features below are white space.)
 - [ ] **Design tokens published** (type scale, 8px rhythm, motion behind `prefers-reduced-motion`, one focus ring, semantic palette kept separate from the accent); **a11y pass** (icon-button labels, visible focus, keyboard walkthrough of assign→decide→merge); explicit **Inbox-first mobile/PWA shell**.
 
 **Easier to use than anyone else:**
-- [ ] **Repo-optional / chat-only mode** — a runner with **no worktree and no merge**; try Skynet in 30s,
-  no git literacy. Widens the funnel (also in Considerations).
+- [x] **Repo-optional / chat-only mode** — a runner with **no worktree and no merge**; try Skynet in 30s,
+  no git literacy. *(Landed: this was already ~90% built as orchestrator.ts's own pre-existing "Phase 0"
+  path — a project with no bound repo (`gitContextFor` resolves `undefined`) already skipped
+  `WorktreeProvisioner` entirely and completed via the no-diff/no-merge branch in `complete()`; project
+  creation and onboarding never hard-required a repo either. What actually shipped: (1) a real safety
+  fix — a chat-only run's `cwd` previously fell through to `config.runnerCwd` (`undefined` by default)
+  → every runner-sdk provider's own fallback to `process.cwd()`, i.e. the **server's own working
+  directory** — replaced with a private per-run scratch tmp dir (`scratchCwdFor`/`LiveAgent.scratchCwd`),
+  minted before start and removed on every teardown path (complete/fail/escalation-reject/stop); (2) an
+  explicit, labeled UI choice — a "No repo — chat only" checkbox on Home's `GetStarted` form and a
+  matching "Chat only" tab on `NewProjectCard` (previously an empty local-folder field silently, silently
+  fell through to no-repo with zero explanation) — plus a "💬 chat only — no repo connected" line on the
+  project header so it's never ambiguous why diff-review/merge never show up. Verified live end-to-end
+  (real browser, real Cursor CLI attempt — auth failure correctly routed through the existing `fail()`
+  path, scratch dir confirmed created then removed) and via `tests/chat-only-run.test.ts`.)*
 - [x] **Task linter v0 (assistive)** — *pulled forward from v5:* "vague task → touches 3 modules, split into
   3?"; "no 'done' defined?". The ease differentiator **nobody has** — lowers the skill floor, not just setup.
   *(Landed: a background, fire-and-forget consult right after `createTask`/text-editing `updateTask` — same
@@ -731,7 +808,7 @@ features below are white space.)
 - [x] **Per-project agent instructions (house rules)** — a `Project.instructions` markdown field that rides *every* prompt an agent sees on that project (assignTask, forkAgent, checkpoint restore, decision resume, review-revise, escalation resume, triage consult, auto-review consult) and Steward's grounding, via one shared `withInstructions()` prefix applied to `StartSpec.task` — vendor-neutral, so it reaches CLI runners too without per-vendor code. Motivated by: "build agents in Skynet using a specific subset of packages, pre-written code, and structure" — that's a per-project policy, not a workspace boundary, and it lives on the project record for instant editability. Trims + normalizes empty → null; the read-only header shows a compact "ⓘ Instructions active" chip. *(Re-verified end-to-end — `tests/project-instructions.test.ts` + `tests/instructions-prompt-wiring.test.ts` now pin the orchestrator → StartSpec.task → per-vendor prompt/argv chain, not just the `withInstructions()` primitive.)*
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.* Also landed: the Roadmap tab's "reads ROADMAP.md" lookup used to dead-end when a repo kept its plan somewhere else — `Project.roadmapPath` now lets the operator (a picker on the tab's empty state) or Steward (`set_roadmap_path`, confirm-first, e.g. "the roadmap is at docs/PLAN.md") point it at any repo-relative file; `resolveRoadmapDoc` is the single place both the tab's API and Steward's own grounding resolve through, so they can't drift.
-- [ ] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third
+- [~] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third
   lane: when a request is better SHOWN than said (review a diff, browse the board, tune the fleet), the
   reply carries a **deep link straight into the exact web-app view** — project/task pre-focused —
   instead of trying to cram it into a chat bubble. The link mechanism already exists and is already
@@ -745,7 +822,17 @@ features below are white space.)
   click to it; **hosted/GCP (`public_ui`, 🏢 deferred)** is the one case that actually needs a
   signed-token flow — mint a short-lived, single-use exchange token per link that the app consumes on
   load to establish a normal session. Chat stays the command line, the web app stays the one canvas —
-  the link is the bridge, not a second interface to maintain. *(Prompted by an outside SOTA-routing
+  the link is the bridge, not a second interface to maintain. *(**Desktop half shipped:**
+  `app.setAsDefaultProtocolClient("skynet")` (`apps/desktop/main.cjs`), handling both delivery
+  mechanisms — macOS's `open-url` app event, and Windows/Linux's argv-based `second-instance` forward
+  (warm) / `process.argv` (cold launch, captured before `app.whenReady()`). A received
+  `skynet://agent/<runId>` translates onto the *existing* hash route verbatim (`apps/desktop/
+  deep-link.cjs`'s `skynetUrlToHash` — pure, unit-tested) and either navigates the already-loaded
+  window in place (`location.hash`, no reload) or rides into the initial `loadURL` on a cold launch.
+  `runLink()`'s counterpart `desktopRunLink(runId)` emits the `skynet://` form instead of
+  `PUBLIC_URL#/...` whenever `config.desktop` is set (`apps/server/src/telegram/index.ts`'s
+  `linkFor`) — the existing desktop flag (`SKYNET_DESKTOP=1`, already set by main.cjs), not a new one.
+  **Hosted/GCP signed-token-exchange path is still 🏢 deferred, untouched.**)* *(Prompted by an outside SOTA-routing
   pitch — "transport vs. generation," deep links that "hydrate state" instead of forcing a re-login.
   The underlying idea is sound and is genuinely missing; the "agent renders a whole spatial PWA on the
   fly" framing isn't — see the AG-UI note in Considerations for why we're not chasing that part.)*
@@ -941,9 +1028,6 @@ memory (v4) + thin runner adapters.
   a chip even renders) is the part that actually matters and stays regardless of transport; swapping
   the wire format later is a no-op to that boundary. Not chasing this now — "wrap, don't rebuild" cuts
   against adopting a nascent protocol for a problem our envelope already solves.
-- **Repo-optional / chat-only mode** — a repo should *not* be hard-required. A "just chat with an
-  agent" mode is mechanically a runner with **no worktree and no merge**; it widens the funnel to try
-  Skynet. Not the core money bet, but cheap to allow.
 - **Cross-repo / multi-repo atomic changes** — a coordinated change spanning several repos. A gap **no
   local tool** fills today (cloud-only: Oz/Devin); a bigger future bet, flagged so we don't foreclose it.
 - **No-telemetry / keys-never-leave-host guarantee** — make the local-first privacy stance an *explicit,

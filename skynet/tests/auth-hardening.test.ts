@@ -111,6 +111,10 @@ describe("requiredScope: the viewer-role mutation gate", () => {
     expect(requiredScope("POST", "/api/steward/chat/stream")).toBeNull();
   });
 
+  it("requires \"author\" for admin promotion — no exemption; the CALLER (an admin) already has it, a viewer never does", () => {
+    expect(requiredScope("POST", "/api/operators/v-1/promote")).toBe("author");
+  });
+
   it("requires \"approver\" for HITL resolve and every merge-decision route", () => {
     expect(requiredScope("POST", "/api/hitl/h-1/resolve")).toBe("approver");
     expect(requiredScope("POST", "/api/merges/r-1/merge")).toBe("approver");

@@ -17,6 +17,7 @@ import {
   type WorkspaceSettings,
   type UpdateWorkspaceSettingsRequest,
   type VerifyCredentialResult,
+  SignedComplianceReport,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -39,6 +40,9 @@ export interface Principal {
   workspaceId: string;
   operatorId: string;
   scopes?: string[];
+  // Set only while a time-limited admin promotion is active on this session
+  // (server: auth/sessions.ts's resolve()) — the timestamp it auto-reverts at.
+  elevatedUntil?: number;
 }
 
 let readOnly = false;
@@ -159,6 +163,36 @@ export function isReadOnlyPrincipal(principal: Principal): boolean {
   return principal.scopes !== undefined && !principal.scopes.includes("author");
 }
 
+/** A workspace operator, as a non-secret summary (admin-promotion picker). */
+export interface OperatorSummary {
+  operatorId: string;
+  email: string;
+  role: "admin" | "viewer";
+}
+
+/** This workspace's roster — admin-only (see GET /api/operators). */
+export async function fetchOperators(): Promise<OperatorSummary[]> {
+  return req("GET", "/api/operators");
+}
+
+/** Time-limited admin promotion (ROADMAP.md) — ADMIN-granted, never
+ *  self-service: promote a named viewer to a bounded full-authority window.
+ *  Only an admin's session can call this (the server checks the caller's
+ *  PERSISTED role, not just their current scopes). */
+export async function promoteOperator(operatorId: string, ttlMs?: number): Promise<{ operatorId: string; expiresAt: number }> {
+  return req("POST", `/api/operators/${encodeURIComponent(operatorId)}/promote`, ttlMs ? { ttlMs } : {});
+}
+
+export type ElevationEvent =
+  | { kind: "grant"; workspaceId: string; operatorId: string; grantedBy: string; at: number; expiresAt: number; ttlMs: number }
+  | { kind: "expiry"; workspaceId: string; operatorId: string; at: number; expiresAt: number };
+
+/** The elevation audit trail (grants AND observed expiries) — newest first,
+ *  append-only server-side. */
+export async function fetchElevations(): Promise<ElevationEvent[]> {
+  return req("GET", "/api/auth/elevations");
+}
+
 export async function fetchSnapshot(): Promise<Snapshot> {
   const raw = await req<unknown>("GET", "/api/snapshot");
   return Snapshot.parse(raw);
@@ -200,10 +234,33 @@ export function clearAudit() {
   return req<unknown>("DELETE", "/api/audit");
 }
 
+// One-click signed "AI change report" (ROADMAP: Compliance evidence pack).
+// Scope is all-optional query params — omit everything for the whole
+// workspace. Parsed defensively like fetchAudit: a malformed response (a
+// server predating this route, or a future breaking change) throws a clear
+// error rather than handing the caller a half-shaped object to render.
+export async function fetchComplianceReport(scope: {
+  projectId?: string | null;
+  runId?: string | null;
+  from?: number | null;
+  to?: number | null;
+}): Promise<SignedComplianceReport> {
+  const params = new URLSearchParams();
+  if (scope.projectId) params.set("projectId", scope.projectId);
+  if (scope.runId) params.set("runId", scope.runId);
+  if (scope.from != null) params.set("from", String(scope.from));
+  if (scope.to != null) params.set("to", String(scope.to));
+  const qs = params.toString();
+  const raw = await req<unknown>("GET", `/api/compliance/report${qs ? `?${qs}` : ""}`);
+  const parsed = SignedComplianceReport.safeParse(raw);
+  if (!parsed.success) throw new Error("The compliance report the server returned didn't match the expected shape.");
+  return parsed.data;
+}
+
 // HITL
 export function resolveHitl(
   id: string,
-  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; memoryNote?: string },
+  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string },
 ) {
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
 }

@@ -123,7 +123,7 @@ function ProjectCard({
 
 // Where a new project's work happens: a local folder, an already-connected repo,
 // or a brand-new repo Skynet creates on GitHub (gated behind a confirm step).
-type BindMode = "folder" | "existing" | "new";
+type BindMode = "folder" | "existing" | "new" | "chat";
 
 /** Accounts a new repo can be created under. null = loading; [] = GitHub not
  *  connected (the "New repo" mode is hidden in that case). */
@@ -288,47 +288,61 @@ export function NewProjectCard({
         onChange={(e) => setGoal(e.target.value)}
       />
 
-      {(hasRepos || canCreate) && (
-        <div className="np-modes" role="tablist" aria-label="Where work happens">
+      <div className="np-modes" role="tablist" aria-label="Where work happens">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "folder"}
+          className={"np-mode" + (mode === "folder" ? " np-mode-on" : "")}
+          onClick={() => { setMode("folder"); setError(null); }}
+        >
+          Local folder
+        </button>
+        {hasRepos && (
           <button
             type="button"
             role="tab"
-            aria-selected={mode === "folder"}
-            className={"np-mode" + (mode === "folder" ? " np-mode-on" : "")}
-            onClick={() => { setMode("folder"); setError(null); }}
+            aria-selected={mode === "existing"}
+            className={"np-mode" + (mode === "existing" ? " np-mode-on" : "")}
+            onClick={() => { setMode("existing"); setError(null); }}
           >
-            Local folder
+            Existing repo
           </button>
-          {hasRepos && (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mode === "existing"}
-              className={"np-mode" + (mode === "existing" ? " np-mode-on" : "")}
-              onClick={() => { setMode("existing"); setError(null); }}
-            >
-              Existing repo
-            </button>
-          )}
-          {canCreate && (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mode === "new"}
-              className={"np-mode" + (mode === "new" ? " np-mode-on" : "")}
-              onClick={() => { setMode("new"); setError(null); }}
-            >
-              New repo
-            </button>
-          )}
-        </div>
-      )}
+        )}
+        {canCreate && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "new"}
+            className={"np-mode" + (mode === "new" ? " np-mode-on" : "")}
+            onClick={() => { setMode("new"); setError(null); }}
+          >
+            New repo
+          </button>
+        )}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "chat"}
+          className={"np-mode" + (mode === "chat" ? " np-mode-on" : "")}
+          onClick={() => { setMode("chat"); setRepoPath(""); setRepo(""); setError(null); }}
+        >
+          Chat only
+        </button>
+      </div>
 
       {mode === "folder" && (
         <>
           <div className="rp-label">Local folder <span className="rp-hint">· runs work here</span></div>
           <FolderPicker value={repoPath} onChange={setRepoPath} />
         </>
+      )}
+      {mode === "chat" && (
+        <div className="np-chatonly-note">
+          No repo — the agent just runs and reports back. No worktree, no diff
+          review, no merge. Connect a folder or repo later from the project's
+          settings to unlock the full review-and-merge workflow.
+        </div>
       )}
       {mode === "existing" && (
         <>

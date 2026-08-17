@@ -612,6 +612,24 @@ export const DiffWalkthrough = z.object({
 });
 export type DiffWalkthrough = z.infer<typeof DiffWalkthrough>;
 
+// Guided merge (see Orchestrator.raiseDiffReview / draftMergeBrief): a
+// plain-English risk/mitigation read of the diff, drafted once alongside the
+// walkthrough — same stateless-consult discipline (structured JSON, never
+// prose). `filesTouched` is supplied by the SYSTEM from the real diff stat,
+// never trusted from the model. `mitigations` composes the model's own
+// diff-grounded read with facts the system already knows (the recorded
+// auto-review verdict, whether the project runs checks after merge) — the
+// model is never asked to restate those, only to add genuinely new risk
+// framing. Null when the draft failed or the provider doesn't support
+// `consult` — the diff HITL always still has the raw diff either way.
+export const MergeBrief = z.object({
+  summary: z.string(),
+  filesTouched: z.array(z.string()).default([]),
+  risks: z.array(z.string()).default([]),
+  mitigations: z.array(z.string()).default([]),
+});
+export type MergeBrief = z.infer<typeof MergeBrief>;
+
 export const DiffSummary = z.object({
   add: z.number().int().nonnegative(),
   del: z.number().int().nonnegative(),
@@ -621,6 +639,15 @@ export const DiffSummary = z.object({
   // gates that carry no file list stay valid.
   files: z.array(z.string()).default([]),
   walkthrough: DiffWalkthrough.nullable().default(null),
+  mergeBrief: MergeBrief.nullable().default(null),
+  // The branch a diff/merge APPROVAL integrates into if the operator doesn't
+  // choose a different one — the project's local integration branch
+  // (`skynet/integration/<projectId>`), or, when GitHub-connected, the PR
+  // base branch. A `merge` retry gate (post-conflict/failure) carries forward
+  // whatever branch that attempt actually targeted, so a plain retry lands in
+  // the same place. Null on a gate predating guided merge, or when it
+  // couldn't be resolved (no git backend). See Resolution.targetBranch.
+  defaultTargetBranch: z.string().nullable().default(null),
 });
 export type DiffSummary = z.infer<typeof DiffSummary>;
 
@@ -632,6 +659,10 @@ export const Resolution = z.object({
   action: ResolveAction,
   optionIndex: z.number().int().nullable().default(null), // for 'option'
   guidance: z.string().nullable().default(null), // for 'modify'
+  // Guided merge — the operator's chosen integration branch for an `approve`
+  // on a `diff`/`merge` gate. Null = the default (DiffSummary.defaultTargetBranch).
+  // Ignored for every other kind/action.
+  targetBranch: z.string().nullable().default(null),
   // Approve-with-memory (roadmap: "the Inbox becomes how policy/memory get
   // authored") — an operator's own words on a durable project/workspace
   // preference this decision suggests, captured in-flow alongside 'approve'.
@@ -759,6 +790,104 @@ export const AuditRecord = z.object({
 });
 export type AuditRecord = z.infer<typeof AuditRecord>;
 
+// ─── Compliance evidence pack ─────────────────────────────────────────────
+// A one-click, signed "AI change report" for auditors (EU AI Act tailwind):
+// every AI-authored change (an approved diff/merge decision) in a chosen
+// scope, who approved it — a human operator, a standing approval policy, or a
+// fleet agent's auto-review — why, and the risk classification in effect at
+// decision time. Built entirely from the existing tamper-evident AuditRecord
+// trail — no new decision-recording path, no re-derivation of history.
+
+export const ComplianceApproverType = z.enum(["human", "policy", "agent-review"]);
+export type ComplianceApproverType = z.infer<typeof ComplianceApproverType>;
+
+export const ComplianceReportEntry = z.object({
+  hitlId: z.string(),
+  runId: z.string(),
+  taskId: z.string().nullable(),
+  taskText: z.string().nullable(),
+  projectId: z.string().nullable(),
+  projectName: z.string().nullable(),
+  branch: z.string().nullable(),
+  // The HITL kind at decision time, as a plain string (mirrors AuditRecord.action
+  // below) — not the current HitlKind enum, so a report stays parseable even if
+  // the live enum grows or narrows after it was signed.
+  kind: z.string(),
+  title: z.string(),
+  why: z.string().nullable(),
+  risk: Risk.nullable(),
+  decidedAt: Timestamp,
+  action: z.string(),
+  // The raw AuditRecord.operatorId: a real operator id, or the approval
+  // policy's self-description ("policy:trusted", "policy:rule:<id>"), or
+  // "autonomy" for a fleet agent's auto-review approval.
+  approvedBy: z.string(),
+  approverType: ComplianceApproverType,
+  // Human-readable attribution detail: the policy string for "policy", the
+  // reviewing fleet agent's name for "agent-review", null for "human"
+  // (approvedBy is already a real operator id in that case).
+  policyDetail: z.string().nullable(),
+  // The stated reason: an operator's modify/reassign guidance, an agent's
+  // rationale, or a fleet reviewer's verdict reason — whichever applies.
+  reason: z.string().nullable(),
+  diffAdd: z.number().int().nonnegative().nullable(),
+  diffDel: z.number().int().nonnegative().nullable(),
+  diffFiles: z.array(z.string()),
+});
+export type ComplianceReportEntry = z.infer<typeof ComplianceReportEntry>;
+
+export const ComplianceReportScope = z.object({
+  projectId: z.string().nullable(),
+  projectName: z.string().nullable(),
+  runId: z.string().nullable(),
+  from: Timestamp.nullable(),
+  to: Timestamp.nullable(),
+});
+export type ComplianceReportScope = z.infer<typeof ComplianceReportScope>;
+
+export const ComplianceReportSummary = z.object({
+  totalChanges: z.number().int().nonnegative(),
+  humanApproved: z.number().int().nonnegative(),
+  policyAutoApproved: z.number().int().nonnegative(),
+  agentReviewApproved: z.number().int().nonnegative(),
+  highRisk: z.number().int().nonnegative(),
+  earliestDecisionAt: Timestamp.nullable(),
+  latestDecisionAt: Timestamp.nullable(),
+});
+export type ComplianceReportSummary = z.infer<typeof ComplianceReportSummary>;
+
+export const ComplianceReport = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  generatedAt: Timestamp,
+  generatedBy: z.string(), // operatorId who ran the export
+  scope: ComplianceReportScope,
+  summary: ComplianceReportSummary,
+  entries: z.array(ComplianceReportEntry),
+});
+export type ComplianceReport = z.infer<typeof ComplianceReport>;
+
+export const SignedComplianceReport = z.object({
+  report: ComplianceReport,
+  // sha256 hex digest of the report's canonical JSON — the thing actually signed.
+  contentHash: z.string(),
+  algorithm: z.literal("ed25519"),
+  // base64 Ed25519 signature over the utf8 bytes of `contentHash`.
+  signature: z.string(),
+  // base64 SPKI public key for this installation, embedded so a verifier can
+  // check authenticity offline from this document alone — no server round-trip.
+  publicKey: z.string(),
+});
+export type SignedComplianceReport = z.infer<typeof SignedComplianceReport>;
+
+export const GenerateComplianceReportRequest = z.object({
+  projectId: z.string().nullable().optional(),
+  runId: z.string().nullable().optional(),
+  from: Timestamp.nullable().optional(),
+  to: Timestamp.nullable().optional(),
+});
+export type GenerateComplianceReportRequest = z.infer<typeof GenerateComplianceReportRequest>;
+
 /** Provider catalog entry — drives glyphs, colors, and the model dropdown. */
 // What a provider needs before it can run — surfaced in the UI (Settings +
 // create-agent) so an operator knows whether it wants a CLI on PATH, a login,
@@ -824,6 +953,9 @@ export const ResolveRequest = z.object({
   // "approve always" rule for this exact command to the project (only honored for
   // rememberable — low/medium, non-deny — commands). Ignored otherwise.
   remember: z.boolean().optional(),
+  // Guided merge — approve a `diff`/`merge` gate into a branch other than the
+  // default (DiffSummary.defaultTargetBranch). Ignored for every other kind.
+  targetBranch: z.string().optional(),
   // Approve-with-memory — see Resolution.memoryNote. Only honored on `approve`.
   memoryNote: z.string().optional(),
 });
