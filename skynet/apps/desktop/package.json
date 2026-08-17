@@ -30,6 +30,7 @@
     },
     "files": [
       "main.cjs",
+      "deep-link.cjs",
       "preload.cjs",
       "package.json"
     ],

@@ -1,7 +1,7 @@
 import { useState, type ComponentType, type SVGProps } from "react";
 import type { TaskRun, Project } from "@skynet/shared";
 import type { WsPhase } from "../lib/client";
-import { useStore } from "../lib/store";
+import { useStore, useNow } from "../lib/store";
 import {
   fmtWait,
   idleRunners,
@@ -192,6 +192,28 @@ export function ConnectingShell({
   );
 }
 
+// Time-limited admin promotion (ROADMAP.md) — ADMIN-granted, never
+// self-service: shows a countdown when THIS session is currently under a
+// live promotion (granted by an admin elsewhere — see settings.tsx's
+// "Access" section for the grant UI), else the plain "· Viewer" badge. No
+// button here: a viewer has no self-elevate action to trigger.
+function ElevateBadge() {
+  const { readOnly, elevatedUntil } = useStore();
+  const now = useNow(1000);
+
+  if (elevatedUntil && elevatedUntil > now) {
+    const left = fmtWait(Math.round((elevatedUntil - now) / 1000));
+    return (
+      <span className="op-role-elevated" title="Time-limited admin promotion, granted by an admin — reverts to Viewer automatically">
+        {" "}
+        · Admin ({left} left)
+      </span>
+    );
+  }
+  if (!readOnly) return null;
+  return <span className="op-role-viewer"> · Viewer</span>;
+}
+
 export function OpSidebar({
   view,
   setView,
@@ -310,7 +332,7 @@ export function OpSidebar({
           <div className="who">{workspaceSettings?.name || "Skynet"}</div>
           <div className="role">
             {operatorHandle() || "Workspace"}
-            {readOnly && <span className="op-role-viewer"> · Viewer</span>}
+            <ElevateBadge />
           </div>
         </div>
       </div>

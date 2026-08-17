@@ -33,6 +33,18 @@ export interface OperatorRecord {
 export interface OperatorDirectory {
   /** Verify credentials; returns the Principal on success, undefined otherwise. */
   verify(email: string, password: string): Principal | undefined;
+  /** The full record for an already-authenticated (workspaceId, operatorId) —
+   *  used by the admin-promotion route (auth/routes.ts) to check a caller's
+   *  REAL, PERSISTED role (never trust a live Principal's current scopes for
+   *  this: a temporarily-elevated viewer's scopes look identical to a real
+   *  admin's) and to validate + look up a promotion's target. Keyed by
+   *  (workspaceId, operatorId): operatorId alone isn't globally unique (e.g.
+   *  the dev seed's "viewer" exists in one workspace, "jordan"/"kyle" in
+   *  different ones). */
+  getByIdentity(workspaceId: string, operatorId: string): OperatorRecord | undefined;
+  /** Every operator record in a workspace — used to list promotable (viewer)
+   *  accounts for the admin-promotion UI. */
+  listByWorkspace(workspaceId: string): OperatorRecord[];
 }
 
 const SCRYPT_KEYLEN = 64;
@@ -62,11 +74,29 @@ export function makeOperator(
   };
 }
 
+const identityKey = (workspaceId: string, operatorId: string): string => `${workspaceId}:${operatorId}`;
+
 export class MemoryOperatorDirectory implements OperatorDirectory {
   private byEmail = new Map<string, OperatorRecord>();
+  private byIdentity = new Map<string, OperatorRecord>();
+  private byWorkspace = new Map<string, OperatorRecord[]>();
 
   constructor(records: OperatorRecord[]) {
-    for (const r of records) this.byEmail.set(r.email.toLowerCase(), r);
+    for (const r of records) {
+      this.byEmail.set(r.email.toLowerCase(), r);
+      this.byIdentity.set(identityKey(r.workspaceId, r.operatorId), r);
+      const list = this.byWorkspace.get(r.workspaceId) ?? [];
+      list.push(r);
+      this.byWorkspace.set(r.workspaceId, list);
+    }
+  }
+
+  getByIdentity(workspaceId: string, operatorId: string): OperatorRecord | undefined {
+    return this.byIdentity.get(identityKey(workspaceId, operatorId));
+  }
+
+  listByWorkspace(workspaceId: string): OperatorRecord[] {
+    return [...(this.byWorkspace.get(workspaceId) ?? [])];
   }
 
   verify(email: string, password: string): Principal | undefined {

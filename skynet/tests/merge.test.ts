@@ -66,8 +66,10 @@ function harness(checkCmd?: string) {
   return { engine, calls, enqueueAndWait };
 }
 
-const req = (runId: string, agentBranch: string, featureId?: string): MergeRequest => ({
-  runId, agentBranch, projectId: "payments", workspaceId: "cyberdyne", ...(featureId ? { featureId } : {}),
+const req = (runId: string, agentBranch: string, targetBranch?: string, featureId?: string): MergeRequest => ({
+  runId, agentBranch, projectId: "payments", workspaceId: "cyberdyne",
+  ...(targetBranch ? { targetBranch } : {}),
+  ...(featureId ? { featureId } : {}),
 });
 
 // Poll a condition until true (short interval — these are in-memory array
@@ -167,6 +169,75 @@ describe("MergeEngine", () => {
     expect(() => git("cat-file", "-e", "skynet/integration/payments:feature.ts")).toThrow();
   });
 
+  // ── Guided merge: operator-chosen target branch ─────────────────────────
+  it("merges into a chosen target branch instead of the project's default integration branch", async () => {
+    git("checkout", "-b", "agent/to-release", "main");
+    commit("feature.ts", "export const x = 1;\n", "add feature");
+    git("checkout", "main");
+
+    const { calls, enqueueAndWait } = harness();
+    await enqueueAndWait(req("a-release", "agent/to-release", "release/v2"));
+
+    expect(calls.merged).toHaveLength(1);
+    expect(calls.merged[0]!.branch).toBe("release/v2");
+    // The default integration branch was never created/touched.
+    expect(git("branch", "--list", "skynet/integration/payments").trim()).toBe("");
+    expect(git("cat-file", "-t", "release/v2:feature.ts").trim()).toBe("blob");
+  });
+
+  it("creates the target branch off baseBranch when it doesn't exist yet, same as the default", async () => {
+    git("checkout", "-b", "agent/fresh-target", "main");
+    commit("feature.ts", "export const x = 1;\n", "add feature");
+    git("checkout", "main");
+    // "release/v3" doesn't exist anywhere yet.
+    expect(git("branch", "--list", "release/v3").trim()).toBe("");
+
+    const { calls, enqueueAndWait } = harness();
+    await enqueueAndWait(req("a-fresh", "agent/fresh-target", "release/v3"));
+
+    expect(calls.merged).toHaveLength(1);
+    expect(git("cat-file", "-t", "release/v3:feature.ts").trim()).toBe("blob");
+    // Created off baseBranch ("main"), same ancestry rule as the default path.
+    expect(git("merge-base", "--is-ancestor", "main", "release/v3")).toBe("");
+  });
+
+  it("an unset targetBranch is unaffected — same default integration branch as before", async () => {
+    git("checkout", "-b", "agent/default-path", "main");
+    commit("feature.ts", "export const x = 1;\n", "add feature");
+    git("checkout", "main");
+
+    const { calls, enqueueAndWait } = harness();
+    await enqueueAndWait(req("a-default", "agent/default-path")); // no targetBranch
+
+    expect(calls.merged).toHaveLength(1);
+    expect(calls.merged[0]!.branch).toBe("skynet/integration/payments");
+  });
+
+  it("two merges for the SAME project into DIFFERENT target branches run as independent chains without stomping each other's scratch worktree", async () => {
+    git("checkout", "-b", "agent/one", "main");
+    commit("one.ts", "export const one = 1;\n", "one");
+    git("checkout", "main");
+    git("checkout", "-b", "agent/two", "main");
+    commit("two.ts", "export const two = 2;\n", "two");
+    git("checkout", "main");
+
+    const { calls, engine } = harness();
+    // Fire both concurrently — distinct target branches, so distinct chains
+    // (see MergeEngine.enqueue keying by branch) that may overlap in time.
+    engine.enqueue(req("a-one", "agent/one", "release/one"));
+    engine.enqueue(req("a-two", "agent/two", "release/two"));
+    const deadline = Date.now() + 10_000;
+    while (calls.merged.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    expect(calls.merged).toHaveLength(2);
+    expect(calls.mergeFailed).toHaveLength(0);
+    expect(calls.conflict).toHaveLength(0);
+    expect(git("cat-file", "-t", "release/one:one.ts").trim()).toBe("blob");
+    expect(git("cat-file", "-t", "release/two:two.ts").trim()).toBe("blob");
+  });
+
   it("MergeRequest.checkCmd (per-project, resolved by the caller) overrides the engine's constructor default", async () => {
     git("checkout", "-b", "agent/override", "main");
     commit("feature.ts", "export const z = 3;\n", "add feature");
@@ -203,7 +274,7 @@ describe("MergeEngine", () => {
 describe("MergeEngine — feature-scoped branch batching", () => {
   it("targetBranchFor resolves to the feature branch when featureId is set, else the project's default", () => {
     const { engine } = harness();
-    expect(engine.targetBranchFor(req("a", "agent/a", "f-1"))).toBe("skynet/feature/f-1");
+    expect(engine.targetBranchFor(req("a", "agent/a", undefined, "f-1"))).toBe("skynet/feature/f-1");
     expect(engine.targetBranchFor(req("a", "agent/a"))).toBe("skynet/integration/payments");
   });
 
@@ -218,8 +289,8 @@ describe("MergeEngine — feature-scoped branch batching", () => {
     const { calls, enqueueAndWait } = harness();
     // Step 1: both tasks merge into the SAME feature branch (destination
     // override via featureId) — a normal per-run merge in every other respect.
-    await enqueueAndWait(req("task-1", "agent/task-1", "f-checkout"));
-    await enqueueAndWait(req("task-2", "agent/task-2", "f-checkout"));
+    await enqueueAndWait(req("task-1", "agent/task-1", undefined, "f-checkout"));
+    await enqueueAndWait(req("task-2", "agent/task-2", undefined, "f-checkout"));
     expect(calls.merged).toHaveLength(2);
     expect(calls.merged.every((m) => m.branch === "skynet/feature/f-checkout")).toBe(true);
     expect(git("cat-file", "-t", "skynet/feature/f-checkout:a.ts").trim()).toBe("blob");
@@ -275,8 +346,8 @@ describe("MergeEngine — feature-scoped branch batching", () => {
     const { calls, engine } = harness();
     // Enqueue both WITHOUT awaiting between them — they run concurrently on
     // separate chains (different target branches), racing in real time.
-    engine.enqueue(req("x", "agent/x", "f-alpha"));
-    engine.enqueue(req("y", "agent/y", "f-beta"));
+    engine.enqueue(req("x", "agent/x", undefined, "f-alpha"));
+    engine.enqueue(req("y", "agent/y", undefined, "f-beta"));
     await waitFor(() => calls.merged.length + calls.conflict.length + calls.mergeFailed.length >= 2);
 
     expect(calls.merged).toHaveLength(2);

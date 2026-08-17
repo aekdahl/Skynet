@@ -16,6 +16,7 @@ const crypto = require("node:crypto");
 const path = require("node:path");
 const fs = require("node:fs");
 const http = require("node:http");
+const { skynetUrlToHash, findSkynetUrlArg } = require("./deep-link.cjs");
 
 // Name the app before anything reads it — fixes notifications and the per-user
 // data dir (…/Skynet instead of …/Electron) in dev. The packaged build already
@@ -53,6 +54,67 @@ const DEV_URL = process.env.SKYNET_DEV_URL || "http://localhost:5173";
 
 let serverProc = null;
 let win = null;
+
+// ─── skynet:// deep links ───────────────────────────────────────────────────
+// A Telegram/Steward reply that links into a specific run/project used to only
+// land cleanly if the browser tab already happened to be signed in — click it
+// fresh and you'd hit a login wall. On desktop there's no login wall to hit:
+// the app is already running locally as the single operator, so an OS-level
+// `skynet://` protocol handler can route the click straight in, no token
+// needed at all (see ROADMAP.md's "Chat → canvas handoff, zero cold start").
+// Translation is pure + shared (deep-link.cjs); this section is just the
+// Electron event wiring for the two platform-specific delivery mechanisms:
+//   • macOS: the OS delivers `open-url` directly to the (single) running
+//     process — no second process, no argv involved.
+//   • Windows/Linux: the OS launches the protocol handler as a fresh process
+//     with the URL as a plain argv entry. If Skynet is already running, that
+//     second process loses `requestSingleInstanceLock()` and Electron forwards
+//     its argv to the first instance via `second-instance`; if Skynet isn't
+//     running, THIS process's own `process.argv` carries the URL, captured
+//     below before `app.whenReady()` so `createWindow()` can apply it once the
+//     page loads (the win-not-ready case `routeToHash` also covers, since
+//     open-url can fire on macOS before whenReady resolves too).
+let pendingDeepLink = null; // hash (e.g. "#/agent/xyz") queued until a window exists to apply it to
+
+/** Focus the window and navigate the ALREADY-LOADED page to `hash` via a plain
+ *  same-document `location.hash` assignment (not a reload — reusing the app's
+ *  own hashchange handling, exactly like any shared link) — or, if there's no
+ *  window yet, queue it for `createWindow()` to bake into the initial load. */
+function routeToHash(hash) {
+  if (!hash) return;
+  if (!win || win.isDestroyed()) {
+    pendingDeepLink = hash;
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(hash)};`).catch(() => {});
+}
+
+// Register as the OS default handler for skynet:// links. Safe/idempotent to
+// call on every launch (updates the OS registration if needed); on Windows
+// this points the registration at process.execPath + the launch args Electron
+// already uses to relaunch itself, so a click reopens (or focuses, via the
+// single-instance lock below) this same app.
+app.setAsDefaultProtocolClient("skynet");
+
+// macOS: register as early as possible (module scope, before whenReady) — the
+// OS can deliver `open-url` before the app finishes launching, and Electron
+// only replays it if a listener is already attached.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  routeToHash(skynetUrlToHash(url));
+});
+
+// Windows/Linux cold launch: `open-url` doesn't exist on these platforms — a
+// launch via the protocol handler passes the URL as a plain argv entry on
+// THIS process instead. Capture it now (before whenReady) so it's ready for
+// createWindow() to apply once the page loads.
+if (process.platform !== "darwin") {
+  const arg = findSkynetUrlArg(process.argv);
+  if (arg) pendingDeepLink = skynetUrlToHash(arg);
+}
 
 /** Where the bundled server entry and built SPA live (dev vs packaged). */
 function resolvePaths() {
@@ -233,7 +295,15 @@ function createWindow() {
     return { action: "allow" };
   });
 
-  win.loadURL(DEV ? DEV_URL : `http://${HOST}:${PORT}/`);
+  // A deep link captured before this window existed (macOS open-url that fired
+  // pre-whenReady, or a Windows/Linux cold launch's own process.argv) rides
+  // straight into the initial load — simplest + no flash-then-hashchange, and
+  // the app's own initial-view logic (parseHash() || initialView()) already
+  // handles a hash present in the URL bar on first paint.
+  const base = DEV ? DEV_URL : `http://${HOST}:${PORT}/`;
+  const hash = pendingDeepLink;
+  pendingDeepLink = null;
+  win.loadURL(hash ? `${base}${hash}` : base);
 }
 
 // Dock/taskbar badge — driven by the renderer's live pending-HITL count (see
@@ -282,11 +352,16 @@ function checkForUpdates() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
     if (win) {
       if (win.isMinimized()) win.restore();
       win.focus();
     }
+    // Windows/Linux warm launch: the OS-launched second process's argv (the one
+    // that just lost the single-instance lock) carries the skynet:// URL, if
+    // this launch came from the protocol handler rather than a plain re-open.
+    const arg = findSkynetUrlArg(argv);
+    if (arg) routeToHash(skynetUrlToHash(arg));
   });
 
   app.whenReady().then(async () => {

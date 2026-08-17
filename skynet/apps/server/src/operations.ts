@@ -22,6 +22,7 @@ import type {
   CreateTaskRequest,
   DryRunPolicyRequest,
   Feature,
+  GenerateComplianceReportRequest,
   HitlItem,
   InformRequest,
   Milestone,
@@ -33,6 +34,7 @@ import type {
   Resolution,
   SavePolicyVersionRequest,
   Agent,
+  SignedComplianceReport,
   Snapshot,
   Task,
   UpdateFeatureRequest,
@@ -65,6 +67,7 @@ import {
 import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
 import { contentHash, readProjectDoc, resolveRoadmapDoc } from "./steward/docs.js";
 import { commitLocalRepoFile } from "./local-repo-write.js";
+import { generateSignedComplianceReport } from "./compliance/index.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
 import { withSecretAvailability } from "./secrets/index.js";
@@ -296,6 +299,25 @@ export class Operations {
     return this.hub.clearAudit(ws);
   }
 
+  /** One-click, signed "AI change report" for a project, a run, a date range,
+   *  or the whole workspace (ROADMAP: Compliance evidence pack). Built
+   *  entirely from the existing audit trail — see compliance/report.ts. */
+  async generateComplianceReport(
+    ws: string,
+    operatorId: string,
+    scope: GenerateComplianceReportRequest,
+  ): Promise<SignedComplianceReport> {
+    if (scope.projectId) {
+      const project = await this.store.getProject(scope.projectId);
+      if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    }
+    if (scope.runId) {
+      const run = await this.store.getRun(scope.runId);
+      if (!run || run.workspaceId !== ws) throw new NotFoundError("Run");
+    }
+    return generateSignedComplianceReport(this.store, ws, operatorId, scope);
+  }
+
   async getRun(ws: string, runId: string): Promise<TaskRun> {
     const agent = await this.store.getRun(runId);
     if (!agent || agent.workspaceId !== ws) throw new NotFoundError("TaskRun");
@@ -387,6 +409,8 @@ export class Operations {
       action: input.action,
       optionIndex: input.optionIndex ?? null,
       guidance: input.guidance ?? null,
+      // Guided merge — only meaningful alongside an actual approval.
+      targetBranch: input.action === "approve" ? (input.targetBranch?.trim() || null) : null,
       // Approve-with-memory — only meaningful alongside an actual approval.
       memoryNote: input.action === "approve" ? (input.memoryNote?.trim() || null) : null,
       by: operatorId,

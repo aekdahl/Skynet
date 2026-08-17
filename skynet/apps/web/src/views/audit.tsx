@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AuditRecord, ResolveAction } from "@skynet/shared";
+import type { AuditRecord, ResolveAction, DiffWalkthrough, MergeBrief } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { fmtWait, KIND_META } from "../lib/derive";
 import { RiskChip } from "../components/hitl-context";
 import { DiffView } from "../components/diff-view";
+import { ComplianceReportExport } from "../components/compliance-export";
 import * as api from "../lib/client";
 
 // Decision audit trail (W8). The resolved-HITL history lives in its own
@@ -35,6 +36,7 @@ const isResolveAction = (a: string): a is ResolveAction =>
 function payloadOf(p: unknown): {
   optionIndex: number | null;
   guidance: string | null;
+  targetBranch: string | null;
   memoryNote: string | null;
   kind: string | null;
   title: string | null;
@@ -46,6 +48,8 @@ function payloadOf(p: unknown): {
   files: string[] | null;
   patch: string | null;
   diff: { add: number; del: number } | null;
+  walkthrough: DiffWalkthrough | null;
+  mergeBrief: MergeBrief | null;
   output: string | null;
 } {
   const o = (p ?? {}) as Record<string, unknown>;
@@ -56,6 +60,7 @@ function payloadOf(p: unknown): {
   return {
     optionIndex: typeof o.optionIndex === "number" ? o.optionIndex : null,
     guidance: str(o.guidance),
+    targetBranch: str(o.targetBranch),
     memoryNote: str(o.memoryNote),
     kind: str(o.kind),
     title: str(o.title),
@@ -67,6 +72,10 @@ function payloadOf(p: unknown): {
     files: strArr(o.files),
     patch: str(o.patch),
     diff: d && typeof d === "object" ? { add: Number(d.add) || 0, del: Number(d.del) || 0 } : null,
+    // Recorded verbatim by hub.ts at resolve time (already validated on the
+    // way in via the HitlItem schema) — a light presence check is enough here.
+    walkthrough: d && typeof d.walkthrough === "object" && d.walkthrough ? (d.walkthrough as DiffWalkthrough) : null,
+    mergeBrief: d && typeof d.mergeBrief === "object" && d.mergeBrief ? (d.mergeBrief as MergeBrief) : null,
     output: str(o.output),
   };
 }
@@ -160,6 +169,8 @@ function AuditRow({
             files={p.files ?? []}
             add={p.diff?.add ?? 0}
             del={p.diff?.del ?? 0}
+            walkthrough={p.walkthrough}
+            mergeBrief={p.mergeBrief}
           />
         </div>
       )}
@@ -173,6 +184,9 @@ function AuditRow({
       {chosen && <p className="audit-detail">Chose “{chosen}”.</p>}
       {p.guidance && (
         <p className="audit-detail audit-guidance">“{p.guidance}”</p>
+      )}
+      {(kind === "diff" || kind === "merge") && p.targetBranch && (
+        <p className="audit-detail">Merged into <span className="mono">{p.targetBranch}</span>.</p>
       )}
       {p.memoryNote && (
         <p className="audit-detail audit-memory-note" title="Captured for Memory v0 to adopt once it lands — not yet read back by anything">
@@ -219,7 +233,7 @@ export function AuditView({
   now: number;
   onOpenTask: (id: string) => void;
 }) {
-  const { queue, auditRev, archiveAudit, deleteAudit, archiveAllAudit, clearAudit } = useStore();
+  const { queue, projects, auditRev, archiveAudit, deleteAudit, archiveAllAudit, clearAudit } = useStore();
   const [records, setRecords] = useState<AuditRecord[] | null>(null);
   const [error, setError] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -341,8 +355,10 @@ export function AuditView({
             decided what, when, and how.
           </p>
         </div>
-        {merged.length > 0 && (
-          <div className="audit-bulk">
+        <div className="audit-bulk">
+          <ComplianceReportExport projects={projects} />
+          {merged.length > 0 && (
+            <>
             {active.length > 0 && (
               <button className="btn btn-ghost btn-sm" onClick={() => void onArchiveAll()}>
                 ⊘ Archive all
@@ -366,8 +382,9 @@ export function AuditView({
                 Clear trail
               </button>
             )}
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </div>
 
       {error && (

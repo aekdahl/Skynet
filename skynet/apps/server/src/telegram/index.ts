@@ -55,6 +55,7 @@ import {
   inQuietHours,
   parseQuietHours,
   runLink,
+  desktopRunLink,
   esc,
   type Names,
 } from "./notices.js";
@@ -1262,8 +1263,12 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     const project = await operations.getProject(ws, run.projectId).catch(() => null);
     return { run: run.name || runId, project: project?.name ?? "" };
   };
-  // Deep link to open the run in the app (empty unless PUBLIC_URL is configured).
-  const linkFor = (runId: string): string | undefined => runLink(config.publicUrl, runId);
+  // Deep link to open the run in the app. Desktop: always a skynet:// OS-protocol
+  // link (config.desktop — apps/desktop/main.cjs sets SKYNET_DESKTOP=1 — no
+  // PUBLIC_URL/token needed, the app is already running locally as the single
+  // operator). Hosted: unchanged — empty unless PUBLIC_URL is configured.
+  const linkFor = (runId: string): string | undefined =>
+    config.desktop ? desktopRunLink(runId) : runLink(config.publicUrl, runId);
 
   // De-dupe run notices: only push when a run's status actually CHANGES, so a run
   // that re-emits "review" doesn't send the same line three times (the reported

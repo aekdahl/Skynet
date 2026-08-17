@@ -43,6 +43,11 @@ export const config = {
   // Path for STORE=file (zero-dependency JSON persistence; default cwd-relative).
   // The desktop app points this at its per-user data directory.
   dbPath: process.env.SKYNET_DB_PATH || "skynet-data.json",
+  // Where this installation's compliance-report signing keypair lives (see
+  // apps/server/src/compliance/signing.ts). Defaults next to the data file —
+  // same "just a file on disk, no native deps" trust model as STORE=file
+  // itself. The private key never leaves this file / this host.
+  complianceKeyPath: process.env.SKYNET_COMPLIANCE_KEY_PATH || undefined,
   // No silent default: pick the fan-out backbone explicitly (BUS=memory for
   // single-process dev/tests; BUS=redis to fan out across replicas).
   bus: (process.env.BUS || undefined) as "memory" | "redis" | undefined,
@@ -97,6 +102,16 @@ export const config = {
   viewerEmail: (process.env.SKYNET_VIEWER_EMAIL || "").toLowerCase() || undefined,
   viewerPassword: process.env.SKYNET_VIEWER_PASSWORD || undefined,
   viewerWorkspace: process.env.SKYNET_VIEWER_WORKSPACE || undefined,
+
+  // Time-limited admin promotion (ROADMAP.md) — an existing ADMIN grants a
+  // named viewer a bounded full-authority window (POST
+  // /api/operators/:id/promote), which auto-reverts on its own once it lapses
+  // (auth/elevations.ts's activeUntil(), checked on every request — no
+  // manual revert). elevationTtlMs is the default window when the request
+  // doesn't specify one; elevationMaxTtlMs caps whatever it asks for, so a
+  // caller can request a shorter window but never a longer one.
+  elevationTtlMs: Number(process.env.SKYNET_ELEVATION_TTL_MS ?? 15 * 60 * 1000),
+  elevationMaxTtlMs: Number(process.env.SKYNET_ELEVATION_MAX_TTL_MS ?? 60 * 60 * 1000),
 
   // ── MCP bootstrap token (headless / sandbox deploys) ───────────────────────
   // In a sandbox (e.g. Daytona) there is no human to log in and mint a token,

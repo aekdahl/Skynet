@@ -1347,6 +1347,14 @@ export function ProjectView({
                 ⎇ stacks onto <b>{project.baseBranch}</b> · runs branch from it &amp; PR into it
               </div>
             )}
+            {!hasRepo && (
+              <div
+                className="mono proj-repo-line proj-chatonly-line"
+                title="No worktree, no diff review, no merge — an agent just runs and reports back."
+              >
+                💬 chat only — no repo connected
+              </div>
+            )}
             {project.checkCmd && (
               <div className="mono proj-repo-line" title="Runs after a merge, before it's committed — a failure undoes the merge and raises a gate.">
                 ✓ verifier gate: <b>{project.checkCmd}</b>

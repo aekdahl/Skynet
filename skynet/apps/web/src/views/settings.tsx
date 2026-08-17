@@ -48,7 +48,7 @@ export function VerifyBadge({ state, onDismiss }: { state: VerifyState | undefin
 // A vendor's runners are only selectable in create-agent once its key is set
 // (the snapshot recomputes provider availability from the secret store).
 export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
-  const { providers, retry, setProviderAvailable, readOnly } = useStore();
+  const { providers, retry, setProviderAvailable, readOnly, elevatedUntil } = useStore();
   // Installer modal state — one at a time; the panel below the provider card
   // renders its live log while running, and locks to that provider until done.
   const [installFor, setInstallFor] = useState<string | null>(null);
@@ -383,6 +383,10 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
       <FleetAutomationSection />
       <CommandPolicySection />
       <McpAccessSection />
+      {/* A genuine base admin only — never a currently-elevated viewer (their
+          scopes look identical, but the server independently enforces the
+          real check on the grant route too; this is just UX, not the gate). */}
+      {!readOnly && !elevatedUntil && <AdminPromotionSection />}
       <TelegramSetup />
       <AdvancedSettingsSection />
       <div className="settings-setup">
@@ -1364,6 +1368,113 @@ function McpAccessSection() {
                     Revoke
                   </button>
                 </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Time-limited admin promotion (ROADMAP.md) — ADMIN-granted, never
+// self-service: pick a viewer, grant a bounded full-authority window (the
+// server-configured default TTL — no custom-duration picker here, kept
+// deliberately minimal per the roadmap's "granting/viewing active
+// promotions" scope, nothing more). Shown only to a genuine base admin (see
+// the readOnly/elevatedUntil gate at the call site) — the server enforces
+// this independently via the caller's PERSISTED role either way.
+function AdminPromotionSection() {
+  const { promoteOperator, fetchOperators, fetchElevations } = useStore();
+  const [viewers, setViewers] = useState<api.OperatorSummary[] | null>(null);
+  const [picked, setPicked] = useState("");
+  const [events, setEvents] = useState<api.ElevationEvent[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [ops, evs] = await Promise.all([fetchOperators(), fetchElevations()]);
+      setViewers(ops.filter((o) => o.role === "viewer"));
+      setEvents(evs);
+    } catch (e) {
+      setErr(`Couldn't load the operator roster: ${(e as Error).message}`);
+    }
+  }, [fetchOperators, fetchElevations]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (!picked && viewers && viewers.length > 0) setPicked(viewers[0]!.operatorId);
+  }, [viewers, picked]);
+
+  const promote = async () => {
+    if (!picked || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await promoteOperator(picked);
+      await load();
+    } catch (e) {
+      setErr(`Couldn't promote — ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="admin-promo">
+      <div className="settings-setup-title">Access</div>
+      <div className="settings-setup-sub">
+        Time-limited admin promotion — grant a viewer a bounded full-authority window (break-glass /
+        sudo-style). It reverts on its own once the window lapses; every grant and expiry is audited below.
+      </div>
+
+      {err && <div className="settings-warn">{err}</div>}
+
+      {viewers && viewers.length === 0 ? (
+        <div className="settings-setup-sub">No viewer accounts in this workspace to promote.</div>
+      ) : (
+        <div className="settings-row admin-promo-grant">
+          <select className="settings-input" value={picked} onChange={(e) => setPicked(e.target.value)} disabled={!viewers || busy}>
+            {(viewers ?? []).map((v) => (
+              <option key={v.operatorId} value={v.operatorId}>
+                {v.email}
+              </option>
+            ))}
+          </select>
+          <button className="btn btn-primary" disabled={!picked || busy} onClick={() => void promote()}>
+            Promote
+          </button>
+        </div>
+      )}
+
+      <div className="admin-promo-log">
+        <div className="settings-setup-title">Promotion history</div>
+        {events === null ? (
+          <div className="settings-setup-sub">Loading…</div>
+        ) : events.length === 0 ? (
+          <div className="settings-setup-sub">No promotions granted yet.</div>
+        ) : (
+          <div className="settings-list admin-promo-events">
+            {events.map((ev, i) => (
+              <div className="admin-promo-event mono" key={i}>
+                {ev.kind === "grant" ? (
+                  <>
+                    <span className="admin-promo-badge admin-promo-grant-badge">GRANT</span>
+                    <span>{ev.operatorId}</span>
+                    <span className="admin-promo-dim">by {ev.grantedBy}</span>
+                    <span className="admin-promo-dim">{rel(ev.at)}</span>
+                    <span className="admin-promo-dim">expires {rel(ev.expiresAt)}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="admin-promo-badge admin-promo-expiry-badge">EXPIRED</span>
+                    <span>{ev.operatorId}</span>
+                    <span className="admin-promo-dim">{rel(ev.at)}</span>
+                  </>
+                )}
               </div>
             ))}
           </div>

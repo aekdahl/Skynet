@@ -92,6 +92,12 @@ export interface StoreState {
   // Undefined until GET /api/auth/me resolves at boot; the client-side mutation
   // guard (client.ts's req()) is the enforcement, this is just for UI greying.
   readOnly?: boolean;
+  // Time-limited admin promotion (ROADMAP.md) — set while an elevation window
+  // is live on this session (null otherwise). Drives the countdown + the
+  // auto-revert timer below; `readOnly` itself already reflects the elevated
+  // state (the server resolves an elevated principal with scopes: undefined),
+  // this is only for the UI to show/count down/proactively re-check.
+  elevatedUntil?: number | null;
 }
 
 export interface Store extends StoreState {
@@ -99,7 +105,7 @@ export interface Store extends StoreState {
   resolveHitl: (
     id: string,
     action: ResolveAction,
-    extra?: { optionIndex?: number; guidance?: string; remember?: boolean; memoryNote?: string },
+    extra?: { optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string },
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
@@ -239,6 +245,14 @@ export interface Store extends StoreState {
   // Exchange operator credentials for a session token, then reconnect with it.
   login: (email: string, password: string) => Promise<api.LoginResult>;
   verifyMfa: (challengeId: string, code: string) => Promise<void>;
+  // Time-limited admin promotion (ROADMAP.md) — ADMIN-granted: promote a
+  // named viewer to a bounded full-authority window. Only callable by an
+  // admin session (the server enforces the caller's PERSISTED role). Doesn't
+  // touch the CALLER's own readOnly/elevatedUntil — granting someone else a
+  // promotion never changes your own session.
+  promoteOperator: (operatorId: string, ttlMs?: number) => Promise<{ expiresAt: number }>;
+  fetchOperators: () => Promise<api.OperatorSummary[]>;
+  fetchElevations: () => Promise<api.ElevationEvent[]>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -427,9 +441,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const loadSnapshot = useRef(() => {
     api
       .fetchSnapshot()
-      // fromSnapshot() is a wholesale replace — thread readOnly through so a
-      // reload/retry doesn't drop it back to "unknown" between fetchMe() calls.
-      .then((snap) => setState((s) => ({ ...fromSnapshot(snap), readOnly: s.readOnly })))
+      // fromSnapshot() is a wholesale replace — thread readOnly/elevatedUntil
+      // through so a reload/retry doesn't drop them back to "unknown" between
+      // fetchMe() calls.
+      .then((snap) => setState((s) => ({ ...fromSnapshot(snap), readOnly: s.readOnly, elevatedUntil: s.elevatedUntil })))
       .catch((err) => {
         // The WS snapshot will seed state if the REST seed fails — but never
         // swallow silently: a schema/contract drift makes fetchSnapshot reject
@@ -452,7 +467,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .then((principal) => {
         const ro = api.isReadOnlyPrincipal(principal);
         api.setReadOnly(ro);
-        if (!cancelled) setState((s) => ({ ...s, readOnly: ro }));
+        if (!cancelled) setState((s) => ({ ...s, readOnly: ro, elevatedUntil: principal.elevatedUntil ?? null }));
       })
       .catch((err) => console.error("[store] fetchMe failed:", err));
 
@@ -460,7 +475,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       (msg) => {
         if (cancelled) return;
         if (msg.type === "snapshot") {
-          setState((s) => ({ ...fromSnapshot(msg.state), readOnly: s.readOnly }));
+          setState((s) => ({ ...fromSnapshot(msg.state), readOnly: s.readOnly, elevatedUntil: s.elevatedUntil }));
         } else {
           // A newly-raised HITL is the "needs you" moment → fire an Inbox alert.
           // notifyInbox no-ops unless the operator turned alerts on (lib/alerts).
@@ -484,6 +499,51 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       connRef.current = null;
     };
   }, []);
+
+  // Time-limited admin promotion: schedule the auto-revert. The server is what
+  // actually enforces the window (auth/elevations.ts's activeUntil() re-checks
+  // it on every request regardless of this timer) — this only makes the
+  // CLIENT proactively re-fetch /me and flip back to read-only the moment it
+  // lapses, instead of the UI silently believing it's still elevated until
+  // the next mutation attempt gets a surprise 403.
+  useEffect(() => {
+    if (!state.elevatedUntil) return;
+    const ms = state.elevatedUntil - Date.now();
+    if (ms <= 0) return; // already lapsed — the next fetchMe() naturally reflects it
+    const t = setTimeout(() => {
+      api
+        .fetchMe()
+        .then((principal) => {
+          const ro = api.isReadOnlyPrincipal(principal);
+          api.setReadOnly(ro);
+          setState((s) => ({ ...s, readOnly: ro, elevatedUntil: principal.elevatedUntil ?? null }));
+        })
+        .catch(() => undefined);
+    }, ms);
+    return () => clearTimeout(t);
+  }, [state.elevatedUntil]);
+
+  // A promotion is ADMIN-granted, on a DIFFERENT browser session than the one
+  // that grants it — unlike the revert above, there's no local action to hang
+  // a proactive re-check off of. Poll /me while this session is read-only so a
+  // just-promoted viewer sees it land without a manual reload; stops the
+  // moment it's no longer read-only (the revert timer above takes over then).
+  useEffect(() => {
+    if (!state.readOnly) return;
+    const t = setInterval(() => {
+      api
+        .fetchMe()
+        .then((principal) => {
+          const ro = api.isReadOnlyPrincipal(principal);
+          api.setReadOnly(ro);
+          setState((s) => (s.readOnly === ro && s.elevatedUntil === (principal.elevatedUntil ?? null)
+            ? s
+            : { ...s, readOnly: ro, elevatedUntil: principal.elevatedUntil ?? null }));
+        })
+        .catch(() => undefined);
+    }, 20_000);
+    return () => clearInterval(t);
+  }, [state.readOnly]);
 
   const store = useMemo<Store>(() => {
     return {
@@ -707,6 +767,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         // Session set — re-init the whole app with the new token.
         location.reload();
       },
+      promoteOperator: (operatorId, ttlMs) => api.promoteOperator(operatorId, ttlMs),
+      fetchOperators: () => api.fetchOperators(),
+      fetchElevations: () => api.fetchElevations(),
     };
   }, [state]);
 
