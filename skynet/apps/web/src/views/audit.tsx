@@ -35,6 +35,7 @@ const isResolveAction = (a: string): a is ResolveAction =>
 function payloadOf(p: unknown): {
   optionIndex: number | null;
   guidance: string | null;
+  memoryNote: string | null;
   kind: string | null;
   title: string | null;
   why: string | null;
@@ -45,6 +46,7 @@ function payloadOf(p: unknown): {
   files: string[] | null;
   patch: string | null;
   diff: { add: number; del: number } | null;
+  output: string | null;
 } {
   const o = (p ?? {}) as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
@@ -54,6 +56,7 @@ function payloadOf(p: unknown): {
   return {
     optionIndex: typeof o.optionIndex === "number" ? o.optionIndex : null,
     guidance: str(o.guidance),
+    memoryNote: str(o.memoryNote),
     kind: str(o.kind),
     title: str(o.title),
     why: str(o.why),
@@ -64,6 +67,7 @@ function payloadOf(p: unknown): {
     files: strArr(o.files),
     patch: str(o.patch),
     diff: d && typeof d === "object" ? { add: Number(d.add) || 0, del: Number(d.del) || 0 } : null,
+    output: str(o.output),
   };
 }
 
@@ -106,6 +110,7 @@ function AuditRow({
   const title = p.title ?? item?.title ?? null;
   const why = p.why ?? item?.why ?? null;
   const command = p.command ?? item?.command ?? null;
+  const output = p.output ?? item?.output ?? null;
   const rationale = p.rationale ?? item?.rationale ?? null;
   const risk = p.risk ?? item?.risk ?? null;
   // Read the chosen option from the SNAPSHOT (self-contained) — the live item's
@@ -143,8 +148,9 @@ function AuditRow({
       {rationale && <p className="audit-reason">💭 {rationale}</p>}
       {why && <p className="audit-why">{why}</p>}
       {command && <pre className="audit-cmd mono">{command}</pre>}
+      {output && <pre className="audit-cmd mono">{output}</pre>}
 
-      {(kind === "diff" || kind === "merge") && p.patch && (
+      {(kind === "diff" || kind === "merge" || kind === "verifier") && p.patch && (
         <div className="audit-diff-wrap">
           {p.files && p.files.length > 0 && (
             <p className="audit-files mono">{p.files.join("  ·  ")}</p>
@@ -167,6 +173,11 @@ function AuditRow({
       {chosen && <p className="audit-detail">Chose “{chosen}”.</p>}
       {p.guidance && (
         <p className="audit-detail audit-guidance">“{p.guidance}”</p>
+      )}
+      {p.memoryNote && (
+        <p className="audit-detail audit-memory-note" title="Captured for Memory v0 to adopt once it lands — not yet read back by anything">
+          📝 Remembered: “{p.memoryNote}”
+        </p>
       )}
 
       <div className="audit-actions">
@@ -388,6 +399,7 @@ export function AuditView({
           <button
             className="kb-archive-head"
             onClick={() => setShowArchived((s) => !s)}
+            aria-expanded={showArchived}
           >
             {showArchived ? "▾" : "▸"} ARCHIVED · {archived.length}
           </button>

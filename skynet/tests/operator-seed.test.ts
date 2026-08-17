@@ -56,3 +56,56 @@ describe("operator seed policy", () => {
     expect(seedOperatorRecords({ devMode: false, adminPassword: "pw" })).toHaveLength(0);
   });
 });
+
+// Read-only (viewer) role — role "viewer" maps to Principal.scopes: ["observe"]
+// at login (auth/operators.ts's verify()); "admin" (the default) stays
+// scopeless = full authority, unchanged. Reuses the existing scoped-principal
+// model rather than a parallel permission system (ROADMAP.md).
+describe("operator role → scopes mapping", () => {
+  it("dev/test also seeds a demo viewer alongside the two admin accounts", () => {
+    const dir = new MemoryOperatorDirectory(seedOperatorRecords({ devMode: true }));
+    expect(dir.verify("viewer@cyberdyne.dev", "skynet")).toEqual({
+      workspaceId: DEFAULT_WORKSPACE,
+      operatorId: "viewer",
+      scopes: ["observe"],
+    });
+    // The admin pair is untouched — still scopeless (full authority).
+    expect(dir.verify("jordan@cyberdyne.dev", "skynet")?.scopes).toBeUndefined();
+  });
+
+  it("production seeds a viewer ONLY from explicit viewer credentials, independent of the admin fields", () => {
+    const dir = new MemoryOperatorDirectory(
+      seedOperatorRecords({
+        devMode: false,
+        viewerEmail: "Viewer@YourCo.com",
+        viewerPassword: "v13w-pw",
+        viewerWorkspace: "acme",
+      }),
+    );
+    expect(dir.verify("viewer@yourco.com", "v13w-pw")).toEqual({
+      workspaceId: "acme",
+      operatorId: "viewer",
+      scopes: ["observe"],
+    });
+  });
+
+  it("a lone viewer without its own workspace falls back to the admin workspace, then the default", () => {
+    const withAdminWs = seedOperatorRecords({
+      devMode: false,
+      viewerEmail: "v@b.co",
+      viewerPassword: "pw",
+      adminEmail: "a@b.co",
+      adminPassword: "pw",
+      adminWorkspace: "acme",
+    });
+    expect(withAdminWs.find((r) => r.role === "viewer")?.workspaceId).toBe("acme");
+
+    const noAdminAtAll = seedOperatorRecords({ devMode: false, viewerEmail: "v@b.co", viewerPassword: "pw" });
+    expect(noAdminAtAll[0].workspaceId).toBe(DEFAULT_WORKSPACE);
+  });
+
+  it("a viewer email without a password does NOT seed (both required)", () => {
+    expect(seedOperatorRecords({ devMode: false, viewerEmail: "v@b.co" })).toHaveLength(0);
+    expect(seedOperatorRecords({ devMode: false, viewerPassword: "pw" })).toHaveLength(0);
+  });
+});

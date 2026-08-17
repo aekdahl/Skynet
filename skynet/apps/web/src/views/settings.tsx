@@ -48,7 +48,7 @@ export function VerifyBadge({ state, onDismiss }: { state: VerifyState | undefin
 // A vendor's runners are only selectable in create-agent once its key is set
 // (the snapshot recomputes provider availability from the secret store).
 export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
-  const { providers, retry, setProviderAvailable } = useStore();
+  const { providers, retry, setProviderAvailable, readOnly } = useStore();
   // Installer modal state — one at a time; the panel below the provider card
   // renders its live log while running, and locks to that provider until done.
   const [installFor, setInstallFor] = useState<string | null>(null);
@@ -181,6 +181,11 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
         </p>
       </div>
 
+      {readOnly && (
+        <div className="settings-warn">
+          You're signed in as a viewer — settings are read-only. Changes below won't save.
+        </div>
+      )}
       {disabled && (
         <div className="settings-warn">
           The secret store is disabled — no master key is configured. Restart the
@@ -647,7 +652,7 @@ function FleetAutomationSection() {
             </label>
             <label
               className="proj-autonomy"
-              title="Give Claude runners a real browser (a Playwright/Chrome MCP server) so an agent can reproduce a bug, verify a UI change, or read live docs. Browser actions still gate for approval. Off by default; Claude runners only for now."
+              title="Give agents a real browser (a Playwright/Chrome MCP server) so they can reproduce a bug, verify a UI change, or read live docs. Browser actions still gate for approval. Off by default. Works for Claude, Codex, Gemini, Cursor, and Copilot runners; not Hermes."
             >
               <input
                 type="checkbox"
@@ -973,7 +978,13 @@ function AdvancedSettingsSection() {
 
   if (!open) {
     return (
-      <div className="settings-setup adv-toggle" onClick={() => setOpen(true)} role="button" tabIndex={0}>
+      <div
+        className="settings-setup adv-toggle"
+        onClick={() => setOpen(true)}
+        onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), setOpen(true))}
+        role="button"
+        tabIndex={0}
+      >
         <div className="settings-setup-text">
           <div className="settings-setup-title">Advanced</div>
           <div className="settings-setup-sub">

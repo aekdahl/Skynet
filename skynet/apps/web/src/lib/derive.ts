@@ -9,6 +9,7 @@ import type {
   Agent,
   Task,
   TaskState,
+  Feature,
 } from "@skynet/shared";
 
 // ─── time formatting ───────────────────────────────────────────────────────
@@ -172,6 +173,14 @@ export const readyMerges = (runs: TaskRun[]) =>
     .filter((r) => r.pr?.state === "open" && !r.pr.dismissed)
     .sort((a, b) => (b.pr!.openedAt ?? 0) - (a.pr!.openedAt ?? 0));
 
+// Features whose aggregate PR is open and awaiting a human merge decision
+// (feature-scoped branch batching — one PR per completed Feature, not per
+// task). Same shape/sort as readyMerges, over the already-synced store list.
+export const readyFeatureMerges = (features: Feature[]) =>
+  features
+    .filter((f) => f.pr?.state === "open" && !f.pr.dismissed)
+    .sort((a, b) => (b.pr!.openedAt ?? 0) - (a.pr!.openedAt ?? 0));
+
 // ─── runner / fleet derivations ──────────────────────────────────────────────
 
 export const runnerIsBusy = (runner: Agent, runs: TaskRun[]) =>
@@ -190,6 +199,72 @@ export const providerOf = (agent: TaskRun, fleet: Agent[]): ProviderId => {
   const r = fleet.find((f) => f.id === agent.agentId);
   return r ? r.provider : agent.provider;
 };
+
+// ─── cost/usage roll-ups (per-project header, per-runner in Fleet) ──────────
+// PURE, unit-tested — computed client-side from `runs` (not server-derived on
+// the snapshot, unlike e.g. parallelismNudge) because `runs` is kept live by
+// per-delta patches (run.usage, run.status, …; see store.tsx's reducer), while
+// a snapshot only lands at connect/reconnect. A snapshot-only rollup would
+// freeze mid-session — wrong for a running cost meter, and a regression from
+// ProjectStats' existing live per-project total (project.tsx), which this
+// replaces to share one tested implementation instead of two.
+//
+// `costUsd`/`durationMs` are null when NO run in the group reported one — kept
+// separate from `uncostedRuns` (runs with no report at all) so a caller can
+// render "$0.00" only when that's really what happened, never for "unknown."
+export interface UsageRollup {
+  runCount: number;
+  tokensIn: number;
+  tokensOut: number;
+  costUsd: number | null;
+  durationMs: number | null;
+  uncostedRuns: number;
+}
+
+function emptyRollup(): UsageRollup {
+  return { runCount: 0, tokensIn: 0, tokensOut: 0, costUsd: null, durationMs: null, uncostedRuns: 0 };
+}
+
+function addRun(roll: UsageRollup, r: TaskRun): void {
+  roll.runCount++;
+  const u = r.usage;
+  if (!u) {
+    roll.uncostedRuns++;
+    return;
+  }
+  roll.tokensIn += u.inputTokens;
+  roll.tokensOut += u.outputTokens;
+  if (u.costUsd != null) roll.costUsd = (roll.costUsd ?? 0) + u.costUsd;
+  else roll.uncostedRuns++;
+  if (u.durationMs != null) roll.durationMs = (roll.durationMs ?? 0) + u.durationMs;
+}
+
+/** Sums token/cost/duration usage across runs, grouped by project and by agent. Archived runs are excluded, matching the rest of the UI's roll-ups. */
+export function computeUsageRollup(runs: TaskRun[]): {
+  byProject: Record<string, UsageRollup>;
+  byAgent: Record<string, UsageRollup>;
+} {
+  const byProject: Record<string, UsageRollup> = {};
+  const byAgent: Record<string, UsageRollup> = {};
+  for (const r of runs) {
+    if (r.archived) continue;
+    addRun((byProject[r.projectId] ??= emptyRollup()), r);
+    if (r.agentId) addRun((byAgent[r.agentId] ??= emptyRollup()), r);
+  }
+  return { byProject, byAgent };
+}
+
+export function fmtNum(n: number): string {
+  if (n < 1_000) return String(n);
+  if (n < 1_000_000) return (n / 1_000).toFixed(n < 10_000 ? 1 : 0) + "k";
+  return (n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0) + "M";
+}
+export function fmtCost(usd: number): string {
+  if (usd < 0.01) return "<$0.01";
+  if (usd < 1) return "$" + usd.toFixed(2);
+  if (usd < 100) return "$" + usd.toFixed(2);
+  return "$" + Math.round(usd).toLocaleString();
+}
 
 // ─── module name lookup ──────────────────────────────────────────────────────
 
@@ -263,6 +338,7 @@ export const KIND_META: Record<HitlKind, { label: string; color: string }> = {
   diff: { label: "DIFF REVIEW", color: "var(--ok)" },
   merge: { label: "MERGE CONFLICT", color: "var(--danger)" },
   escalation: { label: "NEEDS HELP", color: "var(--danger)" },
+  verifier: { label: "CHECKS FAILED", color: "var(--danger)" },
 };
 
 export const providerInfo = (
