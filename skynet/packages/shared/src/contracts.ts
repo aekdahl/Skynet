@@ -569,6 +569,24 @@ export const DiffWalkthrough = z.object({
 });
 export type DiffWalkthrough = z.infer<typeof DiffWalkthrough>;
 
+// Guided merge (see Orchestrator.raiseDiffReview / draftMergeBrief): a
+// plain-English risk/mitigation read of the diff, drafted once alongside the
+// walkthrough — same stateless-consult discipline (structured JSON, never
+// prose). `filesTouched` is supplied by the SYSTEM from the real diff stat,
+// never trusted from the model. `mitigations` composes the model's own
+// diff-grounded read with facts the system already knows (the recorded
+// auto-review verdict, whether the project runs checks after merge) — the
+// model is never asked to restate those, only to add genuinely new risk
+// framing. Null when the draft failed or the provider doesn't support
+// `consult` — the diff HITL always still has the raw diff either way.
+export const MergeBrief = z.object({
+  summary: z.string(),
+  filesTouched: z.array(z.string()).default([]),
+  risks: z.array(z.string()).default([]),
+  mitigations: z.array(z.string()).default([]),
+});
+export type MergeBrief = z.infer<typeof MergeBrief>;
+
 export const DiffSummary = z.object({
   add: z.number().int().nonnegative(),
   del: z.number().int().nonnegative(),
@@ -578,6 +596,15 @@ export const DiffSummary = z.object({
   // gates that carry no file list stay valid.
   files: z.array(z.string()).default([]),
   walkthrough: DiffWalkthrough.nullable().default(null),
+  mergeBrief: MergeBrief.nullable().default(null),
+  // The branch a diff/merge APPROVAL integrates into if the operator doesn't
+  // choose a different one — the project's local integration branch
+  // (`skynet/integration/<projectId>`), or, when GitHub-connected, the PR
+  // base branch. A `merge` retry gate (post-conflict/failure) carries forward
+  // whatever branch that attempt actually targeted, so a plain retry lands in
+  // the same place. Null on a gate predating guided merge, or when it
+  // couldn't be resolved (no git backend). See Resolution.targetBranch.
+  defaultTargetBranch: z.string().nullable().default(null),
 });
 export type DiffSummary = z.infer<typeof DiffSummary>;
 
@@ -589,6 +616,10 @@ export const Resolution = z.object({
   action: ResolveAction,
   optionIndex: z.number().int().nullable().default(null), // for 'option'
   guidance: z.string().nullable().default(null), // for 'modify'
+  // Guided merge — the operator's chosen integration branch for an `approve`
+  // on a `diff`/`merge` gate. Null = the default (DiffSummary.defaultTargetBranch).
+  // Ignored for every other kind/action.
+  targetBranch: z.string().nullable().default(null),
   // Approve-with-memory (roadmap: "the Inbox becomes how policy/memory get
   // authored") — an operator's own words on a durable project/workspace
   // preference this decision suggests, captured in-flow alongside 'approve'.
@@ -781,6 +812,9 @@ export const ResolveRequest = z.object({
   // "approve always" rule for this exact command to the project (only honored for
   // rememberable — low/medium, non-deny — commands). Ignored otherwise.
   remember: z.boolean().optional(),
+  // Guided merge — approve a `diff`/`merge` gate into a branch other than the
+  // default (DiffSummary.defaultTargetBranch). Ignored for every other kind.
+  targetBranch: z.string().optional(),
   // Approve-with-memory — see Resolution.memoryNote. Only honored on `approve`.
   memoryNote: z.string().optional(),
 });

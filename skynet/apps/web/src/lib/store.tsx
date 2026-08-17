@@ -105,7 +105,7 @@ export interface Store extends StoreState {
   resolveHitl: (
     id: string,
     action: ResolveAction,
-    extra?: { optionIndex?: number; guidance?: string; remember?: boolean; memoryNote?: string },
+    extra?: { optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string },
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;

@@ -236,7 +236,7 @@ export function clearAudit() {
 // HITL
 export function resolveHitl(
   id: string,
-  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; memoryNote?: string },
+  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string },
 ) {
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
 }

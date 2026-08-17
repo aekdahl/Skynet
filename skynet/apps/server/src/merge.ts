@@ -37,11 +37,18 @@ export interface MergeRequest {
   projectId: string;
   agentBranch: string;
   workspaceId: string;
-  // Feature-scoped branch batching: when set, this merge's DESTINATION is the
-  // shared `skynet/feature/<featureId>` branch instead of the project's default
-  // integration branch — see `targetBranchFor`. Unset for the reverse step (the
-  // feature branch merging UP into the project's integration branch): that's a
-  // normal request whose `agentBranch` happens to be the feature branch name.
+  // Guided merge — the OPERATOR's explicit choice on approve, overriding
+  // whatever `targetBranchFor` would otherwise pick (creating the branch off
+  // `baseBranch` if it doesn't exist yet, same as the default). Highest
+  // precedence: an explicit human choice beats the automatic featureId
+  // routing below. Unset = today's behavior, unchanged.
+  targetBranch?: string;
+  // Feature-scoped branch batching: when set (and targetBranch isn't), this
+  // merge's DESTINATION is the shared `skynet/feature/<featureId>` branch
+  // instead of the project's default integration branch — see
+  // `targetBranchFor`. Unset for the reverse step (the feature branch
+  // merging UP into the project's integration branch): that's a normal
+  // request whose `agentBranch` happens to be the feature branch name.
   featureId?: string;
   // Effective check command for this run's PROJECT, already resolved (project
   // override, else the workspace-global default) at enqueue time. Threaded per-
@@ -132,14 +139,17 @@ export class MergeEngine {
     return stat;
   }
 
-  /** The merge DESTINATION for a request — the project's default integration
-   *  branch, or (feature-scoped branch batching) a shared per-feature branch
-   *  when `req.featureId` is set. Generalizes `integrationBranch` so a single
-   *  project can have several merges in flight against different targets
-   *  (its own integration branch, plus any number of feature branches) —
-   *  each gets its own serialized chain (see `enqueue`) and scratch worktree
-   *  (see `scratchFor`), so they never collide. */
+  /** The merge DESTINATION for a request — the operator's explicit
+   *  `targetBranch` (guided merge) if set, else (feature-scoped branch
+   *  batching) a shared per-feature branch when `req.featureId` is set,
+   *  else the project's default integration branch. Generalizes
+   *  `integrationBranch` so a single project can have several merges in
+   *  flight against different targets (its own integration branch, plus any
+   *  number of feature branches or operator-chosen branches) — each gets
+   *  its own serialized chain (see `enqueue`) and scratch worktree (see
+   *  `scratchFor`), so they never collide. */
   targetBranchFor(req: MergeRequest): string {
+    if (req.targetBranch) return req.targetBranch;
     return req.featureId ? `${FEATURE_BRANCH_PREFIX}${req.featureId}` : this.integrationBranch(req.projectId);
   }
 
@@ -161,10 +171,14 @@ export class MergeEngine {
 
   /** Sanitized scratch worktree path for a merge TARGET branch. Keyed by the
    *  branch, not just the project — a project can have several targets in
-   *  flight at once (its integration branch, plus any feature branches), each
-   *  already on its own serialized chain (see `enqueue`); a shared scratch
-   *  path keyed only by projectId would let two of those `git worktree add`
-   *  the same path concurrently and corrupt one or both. */
+   *  flight at once (its integration branch, plus any feature branches or
+   *  operator-chosen guided-merge branches), each already on its own
+   *  serialized chain (see `enqueue`); a shared scratch path keyed only by
+   *  projectId would let two of those `git worktree add` the same path
+   *  concurrently and corrupt one or both. Branch names are already the
+   *  uniqueness boundary (each target branch — default, feature, or
+   *  operator-chosen — is distinct), so keying on projectId too would be
+   *  redundant. */
   private scratchFor(branch: string): string {
     return join(this.scratchRoot, `integration-${branch.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
   }

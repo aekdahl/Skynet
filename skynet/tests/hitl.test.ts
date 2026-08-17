@@ -29,8 +29,8 @@ const item: HitlItem = {
   command: "migrate", options: null, recommended: null, steps: null, diff: null,
 };
 
-const approve: Resolution = { action: "approve", optionIndex: null, guidance: null, memoryNote: null, by: "op-1", at: 5_000 };
-const reject: Resolution = { action: "reject", optionIndex: null, guidance: "no", memoryNote: null, by: "op-2", at: 6_000 };
+const approve: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "op-1", at: 5_000 };
+const reject: Resolution = { action: "reject", optionIndex: null, guidance: "no", targetBranch: null, memoryNote: null, by: "op-2", at: 6_000 };
 
 describe("HITL idempotency (first-writer-wins)", () => {
   let store: MemoryStore;
