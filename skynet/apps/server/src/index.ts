@@ -216,7 +216,11 @@ async function main() {
       );
       done();
     });
-    registerLivePreviewProxy(app, (t) => projectPreview.proxyTargetForToken(t));
+    registerLivePreviewProxy(
+      app,
+      (t) => projectPreview.proxyTargetForToken(t),
+      () => projectPreview.liveSalvageCandidates(),
+    );
     // Kill any live preview trees on graceful shutdown — their dev servers are
     // spawned detached (own process group) so they'd otherwise outlive the server
     // and keep holding ports (EADDRINUSE on the next boot). In a container, PID

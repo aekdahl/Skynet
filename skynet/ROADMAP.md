@@ -312,6 +312,24 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     pdfjs-dist's fake-worker fallback), which is a structural blind spot no amount of regex tuning closes.
     `injectViteBase`/`npmRunScriptName` (`project-preview.ts`) now look through the `npm run` wrapper at
     the real script body, so base-mode — the actually-complete fix — applies to the common case too.*
+    *Root-served (strip) mode made structurally correct — the pdf.worker reload-loop, ended: a
+    `concurrently`-wrapped Vite (`"dev": "concurrently … \"npm:dev:client\""`, the Takeoff shape) puts the
+    word "vite" two script-indirections deep, so base-injection can never fire and strip mode has to
+    actually work. Three layers close it for good (all live-verified against a real
+    Vite + pdfjs-dist + concurrently fixture through the real preview machinery): (1) `rewriteJsImports`
+    also rewrites `export default "/…"` — the entire body Vite serves for a `?url` asset import, which is
+    how a worker file's URL reaches app code as a runtime string (the exact pdfjs-dist leak the two
+    earlier regex fixes missed); (2) SALVAGE — a token-less request in a dev-server-only namespace
+    (`/@fs/…`, `/@vite/…`, `/@id/…`, `/node_modules/…`) that escaped the prefix is routed back to its
+    preview (via the worktree path baked into `/@fs/` URLs → Referer → sole live preview) instead of
+    falling through to the SPA fallback, catching the whole runtime-computed-URL class regex can never
+    see; (3) the proxy now owns the server's `upgrade` event EXCLUSIVELY (delegating non-preview sockets
+    to @fastify/websocket) and splices root-origin `vite-hmr`/`vite-ping` sockets through to the dev
+    server — which both makes HMR genuinely work in strip mode and kills the once-per-second reload
+    loop: @fastify/websocket completes a websocket handshake on any matched route before noticing there's
+    no websocket handler, so Vite's "is the server back?" probe (success = the socket OPENS) always
+    "succeeded" against the SPA fallback and the client reloaded forever; unroutable Vite sockets are now
+    destroyed WITHOUT a handshake, so the probe fails honestly and the page just stays up.*
     Remaining Phase-2: the service-container runtime + auto-rebuild on merge.
     · **command** (CLI/lib/other) → run a command and surface **output/exit/artifacts** (no URL) —
     "preview" = run it and show the result. Covers "any software".

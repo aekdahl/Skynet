@@ -30,16 +30,36 @@
 //     serves after it — Vite rewrites each module's import specifiers to
 //     root-absolute paths (`from "/src/App.jsx"`, `from "/@fs/…"`), so the SAME
 //     MIME-mismatch/blank-page failure hits the whole module graph, not just the
-//     entry HTML, if only the HTML were rewritten. HMR-over-proxy degrades to
-//     reload-on-refresh in this mode.
+//     entry HTML, if only the HTML were rewritten.
+//
+// Text rewriting is inherently best-effort (a runtime-computed URL can never be
+// caught as text), so root-served mode gets a second, structural safety net —
+// SALVAGE: a request that escaped the prefix entirely and landed on the top
+// origin in a namespace only a dev server owns (`/@fs/…`, `/@vite/…`, `/@id/…`,
+// `/@react-refresh`, `/node_modules/…`, `/__vite…`) is routed BACK to the live
+// preview it belongs to (resolved via the worktree path baked into `/@fs/`
+// URLs, the request's `Referer`, or the sole live preview) instead of falling
+// through to Skynet's SPA fallback. Same for WebSockets: Vite's HMR client in
+// root-served mode connects at the TOP origin (its base is `/`), declaring the
+// `vite-hmr`/`vite-ping` subprotocols — those upgrades are spliced through to
+// the dev server, which both makes HMR work end-to-end in strip mode AND kills
+// a vicious reload loop: previously the upgrade fell through to
+// @fastify/websocket, whose handler COMPLETES the handshake on any matched
+// route before noticing it isn't a websocket route — so Vite's "is the server
+// back?" ping socket (success = the socket OPENS, see waitForSuccessfulPing in
+// vite/dist/client/client.mjs) always "succeeded" against the SPA fallback and
+// the client called location.reload(), once per second, forever.
 //
 // HTTP is hijacked in an `onRequest` hook — that runs BEFORE Fastify parses the
-// body, so we stream the raw request straight through. HMR (and any app) WebSocket
-// is bridged on the server `upgrade` event.
+// body, so we stream the raw request straight through. Upgrades are intercepted
+// EXCLUSIVELY (prior `upgrade` listeners — @fastify/websocket, which owns /ws —
+// only see upgrades that aren't ours), so a preview socket is never double-
+// handled by two writers on one socket.
 
 import type { FastifyInstance } from "fastify";
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect } from "node:net";
+import type { Duplex } from "node:stream";
 
 /** Extract the `<token>` from `/p/<token>/…`. */
 export function previewTokenOf(url: string): string | null {
@@ -67,29 +87,25 @@ const OPT_COMMENT = "(?:/\\*.*?\\*/\\s*)?";
 
 /** Re-prefix root-absolute ES-module specifiers in a JS body: `from "/…"` (static
  *  imports/re-exports), bare `import "/…"` (side-effect imports), dynamic
- *  `import("/…")`, and `new URL("/…", import.meta.url)` (Vite's transform for a
- *  static-literal `new URL(specifier, import.meta.url)` — the pattern libraries
- *  like `pdfjs-dist` use to locate a worker file: `fileToDevUrl` bakes the
- *  resolved path in as a *root-relative string*, so at runtime the browser
- *  resolves it against the page's origin, landing on the unprefixed path and
- *  missing this proxy entirely — a `text/html` SPA-fallback response where a
- *  worker script was expected, which surfaces as "failed to fetch dynamically
- *  imported module"). This is what Vite's module graph is actually built from
- *  once you're past the entry HTML — e.g. `main.jsx` importing `"/src/App.jsx"`
- *  or `"/@fs/…"` — so it applies both inside inline `<script>` blocks
- *  (react-refresh preamble) and to whole standalone `.js`/`.jsx` module
- *  responses. Skips protocol-relative, absolute-URL, relative, and
+ *  `import("/…")`, `new URL("/…", import.meta.url)` (Vite's transform for a
+ *  static-literal `new URL(specifier, import.meta.url)`), and
+ *  `export default "/…"` — the entire body of the module Vite's dev server
+ *  serves for a `?url` asset import (vite:asset load():
+ *  `export default ${JSON.stringify(url)}`). That last shape is how a library
+ *  worker file's URL actually reaches app code — e.g.
+ *  `import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url"` resolves
+ *  to a module whose text is `export default "/@fs/…/pdf.worker.min.mjs?import"`
+ *  — and the string is then consumed at RUNTIME (`new Worker(url)`,
+ *  `import(url)`), where no text rewriter can see it anymore. Miss it here and
+ *  the browser resolves the bare `/@fs/…` path against the top origin, escapes
+ *  the proxy, and gets SPA-fallback HTML where a worker script was expected
+ *  ("Setting up fake worker failed: Failed to fetch dynamically imported
+ *  module"). Skips protocol-relative, absolute-URL, relative, and
  *  already-prefixed specifiers (only a single leading `/` qualifies).
  *
- *  IMPORTANT — this is inherently incomplete: it only catches a path that
- *  appears as a quoted string LITERAL directly in one of these four shapes.
- *  A runtime-computed specifier — `import(someVariable)`, e.g. pdfjs-dist's
- *  `_setupFakeWorker()` doing `import(this.workerSrc)` — can never be caught
- *  by text rewriting, because the value doesn't exist as text until the code
- *  runs. The robust fix for that class is serving the dev server itself in
- *  base-prefixed mode (`--base=/p/<token>/`, see project-preview.ts) so Vite
- *  bakes the correct prefix into every reference itself; this function is a
- *  best-effort fallback for when that isn't possible. PURE — tested. */
+ *  Still inherently incomplete — a URL assembled at runtime from pieces can
+ *  never be caught as text; the salvage layer (see header + salvagePreviewToken)
+ *  is the structural backstop for that class. PURE — tested. */
 export function rewriteJsImports(js: string, prefix: string): string {
   const reprefix = (path: string): string | null =>
     path === prefix || path.startsWith(prefix + "/") ? null : prefix + path;
@@ -109,6 +125,10 @@ export function rewriteJsImports(js: string, prefix: string): string {
     .replace(new RegExp(`\\bnew\\s+URL\\s*\\(\\s*${OPT_COMMENT}("|')(/(?!/)[^"']*)\\1\\s*,\\s*import\\.meta\\.url\\s*\\)`, "g"), (m, q, path) => {
       const r = reprefix(path);
       return r ? m.replace(`${q}${path}${q}`, `${q}${r}${q}`) : m;
+    })
+    .replace(/\bexport\s+default\s+("|')(\/(?!\/)[^"']*)\1/g, (m, q, path) => {
+      const r = reprefix(path);
+      return r ? `export default ${q}${r}${q}` : m;
     });
 }
 
@@ -135,25 +155,93 @@ export function rewritePreviewHtml(html: string, prefix: string): string {
   return out;
 }
 
+// ─── Salvage: token-less dev-server requests back to their preview ──────────
+
+/** Path namespaces only a dev server (Vite & friends) ever owns. A top-origin
+ *  request in one of these can only be a preview-page reference that escaped
+ *  the `/p/<token>/` prefix (a runtime-computed URL the text rewriter could not
+ *  see) — never a legitimate Skynet route. PURE — tested. */
+export function isDevServerPath(url: string): boolean {
+  const p = url.split("?")[0]!;
+  return (
+    p.startsWith("/@fs/") ||
+    p.startsWith("/@vite/") ||
+    p.startsWith("/@id/") ||
+    p === "/@react-refresh" ||
+    p.startsWith("/node_modules/") ||
+    p.startsWith("/__vite")
+  );
+}
+
+/** A live preview the salvage layer can route to. `dir` is the preview's
+ *  worktree directory (absolute); `stripPrefix` mirrors PreviewTarget. */
+export interface SalvageCandidate {
+  token: string;
+  dir: string;
+  stripPrefix: boolean;
+}
+
+/** Resolve which live preview a token-less dev-server request belongs to:
+ *   1. `/@fs/<abs-path>` embeds the file's real location — match it against
+ *      each candidate's worktree dir (deterministic, works even for requests
+ *      that carry no Referer, e.g. a worker's own sub-requests);
+ *   2. the request's `Referer` names the page it came from — `/p/<token>/…`;
+ *   3. exactly one live preview → it (the overwhelmingly common case).
+ *  Returns the token, or null when unresolvable (ambiguous or no previews).
+ *  PURE — tested. */
+export function salvagePreviewToken(
+  url: string,
+  referer: string | undefined,
+  candidates: SalvageCandidate[],
+): string | null {
+  if (!isDevServerPath(url) || candidates.length === 0) return null;
+  const path = url.split("?")[0]!;
+  if (path.startsWith("/@fs/")) {
+    let decoded = path;
+    try {
+      decoded = decodeURIComponent(path);
+    } catch {
+      /* keep raw */
+    }
+    const fsPath = decoded.slice("/@fs".length); // "/@fs/data/…" → "/data/…"
+    for (const c of candidates) {
+      const dir = c.dir.replace(/\/+$/, "");
+      if (dir && (fsPath === dir || fsPath.startsWith(dir + "/"))) return c.token;
+    }
+  }
+  if (referer) {
+    const m = referer.match(/\/p\/([A-Za-z0-9._-]+)(?:\/|\?|$)/);
+    const tok = m?.[1];
+    if (tok && candidates.some((c) => c.token === tok)) return tok;
+  }
+  if (candidates.length === 1) return candidates[0]!.token;
+  return null;
+}
+
+/** Does an upgrade request declare Vite's client subprotocols? (`vite-hmr` for
+ *  the live HMR channel, `vite-ping` for the "is the server back?" probe whose
+ *  SUCCESS CONDITION is just the socket opening.) PURE — tested. */
+export function isViteClientSocket(protocolHeader: string | string[] | undefined): boolean {
+  const v = Array.isArray(protocolHeader) ? protocolHeader.join(",") : (protocolHeader ?? "");
+  return /\bvite-(hmr|ping)\b/.test(v);
+}
+
 /** Resolve a preview token to its live loopback port and path mode, or undefined
  *  if unknown/not live. `stripPrefix` = the dev server serves at base `/`, so the
  *  proxy must strip the `/p/<token>` prefix and re-prefix its HTML (see header). */
 export type PreviewTarget = (token: string) => { port: number; stripPrefix: boolean } | undefined;
 
-export function registerLivePreviewProxy(app: FastifyInstance, targetForToken: PreviewTarget): void {
-  // ── HTTP ──────────────────────────────────────────────────────────────────
-  app.addHook("onRequest", (req, reply, done) => {
-    if (!req.url.startsWith("/p/")) return done();
-    const token = previewTokenOf(req.url);
-    const target = token ? targetForToken(token) : undefined;
-    if (!target) {
-      reply.code(404).type("text/plain").send("preview not found or not running");
-      return;
-    }
-    const { port, stripPrefix } = target;
-    reply.hijack(); // take over the socket; skip Fastify's body parsing + serialization
-    const raw = reply.raw;
-    const fwdPath = stripPrefix ? stripPreviewPrefix(req.url, token!) : req.url;
+/** The live previews the salvage layer may route token-less requests to. */
+export type SalvageCandidates = () => SalvageCandidate[];
+
+export function registerLivePreviewProxy(
+  app: FastifyInstance,
+  targetForToken: PreviewTarget,
+  salvageCandidates: SalvageCandidates = () => [],
+): void {
+  /** Forward one HTTP request to a preview's dev server, rewriting root-served
+   *  bodies so their root-absolute refs re-enter the `/p/<token>/` prefix. */
+  function forward(req: IncomingMessage & { url: string }, raw: ServerResponse, token: string, port: number, stripPrefix: boolean, fwdPath: string): void {
     const headers = { ...req.headers, host: `127.0.0.1:${port}` };
     // In strip mode we may rewrite the body, so ask the dev server to hand it
     // back uncompressed (we can't rewrite gzipped bytes).
@@ -197,39 +285,112 @@ export function registerLivePreviewProxy(app: FastifyInstance, targetForToken: P
       if (!raw.headersSent) raw.writeHead(502, { "content-type": "text/plain" });
       raw.end("preview upstream error");
     });
-    req.raw.pipe(upstream); // GET → empty body ends immediately; POST/PUT → streamed
+    req.pipe(upstream); // GET → empty body ends immediately; POST/PUT → streamed
+  }
+
+  // ── HTTP ──────────────────────────────────────────────────────────────────
+  app.addHook("onRequest", (req, reply, done) => {
+    if (!req.url.startsWith("/p/")) {
+      // Salvage: a dev-server-namespace request that escaped the prefix (a
+      // runtime-computed URL — see header). Route it back to its preview; when
+      // no preview can be resolved, answer 404 OURSELVES — these namespaces are
+      // never Skynet routes, and letting them fall to the SPA fallback turns
+      // every miss into a misleading 200 text/html (the "HTML where a module
+      // was expected" class of failure).
+      if (!isDevServerPath(req.url)) return done();
+      const token = salvagePreviewToken(req.url, req.headers.referer, salvageCandidates());
+      const target = token ? targetForToken(token) : undefined;
+      if (!token || !target) {
+        reply.code(404).type("text/plain").send("preview asset not routable (no matching live preview)");
+        return;
+      }
+      reply.hijack();
+      // A root-served dev server expects the path exactly as it appears here; a
+      // base-prefixed one only answers under its base, so re-add the prefix.
+      const fwdPath = target.stripPrefix ? req.url : `/p/${token}${req.url}`;
+      forward(req.raw as IncomingMessage & { url: string }, reply.raw, token, target.port, target.stripPrefix, fwdPath);
+      return;
+    }
+    const token = previewTokenOf(req.url);
+    const target = token ? targetForToken(token) : undefined;
+    if (!target) {
+      reply.code(404).type("text/plain").send("preview not found or not running");
+      return;
+    }
+    reply.hijack(); // take over the socket; skip Fastify's body parsing + serialization
+    const fwdPath = target.stripPrefix ? stripPreviewPrefix(req.url, token!) : req.url;
+    forward(req.raw as IncomingMessage & { url: string }, reply.raw, token!, target.port, target.stripPrefix, fwdPath);
   });
 
   // ── WebSocket (Vite HMR + any app socket) ──────────────────────────────────
   // Transparent TCP splice: re-issue the raw HTTP upgrade to the loopback dev
-  // server (Host rewritten) and pipe the sockets, so the 101 + frames flow end to
-  // end. Only /p/ upgrades are ours — every other path (e.g. Skynet's own /ws) is
-  // left untouched for its handler. Best-effort: a failed HMR socket never breaks
-  // page viewing.
-  app.server.on("upgrade", (req, socket, head) => {
-    const url = req.url ?? "";
-    if (!url.startsWith("/p/")) return; // not ours
-    const token = previewTokenOf(url);
-    const target = token ? targetForToken(token) : undefined;
-    if (!target) {
-      socket.destroy();
-      return;
-    }
-    const { port, stripPrefix } = target;
-    const fwdUrl = stripPrefix ? stripPreviewPrefix(url, token!) : url;
-    const upstream = netConnect(port, "127.0.0.1", () => {
-      const headers = { ...req.headers, host: `127.0.0.1:${port}` };
-      const lines = [`${req.method ?? "GET"} ${fwdUrl} HTTP/1.1`];
-      for (const [k, v] of Object.entries(headers)) {
-        if (Array.isArray(v)) for (const vv of v) lines.push(`${k}: ${vv}`);
-        else if (v != null) lines.push(`${k}: ${v}`);
+  // server (Host rewritten) and pipe the sockets, so the 101 + frames flow end
+  // to end. Interception is EXCLUSIVE: prior `upgrade` listeners (that's
+  // @fastify/websocket, which owns Skynet's own /ws) only run for upgrades that
+  // aren't ours — previously both listeners fired for every upgrade, and
+  // @fastify/websocket completes the websocket handshake on ANY matched route
+  // before discovering it has no websocket handler (handleUpgrade first,
+  // noHandle after), which is what made Vite's `vite-ping` probe "succeed"
+  // against the SPA fallback and reload the previewed page every second.
+  // Best-effort: a failed HMR socket never breaks page viewing.
+  //
+  // The takeover runs at onReady — Fastify boots plugins lazily, so
+  // @fastify/websocket's own `upgrade` listener only exists once the app has
+  // finished booting; capturing earlier would find an empty list and then
+  // coexist with (instead of preceding) the plugin's listener, resurrecting the
+  // double-handling this replaces — and destroying /ws sockets we should have
+  // delegated.
+  app.addHook("onReady", (done) => {
+    const priorUpgradeListeners = app.server.listeners("upgrade").slice() as Array<(req: IncomingMessage, socket: Duplex, head: Buffer) => void>;
+    app.server.removeAllListeners("upgrade");
+    app.server.on("upgrade", (req, socket, head) => {
+      const url = req.url ?? "";
+      let token: string | null = null;
+      let fwdUrl = url;
+      if (url.startsWith("/p/")) {
+        token = previewTokenOf(url);
+        if (token) fwdUrl = targetForToken(token)?.stripPrefix ? stripPreviewPrefix(url, token) : url;
+      } else if (!url.startsWith("/ws") && isViteClientSocket(req.headers["sec-websocket-protocol"])) {
+        // A root-served preview's Vite client connects at the TOP origin (its
+        // base is `/`) — the page URL's token never reaches us, so resolve by
+        // the sole live root-served preview. Ambiguous (several live) → destroy
+        // WITHOUT a handshake: vite-ping's success test is "did the socket
+        // open", so a hard failure keeps the client polling quietly instead of
+        // reload-looping on a fake open.
+        const strips = salvageCandidates().filter((c) => c.stripPrefix);
+        token = strips.length === 1 ? strips[0]!.token : null;
+        if (token === null) {
+          socket.destroy();
+          return;
+        }
+      } else {
+        // Not a preview upgrade — hand it to whoever was listening before us
+        // (@fastify/websocket → Skynet's /ws gateway).
+        if (priorUpgradeListeners.length === 0) socket.destroy();
+        else for (const l of priorUpgradeListeners) l.call(app.server, req, socket, head);
+        return;
       }
-      upstream.write(lines.join("\r\n") + "\r\n\r\n");
-      if (head?.length) upstream.write(head);
-      socket.pipe(upstream);
-      upstream.pipe(socket);
+      const target = token ? targetForToken(token) : undefined;
+      if (!target) {
+        socket.destroy();
+        return;
+      }
+      const { port } = target;
+      const upstream = netConnect(port, "127.0.0.1", () => {
+        const headers = { ...req.headers, host: `127.0.0.1:${port}` };
+        const lines = [`${req.method ?? "GET"} ${fwdUrl} HTTP/1.1`];
+        for (const [k, v] of Object.entries(headers)) {
+          if (Array.isArray(v)) for (const vv of v) lines.push(`${k}: ${vv}`);
+          else if (v != null) lines.push(`${k}: ${v}`);
+        }
+        upstream.write(lines.join("\r\n") + "\r\n\r\n");
+        if (head?.length) upstream.write(head);
+        socket.pipe(upstream);
+        upstream.pipe(socket);
+      });
+      upstream.on("error", () => socket.destroy());
+      socket.on("error", () => upstream.destroy());
     });
-    upstream.on("error", () => socket.destroy());
-    socket.on("error", () => upstream.destroy());
+    done();
   });
 }
