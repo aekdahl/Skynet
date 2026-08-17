@@ -13,7 +13,7 @@ export function EmptyState({
 }: {
   title: string;
   hint?: ReactNode;
-  cta?: { label: string; onClick: () => void };
+  cta?: { label: string; onClick: () => void; disabled?: boolean };
   compact?: boolean;
 }) {
   return (
@@ -21,7 +21,7 @@ export function EmptyState({
       <div className="empty-state-title">{title}</div>
       {hint && <div className="empty-state-hint">{hint}</div>}
       {cta && (
-        <button className="btn btn-primary empty-state-cta" onClick={cta.onClick}>
+        <button className="btn btn-primary empty-state-cta" disabled={cta.disabled} onClick={cta.onClick}>
           {cta.label}
         </button>
       )}

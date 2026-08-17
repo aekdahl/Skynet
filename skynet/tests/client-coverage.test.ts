@@ -99,6 +99,13 @@ const ALLOW = new Set<string>([
   // Operations/Orchestrator path (with a stub GitHub service). No end-to-end
   // fleet journey opens a real PR, so they're allowlisted rather than simulated.
   "mergePr", "updatePrBranch", "reworkPr", "dismissPr",
+  // Feature-scoped branch batching's aggregate PR (one per completed Feature,
+  // not per task) — same stub-GitHub Operations/Orchestrator harness, in
+  // ready-merge.test.ts's "feature-scoped batches" suite; the underlying
+  // git-merge tiers (task → feature branch → project base) are covered end to
+  // end with real repos in merge.test.ts. No fleet journey completes an entire
+  // multi-task feature batch, so allowlisted like the per-run actions above.
+  "mergeFeaturePr", "dismissFeaturePr",
   // Checkpoint / snapshot-restore — creates a real git commit + pinned ref and,
   // on restore, stops the live handle and relaunches the provider with a
   // resumed SDK session. No offline journey can exercise the worktree
@@ -113,6 +120,24 @@ const ALLOW = new Set<string>([
   // exercised against a real store + hub in task-linter-ops.test.ts, and the
   // model's structured-output parsing in task-linter.test.ts.
   "dismissTaskLint",
+  // Viewer-role session plumbing (fetchMe + the readOnly flag it derives) —
+  // called once at boot (StoreProvider), not from a user action a journey would
+  // drive. The role → scopes mapping is covered server-side by
+  // operator-seed.test.ts; the REST mutation gate it feeds by
+  // viewer-role-routes.test.ts. isReadOnlyPrincipal is a pure predicate over
+  // that shape, exercised directly wherever it's used (store.tsx), not via a
+  // journey.
+  "fetchMe", "setReadOnly", "isReadOnly", "isReadOnlyPrincipal",
+  // `inform` — mass-select runs (explicit ids and/or a whole project's live
+  // runs) and attach a note that rides each one's next prompt, no extra turn
+  // (a third interaction type alongside chat + resolve). Exercising it for
+  // real needs a LIVE run on a real provider (a note only means anything once
+  // it rides an actual next turn) — no offline journey can produce that. The
+  // Operations/Orchestrator wiring (multi-run, project targeting, union
+  // dedup, skip-when-not-live) is exercised against a real store + hub in
+  // inform.test.ts; the delivery mechanics (Claude's shouldQuery:false, the
+  // CLI buffer+prepend) in claude-inform.test.ts / cli-inform.test.ts.
+  "informRuns",
 ]);
 
 describe("client API coverage", () => {

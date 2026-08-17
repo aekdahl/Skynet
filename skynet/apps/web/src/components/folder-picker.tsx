@@ -89,7 +89,7 @@ function BrowseModal({
       <div className="fp-modal" onClick={(e) => e.stopPropagation()} style={MODAL}>
         <div style={HEAD}>
           <b>Choose a project folder</b>
-          <button className="btn btn-ghost" onClick={onClose} style={{ padding: "2px 8px" }}>✕</button>
+          <button className="btn btn-ghost" onClick={onClose} aria-label="Close" style={{ padding: "2px 8px" }}>✕</button>
         </div>
 
         {/* Editable path bar — type/paste + Enter or Go to jump there. */}
@@ -136,7 +136,7 @@ function BrowseModal({
         </div>
 
         <div style={FOOT}>
-          <span style={{ color: "var(--faint)", fontSize: 11 }}>
+          <span style={{ color: "var(--muted)", fontSize: 11 }}>
             {listing?.isGitRepo
               ? "◈ This folder is a git repo — runs branch & PR here."
               : typedButNotLoaded
