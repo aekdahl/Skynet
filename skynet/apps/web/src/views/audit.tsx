@@ -36,6 +36,7 @@ function payloadOf(p: unknown): {
   optionIndex: number | null;
   guidance: string | null;
   targetBranch: string | null;
+  memoryNote: string | null;
   kind: string | null;
   title: string | null;
   why: string | null;
@@ -48,6 +49,7 @@ function payloadOf(p: unknown): {
   diff: { add: number; del: number } | null;
   walkthrough: DiffWalkthrough | null;
   mergeBrief: MergeBrief | null;
+  output: string | null;
 } {
   const o = (p ?? {}) as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
@@ -58,6 +60,7 @@ function payloadOf(p: unknown): {
     optionIndex: typeof o.optionIndex === "number" ? o.optionIndex : null,
     guidance: str(o.guidance),
     targetBranch: str(o.targetBranch),
+    memoryNote: str(o.memoryNote),
     kind: str(o.kind),
     title: str(o.title),
     why: str(o.why),
@@ -72,6 +75,7 @@ function payloadOf(p: unknown): {
     // way in via the HitlItem schema) — a light presence check is enough here.
     walkthrough: d && typeof d.walkthrough === "object" && d.walkthrough ? (d.walkthrough as DiffWalkthrough) : null,
     mergeBrief: d && typeof d.mergeBrief === "object" && d.mergeBrief ? (d.mergeBrief as MergeBrief) : null,
+    output: str(o.output),
   };
 }
 
@@ -114,6 +118,7 @@ function AuditRow({
   const title = p.title ?? item?.title ?? null;
   const why = p.why ?? item?.why ?? null;
   const command = p.command ?? item?.command ?? null;
+  const output = p.output ?? item?.output ?? null;
   const rationale = p.rationale ?? item?.rationale ?? null;
   const risk = p.risk ?? item?.risk ?? null;
   // Read the chosen option from the SNAPSHOT (self-contained) — the live item's
@@ -151,8 +156,9 @@ function AuditRow({
       {rationale && <p className="audit-reason">💭 {rationale}</p>}
       {why && <p className="audit-why">{why}</p>}
       {command && <pre className="audit-cmd mono">{command}</pre>}
+      {output && <pre className="audit-cmd mono">{output}</pre>}
 
-      {(kind === "diff" || kind === "merge") && p.patch && (
+      {(kind === "diff" || kind === "merge" || kind === "verifier") && p.patch && (
         <div className="audit-diff-wrap">
           {p.files && p.files.length > 0 && (
             <p className="audit-files mono">{p.files.join("  ·  ")}</p>
@@ -180,6 +186,11 @@ function AuditRow({
       )}
       {(kind === "diff" || kind === "merge") && p.targetBranch && (
         <p className="audit-detail">Merged into <span className="mono">{p.targetBranch}</span>.</p>
+      )}
+      {p.memoryNote && (
+        <p className="audit-detail audit-memory-note" title="Captured for Memory v0 to adopt once it lands — not yet read back by anything">
+          📝 Remembered: “{p.memoryNote}”
+        </p>
       )}
 
       <div className="audit-actions">
@@ -401,6 +412,7 @@ export function AuditView({
           <button
             className="kb-archive-head"
             onClick={() => setShowArchived((s) => !s)}
+            aria-expanded={showArchived}
           >
             {showArchived ? "▾" : "▸"} ARCHIVED · {archived.length}
           </button>

@@ -6,7 +6,7 @@
 
 import { Pool } from "pg";
 import { now } from "../config.js";
-import type { Principal } from "../auth.js";
+import type { Principal, Scope } from "../auth.js";
 import { newSession, type Session, type SessionStore } from "./sessions.js";
 
 const SCHEMA = `
@@ -18,12 +18,21 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at   bigint NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expires_at);
+-- scopes: NULL = full authority (admin humans, dev tokens) — mirrors
+-- Principal.scopes' own undefined-means-unrestricted convention, so a NULL
+-- read back needs no special-casing before reaching hasScope(). Without this
+-- column a viewer's restricted scopes were silently dropped on every
+-- resolve() — a Postgres-backed viewer login resolved as full authority.
+-- Added after the initial release; ADD COLUMN IF NOT EXISTS upgrades an
+-- existing table in place (this table has no other migration yet).
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS scopes jsonb;
 `;
 
 interface Row {
   workspace_id: string;
   operator_id: string;
   expires_at: string;
+  scopes: Scope[] | null;
 }
 
 export class PostgresSessionStore implements SessionStore {
@@ -46,9 +55,16 @@ export class PostgresSessionStore implements SessionStore {
     const session = newSession(principal, ttlMs);
     const pool = await this.db();
     await pool.query(
-      `INSERT INTO sessions(token,workspace_id,operator_id,created_at,expires_at)
-       VALUES($1,$2,$3,$4,$5)`,
-      [session.token, principal.workspaceId, principal.operatorId, session.createdAt, session.expiresAt],
+      `INSERT INTO sessions(token,workspace_id,operator_id,created_at,expires_at,scopes)
+       VALUES($1,$2,$3,$4,$5,$6)`,
+      [
+        session.token,
+        principal.workspaceId,
+        principal.operatorId,
+        session.createdAt,
+        session.expiresAt,
+        principal.scopes ? JSON.stringify(principal.scopes) : null,
+      ],
     );
     return session;
   }
@@ -62,7 +78,11 @@ export class PostgresSessionStore implements SessionStore {
       await pool.query("DELETE FROM sessions WHERE token=$1", [token]); // sweep on access
       return undefined;
     }
-    return { workspaceId: row.workspace_id, operatorId: row.operator_id };
+    return {
+      workspaceId: row.workspace_id,
+      operatorId: row.operator_id,
+      ...(row.scopes ? { scopes: row.scopes } : {}),
+    };
   }
 
   async destroy(token: string): Promise<void> {

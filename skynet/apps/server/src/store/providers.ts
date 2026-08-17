@@ -15,6 +15,9 @@ const PROVIDER_ENV_KEY: Record<ProviderId, string | undefined> = {
   copilot: process.env.GITHUB_TOKEN,
   // Hermes is provider-agnostic; its recommended key is OpenRouter's.
   hermes: process.env.OPENROUTER_API_KEY,
+  // OpenCode is provider-agnostic too; defaulted to Anthropic (its own docs'
+  // recommendation) — see provider-env.ts.
+  opencode: process.env.ANTHROPIC_API_KEY,
 };
 
 // Each provider carries its static requirements + a live binOnPath probe (what

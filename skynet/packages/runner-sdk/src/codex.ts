@@ -11,10 +11,16 @@
 // (CODEX_BIN, CODEX_EXTRA_ARGS) so operators can track protocol changes without
 // a code change. Missing binary or an auth failure falls back cleanly (see
 // cli-runner.ts) — the default RUNNER=mock path never imports this module.
+//
+// Opt-in browser tooling (`spec.browser`, see cli-runner.ts's
+// `browserMcpServerSpec`) is wired via `-c mcp_servers.browser.*=…` overrides on
+// `buildArgs` — no config file touched, ever (see the comment there).
 
 import type { ProviderId, Resolution } from "@skynet/shared";
 import {
+  BROWSER_MCP_NAME,
   CliRunnerProvider,
+  browserMcpServerSpec,
   usageFromJson,
   type CliEvent,
   type CliVendor,
@@ -65,15 +71,27 @@ export const codex: CliVendor = {
 
   buildArgs(spec: StartSpec): string[] {
     // `exec` = non-interactive; `--json` = JSONL event stream on stdout.
-    return [
+    const args = [
       "exec",
       "--json",
       "--skip-git-repo-check",
       "--model",
       spec.model,
-      ...EXTRA,
-      spec.task,
     ];
+    // Opt-in browser tooling: Codex has NO project-local MCP config file (only
+    // a global `~/.codex/config.toml`) — but `-c key=value` overrides a config
+    // value for just this invocation (verified live against codex-cli 0.147.0:
+    // `codex mcp list -c 'mcp_servers.browser.command="npx"' -c '…args=[...]'`
+    // registers the server with zero file writes). Each override value is TOML,
+    // and a JSON string/array of strings IS valid TOML, so JSON.stringify
+    // produces exactly the literal `-c` wants.
+    if (spec.browser) {
+      const { command, args: mcpArgs } = browserMcpServerSpec();
+      args.push("-c", `mcp_servers.${BROWSER_MCP_NAME}.command=${JSON.stringify(command)}`);
+      args.push("-c", `mcp_servers.${BROWSER_MCP_NAME}.args=${JSON.stringify(mcpArgs)}`);
+    }
+    args.push(...EXTRA, spec.task);
+    return args;
   },
 
   parseLine(line: string, ctx: ParseCtx): CliEvent {

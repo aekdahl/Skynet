@@ -88,6 +88,16 @@ export interface StoreState {
   // a real-time gate). Undefined until the first snapshot lands (or an older
   // server that doesn't send it).
   parallelismNudge?: ParallelismNudge;
+  // A viewer-role session (read-only — see auth/operators.ts's role concept).
+  // Undefined until GET /api/auth/me resolves at boot; the client-side mutation
+  // guard (client.ts's req()) is the enforcement, this is just for UI greying.
+  readOnly?: boolean;
+  // Time-limited admin promotion (ROADMAP.md) — set while an elevation window
+  // is live on this session (null otherwise). Drives the countdown + the
+  // auto-revert timer below; `readOnly` itself already reflects the elevated
+  // state (the server resolves an elevated principal with scopes: undefined),
+  // this is only for the UI to show/count down/proactively re-check.
+  elevatedUntil?: number | null;
 }
 
 export interface Store extends StoreState {
@@ -95,10 +105,17 @@ export interface Store extends StoreState {
   resolveHitl: (
     id: string,
     action: ResolveAction,
-    extra?: { optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string },
+    extra?: { optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string },
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
+  // `inform` — mass-select runs (explicit ids and/or a whole project's live
+  // runs) + a note that rides each one's next prompt, no extra turn.
+  informRuns: (body: {
+    note: string;
+    runIds?: string[];
+    projectId?: string;
+  }) => Promise<{ informed: string[]; skipped: Array<{ runId: string; reason: string }> }>;
   forkAgent: (id: string) => Promise<void>;
   // Checkpoint / restore (extends fork/resume, W6). Checkpoints aren't part of
   // the WS-synced snapshot (per-run, lazily fetched like a diff) — create/
@@ -113,6 +130,9 @@ export interface Store extends StoreState {
   updatePrBranch: (runId: string) => Promise<{ updated: boolean; conflicts?: string[] }>;
   reworkPr: (runId: string, guidance: string, comment?: string) => Promise<void>;
   dismissPr: (runId: string) => Promise<void>;
+  // Feature-scoped branch batching's aggregate PR — merge/dismiss only.
+  mergeFeaturePr: (featureId: string, method?: "merge" | "squash" | "rebase") => Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }>;
+  dismissFeaturePr: (featureId: string) => Promise<void>;
   // Local optimistic flip after a key is set/cleared in Settings (the snapshot
   // recomputes availability from the secret store on next load).
   setProviderAvailable: (id: string, available: boolean) => void;
@@ -138,6 +158,8 @@ export interface Store extends StoreState {
       autonomy?: boolean;
       approvalLevel?: string;
       planModeGate?: boolean;
+      // Tool names to block for this project's agents; null clears the restriction.
+      disallowedTools?: string[] | null;
       repoPath?: string | null;
       // null clears the project's instructions back to "no rules".
       instructions?: string | null;
@@ -147,6 +169,11 @@ export interface Store extends StoreState {
       syncSourceStatus?: boolean;
       // Branch to stack runs/PRs onto; null clears back to the global default.
       baseBranch?: string | null;
+      // Where the Roadmap tab reads its doc from; null clears back to the
+      // default ROADMAP.md/docs/ROADMAP.md candidates.
+      roadmapPath?: string | null;
+      // Verifier gate command; null clears back to the global default.
+      checkCmd?: string | null;
     },
   ) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;
@@ -218,6 +245,14 @@ export interface Store extends StoreState {
   // Exchange operator credentials for a session token, then reconnect with it.
   login: (email: string, password: string) => Promise<api.LoginResult>;
   verifyMfa: (challengeId: string, code: string) => Promise<void>;
+  // Time-limited admin promotion (ROADMAP.md) — ADMIN-granted: promote a
+  // named viewer to a bounded full-authority window. Only callable by an
+  // admin session (the server enforces the caller's PERSISTED role). Doesn't
+  // touch the CALLER's own readOnly/elevatedUntil — granting someone else a
+  // promotion never changes your own session.
+  promoteOperator: (operatorId: string, ttlMs?: number) => Promise<{ expiresAt: number }>;
+  fetchOperators: () => Promise<api.OperatorSummary[]>;
+  fetchElevations: () => Promise<api.ElevationEvent[]>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -406,7 +441,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const loadSnapshot = useRef(() => {
     api
       .fetchSnapshot()
-      .then((snap) => setState(fromSnapshot(snap)))
+      // fromSnapshot() is a wholesale replace — thread readOnly/elevatedUntil
+      // through so a reload/retry doesn't drop them back to "unknown" between
+      // fetchMe() calls.
+      .then((snap) => setState((s) => ({ ...fromSnapshot(snap), readOnly: s.readOnly, elevatedUntil: s.elevatedUntil })))
       .catch((err) => {
         // The WS snapshot will seed state if the REST seed fails — but never
         // swallow silently: a schema/contract drift makes fetchSnapshot reject
@@ -420,12 +458,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     loadSnapshot.current();
+    // Resolve the session's principal once at boot — whether it's read-only
+    // drives the client-side mutation guard (client.ts's req()) and the UI's
+    // greying. Best-effort: a failure here just leaves mutations enabled
+    // client-side (the server-side gate is still authoritative).
+    api
+      .fetchMe()
+      .then((principal) => {
+        const ro = api.isReadOnlyPrincipal(principal);
+        api.setReadOnly(ro);
+        if (!cancelled) setState((s) => ({ ...s, readOnly: ro, elevatedUntil: principal.elevatedUntil ?? null }));
+      })
+      .catch((err) => console.error("[store] fetchMe failed:", err));
 
     const conn = api.connect(
       (msg) => {
         if (cancelled) return;
         if (msg.type === "snapshot") {
-          setState(fromSnapshot(msg.state));
+          setState((s) => ({ ...fromSnapshot(msg.state), readOnly: s.readOnly, elevatedUntil: s.elevatedUntil }));
         } else {
           // A newly-raised HITL is the "needs you" moment → fire an Inbox alert.
           // notifyInbox no-ops unless the operator turned alerts on (lib/alerts).
@@ -450,6 +500,51 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Time-limited admin promotion: schedule the auto-revert. The server is what
+  // actually enforces the window (auth/elevations.ts's activeUntil() re-checks
+  // it on every request regardless of this timer) — this only makes the
+  // CLIENT proactively re-fetch /me and flip back to read-only the moment it
+  // lapses, instead of the UI silently believing it's still elevated until
+  // the next mutation attempt gets a surprise 403.
+  useEffect(() => {
+    if (!state.elevatedUntil) return;
+    const ms = state.elevatedUntil - Date.now();
+    if (ms <= 0) return; // already lapsed — the next fetchMe() naturally reflects it
+    const t = setTimeout(() => {
+      api
+        .fetchMe()
+        .then((principal) => {
+          const ro = api.isReadOnlyPrincipal(principal);
+          api.setReadOnly(ro);
+          setState((s) => ({ ...s, readOnly: ro, elevatedUntil: principal.elevatedUntil ?? null }));
+        })
+        .catch(() => undefined);
+    }, ms);
+    return () => clearTimeout(t);
+  }, [state.elevatedUntil]);
+
+  // A promotion is ADMIN-granted, on a DIFFERENT browser session than the one
+  // that grants it — unlike the revert above, there's no local action to hang
+  // a proactive re-check off of. Poll /me while this session is read-only so a
+  // just-promoted viewer sees it land without a manual reload; stops the
+  // moment it's no longer read-only (the revert timer above takes over then).
+  useEffect(() => {
+    if (!state.readOnly) return;
+    const t = setInterval(() => {
+      api
+        .fetchMe()
+        .then((principal) => {
+          const ro = api.isReadOnlyPrincipal(principal);
+          api.setReadOnly(ro);
+          setState((s) => (s.readOnly === ro && s.elevatedUntil === (principal.elevatedUntil ?? null)
+            ? s
+            : { ...s, readOnly: ro, elevatedUntil: principal.elevatedUntil ?? null }));
+        })
+        .catch(() => undefined);
+    }, 20_000);
+    return () => clearInterval(t);
+  }, [state.readOnly]);
+
   const store = useMemo<Store>(() => {
     return {
       ...state,
@@ -461,6 +556,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return reply;
       },
       streamAgentMessage: (id, text, onDelta) => api.streamAgentMessage(id, text, onDelta),
+      informRuns: (body) => api.informRuns(body),
       forkAgent: async (id) => {
         try {
           await api.forkAgent(id);
@@ -506,6 +602,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       dismissPr: async (runId) => {
         await api.dismissPr(runId);
+      },
+      mergeFeaturePr: (featureId, method) => api.mergeFeaturePr(featureId, method),
+      dismissFeaturePr: async (featureId) => {
+        await api.dismissFeaturePr(featureId);
       },
       setProviderAvailable: (id, available) => {
         setState((s) => ({
@@ -667,6 +767,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         // Session set — re-init the whole app with the new token.
         location.reload();
       },
+      promoteOperator: (operatorId, ttlMs) => api.promoteOperator(operatorId, ttlMs),
+      fetchOperators: () => api.fetchOperators(),
+      fetchElevations: () => api.fetchElevations(),
     };
   }, [state]);
 

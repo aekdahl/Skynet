@@ -100,7 +100,7 @@ describe("review feedback loop: modify guidance is applied", () => {
     const openDiff = async (): Promise<HitlItem | undefined> =>
       (await store.listQueue(DEFAULT_WORKSPACE)).find((q) => q.kind === "diff" && q.resolvedAt == null);
     const resolve = async (item: HitlItem, action: Resolution["action"], guidance?: string) => {
-      const resolution: Resolution = { action, optionIndex: null, guidance: guidance ?? null, targetBranch: null, by: "test", at: Date.now() };
+      const resolution: Resolution = { action, optionIndex: null, guidance: guidance ?? null, targetBranch: null, memoryNote: null, by: "test", at: Date.now() };
       const r = await hub.resolveHitl(item.id, resolution);
       if (r?.resolution?.at === resolution.at) await orchestrator.deliver(item, resolution);
     };

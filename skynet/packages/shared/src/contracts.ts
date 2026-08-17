@@ -16,6 +16,7 @@ export const ProviderId = z.enum([
   "cursor",
   "copilot",
   "hermes",
+  "opencode",
 ]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
@@ -37,7 +38,11 @@ export type PlanStepState = z.infer<typeof PlanStepState>;
 // enough / fundamentally blocked), or the system tripped a guard (too long, too
 // many failures). Distinct from "question" (which resumes on an answer): the
 // human decides whether to help & resume, reassign, or stop.
-export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation"]);
+// "verifier" = the project's check command failed AFTER a diff/merge gate was
+// already approved and the merge itself succeeded — the merge commit is undone
+// (MergeEngine.process's bounce) pending this decision: approve retries the
+// merge+check, reject/modify bounces the agent to revise with the check output.
+export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "verifier"]);
 export type HitlKind = z.infer<typeof HitlKind>;
 
 /** Default single-tenant workspace until real provisioning lands. */
@@ -302,6 +307,15 @@ export const Project = z.object({
   // a human wants to see the approach BEFORE anything changes. Only the Claude
   // runner acts on it today.
   planModeGate: z.boolean().default(false),
+  // Tool names this project's agents may never use (e.g. "Bash") — passed to
+  // the SDK's own `disallowedTools`, which removes the tool from the model's
+  // context entirely (not just gated per-call). A deny-list, not an allow-list:
+  // an allow-list risks silently breaking an agent that needs a tool nobody
+  // thought to list, so the safer default is "everything except what's named
+  // here". null/empty = no restriction (today's behavior, unchanged). Only the
+  // Claude runner acts on it today — CLI vendors have no equivalent SDK
+  // primitive (see runner-sdk/src/claude.ts).
+  disallowedTools: z.array(z.string()).nullable().default(null),
   // A project binds to a repository one of two ways (they can coexist):
   //  • repoPath — an absolute local folder the runs work in. When it contains
   //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
@@ -316,6 +330,13 @@ export const Project = z.object({
   // feature branch to STACK a project's work onto that branch instead of main —
   // every run branches off it and its PRs target it.
   baseBranch: z.string().nullable().default(null),
+  // Command run in a scratch worktree after a successful merge, before it's
+  // committed to the integration branch — the project's tests/checks (the
+  // Verifier gate). null → the server-global default (SKYNET_CHECK_CMD), same
+  // "project override, else global default" convention as `baseBranch`. A
+  // failing check undoes the merge commit and raises a `verifier` HITL instead
+  // of silently landing broken code; a passing check auto-commits (unchanged).
+  checkCmd: z.string().nullable().default(null),
   // Free-form markdown that rides EVERY agent prompt on this project — the
   // "house rules" for this codebase (which packages to use, code structure,
   // conventions the agent should follow). Steward also sees it in its
@@ -344,6 +365,12 @@ export const Project = z.object({
   // (e.g. close/comment the GitHub issue on done). Outward-facing, so off by
   // default. See docs/task-source-sync.md.
   syncSourceStatus: z.boolean().default(false),
+  // Override for where the Roadmap tab reads its doc from, when it isn't at
+  // either default candidate (steward/docs.ts's ROADMAP_PATHS —
+  // "ROADMAP.md"/"docs/ROADMAP.md"). Set by the operator (or Steward,
+  // confirmed) via a "select a file" affordance when the default lookup comes
+  // up empty. null = use the default candidates, unchanged behavior.
+  roadmapPath: z.string().nullable().default(null),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -488,6 +515,15 @@ export const Feature = z.object({
   order: z.number().int().optional(),
   archived: z.boolean().default(false),
   createdAt: Timestamp,
+  // The aggregate PR for this feature's batched tasks — feature-scoped branch
+  // batching (see merge.ts's `targetBranchFor`): tasks under this feature merge
+  // into a shared `skynet/feature/<id>` branch, and once every one is done this
+  // is set to the single PR opened for the whole batch (feature branch → project
+  // base), rather than one PR per task. A dedicated field, not reused per-task
+  // `TaskRun.pr` slots — by the time the aggregate PR opens, every sibling run
+  // has already gone through its own completion/worktree-retire, so writing a
+  // fresh open PR onto those records would leave stale, unmergeable duplicates.
+  pr: PullRequest.nullable().default(null),
 });
 export type Feature = z.infer<typeof Feature>;
 
@@ -584,6 +620,16 @@ export const Resolution = z.object({
   // on a `diff`/`merge` gate. Null = the default (DiffSummary.defaultTargetBranch).
   // Ignored for every other kind/action.
   targetBranch: z.string().nullable().default(null),
+  // Approve-with-memory (roadmap: "the Inbox becomes how policy/memory get
+  // authored") — an operator's own words on a durable project/workspace
+  // preference this decision suggests, captured in-flow alongside 'approve'.
+  // Distinct from the command-specific "Always allow" rule (see ApprovalRule
+  // above): this applies to any gate kind, not just exact commands, and isn't
+  // an auto-approval — it's a fact for Memory v0 to adopt as a write path once
+  // it lands (ROADMAP.md "Memory v0"). Until then this is plumbing only:
+  // persisted on the resolution + audit trail so the intent isn't lost, but
+  // nothing reads it back or injects it into a runner yet.
+  memoryNote: z.string().nullable().default(null),
   by: z.string(), // operator id — audit trail
   at: Timestamp,
 });
@@ -614,9 +660,24 @@ export const HitlItem = z.object({
   recommended: z.number().int().nullable().default(null), // question — index
   steps: z.array(z.string()).nullable().default(null), // plan
   diff: DiffSummary.nullable().default(null), // diff
+  // Captured command/check output (verifier). Unlike `diff` (re-fetchable from
+  // the agent's worktree on demand, so never stored raw), a failed check runs in
+  // a SCRATCH integration worktree that's torn down immediately after — there's
+  // nothing left to re-fetch from later, so the (capped) output is captured onto
+  // the gate itself at raise time.
+  output: z.string().nullable().default(null), // verifier
   // System-computed, scannable chips for the decision: the safety classifier's
   // risk reasons (approval) or the conflicting files (merge). Not runner-supplied.
   flags: z.array(z.string()).default([]),
+  // `merge`-kind only, feature-scoped branch batching (merge.ts's `targetBranchFor`):
+  // set when this conflict is merging a FEATURE branch itself UP into the
+  // project's base (once every task under it is done) — retrying on approve
+  // must re-merge THIS ref, never the resolving run's own branch (there's no
+  // single "owning run" for that step, unlike a task merging INTO its feature
+  // branch, which re-derives correctly from the task's own `featureId` on
+  // retry — same as `agent.branch` already does today). Null for every HITL
+  // today — additive, no behavior change to existing records.
+  sourceBranchOverride: z.string().nullable().default(null),
 });
 export type HitlItem = z.infer<typeof HitlItem>;
 
@@ -648,6 +709,12 @@ export const Agent = z.object({
   // own agent) — this only narrows the reviewer pool further. Off = never picked
   // as a reviewer (it still does its own tasks).
   canReview: z.boolean().default(true),
+  // Area-manager hierarchy (docs/agent-hierarchy.md), landed additively ahead of
+  // the agentic manager runtime: 'worker' (default) is every agent today —
+  // unchanged behavior. 'manager' is reserved for a future per-project area
+  // manager that delegates to worker subagents; nothing in this codebase sets
+  // it yet (no manager provisioning exists), so it's inert until that lands.
+  role: z.enum(["manager", "worker"]).default("worker"),
 });
 export type Agent = z.infer<typeof Agent>;
 
@@ -748,10 +815,23 @@ export const ResolveRequest = z.object({
   // Guided merge — approve a `diff`/`merge` gate into a branch other than the
   // default (DiffSummary.defaultTargetBranch). Ignored for every other kind.
   targetBranch: z.string().optional(),
+  // Approve-with-memory — see Resolution.memoryNote. Only honored on `approve`.
+  memoryNote: z.string().optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
 
 export const ChatRequest = z.object({ text: z.string().min(1) });
+
+// `inform` — a third interaction type alongside chat (a real extra turn) and
+// resolve (a HITL decision): a note that rides each targeted run's NEXT prompt
+// at no extra turn — never a fresh round-trip query, never a HITL gate. Select
+// explicit run ids, a whole project's live runs, or both (the two sets union).
+export const InformRequest = z.object({
+  note: z.string().min(1),
+  runIds: z.array(z.string()).default([]),
+  projectId: z.string().optional(),
+});
+export type InformRequest = z.infer<typeof InformRequest>;
 
 // ─── Ready-to-merge actions ──────────────────────────────────────────────────
 /** Merge an open PR from the ready list. `method` = the GitHub merge strategy. */
@@ -819,17 +899,22 @@ export const UpdateProjectRequest = z.object({
   autonomy: z.boolean().optional(),
   approvalLevel: ApprovalLevel.optional(),
   planModeGate: z.boolean().optional(), // see Project.planModeGate
+  // Tool names to block for this project's agents. `null` clears back to "no
+  // restriction". See Project.disallowedTools.
+  disallowedTools: z.array(z.string()).nullable().optional(),
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
   // Project-scoped agent guidance. `null` clears the field back to "no rules".
   instructions: z.string().nullable().optional(),
   githubCredentialId: z.string().nullable().optional(), // pick the GitHub account (null clears → default)
   baseBranch: z.string().nullable().optional(), // stack onto a branch; null clears → global default
+  checkCmd: z.string().nullable().optional(), // Verifier gate command; null clears → global default
 
   // Which provider keys the project may run on (secret-store credential ids;
   // empty = all keys). See Project.enabledRunnerCredentialIds.
   enabledRunnerCredentialIds: z.array(z.string()).optional(),
   syncSourceStatus: z.boolean().optional(), // write status changes back to the source of truth
+  roadmapPath: z.string().nullable().optional(), // see Project.roadmapPath; null clears → default candidates
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 
@@ -902,8 +987,12 @@ export type UpdateMilestoneRequest = z.infer<typeof UpdateMilestoneRequest>;
 // after the operator confirms the diff in chat. `baselineHash` (always) and
 // `baselineSha` (GitHub-bound projects only) pin the edit to the exact content
 // it was drafted against, so a concurrent change is refused, not clobbered.
+// `path` isn't restricted to the two default candidates: Project.roadmapPath
+// can point the doc at any file, and validateProjectAction's edit_roadmap
+// case (steward/assistant.ts) already refuses a path that doesn't match the
+// resolved doc's own — this schema doesn't need a second, stricter opinion.
 export const UpdateProjectRoadmapRequest = z.object({
-  path: z.enum(["ROADMAP.md", "docs/ROADMAP.md"]),
+  path: z.string().min(1),
   content: z.string().min(1),
   baselineHash: z.string().min(1),
   baselineSha: z.string().optional(),

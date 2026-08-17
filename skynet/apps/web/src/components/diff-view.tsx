@@ -180,7 +180,7 @@ export function DiffView({
           )}
         </div>
       )}
-      <button className="dv-toggle mono" onClick={() => setOpen((o) => !o)}>
+      <button className="dv-toggle mono" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <span className="dv-caret">{open ? "▾" : "▸"}</span> {open ? "Hide changes" : "View changes"}
         <span className="dv-toggle-stat">
           <span className="diff-add">+{add}</span> <span className="diff-del">−{del}</span>

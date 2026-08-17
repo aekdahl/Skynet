@@ -20,6 +20,12 @@ export function HitlContext({ q, runName, openDiff = false }: { q: HitlItem; run
     });
   if (q.rationale) rows.push({ label: q.kind === "escalation" ? "Agent's account" : "Agent's reason", value: q.rationale, cls: "hitl-ctx-reason" });
   if (q.why) rows.push({ label: q.kind === "escalation" ? "What happened" : "Why you're asked", value: q.why });
+  if (q.output)
+    rows.push({
+      label: "Check output",
+      value: <pre className="hitl-ctx-cmd mono hitl-ctx-output">{q.output}</pre>,
+      cls: "hitl-ctx-what",
+    });
 
   const flags = q.flags ?? [];
   const flagLabel = q.kind === "merge" ? "Conflicts in" : q.kind === "escalation" ? "Trigger" : "Flagged";

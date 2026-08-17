@@ -119,6 +119,13 @@ export function StewardDock({
           .then(() => {
             window.dispatchEvent(new CustomEvent("skynet:roadmap-updated", { detail: { projectId } }));
           });
+      case "set_roadmap_path":
+        // A plain project field via the normal store path, but an open Roadmap
+        // tab needs the same live-refetch nudge edit_roadmap gives it — it isn't
+        // driven by project.roadmapPath directly, it refetches on this event.
+        return updateProject(projectId, { roadmapPath: a.path ?? null }).then(() => {
+          window.dispatchEvent(new CustomEvent("skynet:roadmap-updated", { detail: { projectId } }));
+        });
       default: {
         // Exhaustiveness guard: every ProjectActionKind Steward can propose MUST
         // have a case here. Without it a confirmed action silently no-ops (the
@@ -224,7 +231,7 @@ export function StewardDock({
         <span className="steward-title mono">✦ STEWARD</span>
         <span className="steward-scope mono">{effFocusName ? `focused · ${effFocusName}` : "workspace"}</span>
         <span className="steward-spacer" />
-        <button className="btn btn-ghost btn-sm" onClick={onClose} title="Close Steward">✕</button>
+        <button className="btn btn-ghost btn-sm" onClick={onClose} title="Close Steward" aria-label="Close Steward">✕</button>
       </div>
       <div className="steward-thread" ref={threadRef}>
         {msgs.length === 0 && (

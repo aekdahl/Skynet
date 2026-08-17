@@ -13,7 +13,8 @@ import type { Operations } from "../operations.js";
 import { mfaEnabled, createChallenge, verifyChallenge } from "./mfa.js";
 import type { SessionStore } from "./sessions.js";
 import type { ServiceTokenStore } from "./service-tokens.js";
-import type { OperatorDirectory } from "./operators.js";
+import type { OperatorDirectory, OperatorRecord } from "./operators.js";
+import type { ElevationStore } from "./elevations.js";
 
 const LoginRequest = z.object({
   email: z.string().min(1),
@@ -24,6 +25,12 @@ const LoginRequest = z.object({
 const MfaRequest = z.object({
   challengeId: z.string().min(1),
   code: z.string().min(1),
+});
+
+// Time-limited admin promotion, ADMIN-granted: ttlMs is a request, not a
+// grant — the route clamps it to elevationMaxTtlMs.
+const PromoteRequest = z.object({
+  ttlMs: z.number().int().positive().optional(),
 });
 
 // Mirrors the Scope tuple in auth.ts. A minted token is narrowed to this subset.
@@ -39,6 +46,13 @@ const CreateServiceTokenRequest = z.object({
 export interface AuthRouteDeps {
   sessions: SessionStore;
   operators: OperatorDirectory;
+  elevations: ElevationStore;
+}
+
+/** A minimal, non-secret view of an operator record for the promotion UI —
+ *  never leaks salt/hash. */
+function operatorSummary(r: OperatorRecord): { operatorId: string; email: string; role: OperatorRecord["role"] } {
+  return { operatorId: r.operatorId, email: r.email, role: r.role };
 }
 
 function setSessionCookie(reply: FastifyReply, token: string, expiresAt: number): void {
@@ -55,7 +69,24 @@ function clearSessionCookie(reply: FastifyReply): void {
 }
 
 export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): Promise<void> {
-  const { sessions, operators } = deps;
+  const { sessions, operators, elevations } = deps;
+
+  // Never trust a live Principal's CURRENT scopes for an admin-only check —
+  // a temporarily-elevated viewer's scopes look identical to a real admin's
+  // (scopes: undefined, same as hasScope() sees for a genuine admin). Look up
+  // the caller's PERSISTED role in the directory instead; this is the one
+  // check that actually closes the "elevated viewer re-grants/self-extends"
+  // loophole. Returns the caller's own record on success (reply already sent
+  // on failure) so callers don't re-look-it-up.
+  function requireAdmin(req: FastifyRequest, reply: FastifyReply): OperatorRecord | undefined {
+    const principal = req.principal!;
+    const record = operators.getByIdentity(principal.workspaceId, principal.operatorId);
+    if (!record || record.role !== "admin") {
+      reply.code(403).send({ error: "Only an admin may do this." });
+      return undefined;
+    }
+    return record;
+  }
 
   // Public — the one /api route reachable without an existing token.
   // Issue a session (httpOnly cookie + body token). Shared by the direct-login
@@ -119,6 +150,41 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
 
   // Authenticated — who am I? (the hook has already set req.principal or 401'd).
   app.get("/api/auth/me", async (req: FastifyRequest) => ({ principal: req.principal }));
+
+  // This workspace's operator roster, as a non-secret summary — lets the
+  // admin-promotion UI list who's a viewer (and thus promotable) without any
+  // general account-management surface. Admin-only: a viewer doesn't need
+  // (and per DEF-006-style discipline, shouldn't casually see) the full list
+  // of other operators' emails in the workspace.
+  app.get("/api/operators", async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!requireAdmin(req, reply)) return reply;
+    return operators.listByWorkspace(req.principal!.workspaceId).map(operatorSummary);
+  });
+
+  // Time-limited admin promotion (ROADMAP.md) — ADMIN-granted, never
+  // self-service: an existing admin promotes a NAMED viewer to a bounded
+  // full-authority window. requireAdmin checks the CALLER's persisted role
+  // (not their current scopes — see its own comment for why that distinction
+  // is load-bearing, not stylistic).
+  app.post<{ Params: { operatorId: string } }>("/api/operators/:operatorId/promote", async (req, reply) => {
+    const admin = requireAdmin(req, reply);
+    if (!admin) return reply;
+    const body = PromoteRequest.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    const target = operators.getByIdentity(admin.workspaceId, req.params.operatorId);
+    if (!target) return reply.code(404).send({ error: "Unknown operator." });
+    if (target.role !== "viewer") {
+      return reply.code(400).send({ error: "Only a viewer can be promoted (this operator is already an admin)." });
+    }
+    const ttlMs = Math.min(body.data.ttlMs ?? config.elevationTtlMs, config.elevationMaxTtlMs);
+    const result = await elevations.grant(admin.workspaceId, target.operatorId, admin.operatorId, ttlMs);
+    return { operatorId: target.operatorId, expiresAt: result.expiresAt };
+  });
+
+  // The elevation audit trail (grants AND observed expiries — see
+  // elevations.ts) — append-only (no archive/delete route). Any authenticated
+  // principal in the workspace may read it, same visibility as GET /api/audit.
+  app.get("/api/auth/elevations", async (req: FastifyRequest) => elevations.list(req.principal!.workspaceId));
 }
 
 /**

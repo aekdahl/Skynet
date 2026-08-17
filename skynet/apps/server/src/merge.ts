@@ -26,15 +26,38 @@ import { gitBin } from "./git-bin.js";
 
 const exec = promisify(execFile);
 
+/** Branch namespace for feature-scoped branch batching's shared per-feature
+ *  branches — exported so callers (orchestrator.ts) can recognize a request
+ *  whose SOURCE is a feature branch (the "merge the feature branch up into
+ *  the project's integration branch" step) without duplicating the literal. */
+export const FEATURE_BRANCH_PREFIX = "skynet/feature/";
+
 export interface MergeRequest {
   runId: string;
   projectId: string;
   agentBranch: string;
   workspaceId: string;
-  // Guided merge — merge into this branch instead of the project's default
-  // integration branch (creating it off `baseBranch` if it doesn't exist yet,
-  // same as the default). Unset = today's behavior, unchanged.
+  // Guided merge — the OPERATOR's explicit choice on approve, overriding
+  // whatever `targetBranchFor` would otherwise pick (creating the branch off
+  // `baseBranch` if it doesn't exist yet, same as the default). Highest
+  // precedence: an explicit human choice beats the automatic featureId
+  // routing below. Unset = today's behavior, unchanged.
   targetBranch?: string;
+  // Feature-scoped branch batching: when set (and targetBranch isn't), this
+  // merge's DESTINATION is the shared `skynet/feature/<featureId>` branch
+  // instead of the project's default integration branch — see
+  // `targetBranchFor`. Unset for the reverse step (the feature branch
+  // merging UP into the project's integration branch): that's a normal
+  // request whose `agentBranch` happens to be the feature branch name.
+  featureId?: string;
+  // Effective check command for this run's PROJECT, already resolved (project
+  // override, else the workspace-global default) at enqueue time. Threaded per-
+  // request rather than baked into the engine at construction: a MergeEngine is
+  // cached per (repo, baseBranch) and shared across every project on that repo,
+  // so a project-level override can't live on `this.checkCmd` without either
+  // colliding with another project sharing the cache key or going stale after
+  // an operator edits it. Undefined → fall back to `this.checkCmd`.
+  checkCmd?: string;
 }
 
 export interface MergeCallbacks {
@@ -72,6 +95,8 @@ export class MergeEngine {
     private repo: string,
     private baseBranch: string,
     private cb: MergeCallbacks,
+    // Workspace-global default; per-project overrides ride MergeRequest.checkCmd
+    // instead (see its doc comment for why).
     private checkCmd?: string,
     scratchRoot?: string,
   ) {
@@ -91,8 +116,45 @@ export class MergeEngine {
     return `skynet/integration/${projectId}`;
   }
 
+  /** Added/deleted line counts + touched files of `branch` vs `base` — read
+   *  directly against the shared repo, no worktree needed (unlike a per-run
+   *  worktree diff, a branch-to-branch diff doesn't require anything checked
+   *  out). Used for feature-scoped branch batching's aggregate PR: the safety
+   *  preflight and PR body need real changed-files for a feature branch that
+   *  has no dedicated per-run worktree of its own. Best-effort, mirrors
+   *  WorktreeProvisioner.diffStat's shape. */
+  async diffStat(branch: string, base: string): Promise<{ add: number; del: number; files: string[] }> {
+    const stat = { add: 0, del: 0, files: [] as string[] };
+    try {
+      const out = await this.git(this.repo, "diff", "--numstat", `${base}...${branch}`);
+      for (const line of out.split("\n").filter(Boolean)) {
+        const [a, d, f] = line.split("\t");
+        stat.add += Number(a) || 0;
+        stat.del += Number(d) || 0;
+        if (f) stat.files.push(f);
+      }
+    } catch {
+      /* best-effort — a missing branch/ref just yields an empty stat */
+    }
+    return stat;
+  }
+
+  /** The merge DESTINATION for a request — the operator's explicit
+   *  `targetBranch` (guided merge) if set, else (feature-scoped branch
+   *  batching) a shared per-feature branch when `req.featureId` is set,
+   *  else the project's default integration branch. Generalizes
+   *  `integrationBranch` so a single project can have several merges in
+   *  flight against different targets (its own integration branch, plus any
+   *  number of feature branches or operator-chosen branches) — each gets
+   *  its own serialized chain (see `enqueue`) and scratch worktree (see
+   *  `scratchFor`), so they never collide. */
+  targetBranchFor(req: MergeRequest): string {
+    if (req.targetBranch) return req.targetBranch;
+    return req.featureId ? `${FEATURE_BRANCH_PREFIX}${req.featureId}` : this.integrationBranch(req.projectId);
+  }
+
   enqueue(req: MergeRequest): void {
-    const branch = req.targetBranch || this.integrationBranch(req.projectId);
+    const branch = this.targetBranchFor(req);
     const prev = this.chains.get(branch) ?? Promise.resolve();
     const next = prev
       .then(() => this.process(req, branch))
@@ -107,14 +169,18 @@ export class MergeEngine {
     if (!exists) await this.git(this.repo, "branch", branch, this.baseBranch);
   }
 
-  /** Sanitized scratch worktree path for a project's integration merges —
-   *  keyed by BOTH project and target branch: with guided merge, one project
-   *  can have multiple chains (one per distinct target branch, see enqueue())
-   *  running concurrently, and each needs its own scratch dir or they'd
-   *  stomp on each other's worktree checkout. */
-  private scratchFor(projectId: string, branch: string): string {
-    const safe = (s: string) => s.replace(/[^a-zA-Z0-9._-]/g, "_");
-    return join(this.scratchRoot, `integration-${safe(projectId)}-${safe(branch)}`);
+  /** Sanitized scratch worktree path for a merge TARGET branch. Keyed by the
+   *  branch, not just the project — a project can have several targets in
+   *  flight at once (its integration branch, plus any feature branches or
+   *  operator-chosen guided-merge branches), each already on its own
+   *  serialized chain (see `enqueue`); a shared scratch path keyed only by
+   *  projectId would let two of those `git worktree add` the same path
+   *  concurrently and corrupt one or both. Branch names are already the
+   *  uniqueness boundary (each target branch — default, feature, or
+   *  operator-chosen — is distinct), so keying on projectId too would be
+   *  redundant. */
+  private scratchFor(branch: string): string {
+    return join(this.scratchRoot, `integration-${branch.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
   }
 
   private async process(req: MergeRequest, branch: string): Promise<void> {
@@ -124,7 +190,7 @@ export class MergeEngine {
     // A fresh scratch worktree holding the integration branch. --force covers a
     // leftover checkout of the branch elsewhere (e.g. pre-fix state where the
     // engine used to check it out in the shared repo).
-    const scratch = this.scratchFor(req.projectId, branch);
+    const scratch = this.scratchFor(branch);
     await this.git(this.repo, "worktree", "remove", "--force", scratch).catch(() => undefined);
     await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
     await this.git(this.repo, "worktree", "add", "--force", scratch, branch);
@@ -160,7 +226,8 @@ export class MergeEngine {
         return;
       }
 
-      if (this.checkCmd) {
+      const checkCmd = req.checkCmd ?? this.checkCmd;
+      if (checkCmd) {
         // Run the operator-configured check under hard limits (timeout, output
         // cap, confined cwd, no inherited stdio) and refuse denylisted commands
         // outright. Env is preserved (an operator-set check needs the real
@@ -170,7 +237,7 @@ export class MergeEngine {
           await this.cb.onChecksFailed(req, output);
         };
         try {
-          assertApprovable(this.checkCmd);
+          assertApprovable(checkCmd);
         } catch (err) {
           if (err instanceof CommandDeniedError) {
             await bounce(`check command refused by safety policy: ${err.message}`);
@@ -178,7 +245,7 @@ export class MergeEngine {
           }
           throw err;
         }
-        const res = await runBounded(this.checkCmd, {
+        const res = await runBounded(checkCmd, {
           cwd: scratch,
           env: process.env as Record<string, string>,
         });

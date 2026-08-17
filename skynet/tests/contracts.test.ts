@@ -4,6 +4,7 @@
 // must be rejected — that's the guarantee both apps lean on.
 import { describe, it, expect } from "vitest";
 import {
+  Agent,
   Task,
   TaskRun,
   HitlItem,
@@ -44,6 +45,24 @@ const agent: TaskRun = {
   mergedAt: null,
 };
 
+// A fleet runner — distinct from `agent` (a TaskRun) above; `Agent` in
+// contracts.ts is the fleet-runner slot (docs/agent-hierarchy.md's `role`
+// field lives here, not on TaskRun).
+const runner: Agent = {
+  id: "runner-01",
+  workspaceId: DEFAULT_WORKSPACE,
+  name: "claude-ada",
+  provider: "claude",
+  credentialId: null,
+  model: "opus-4.8",
+  status: "idle",
+  idleSince: 1_000,
+  label: null,
+  autoProvisioned: false,
+  canReview: true,
+  role: "worker",
+};
+
 const wire = <T>(v: T): unknown => JSON.parse(JSON.stringify(v));
 
 describe("contracts round-trip", () => {
@@ -64,6 +83,22 @@ describe("contracts round-trip", () => {
     expect(parsed.dependsOn).toEqual([]);
     expect(parsed.visual).toBe(false);
     expect(parsed.parentId).toBeNull();
+  });
+
+  it("Agent survives JSON serialize → parse unchanged", () => {
+    const parsed = Agent.parse(wire(runner));
+    expect(parsed).toEqual(runner);
+  });
+
+  it("Agent.role defaults to 'worker' on parse (docs/agent-hierarchy.md — additive, no behavior change)", () => {
+    const minimal = {
+      id: "x", workspaceId: "w", name: "n", provider: "claude", model: "m", status: "idle",
+    };
+    expect(Agent.parse(minimal).role).toBe("worker");
+  });
+
+  it("rejects an unknown Agent role", () => {
+    expect(() => Agent.parse({ ...runner, role: "overlord" })).toThrow();
   });
 
   it("Task.assignment defaults to unassigned and round-trips a pinned pool", () => {
@@ -91,11 +126,12 @@ describe("contracts round-trip", () => {
   });
 
   it("every ServerEvent variant round-trips through its discriminated union", () => {
-    const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, by: "op-1", at: 5 };
+    const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "op-1", at: 5 };
     const hitl: HitlItem = {
       id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "billing", kind: "approval",
       title: "t", why: "w", risk: "medium", raisedAt: 1, expiresAt: null, resolvedAt: null, resolution: null,
-      command: "deploy", options: null, recommended: null, steps: null, diff: null, rationale: null, flags: [],
+      command: "deploy", options: null, recommended: null, steps: null, diff: null, output: null, rationale: null, flags: [],
+      sourceBranchOverride: null,
     };
     const events: ServerEvent[] = [
       { type: "run.started", run: agent },

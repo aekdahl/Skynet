@@ -31,7 +31,9 @@ const mapModel = (m: string): string | undefined => (m.trim() ? m.trim() : undef
 // Lines that look like a tool / shell / edit is running — bump progress.
 const TOOL_RE = /^(?:\s*[▸✦●>*-]\s*)?(running|executing|tool|shell|run|edit|write|read|patch|apply|search|fetch)\b/i;
 
-const hermes: CliVendor = {
+// Exported (unlike a purely-internal const) so tests can assert on the vendor
+// shape directly — the same pattern codex.ts/gemini.ts already use.
+export const hermes: CliVendor = {
   id: "hermes" as ProviderId,
   bin: BIN,
   installHint: "Install the Hermes Agent CLI (https://hermes-agent.nousresearch.com) and set a provider key (e.g. OPENROUTER_API_KEY), or set SKYNET_HERMES_BIN.",
