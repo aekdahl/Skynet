@@ -358,6 +358,27 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     Verified against a real nested-monorepo fixture (real `npm install`, not mocked): cold start
     installs, warm restart skips it (`▸ cd apps/web && node server.js` — no install segment at all),
     a dependency bump makes it reinstall again.
+- [x] **Deploy to Fly.io — a real, persistent deployment alongside the ephemeral local preview.** The
+  live preview above is a scratch worktree running a local dev server: torn down on stop/restart, never
+  independently reachable once Skynet itself isn't running. This adds a second, human-triggered option —
+  a genuine `https://<app>.fly.dev` deployment of a project's **integration branch** (or a single **run's
+  branch**, for pre-merge verification) that survives independent of the local Skynet process, and is
+  only ever torn down by an explicit operator action (never automatically, never on a Skynet restart).
+  **Reuses, doesn't replace:** the SAME worktree provisioning as the local preview (`prepareWorktree`/
+  `ensureDeps`, extracted into `preview/worktree.ts` so both engines share one implementation), the
+  existing `.skynet/preview.json` descriptor's previously-unused `build`/`outputDir` fields (a new `fly`
+  sub-block adds only what's genuinely Fly-specific: app name, region, VM sizing — small/free-tier
+  defaults, always operator-overridable), and the same per-project credential-pinning UI pattern as the
+  GitHub PAT (`flyCredentialId`, a `fly` credential in the existing `SecretStore`). Two deploy shapes:
+  a **static site** (descriptor declares `build`) builds locally in the warm worktree and ships a minimal
+  generated `Dockerfile`/`fly.toml`; a **service** (a real backend) skips any local install entirely and
+  defers to `flyctl launch`'s own builder detection — reusing local `node_modules` for a container's
+  shipped artifact would risk shipping macOS-built native deps into a Linux image. Mechanism: shells out
+  to the real `flyctl` CLI (matches this codebase's `git-bin.ts` precedent — wrap a battle-tested binary
+  rather than reimplement the Machines API), with a deterministic app-name collision retry. Explicit
+  operator action only — a "⇪ Deploy to Fly.io" button; never wired into the autonomy loop, the merge
+  queue, or any automatic trigger. Full design: **[docs/live-preview.md](docs/live-preview.md)
+  §"Deploy to Fly.io"**.
 - [~] **🔁 Task ↔ source-of-truth sync.** Tasks imported from an external source (GitHub issues, repo
   files, a tracker) should update the source when their Skynet status changes. **Approach:** a
   `Task.source` provenance link (set at import) + a `SyncSink` adapter seam (one per source kind),

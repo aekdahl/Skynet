@@ -43,6 +43,7 @@ const agent: TaskRun = {
   archived: false,
   pr: null,
   mergedAt: null,
+  flyDeployment: null,
 };
 
 // A fleet runner — distinct from `agent` (a TaskRun) above; `Agent` in

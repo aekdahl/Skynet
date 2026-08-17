@@ -22,6 +22,7 @@ import type {
   CreateTaskRequest,
   DryRunPolicyRequest,
   Feature,
+  FlyDeployment,
   GenerateComplianceReportRequest,
   HitlItem,
   InformRequest,
@@ -56,6 +57,8 @@ import { computeParallelismNudge } from "./derive/parallelism.js";
 import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { projectPreview, type PreviewState, type PreviewSource } from "./preview/project-preview.js";
+import { git as gitExec } from "./preview/worktree.js";
+import { flyDeploy, type FlyDeployState } from "./fly/deploy.js";
 import { githubService, parseRepoRef } from "./github/index.js";
 import { parseChecklist } from "./tasks/checklist.js";
 import { lintTask } from "./task-linter.js";
@@ -70,7 +73,7 @@ import { commitLocalRepoFile } from "./local-repo-write.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { type Orchestrator } from "./orchestrator.js";
-import { withSecretAvailability } from "./secrets/index.js";
+import { secretService, withSecretAvailability } from "./secrets/index.js";
 import type { Store } from "./store/store.js";
 
 /** A referenced entity does not exist (or isn't in the caller's workspace). 404. */
@@ -393,6 +396,112 @@ export class Operations {
     return projectPreview.refresh(projectId);
   }
 
+  // ── Fly.io deploy (persistent, human-triggered — see docs/live-preview.md) ─
+  // Explicit operator action ONLY: never called from the autonomy loop, the
+  // merge queue, or any automatic trigger. Two targets, same engine: a
+  // project's integration branch (the "overwatch" slice) or a single run's
+  // own branch (pre-merge verification). Unlike the local preview, the
+  // terminal state is PERSISTED on the Project/TaskRun record — the whole
+  // point is that the deployment outlives the local Skynet process, so the UI
+  // must still be able to show "live at https://…" after a restart.
+  private async flyToken(ws: string, credentialId: string | null): Promise<string> {
+    const apiKey = await secretService.resolve(ws, credentialId ?? "fly");
+    if (!apiKey) throw new Error("No Fly.io API token is set — add one in Integrations, or pick an account in this project's settings.");
+    return apiKey;
+  }
+  flyDeployProjectState(ws: string, projectId: string): Promise<FlyDeployState> {
+    return this.getProject(ws, projectId).then((p) => this.mergeFlyState(projectId, p.flyDeployment));
+  }
+  async flyDeployProjectStart(ws: string, projectId: string, operatorId: string): Promise<FlyDeployState> {
+    const project = await this.getProject(ws, projectId);
+    if (!project.repoPath) throw new Error("This project has no local folder to deploy.");
+    const integration = `skynet/integration/${projectId}`;
+    const hasIntegration = await this.branchExists(project.repoPath, integration);
+    const ref = hasIntegration ? integration : project.baseBranch || config.baseBranch;
+    const flyApiToken = await this.flyToken(ws, project.flyCredentialId);
+    const result = await flyDeploy.start({
+      key: projectId, gitRepo: project.repoPath, ref, branch: ref,
+      projectId, projectName: project.name, flyApiToken,
+    });
+    await this.persistFlyDeployment(ws, "project", projectId, result, operatorId);
+    return result;
+  }
+  async flyDeployProjectStop(ws: string, projectId: string): Promise<FlyDeployState> {
+    const project = await this.getProject(ws, projectId);
+    const appName = project.flyDeployment?.appName;
+    if (!appName) throw new Error("Nothing deployed for this project.");
+    const flyApiToken = await this.flyToken(ws, project.flyCredentialId);
+    const result = await flyDeploy.destroy({ key: projectId, appName, flyApiToken, gitRepo: project.repoPath ?? undefined });
+    await this.persistFlyDeployment(ws, "project", projectId, result, project.flyDeployment?.deployedBy ?? "");
+    return result;
+  }
+  flyDeployRunState(ws: string, runId: string): Promise<FlyDeployState> {
+    return this.getRun(ws, runId).then((r) => this.mergeFlyState(`run:${runId}`, r.flyDeployment));
+  }
+  async flyDeployRunStart(ws: string, runId: string, operatorId: string): Promise<FlyDeployState> {
+    const run = await this.getRun(ws, runId);
+    const project = await this.getProject(ws, run.projectId);
+    if (!project.repoPath) throw new Error("This project has no local folder to deploy.");
+    if (!(await this.branchExists(project.repoPath, run.branch))) {
+      throw new Error(`This run has no commits to deploy yet (branch ${run.branch} doesn't exist).`);
+    }
+    const flyApiToken = await this.flyToken(ws, project.flyCredentialId);
+    const result = await flyDeploy.start({
+      key: `run:${runId}`, gitRepo: project.repoPath, ref: run.branch, branch: run.branch,
+      projectId: run.projectId, projectName: project.name, flyApiToken,
+    });
+    await this.persistFlyDeployment(ws, "run", runId, result, operatorId);
+    return result;
+  }
+  async flyDeployRunStop(ws: string, runId: string): Promise<FlyDeployState> {
+    const run = await this.getRun(ws, runId);
+    const project = await this.getProject(ws, run.projectId);
+    const appName = run.flyDeployment?.appName;
+    if (!appName) throw new Error("Nothing deployed for this run.");
+    const flyApiToken = await this.flyToken(ws, project.flyCredentialId);
+    const result = await flyDeploy.destroy({ key: `run:${runId}`, appName, flyApiToken, gitRepo: project.repoPath ?? undefined });
+    await this.persistFlyDeployment(ws, "run", runId, result, run.flyDeployment?.deployedBy ?? "");
+    return result;
+  }
+  /** The manager's in-memory record is ephemeral (gone on restart); the
+   *  persisted Project/TaskRun.flyDeployment is the source of truth for
+   *  "is something live" across restarts. When the manager has nothing (e.g.
+   *  right after a restart, before anyone's re-polled), fall back to the
+   *  persisted terminal state instead of reporting "idle" for a deployment
+   *  that's actually still live on Fly. */
+  private mergeFlyState(key: string, persisted: FlyDeployment | null): FlyDeployState {
+    const live = flyDeploy.state(key);
+    if (live.status !== "idle" || !persisted) return live;
+    return {
+      status: persisted.status, appName: persisted.appName, region: persisted.region, url: persisted.url,
+      branch: persisted.branch, sha: persisted.sha, error: persisted.error, logs: [], deployedAt: persisted.deployedAt,
+    };
+  }
+  private async persistFlyDeployment(ws: string, kind: "project" | "run", id: string, result: FlyDeployState, operatorId: string): Promise<void> {
+    const flyDeployment = {
+      status: result.status,
+      appName: result.appName,
+      region: result.region,
+      url: result.url,
+      branch: result.branch,
+      sha: result.sha,
+      error: result.error,
+      deployedAt: result.deployedAt,
+      deployedBy: result.status === "live" ? operatorId : null,
+    };
+    if (kind === "project") {
+      const project = await this.store.getProject(id);
+      if (project && project.workspaceId === ws) await this.hub.upsertProject({ ...project, flyDeployment });
+    } else {
+      const run = await this.store.getRun(id);
+      if (run && run.workspaceId === ws) await this.hub.upsertRun({ ...run, flyDeployment });
+    }
+  }
+  private async branchExists(gitRepo: string, branch: string): Promise<boolean> {
+    const { stdout } = await gitExec(gitRepo, "branch", "--list", branch).catch(() => ({ stdout: "" }));
+    return !!stdout.trim();
+  }
+
   // ── HITL ──────────────────────────────────────────────────────────────────
   /** Resolve a HITL item and deliver the decision to the agent (idempotent). */
   async resolveHitl(ws: string, hitlId: string, input: ResolveRequest, operatorId: string): Promise<HitlItem> {
@@ -656,6 +765,10 @@ export class Operations {
       // Optional: pin to a specific GitHub account at creation, else the default
       // connection (chosen later in project settings).
       githubCredentialId: input.githubCredentialId ?? null,
+      // Fly.io deploy account + deployment state are set/populated later —
+      // never at creation (see project.tsx settings, "Deploy to Fly.io").
+      flyCredentialId: null,
+      flyDeployment: null,
       // Runner-key confinement is opt-in and set later in project settings —
       // a fresh project runs on any workspace key until narrowed.
       enabledRunnerCredentialIds: [],

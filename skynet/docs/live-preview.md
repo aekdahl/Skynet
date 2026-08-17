@@ -133,3 +133,167 @@ The first working slice, web + desktop:
 Deferred within Phase 1 (fast-follows): dev-server HMR polish across more
 frameworks, the agent-assisted resolver's live call + write-back, and the
 per-run pre-merge "Preview this change" button.
+
+---
+
+## Deploy to Fly.io (persistent, human-triggered)
+
+Everything above is **ephemeral by design**: a scratch worktree running a
+local dev server, torn down on stop/restart, never independently reachable
+once Skynet itself isn't running. That's exactly right for "watch the app
+change as the fleet merges" — but it can't answer "send someone this link" or
+"verify this survives a restart." **Deploy to Fly.io** is a second,
+additive option for that case: a REAL app on Fly's infrastructure, with a
+real `https://<app>.fly.dev` URL, that keeps running independent of the local
+Skynet process. The operator picks per use-case — both buttons sit side by
+side on the project view ("▶ Preview app" vs. "⇪ Deploy to Fly.io").
+
+**The one rule that matters:** this is **only ever started by an explicit
+operator click**. It is never wired into the autonomy loop, the merge queue,
+or any automatic trigger — a real deploy costs real money and creates a real
+public surface, so a human clicks it, every time.
+
+### Two targets, one engine
+
+- **Project** — deploys the **integration branch** (the fleet's cumulative
+  merged state), same slice the local preview's "Merged" source shows.
+- **Run** — deploys a single **run's own branch**, for pre-merge verification
+  with a real shareable URL (as opposed to the local per-run preview, which is
+  still ephemeral).
+
+Both go through the same `FlyDeployManager` (`apps/server/src/fly/deploy.ts`),
+keyed the same way the local preview is (`projectId`, or `run:<runId>`).
+
+### Reuses the local preview's worktree machinery
+
+A warm worktree with the right deps is the same prerequisite for both a local
+dev server and a Fly deploy — only what runs *after* differs. `prepareWorktree`
+and `ensureDeps` were extracted out of `project-preview.ts` into
+`apps/server/src/preview/worktree.ts` so both engines share one
+implementation; the local preview manager now delegates to it (unchanged
+behavior — covered by its existing tests).
+
+### Extends `.skynet/preview.json`, doesn't replace it
+
+Rather than invent a second descriptor format, this reuses the SAME
+`.skynet/preview.json` — including `build`/`outputDir`, declared back in
+Phase 1 but unused until now — plus a new `fly` sub-block for what's genuinely
+Fly-specific:
+
+```json
+{
+  "dev": "npm run dev",
+  "build": "npm run build",
+  "outputDir": "dist",
+  "fly": {
+    "app": "my-project-ab12cd34",
+    "region": "iad",
+    "size": "shared-cpu-1x",
+    "memory": "256mb",
+    "org": "my-fly-org"
+  }
+}
+```
+
+Every `fly.*` field is optional and operator-overridable; the defaults are
+Fly's smallest/cheapest (`shared-cpu-1x` / `256mb`, region `iad`) so a bare
+`{}` — or no `fly` block at all — never surprises anyone with cost.
+`fly.org` is only needed for a multi-org Fly account (a non-interactive
+deploy can't answer flyctl's org prompt).
+
+**App naming.** Fly app names are globally unique. Without an explicit
+`fly.app`, one is derived deterministically from the project name + a short
+hash of the project id (`slugify(name)-<hash(id)>`) — the same project always
+derives the same app name (a redeploy is idempotent, never a second app), and
+two different projects with the same display name never collide with each
+other. On the rare occasion the derived (or explicit) name is already taken
+by an unrelated Fly app, the deploy retries with a deterministic suffix
+(`<name>-1`, `<name>-2`, …) rather than failing outright.
+
+### Two deploy shapes, chosen by the descriptor
+
+- **Static site** (`build` set) — runs the build **locally**, in the same
+  warm worktree the local preview uses (`ensureDeps` + the `build` command),
+  then ships a minimal generated `Dockerfile` (nginx serving `outputDir`) and
+  `fly.toml`. Fully deterministic, no flyctl auto-detection involved. A
+  repo-committed `Dockerfile`/`fly.toml` is respected and never overwritten.
+- **Service** (no `build` — a real backend) — **no local install or build at
+  all.** `flyctl launch --no-deploy` generates a `fly.toml` (detecting a
+  Dockerfile/buildpack strategy) the first time, then `flyctl deploy` builds
+  **inside Fly's own build container**. This is deliberate, not just
+  simpler: reusing the local `node_modules` for a container's shipped
+  artifact would risk shipping macOS-built native deps into a Linux image —
+  a footgun the local dev-server preview never hits (it *runs* on the local
+  OS) but a shipped container absolutely would.
+
+### Mechanism: the `flyctl` CLI
+
+Skynet shells out to the real `flyctl` binary (`apps/server/src/fly/fly-bin.ts`
+resolves it — mirrors `git-bin.ts`'s handling of a GUI app's bare PATH, plus
+flyctl's own `~/.fly/bin` install location) rather than calling the Fly
+Machines REST API directly. **Trade-off, noted explicitly:** shelling out
+means depending on an external binary being installed (flyctl isn't bundled),
+whereas a direct API client would have zero extra runtime dependency — but it
+matches this codebase's own precedent (`git-bin.ts` wraps a real `git` the
+same way) and rides a battle-tested, actively-maintained tool instead of a
+hand-rolled Machines API client that would need to track Fly's API changes
+itself. Auth is the standard headless flyctl path — `FLY_API_TOKEN` in the
+child's env, resolved from the stored credential, never written to disk.
+
+### Fly.io API tokens, via the existing `SecretStore`
+
+A Fly token is the same shape of secret as a GitHub PAT or an LLM key, so it
+goes through the exact same `SecretStore` (`apps/server/src/secrets/`) —
+not a new store. `fly` is a new `CredentialProvider` (alongside the LLM
+`ProviderId`s and `github`), added in **Integrations** the same way an
+additional GitHub account is (`FlyAccounts`, mirroring `GithubAccounts`), and
+pinned per-project the same way (`Project.flyCredentialId`, mirroring
+`githubCredentialId`) via the identical select-a-credential UI pattern
+(`ProjectFlyAccount`, mirroring `ProjectGithubAccount`). No default/workspace-
+wide Fly connection concept beyond "the credential named as the default" —
+same as GitHub's additional accounts.
+
+### Deployment state — a new status, alongside the existing preview
+
+`Project.flyDeployment` / `TaskRun.flyDeployment` (a `FlyDeployment` record:
+`status` — `idle`/`deploying`/`live`/`failed`/`stopped` — `appName`, `region`,
+`url`, `branch`, `sha`, `error`, `deployedAt`, `deployedBy`) is a sibling
+field next to the existing `PreviewState`, never replacing it. Unlike the
+local preview's `PreviewState` (purely in-memory, gone on restart — that's
+correct, since the local dev server itself is gone too), the Fly deployment's
+*terminal* state is **persisted** on the Project/TaskRun record: the Fly app
+keeps running whether or not Skynet does, so the UI needs to still say
+"live at https://…" after a Skynet restart. In-flight build/deploy logs
+stream from an in-memory ring buffer (ephemeral — acceptable, since they're
+only useful while watching a deploy happen).
+
+### Teardown — explicit only, never automatic
+
+A Fly app can cost money even idle (plan-dependent), so there is deliberately
+**no auto-teardown** — not on Skynet restart (unlike the local preview
+worktree, which stop() removes every time), not on project delete, not ever,
+except an operator clicking "Stop & destroy" (behind a confirm dialog — it's
+irreversible; redeploying creates a fresh app). The UI is explicit about the
+distinction: "Preview app" is labeled ephemeral, "Deploy to Fly.io" is labeled
+persistent-until-you-stop-it.
+
+### What's tested vs. what needs a real Fly account
+
+Everything that doesn't need network or a Fly account is unit-tested:
+descriptor parsing, app-name derivation + collision retry, the generated
+`fly.toml`/`Dockerfile`, `flyctlBin()` resolution, and the credential
+round-trip through `SecretStore` (`tests/fly-descriptor.test.ts`,
+`tests/fly-bin.test.ts`, `tests/credentials.test.ts`,
+`tests/secrets-verify.test.ts`). The static-site deploy path's full
+orchestration (worktree → local build → generated deploy assets → app-name
+collision retry → teardown) is exercised end-to-end against a real git repo
+and a **fake** `flyctl` binary standing in for the real one
+(`tests/fly-deploy-static.test.ts`) — no network, no account, but proves the
+manager's control flow is correct.
+
+**Needs manual verification with a real Fly account** (not fabricable in
+CI/this environment): that a genuine `flyctl deploy` against Fly's real
+builders/API succeeds for both the static-site and service paths, that the
+resulting URL actually serves the app, that the "service" path's
+`flyctl launch` auto-detection behaves sanely across a few real frameworks,
+and that `flyctl apps destroy` genuinely stops billing / removes the app.

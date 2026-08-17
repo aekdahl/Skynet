@@ -22,10 +22,11 @@ export type ProviderId = z.infer<typeof ProviderId>;
 
 // A credential in the secret store belongs to a fleet provider OR to "github" — a
 // GitHub PAT, so a project can be pinned to a specific GitHub account (business vs
-// personal billing/storage). `github` is deliberately NOT a fleet provider: it
-// never appears in the runner catalog or provider-availability, only as a stored
-// credential a project's git operations can authenticate with.
-export const CredentialProvider = z.union([ProviderId, z.literal("github")]);
+// personal billing/storage) — or to "fly", a Fly.io API token so a project can
+// deploy to a persistent, shareable Fly app. Neither `github` nor `fly` is a fleet
+// provider: they never appear in the runner catalog or provider-availability, only
+// as a stored credential a project's git ops / Fly deploys authenticate with.
+export const CredentialProvider = z.union([ProviderId, z.literal("github"), z.literal("fly")]);
 export type CredentialProvider = z.infer<typeof CredentialProvider>;
 
 export const TaskRunStatus = z.enum(["running", "waiting", "paused", "review", "done"]);
@@ -99,6 +100,32 @@ export type ProjectStatus = z.infer<typeof ProjectStatus>;
 
 /** Epoch milliseconds. Clients derive elapsed/wait/since-beat from these. */
 export const Timestamp = z.number().int().nonnegative();
+
+// ─── Fly.io deploy (persistent, human-triggered) ──────────────────────────
+// A REAL, shareable deployment — distinct from the ephemeral local live preview
+// (docs/live-preview.md): it survives independent of the local Skynet process,
+// and is never torn down automatically (an operator stops/destroys it
+// explicitly). One target deploys a project's integration branch (the
+// "overwatch" slice); a second, optional target deploys a single run's branch
+// for pre-merge verification — same shape, different git ref. See
+// docs/live-preview.md §"Deploy to Fly.io".
+export const FlyDeployStatus = z.enum(["idle", "deploying", "live", "failed", "stopped"]);
+export type FlyDeployStatus = z.infer<typeof FlyDeployStatus>;
+
+export const FlyDeployment = z.object({
+  status: FlyDeployStatus,
+  appName: z.string().nullable().default(null),
+  region: z.string().nullable().default(null),
+  // The real https://<app>.fly.dev URL once live — reachable with no local
+  // Skynet process running.
+  url: z.string().nullable().default(null),
+  branch: z.string().nullable().default(null), // git ref last deployed
+  sha: z.string().nullable().default(null), // commit last deployed
+  error: z.string().nullable().default(null),
+  deployedAt: Timestamp.nullable().default(null),
+  deployedBy: z.string().nullable().default(null), // operatorId who triggered it
+});
+export type FlyDeployment = z.infer<typeof FlyDeployment>;
 
 // ─── Plan & log ───────────────────────────────────────────────────────────
 
@@ -209,6 +236,12 @@ export const TaskRun = z.object({
   // GitHub PR merely opened (not yet merged), this is the one field that means a
   // real merge happened. Null → never merged.
   mergedAt: Timestamp.nullable().default(null),
+  // A REAL, persistent Fly.io deployment of THIS run's own branch — pre-merge
+  // verification with a real shareable URL, distinct from `previewUrl` (the
+  // static built-artifact preview) and from the project-level Fly deployment
+  // (Project.flyDeployment, which tracks the integration branch). null = never
+  // deployed. Explicit operator action only; never auto-deployed or auto-torn-down.
+  flyDeployment: FlyDeployment.nullable().default(null),
 });
 export type TaskRun = z.infer<typeof TaskRun>;
 
@@ -365,6 +398,16 @@ export const Project = z.object({
   // (e.g. close/comment the GitHub issue on done). Outward-facing, so off by
   // default. See docs/task-source-sync.md.
   syncSourceStatus: z.boolean().default(false),
+  // Which stored Fly.io credential this project's `Deploy to Fly.io` action
+  // authenticates with — a secret-store credential id of a `fly` API token.
+  // null → the workspace's default Fly connection. Same shape as
+  // githubCredentialId (separate Fly orgs can back different projects).
+  flyCredentialId: z.string().nullable().default(null),
+  // The project-level Fly deployment (integration branch) — a REAL, persistent
+  // app that survives independent of the local Skynet process, and is only ever
+  // torn down by an explicit operator action (never on Skynet restart). null =
+  // never deployed. See FlyDeployment.
+  flyDeployment: FlyDeployment.nullable().default(null),
   // Override for where the Roadmap tab reads its doc from, when it isn't at
   // either default candidate (steward/docs.ts's ROADMAP_PATHS —
   // "ROADMAP.md"/"docs/ROADMAP.md"). Set by the operator (or Steward,
@@ -1005,6 +1048,7 @@ export const UpdateProjectRequest = z.object({
   // Project-scoped agent guidance. `null` clears the field back to "no rules".
   instructions: z.string().nullable().optional(),
   githubCredentialId: z.string().nullable().optional(), // pick the GitHub account (null clears → default)
+  flyCredentialId: z.string().nullable().optional(), // pick the Fly.io account (null clears → default)
   baseBranch: z.string().nullable().optional(), // stack onto a branch; null clears → global default
   checkCmd: z.string().nullable().optional(), // Verifier gate command; null clears → global default
 

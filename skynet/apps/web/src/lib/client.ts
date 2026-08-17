@@ -590,6 +590,7 @@ export function updateProject(
     // null clears the field back to "no project rules".
     instructions?: string | null;
     githubCredentialId?: string | null;
+    flyCredentialId?: string | null;
     // Which provider keys the project may run on (credential ids; empty = all).
     enabledRunnerCredentialIds?: string[];
     syncSourceStatus?: boolean;
@@ -843,6 +844,42 @@ export function previewRestart(projectId: string) {
 }
 export function previewRefresh(projectId: string) {
   return req<PreviewState>("POST", `/api/projects/${projectId}/preview/refresh`);
+}
+
+// ─── Deploy to Fly.io (persistent, human-triggered) ─────────────────────────
+// A REAL, shareable URL that survives independent of the local Skynet process
+// — distinct from the ephemeral local preview above. Explicit operator action
+// only (a button in the UI); never auto-started or auto-torn-down. Two
+// targets: a project's integration branch, or a single run's own branch (for
+// pre-merge verification) — same shape, different endpoint prefix.
+export interface FlyDeployState {
+  status: "idle" | "deploying" | "live" | "failed" | "stopped";
+  appName: string | null;
+  region: string | null;
+  url: string | null;
+  branch: string | null;
+  sha: string | null;
+  error: string | null;
+  logs: string[];
+  deployedAt: number | null;
+}
+export function flyDeployStatus(projectId: string) {
+  return req<FlyDeployState>("GET", `/api/projects/${projectId}/fly-deploy`);
+}
+export function flyDeployStart(projectId: string) {
+  return req<FlyDeployState>("POST", `/api/projects/${projectId}/fly-deploy/start`);
+}
+export function flyDeployStop(projectId: string) {
+  return req<FlyDeployState>("POST", `/api/projects/${projectId}/fly-deploy/stop`);
+}
+export function flyDeployRunStatus(runId: string) {
+  return req<FlyDeployState>("GET", `/api/runs/${runId}/fly-deploy`);
+}
+export function flyDeployRunStart(runId: string) {
+  return req<FlyDeployState>("POST", `/api/runs/${runId}/fly-deploy/start`);
+}
+export function flyDeployRunStop(runId: string) {
+  return req<FlyDeployState>("POST", `/api/runs/${runId}/fly-deploy/stop`);
 }
 
 // Provider CLI installer — POSTs to /api/providers/:id/install and streams the

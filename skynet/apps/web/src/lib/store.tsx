@@ -164,6 +164,7 @@ export interface Store extends StoreState {
       // null clears the project's instructions back to "no rules".
       instructions?: string | null;
       githubCredentialId?: string | null;
+      flyCredentialId?: string | null;
       // Which provider keys the project may run on (credential ids; empty = all).
       enabledRunnerCredentialIds?: string[];
       syncSourceStatus?: boolean;

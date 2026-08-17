@@ -678,6 +678,54 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string } }>("/api/projects/:id/preview/restart", previewAction((w, i) => ops.previewRestart(w, i)));
   app.post<{ Params: { id: string } }>("/api/projects/:id/preview/refresh", previewAction((w, i) => ops.previewRefresh(w, i)));
 
+  // ── Deploy to Fly.io (persistent, human-triggered) — a REAL, shareable URL
+  // that survives independent of the local Skynet process. Explicit operator
+  // action only: there is deliberately no automatic trigger anywhere in this
+  // file. Two targets: a project's integration branch, or a single run's own
+  // branch (pre-merge verification) — see docs/live-preview.md.
+  app.get<{ Params: { id: string } }>("/api/projects/:id/fly-deploy", async (req, reply) => {
+    try {
+      return await ops.flyDeployProjectState(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/projects/:id/fly-deploy/start", async (req, reply) => {
+    try {
+      return await ops.flyDeployProjectStart(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/projects/:id/fly-deploy/stop", async (req, reply) => {
+    try {
+      return await ops.flyDeployProjectStop(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.get<{ Params: { id: string } }>("/api/runs/:id/fly-deploy", async (req, reply) => {
+    try {
+      return await ops.flyDeployRunState(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/runs/:id/fly-deploy/start", async (req, reply) => {
+    try {
+      return await ops.flyDeployRunStart(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/runs/:id/fly-deploy/stop", async (req, reply) => {
+    try {
+      return await ops.flyDeployRunStop(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // ── tasks ──────────────────────────────────────────────────────────────
   app.post<{ Params: { id: string } }>("/api/projects/:id/tasks", async (req, reply) => {
     const body = CreateTaskRequest.safeParse(req.body);

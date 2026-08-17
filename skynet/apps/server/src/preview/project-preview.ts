@@ -22,18 +22,23 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
-import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { get as httpGet } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { wrapForSandbox } from "@skynet/runner-sdk/sandbox";
 import { oneShotRepoAssistant } from "@skynet/runner-sdk/claude";
-import { gitBin } from "../git-bin.js";
 import { secretService } from "../secrets/index.js";
 import { publicOrigin } from "./public-origin.js";
-
-const exec = promisify(execFile);
+import {
+  ensureDeps as sharedEnsureDeps,
+  git as sharedGit,
+  installCmd as sharedInstallCmd,
+  prepareWorktree as sharedPrepareWorktree,
+  readDescriptorRaw,
+  runToCompletion as sharedRunToCompletion,
+} from "./worktree.js";
 
 /**
  * Environment for preview subprocesses (dependency install + the dev server).
@@ -355,7 +360,7 @@ export class ProjectPreviewManager {
   constructor(private worktreesDir?: string) {}
 
   private git(cwd: string, ...args: string[]): Promise<{ stdout: string }> {
-    return exec(gitBin(), ["-C", cwd, ...args]);
+    return sharedGit(cwd, ...args);
   }
 
   private previewDir(key: string): string {
@@ -416,13 +421,7 @@ export class ProjectPreviewManager {
 
   /** Read `.skynet/preview.json` if present (tolerant of a malformed file). */
   private readDescriptor(dir: string): { dev?: string; start?: string; port?: number; install?: string } | null {
-    const descPath = join(dir, ".skynet", "preview.json");
-    if (!existsSync(descPath)) return null;
-    try {
-      return JSON.parse(readFileSync(descPath, "utf8"));
-    } catch {
-      return null; // malformed → callers fall back to heuristics
-    }
+    return readDescriptorRaw(dir) as { dev?: string; start?: string; port?: number; install?: string } | null;
   }
 
   /** package.json's `scripts[name]` body, if the file and script both exist. */
@@ -613,21 +612,7 @@ export class ProjectPreviewManager {
    *  existing worktree dir (via checkout + reset) so a restart keeps node_modules
    *  warm — untracked deps survive the reset; only a broken worktree is recreated. */
   private async prepareWorktree(key: string, gitRepo: string, ref: string): Promise<string> {
-    const dir = this.previewDir(key);
-    if (existsSync(join(dir, ".git"))) {
-      try {
-        await this.git(gitRepo, "worktree", "repair", dir).catch(() => undefined);
-        await this.git(dir, "checkout", "--detach", ref);
-        await this.git(dir, "reset", "--hard", ref);
-        return dir; // reused — node_modules (real or symlink) is preserved
-      } catch {
-        /* stale/broken worktree → fall through and recreate it fresh */
-      }
-    }
-    await this.git(gitRepo, "worktree", "remove", "--force", dir).catch(() => undefined);
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-    await this.git(gitRepo, "worktree", "add", "--force", "--detach", dir, ref);
-    return dir;
+    return sharedPrepareWorktree(gitRepo, this.previewDir(key), ref);
   }
 
   /** `latest`: fold every review-ready run branch into the (already base/
@@ -668,21 +653,10 @@ export class ProjectPreviewManager {
    *  clones with none anywhere fall back to a real install. No-op once present
    *  (a warm reused worktree, or a prior symlink). */
   private async ensureDeps(p: Live, gitRepo: string): Promise<void> {
-    if (!existsSync(join(p.dir, "package.json"))) return; // not a node project
-    if (existsSync(join(p.dir, "node_modules"))) return; // already provisioned (warm/symlinked)
-    const repoNodeModules = join(gitRepo, "node_modules");
-    if (existsSync(repoNodeModules)) {
-      try {
-        await symlink(repoNodeModules, join(p.dir, "node_modules"), "dir");
-        this.log(p, "linked node_modules from the project checkout (no install needed)");
-        return;
-      } catch (err) {
-        this.log(p, `couldn't link node_modules (${(err as Error).message}) — installing instead`);
-      }
-    }
-    const install = this.installCmd(p.dir);
-    this.log(p, `installing dependencies — ${install} (first preview of this project may take a minute)`);
-    await this.runToCompletion(install, p.dir, p, 5 * 60_000);
+    // A live preview is a DEV run — force NODE_ENV=development for the install
+    // too (see previewEnv's header comment: otherwise devDependencies the dev
+    // script needs get skipped).
+    return sharedEnsureDeps(p.dir, gitRepo, (line) => this.log(p, line), previewEnv());
   }
 
   /** A fresh detached worktree has no `.env`, yet many dev scripts assume one —
@@ -705,12 +679,7 @@ export class ProjectPreviewManager {
   /** Infer the install command: descriptor override, then the lockfile's package
    *  manager, else npm. */
   private installCmd(dir: string): string {
-    const desc = this.readDescriptor(dir);
-    if (desc?.install) return desc.install;
-    if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm install";
-    if (existsSync(join(dir, "yarn.lock"))) return "yarn install";
-    if (existsSync(join(dir, "bun.lockb"))) return "bun install";
-    return "npm install";
+    return sharedInstallCmd(dir);
   }
 
   /** Where a nested sub-package's "last successful install" marker lives —
@@ -788,24 +757,7 @@ export class ProjectPreviewManager {
    *  Not sandboxed — install needs the registry; the untrusted app runtime (the
    *  dev server) is the wrapped one. Rejects on non-zero exit or timeout. */
   private runToCompletion(cmd: string, cwd: string, p: Live, timeoutMs: number): Promise<void> {
-    return new Promise((res, rej) => {
-      const child = spawn("/bin/sh", ["-c", cmd], { cwd, env: previewEnv() });
-      const timer = setTimeout(() => {
-        child.kill("SIGKILL");
-        rej(new Error(`\`${cmd}\` timed out after ${Math.round(timeoutMs / 1000)}s`));
-      }, timeoutMs);
-      child.stdout?.on("data", (b) => this.log(p, b.toString()));
-      child.stderr?.on("data", (b) => this.log(p, b.toString()));
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        rej(err);
-      });
-      child.on("exit", (code) => {
-        clearTimeout(timer);
-        if (code === 0) res();
-        else rej(new Error(`\`${cmd}\` exited with code ${code ?? "?"}`));
-      });
-    });
+    return sharedRunToCompletion(cmd, cwd, (line) => this.log(p, line), timeoutMs, previewEnv());
   }
 
   /** Kill a preview's dev-server child + idle timer, WITHOUT removing its
