@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import type { SecretMeta, WorkspaceSettings, UpdateWorkspaceSettingsRequest } from "@skynet/shared";
+import type {
+  SecretMeta,
+  WorkspaceSettings,
+  UpdateWorkspaceSettingsRequest,
+  CommandPolicy,
+  PolicyRule,
+  PolicyVersion,
+  PolicyDryRunResult,
+  PolicyDecision,
+  PolicyRuleKind,
+  Risk,
+} from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import type { McpScope, ServiceTokenMeta } from "../lib/client";
@@ -370,6 +381,7 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
       </div>
 
       <FleetAutomationSection />
+      <CommandPolicySection />
       <McpAccessSection />
       {/* A genuine base admin only — never a currently-elevated viewer (their
           scopes look identical, but the server independently enforces the
@@ -656,6 +668,282 @@ function FleetAutomationSection() {
               <span className="proj-autonomy-switch" aria-hidden="true" />
               <span className="proj-autonomy-label">Give agents a browser (Playwright MCP)</span>
             </label>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Command policy ─────────────────────────────────────────────────────────
+// The versioned, per-workspace command-safety classifier (ROADMAP.md "policy
+// as code"). Replaces trust in the compiled-in classifier with a rule set an
+// operator can see, edit, dry-run against real history, and version — a
+// workspace that never saves a custom version keeps running the shipped
+// default untouched (fetchCommandPolicy() returns it either way).
+const POLICY_DECISIONS: PolicyDecision[] = ["allow", "gate", "deny"];
+const POLICY_RULE_KINDS: PolicyRuleKind[] = ["deny", "gate", "allow-leader"];
+const POLICY_RISKS: Risk[] = ["low", "medium", "high"];
+
+function newPolicyRule(kind: PolicyRuleKind): PolicyRule {
+  return { id: `rule-${Math.random().toString(36).slice(2, 9)}`, kind, pattern: "", risk: "medium", reason: "", enabled: true };
+}
+
+function CommandPolicySection() {
+  const [draft, setDraft] = useState<CommandPolicy | null>(null);
+  const [versions, setVersions] = useState<PolicyVersion[]>([]);
+  const [label, setLabel] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [dryRun, setDryRun] = useState<PolicyDryRunResult | null>(null);
+  const [dryRunBusy, setDryRunBusy] = useState(false);
+  const [dryRunErr, setDryRunErr] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+
+  const load = useCallback(() => {
+    Promise.all([api.fetchCommandPolicy(), api.fetchCommandPolicyVersions()])
+      .then(([policy, vs]) => {
+        setDraft(policy);
+        setVersions(vs);
+      })
+      .catch(() => setErr("Couldn't load the command policy."));
+  }, []);
+  useEffect(() => { if (open) load(); }, [open, load]);
+
+  const patchRule = (id: string, patch: Partial<PolicyRule>) => {
+    setDraft((d) => (d ? { ...d, rules: d.rules.map((r) => (r.id === id ? { ...r, ...patch } : r)) } : d));
+  };
+  const removeRule = (id: string) => {
+    setDraft((d) => (d ? { ...d, rules: d.rules.filter((r) => r.id !== id) } : d));
+  };
+  const addRule = (kind: PolicyRuleKind) => {
+    setDraft((d) => (d ? { ...d, rules: [...d.rules, newPolicyRule(kind)] } : d));
+  };
+
+  const runDryRun = async () => {
+    if (!draft) return;
+    setDryRunBusy(true);
+    setDryRunErr(null);
+    try {
+      setDryRun(await api.dryRunCommandPolicy(draft));
+    } catch (e) {
+      setDryRunErr((e as Error).message);
+    } finally {
+      setDryRunBusy(false);
+    }
+  };
+
+  const save = async () => {
+    if (!draft) return;
+    setBusy(true);
+    setErr(null);
+    setSaved(false);
+    try {
+      await api.saveCommandPolicyVersion(draft, label.trim() || null);
+      setLabel("");
+      setDryRun(null);
+      setSaved(true);
+      load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loadVersion = (v: PolicyVersion) => {
+    setDraft(v.policy);
+    setDryRun(null);
+    setSaved(false);
+  };
+
+  return (
+    <div className="settings-setup policy-toggle-row">
+      <div className="settings-setup-text">
+        <div className="adv-toggle" onClick={() => setOpen((v) => !v)} role="button" tabIndex={0}>
+          <div className="settings-setup-title">Command policy {open ? "▾" : "▸"}</div>
+          <div className="settings-setup-sub">
+            The rules that decide whether an agent's command runs automatically, needs your approval, or is refused
+            outright. Edit the rules, dry-run the change against this workspace's real command history to see exactly
+            what would flip, then save — the previous version stays on record. No custom version saved yet = the
+            shipped default classifier, unchanged.
+          </div>
+        </div>
+        {open && (
+          <div className="policy-panel">
+            {err && <div className="settings-warn">{err}</div>}
+            {!draft ? (
+              <div className="settings-setup-sub">Loading…</div>
+            ) : (
+              <>
+                <div className="policy-rules">
+                  {POLICY_RULE_KINDS.map((kind) => (
+                    <div className="policy-rule-group" key={kind}>
+                      <div className="policy-rule-group-head">
+                        <span className={`risk-chip ${kind === "deny" ? "risk-high" : kind === "gate" ? "risk-medium" : "risk-low"}`}>
+                          {kind}
+                        </span>
+                        <span className="settings-setup-sub">
+                          {kind === "deny"
+                            ? "Matches here NEVER run, even if approved."
+                            : kind === "gate"
+                              ? "Matches here require human approval."
+                              : "Every segment of a command must match one of these for it to run unattended."}
+                        </span>
+                        <button className="btn btn-ghost btn-sm" onClick={() => addRule(kind)}>+ rule</button>
+                      </div>
+                      {draft.rules.filter((r) => r.kind === kind).length === 0 && (
+                        <div className="settings-setup-sub">No rules.</div>
+                      )}
+                      {draft.rules.filter((r) => r.kind === kind).map((r) => (
+                        <div className="policy-rule-row" key={r.id}>
+                          <input
+                            type="checkbox"
+                            checked={r.enabled}
+                            title="Enabled"
+                            onChange={(e) => patchRule(r.id, { enabled: e.target.checked })}
+                          />
+                          <input
+                            className="settings-input policy-rule-pattern"
+                            placeholder="regex pattern"
+                            value={r.pattern}
+                            onChange={(e) => patchRule(r.id, { pattern: e.target.value })}
+                          />
+                          {kind !== "allow-leader" && (
+                            <select className="qx-input policy-rule-risk" value={r.risk} onChange={(e) => patchRule(r.id, { risk: e.target.value as Risk })}>
+                              {POLICY_RISKS.map((risk) => (
+                                <option key={risk} value={risk}>{risk}</option>
+                              ))}
+                            </select>
+                          )}
+                          <input
+                            className="settings-input policy-rule-reason"
+                            placeholder="reason (shown on the gate)"
+                            value={r.reason}
+                            onChange={(e) => patchRule(r.id, { reason: e.target.value })}
+                          />
+                          <button className="btn btn-ghost btn-sm" onClick={() => removeRule(r.id)}>Remove</button>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="policy-defaults">
+                  <span className="settings-setup-sub">Command matching no rule above:</span>
+                  <select className="qx-input" value={draft.defaultDecision} onChange={(e) => setDraft({ ...draft, defaultDecision: e.target.value as PolicyDecision })}>
+                    {POLICY_DECISIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                  <select className="qx-input" value={draft.defaultRisk} onChange={(e) => setDraft({ ...draft, defaultRisk: e.target.value as Risk })}>
+                    {POLICY_RISKS.map((r) => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                  <label className="proj-autonomy" title="Block `allow` whenever the command contains $(...), backticks, eval, or a redirect — even if every segment otherwise matches an allow-leader.">
+                    <input
+                      type="checkbox"
+                      className="proj-autonomy-cb"
+                      checked={draft.unsafeCompositionBlocksAllow}
+                      onChange={(e) => setDraft({ ...draft, unsafeCompositionBlocksAllow: e.target.checked })}
+                    />
+                    <span className="proj-autonomy-switch" aria-hidden="true" />
+                    <span className="proj-autonomy-label">Block substitution/eval composition from ever auto-allowing</span>
+                  </label>
+                </div>
+
+                <div className="policy-inert">
+                  <div className="settings-setup-sub">
+                    Recorded for visibility only — no runtime enforcement exists for these yet.
+                  </div>
+                  <label className="fleet-auto-max">
+                    <span className="fleet-auto-max-label">Max wall-clock (ms)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      className="qx-input fleet-auto-max-input"
+                      value={draft.resourceCaps.maxWallClockMs ?? ""}
+                      placeholder="unset"
+                      onChange={(e) => setDraft({ ...draft, resourceCaps: { ...draft.resourceCaps, maxWallClockMs: e.target.value ? Number(e.target.value) : null } })}
+                    />
+                  </label>
+                  <label className="fleet-auto-max">
+                    <span className="fleet-auto-max-label">Max token budget</span>
+                    <input
+                      type="number"
+                      min={0}
+                      className="qx-input fleet-auto-max-input"
+                      value={draft.resourceCaps.maxTokenBudget ?? ""}
+                      placeholder="unset"
+                      onChange={(e) => setDraft({ ...draft, resourceCaps: { ...draft.resourceCaps, maxTokenBudget: e.target.value ? Number(e.target.value) : null } })}
+                    />
+                  </label>
+                  <label className="proj-autonomy" title="No network-egress enforcement mechanism exists yet — this only records intent for when it does.">
+                    <input
+                      type="checkbox"
+                      className="proj-autonomy-cb"
+                      checked={draft.networkEgress.enabled}
+                      onChange={(e) => setDraft({ ...draft, networkEgress: { ...draft.networkEgress, enabled: e.target.checked } })}
+                    />
+                    <span className="proj-autonomy-switch" aria-hidden="true" />
+                    <span className="proj-autonomy-label">Network-egress allowlist (inert)</span>
+                  </label>
+                </div>
+
+                <div className="policy-actions">
+                  <button className="btn btn-ghost" disabled={dryRunBusy} onClick={() => void runDryRun()}>
+                    {dryRunBusy ? "Dry-running…" : "Dry-run against history"}
+                  </button>
+                  <input
+                    className="settings-input policy-label-input"
+                    placeholder="Version label (optional)"
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                  />
+                  <button className="btn btn-primary" disabled={busy} onClick={() => void save()}>
+                    {busy ? "Saving…" : "Save as new active version"}
+                  </button>
+                  {saved && <span className="settings-setup-sub">Saved.</span>}
+                </div>
+
+                {dryRunErr && <div className="settings-warn">{dryRunErr}</div>}
+                {dryRun && (
+                  <div className="policy-dryrun">
+                    <div className="settings-setup-sub">
+                      {dryRun.uniqueCommands} distinct commands replayed ({dryRun.sampledRecords} historical records) —{" "}
+                      {dryRun.changed.length} would change, {dryRun.unchanged} unchanged.
+                    </div>
+                    {dryRun.changed.length > 0 && (
+                      <div className="policy-dryrun-list">
+                        {dryRun.changed.map((c) => (
+                          <div className="policy-dryrun-row" key={c.command}>
+                            <span className="mono policy-dryrun-cmd">{c.command}</span>
+                            <span className="policy-dryrun-verdict">
+                              <span className={`risk-chip risk-${c.before.risk}`}>{c.before.decision}</span>
+                              <span aria-hidden="true"> → </span>
+                              <span className={`risk-chip risk-${c.after.risk}`}>{c.after.decision}</span>
+                            </span>
+                            <span className="settings-setup-sub">×{c.occurrences}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="policy-history">
+                  <div className="settings-setup-sub">Version history</div>
+                  {versions.length === 0 && <div className="settings-setup-sub">No saved versions — running the shipped default.</div>}
+                  {versions.map((v) => (
+                    <div className="policy-history-row" key={v.id}>
+                      <span className="mono">v{v.version}</span>
+                      {v.active && <span className="chip chip-idle">active</span>}
+                      <span className="settings-setup-sub">{v.label || "(no label)"}</span>
+                      <span className="settings-setup-sub">{v.createdBy} · {new Date(v.createdAt).toLocaleString()}</span>
+                      <button className="btn btn-ghost btn-sm" onClick={() => loadVersion(v)}>Load into editor</button>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>

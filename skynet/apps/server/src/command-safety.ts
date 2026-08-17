@@ -6,11 +6,14 @@
 // approved command otherwise runs verbatim, unbounded, with the server's full
 // environment. This module closes that gap with two primitives:
 //
-//   1. classifyCommand() — a DENYLIST + risk-score policy. Allow read-only
-//      commands, hard-DENY a curated set of catastrophic patterns (so they can
-//      never be approved), and GATE the rest for human approval with a real
-//      risk level. Scans the whole string (so `$(rm -rf /)` and `… | sh` are
-//      caught) and is conservative: anything it can't certify safe → gate.
+//   1. classifyCommand() — a DENYLIST + risk-score policy, DATA-driven (see
+//      `CommandPolicy` in @skynet/shared). Allow read-only commands, hard-DENY a
+//      curated set of catastrophic patterns (so they can never be approved), and
+//      GATE the rest for human approval with a real risk level. Scans the whole
+//      string (so `$(rm -rf /)` and `… | sh` are caught) and is conservative:
+//      anything it can't certify safe → gate. A workspace with no custom
+//      CommandPolicy (see command-policy.ts) gets DEFAULT_COMMAND_POLICY below,
+//      which reproduces the classifier this module shipped with byte-for-byte.
 //   2. runBounded() — execute under hard limits: timeout (SIGTERM→SIGKILL),
 //      output-size cap, a scrubbed allowlist environment, confined cwd, no
 //      inherited stdio. Kernel-level isolation (seccomp/namespaces) is the
@@ -22,7 +25,7 @@
 // the environment at call time with safe defaults.
 
 import { spawn } from "node:child_process";
-import type { Risk } from "@skynet/shared";
+import type { CommandPolicy, PolicyRule, PolicyRuleKind, Risk } from "@skynet/shared";
 
 // ─── Verdict ────────────────────────────────────────────────────────────────
 
@@ -44,9 +47,11 @@ export class CommandDeniedError extends Error {
   }
 }
 
-// ─── Policy rules ─────────────────────────────────────────────────────────────
+// ─── Default policy (the classifier this module always shipped with) ────────
+// Expressed as CommandPolicy DATA so it's the same shape an operator's custom
+// policy takes — this is just what a workspace gets with no custom policy.
 
-interface Rule {
+interface LegacyRule {
   id: string;
   test: RegExp;
   risk: Risk;
@@ -54,7 +59,7 @@ interface Rule {
 }
 
 // Catastrophic / irreversible / remote-code-exec — NEVER runs, even if approved.
-const DENY_RULES: Rule[] = [
+const DENY_RULES: LegacyRule[] = [
   { id: "rm-root", risk: "high", reason: "recursive remove targeting / , /* , ~ or $HOME", test: /\brm\b[^\n;|&]*\s(?:-{1,2}[a-z-]+\s+)*(?:\/|\/\*|~\/?|\$HOME)(?=[\s;)|&'"\]]|$)/i },
   { id: "fork-bomb", risk: "high", reason: "fork bomb", test: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/ },
   { id: "mkfs", risk: "high", reason: "filesystem format (mkfs)", test: /\bmkfs(\.\w+)?\b/i },
@@ -71,7 +76,7 @@ const DENY_RULES: Rule[] = [
 ];
 
 // Destructive-but-legitimate — must be approved, surfaced as high risk.
-const GATE_HIGH_RULES: Rule[] = [
+const GATE_HIGH_RULES: LegacyRule[] = [
   { id: "rm-recursive-force", risk: "high", reason: "recursive force remove", test: /\brm\b[^\n;|&]*\s-{1,2}(?:[a-z]*r[a-z]*f|[a-z]*f[a-z]*r|recursive|force)\b/i },
   { id: "git-reset-hard", risk: "high", reason: "discards working-tree changes", test: /\bgit\s+reset\b[^\n]*--hard/i },
   { id: "git-clean", risk: "high", reason: "deletes untracked files", test: /\bgit\s+clean\b[^\n]*\s-[a-z]*f/i },
@@ -83,7 +88,7 @@ const GATE_HIGH_RULES: Rule[] = [
 ];
 
 // Mutating but lower-stakes — approved, surfaced as medium risk.
-const GATE_MEDIUM_RULES: Rule[] = [
+const GATE_MEDIUM_RULES: LegacyRule[] = [
   { id: "pkg-install", risk: "medium", reason: "installs dependencies / fetches code", test: /\b(apt|apt-get|yum|dnf|brew|pip3?|gem|cargo)\s+(install|add)\b|\bnpm\s+i(nstall)?\b[^\n]*\s-g\b/i },
   { id: "perm-change", risk: "medium", reason: "changes file permissions/ownership", test: /\b(chmod|chown)\b/i },
   { id: "rm-any", risk: "medium", reason: "removes files", test: /(^|[\s;&|])rm\b/i },
@@ -100,13 +105,36 @@ const ALLOW_LEADERS: RegExp[] = [
   /^git\s+(status|log|diff|show|rev-parse|ls-files|ls-tree|describe|blame|fetch|remote\b(?![^\n]*\b(add|remove|set-url)\b)|config\s+--get|branch\s*$|branch\s+(-a|-r|-l|--list|-v)\b|tag\s*$|tag\s+-l\b)/i,
 ];
 
+const toRule = (r: LegacyRule, kind: PolicyRuleKind): PolicyRule => ({
+  id: r.id, kind, pattern: r.test.source, risk: r.risk, reason: r.reason, enabled: true,
+});
+
+/** Shipped out of the box — every workspace with no custom `PolicyVersion`
+ *  (see command-policy.ts) classifies commands with exactly this data. */
+export const DEFAULT_COMMAND_POLICY: CommandPolicy = {
+  rules: [
+    ...DENY_RULES.map((r) => toRule(r, "deny")),
+    ...GATE_HIGH_RULES.map((r) => toRule(r, "gate")),
+    ...GATE_MEDIUM_RULES.map((r) => toRule(r, "gate")),
+    ...ALLOW_LEADERS.map((re, i): PolicyRule => ({ id: `allow-leader-${i}`, kind: "allow-leader", pattern: re.source, risk: "low", reason: "read-only leader", enabled: true })),
+  ],
+  defaultDecision: "gate",
+  defaultRisk: "medium",
+  unsafeCompositionBlocksAllow: true,
+  resourceCaps: { maxWallClockMs: null, maxTokenBudget: null },
+  networkEgress: { enabled: false, allowlist: [] },
+};
+
 const RISK_RANK: Record<Risk, number> = { low: 0, medium: 1, high: 2 };
 const maxRisk = (a: Risk, b: Risk): Risk => (RISK_RANK[a] >= RISK_RANK[b] ? a : b);
 
 // Tokens that mean "I can't reason about every code path here" → never `allow`.
 const UNSAFE_COMPOSITION = /\$\(|`|<\(|>\(|>>?|^\s*eval\b|[\s;&|]eval\b/;
 
-function readExtraDenyRules(): Rule[] {
+/** Additional hard-deny patterns from SKYNET_CMD_DENY — merged on top of every
+ *  policy (workspace-custom or default) regardless of what the policy itself
+ *  contains, same as before this module became policy-driven. */
+function readExtraDenyRules(): LegacyRule[] {
   const raw = process.env.SKYNET_CMD_DENY;
   if (!raw) return [];
   return raw
@@ -121,7 +149,7 @@ function readExtraDenyRules(): Rule[] {
         return null;
       }
     })
-    .filter((r): r is Rule => r !== null);
+    .filter((r): r is LegacyRule => r !== null);
 }
 
 /** Split a command line into the segments a shell would run sequentially. */
@@ -132,22 +160,39 @@ function segments(command: string): string[] {
     .filter(Boolean);
 }
 
+interface CompiledRule { id: string; risk: Risk; reason: string; test: RegExp }
+
+function compileRules(rules: PolicyRule[], kind: PolicyRuleKind): CompiledRule[] {
+  const out: CompiledRule[] = [];
+  for (const r of rules) {
+    if (r.kind !== kind || r.enabled === false) continue;
+    try {
+      out.push({ id: r.id, risk: r.risk, reason: r.reason, test: new RegExp(r.pattern, "i") });
+    } catch {
+      console.warn(`[command-safety] ignoring invalid policy rule pattern (${r.id}): ${r.pattern}`);
+    }
+  }
+  return out;
+}
+
 // ─── Classification ───────────────────────────────────────────────────────────
 
 /**
  * Classify a shell command into allow / gate / deny with a risk level and
- * human-readable reasons. Deny scanning runs over the whole string (catches
- * hidden substitutions and pipe-to-shell); allow requires every segment to lead
- * with a read-only command and contain no substitution/redirection.
+ * human-readable reasons, evaluated against `policy` (a workspace's active
+ * CommandPolicy, or DEFAULT_COMMAND_POLICY). Deny scanning runs over the whole
+ * string (catches hidden substitutions and pipe-to-shell); allow requires every
+ * segment to lead with a certified read-only command and contain no
+ * substitution/redirection.
  */
-export function classifyCommand(command: string): CommandVerdict {
+export function classifyCommand(command: string, policy: CommandPolicy = DEFAULT_COMMAND_POLICY): CommandVerdict {
   const cmd = command.trim();
   if (!cmd) {
     return { decision: "allow", risk: "low", reasons: ["empty command (no-op)"], ruleIds: [] };
   }
 
   // 1) Hard deny — checked across the entire command string.
-  const denyHits = [...DENY_RULES, ...readExtraDenyRules()].filter((r) => r.test.test(cmd));
+  const denyHits = [...compileRules(policy.rules, "deny"), ...readExtraDenyRules()].filter((r) => r.test.test(cmd));
   if (denyHits.length) {
     return {
       decision: "deny",
@@ -158,7 +203,7 @@ export function classifyCommand(command: string): CommandVerdict {
   }
 
   // 2) Gate — destructive/mutating but legitimate. Take the max risk that fires.
-  const gateHits = [...GATE_HIGH_RULES, ...GATE_MEDIUM_RULES].filter((r) => r.test.test(cmd));
+  const gateHits = compileRules(policy.rules, "gate").filter((r) => r.test.test(cmd));
   if (gateHits.length) {
     return {
       decision: "gate",
@@ -169,17 +214,23 @@ export function classifyCommand(command: string): CommandVerdict {
   }
 
   // 3) Allow — only if certifiably read-only and free of risky composition.
+  const allowLeaders = compileRules(policy.rules, "allow-leader");
   const segs = segments(cmd);
   const allAllowed =
-    !UNSAFE_COMPOSITION.test(cmd) &&
+    (!policy.unsafeCompositionBlocksAllow || !UNSAFE_COMPOSITION.test(cmd)) &&
     segs.length > 0 &&
-    segs.every((s) => ALLOW_LEADERS.some((re) => re.test(s)));
+    segs.every((s) => allowLeaders.some((r) => r.test.test(s)));
   if (allAllowed) {
     return { decision: "allow", risk: "low", reasons: ["read-only command"], ruleIds: ["allow-readonly"] };
   }
 
-  // 4) Unknown — default to a human gate at medium risk.
-  return { decision: "gate", risk: "medium", reasons: ["unrecognized command — needs review"], ruleIds: ["default-gate"] };
+  // 4) Unknown — falls to the policy's default (today's shipped default: gate/medium).
+  return {
+    decision: policy.defaultDecision,
+    risk: policy.defaultRisk,
+    reasons: ["unrecognized command — needs review"],
+    ruleIds: [`default-${policy.defaultDecision}`],
+  };
 }
 
 /**
@@ -188,8 +239,8 @@ export function classifyCommand(command: string): CommandVerdict {
  * server-side. Returns the verdict otherwise. (Defense in depth — the gate that
  * raised the HITL should already have caught it.)
  */
-export function assertApprovable(command: string): CommandVerdict {
-  const verdict = classifyCommand(command);
+export function assertApprovable(command: string, policy: CommandPolicy = DEFAULT_COMMAND_POLICY): CommandVerdict {
+  const verdict = classifyCommand(command, policy);
   if (verdict.decision === "deny") throw new CommandDeniedError(verdict, command);
   return verdict;
 }
@@ -304,8 +355,9 @@ export function runBounded(command: string, opts: BoundedExecOptions): Promise<B
 export async function safeExec(
   command: string,
   opts: BoundedExecOptions,
+  policy: CommandPolicy = DEFAULT_COMMAND_POLICY,
 ): Promise<{ verdict: CommandVerdict; result: BoundedExecResult }> {
-  const verdict = assertApprovable(command);
+  const verdict = assertApprovable(command, policy);
   const result = await runBounded(command, opts);
   return { verdict, result };
 }

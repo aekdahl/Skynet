@@ -396,12 +396,24 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   **stop**. The halted run frees its runner but keeps its worktree so a resume/reassign can continue the
   work. *(Verified live: a real agent correctly escalated rather than fabricate a secret; help & resume
   round-tripped. Foundation for the "escalation SLAs / delegated approval" governance items below.)*
-- [ ] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).** A 6-way
+- [~] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).** A 6-way
   competitor deep-dive found *none* ship a real safety/policy layer, decision audit, or (bar one) a HITL
   inbox — so this is where we win now:
-  - **Safety = policy-as-code, not a hardcoded denylist** — a versioned, diffable per-workspace policy
+  - [x] **Safety = policy-as-code, not a hardcoded denylist** — a versioned, diffable per-workspace policy
     (allow/gate/deny, path scopes, resource + token-budget caps, network-egress rules); dry-run a policy
-    against historical runs before enabling it.
+    against historical runs before enabling it. *Landed: `CommandPolicy`/`PolicyVersion` (contracts.ts) —
+    `classifyCommand()` (command-safety.ts) now consults a policy argument instead of hardcoded rule
+    arrays; the shipped classifier is `DEFAULT_COMMAND_POLICY`, the exact same rules expressed as data, so a
+    workspace with no saved version is byte-for-byte unaffected. Versions are per-workspace, git-like
+    (`store.putPolicyVersion` deactivates the prior active version but keeps it — never overwrites), backed
+    by all three Store adapters (memory/file/Postgres). Dry-run (`command-policy.ts#dryRunPolicy`) replays a
+    workspace's real historical commands (drawn from its `hitl_audit` trail) through a proposed-but-unsaved
+    policy and reports exactly which commands would flip decision/risk vs. the currently active policy —
+    verified live against real audit history end-to-end (API + Settings UI). A Settings → Command policy
+    panel edits rules, dry-runs, and browses version history. Resource-cap and network-egress fields are
+    recorded on the policy but inert — no runtime enforcement exists for either yet (network-egress
+    enforcement is explicitly out of scope here; see 🏢 below). Path scopes were scoped out (no per-path
+    command semantics existed to attach them to). Tests: `tests/command-policy.test.ts`.
   - **Context-aware risk** — classify by *blast radius*, not string match: outside the worktree, touching
     secrets, git-history-destructive, package publish, DB migration, network egress.
   - [x] **⭐ Prompt-injection / tool-poisoning firewall** — detect when untrusted content the agent read (an

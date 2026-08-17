@@ -18,6 +18,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
+import { resolveActivePolicy } from "./command-policy.js";
 import { resolveMergeTarget } from "./derive/merge-target.js";
 import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
@@ -462,8 +463,9 @@ export class Orchestrator {
     let risk = raise.risk;
     const why = raise.why;
     let flags: string[] = [];
+    const policy = await resolveActivePolicy(this.store, agent.workspaceId);
     if (raise.kind === "approval" && raise.command) {
-      const verdict = classifyCommand(raise.command);
+      const verdict = classifyCommand(raise.command, policy);
       if (rank[verdict.risk] > rank[risk]) risk = verdict.risk;
       // Surface the classifier's real reasons as scannable chips (not buried in
       // prose) so the operator sees exactly WHY this needs approval.
@@ -535,6 +537,7 @@ export class Orchestrator {
         command: raise.command,
         level: project?.approvalLevel ?? "trusted",
         rules: project?.approvalRules ?? [],
+        policy,
       });
       if (auto) {
         const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: auto.by, at: now() };

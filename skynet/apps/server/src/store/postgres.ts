@@ -15,6 +15,7 @@ import type {
   HitlItem,
   Milestone,
   Module,
+  PolicyVersion,
   Project,
   ProviderInfo,
   Agent,
@@ -46,6 +47,8 @@ CREATE TABLE IF NOT EXISTS hitl_audit (id bigserial PRIMARY KEY, workspace_id te
 ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS github_connections (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS workspace_settings (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS command_policy_versions (id text PRIMARY KEY, workspace_id text NOT NULL, version int NOT NULL, active boolean NOT NULL DEFAULT false, data jsonb NOT NULL);
+CREATE INDEX IF NOT EXISTS command_policy_versions_ws ON command_policy_versions(workspace_id);
 CREATE TABLE IF NOT EXISTS github_tokens      (workspace_id text PRIMARY KEY, ciphertext text NOT NULL);
 CREATE TABLE IF NOT EXISTS service_tokens     (id text PRIMARY KEY, token_hash text NOT NULL, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE INDEX IF NOT EXISTS service_tokens_hash ON service_tokens(token_hash);
@@ -264,6 +267,40 @@ export class PostgresStore implements Store {
       "INSERT INTO workspace_settings(workspace_id,data) VALUES($1,$2::jsonb) ON CONFLICT(workspace_id) DO UPDATE SET data=$2::jsonb",
       [settings.workspaceId, J(settings)],
     );
+  }
+
+  // ── command policy versions (workspace-scoped, versioned — see store.ts) ──
+  async listPolicyVersions(ws: string): Promise<PolicyVersion[]> {
+    const { rows } = await this.pool.query<{ data: PolicyVersion }>(
+      "SELECT data FROM command_policy_versions WHERE workspace_id=$1 ORDER BY version DESC",
+      [ws],
+    );
+    return rows.map((r) => r.data);
+  }
+  async getPolicyVersion(id: string): Promise<PolicyVersion | undefined> {
+    const { rows } = await this.pool.query<{ data: PolicyVersion }>("SELECT data FROM command_policy_versions WHERE id=$1", [id]);
+    return rows[0]?.data;
+  }
+  async getActivePolicyVersion(ws: string): Promise<PolicyVersion | undefined> {
+    const { rows } = await this.pool.query<{ data: PolicyVersion }>(
+      "SELECT data FROM command_policy_versions WHERE workspace_id=$1 AND active=true",
+      [ws],
+    );
+    return rows[0]?.data;
+  }
+  async putPolicyVersion(version: PolicyVersion): Promise<PolicyVersion> {
+    if (version.active) {
+      await this.pool.query(
+        "UPDATE command_policy_versions SET active=false WHERE workspace_id=$1 AND id<>$2 AND active=true",
+        [version.workspaceId, version.id],
+      );
+    }
+    await this.pool.query(
+      "INSERT INTO command_policy_versions(id,workspace_id,version,active,data) VALUES($1,$2,$3,$4,$5::jsonb) " +
+        "ON CONFLICT(id) DO UPDATE SET workspace_id=$2, version=$3, active=$4, data=$5::jsonb",
+      [version.id, version.workspaceId, version.version, version.active, J(version)],
+    );
+    return version;
   }
 
   async getGithubToken(ws: string): Promise<string | undefined> {

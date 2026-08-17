@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import type { GithubConnection, WorkspaceSettings } from "@skynet/shared";
-import { Agent, AuditRecord, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, Project, Task, TaskRun } from "@skynet/shared";
+import { Agent, AuditRecord, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, PolicyVersion, Project, Task, TaskRun } from "@skynet/shared";
 import type { z } from "zod";
 import { MemoryStore } from "./memory.js";
 
@@ -88,6 +88,7 @@ export class FileStore extends MemoryStore {
       // list and blanked the audit page (approvals looked lost). fillArray drops
       // the few bad rows with a warning; the rest still show.
       this.audit = fillArray(d.audit, AuditRecord, "audit record");
+      fill(this.policyVersions, d.policyVersions, PolicyVersion, "policy version");
       // GitHub connections are keyed by workspaceId (not id), so fill directly.
       if (Array.isArray(d.github)) for (const c of d.github as GithubConnection[]) this.github.set(c.workspaceId, c);
       if (Array.isArray(d.workspaceSettings)) for (const s of d.workspaceSettings as WorkspaceSettings[]) this.workspaceSettings.set(s.workspaceId, s);
@@ -127,6 +128,7 @@ export class FileStore extends MemoryStore {
       modules: this.modules,
       deps: this.deps,
       audit: this.audit,
+      policyVersions: [...this.policyVersions.values()],
       github: [...this.github.values()],
       workspaceSettings: [...this.workspaceSettings.values()],
       githubTokens: Object.fromEntries(this.githubTokens),

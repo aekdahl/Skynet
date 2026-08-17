@@ -1278,6 +1278,132 @@ export const UpdateWorkspaceSettingsRequest = z.object({
 });
 export type UpdateWorkspaceSettingsRequest = z.infer<typeof UpdateWorkspaceSettingsRequest>;
 
+// ─── Command policy (versioned, per-workspace, operator-editable) ───────────
+// Replaces the compiled-in command-safety classifier with DATA: a workspace can
+// view, edit, version, and dry-run its own allow/gate/deny rules instead of
+// trusting whatever shipped in the binary. A workspace with no custom
+// PolicyVersion behaves exactly like the DEFAULT_COMMAND_POLICY shipped in
+// apps/server/src/command-safety.ts (same rules, expressed as data). Distinct
+// from `SafetyPolicy` above (GitHub push-safety toggles) and from
+// `ApprovalRule`/`ApprovalLevel` (the downstream per-PROJECT auto-approval layer
+// that decides whether an already-*gated* command still needs a human) — this is
+// the upstream classification layer itself: what decides allow/gate/deny at all.
+
+/** Mirrors command-safety.ts's `SafetyDecision`. allow = run without a gate ·
+ *  gate = require human approval · deny = never run, even if "approved". */
+export const PolicyDecision = z.enum(["allow", "gate", "deny"]);
+export type PolicyDecision = z.infer<typeof PolicyDecision>;
+
+/** Which evaluation bucket a rule participates in — deny/gate are whole-string
+ *  regex checks (deny wins outright); allow-leader certifies a read-only leading
+ *  command (every segment of the command line must match one). */
+export const PolicyRuleKind = z.enum(["deny", "gate", "allow-leader"]);
+export type PolicyRuleKind = z.infer<typeof PolicyRuleKind>;
+
+export const PolicyRule = z.object({
+  id: z.string(),
+  kind: PolicyRuleKind,
+  /** Regex source (case-insensitive), e.g. String.raw`\bsudo\b`. */
+  pattern: z.string(),
+  /** Risk surfaced on the HITL gate. Ignored for `allow-leader` (always low). */
+  risk: Risk.default("medium"),
+  /** Human-readable reason — feeds the HITL `why` chips and the audit trail. */
+  reason: z.string(),
+  enabled: z.boolean().default(true),
+});
+export type PolicyRule = z.infer<typeof PolicyRule>;
+
+/** A workspace's editable command-classification policy: an ordered rule set
+ *  plus the fallback for commands no rule matches. `resourceCaps` and
+ *  `networkEgress` are recorded for visibility/future enforcement — no runtime
+ *  enforcement of either exists yet (wall-clock has a separate env-based cap;
+ *  token budget is reported after the fact; network egress has no enforcement
+ *  mechanism anywhere in the codebase). Editing them here is inert today. */
+export const CommandPolicy = z.object({
+  rules: z.array(PolicyRule).default([]),
+  /** Decision for a command that matches no deny/gate rule and isn't a
+   *  certified read-only allow-leader. Today's classifier defaults to "gate". */
+  defaultDecision: PolicyDecision.default("gate"),
+  defaultRisk: Risk.default("medium"),
+  /** Block `allow` whenever the command contains substitution/eval/pipe-to-shell
+   *  composition ($(...), backticks, `eval`, redirects) — even if every segment
+   *  otherwise matches an allow-leader. On by default; matches today's behavior. */
+  unsafeCompositionBlocksAllow: z.boolean().default(true),
+  resourceCaps: z
+    .object({
+      maxWallClockMs: z.number().int().positive().nullable().default(null),
+      maxTokenBudget: z.number().int().positive().nullable().default(null),
+    })
+    .default({}),
+  networkEgress: z
+    .object({
+      enabled: z.boolean().default(false),
+      allowlist: z.array(z.string()).default([]),
+    })
+    .default({}),
+});
+export type CommandPolicy = z.infer<typeof CommandPolicy>;
+
+/** One immutable, versioned snapshot of a workspace's CommandPolicy — git-like:
+ *  every save creates a new version, older versions stay inspectable/diffable,
+ *  and exactly one version is `active` at a time. No active PolicyVersion for a
+ *  workspace = it runs the shipped DEFAULT_COMMAND_POLICY unmodified. */
+export const PolicyVersion = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  /** Monotonic per-workspace, starting at 1. */
+  version: z.number().int().positive(),
+  policy: CommandPolicy,
+  active: z.boolean().default(false),
+  label: z.string().nullable().default(null),
+  createdBy: z.string(),
+  createdAt: Timestamp,
+});
+export type PolicyVersion = z.infer<typeof PolicyVersion>;
+
+/** Body to save a new policy version (becomes active immediately on save). */
+export const SavePolicyVersionRequest = z.object({
+  policy: CommandPolicy,
+  label: z.string().nullable().optional(),
+});
+export type SavePolicyVersionRequest = z.infer<typeof SavePolicyVersionRequest>;
+
+/** Body to dry-run an unsaved, proposed policy against historical commands. */
+export const DryRunPolicyRequest = z.object({
+  policy: CommandPolicy,
+  /** Cap on distinct historical commands replayed. Default 500. */
+  limit: z.number().int().positive().max(2000).optional(),
+});
+export type DryRunPolicyRequest = z.infer<typeof DryRunPolicyRequest>;
+
+const PolicyVerdictSummary = z.object({
+  decision: PolicyDecision,
+  risk: Risk,
+  reasons: z.array(z.string()),
+});
+
+/** One command whose classification would change under the proposed policy. */
+export const PolicyDryRunChange = z.object({
+  command: z.string(),
+  /** How many historical records carried this exact (normalized) command. */
+  occurrences: z.number().int(),
+  before: PolicyVerdictSummary, // under the workspace's CURRENTLY active policy
+  after: PolicyVerdictSummary, // under the proposed (unsaved) policy
+});
+export type PolicyDryRunChange = z.infer<typeof PolicyDryRunChange>;
+
+export const PolicyDryRunResult = z.object({
+  /** Historical audit records considered (post-dedup source rows). */
+  sampledRecords: z.number().int(),
+  /** Distinct normalized commands classified. */
+  uniqueCommands: z.number().int(),
+  /** Commands whose decision, risk, or reasons differ before → after. */
+  changed: z.array(PolicyDryRunChange),
+  /** Distinct commands classified identically before and after. */
+  unchanged: z.number().int(),
+});
+export type PolicyDryRunResult = z.infer<typeof PolicyDryRunResult>;
+
 /** Body to record/refresh an installation after the App is installed on GitHub. */
 export const ConnectGithubRequest = z.object({
   installation: GithubInstallation,

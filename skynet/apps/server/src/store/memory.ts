@@ -12,6 +12,7 @@ import type {
   HitlItem,
   Milestone,
   Module,
+  PolicyVersion,
   Project,
   ProviderInfo,
   Agent,
@@ -40,6 +41,7 @@ export class MemoryStore implements Store {
   protected audit: AuditRecord[] = [];
   protected github = new Map<string, GithubConnection>(); // keyed by workspaceId
   protected workspaceSettings = new Map<string, WorkspaceSettings>(); // keyed by workspaceId
+  protected policyVersions = new Map<string, PolicyVersion>(); // keyed by id
   protected githubTokens = new Map<string, string>(); // workspaceId → sealed PAT ciphertext
   protected serviceTokens = new Map<string, StoredServiceToken>(); // keyed by id (holds a hash, never the raw token)
   private providers: ProviderInfo[] = PROVIDERS;
@@ -142,6 +144,24 @@ export class MemoryStore implements Store {
 
   async getWorkspaceSettings(ws: string) { return this.workspaceSettings.get(ws); }
   async putWorkspaceSettings(settings: WorkspaceSettings) { this.workspaceSettings.set(settings.workspaceId, settings); this.persist(); }
+
+  async listPolicyVersions(ws: string) {
+    return [...this.policyVersions.values()].filter((v) => v.workspaceId === ws).sort((a, b) => b.version - a.version);
+  }
+  async getPolicyVersion(id: string) { return this.policyVersions.get(id); }
+  async getActivePolicyVersion(ws: string) {
+    return [...this.policyVersions.values()].find((v) => v.workspaceId === ws && v.active);
+  }
+  async putPolicyVersion(version: PolicyVersion) {
+    if (version.active) {
+      for (const v of this.policyVersions.values()) {
+        if (v.workspaceId === version.workspaceId && v.id !== version.id && v.active) v.active = false;
+      }
+    }
+    this.policyVersions.set(version.id, version);
+    this.persist();
+    return version;
+  }
 
   async getGithubToken(ws: string) { return this.githubTokens.get(ws); }
   async putGithubToken(ws: string, ciphertext: string) { this.githubTokens.set(ws, ciphertext); this.persist(); }
