@@ -11,6 +11,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { registerAuthRoutes } from "../apps/server/src/auth/routes.js";
 import { MemorySessionStore } from "../apps/server/src/auth/sessions.js";
 import { MemoryOperatorDirectory, makeOperator } from "../apps/server/src/auth/operators.js";
+import { MemoryElevationStore } from "../apps/server/src/auth/elevations.js";
 import { config } from "../apps/server/src/config.js";
 
 const EMAIL = "op@example.com";
@@ -33,7 +34,7 @@ describe("MFA-verified sessions get the long TTL", () => {
     sessions = new MemorySessionStore();
     operators = new MemoryOperatorDirectory([makeOperator("op", "cyberdyne", EMAIL, PASSWORD)]);
     app = Fastify();
-    await registerAuthRoutes(app, { sessions, operators });
+    await registerAuthRoutes(app, { sessions, operators, elevations: new MemoryElevationStore() });
     await app.ready();
 
     // Deterministic TTLs so the assertions can compare on the exact value.

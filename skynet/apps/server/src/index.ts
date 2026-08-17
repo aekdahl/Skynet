@@ -33,6 +33,7 @@ import { MemorySessionStore, type SessionStore } from "./auth/sessions.js";
 import { StoreServiceTokenStore } from "./auth/service-tokens.js";
 import { seedBootstrapToken } from "./auth/bootstrap.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
+import { MemoryElevationStore } from "./auth/elevations.js";
 import { registerAuthRoutes, registerServiceTokenRoutes } from "./auth/routes.js";
 import { mfaEnabled, ensureRecoveryCodes } from "./auth/mfa.js";
 import { startTelegramBridge } from "./telegram/index.js";
@@ -116,12 +117,17 @@ async function main() {
   }
   const seededOperators = seedOperators();
   const operators = new MemoryOperatorDirectory(seededOperators);
+  // Time-limited admin promotion (ROADMAP.md) — grants + their audit trail,
+  // in-memory only for now, same footing as the operator directory itself (no
+  // Postgres-backed directory exists yet either). Independent of the session
+  // backend (memory/Postgres/Redis) — see auth/elevations.ts.
+  const elevations = new MemoryElevationStore();
   // Scoped API tokens for MCP / programmatic access. Persisted through the
   // domain Store (file on desktop, Postgres hosted) as a hash + last-4 — so a
   // token minted in Settings survives a restart, and the raw secret is never
   // written to disk.
   const serviceTokens = new StoreServiceTokenStore(store);
-  configureAuth({ sessions, serviceTokens });
+  configureAuth({ sessions, serviceTokens, elevations });
   // MFA on (SKYNET_MFA): generate recovery codes once (plaintext written to a
   // 0600 file on /data for one-time SSH retrieval; hashes persisted).
   if (mfaEnabled()) ensureRecoveryCodes((m) => console.log(m));
@@ -175,7 +181,7 @@ async function main() {
 
   app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: "per-runner", sessions: config.sessions }));
 
-  await registerAuthRoutes(app, { sessions, operators });
+  await registerAuthRoutes(app, { sessions, operators, elevations });
   await registerServiceTokenRoutes(app, { serviceTokens, operations });
   await registerApi(app, { operations, orchestrator });
   // MCP endpoint (Streamable HTTP) — runs drive Skynet through the same

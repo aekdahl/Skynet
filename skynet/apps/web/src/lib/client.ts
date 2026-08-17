@@ -39,6 +39,9 @@ export interface Principal {
   workspaceId: string;
   operatorId: string;
   scopes?: string[];
+  // Set only while a time-limited admin promotion is active on this session
+  // (server: auth/sessions.ts's resolve()) — the timestamp it auto-reverts at.
+  elevatedUntil?: number;
 }
 
 let readOnly = false;
@@ -157,6 +160,36 @@ export async function fetchMe(): Promise<Principal> {
  *  read-only. */
 export function isReadOnlyPrincipal(principal: Principal): boolean {
   return principal.scopes !== undefined && !principal.scopes.includes("author");
+}
+
+/** A workspace operator, as a non-secret summary (admin-promotion picker). */
+export interface OperatorSummary {
+  operatorId: string;
+  email: string;
+  role: "admin" | "viewer";
+}
+
+/** This workspace's roster — admin-only (see GET /api/operators). */
+export async function fetchOperators(): Promise<OperatorSummary[]> {
+  return req("GET", "/api/operators");
+}
+
+/** Time-limited admin promotion (ROADMAP.md) — ADMIN-granted, never
+ *  self-service: promote a named viewer to a bounded full-authority window.
+ *  Only an admin's session can call this (the server checks the caller's
+ *  PERSISTED role, not just their current scopes). */
+export async function promoteOperator(operatorId: string, ttlMs?: number): Promise<{ operatorId: string; expiresAt: number }> {
+  return req("POST", `/api/operators/${encodeURIComponent(operatorId)}/promote`, ttlMs ? { ttlMs } : {});
+}
+
+export type ElevationEvent =
+  | { kind: "grant"; workspaceId: string; operatorId: string; grantedBy: string; at: number; expiresAt: number; ttlMs: number }
+  | { kind: "expiry"; workspaceId: string; operatorId: string; at: number; expiresAt: number };
+
+/** The elevation audit trail (grants AND observed expiries) — newest first,
+ *  append-only server-side. */
+export async function fetchElevations(): Promise<ElevationEvent[]> {
+  return req("GET", "/api/auth/elevations");
 }
 
 export async function fetchSnapshot(): Promise<Snapshot> {

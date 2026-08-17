@@ -128,6 +128,15 @@ const ALLOW = new Set<string>([
   // that shape, exercised directly wherever it's used (store.tsx), not via a
   // journey.
   "fetchMe", "setReadOnly", "isReadOnly", "isReadOnlyPrincipal",
+  // Time-limited admin promotion (ROADMAP.md) — ADMIN-granted: promoting a
+  // viewer needs a real second operator + a real persisted-role check, so no
+  // offline journey exercises it (there's no "am I an admin" fixture a
+  // journey can assume); covered server-side by admin-promotion.test.ts (the
+  // promote route, the persisted-role gate, TTL clamp, an already-elevated
+  // viewer can't re-grant). fetchOperators/fetchElevations read the roster
+  // and the append-only audit trail those same routes write — no operator
+  // journey drives either.
+  "fetchOperators", "promoteOperator", "fetchElevations",
   // `inform` — mass-select runs (explicit ids and/or a whole project's live
   // runs) and attach a note that rides each one's next prompt, no extra turn
   // (a third interaction type alongside chat + resolve). Exercising it for

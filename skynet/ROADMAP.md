@@ -601,9 +601,40 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   production gets an equivalent `SKYNET_VIEWER_EMAIL`/`_PASSWORD`/`_WORKSPACE` env seed (mirrors the
   existing admin seed — there's still no invite/user-management UI, so this is the only way to stand
   one up on a hosted deploy today). *(Multi-user — hosted/team only.)*
-- [ ] 🏢 **Time-limited admin promotion** — temporarily elevate a viewer to admin for a bounded,
+- [x] 🏢 **Time-limited admin promotion** — temporarily elevate a viewer to admin for a bounded,
   auto-expiring window (break-glass / sudo-style), then revert to their base role automatically; every
-  promotion + expiry is audited. Depends on the read-only role above.
+  promotion + expiry is audited. Depends on the read-only role above. **Admin-granted, never
+  self-service**: an existing admin promotes a NAMED viewer (`POST /api/operators/:operatorId/promote`)
+  — there is no "elevate my own session" path at all. Keyed by OPERATOR, not by session token (the
+  granting admin has no access to the target's session, and the target may not even be logged in yet):
+  a new `ElevationStore` (`auth/elevations.ts`, in-memory) tracks the live grant and is checked by
+  `auth.ts`'s `resolvePrincipal()` on EVERY session-resolved request — the same "wherever a Principal
+  is resolved" seam session-TTL sweeping already uses — so an expired grant reverts transparently on
+  the next request, no manual step, and no backend-specific (Postgres/Redis) plumbing at all (dropped
+  entirely from `SessionStore`, which now has no elevation concept — one in-memory store covers every
+  session backend). The route's OWN check is what actually closes the self-service loophole: a
+  currently-elevated viewer's live `scopes` look identical to a real admin's, so it verifies the
+  CALLER's PERSISTED role in the operator directory (`OperatorDirectory.getByIdentity`), not their
+  current scope — an elevated viewer cannot re-grant or self-extend, verified explicitly. Every grant
+  AND every LAZILY-OBSERVED expiry (sweep-on-access, first request past the deadline) is its own
+  audit entry — deliberately NOT folded into the HITL audit trail (`AuditRecord`'s `hitlId`/`runId`
+  are structurally required and every existing consumer is keyed to a resolved HITL decision) — with
+  no delete/archive route, same as before. Bundled a real pre-existing bug fix along the way:
+  `PostgresSessionStore` was silently dropping `scopes` on every resolve (a Postgres-backed viewer
+  login would have resolved as full authority) — independent of this feature, fixed regardless.
+  Web: a "Access" section in Settings (admin-only, hidden from a currently-elevated viewer even
+  though their live scopes would otherwise qualify) lists the workspace's viewer accounts + the
+  grant/expiry history and lets an admin promote one; the sidebar's `· Viewer` → `· Admin (Nm left)`
+  countdown is unchanged (no button — a promoted viewer's OWN session picks it up on its next
+  request, or within ~20s via a light client-side poll while read-only, no reload needed). Verified
+  live end-to-end against a real dev server: a viewer's mutation 403s; the viewer itself attempting
+  `/promote` on any operator (including itself) 403s; an admin promotes the viewer and the SAME
+  viewer token's identical mutation now succeeds mid-window; the now-elevated viewer's OWN attempt to
+  promote a second viewer STILL 403s (the persisted-role check firing, not the live-scope one); after
+  the window lapses with no action taken, the identical token 403s again while `/api/auth/me` still
+  resolves (never logged out); the elevation log showed both the grant and, once observed, its
+  expiry — newest first. The Settings "Access" section was confirmed rendering that exact live
+  grant/expiry data (roster + promotion history, correctly labeled) end to end.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap, additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
 - [~] 🔗⛓ **Feature-scoped branch hierarchy — branch out from branches.** When a Task has `featureId` set,
   its approved diff now merges into a shared `skynet/feature/<id>` branch (`MergeEngine.targetBranchFor`,
