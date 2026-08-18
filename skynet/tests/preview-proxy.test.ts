@@ -4,7 +4,15 @@
 // bits: token extraction from the path, and public-origin learning (env wins;
 // loopback ignored).
 import { describe, it, expect, beforeEach } from "vitest";
-import { previewTokenOf, stripPreviewPrefix, rewritePreviewHtml, rewriteJsImports } from "../apps/server/src/preview/preview-proxy.js";
+import {
+  previewTokenOf,
+  stripPreviewPrefix,
+  rewritePreviewHtml,
+  rewriteJsImports,
+  isDevServerPath,
+  salvagePreviewToken,
+  isViteClientSocket,
+} from "../apps/server/src/preview/preview-proxy.js";
 import { recordPublicOrigin, publicOrigin, __resetPublicOrigin } from "../apps/server/src/preview/public-origin.js";
 
 describe("previewTokenOf", () => {
@@ -102,6 +110,81 @@ describe("rewriteJsImports", () => {
     expect(rewriteJsImports(js, P)).toBe(
       `await import(/* @vite-ignore */ "/p/abc123/@fs/data/worktrees/preview/node_modules/pdfjs-dist/build/pdf.worker.min.mjs")`,
     );
+  });
+  it("re-prefixes export default \"/…\" — Vite's dev response for a `?url` asset import (THE pdfjs-dist worker leak)", () => {
+    // vite:asset load() serves `import x from "…?url"` as exactly this module:
+    // a bare exported string. The string is consumed at RUNTIME (new Worker(x) /
+    // import(x)) where no rewriter can see it — so it must be prefixed here.
+    const js = `export default "/@fs/data/worktrees/preview-p-1/node_modules/pdfjs-dist/build/pdf.worker.min.mjs?import"`;
+    expect(rewriteJsImports(js, P)).toBe(
+      `export default "/p/abc123/@fs/data/worktrees/preview-p-1/node_modules/pdfjs-dist/build/pdf.worker.min.mjs?import"`,
+    );
+  });
+  it("leaves export default alone when already prefixed, relative, or not a string path", () => {
+    const already = `export default "/p/abc123/x.js"`;
+    expect(rewriteJsImports(already, P)).toBe(already);
+    const object = `export default { url: 1 }`;
+    expect(rewriteJsImports(object, P)).toBe(object);
+    const protoRel = `export default "//cdn.example.com/x.js"`;
+    expect(rewriteJsImports(protoRel, P)).toBe(protoRel);
+  });
+});
+
+describe("isDevServerPath", () => {
+  it("recognizes the namespaces only a dev server owns", () => {
+    for (const p of ["/@fs/data/x/y.js", "/@vite/client", "/@id/some-id", "/@react-refresh", "/node_modules/.vite/deps/react.js", "/__vite_ping"]) {
+      expect(isDevServerPath(p), p).toBe(true);
+    }
+  });
+  it("ignores query strings when classifying", () => {
+    expect(isDevServerPath("/@fs/data/w/pdf.worker.min.mjs?import")).toBe(true);
+  });
+  it("rejects ordinary app/Skynet paths", () => {
+    for (const p of ["/", "/api/snapshot", "/p/tok/@vite/client", "/assets/index.js", "/src/App.tsx"]) {
+      expect(isDevServerPath(p), p).toBe(false);
+    }
+  });
+});
+
+describe("salvagePreviewToken", () => {
+  const A = { token: "tokA", dir: "/data/worktrees/preview-p-a-1", stripPrefix: true };
+  const B = { token: "tokB", dir: "/data/worktrees/preview-p-b-1", stripPrefix: true };
+
+  it("resolves by the worktree dir embedded in an /@fs/ path (works with no Referer — e.g. a worker's own sub-requests)", () => {
+    const url = "/@fs/data/worktrees/preview-p-b-1/node_modules/pdfjs-dist/build/pdf.worker.min.mjs?import";
+    expect(salvagePreviewToken(url, undefined, [A, B])).toBe("tokB");
+  });
+  it("decodes percent-encoded /@fs/ paths before matching", () => {
+    const url = "/@fs/data/worktrees/preview-p-a-1/node_modules/some%20pkg/x.js";
+    expect(salvagePreviewToken(url, undefined, [A, B])).toBe("tokA");
+  });
+  it("falls back to the Referer's /p/<token>/ page", () => {
+    const url = "/@vite/client";
+    expect(salvagePreviewToken(url, "https://skynet.example.com/p/tokB/", [A, B])).toBe("tokB");
+  });
+  it("ignores a Referer token that is not a live candidate", () => {
+    expect(salvagePreviewToken("/@vite/client", "https://x.example.com/p/gone/", [A, B])).toBeNull();
+  });
+  it("falls back to the sole live preview", () => {
+    expect(salvagePreviewToken("/@vite/client", undefined, [A])).toBe("tokA");
+  });
+  it("returns null when ambiguous, when no previews are live, or for a non-dev path", () => {
+    expect(salvagePreviewToken("/@vite/client", undefined, [A, B])).toBeNull();
+    expect(salvagePreviewToken("/@vite/client", undefined, [])).toBeNull();
+    expect(salvagePreviewToken("/api/snapshot", undefined, [A])).toBeNull();
+  });
+});
+
+describe("isViteClientSocket", () => {
+  it("matches vite-hmr and vite-ping subprotocols", () => {
+    expect(isViteClientSocket("vite-hmr")).toBe(true);
+    expect(isViteClientSocket("vite-ping")).toBe(true);
+    expect(isViteClientSocket(["vite-hmr"])).toBe(true);
+  });
+  it("rejects other/absent protocols", () => {
+    expect(isViteClientSocket(undefined)).toBe(false);
+    expect(isViteClientSocket("graphql-ws")).toBe(false);
+    expect(isViteClientSocket("vite-hmrx")).toBe(false);
   });
 });
 

@@ -414,6 +414,18 @@ export class ProjectPreviewManager {
     return undefined;
   }
 
+  /** Every live preview, for the proxy's SALVAGE layer (see preview-proxy.ts):
+   *  routes a token-less dev-server request (`/@fs/…`, a Vite HMR socket at the
+   *  top origin, …) back to the preview it belongs to. `dir` lets `/@fs/<abs>`
+   *  URLs — which embed the worktree path — resolve deterministically. */
+  liveSalvageCandidates(): { token: string; dir: string; stripPrefix: boolean }[] {
+    const out: { token: string; dir: string; stripPrefix: boolean }[] = [];
+    for (const p of this.previews.values()) {
+      if (p.status === "live" && p.port) out.push({ token: p.token, dir: p.dir, stripPrefix: !p.baseInjected });
+    }
+    return out;
+  }
+
   private log(p: Live, line: string) {
     for (const l of line.split("\n")) if (l.trim()) p.logs.push(l);
     if (p.logs.length > LOG_CAP) p.logs.splice(0, p.logs.length - LOG_CAP);
