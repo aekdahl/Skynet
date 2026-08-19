@@ -882,6 +882,19 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   work") doesn't need; only the merge *destination* changed. A different axis from **Structural
   agent-hierarchy hooks** just above (that's agent *role* — worker/manager; this is *Feature/task*
   grouping) — complementary, not dependent.
+- [x] **Feature-batch size guardrail.** Feature-scoped batching (above) lets one human approval cover
+  every task under a Feature — but nothing capped how big that batch could grow, so the single gate could
+  quietly become one unreviewable mega-PR. Two layers, both assistive (neither blocks anything): **(1)
+  PR-time** — `checkFeatureBatchSize` (pure, `orchestrator.ts`) checks the aggregate diff against
+  configurable thresholds (`SKYNET_FEATURE_BATCH_MAX_TASKS`/`_LINES`/`_FILES`, defaults 12/5000/60); past
+  any of them the feature PR still opens (blocking it entirely would strand finished work behind nothing)
+  but `buildFeatureMergeBriefing`'s risk floors at `"high"` and its rationale names which threshold(s)
+  tripped and by how much — the card renders this via the existing structured `MergeBriefing` fields, no
+  new UI needed. **(2) Task-link time** — `Operations.updateTask` (the single choke point every "add a
+  task to a feature" path funnels through — the UI, Steward's `set_task_feature`, and Telegram all call
+  it) fires an assistive note the moment the resulting batch crosses the task-count threshold, well before
+  the batch completes, so an operator can split an oversized feature while there's still time. Persisted
+  on `Feature.sizeWarning`, fires once (never re-triggers as more tasks pile on past the threshold).
 - [x] **Make the one human approval reviewable — feature-level brief.** Approving a 30-task batched
   feature PR off the plain diff card is rubber-stamping or drowning: `Feature.pr.briefing` gains a
   nullable `featureBrief` (`packages/shared/src/contracts.ts`), composed once in `openPrForFeature` right
@@ -939,9 +952,10 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
      consecutive flagged/failed TASKS on the same project pauses that project's `autonomy` toggle with
      ONE summary escalation, not N separate HITL gates — distinct from the existing PER-RUN retry
      ceiling (`config.runMaxFailures`/`failCounts`, which bounds retries on a single run, never a
-     project's whole unattended session); **(b)** a **feature size guardrail** — cap how large a
-     Feature's auto-picked task batch may grow unattended before it forces a human check-in, so a
-     mis-scoped Feature can't silently balloon into a week of unattended spend; **(c)** ~~a
+     project's whole unattended session); **(b)** ~~a feature size guardrail~~ — **shipped**, see
+     **Feature-batch size guardrail** above: caps how large a Feature's auto-picked task batch may grow
+     unattended before it forces a human check-in, so a mis-scoped Feature can't silently balloon into a
+     week of unattended spend; **(c)** ~~a
      feature-altitude merge brief~~ — **shipped**, see **Make the one human approval reviewable** above:
      one synthesized brief for the whole batched-feature PR, not N per-task ones a human has to mentally
      reassemble.

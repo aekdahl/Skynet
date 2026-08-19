@@ -199,6 +199,17 @@ export const config = {
   //     get a soft, human-recoverable escalation before the hard fail.
   runMaxFailures: Number(process.env.SKYNET_RUN_MAX_FAILURES ?? 3),
   runStuckMs: Number(process.env.SKYNET_RUN_STUCK_MS ?? 0),
+  // Feature-batch size guardrail — feature-scoped branch batching (see
+  // orchestrator.ts's checkFeatureCompletion) opens ONE PR for every task under
+  // a Feature, with no cap on how big that batch gets. Past any of these
+  // thresholds the PR still opens (blocking it entirely would strand finished
+  // work behind nothing) — but its briefing's risk floors at "high" and the
+  // rationale names which threshold tripped and by how much, so the single
+  // human gate stays meaningful instead of rubber-stamping a mega-diff. See
+  // buildFeatureMergeBriefing / checkFeatureBatchSize.
+  featureBatchMaxTasks: Number(process.env.SKYNET_FEATURE_BATCH_MAX_TASKS ?? 12),
+  featureBatchMaxChangedLines: Number(process.env.SKYNET_FEATURE_BATCH_MAX_LINES ?? 5_000),
+  featureBatchMaxFiles: Number(process.env.SKYNET_FEATURE_BATCH_MAX_FILES ?? 60),
   // Session circuit-breaker (project-scoped, behavioral — not the budget guard):
   // N consecutive BAD autonomy outcomes for the same project — a flagged
   // auto-review verdict, or a run that failed — with no good outcome in

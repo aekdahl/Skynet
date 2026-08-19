@@ -1052,6 +1052,7 @@ export class Operations {
     if (patch.featureId !== undefined && patch.featureId !== null) {
       const f = await this.store.getFeature(patch.featureId);
       if (!f || f.workspaceId !== ws || f.projectId !== task.projectId) throw new NotFoundError("Feature");
+      await this.maybeWarnFeatureBatchSize(ws, f, tid);
     }
     if (patch.milestoneId !== undefined && patch.milestoneId !== null) {
       const m = await this.store.getMilestone(patch.milestoneId);
@@ -1097,6 +1098,28 @@ export class Operations {
     });
     if (relint) this.maybeLintTask(ws, updated);
     return updated;
+  }
+  /**
+   * Earlier warning for the feature-batch size guardrail (see
+   * orchestrator.ts's checkFeatureBatchSize, applied at PR-open time): fires
+   * the moment a task JOINS a feature and the resulting batch crosses
+   * SKYNET_FEATURE_BATCH_MAX_TASKS, not just once the whole batch completes —
+   * an operator sees it while there's still time to split the feature.
+   * Assistive only: never blocks the link, never throws. Fires ONCE — once
+   * `feature.sizeWarning` is set it's left alone, so adding an 13th, 14th, …
+   * task doesn't keep re-triggering the same note.
+   */
+  private async maybeWarnFeatureBatchSize(ws: string, feature: Feature, joiningTaskId: string): Promise<void> {
+    if (feature.sizeWarning) return; // already warned once — assistive, not a nag
+    const siblingCount =
+      (await this.store.listTasks(ws)).filter((t) => t.featureId === feature.id && !t.archived && t.id !== joiningTaskId).length + 1; // +1 for the task joining right now
+    if (siblingCount <= config.featureBatchMaxTasks) return;
+    const note = `"${feature.name}" now has ${siblingCount} tasks under it — over the ${config.featureBatchMaxTasks}-task batch guardrail. Consider splitting it into a second feature before the batch completes (it'll still open as one PR either way).`;
+    console.warn(`[feature ${feature.id}] ${note}`);
+    await this.hub.upsertFeature({
+      ...feature,
+      sizeWarning: { taskCount: siblingCount, threshold: config.featureBatchMaxTasks, note, at: now() },
+    });
   }
   /**
    * Manually promote (up) or demote (down) a task within its project's backlog.
@@ -1283,6 +1306,7 @@ export class Operations {
       archived: false,
       createdAt: now(),
       pr: null,
+      sizeWarning: null,
     };
     return this.hub.upsertFeature(feature);
   }
