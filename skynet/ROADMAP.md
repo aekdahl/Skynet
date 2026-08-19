@@ -572,6 +572,32 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     the audit trail records who reviewed what. Auto-approve merges only when the project's autonomy toggle is
     on; flagged runs stay in `review` for a human. Verdict parsing is field-based (JSON tail), not prose,
     so a reason mentioning "flagged" never false-flags an APPROVE.*
+  - *Landed: **`Project.deepReview` — reviewer-as-run (a real agent that actually USES the change).** The
+    plain auto-review above reads the last 30 log lines through a stateless, tool-less `consult` — it never
+    sees the change run. Deep review (a per-project opt-in, off by default — this is a real bounded agent run,
+    not a cheap text call) replaces that with a SECOND real agent: it opens a live preview of the run's own
+    branch (`projectPreview.startRun`, reusing the SAME "Preview this change" machinery/worktree — a detached
+    checkout, never the doer's own branch-owning worktree) with browser tools on, is handed the task text +
+    diff stat + preview URL, and is instructed to actually click through the changed behavior before answering
+    with the identical `REVIEW_OUTPUT_INSTRUCTION` JSON contract the plain consult uses. Deliberately kept
+    invisible on the kanban board — no `TaskRun`, no fleet-runner "busy" row — via a minimal private
+    `RunnerEvents` adapter that auto-resolves the reviewer's own gates (there's no human to ask), captures its
+    final text as the verdict, and its `mcp__browser__*` tool calls as a short "evidence" list
+    (`Task.reviewVerdict.evidence`). Hard-bounded: `StartSpec.maxTurns` (new field, reviewer gets 20 vs. the
+    normal 60) + `StartSpec.disallowedTools` locks out `Edit`/`MultiEdit`/`Write`/`NotebookEdit`/`Bash`
+    categorically (an SDK-level removal, not a per-call gate) — a reviewer can browse and read, it structurally
+    cannot fix anything it finds. **Never blocks the pipeline**: no repo, a non-Claude reviewer (browser tools
+    are Claude-only today, matching `StartSpec.browser`'s existing scope), the preview failing to start, a
+    timeout, or an unreadable reply from the reviewer all fall straight back to the plain consult path — same
+    safe-default discipline as an unreadable plain-consult verdict, just one layer earlier. Verified two ways:
+    5 orchestrator tests against a REAL throwaway git repo + a real (dependency-free, `.skynet/preview.json`-
+    described) preview subprocess via an injected `ProjectPreviewManager` (mirrors the existing `providerOverride`
+    test seam) — on/off parity, evidence capture, every fallback path, reviewer≠author still enforced; and a
+    live, unscripted run of the real Claude Agent SDK through the exact `StartSpec` this feature builds, which
+    confirmed `disallowedTools` genuinely blocks edits (zero attempts, not just zero approvals) while the
+    reviewer navigated a real local page, clicked a button, and correctly reported what it observed. No settings
+    UI yet — enable via `PATCH /api/projects/:id {"deepReview":true}`; a project-settings toggle is a natural
+    follow-up, out of scope here.*
   - *Landed: **`error_max_turns` is resumable** — a run that hits the Claude turn cap parks with the current
     plan + guidance instead of dead-ending; the operator resolves it forward.*
   - *Landed: **checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks

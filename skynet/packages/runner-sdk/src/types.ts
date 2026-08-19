@@ -65,6 +65,13 @@ export interface StartSpec {
    * have no equivalent SDK primitive.
    */
   disallowedTools?: string[] | null;
+  /**
+   * Override the runner's default turn budget (Claude: 60) — set for a
+   * deliberately short-lived run (e.g. a deep-review reviewer agent) that
+   * should terminate quickly rather than run to the normal cap. Only the
+   * Claude runner acts on it today.
+   */
+  maxTurns?: number;
 }
 
 /**

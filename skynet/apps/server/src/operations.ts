@@ -756,6 +756,9 @@ export class Operations {
       planModeGate: false,
       // No tool restriction at creation — set later in project settings.
       disallowedTools: null,
+      // Deep review is off at creation — a real agent run costs money, so it
+      // stays an explicit opt-in set later in project settings.
+      deepReview: false,
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo,

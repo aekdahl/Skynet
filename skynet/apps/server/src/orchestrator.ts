@@ -20,7 +20,7 @@ import { classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
 import { resolveActivePolicy } from "./command-policy.js";
 import { resolveMergeTarget } from "./derive/merge-target.js";
-import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
+import { parseReviewVerdict, extractJsonObject, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
 import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./merge-brief.js";
@@ -33,7 +33,7 @@ import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { providerUsableFromEnv } from "./provider-env.js";
 import { secretService } from "./secrets/index.js";
 import { previewService } from "./preview/index.js";
-import { projectPreview } from "./preview/project-preview.js";
+import { projectPreview, type ProjectPreviewManager } from "./preview/project-preview.js";
 import type { Store } from "./store/store.js";
 import { WorktreeProvisioner } from "./worktrees.js";
 
@@ -194,6 +194,14 @@ export function splitEstMinutesTag(raw: string): TriageTag {
 const SCOPE_NOTE =
   "\n\n---\nScope discipline: do exactly what's asked above, then stop. Don't expand into adjacent or unrequested work — extra features, UI, refactors, or speculative follow-ups. When the requested change is complete, report and finish rather than inventing more scope. If you're genuinely blocked, or the task is too big for one focused session, escalate (AskUserQuestion with header \"ESCALATE\") instead of grinding through your turn budget.";
 
+// A deep-review reviewer (see Project.deepReview / runDeepReview) is a real but
+// deliberately SHORT-LIVED agent run — read the brief, browse the live preview,
+// answer with a verdict. A low turn budget keeps its cost bounded and its own
+// runtime/idle caps as a backstop; this wall-clock timeout is belt-and-suspenders
+// in case those never fire (e.g. a handle that never calls onCompleted/onFailed).
+const DEEP_REVIEW_MAX_TURNS = 20;
+const DEEP_REVIEW_TIMEOUT_MS = 6 * 60_000;
+
 /** Prepend the project's `instructions` (the "house rules" for this codebase)
  *  to any prompt an agent will see. When there are no instructions this is a
  *  no-op — the prompt is returned unchanged, so runs on projects that never
@@ -276,7 +284,16 @@ export class Orchestrator {
 
   // `providerOverride` is a test seam — inject a runner provider directly instead
   // of resolving the runner's own provider. Production always passes (store, hub) only.
-  constructor(private store: Store, private hub: Hub, private providerOverride?: RunnerProvider) {}
+  constructor(
+    private store: Store,
+    private hub: Hub,
+    private providerOverride?: RunnerProvider,
+    // Test seam mirroring providerOverride: an injected preview manager
+    // short-circuits `runDeepReview`'s use of the real `projectPreview`
+    // singleton, so a deep-review test can point at an isolated worktrees dir
+    // instead of the process-wide default.
+    private previewOverride?: Pick<ProjectPreviewManager, "startRun" | "dirFor" | "stop">,
+  ) {}
 
   /** Build (or reuse) the git backend for a repo path + base branch. Cached so
    *  each (repo, base) keeps exactly one worktree provisioner and one serialized
@@ -3391,6 +3408,164 @@ export class Orchestrator {
   }
 
   /**
+   * `Project.deepReview` opt-in: instead of a stateless consult reading the
+   * last 30 log lines, spin up a SECOND real, bounded agent (browser tools on,
+   * edit tools off) that opens a live preview of the run's own branch and
+   * actually exercises the change before writing its verdict. Deliberately
+   * NOT plumbed through the normal assignTask()/`this.live` machinery — it
+   * must stay invisible on the kanban board (no TaskRun, no fleet-runner
+   * "busy" TaskRun row), so its RunnerEvents are a private, minimal adapter
+   * that captures the reviewer's final text + browser actions, auto-resolves
+   * any tool gate itself (there's no human to ask), and is discarded once the
+   * run ends. Returns null on ANY failure (no repo, wrong provider, preview
+   * won't start, timeout, unreadable verdict) — the caller falls back to the
+   * plain consult path; deep review only ever strengthens the pipeline, never
+   * blocks it.
+   */
+  private async runDeepReview(
+    ws: string,
+    reviewer: Agent,
+    task: Task,
+    run: TaskRun,
+    hitl: HitlItem,
+    project: Project,
+  ): Promise<{ decision: "approve" | "flag"; reason: string; evidence: string[] } | null> {
+    // Browser tools + the read-only lockdown below are verified only for the
+    // Claude runner today — see StartSpec.disallowedTools/browser docs.
+    if (reviewer.provider !== "claude") return null;
+    if (!project.repoPath) return null; // a preview needs a real local checkout
+
+    const previewMgr = this.previewOverride ?? projectPreview;
+    const previewKey = `run:${run.id}`;
+    let preview;
+    try {
+      preview = await previewMgr.startRun(run.id, {
+        repoPath: project.repoPath,
+        projectId: project.id,
+        branch: run.branch,
+        workspaceId: ws,
+      });
+    } catch {
+      return null;
+    }
+    if (preview.status !== "live" || !preview.url) {
+      // Cheap, common failure (no start recipe, install/health-check failure,
+      // branch not pushed yet) — not worth logging as an error; consult covers it.
+      await previewMgr.stop(previewKey).catch(() => undefined);
+      return null;
+    }
+    const cwd = previewMgr.dirFor(previewKey);
+    if (!cwd) {
+      await previewMgr.stop(previewKey).catch(() => undefined);
+      return null;
+    }
+
+    try {
+      const provider = await this.getProvider(reviewer.provider);
+      const apiKey = await secretService.resolve(ws, reviewer.credentialId ?? reviewer.provider);
+      const diffSummary = hitl.diff
+        ? `Files changed (${hitl.diff.files.length}): ${hitl.diff.files.slice(0, 25).join(", ")}${hitl.diff.files.length > 25 ? ", …" : ""} (+${hitl.diff.add}/-${hitl.diff.del})`
+        : "No diff stat available for this run.";
+      const brief = [
+        `You are reviewing another agent's finished work on this task: "${task.text}"`,
+        project.instructions ? `Project instructions: ${project.instructions}` : null,
+        diffSummary,
+        `A live preview of this EXACT change is running at: ${preview.url}\nUse your browser tools to load it and actually exercise the changed behavior — click through the relevant flow, don't just read code. Ground your verdict in what you observe in the browser, not assumptions.`,
+        "You are a REVIEWER ONLY — you have no edit tools and must not attempt to fix anything you find. If something's broken, that IS the finding: report it, don't repair it.",
+        `When you're done, reply with ONLY the required JSON — no other text. ${REVIEW_OUTPUT_INSTRUCTION}`,
+      ]
+        .filter((l): l is string => !!l)
+        .join("\n\n");
+
+      const reviewRunId = `review-${run.id}-${++this.seq}`;
+      let lastText = "";
+      const evidence: string[] = [];
+      let handle: RunnerHandle | undefined;
+      const outcome = await Promise.race([
+        new Promise<"completed" | "failed">((resolve) => {
+          const events: RunnerEvents = {
+            onLog: (_id, line, detail) => {
+              if (detail === undefined) {
+                if (line.trim()) lastText = line;
+                return;
+              }
+              // Browser-tool calls are the "evidence" of what was exercised —
+              // capped so a long browsing session doesn't bloat the verdict.
+              if (/^▸ mcp__browser__/.test(line)) {
+                evidence.push(line.slice(2));
+                if (evidence.length > 12) evidence.shift();
+              }
+            },
+            onProgress: () => {},
+            onHeartbeat: () => {},
+            onStatus: () => {},
+            // No human is watching this run — resolve every gate ourselves.
+            // Tool-call ("approval") gates (browser actions, WebFetch) are
+            // auto-approved so browsing proceeds unattended; anything else
+            // (a question, an escalation) is rejected with guidance nudging
+            // the reviewer back to just answering, rather than left to hang.
+            onHitl: (_id, raise) => {
+              if (!handle) return;
+              const resolution: Resolution =
+                raise.kind === "approval"
+                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "deep-review-harness", at: now() }
+                  : {
+                      action: "reject",
+                      optionIndex: null,
+                      guidance: "Don't ask questions or make a plan — just use the browser to check the change, then reply with only the required JSON verdict.",
+                      targetBranch: null,
+                      memoryNote: null,
+                      by: "deep-review-harness",
+                      at: now(),
+                    };
+              void handle.resume(resolution).catch(() => undefined);
+            },
+            onCompleted: () => resolve("completed"),
+            onFailed: () => resolve("failed"),
+            onChatReply: () => {},
+          };
+          provider
+            .start(
+              {
+                runId: reviewRunId,
+                projectId: project.id,
+                task: brief,
+                model: reviewer.model,
+                branch: run.branch,
+                cwd,
+                apiKey,
+                browser: true,
+                maxTurns: DEEP_REVIEW_MAX_TURNS,
+                // Categorically no edits/shell — a reviewer can browse and read,
+                // it cannot touch code (see the method doc).
+                disallowedTools: ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"],
+              },
+              events,
+            )
+            .then((h) => {
+              handle = h;
+            })
+            .catch(() => resolve("failed"));
+        }),
+        new Promise<"failed">((resolve) => setTimeout(() => resolve("failed"), DEEP_REVIEW_TIMEOUT_MS)),
+      ]);
+      await handle?.stop().catch(() => undefined);
+
+      if (outcome !== "completed" || !lastText) return null;
+      // Only trust a genuinely readable verdict field — anything else falls
+      // back to consult (Do #4), rather than treating unreadable prose as a
+      // real "flag" the way parseReviewVerdict's own safe-default would.
+      const obj = extractJsonObject(lastText);
+      const field = obj && typeof obj.verdict === "string" ? obj.verdict.trim().toLowerCase() : "";
+      if (field !== "approve" && field !== "flag") return null;
+      const verdict = parseReviewVerdict(lastText);
+      return { decision: verdict.approve ? "approve" : "flag", reason: verdict.reason, evidence: [...evidence] };
+    } finally {
+      await previewMgr.stop(previewKey).catch(() => undefined);
+    }
+  }
+
+  /**
    * Autonomous review of a finished run's open HITL. Always records a verdict
    * on the task (approve OR flag) so the human has an audit trail of what the
    * reviewer thought. Only when `canResolve` is true does an approve verdict
@@ -3407,22 +3582,37 @@ export class Orchestrator {
     const run = task.runId ? await this.store.getRun(task.runId) : undefined;
     let decision: "approve" | "flag" = "approve";
     let reason = "auto-approved";
+    let evidence: string[] | undefined;
     try {
-      const provider = await this.getProvider(agent.provider);
-      if (provider.consult && run) {
-        const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
-        const context = run.log.slice(-30).map((l) => l.line).join("\n").slice(-3000);
-        const project = await this.store.getProject(task.projectId);
-        const reply = await provider.consult(
-          { task: withInstructions(project?.instructions, task.text), model: agent.model, cwd: config.runnerCwd, apiKey, context },
-          `Review whether this run satisfies the task "${task.text}". ${REVIEW_OUTPUT_INSTRUCTION}`,
-        );
-        // The verdict is the MODEL's, read from a structured field — we never
-        // classify its prose (a reason mentioning "flagged" once false-flagged an
-        // APPROVE). An unreadable verdict flags for a human, never auto-approves.
-        const verdict = parseReviewVerdict(reply);
-        decision = verdict.approve ? "approve" : "flag";
-        reason = verdict.reason;
+      const project = await this.store.getProject(task.projectId);
+      // `deepReview` opt-in: try a real, browser-driven second agent run first.
+      // runDeepReview returns null on ANY failure (wrong provider, no repo,
+      // preview wouldn't start, timeout, unreadable verdict) — every one of
+      // those falls straight through to the plain consult path below, byte-
+      // for-byte the same as when the project never opted in at all.
+      const deep = project?.deepReview && run
+        ? await this.runDeepReview(ws, agent, task, run, hitl, project).catch(() => null)
+        : null;
+      if (deep) {
+        decision = deep.decision;
+        reason = deep.reason;
+        evidence = deep.evidence;
+      } else {
+        const provider = await this.getProvider(agent.provider);
+        if (provider.consult && run) {
+          const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
+          const context = run.log.slice(-30).map((l) => l.line).join("\n").slice(-3000);
+          const reply = await provider.consult(
+            { task: withInstructions(project?.instructions, task.text), model: agent.model, cwd: config.runnerCwd, apiKey, context },
+            `Review whether this run satisfies the task "${task.text}". ${REVIEW_OUTPUT_INSTRUCTION}`,
+          );
+          // The verdict is the MODEL's, read from a structured field — we never
+          // classify its prose (a reason mentioning "flagged" once false-flagged an
+          // APPROVE). An unreadable verdict flags for a human, never auto-approves.
+          const verdict = parseReviewVerdict(reply);
+          decision = verdict.approve ? "approve" : "flag";
+          reason = verdict.reason;
+        }
       }
     } catch (err) {
       decision = "flag";
@@ -3454,7 +3644,7 @@ export class Orchestrator {
     }
     // ALWAYS persist the verdict on the task so the detail view can show it —
     // approve OR flag, autonomy on OR off. This is the audit trail.
-    const verdict = { decision, reason, by: reviewer, at };
+    const verdict = { decision, reason, by: reviewer, at, evidence: evidence ?? null };
     const withVerdict = await this.hub.upsertTask({ ...freshTask, reviewVerdict: verdict });
     if (decision === "approve" && canResolve) {
       const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "autonomy", at };
