@@ -1,7 +1,8 @@
-import { useState } from "react";
-import type { Feature, FeatureBrief, TaskRun } from "@skynet/shared";
+import { useEffect, useState } from "react";
+import type { Feature, FeatureBrief, MergeBriefing, PrChecksStatus, TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { readyMerges, readyFeatureMerges, fmtCost, fmtNum } from "../lib/derive";
+import * as api from "../lib/client";
+import { readyMerges, readyFeatureMerges, fmtCost, fmtNum, fleetAgentName, projectName } from "../lib/derive";
 import { RiskChip } from "../components/hitl-context";
 import { Blocked } from "../components/empty";
 
@@ -13,8 +14,91 @@ const REC_META: Record<string, { label: string; color: string }> = {
   hold: { label: "HOLD", color: "var(--muted)" },
 };
 
+const CHECKS_META: Record<PrChecksStatus["checks"], { label: string; cls: string }> = {
+  passing: { label: "✓ Checks passing", cls: "checks-passing" },
+  failing: { label: "✗ Checks failing", cls: "checks-failing" },
+  pending: { label: "⏳ Checks pending", cls: "checks-pending" },
+  none: { label: "", cls: "" }, // handled separately — no badge, a quieter note
+};
+
+/** Live GitHub check-run status, fetched by the CARD ITSELF on mount (a real
+ *  GitHub API call — never baked into the polled snapshot). Shown BEFORE a
+ *  merge decision, not just after GitHub blocks an attempt: an operator
+ *  deciding whether to trust "RECOMMEND MERGE" needs to know whether anything
+ *  automated actually ran and passed. `checks:"none"` (no CI configured on the
+ *  repo) is shown explicitly too — silence isn't the same as passing. */
+function PrChecksBadge({ fetchChecks }: { fetchChecks: () => Promise<PrChecksStatus | null> }) {
+  const [status, setStatus] = useState<PrChecksStatus | null | "loading">("loading");
+
+  const load = () => {
+    setStatus("loading");
+    fetchChecks()
+      .then(setStatus)
+      .catch(() => setStatus(null));
+  };
+  useEffect(load, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (status === "loading") return <span className="merge-nocheck">checking CI…</span>;
+  if (status === null) return null; // unreachable — fail silent, no misleading badge
+  if (status.checks === "none") {
+    return (
+      <span className="merge-nocheck" title="No CI checks are configured on this repo — this isn't a pass, there's simply nothing to report.">
+        no CI configured
+      </span>
+    );
+  }
+  const meta = CHECKS_META[status.checks];
+  return (
+    <span className={`merge-checks ${meta.cls}`}>
+      {meta.label}
+      <button className="merge-checks-refresh" onClick={load} title="Re-check">↻</button>
+    </span>
+  );
+}
+
+/** The decision-relevant detail a bare "RECOMMEND MERGE" summary doesn't show:
+ *  the real diff composition (not just a total), which files actually tripped
+ *  the sensitive-area flag (not just the flag), and who authored vs. who
+ *  independently reviewed this — plus the reviewer's own words. */
+function MergeBriefingDetail({ b, fleet }: { b: MergeBriefing; fleet: import("@skynet/shared").Agent[] }) {
+  const author = fleetAgentName(b.authoredBy, fleet);
+  const reviewer = fleetAgentName(b.reviewedBy, fleet);
+  return (
+    <>
+      <p className="merge-stat">
+        <b className="add">+{b.add}</b> / <b className="del">-{b.del}</b> · {b.filesChanged} file{b.filesChanged === 1 ? "" : "s"}
+        {b.modules.length > 0 && <> · touches {b.modules.join(", ")}</>}
+        {b.modules.length === 0 && <> · no mapped module</>}
+        {" · "}
+        {b.testsChanged ? "tests changed" : "no test changes"}
+      </p>
+      {b.sensitiveFiles.length > 0 && (
+        <div className="qcard-flags">
+          <span className="qcard-flags-label">Sensitive area</span>
+          {b.sensitiveFiles.slice(0, 6).map((f) => (
+            <span key={f} className="flag-chip flag-file">{f}</span>
+          ))}
+          {b.sensitiveFiles.length > 6 && <span className="flag-chip">+{b.sensitiveFiles.length - 6} more</span>}
+        </div>
+      )}
+      <p className="merge-attribution">
+        {author ? <>Authored by <b>{author}</b></> : "Author unknown"}
+        {reviewer ? (
+          <>
+            {" → "}reviewed by <b>{reviewer}</b>
+            {b.reviewDecision && <> ({b.reviewDecision === "flag" ? "flagged" : "approved"})</>}
+          </>
+        ) : (
+          " — no independent AI review recorded"
+        )}
+      </p>
+      <p className="qcard-reason">{b.rationale}</p>
+    </>
+  );
+}
+
 function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string) => void }) {
-  const { mergePr, updatePrBranch, reworkPr, dismissPr } = useStore();
+  const { mergePr, updatePrBranch, reworkPr, dismissPr, fleet, projects } = useStore();
   const pr = run.pr!;
   const b = pr.briefing;
   const rec = REC_META[b?.recommendation ?? "hold"] ?? REC_META.hold!;
@@ -71,6 +155,8 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
       <div className="qcard-head">
         <span className="kind-chip" style={{ color: rec.color, borderColor: rec.color }}>{rec.label}</span>
         {b && <RiskChip risk={b.risk} />}
+        <PrChecksBadge fetchChecks={() => api.fetchPrChecks(run.id)} />
+        <span className="qcard-project" title="Project">{projectName(run.projectId, projects)}</span>
         <button className="qcard-agent" onClick={() => onOpenTask(run.id)}>{run.name}</button>
         <a className="merge-prlink mono" href={pr.url} target="_blank" rel="noreferrer" title="Open the pull request on GitHub">
           #{pr.number} ↗
@@ -78,14 +164,7 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
       </div>
 
       <h3 className="qcard-title">{b?.summary ?? `${run.name} — ready to merge`}</h3>
-      {b && (
-        <dl className="merge-brief">
-          <dt>Impact</dt>
-          <dd>{b.impact}</dd>
-          <dt>Review</dt>
-          <dd>{b.rationale}</dd>
-        </dl>
-      )}
+      {b && <MergeBriefingDetail b={b} fleet={fleet} />}
       <p className="merge-branch mono">{pr.branch} → {pr.base} · <a href={pr.url} target="_blank" rel="noreferrer">view diff on GitHub ↗</a></p>
 
       <div className="qcard-actions">
@@ -196,7 +275,7 @@ function FeatureBriefDetail({ brief }: { brief: FeatureBrief }) {
 // a stale/conflicting feature PR surfaces as a normal GitHub conflict on the
 // PR itself; changes go through a follow-up task under the same feature).
 function FeatureMergeCard({ feature, taskNames }: { feature: Feature; taskNames: string[] }) {
-  const { mergeFeaturePr, dismissFeaturePr } = useStore();
+  const { mergeFeaturePr, dismissFeaturePr, fleet, projects } = useStore();
   const pr = feature.pr!;
   const b = pr.briefing;
   const rec = REC_META[b?.recommendation ?? "hold"] ?? REC_META.hold!;
@@ -221,6 +300,8 @@ function FeatureMergeCard({ feature, taskNames }: { feature: Feature; taskNames:
       <div className="qcard-head">
         <span className="kind-chip" style={{ color: rec.color, borderColor: rec.color }}>{rec.label}</span>
         {b && <RiskChip risk={b.risk} />}
+        <PrChecksBadge fetchChecks={() => api.fetchFeaturePrChecks(feature.id)} />
+        <span className="qcard-project" title="Project">{projectName(feature.projectId, projects)}</span>
         <span className="qcard-agent">{feature.name}</span>
         <a className="merge-prlink mono" href={pr.url} target="_blank" rel="noreferrer" title="Open the pull request on GitHub">
           #{pr.number} ↗
@@ -231,14 +312,7 @@ function FeatureMergeCard({ feature, taskNames }: { feature: Feature; taskNames:
       <p className="merge-branch">
         {taskNames.length} task{taskNames.length === 1 ? "" : "s"} batched: {taskNames.join(", ")}
       </p>
-      {b && (
-        <dl className="merge-brief">
-          <dt>Impact</dt>
-          <dd>{b.impact}</dd>
-          <dt>Review</dt>
-          <dd>{b.rationale}</dd>
-        </dl>
-      )}
+      {b && <MergeBriefingDetail b={b} fleet={fleet} />}
       {b?.featureBrief && <FeatureBriefDetail brief={b.featureBrief} />}
       <p className="merge-branch mono">{pr.branch} → {pr.base} · <a href={pr.url} target="_blank" rel="noreferrer">view diff on GitHub ↗</a></p>
 
