@@ -832,6 +832,11 @@ export class Operations {
         : { roadmapPath: patch.roadmapPath?.trim() ? patch.roadmapPath.trim() : null };
     const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions, ...baseBranch, ...roadmapPath });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
+    // Re-enabling autonomy (whether the operator turned it off themselves, or
+    // the session circuit-breaker did) starts the streak fresh — otherwise an
+    // already-at-threshold in-memory count could re-trip on the very next bad
+    // outcome instead of giving the project a clean run.
+    if (patch.autonomy === true) this.orchestrator.resetAutonomyStreak(id);
     return updated;
   }
   /** Remove one standing "approve always" rule from a project (the operator

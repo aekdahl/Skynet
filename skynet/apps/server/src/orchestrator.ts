@@ -386,6 +386,18 @@ export class Orchestrator {
   // Per-run failure counter (onFailed): past config.runMaxFailures the run is
   // escalated instead of parked in `review`. Cleared on success/resolution.
   private failCounts = new Map<string, number>();
+  // Session circuit-breaker: consecutive BAD autonomy outcomes (a flagged
+  // auto-review verdict, or a failed run) for the SAME project, with no good
+  // outcome in between. Keyed by projectId. In-memory: a restart resets it to
+  // 0, which fails OPEN (one more attempt is allowed before the breaker can
+  // trip again) — an accepted trade-off, not a safety gap: this breaker is a
+  // BEHAVIORAL stop (don't keep grinding through tasks on a project that's
+  // clearly stuck), layered on top of the per-run/per-key breakers above and
+  // whatever spend budget the operator has configured, not the only guard.
+  // Cleared on any good outcome, or when the operator re-enables the
+  // project's `autonomy` toggle (see resetAutonomyStreak, called from
+  // operations.ts#updateProject).
+  private autonomyStreaks = new Map<string, { count: number; entries: string[] }>();
   // Key-health circuit breaker: credentials (`${ws}:${credentialId ?? provider}`)
   // known to be out of credits/quota. `providerUsable` refuses a depleted key so
   // NO new run is assigned to it (and auto-provision skips it) — stopping the
@@ -846,13 +858,25 @@ export class Orchestrator {
     }
     // Count failures on this run; past the threshold, hand it to a human
     // (escalation) instead of quietly parking in `review` for another doomed try.
-    const count = (this.failCounts.get(runId) ?? 0) + 1;
+    const priorCount = this.failCounts.get(runId) ?? 0;
+    const count = priorCount + 1;
     this.failCounts.set(runId, count);
+    const live = this.live.get(runId);
+    // Session circuit-breaker: this run failing is one bad autonomy outcome for
+    // its project — counted once per RUN (the first fail() call for this
+    // runId), not once per internal retry attempt. The same run can call
+    // fail() several times before its own runMaxFailures escalation above
+    // trips (see tests/escalation.test.ts's 3-strikes test, which does exactly
+    // that on one runId) — that's still just ONE run going badly, not several;
+    // double/triple-counting it would let a single flaky run alone trip the
+    // project breaker on top of (and racing) its own dedicated escalation.
+    if (priorCount === 0) {
+      await this.noteProjectRunFailure(runId, live?.taskId ?? null, reason).catch(() => undefined);
+    }
     if (config.runMaxFailures > 0 && count >= config.runMaxFailures) {
       await this.escalate(runId, `${count} failed attempts — latest: ${reason}`, "failures");
       return;
     }
-    const live = this.live.get(runId);
     await this.freeRunner(live?.agentId ?? null);
     await this.hub.runLog(runId, `runner failed — ${reason}. Not completed; needs attention.`);
     await this.hub.runStatus(runId, "review"); // visible needs-attention, NOT "done"
@@ -860,6 +884,23 @@ export class Orchestrator {
     if (live?.git) await live.git.worktrees.retire(runId).catch(() => undefined);
     await this.releaseScratchCwd(live?.scratchCwd);
     this.live.delete(runId);
+  }
+
+  /** Session circuit-breaker input: a run just failed — count it as one bad
+   *  autonomy outcome for its project (see noteAutonomyBadOutcome). Excludes
+   *  the credential-exhaustion and turn-budget cases above (fail()'s early
+   *  returns) — those are a distinct billing wall / a resumable checkpoint,
+   *  not the run "going badly", and each already has its own dedicated
+   *  breaker/escalation. */
+  private async noteProjectRunFailure(runId: string, taskId: string | null, reason: string): Promise<void> {
+    if (config.autonomyMaxConsecutiveFailures <= 0) return;
+    const run = await this.store.getRun(runId);
+    if (!run) return;
+    const project = await this.store.getProject(run.projectId);
+    if (!project) return;
+    const task = taskId ? await this.store.getTask(taskId) : null;
+    const label = task ? `"${task.text}" failed — ${reason}` : `a run failed — ${reason}`;
+    await this.noteAutonomyBadOutcome(project, runId, label);
   }
 
   /** Startup failed (no runner configured, worktree provisioning, runner.start
@@ -973,6 +1014,13 @@ export class Orchestrator {
     // same pattern as the command-gate auto-approver in raise() — so it's a
     // real audited decision, not a human notification that immediately
     // self-cancels.
+    // Known gap: this success never feeds the session circuit-breaker's good-
+    // outcome signal (noteAutonomyGoodOutcome) — only autoReview's approve
+    // does, per the breaker's explicit scope. A `full`-approval-level project
+    // whose failures happen to interleave with (rather than follow) enough
+    // full-auto-merges could accumulate toward the threshold without ever
+    // resetting. Flagged, not silently missing — narrowing the breaker to
+    // exactly the two mechanisms its spec named, rather than expanding scope.
     if (project?.approvalLevel === "full" && project.autonomy && risk !== "high") {
       const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "policy:full-autonomy", at: now() };
       await this.hub.runLog(runId, `auto-merged (policy:full-autonomy): ${item.title}`);
@@ -1725,6 +1773,15 @@ export class Orchestrator {
       this.questionTimers.delete(item.id);
     }
 
+    // The session circuit-breaker's summary escalation (see
+    // noteAutonomyBadOutcome) is purely informational — it's tied to the LAST
+    // bad run only because HitlItem.runId is required, but it's not "about"
+    // that run the way a real escalation is. resolveHitl (the caller) already
+    // marked it resolved before reaching here, so any action (approve/reject/
+    // modify) just dismisses the notice; the real "resume" lever is the
+    // project's own autonomy toggle, not a run-lifecycle action.
+    if (item.kind === "escalation" && item.flags.includes("autonomy-paused")) return;
+
     // Escalation has its own resolution semantics (help & resume / reassign / stop).
     if (item.kind === "escalation") {
       await this.deliverEscalation(item, resolution);
@@ -2007,6 +2064,79 @@ export class Orchestrator {
     await this.hub.runStatus(runId, "waiting");
     await this.hub.raiseHitl(item);
     await this.hub.runLog(runId, `escalated (${source}) — ${reason}`);
+  }
+
+  /**
+   * Record one BAD autonomy outcome (a flagged review, or a failed run) for a
+   * project and trip the circuit breaker at `config.autonomyMaxConsecutiveFailures`
+   * consecutive bad outcomes with no good one in between: turn the project's
+   * OWN `autonomy` toggle off (persisted — the existing UI switch reflects it,
+   * and flipping it back on resumes + resets the streak) and raise ONE summary
+   * `escalation` HITL instead of letting the sweep grind through more tasks.
+   * Only tracked while the project is actually autonomous — a manually-
+   * supervised project (autonomy already off) isn't "sweeping", so its
+   * outcomes don't feed this and can't re-trip it.
+   */
+  private async noteAutonomyBadOutcome(project: Project, runId: string, entry: string): Promise<void> {
+    const max = config.autonomyMaxConsecutiveFailures;
+    if (!project.autonomy || max <= 0) return;
+    const streak = this.autonomyStreaks.get(project.id) ?? { count: 0, entries: [] };
+    streak.count += 1;
+    streak.entries.push(entry);
+    if (streak.count < max) {
+      this.autonomyStreaks.set(project.id, streak);
+      return;
+    }
+    // Tripped. Reset the streak BEFORE anything async can race a fresh bad
+    // outcome in (e.g. a review verdict for a run already in flight) into
+    // re-tripping on top of an already-paused project.
+    this.autonomyStreaks.delete(project.id);
+    await this.hub.upsertProject({ ...project, autonomy: false });
+    const list = streak.entries.map((e, i) => `${i + 1}) ${e}`).join(" ");
+    const item: HitlItem = {
+      id: `q-autonomy-${project.id}-${++this.seq}`,
+      workspaceId: project.workspaceId,
+      runId,
+      kind: "escalation",
+      title: `Autonomy paused — ${streak.count} bad outcomes in a row`,
+      why:
+        `${project.name}'s autonomous sweep hit ${streak.count} bad outcomes in a row with no ` +
+        `success in between, so autonomy was turned off to stop it grinding through more tasks: ${list} ` +
+        `This does NOT auto-resume — re-enable Autonomy on the project page when you're ready; the streak resets.`,
+      risk: "medium",
+      rationale: null,
+      raisedAt: now(),
+      expiresAt: null,
+      resolvedAt: null,
+      resolution: null,
+      command: null,
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: null,
+      output: null,
+      // Distinguishes this from a run-level escalation for deliver()'s dispatch
+      // (see below): resolving it just dismisses the notice — the real "resume"
+      // lever is the project's own autonomy toggle, not a run action (there's no
+      // single run to resume/reassign/stop here).
+      flags: ["autonomy-paused"],
+      sourceBranchOverride: null,
+    };
+    await this.hub.raiseHitl(item);
+    await this.hub.runLog(runId, `project autonomy paused — ${streak.count} consecutive bad outcomes`).catch(() => undefined);
+  }
+
+  /** A good autonomy outcome (an auto-review approve) — clears any accumulated
+   *  bad streak for the project, same as an operator re-enabling autonomy. */
+  private noteAutonomyGoodOutcome(projectId: string): void {
+    this.autonomyStreaks.delete(projectId);
+  }
+
+  /** Operator re-enabled a project's `autonomy` toggle (operations.ts#updateProject)
+   *  — clear any accumulated circuit-breaker streak so it starts fresh instead of
+   *  being able to re-trip on the very next bad outcome. */
+  resetAutonomyStreak(projectId: string): void {
+    this.autonomyStreaks.delete(projectId);
   }
 
   /** Resolve an `escalation`: help & resume (modify), reassign, or stop (reject). */
@@ -3568,6 +3698,18 @@ export class Orchestrator {
     // approve OR flag, autonomy on OR off. This is the audit trail.
     const verdict = { decision, reason, by: reviewer, at };
     const withVerdict = await this.hub.upsertTask({ ...freshTask, reviewVerdict: verdict });
+    // Session circuit-breaker: a flag is a bad autonomy outcome for the
+    // project, an approve is a good one — tracked regardless of `canResolve`
+    // (autonomy on/off), same as the verdict itself; noteAutonomyBadOutcome's
+    // own guard is what actually skips a non-autonomous project.
+    const breakerProject = await this.store.getProject(freshTask.projectId);
+    if (breakerProject) {
+      if (decision === "flag") {
+        await this.noteAutonomyBadOutcome(breakerProject, hitl.runId, `"${freshTask.text}" flagged — ${reason}`);
+      } else {
+        this.noteAutonomyGoodOutcome(breakerProject.id);
+      }
+    }
     if (decision === "approve" && canResolve) {
       const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "autonomy", at };
       const resolved = await this.hub.resolveHitl(hitl.id, resolution);

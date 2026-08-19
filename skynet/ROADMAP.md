@@ -435,6 +435,39 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   **stop**. The halted run frees its runner but keeps its worktree so a resume/reassign can continue the
   work. *(Verified live: a real agent correctly escalated rather than fabricate a secret; help & resume
   round-tripped. Foundation for the "escalation SLAs / delegated approval" governance items below.)*
+- [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
+  Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
+  credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself
+  from grinding through task after task while each one individually failed or got flagged — financially
+  bounded by a spend budget (see the budget guard elsewhere on this roadmap), but not stopped
+  *behaviorally*. Now: `config.autonomyMaxConsecutiveFailures` (`SKYNET_AUTONOMY_MAX_CONSECUTIVE_FAILURES`,
+  default 3) consecutive BAD autonomy outcomes for the SAME project — a flagged auto-review verdict, or a
+  run that failed — with no good outcome in between, turns that project's own `autonomy` toggle off
+  (persisted, the existing UI switch reflects it) and raises ONE summary `escalation` HITL naming which
+  tasks and why, instead of letting the sweep grind through more. Composes the two EXISTING outcome
+  signals rather than adding a new one: `autoReview`'s verdict (approve resets the streak, flag extends
+  it) and `fail()`'s run failures — counted ONCE per run (the first `fail()` call for a runId), not once
+  per internal retry attempt, so a single flaky run's own 3-strikes retry loop can't also trip this on top
+  of (and racing) its own dedicated escalation. Only tracks outcomes produced WHILE the project is
+  autonomous — a manually-supervised project isn't "sweeping". In-memory, keyed by project id (a restart
+  resets it to 0 — fails OPEN, one more attempt is allowed before it can trip again; an accepted trade-off
+  given the layered guardrails above and the spend budget still bound the actual damage). Re-enabling the
+  toggle (the operator's own action, or a future auto-resume) resumes the sweep and resets the streak
+  (`Orchestrator.resetAutonomyStreak`, wired from `operations.ts#updateProject`). The summary escalation
+  reuses the existing `escalation` HITL kind/UI rather than adding a new surface, but is purely
+  informational — resolving it (any action) just dismisses the notice; deliver() special-cases its
+  `flags: ["autonomy-paused"]` marker to skip the real escalation's run-lifecycle resolution (help &
+  resume / reassign / stop don't apply — there's no single run to act on, and the actual "resume" lever is
+  the toggle, not this item). Manual "Start now" assignment is untouched and still works on a paused
+  project (`assignTask` never gated on `autonomy` to begin with — only the autonomy tick's own auto-pick
+  step is). Known gap, flagged rather than silently missing: a `full`-approval-level project's own
+  unattended diff auto-merges (`raiseDiffReview`'s `policy:full-autonomy` path) don't feed the streak's
+  good-outcome signal — only `autoReview`'s approve does, per this feature's explicit scope (composing the
+  two named mechanisms, not every path that can succeed). Tests: `tests/autonomy-circuit-breaker.test.ts`
+  — 3 flags trip + exactly one escalation (not three); a 4th bad outcome after tripping doesn't raise a
+  second; an approve in between resets the streak; a failed run composes into the same streak as flags
+  without double-counting its own retries; manual assignment while paused; pause is per-project, not
+  per-workspace; re-enabling resets; resolving the escalation has no run-lifecycle side effect.
 - [~] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).** A 6-way
   competitor deep-dive found *none* ship a real safety/policy layer, decision audit, or (bar one) a HITL
   inbox — so this is where we win now:
