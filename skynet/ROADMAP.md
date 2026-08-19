@@ -453,8 +453,14 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     recorded on the policy but inert — no runtime enforcement exists for either yet (network-egress
     enforcement is explicitly out of scope here; see 🏢 below). Path scopes were scoped out (no per-path
     command semantics existed to attach them to). Tests: `tests/command-policy.test.ts`.
-  - **Context-aware risk** — classify by *blast radius*, not string match: outside the worktree, touching
+  - [x] **Context-aware risk** — classify by *blast radius*, not string match: outside the worktree, touching
     secrets, git-history-destructive, package publish, DB migration, network egress.
+    *Landed: `blastRadiusFlags()` in `command-safety.ts` scans a command's absolute paths against the agent's
+    worktree root and flags any path that falls outside it as `outside-worktree:<path>`. Also flags network-egress
+    commands (curl/wget/ssh/scp/rsync/nc — distinct from the already-denied pipe-to-shell patterns). Both signals
+    are added to the gate's `flags` chips and bump risk to `high` in `orchestrator.ts#raise()`, so auto-approval
+    can never quietly run an outside-worktree or network-egress command regardless of the project's approval level.
+    Tests: `tests/blast-radius.test.ts`.*
   - [x] **⭐ Prompt-injection / tool-poisoning firewall** — detect when untrusted content the agent read (an
     issue, a web page, a dependency README) is steering its tool calls, and gate it. No competitor has this.
     *Landed (v1): a structured LLM consult (`injection-firewall.ts`, same prompt-builder + safe-default-parser
@@ -484,8 +490,19 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     own gate still applies); and — as the live verification also showed — a sufficiently blunt injection often
     gets refused by the model's own training before any tool call is even attempted, so this firewall is
     defense-in-depth for the cases where the model *does* comply, not the only line of defense.*
-  - **Tamper-evident audit** — hash-chained, append-only decision records (who saw which diff/command, what
+  - [x] **Tamper-evident audit** — hash-chained, append-only decision records (who saw which diff/command, what
     the policy said, what the agent did after); exportable to SIEM.
+    *Landed: every `AuditRecord` now carries a `hash` (SHA-256 of the canonical JSON of its immutable decision
+    fields: workspaceId/hitlId/runId/action/operatorId/at/payload/prevHash) and a `prevHash` linking it to the
+    preceding record in the same workspace's chain — a linked list where any alteration to a field or to the
+    record's position in the trail is immediately detectable offline. Genesis record has `prevHash=null`;
+    pre-chain records (written before this feature landed) have neither field and are skipped by verification.
+    All three Store adapters (memory/file/Postgres) chain records at write time; Postgres adds `hash` and
+    `prev_hash` columns via `ALTER TABLE IF NOT EXISTS`. `verifyAuditChain()` (`audit-chain.ts`) re-computes and
+    verifies the full chain in oldest-first order. SIEM export: `GET /api/audit/export` returns the workspace
+    trail as NDJSON (one record per line, oldest-first, `application/x-ndjson`, `Content-Disposition: attachment`)
+    so a SIEM agent can ingest the stream and verify the chain offline. Optional `?from=<ms>&?to=<ms>` narrow
+    the window. Tests: `tests/audit-chain.test.ts`.*
   - **⭐ Compliance evidence pack** — one-click signed "AI change report" for auditors (EU AI Act tailwind).
     *Landed: a project / run / date-range-scoped report built entirely from the existing tamper-evident
     `AuditRecord` trail — no new decision-recording path. Every approved diff/merge, who approved it (a

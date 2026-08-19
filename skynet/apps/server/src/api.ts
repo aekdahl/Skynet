@@ -250,6 +250,22 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     return { ok: true };
   });
 
+  // SIEM export — the workspace's full audit trail as NDJSON (one record per line,
+  // oldest-first so the hash chain can be followed sequentially). Each line is a
+  // complete AuditRecord including hash + prevHash for offline chain verification.
+  // Optional ?from=<ms>&?to=<ms> narrow the time window. Intended for ingestion
+  // into a SIEM (Splunk / Datadog / ELK) or archival; not paginated — callers
+  // should scope via from/to when the trail is large.
+  app.get<{ Querystring: { from?: string; to?: string } }>("/api/audit/export", async (req, reply) => {
+    const records = (await ops.listAudit(ws(req))).reverse(); // oldest-first for SIEM chain
+    const from = req.query.from ? Number(req.query.from) : null;
+    const to = req.query.to ? Number(req.query.to) : null;
+    const filtered = records.filter((r) => (from == null || r.at >= from) && (to == null || r.at <= to));
+    reply.header("Content-Type", "application/x-ndjson");
+    reply.header("Content-Disposition", 'attachment; filename="audit-export.ndjson"');
+    return reply.send(filtered.map((r) => JSON.stringify(r)).join("\n") + (filtered.length ? "\n" : ""));
+  });
+
   // One-click signed "AI change report" (ROADMAP: Compliance evidence pack) —
   // a project, a run, a date range, or the whole workspace (all query params
   // optional/omittable). Always returns the signed JSON; the web client
