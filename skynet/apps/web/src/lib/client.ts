@@ -20,6 +20,7 @@ import {
   type CommandPolicy,
   type PolicyVersion,
   type PolicyDryRunResult,
+  type PrChecksStatus,
   SignedComplianceReport,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
@@ -392,6 +393,11 @@ export function reworkPr(runId: string, guidance: string, comment?: string) {
 export function dismissPr(runId: string) {
   return req<unknown>("POST", `/api/merges/${runId}/dismiss`);
 }
+/** Live GitHub check-run status for a ready PR — a real API call the card
+ *  makes on its own (not part of the polled snapshot). null = unknown. */
+export function fetchPrChecks(runId: string) {
+  return req<PrChecksStatus | null>("GET", `/api/merges/${runId}/checks`);
+}
 // Feature-scoped branch batching's aggregate PR — one per completed Feature
 // (see orchestrator.ts's checkFeatureCompletion), not per task. Only merge +
 // dismiss are supported — no rework/update-branch for a batch.
@@ -400,6 +406,9 @@ export function mergeFeaturePr(featureId: string, method: "merge" | "squash" | "
 }
 export function dismissFeaturePr(featureId: string) {
   return req<unknown>("POST", `/api/features/${featureId}/pr/dismiss`);
+}
+export function fetchFeaturePrChecks(featureId: string) {
+  return req<PrChecksStatus | null>("GET", `/api/features/${featureId}/pr/checks`);
 }
 export function pauseAgent(id: string) {
   return req<unknown>("POST", `/api/runs/${id}/pause`);

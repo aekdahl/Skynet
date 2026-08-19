@@ -204,6 +204,16 @@ export const config = {
   featureBatchMaxTasks: Number(process.env.SKYNET_FEATURE_BATCH_MAX_TASKS ?? 12),
   featureBatchMaxChangedLines: Number(process.env.SKYNET_FEATURE_BATCH_MAX_LINES ?? 5_000),
   featureBatchMaxFiles: Number(process.env.SKYNET_FEATURE_BATCH_MAX_FILES ?? 60),
+  // Session circuit-breaker (project-scoped, behavioral — not the budget guard):
+  // N consecutive BAD autonomy outcomes for the same project — a flagged
+  // auto-review verdict, or a run that failed — with no good outcome in
+  // between, turns that project's OWN `autonomy` toggle off and raises ONE
+  // summary escalation instead of letting the sweep grind through more tasks.
+  // Only tracks outcomes produced WHILE the project is autonomous (a manually-
+  // supervised project isn't "sweeping"); re-enabling the toggle resets the
+  // streak. >0 enables (default 3); 0 disables. See orchestrator.ts
+  // noteAutonomyOutcome / noteAutonomyBadOutcome.
+  autonomyMaxConsecutiveFailures: Number(process.env.SKYNET_AUTONOMY_MAX_CONSECUTIVE_FAILURES ?? 3),
   // Expose the local folder browser (/api/fs/list) so the desktop UI can offer a
   // folder *picker* for connecting a project to a local repo. Local-only: it
   // reveals the server machine's filesystem, so it's ON only outside production
