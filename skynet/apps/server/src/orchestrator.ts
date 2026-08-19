@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, Risk, Feature, Milestone, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
+import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, Milestone, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
 import { WorkspaceSettings } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -24,6 +24,7 @@ import { parseReviewVerdict, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
 import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./merge-brief.js";
+import { composeFeatureBrief, parseFeatureNarrative, FEATURE_BRIEF_INSTRUCTION, FEATURE_BRIEF_SYSTEM } from "./feature-brief.js";
 import { decisionResumePrompt } from "./decision-resume.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
@@ -323,6 +324,7 @@ export function computeMergeBriefing(input: {
     authoredBy,
     reviewedBy: verdict?.by ?? null,
     reviewDecision: verdict?.decision ?? null,
+    featureBrief: null, // single-run PR — never drafted for these (see feature-brief.ts)
   };
 }
 
@@ -366,6 +368,7 @@ export function computeFeatureMergeBriefing(input: {
     authoredBy: null,
     reviewedBy: null,
     reviewDecision: flaggedCount > 0 ? "flag" : anyReviewed ? "approve" : null,
+    featureBrief: null, // filled in by openPrForFeature (draftFeatureBrief) after this heuristic returns
   };
 }
 
@@ -1172,6 +1175,53 @@ export class Orchestrator {
     } catch {
       return null; // best-effort — a draft failure never blocks the review
     }
+  }
+
+  /**
+   * Feature-level ready-to-merge brief (make the one human approval
+   * reviewable) — composed once, when a Feature's whole task batch completes
+   * and its aggregate PR opens (see `openPrForFeature`). The per-task list,
+   * aggregate spend, and evidence summary are SYSTEM-composed from data
+   * already in hand (`composeFeatureBrief`) — never asked of the model. The
+   * one genuinely new thing is a consult-drafted narrative of what the
+   * feature now does AS A WHOLE, grounded on the combined branch diff, run on
+   * the anchor run's own provider (same discipline as `draftMergeBrief`).
+   * Best-effort: no consult support, no credential, or an unreadable reply
+   * all just mean `narrative: null` — the system-composed half of the brief
+   * still returns, and the PR is never blocked on this.
+   */
+  private async draftFeatureBrief(
+    anchorRun: TaskRun | undefined,
+    siblings: Task[],
+    runs: TaskRun[],
+    patch: string,
+    checksConfigured: boolean,
+  ): Promise<FeatureBrief> {
+    let narrative: string | null = null;
+    if (anchorRun && patch) {
+      try {
+        const provider = await this.getProvider(anchorRun.provider);
+        if (provider.consult) {
+          const apiKey = await secretService.resolve(anchorRun.workspaceId, anchorRun.credentialId ?? anchorRun.provider);
+          const reply = await provider.consult(
+            {
+              task: anchorRun.name,
+              model: anchorRun.model,
+              cwd: config.runnerCwd,
+              apiKey,
+              context: patch,
+              system: FEATURE_BRIEF_SYSTEM,
+            },
+            FEATURE_BRIEF_INSTRUCTION,
+          );
+          narrative = parseFeatureNarrative(reply);
+        }
+      } catch {
+        // best-effort — a draft failure never blocks the PR; the system-
+        // composed half of the brief (below) still carries every fact.
+      }
+    }
+    return composeFeatureBrief(siblings, runs, narrative, checksConfigured);
   }
 
   /**
@@ -2530,7 +2580,19 @@ export class Orchestrator {
     const stat = await git.merge.diffStat(branch, base);
     const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
     const siblings = (await this.store.listTasks(feature.workspaceId)).filter((t) => t.featureId === feature.id && !t.archived);
-    const briefing = this.buildFeatureMergeBriefing(feature, taskNames, stat, modules, siblings);
+    const heuristic = this.buildFeatureMergeBriefing(feature, taskNames, stat, modules, siblings);
+    // Feature-level brief (make the one human approval reviewable): drafted
+    // alongside the heuristic, never blocking the PR on failure. `anchorRun`
+    // supplies the provider/model/credential for the narrative consult; the
+    // sibling runs supply the aggregate spend.
+    const anchorRun = await this.store.getRun(anchorRunId);
+    const siblingRuns = (
+      await Promise.all(siblings.map((t) => (t.runId ? this.store.getRun(t.runId) : Promise.resolve(undefined))))
+    ).filter((r): r is TaskRun => r != null);
+    const patch = await git.merge.patch(branch, base);
+    const checksConfigured = !!(project.checkCmd?.trim() || config.checkCmd);
+    const featureBrief = await this.draftFeatureBrief(anchorRun, siblings, siblingRuns, patch, checksConfigured);
+    const briefing: MergeBriefing = { ...heuristic, featureBrief };
     try {
       const result = await githubService.pushAndOpenPr({
         workspaceId: feature.workspaceId,
