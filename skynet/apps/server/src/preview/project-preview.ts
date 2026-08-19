@@ -399,6 +399,15 @@ export class ProjectPreviewManager {
     };
   }
 
+  /** The detached worktree dir a `status: "live"` preview is checked out in —
+   *  e.g. so a `deepReview` agent can be pointed at the EXACT checkout its
+   *  browser tools are about to exercise, instead of provisioning a second one.
+   *  undefined if nothing is tracked under `key` (never started, already
+   *  stopped, or not yet past the "starting" phase). */
+  dirFor(key: string): string | undefined {
+    return this.previews.get(key)?.dir;
+  }
+
   /** The live loopback port + path mode for a preview proxy token — used by the
    *  /p/<token>/ reverse proxy. `stripPrefix` is true when the dev server serves
    *  at base `/` (we didn't/couldn't inject `--base`), so the proxy must strip the

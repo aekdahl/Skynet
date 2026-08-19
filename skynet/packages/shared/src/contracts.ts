@@ -436,6 +436,17 @@ export const Project = z.object({
   // Claude runner acts on it today — CLI vendors have no equivalent SDK
   // primitive (see runner-sdk/src/claude.ts).
   disallowedTools: z.array(z.string()).nullable().default(null),
+  // Opt-in: at review time, instead of a stateless one-shot consult reading the
+  // last 30 log lines, run a SECOND real bounded agent (browser tools on, no
+  // edit tools) that opens a live preview of the run's own branch and actually
+  // exercises the changed behavior before writing its verdict. Off by default —
+  // it's a real agent run (turns/time/cost), not a cheap text call, so it stays
+  // an explicit per-project choice. Needs a local repoPath (a preview needs a
+  // real checkout) and a Claude-capable reviewer (browser tools are Claude-only
+  // today); falls back to the plain consult path when either is missing, the
+  // preview fails to start, or the reviewer times out / returns no readable
+  // verdict — deep review never blocks the pipeline, it only strengthens it.
+  deepReview: z.boolean().default(false),
   // A project binds to a repository one of two ways (they can coexist):
   //  • repoPath — an absolute local folder the runs work in. When it contains
   //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
@@ -578,6 +589,11 @@ export const Task = z.object({
       reason: z.string(),
       by: z.string(), // reviewer agent name (or id, as a fallback)
       at: Timestamp,
+      // Set only by a `deepReview` run (see Project.deepReview): a short list of
+      // what the reviewer actually exercised (e.g. browser actions against the
+      // live preview), for later surfacing in the review UI. Null for a plain
+      // consult verdict — there's nothing "exercised" to report.
+      evidence: z.array(z.string()).nullable().optional(),
     })
     .nullable()
     .default(null),
@@ -1140,6 +1156,7 @@ export const UpdateProjectRequest = z.object({
   // Tool names to block for this project's agents. `null` clears back to "no
   // restriction". See Project.disallowedTools.
   disallowedTools: z.array(z.string()).nullable().optional(),
+  deepReview: z.boolean().optional(), // see Project.deepReview
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
   // Project-scoped agent guidance. `null` clears the field back to "no rules".

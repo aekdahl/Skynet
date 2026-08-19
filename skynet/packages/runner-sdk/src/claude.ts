@@ -965,7 +965,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // a `plan` HITL). Off (the default) is today's behavior, unchanged.
       permissionMode: spec.planModeGate ? "plan" : "default",
       canUseTool,
-      maxTurns: 60,
+      maxTurns: spec.maxTurns ?? 60,
       // Use Claude Code's default system prompt + full tool suite. Without this a
       // bare query() gives a minimal agent that never loads TodoWrite, so the
       // agent writes plans as prose and the PLAN panel stays empty. The preset
