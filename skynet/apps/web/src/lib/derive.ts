@@ -10,6 +10,7 @@ import type {
   Task,
   TaskState,
   Feature,
+  Project,
 } from "@skynet/shared";
 
 // ─── time formatting ───────────────────────────────────────────────────────
@@ -203,6 +204,11 @@ export const fleetAgentName = (id: string | null | undefined, fleet: Agent[]): s
   if (!id) return null;
   return fleet.find((f) => f.id === id)?.name ?? id;
 };
+
+// Resolve a project id to its display name (e.g. for a cross-project list —
+// Ready to merge, Audit — where a card needs to say which project it's from).
+export const projectName = (id: string, projects: Project[]): string =>
+  projects.find((p) => p.id === id)?.name ?? id;
 
 export const providerOf = (agent: TaskRun, fleet: Agent[]): ProviderId => {
   const r = fleet.find((f) => f.id === agent.agentId);

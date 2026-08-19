@@ -438,6 +438,7 @@ kbd {
 .merge-attribution { font-size: 12px; color: var(--muted); margin: 2px 0; }
 .merge-attribution b { color: var(--text); font-weight: 600; }
 .merge-nocheck { font-size: 11px; color: var(--faint); font-style: italic; }
+.qcard-project { font-size: 12px; color: var(--muted); white-space: nowrap; }
 /* Guided merge — the target-branch picker on a diff/merge gate. */
 .qcard-branch { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .qcard-branch-label { font-size: 11px; letter-spacing: 0.04em; color: var(--muted); white-space: nowrap; }

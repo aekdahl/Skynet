@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Feature, MergeBriefing, PrChecksStatus, TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
-import { readyMerges, readyFeatureMerges, fleetAgentName } from "../lib/derive";
+import { readyMerges, readyFeatureMerges, fleetAgentName, projectName } from "../lib/derive";
 import { RiskChip } from "../components/hitl-context";
 import { Blocked } from "../components/empty";
 
@@ -98,7 +98,7 @@ function MergeBriefingDetail({ b, fleet }: { b: MergeBriefing; fleet: import("@s
 }
 
 function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string) => void }) {
-  const { mergePr, updatePrBranch, reworkPr, dismissPr, fleet } = useStore();
+  const { mergePr, updatePrBranch, reworkPr, dismissPr, fleet, projects } = useStore();
   const pr = run.pr!;
   const b = pr.briefing;
   const rec = REC_META[b?.recommendation ?? "hold"] ?? REC_META.hold!;
@@ -156,6 +156,7 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
         <span className="kind-chip" style={{ color: rec.color, borderColor: rec.color }}>{rec.label}</span>
         {b && <RiskChip risk={b.risk} />}
         <PrChecksBadge fetchChecks={() => api.fetchPrChecks(run.id)} />
+        <span className="qcard-project" title="Project">{projectName(run.projectId, projects)}</span>
         <button className="qcard-agent" onClick={() => onOpenTask(run.id)}>{run.name}</button>
         <a className="merge-prlink mono" href={pr.url} target="_blank" rel="noreferrer" title="Open the pull request on GitHub">
           #{pr.number} ↗
@@ -227,7 +228,7 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
 // a stale/conflicting feature PR surfaces as a normal GitHub conflict on the
 // PR itself; changes go through a follow-up task under the same feature).
 function FeatureMergeCard({ feature, taskNames }: { feature: Feature; taskNames: string[] }) {
-  const { mergeFeaturePr, dismissFeaturePr, fleet } = useStore();
+  const { mergeFeaturePr, dismissFeaturePr, fleet, projects } = useStore();
   const pr = feature.pr!;
   const b = pr.briefing;
   const rec = REC_META[b?.recommendation ?? "hold"] ?? REC_META.hold!;
@@ -253,6 +254,7 @@ function FeatureMergeCard({ feature, taskNames }: { feature: Feature; taskNames:
         <span className="kind-chip" style={{ color: rec.color, borderColor: rec.color }}>{rec.label}</span>
         {b && <RiskChip risk={b.risk} />}
         <PrChecksBadge fetchChecks={() => api.fetchFeaturePrChecks(feature.id)} />
+        <span className="qcard-project" title="Project">{projectName(feature.projectId, projects)}</span>
         <span className="qcard-agent">{feature.name}</span>
         <a className="merge-prlink mono" href={pr.url} target="_blank" rel="noreferrer" title="Open the pull request on GitHub">
           #{pr.number} ↗
