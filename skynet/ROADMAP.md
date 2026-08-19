@@ -687,6 +687,36 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     reviewer navigated a real local page, clicked a button, and correctly reported what it observed. No settings
     UI yet — enable via `PATCH /api/projects/:id {"deepReview":true}`; a project-settings toggle is a natural
     follow-up, out of scope here.*
+  - *Landed: **`Project.breakerReview` — the adversarial second lens (Two-lens review, item 2 below), layered
+    on `deepReview`.** The verifier above confirms a change works; this tries to prove it doesn't. Requires
+    `deepReview` (a no-op otherwise — there's no verifier pass to run after). After the `deepReview` reviewer
+    APPROVES (never spent confirming a flag a human already needs to see), `Orchestrator.runBreakerReview`
+    spins up a THIRD bounded agent run — same invisible-on-the-board mechanism as `runDeepReview` (private
+    `RunnerEvents` adapter, no `TaskRun`/fleet row) — but told to actively try to BREAK the change against the
+    SAME kind of live preview: malformed input, edge cases, auth boundaries, concurrent actions. Structured
+    output (field-based parsing, `breaker-verdict.ts`): `{findings:[{severity,what,repro}],verdict:"clean"|
+    "broken"}` — every finding needs a real repro (Do #2: "report only what you actually reproduced... no
+    speculation"), so a clean pass still records what was *attempted*, not just silence. Any `"broken"` verdict
+    with a medium+ severity finding flips the task's verdict to flag with the findings as the reason — the
+    existing flag path handles the rest (no auto-merge, human sees it, findings visible on
+    `Task.reviewVerdict.breaker` for a future feature-brief `evidenceSummary` line). **Never blocks the
+    pipeline**: a run that couldn't even start (no repo, wrong provider, preview failure) records nothing; one
+    that ran but produced no readable verdict (timeout, unreadable reply) is recorded "clean" WITH a `note` —
+    the verifier's approve is never touched either way. **Tighter bound than the verifier**: 12 turns / 4min vs.
+    20 turns / 6min. **Safety**: unlike the reviewer (`Bash` categorically removed), the breaker keeps `Bash`
+    available — probing concurrent/malformed requests often needs it — but its approval gates run through the
+    SAME `classifyCommand` + `decideAutoApproval` path a real run's Bash gate would (Do #5: "standard command
+    gates still apply"), auto-resolved against the project's own trust level with no human to escalate a gate
+    to; `WebFetch`/`WebSearch` are removed from context (acts only on the loopback preview URL it's given, not
+    the open internet); browser tools against the preview stay unconditionally allowed, same as the reviewer.
+    Off by default, same reasoning as `deepReview` (a real agent run, not a cheap check); no auto-created tasks
+    from findings (that's a future step) and no settings UI yet, matching `deepReview`'s own current state —
+    enable via `PATCH /api/projects/:id {"breakerReview":true}`. Verified with 9 orchestrator tests against a
+    REAL throwaway git repo + real preview subprocess (mirrors `deep-review.test.ts`'s harness): a medium-
+    severity reproduced finding flips the verdict, a low-severity-only "broken" verdict does NOT, a clean pass
+    records its attempts, an unreadable reply is clean-with-note, the breaker is skipped when the verifier
+    already flagged AND when `breakerReview` is on but `deepReview` is off, and the Bash gate genuinely
+    auto-approves a low-risk command while denying a high-risk one.*
   - *Landed: **the ready-to-merge card shows its evidence, not just its verdict.** A "RECOMMEND MERGE / HIGH
     RISK" card that only shows a one-line prose verdict on a 274-file diff isn't enough to click Merge on — an
     operator either trusts the badge blind or re-derives the same reasoning by hand from the GitHub diff. The
@@ -936,17 +966,20 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
      below — a human can always still assign manually). Per-run wall-clock/idle-stall caps
      (`runtimeCapMs`/`idleCapMs`, `runner-sdk/src/caps.ts`) already bound a single run's worst case;
      this is the same idea one level up, in dollars instead of minutes.
-  2. **Two-lens review: verifier + breaker.** Today's `autoReview` (`orchestrator.ts`) is a single
-     reviewer-≠-author `consult` call — stateless, text-in/text-out, the last 30 log lines as context,
-     **no tool use at all**. That's enough to judge "does this look right on paper" but not to actually
-     RUN the change. New: a **verifier** lens that exercises the live change for real — a bounded second
-     agent RUN (not a `consult`) using the browser tools already landed for most vendors
-     (`browserMcpServers`, `runner-sdk/src/claude.ts` + the per-vendor CLI wiring above) so it can click
-     through a UI change or hit an endpoint, not just read the diff. A **breaker** lens sits alongside it
-     with the opposite brief — try to make the change fail (edge inputs, a wrong assumption, a missed
-     error path) — same reviewer-as-run mechanism, adversarial framing instead of confirmatory. Both
-     compose with (never replace) the existing consult-based verdict; a flag from either lens behaves
-     exactly like today's `reviewVerdict: flag` — parked in review for a human.
+  2. ~~**Two-lens review: verifier + breaker.**~~ — **shipped, both halves.** Plain `autoReview`
+     (`orchestrator.ts`) was a single reviewer-≠-author `consult` call — stateless, text-in/text-out, the
+     last 30 log lines as context, **no tool use at all** — enough to judge "does this look right on
+     paper" but not to actually RUN the change. The **verifier** lens landed as `Project.deepReview` (see
+     **Landed** above): a bounded second agent RUN (not a `consult`) with browser tools, opening a live
+     preview of the run's own branch and actually clicking through the change before answering. The
+     **breaker** lens landed alongside it as `Project.breakerReview` (see **Landed** above, layered ON
+     `deepReview` — requires it): the opposite brief, run only after the verifier approves — try to make
+     the change fail (malformed input, edge cases, auth boundaries, concurrent actions) against the SAME
+     kind of live preview, reporting only what it actually reproduced. Both compose with (never replace)
+     the existing consult-based verdict; a flag from either lens behaves exactly like today's
+     `reviewVerdict: flag` — parked in review for a human. Not built: neither lens has a settings UI yet
+     (`PATCH /api/projects/:id` only) and breaker findings don't yet auto-create backlog tasks — both
+     natural follow-ups, out of scope for the lenses themselves.
   3. **Circuit breakers + right-sized batches.** Three guardrails, one spirit — an autonomous loop must
      be able to stop *itself*, with no human watching: **(a)** a **session circuit-breaker** — N
      consecutive flagged/failed TASKS on the same project pauses that project's `autonomy` toggle with
