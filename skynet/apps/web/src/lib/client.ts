@@ -582,6 +582,8 @@ export function updateProject(
     goal?: string;
     status?: string;
     autonomy?: boolean;
+    // A daily USD ceiling on known spend; null clears back to "no limit".
+    dailyBudgetUsd?: number | null;
     approvalLevel?: string;
     planModeGate?: boolean;
     // Tool names to block for this project's agents; null clears the restriction.

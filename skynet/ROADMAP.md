@@ -453,6 +453,23 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     recorded on the policy but inert — no runtime enforcement exists for either yet (network-egress
     enforcement is explicitly out of scope here; see 🏢 below). Path scopes were scoped out (no per-path
     command semantics existed to attach them to). Tests: `tests/command-policy.test.ts`.
+  - [x] **Budget ceiling — daily spend rollup + auto-pick gating.** A per-project `dailyBudgetUsd` (USD,
+    null = no limit — today's behavior, unchanged): once the project's KNOWN spend today reaches it, the
+    autonomy loop's auto-pick step stops starting NEW work on that project for the rest of the day —
+    in-flight runs finish, and a human can still assign manually at any time (`assignTask` itself is never
+    gated). The safety floor for "today we develop for $20." A different mechanism from
+    `CommandPolicy.resourceCaps.maxTokenBudget` above (per-command policy, still inert) — this is a
+    per-project daily USD ceiling on real spend. *Landed:* `computeDailySpend`
+    (`packages/shared/src/budget.ts`, pure — sums `TaskRun.usage.costUsd` for a project's runs started in
+    the current local day) is the ONE place "today's spend" is computed, shared by the server gate
+    (`orchestrator.ts#underDailyBudget`, called from `tickAutonomy` step 2) and the web project header, so
+    the number an operator sees is exactly the number the gate acted on. Vendors that don't report cost are
+    tracked as a separate `unknownCostRuns` count and treated as a floor, never silently dropped and never
+    fabricated into the enforcement number (so the gate can't be tripped by spend it can't actually see).
+    Logs the pause transition once via the hub, not every tick (`budgetPausedFlagged`, re-arms silently once
+    spend drops back under budget — which happens on its own at local midnight, since "today" is always
+    recomputed from `now()`, no separate reset). Project settings gets a "Daily budget" field; the project
+    header shows "spent today / budget" once one is set.
   - **Context-aware risk** — classify by *blast radius*, not string match: outside the worktree, touching
     secrets, git-history-destructive, package publish, DB migration, network egress.
   - [x] **⭐ Prompt-injection / tool-poisoning firewall** — detect when untrusted content the agent read (an

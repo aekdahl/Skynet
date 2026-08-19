@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta, ProviderId, ProviderInfo } from "@skynet/shared";
+import { computeDailySpend } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { Blocked, PrimaryButton } from "../components/empty";
@@ -881,6 +882,26 @@ function ProjectStats({
       title: modelPairs.size ? [...modelPairs].join("\n") : "No runs yet",
     },
   ];
+  // Only shown once a daily budget is set — same number the autonomy gate
+  // acts on (computeDailySpend, shared with the server), archived runs
+  // included, so a run's spend can't be hidden from the budget by archiving it.
+  if (project.dailyBudgetUsd != null) {
+    const spend = computeDailySpend(runs, project.id, Date.now());
+    const paused = spend.spentUsd >= project.dailyBudgetUsd;
+    // fmtCost renders any nonzero-but-tiny amount as "<$0.01" (correct for real
+    // spend that rounds to nothing) — special-case exact zero so a project with
+    // no runs yet today reads as "$0.00", not the confusingly-nonzero-looking "<$0.01".
+    const spentLabel = spend.spentUsd === 0 ? "$0.00" : fmtCost(spend.spentUsd);
+    cells.push({
+      label: "Budget today",
+      value: `${spentLabel} / ${fmtCost(project.dailyBudgetUsd)}${paused ? " ⏸" : ""}`,
+      title:
+        (paused ? "Auto-pick is paused for the rest of today — you can still assign tasks manually. " : "") +
+        (spend.unknownCostRuns > 0
+          ? `Known spend only — ${spend.unknownCostRuns} run(s) today didn't report a cost, so the real total may be higher.`
+          : "Known spend today vs. the daily budget."),
+    });
+  }
 
   return (
     <div className="proj-stats">
@@ -891,6 +912,48 @@ function ProjectStats({
         </div>
       ))}
     </div>
+  );
+}
+
+// A daily USD ceiling on the project's known spend — once reached, the
+// autonomy loop stops auto-picking new work for the rest of the day (manual
+// assignment is never affected). Local draft state + commit-on-blur (same
+// pattern as the numeric fields in settings.tsx) so a PATCH doesn't fire on
+// every keystroke; re-syncs from the project when it changes elsewhere (e.g.
+// another tab, or the WS snapshot) and the field isn't mid-edit.
+function ProjectDailyBudget({ project, onChange }: { project: Project; onChange: (usd: number | null) => void }) {
+  const [draft, setDraft] = useState(project.dailyBudgetUsd == null ? "" : String(project.dailyBudgetUsd));
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    if (!editing) setDraft(project.dailyBudgetUsd == null ? "" : String(project.dailyBudgetUsd));
+  }, [project.dailyBudgetUsd, editing]);
+  const commit = () => {
+    setEditing(false);
+    const trimmed = draft.trim();
+    if (trimmed === "") return onChange(null);
+    const n = Number(trimmed);
+    if (!Number.isFinite(n) || n < 0) return setDraft(project.dailyBudgetUsd == null ? "" : String(project.dailyBudgetUsd)); // reject — revert to the last real value
+    onChange(n);
+  };
+  return (
+    <label
+      className="proj-approval"
+      title="A daily USD ceiling on this project's known spend. Once today's spend reaches it, the autonomy loop stops picking up new work for the rest of the day — in-flight runs finish, and you can still assign tasks manually at any time. Empty = no limit."
+    >
+      <span className="proj-approval-label mono">Daily budget</span>
+      <span className="proj-budget-prefix mono">$</span>
+      <input
+        type="number"
+        min={0}
+        step="0.01"
+        className="proj-budget-input"
+        placeholder="No limit"
+        value={draft}
+        onFocus={() => setEditing(true)}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+      />
+    </label>
   );
 }
 
@@ -1435,6 +1498,7 @@ export function ProjectView({
                 <span className="proj-autonomy-hint">Agents triage, auto-pick, and review tasks on their own — off, the board is fully human-driven.</span>
               </span>
             </label>
+            <ProjectDailyBudget project={project} onChange={(v) => updateProject(project.id, { dailyBudgetUsd: v })} />
             <label
               className="proj-autonomy"
               title="Every run proposes a plan first and pauses for your approval before making any changes. Off by default; Claude runners only for now."

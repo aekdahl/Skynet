@@ -1128,6 +1128,12 @@ button.kb-done:hover { opacity: 1; }
 .proj-approval-danger { border-color: color-mix(in oklch, var(--danger), transparent 40%); }
 .proj-approval-danger .proj-approval-label { color: var(--danger); font-weight: 600; }
 .proj-approval-danger .proj-approval-select { color: var(--danger); }
+/* Daily budget — a plain number input sitting in the same pill as the
+   approval-level select above, just with a "$" prefix instead of a chevron. */
+.proj-budget-prefix { color: var(--muted); }
+.proj-budget-input { width: 64px; font-size: 12px; padding: 0; border: none; background: none; color: var(--ink); }
+.proj-budget-input::placeholder { color: var(--faint); }
+.proj-budget-input::-webkit-outer-spin-button, .proj-budget-input::-webkit-inner-spin-button { margin-left: 4px; }
 /* Project runner-key confinement — a compact <details> popover in the header. */
 .proj-keys { position: relative; }
 .proj-keys-summary { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; box-sizing: border-box; font-size: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; list-style: none; }

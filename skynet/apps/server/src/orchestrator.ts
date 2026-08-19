@@ -4,7 +4,7 @@
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
 import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, Risk, Feature, Milestone, DiffWalkthrough, PullRequest } from "@skynet/shared";
-import { WorkspaceSettings } from "@skynet/shared";
+import { WorkspaceSettings, computeDailySpend } from "@skynet/shared";
 import {
   isCreditExhaustionError,
   type HitlRaise,
@@ -273,6 +273,11 @@ export class Orchestrator {
   // Runs already told "main moved" — so the periodic freshness sweep nudges once,
   // not every tick. Cleared if the branch catches back up (e.g. after a resync).
   private baseMovedFlagged = new Set<string>();
+  // Projects currently paused by their daily budget — so the "autonomy paused
+  // for today" line logs once per PAUSE, not once per tick. Cleared (re-armed,
+  // silently) once spend drops back under budget — which happens on its own at
+  // local midnight, since the spend window is always recomputed from `now()`.
+  private budgetPausedFlagged = new Set<string>();
 
   // `providerOverride` is a test seam — inject a runner provider directly instead
   // of resolving the runner's own provider. Production always passes (store, hub) only.
@@ -3145,6 +3150,40 @@ export class Orchestrator {
   private autonomyTicking = false;
 
   /**
+   * The daily-budget safety floor: false once a project's KNOWN spend today
+   * has reached its `dailyBudgetUsd` — the only thing this blocks is
+   * autonomous auto-pick (tickAutonomy step 2); a human can still assign
+   * manually at any time (assignTask itself is never gated). null budget =
+   * always true (no limit, today's behavior). Logs the pause transition once
+   * via the hub (not every tick) and re-arms silently once spend drops back
+   * under budget — which happens on its own at local midnight, since
+   * computeDailySpend always recomputes "today" from `now()`.
+   */
+  private async underDailyBudget(project: Project, runs: TaskRun[]): Promise<boolean> {
+    if (project.dailyBudgetUsd == null) {
+      this.budgetPausedFlagged.delete(project.id); // re-arm if a budget was cleared while paused
+      return true;
+    }
+    const spend = computeDailySpend(runs, project.id, now());
+    const exhausted = spend.spentUsd >= project.dailyBudgetUsd;
+    if (!exhausted) {
+      this.budgetPausedFlagged.delete(project.id);
+      return true;
+    }
+    if (!this.budgetPausedFlagged.has(project.id)) {
+      this.budgetPausedFlagged.add(project.id);
+      const floorNote = spend.unknownCostRuns > 0 ? ` (+${spend.unknownCostRuns} run(s) with unreported cost, not counted)` : "";
+      await this.hub
+        .runLog(
+          `budget-${project.id}`,
+          `autonomy paused for today — $${spend.spentUsd.toFixed(2)} of $${project.dailyBudgetUsd.toFixed(2)} budget spent${floorNote}. You can still assign tasks manually.`,
+        )
+        .catch(() => undefined);
+    }
+    return false;
+  }
+
+  /**
    * Autonomy loop: for each project with `autonomy` on and idle-agent capacity,
    * do the low-risk moves so tasks flow without a human — triage a backlog item
    * (agent writes an assessment), start an auto-pick todo task, and review a
@@ -3167,6 +3206,9 @@ export class Orchestrator {
         const projects = await this.store.listProjects(ws);
         if (projects.length === 0) continue;
         const tasks = await this.store.listTasks(ws);
+        // Only fetched when at least one project actually has a budget set —
+        // every other workspace's tick stays exactly as cheap as before.
+        const runs = projects.some((p) => p.dailyBudgetUsd != null) ? await this.store.listRuns(ws) : [];
         for (const p of projects) {
           // Re-read idle capacity per project (an earlier project may have used it).
           const idle = (await this.store.listAgents(ws)).filter((a) => a.status === "idle");
@@ -3231,7 +3273,7 @@ export class Orchestrator {
             //    that when capacity is short, the acquireExclusive queue — which
             //    serializes in call order — grants idle agents to the
             //    highest-priority tasks first instead of array/insertion order.
-            if (p.autonomy) {
+            if (p.autonomy && (await this.underDailyBudget(p, runs))) {
               const pickable = mine
                 .filter((t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned")
                 .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
