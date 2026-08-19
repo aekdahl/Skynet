@@ -10,6 +10,7 @@ import type {
   Task,
   TaskState,
   Feature,
+  Project,
 } from "@skynet/shared";
 
 // ─── time formatting ───────────────────────────────────────────────────────
@@ -194,6 +195,20 @@ export const runnerName = (agent: TaskRun, fleet: Agent[]) => {
   const r = fleet.find((f) => f.id === agent.agentId);
   return r ? r.name : agent.agentId ?? agent.id;
 };
+
+// Resolve an arbitrary fleet agent id (e.g. MergeBriefing.authoredBy/
+// reviewedBy — not tied to a TaskRun the way `runnerName` is) to its display
+// name. Falls back to the id itself when the agent isn't found (retired,
+// archived) or "heuristic" is passed through unchanged (not an agent id).
+export const fleetAgentName = (id: string | null | undefined, fleet: Agent[]): string | null => {
+  if (!id) return null;
+  return fleet.find((f) => f.id === id)?.name ?? id;
+};
+
+// Resolve a project id to its display name (e.g. for a cross-project list —
+// Ready to merge, Audit — where a card needs to say which project it's from).
+export const projectName = (id: string, projects: Project[]): string =>
+  projects.find((p) => p.id === id)?.name ?? id;
 
 export const providerOf = (agent: TaskRun, fleet: Agent[]): ProviderId => {
   const r = fleet.find((f) => f.id === agent.agentId);

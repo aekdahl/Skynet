@@ -166,16 +166,50 @@ export type LogLine = z.infer<typeof LogLine>;
 
 /** The decision aid shown on the ready-to-merge card. `impact`/`risk` are
  *  system-derived (diff size + modules touched); `recommendation` + `rationale`
- *  carry the AI reviewer's verdict (or a deterministic heuristic when none ran). */
+ *  carry the AI reviewer's verdict (or a deterministic heuristic when none ran).
+ *
+ *  `impact`/`rationale`/`summary` stay as prose (the card's headline text), but
+ *  everything that prose was SILENTLY BUILT FROM — the diff stat, the matched
+ *  modules, which files actually tripped the sensitive-area heuristic, and who
+ *  authored vs. who reviewed — is also carried as real fields below, so the UI
+ *  can show the evidence instead of asking an operator to trust a one-line
+ *  verdict on a change that (per `risk`) may be exactly the kind not to. */
 export const MergeBriefing = z.object({
   summary: z.string(), // what changed, one line
-  impact: z.string(), // what it touches / who's affected
+  impact: z.string(), // what it touches / who's affected (prose)
   risk: Risk, // low | medium | high
   recommendation: z.enum(["merge", "rework", "hold"]), // the suggested action
   rationale: z.string(), // WHY — the reviewer's words (or the heuristic's reason)
   by: z.string(), // reviewer agent name, or "heuristic"
+  // ── structured, so the UI doesn't have to parse prose ──────────────────────
+  add: z.number().int().nonnegative().default(0),
+  del: z.number().int().nonnegative().default(0),
+  filesChanged: z.number().int().nonnegative().default(0),
+  modules: z.array(z.string()).default([]), // mapped module ids; [] = "no mapped module"
+  // The actual file paths that tripped the sensitive-area heuristic (auth/data/
+  // infra) — not just the boolean fact that one did.
+  sensitiveFiles: z.array(z.string()).default([]),
+  testsChanged: z.boolean().default(false),
+  // Fleet agent ids — null when unknown (e.g. a human-authored branch, or a
+  // batched feature PR spanning several authors). Distinct fields (rather than
+  // reusing `by`) so the UI can show authorship and review as two separate
+  // facts and make independence visible, instead of a single ambiguous name.
+  authoredBy: z.string().nullable().default(null),
+  reviewedBy: z.string().nullable().default(null),
+  reviewDecision: z.enum(["approve", "flag"]).nullable().default(null),
 });
 export type MergeBriefing = z.infer<typeof MergeBriefing>;
+
+/** Live GitHub check-run status for an open PR — fetched on demand (not part of
+ *  the polled snapshot; it's a real GitHub API call), so the ready-to-merge
+ *  card can show whether CI actually ran and passed BEFORE a human clicks
+ *  Merge, not just after GitHub blocks it. `"none"` = no checks configured on
+ *  the repo (distinct from a passing/failing verdict — silence isn't success). */
+export const PrChecksStatus = z.object({
+  checks: z.enum(["none", "pending", "passing", "failing"]),
+  mergeable: z.boolean().nullable(), // null = GitHub is still computing it
+});
+export type PrChecksStatus = z.infer<typeof PrChecksStatus>;
 
 export const PullRequest = z.object({
   number: z.number().int(),

@@ -39,7 +39,11 @@ const project: Project = {
 const openPr: PullRequest = {
   number: 42, url: "https://github.com/acme/app/pull/42", repo: "acme/app",
   branch: "agent/r1", base: "main", state: "open", openedAt: 1000,
-  briefing: { summary: "do X — 3+/1−", impact: "Touches api/x", risk: "low", recommendation: "merge", rationale: "a2: looks good", by: "a2" },
+  briefing: {
+    summary: "do X — 3+/1−", impact: "Touches api/x", risk: "low", recommendation: "merge", rationale: "a2: looks good", by: "a2",
+    add: 3, del: 1, filesChanged: 1, modules: ["api/x"], sensitiveFiles: [], testsChanged: false,
+    authoredBy: "a1", reviewedBy: "a2", reviewDecision: "approve",
+  },
   dismissed: false,
 };
 const mkRun = (over: Partial<TaskRun> = {}): TaskRun => ({
@@ -149,6 +153,32 @@ describe("ready-to-merge", () => {
     await store.putRun(mkRun({ pr: null }));
     await expect(orch.mergeReadyPr(DEFAULT_WORKSPACE, "r1", "squash")).rejects.toThrow(/no open pr/i);
   });
+
+  // Live GitHub check-run status — fetched by the card BEFORE a merge decision
+  // (not just learned reactively once GitHub blocks an attempt), so an
+  // operator can see whether CI actually ran and passed before trusting a
+  // "RECOMMEND MERGE" verdict.
+  it("prChecksForRun surfaces the real check-run status for the open PR", async () => {
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "open", checks: "passing", mergeable: true });
+    const { store, orch } = await setup();
+    await store.putRun(mkRun());
+    expect(await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1")).toEqual({ checks: "passing", mergeable: true });
+    expect(githubService.prStatus).toHaveBeenCalledWith(DEFAULT_WORKSPACE, "acme/app", 42, null);
+  });
+
+  it("prChecksForRun returns null (never throws) when there's no open PR or the workspace doesn't match", async () => {
+    const { store, orch } = await setup();
+    await store.putRun(mkRun({ pr: null }));
+    expect(await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1")).toBeNull();
+    expect(await orch.prChecksForRun(DEFAULT_WORKSPACE, "no-such-run")).toBeNull();
+  });
+
+  it("prChecksForRun is best-effort — a GitHub failure resolves null, doesn't throw", async () => {
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("rate limited"));
+    const { store, orch } = await setup();
+    await store.putRun(mkRun());
+    expect(await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1")).toBeNull();
+  });
 });
 
 // Feature-scoped branch batching's aggregate PR (one per completed Feature,
@@ -160,7 +190,11 @@ describe("ready-to-merge — feature-scoped batches", () => {
   const featurePr: PullRequest = {
     number: 43, url: "https://github.com/acme/app/pull/43", repo: "acme/app",
     branch: "skynet/feature/f1", base: "main", state: "open", openedAt: 1000,
-    briefing: { summary: "Checkout — 5+/1− across 2 file(s), 2 task(s): do X, do Y", impact: "Touches api/x", risk: "low", recommendation: "merge", rationale: "No flagged tasks in this batch.", by: "heuristic" },
+    briefing: {
+      summary: "Checkout — 5+/1− across 2 file(s), 2 task(s): do X, do Y", impact: "Touches api/x", risk: "low", recommendation: "merge", rationale: "No flagged tasks in this batch.", by: "heuristic",
+      add: 5, del: 1, filesChanged: 2, modules: ["api/x"], sensitiveFiles: [], testsChanged: false,
+      authoredBy: null, reviewedBy: null, reviewDecision: "approve",
+    },
     dismissed: false,
   };
   const mkFeature = (over: Partial<Feature> = {}): Feature => ({
@@ -219,5 +253,19 @@ describe("ready-to-merge — feature-scoped batches", () => {
     await store.putFeature(mkFeature({ pr: null }));
     await expect(orch.mergeReadyFeaturePr(DEFAULT_WORKSPACE, "f1", "squash")).rejects.toThrow(/no open pr/i);
     await expect(orch.dismissReadyFeaturePr(DEFAULT_WORKSPACE, "f1")).rejects.toThrow(/no pr/i);
+  });
+
+  it("prChecksForFeature surfaces the real check-run status for the aggregate PR", async () => {
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "open", checks: "failing", mergeable: true });
+    const { store, orch } = await setup();
+    await store.putFeature(mkFeature());
+    expect(await orch.prChecksForFeature(DEFAULT_WORKSPACE, "f1")).toEqual({ checks: "failing", mergeable: true });
+    expect(githubService.prStatus).toHaveBeenCalledWith(DEFAULT_WORKSPACE, "acme/app", 43, null);
+  });
+
+  it("prChecksForFeature returns null when there's no open PR", async () => {
+    const { store, orch } = await setup();
+    await store.putFeature(mkFeature({ pr: null }));
+    expect(await orch.prChecksForFeature(DEFAULT_WORKSPACE, "f1")).toBeNull();
   });
 });

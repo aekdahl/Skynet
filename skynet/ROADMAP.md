@@ -589,6 +589,30 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     the audit trail records who reviewed what. Auto-approve merges only when the project's autonomy toggle is
     on; flagged runs stay in `review` for a human. Verdict parsing is field-based (JSON tail), not prose,
     so a reason mentioning "flagged" never false-flags an APPROVE.*
+  - *Landed: **the ready-to-merge card shows its evidence, not just its verdict.** A "RECOMMEND MERGE / HIGH
+    RISK" card that only shows a one-line prose verdict on a 274-file diff isn't enough to click Merge on — an
+    operator either trusts the badge blind or re-derives the same reasoning by hand from the GitHub diff. The
+    ingredients `buildMergeBriefing`/`buildFeatureMergeBriefing` (`orchestrator.ts`) always computed (diff stat,
+    matched modules, which files tripped the sensitive-area heuristic, tests-changed) were being collapsed into
+    an opaque `impact` string and discarded — now they're real `MergeBriefing` fields (`add`/`del`/
+    `filesChanged`/`modules`/`sensitiveFiles`/`testsChanged`/`authoredBy`/`reviewedBy`/`reviewDecision`), and
+    the card renders them directly: the actual sensitive file PATHS (not just the flag), a real diff-composition
+    line, and — since the reviewer is already guaranteed structurally to be a different fleet agent than the
+    author (`orchestrator.ts`'s `autoReview`) — an explicit "Authored by X → reviewed by Y (approved/flagged)"
+    line, so that independence is visible instead of implicit. The two `buildMergeBriefing`/
+    `buildFeatureMergeBriefing` computations were also lifted out of the orchestrator into pure, exported
+    functions (`computeMergeBriefing`/`computeFeatureMergeBriefing`/`mergeSensitiveFiles`/`mergeRisk`) so this
+    logic — previously untested — is directly unit-tested without a git worktree. Biggest gap closed: GitHub's
+    real check-run status (`githubService.prStatus` — already implemented, but only ever consulted reactively
+    *after* a merge attempt was blocked) is now fetched by the card itself on load and shown BEFORE the merge
+    decision (`GET /api/merges/:id/checks`, best-effort/on-demand — never baked into the polled snapshot, since
+    it's a real GitHub API call): passing/pending/failing render as a colored badge, and — since silence isn't
+    the same as passing — a repo with no CI configured says so explicitly rather than showing nothing. Verified
+    live against a seeded ready-to-merge card end to end (sensitive-file chips, authored/reviewed line, diff
+    stat all correct; the checks badge fails silent — no misleading badge — when no GitHub connection exists,
+    exactly the intended fallback). Not built: the Verifier gate (above) still only runs on the local
+    merge-queue path, never for GitHub-PR-based runs — so a repo with no CI configured genuinely has no
+    automated pass/fail signal yet, which the card now says outright instead of staying silent about it.*
   - *Landed: **`error_max_turns` is resumable** — a run that hits the Claude turn cap parks with the current
     plan + guidance instead of dead-ending; the operator resolves it forward.*
   - *Landed: **checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks

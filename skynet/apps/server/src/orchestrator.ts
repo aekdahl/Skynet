@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, Risk, Feature, Milestone, DiffWalkthrough, PullRequest } from "@skynet/shared";
+import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, Risk, Feature, Milestone, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
 import { WorkspaceSettings } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -215,6 +215,129 @@ export function withInstructions(instructions: string | null | undefined, body: 
  *  HITL raising both need to know not to treat `req.runId` as one. */
 export function isFeatureUpMerge(req: MergeRequest): boolean {
   return !req.featureId && req.agentBranch.startsWith(FEATURE_BRANCH_PREFIX);
+}
+
+// ─── Ready-to-merge briefing — pure, exported for direct unit tests ─────────
+// The decision-aid on the ready-to-merge card is built from data already in
+// hand (the diff stat + mapped modules) plus the AI reviewer's recorded
+// verdict when present — no LLM call, no I/O. Kept as standalone functions
+// (not private Orchestrator methods) specifically so the sensitive-file/risk
+// logic — the evidence an operator actually needs to trust a merge
+// recommendation — can be unit-tested directly, without spinning up a git
+// worktree + GitHub push just to reach it.
+
+/** Sensitive areas — a change touching these reads as higher-risk on the
+ *  ready-to-merge card (matched against module ids AND file paths, case-insensitive). */
+const SENSITIVE_AREA =
+  /(auth|login|session|token|secret|credential|password|payment|billing|charge|invoice|migration|schema|infra|deploy|terraform|k8s|kubernetes|security|permission|rbac)/i;
+
+/** The actual file paths (plus any matching module ids, folded in as synthetic
+ *  "module: …" entries when no individual file name matches) that tripped the
+ *  sensitive-area heuristic — the evidence behind "includes a sensitive area",
+ *  not just the boolean fact of it. */
+export function mergeSensitiveFiles(files: string[], modules: string[]): string[] {
+  const hits = files.filter((f) => SENSITIVE_AREA.test(f));
+  if (!hits.length) for (const m of modules) if (SENSITIVE_AREA.test(m)) hits.push(`module: ${m}`);
+  return hits;
+}
+
+/** Does the diff touch anything that reads as a test file? */
+export function mergeTouchesTests(files: string[]): boolean {
+  return files.some((f) => /(\.test\.|\.spec\.|\/tests?\/|__tests__)/i.test(f));
+}
+
+/** Risk for the ready-to-merge card: a sensitive area → high; an otherwise
+ *  broad change → medium; else low. */
+export function mergeRisk(stat: { add: number; del: number; files: string[] }, sensitive: boolean): Risk {
+  const big = stat.files.length > 15 || stat.del > 400 || stat.add + stat.del > 800;
+  return sensitive ? "high" : big ? "medium" : "low";
+}
+
+const mergeImpact = (modules: string[], filesLen: number, sensitive: boolean, touchesTests: boolean): string =>
+  [
+    modules.length
+      ? `Touches ${modules.slice(0, 6).join(", ")}${modules.length > 6 ? ` +${modules.length - 6} more` : ""}`
+      : `${filesLen} file(s), no mapped module`,
+    sensitive ? "includes a sensitive area (auth/data/infra)" : null,
+    touchesTests ? "changes tests" : "no test changes",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+/** Build the ready-to-merge decision-aid for a single run's PR. `verdict` is
+ *  the task's recorded AI review (task.reviewVerdict), when one ran. */
+export function computeMergeBriefing(input: {
+  runName: string;
+  authoredBy: string | null;
+  verdict: { by: string; reason: string; decision: "approve" | "flag" } | null;
+  stat: { add: number; del: number; files: string[] };
+  modules: string[];
+}): MergeBriefing {
+  const { runName, authoredBy, verdict, stat, modules } = input;
+  const files = stat.files;
+  const sensitiveFiles = mergeSensitiveFiles(files, modules);
+  const sensitive = sensitiveFiles.length > 0;
+  const touchesTests = mergeTouchesTests(files);
+  return {
+    summary: `${runName} — ${stat.add}+/${stat.del}− across ${files.length} file(s)`,
+    impact: mergeImpact(modules, files.length, sensitive, touchesTests),
+    risk: mergeRisk(stat, sensitive),
+    recommendation: verdict?.decision === "flag" ? "rework" : "merge",
+    rationale: verdict ? `${verdict.by}: ${verdict.reason}` : "No AI review recorded — merge at your discretion.",
+    by: verdict?.by ?? "heuristic",
+    add: stat.add,
+    del: stat.del,
+    filesChanged: files.length,
+    modules,
+    sensitiveFiles,
+    testsChanged: touchesTests,
+    authoredBy,
+    reviewedBy: verdict?.by ?? null,
+    reviewDecision: verdict?.decision ?? null,
+  };
+}
+
+/** Build the ready-to-merge decision-aid for a feature-scoped batch PR (several
+ *  tasks sharing one PR). `flaggedCount` → any flagged sibling forces "rework"
+ *  so a batch never hides one task's flagged concern behind its siblings'
+ *  clean ones; `anyReviewed` keeps `reviewDecision` honestly null when nothing
+ *  in the batch was ever reviewed, rather than implying a blanket approval. */
+export function computeFeatureMergeBriefing(input: {
+  featureName: string;
+  taskNames: string[];
+  stat: { add: number; del: number; files: string[] };
+  modules: string[];
+  flaggedCount: number;
+  anyReviewed: boolean;
+}): MergeBriefing {
+  const { featureName, taskNames, stat, modules, flaggedCount, anyReviewed } = input;
+  const files = stat.files;
+  const sensitiveFiles = mergeSensitiveFiles(files, modules);
+  const sensitive = sensitiveFiles.length > 0;
+  const touchesTests = mergeTouchesTests(files);
+  return {
+    summary: `${featureName} — ${stat.add}+/${stat.del}− across ${files.length} file(s), ${taskNames.length} task(s): ${taskNames.slice(0, 4).join(", ")}${taskNames.length > 4 ? ` +${taskNames.length - 4} more` : ""}`,
+    impact: mergeImpact(modules, files.length, sensitive, touchesTests),
+    risk: mergeRisk(stat, sensitive),
+    recommendation: flaggedCount > 0 ? "rework" : "merge",
+    rationale:
+      flaggedCount > 0
+        ? `${flaggedCount} of ${taskNames.length} task(s) were flagged on review — check before merging.`
+        : "No flagged tasks in this batch.",
+    by: "heuristic",
+    add: stat.add,
+    del: stat.del,
+    filesChanged: files.length,
+    modules,
+    sensitiveFiles,
+    testsChanged: touchesTests,
+    // A batch spans several tasks (each possibly a different author/reviewer
+    // pair) — no single "authored by"/"reviewed by" applies (per-task review
+    // decisions already surface via `rationale`'s flagged count).
+    authoredBy: null,
+    reviewedBy: null,
+    reviewDecision: flaggedCount > 0 ? "flag" : anyReviewed ? "approve" : null,
+  };
 }
 
 export class Orchestrator {
@@ -2303,39 +2426,16 @@ export class Orchestrator {
     modules: string[],
     siblings: Task[],
   ): MergeBriefing {
-    const files = stat.files;
-    const sensitive = [...modules, ...files].some((s) => Orchestrator.SENSITIVE.test(s));
-    const touchesTests = files.some((f) => /(\.test\.|\.spec\.|\/tests?\/|__tests__)/i.test(f));
-    const big = files.length > 15 || stat.del > 400 || stat.add + stat.del > 800;
-    const risk: Risk = sensitive ? "high" : big ? "medium" : "low";
     const flagged = siblings.filter((t) => t.reviewVerdict?.decision === "flag");
-    const recommendation: MergeBriefing["recommendation"] = flagged.length > 0 ? "rework" : "merge";
-    const impact = [
-      modules.length
-        ? `Touches ${modules.slice(0, 6).join(", ")}${modules.length > 6 ? ` +${modules.length - 6} more` : ""}`
-        : `${files.length} file(s), no mapped module`,
-      sensitive ? "includes a sensitive area (auth/data/infra)" : null,
-      touchesTests ? "changes tests" : "no test changes",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    return {
-      summary: `${feature.name} — ${stat.add}+/${stat.del}− across ${files.length} file(s), ${taskNames.length} task(s): ${taskNames.slice(0, 4).join(", ")}${taskNames.length > 4 ? ` +${taskNames.length - 4} more` : ""}`,
-      impact,
-      risk,
-      recommendation,
-      rationale:
-        flagged.length > 0
-          ? `${flagged.length} of ${taskNames.length} task(s) were flagged on review — check before merging.`
-          : "No flagged tasks in this batch.",
-      by: "heuristic",
-    };
+    return computeFeatureMergeBriefing({
+      featureName: feature.name,
+      taskNames,
+      stat,
+      modules,
+      flaggedCount: flagged.length,
+      anyReviewed: siblings.some((t) => t.reviewVerdict),
+    });
   }
-
-  // Sensitive areas — a change touching these reads as higher-risk on the
-  // ready-to-merge card (matched against module ids AND file paths, case-insensitive).
-  private static readonly SENSITIVE =
-    /(auth|login|session|token|secret|credential|password|payment|billing|charge|invoice|migration|schema|infra|deploy|terraform|k8s|kubernetes|security|permission|rbac)/i;
 
   /** A deterministic decision-aid for the ready-to-merge card, from data already
    *  in hand — the diff stat + mapped modules — plus the AI reviewer's recorded
@@ -2348,31 +2448,7 @@ export class Orchestrator {
     modules: string[],
   ): Promise<MergeBriefing> {
     const task = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === run.id);
-    const verdict = task?.reviewVerdict ?? null;
-    const files = stat.files;
-    const sensitive = [...modules, ...files].some((s) => Orchestrator.SENSITIVE.test(s));
-    const touchesTests = files.some((f) => /(\.test\.|\.spec\.|\/tests?\/|__tests__)/i.test(f));
-    // Risk: a sensitive area → high; an otherwise broad change → medium; else low.
-    const big = files.length > 15 || stat.del > 400 || stat.add + stat.del > 800;
-    const risk: Risk = sensitive ? "high" : big ? "medium" : "low";
-    const recommendation: MergeBriefing["recommendation"] = verdict?.decision === "flag" ? "rework" : "merge";
-    const impact = [
-      modules.length
-        ? `Touches ${modules.slice(0, 6).join(", ")}${modules.length > 6 ? ` +${modules.length - 6} more` : ""}`
-        : `${files.length} file(s), no mapped module`,
-      sensitive ? "includes a sensitive area (auth/data/infra)" : null,
-      touchesTests ? "changes tests" : "no test changes",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    return {
-      summary: `${run.name} — ${stat.add}+/${stat.del}− across ${files.length} file(s)`,
-      impact,
-      risk,
-      recommendation,
-      rationale: verdict ? `${verdict.by}: ${verdict.reason}` : "No AI review recorded — merge at your discretion.",
-      by: verdict?.by ?? "heuristic",
-    };
+    return computeMergeBriefing({ runName: run.name, authoredBy: run.agentId, verdict: task?.reviewVerdict ?? null, stat, modules });
   }
 
   /** Mark a run's owning task done (idempotent) — used the moment its PR opens,
@@ -2393,6 +2469,20 @@ export class Orchestrator {
   async listReadyPrs(workspaceId: string): Promise<TaskRun[]> {
     const runs = await this.store.listAllRuns().catch(() => [] as TaskRun[]);
     return runs.filter((r) => r.workspaceId === workspaceId && r.pr?.state === "open" && !r.pr.dismissed);
+  }
+
+  /** Live GitHub check-run status for a ready PR — a real API call (never part
+   *  of the polled snapshot), so the ready-to-merge card can show whether CI
+   *  actually ran and passed BEFORE a human clicks Merge, not just learn it
+   *  from `classifyMergeBlock` after GitHub already blocked the attempt.
+   *  Best-effort: null on any failure (unreachable, no connection, etc.) — the
+   *  card falls back to showing no check-status affordance, same as today. */
+  async prChecksForRun(workspaceId: string, runId: string): Promise<PrChecksStatus | null> {
+    const run = await this.store.getRun(runId);
+    if (!run || run.workspaceId !== workspaceId || !run.pr) return null;
+    const cred = (await this.store.getProject(run.projectId))?.githubCredentialId ?? null;
+    const status = await githubService.prStatus(workspaceId, run.pr.repo, run.pr.number, cred).catch(() => null);
+    return status ? { checks: status.checks, mergeable: status.mergeable } : null;
   }
 
   /** Merge an open PR from the ready list. Success → integrate + settle to done
@@ -2513,6 +2603,16 @@ export class Orchestrator {
   async listReadyFeaturePrs(workspaceId: string): Promise<Feature[]> {
     const features = await this.store.listFeatures(workspaceId).catch(() => [] as Feature[]);
     return features.filter((f) => f.pr?.state === "open" && !f.pr.dismissed);
+  }
+
+  /** Live GitHub check-run status for a feature's aggregate ready PR — see
+   *  `prChecksForRun`'s comment; same real-API-call, best-effort contract. */
+  async prChecksForFeature(workspaceId: string, featureId: string): Promise<PrChecksStatus | null> {
+    const feature = await this.store.getFeature(featureId);
+    if (!feature || feature.workspaceId !== workspaceId || !feature.pr) return null;
+    const cred = (await this.store.getProject(feature.projectId))?.githubCredentialId ?? null;
+    const status = await githubService.prStatus(workspaceId, feature.pr.repo, feature.pr.number, cred).catch(() => null);
+    return status ? { checks: status.checks, mergeable: status.mergeable } : null;
   }
 
   /** Merge a feature's aggregate PR. Success → mark the feature shipped.
