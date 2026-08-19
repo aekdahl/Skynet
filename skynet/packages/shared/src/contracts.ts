@@ -447,6 +447,19 @@ export const Project = z.object({
   // preview fails to start, or the reviewer times out / returns no readable
   // verdict — deep review never blocks the pipeline, it only strengthens it.
   deepReview: z.boolean().default(false),
+  // Opt-in second lens, layered on TOP of `deepReview` (requires it — a no-op
+  // while deepReview is off, since there's no verifier pass to run after).
+  // After the deepReview reviewer APPROVES, spins up a THIRD bounded agent run
+  // against the SAME kind of live preview — this one adversarial: told to
+  // actively try to break the change (malformed input, edge cases, auth
+  // boundaries, concurrent actions) rather than judge whether it works. Any
+  // reproduced finding of medium+ severity flips the task's verdict to flag,
+  // with the findings as the reason — the verifier alone can confirm a change
+  // *works*; this is what tries to prove it *doesn't*. Off by default, same
+  // reasoning as deepReview (a real bounded run, not a cheap check). Never
+  // blocks the pipeline: an unreadable/failed breaker run leaves the
+  // verifier's approve standing (see Orchestrator.runBreakerReview).
+  breakerReview: z.boolean().default(false),
   // A project binds to a repository one of two ways (they can coexist):
   //  • repoPath — an absolute local folder the runs work in. When it contains
   //    a .git, `gitBacked` is set and Skynet auto-manages a worktree per agent
@@ -532,6 +545,28 @@ export const TaskLintConcern = z.object({
 });
 export type TaskLintConcern = z.infer<typeof TaskLintConcern>;
 
+// One thing the breaker (Project.breakerReview) actually reproduced against the
+// live preview — never a speculative claim. `severity` uses the same low/medium/
+// high scale as everywhere else (Risk); only medium+ findings on a "broken"
+// verdict flip the task's own verdict to flag (see Orchestrator.runBreakerReview).
+export const BreakerFinding = z.object({
+  severity: Risk,
+  what: z.string(), // what broke / was attempted, in the breaker's own words
+  repro: z.string(), // exact steps to reproduce it
+});
+export type BreakerFinding = z.infer<typeof BreakerFinding>;
+
+// The breaker's structured reply — see Task.reviewVerdict.breaker.
+export const BreakerVerdict = z.object({
+  verdict: z.enum(["clean", "broken"]),
+  findings: z.array(BreakerFinding).default([]),
+  // Set only when the breaker run itself couldn't produce a readable verdict
+  // (unreadable reply, timeout, crash) — recorded as "clean-with-note" so the
+  // pipeline is never blocked by a broken breaker; null on a normal outcome.
+  note: z.string().nullable().default(null),
+});
+export type BreakerVerdict = z.infer<typeof BreakerVerdict>;
+
 export const Task = z.object({
   id: z.string(),
   workspaceId: z.string(),
@@ -594,6 +629,15 @@ export const Task = z.object({
       // live preview), for later surfacing in the review UI. Null for a plain
       // consult verdict — there's nothing "exercised" to report.
       evidence: z.array(z.string()).nullable().optional(),
+      // Set only by a `breakerReview` run (see Project.breakerReview) — the
+      // adversarial second lens, run after the reviewer above approves. Records
+      // what it actually reproduced against the SAME live preview, even on a
+      // clean pass (so "we tried and it held" is visible, not just silence —
+      // for later feature-brief evidence). `note` is set only on a breaker run
+      // that couldn't produce a readable verdict (a broken breaker never blocks
+      // the pipeline — treated as clean-with-note, `decision` above is
+      // untouched); null on a normal clean/broken outcome.
+      breaker: BreakerVerdict.nullable().optional(),
     })
     .nullable()
     .default(null),
@@ -1175,6 +1219,7 @@ export const UpdateProjectRequest = z.object({
   // restriction". See Project.disallowedTools.
   disallowedTools: z.array(z.string()).nullable().optional(),
   deepReview: z.boolean().optional(), // see Project.deepReview
+  breakerReview: z.boolean().optional(), // see Project.breakerReview (requires deepReview)
   repoPath: z.string().nullable().optional(),
   repo: z.string().optional(),
   // Project-scoped agent guidance. `null` clears the field back to "no rules".

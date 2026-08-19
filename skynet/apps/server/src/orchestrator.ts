@@ -21,6 +21,7 @@ import { decideAutoApproval } from "./approval-policy.js";
 import { resolveActivePolicy } from "./command-policy.js";
 import { resolveMergeTarget } from "./derive/merge-target.js";
 import { parseReviewVerdict, extractJsonObject, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
+import { parseBreakerVerdict, BREAKER_OUTPUT_INSTRUCTION, type BreakerVerdictOut } from "./breaker-verdict.js";
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
 import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./merge-brief.js";
@@ -202,6 +203,13 @@ const SCOPE_NOTE =
 // in case those never fire (e.g. a handle that never calls onCompleted/onFailed).
 const DEEP_REVIEW_MAX_TURNS = 20;
 const DEEP_REVIEW_TIMEOUT_MS = 6 * 60_000;
+
+// The breaker (Project.breakerReview / runBreakerReview) runs strictly AFTER
+// the deepReview reviewer above already approved — it's pure extra scrutiny on
+// a change that's already been judged to work, so its own budget is tighter
+// still: fewer turns, a shorter wall-clock backstop.
+const BREAKER_MAX_TURNS = 12;
+const BREAKER_TIMEOUT_MS = 4 * 60_000;
 
 /** Prepend the project's `instructions` (the "house rules" for this codebase)
  *  to any prompt an agent will see. When there are no instructions this is a
@@ -4024,6 +4032,183 @@ export class Orchestrator {
   }
 
   /**
+   * `Project.breakerReview` opt-in (requires `deepReview`): after the deepReview
+   * reviewer above already APPROVED a run, spin up a THIRD real, bounded agent
+   * run — same invisible-on-the-board mechanics as runDeepReview (a private
+   * RunnerEvents adapter, no TaskRun, no fleet-runner row) but ADVERSARIAL:
+   * told to actively try to break the change against the SAME kind of live
+   * preview, rather than judge whether it works. The verifier above confirms a
+   * change works; this tries to prove it doesn't.
+   *
+   * Unlike the reviewer, Bash is NOT categorically removed — probing malformed
+   * input / concurrent actions / auth boundaries often needs it — so a Bash
+   * approval gate goes through the SAME command-safety classification + the
+   * project's own approval policy a real run's Bash gate would (Do #5:
+   * "standard command gates still apply to everything else it tries to do"):
+   * auto-approved only when the project's trust level would already allow it,
+   * denied otherwise (there's no human here to escalate a gate to). Browser
+   * tools against the preview stay unconditionally allowed, same as the
+   * reviewer — that's the sanctioned mechanism, not "everything else". WebFetch/
+   * WebSearch are removed from context entirely (general internet access is
+   * outside "the loopback preview URL it is given").
+   *
+   * Returns null only when the run genuinely never happened (no repo, wrong
+   * provider, preview wouldn't start) — nothing to record. A run that DID
+   * start but produced no readable verdict (timeout, unreadable reply) instead
+   * returns a "clean" result with `note` set: it's recorded as an attempt, but
+   * NEVER treated as broken (Do #2 — a broken breaker must not block the
+   * pipeline; the verifier already approved this change).
+   */
+  private async runBreakerReview(
+    ws: string,
+    reviewer: Agent,
+    task: Task,
+    run: TaskRun,
+    hitl: HitlItem,
+    project: Project,
+  ): Promise<BreakerVerdictOut & { note: string | null } | null> {
+    if (reviewer.provider !== "claude") return null; // browser tools are Claude-only, same as the reviewer
+    if (!project.repoPath) return null;
+
+    const previewMgr = this.previewOverride ?? projectPreview;
+    const previewKey = `run:${run.id}`;
+    let preview;
+    try {
+      preview = await previewMgr.startRun(run.id, {
+        repoPath: project.repoPath,
+        projectId: project.id,
+        branch: run.branch,
+        workspaceId: ws,
+      });
+    } catch {
+      return null;
+    }
+    if (preview.status !== "live" || !preview.url) {
+      await previewMgr.stop(previewKey).catch(() => undefined);
+      return null;
+    }
+    const cwd = previewMgr.dirFor(previewKey);
+    if (!cwd) {
+      await previewMgr.stop(previewKey).catch(() => undefined);
+      return null;
+    }
+
+    try {
+      const provider = await this.getProvider(reviewer.provider);
+      const apiKey = await secretService.resolve(ws, reviewer.credentialId ?? reviewer.provider);
+      // Resolved once, up front — decideAutoApproval below needs the workspace's
+      // ACTIVE command policy, same as a real run's Bash gate (see raise()).
+      const policy = await resolveActivePolicy(this.store, ws);
+      const diffSummary = hitl.diff
+        ? `Files changed (${hitl.diff.files.length}): ${hitl.diff.files.slice(0, 25).join(", ")}${hitl.diff.files.length > 25 ? ", …" : ""} (+${hitl.diff.add}/-${hitl.diff.del})`
+        : "No diff stat available for this run.";
+      const brief = [
+        `Another agent finished this task: "${task.text}" — a reviewer already checked it in the browser and found no problems. Your job is ADVERSARIAL: try to prove the reviewer wrong.`,
+        project.instructions ? `Project instructions: ${project.instructions}` : null,
+        diffSummary,
+        `A live preview of this EXACT change is running at: ${preview.url}\nActively try to make it misbehave: malformed/edge-case input, unexpected sequences of actions, rapid/concurrent actions, and any auth or permission boundary the new behavior touches. Try what a careless or malicious user might do — don't just re-check the happy path the reviewer already covered.`,
+        "You are a BREAKER ONLY — you have no edit tools and must not attempt to fix anything. Report ONLY what you ACTUALLY did against the live preview and observed — every finding needs concrete repro steps. Never speculate or report something you didn't personally trigger; an unreproduced guess is worse than no finding at all.",
+        `When you're done, reply with ONLY the required JSON — no other text. ${BREAKER_OUTPUT_INSTRUCTION}`,
+      ]
+        .filter((l): l is string => !!l)
+        .join("\n\n");
+
+      const breakerRunId = `breaker-${run.id}-${++this.seq}`;
+      let lastText = "";
+      let handle: RunnerHandle | undefined;
+      const outcome = await Promise.race([
+        new Promise<"completed" | "failed">((resolve) => {
+          const events: RunnerEvents = {
+            onLog: (_id, line, detail) => {
+              if (detail === undefined && line.trim()) lastText = line;
+            },
+            onProgress: () => {},
+            onHeartbeat: () => {},
+            onStatus: () => {},
+            // No human is watching this run — resolve every gate ourselves.
+            onHitl: (_id, raise) => {
+              if (!handle) return;
+              let resolution: Resolution;
+              // Matches claude.ts's actionTitle()'s Bash branch exactly — the
+              // only reliable signal HitlRaise carries for "this is a shell
+              // command", since it has no explicit tool-name field.
+              const isBash = /^Run a shell command:/.test(raise.title);
+              if (raise.kind === "approval" && isBash) {
+                const auto = decideAutoApproval({ command: raise.command, level: project.approvalLevel, rules: project.approvalRules, policy });
+                resolution = auto
+                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: auto.by, at: now() }
+                  : {
+                      action: "reject",
+                      optionIndex: null,
+                      guidance: "That command isn't auto-approved under this project's policy (no human is available to review it here). Try a different way to exercise the change against the live preview, or report what you've already found.",
+                      targetBranch: null,
+                      memoryNote: null,
+                      by: "breaker-harness",
+                      at: now(),
+                    };
+              } else if (raise.kind === "approval") {
+                // Browser actions against the preview are the sanctioned
+                // mechanism — same unattended auto-approve as the reviewer.
+                resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "breaker-harness", at: now() };
+              } else {
+                resolution = {
+                  action: "reject",
+                  optionIndex: null,
+                  guidance: "Don't ask questions or make a plan — just try to break the change against the live preview, then reply with only the required JSON verdict.",
+                  targetBranch: null,
+                  memoryNote: null,
+                  by: "breaker-harness",
+                  at: now(),
+                };
+              }
+              void handle.resume(resolution).catch(() => undefined);
+            },
+            onCompleted: () => resolve("completed"),
+            onFailed: () => resolve("failed"),
+            onChatReply: () => {},
+          };
+          provider
+            .start(
+              {
+                runId: breakerRunId,
+                projectId: project.id,
+                task: brief,
+                model: reviewer.model,
+                branch: run.branch,
+                cwd,
+                apiKey,
+                browser: true,
+                maxTurns: BREAKER_MAX_TURNS,
+                // Edits stay off, same as the reviewer. Bash deliberately stays
+                // AVAILABLE (gated for real above, not removed) — general
+                // internet access does not (Do #5: preview URL only).
+                disallowedTools: ["Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch"],
+              },
+              events,
+            )
+            .then((h) => {
+              handle = h;
+            })
+            .catch(() => resolve("failed"));
+        }),
+        new Promise<"failed">((resolve) => setTimeout(() => resolve("failed"), BREAKER_TIMEOUT_MS)),
+      ]);
+      await handle?.stop().catch(() => undefined);
+
+      if (outcome !== "completed" || !lastText) {
+        return { verdict: "clean", findings: [], note: "breaker run did not finish in time — treated as clean" };
+      }
+      const parsed = parseBreakerVerdict(lastText);
+      if (!parsed) {
+        return { verdict: "clean", findings: [], note: "breaker run produced no readable verdict — treated as clean" };
+      }
+      return { ...parsed, note: null };
+    } finally {
+      await previewMgr.stop(previewKey).catch(() => undefined);
+    }
+  }
+
+  /**
    * Autonomous review of a finished run's open HITL. Always records a verdict
    * on the task (approve OR flag) so the human has an audit trail of what the
    * reviewer thought. Only when `canResolve` is true does an approve verdict
@@ -4041,6 +4226,7 @@ export class Orchestrator {
     let decision: "approve" | "flag" = "approve";
     let reason = "auto-approved";
     let evidence: string[] | undefined;
+    let breaker: (BreakerVerdictOut & { note: string | null }) | null = null;
     try {
       const project = await this.store.getProject(task.projectId);
       // `deepReview` opt-in: try a real, browser-driven second agent run first.
@@ -4070,6 +4256,25 @@ export class Orchestrator {
           const verdict = parseReviewVerdict(reply);
           decision = verdict.approve ? "approve" : "flag";
           reason = verdict.reason;
+        }
+      }
+      // `breakerReview` opt-in (requires `deepReview` — a no-op otherwise, since
+      // `deep` is only ever set by a genuine deepReview pass): only after the
+      // deepReview reviewer ITSELF approved — never spend a breaker run
+      // confirming a flag a human already needs to look at, and never on the
+      // plain-consult path (nothing was actually verified there for a breaker
+      // to try to break). runBreakerReview never throws (self-caught below);
+      // a genuinely reproduced medium+ finding on a "broken" verdict is the
+      // ONLY thing that flips decision — everything else (clean, unreadable,
+      // couldn't run at all) leaves the verifier's approve exactly as it was.
+      if (deep && decision === "approve" && project?.breakerReview) {
+        breaker = await this.runBreakerReview(ws, agent, task, run!, hitl, project).catch(() => null);
+        if (breaker) {
+          const severe = breaker.findings.filter((f) => f.severity !== "low");
+          if (breaker.verdict === "broken" && severe.length > 0) {
+            decision = "flag";
+            reason = `Breaker reproduced ${severe.length} issue(s) the verifier missed: ${severe.map((f) => f.what).join("; ").slice(0, 280)}`;
+          }
         }
       }
     } catch (err) {
@@ -4102,7 +4307,7 @@ export class Orchestrator {
     }
     // ALWAYS persist the verdict on the task so the detail view can show it —
     // approve OR flag, autonomy on OR off. This is the audit trail.
-    const verdict = { decision, reason, by: reviewer, at, evidence: evidence ?? null };
+    const verdict = { decision, reason, by: reviewer, at, evidence: evidence ?? null, breaker };
     const withVerdict = await this.hub.upsertTask({ ...freshTask, reviewVerdict: verdict });
     // Session circuit-breaker: a flag is a bad autonomy outcome for the
     // project, an approve is a good one — tracked regardless of `canResolve`

@@ -776,6 +776,9 @@ export class Operations {
       // Deep review is off at creation — a real agent run costs money, so it
       // stays an explicit opt-in set later in project settings.
       deepReview: false,
+      // Breaker review is layered on top of deepReview — off at creation for
+      // the same reason (another real agent run), set later in settings.
+      breakerReview: false,
       repoPath,
       gitBacked: repoPath ? isGitRepo(repoPath) : false,
       repo,
