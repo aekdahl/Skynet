@@ -217,6 +217,35 @@ export function isFeatureUpMerge(req: MergeRequest): boolean {
   return !req.featureId && req.agentBranch.startsWith(FEATURE_BRANCH_PREFIX);
 }
 
+/** Which (if any) feature-batch size guardrail a batch trips, and by how much
+ *  — pure, exported for direct unit tests (see buildFeatureMergeBriefing,
+ *  which floors risk to "high" and appends this to the rationale when
+ *  `tripped`). Never blocks anything itself; a caller decides what to do with
+ *  the verdict. Checks EVERY threshold (not just the first) so the rationale
+ *  names every one that's over, not just whichever happened to be checked first. */
+export interface FeatureBatchSizeCheck {
+  tripped: boolean;
+  /** e.g. "14 tasks (2 over the 12-task limit)"; joined with "; " when more
+   *  than one threshold trips. Null when nothing tripped. */
+  reason: string | null;
+}
+export function checkFeatureBatchSize(
+  batch: { taskCount: number; changedLines: number; filesChanged: number },
+  thresholds: { maxTasks: number; maxChangedLines: number; maxFiles: number },
+): FeatureBatchSizeCheck {
+  const overs: string[] = [];
+  if (batch.taskCount > thresholds.maxTasks) {
+    overs.push(`${batch.taskCount} tasks (${batch.taskCount - thresholds.maxTasks} over the ${thresholds.maxTasks}-task limit)`);
+  }
+  if (batch.changedLines > thresholds.maxChangedLines) {
+    overs.push(`${batch.changedLines} changed lines (${batch.changedLines - thresholds.maxChangedLines} over the ${thresholds.maxChangedLines}-line limit)`);
+  }
+  if (batch.filesChanged > thresholds.maxFiles) {
+    overs.push(`${batch.filesChanged} files changed (${batch.filesChanged - thresholds.maxFiles} over the ${thresholds.maxFiles}-file limit)`);
+  }
+  return { tripped: overs.length > 0, reason: overs.length ? overs.join("; ") : null };
+}
+
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   // Global kill switch. When paused, the autonomy loop is a no-op (no new work is
@@ -2283,7 +2312,16 @@ export class Orchestrator {
    *  summary/impact list the bundled task names, and the recommendation
    *  aggregates every sibling's recorded review verdict (any flagged task →
    *  "rework", so a batch never hides one task's flagged concern behind its
-   *  siblings' clean ones). */
+   *  siblings' clean ones).
+   *
+   *  Also applies the feature-batch SIZE guardrail (checkFeatureBatchSize):
+   *  feature-scoped batching lets one human approval cover every task in the
+   *  batch, but nothing else caps how big that batch gets — past the
+   *  configured task/line/file thresholds, risk floors at "high" (never
+   *  downgraded by the diff-size heuristic above) and the rationale names
+   *  which threshold(s) tripped and by how much, so the single gate stays
+   *  meaningful instead of rubber-stamping a mega-diff. Never blocks the PR
+   *  from opening — see checkFeatureCompletion/openPrForFeature. */
   private buildFeatureMergeBriefing(
     feature: Feature,
     taskNames: string[],
@@ -2295,7 +2333,11 @@ export class Orchestrator {
     const sensitive = [...modules, ...files].some((s) => Orchestrator.SENSITIVE.test(s));
     const touchesTests = files.some((f) => /(\.test\.|\.spec\.|\/tests?\/|__tests__)/i.test(f));
     const big = files.length > 15 || stat.del > 400 || stat.add + stat.del > 800;
-    const risk: Risk = sensitive ? "high" : big ? "medium" : "low";
+    const sizeCheck = checkFeatureBatchSize(
+      { taskCount: taskNames.length, changedLines: stat.add + stat.del, filesChanged: files.length },
+      { maxTasks: config.featureBatchMaxTasks, maxChangedLines: config.featureBatchMaxChangedLines, maxFiles: config.featureBatchMaxFiles },
+    );
+    const risk: Risk = sensitive || sizeCheck.tripped ? "high" : big ? "medium" : "low";
     const flagged = siblings.filter((t) => t.reviewVerdict?.decision === "flag");
     const recommendation: MergeBriefing["recommendation"] = flagged.length > 0 ? "rework" : "merge";
     const impact = [
@@ -2307,15 +2349,20 @@ export class Orchestrator {
     ]
       .filter(Boolean)
       .join(" · ");
+    const rationale = [
+      flagged.length > 0
+        ? `${flagged.length} of ${taskNames.length} task(s) were flagged on review — check before merging.`
+        : "No flagged tasks in this batch.",
+      sizeCheck.tripped ? `Batch exceeds the size guardrail — ${sizeCheck.reason}.` : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
     return {
       summary: `${feature.name} — ${stat.add}+/${stat.del}− across ${files.length} file(s), ${taskNames.length} task(s): ${taskNames.slice(0, 4).join(", ")}${taskNames.length > 4 ? ` +${taskNames.length - 4} more` : ""}`,
       impact,
       risk,
       recommendation,
-      rationale:
-        flagged.length > 0
-          ? `${flagged.length} of ${taskNames.length} task(s) were flagged on review — check before merging.`
-          : "No flagged tasks in this batch.",
+      rationale,
       by: "heuristic",
     };
   }

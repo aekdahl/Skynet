@@ -567,6 +567,24 @@ export const Feature = z.object({
   // has already gone through its own completion/worktree-retire, so writing a
   // fresh open PR onto those records would leave stale, unmergeable duplicates.
   pr: PullRequest.nullable().default(null),
+  // Assistive, non-blocking size-guardrail note: set the FIRST time a task is
+  // linked to this feature and the resulting batch crosses
+  // SKYNET_FEATURE_BATCH_MAX_TASKS (see operations.ts's updateTask) — an early
+  // warning so an operator can split an oversized feature before its batch
+  // completes and opens one hard-to-review PR. Fires once (stays set once
+  // tripped, never re-overwritten) rather than nagging on every task added
+  // past the threshold. Purely advisory: never blocks linking more tasks, and
+  // the aggregate PR still opens regardless (see buildFeatureMergeBriefing's
+  // separate, PR-time size check, which floors risk instead of gating).
+  sizeWarning: z
+    .object({
+      taskCount: z.number().int(), // task count at the moment this tripped
+      threshold: z.number().int(), // the configured max-tasks threshold
+      note: z.string(), // operator-facing message
+      at: Timestamp,
+    })
+    .nullable()
+    .default(null),
 });
 export type Feature = z.infer<typeof Feature>;
 
