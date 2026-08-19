@@ -290,6 +290,7 @@ export function blastRadiusFlags(command: string, ctx: BlastContext = {}): strin
   ABS_PATH_RE.lastIndex = 0;
   while ((m = ABS_PATH_RE.exec(command)) !== null) {
     const p = m[1];
+    if (p === undefined) continue;
     if (seen.has(p)) continue;
     seen.add(p);
     if (wtRoot && (p === worktreePath || p.startsWith(wtRoot))) continue; // inside worktree — safe
