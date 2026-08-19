@@ -93,4 +93,32 @@ describe("FileStore legacy HITL migration", () => {
     expect(ids).not.toContain("t-assigned");
     expect(Snapshot.safeParse(snap).success).toBe(true);
   });
+
+  it("loads a Feature record whose PR briefing predates featureBrief (defaults to null, not dropped)", async () => {
+    // featureBrief was added to MergeBriefing after some batched-feature PRs
+    // already had a briefing on disk — those records have no featureBrief key
+    // at all. .nullable().default(null) means this is NOT a legacy-drop case
+    // like the ones above: the record must load with featureBrief === null,
+    // not be rejected.
+    const legacyFeature = {
+      id: "f-legacy", workspaceId: DEFAULT_WORKSPACE, projectId: "p-1", name: "Old batch",
+      status: "active", archived: false, createdAt: 1,
+      pr: {
+        number: 12, url: "https://github.com/acme/app/pull/12", repo: "acme/app",
+        branch: "skynet/feature/f-legacy", base: "main", state: "open", openedAt: 1,
+        // No `featureBrief` key — this is the pre-existing on-disk shape.
+        briefing: { summary: "s", impact: "i", risk: "low", recommendation: "merge", rationale: "r", by: "heuristic" },
+        dismissed: false,
+      },
+    };
+    const path = join(mkdtempSync(join(tmpdir(), "file-store-migration-")), "skynet-data.json");
+    writeFileSync(path, JSON.stringify({ features: [legacyFeature] }));
+
+    const store = FileStore.create(path);
+    const snap = await store.snapshot(DEFAULT_WORKSPACE);
+    const feature = snap.features.find((f) => f.id === "f-legacy");
+    expect(feature).toBeDefined();
+    expect(feature?.pr?.briefing?.featureBrief).toBeNull();
+    expect(Snapshot.safeParse(snap).success).toBe(true);
+  });
 });

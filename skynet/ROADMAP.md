@@ -743,6 +743,29 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   work") doesn't need; only the merge *destination* changed. A different axis from **Structural
   agent-hierarchy hooks** just above (that's agent *role* — worker/manager; this is *Feature/task*
   grouping) — complementary, not dependent.
+- [x] **Make the one human approval reviewable — feature-level brief.** Approving a 30-task batched
+  feature PR off the plain diff card is rubber-stamping or drowning: `Feature.pr.briefing` gains a
+  nullable `featureBrief` (`packages/shared/src/contracts.ts`), composed once in `openPrForFeature` right
+  alongside the existing heuristic. Everything except the narrative is SYSTEM-composed from data already
+  in hand (`composeFeatureBrief`, `apps/server/src/feature-brief.ts`), never asked of the model: a
+  one-liner + recorded review verdict per bundled task, the batch's aggregate spend (every sibling run's
+  `Usage` summed elementwise — a vendor-omitted `costUsd`/`durationMs` on some runs is excluded from the
+  sum, not treated as zero), and an evidence summary (today: the review-verdict tally + whether a verifier
+  gate runs after merge; the extension point once real verifier/breaker runs record their own evidence).
+  The one genuinely new thing is a consult-drafted `narrative` — what the feature now does AS A WHOLE,
+  grounded on the real combined branch diff (`MergeEngine.patch`, mirroring `diffStat`'s no-worktree-
+  needed style) via the batch's anchor run's own provider — same stateless, structured-JSON-only
+  discipline as the diff walkthrough / per-run merge brief (`draftFeatureBrief`). Best-effort throughout:
+  no consult support, no credential, or an unreadable reply all just leave `narrative: null` — the PR
+  still opens with the system-composed half of the brief, never blocked on the model. `FeatureMergeCard`
+  (`apps/web/src/views/merges.tsx`) renders it collapsed by default (a 30-task card shouldn't force a wall
+  of text on everyone) — expand for the narrative, evidence lines, per-task verdict list, and total spend.
+  `featureBrief` is nullable + defaulted so a PR opened before this shipped still parses unchanged
+  (`tests/file-store-migration.test.ts`). Never drafted for a single-run PR — `buildMergeBriefing`
+  hardcodes `featureBrief: null`. Verified with fixture-composed unit coverage
+  (`tests/feature-brief.test.ts`) and an orchestrator-level test driving two real tasks through a real
+  git batch completion, including a forced consult failure proving the PR still opens
+  (`tests/feature-brief-orchestrator.test.ts`).
 
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in

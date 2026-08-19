@@ -148,6 +148,39 @@ export const Usage = z.object({
 });
 export type Usage = z.infer<typeof Usage>;
 
+// Feature-level ready-to-merge brief — makes approving a batched multi-task
+// feature PR reviewable instead of a rubber stamp (see Orchestrator.
+// openPrForFeature / draftFeatureBrief). `tasks`/`spend`/`evidenceSummary` are
+// SYSTEM-composed from data already in hand (sibling Task.reviewVerdict +
+// TaskRun.usage — see feature-brief.ts's composeFeatureBrief) — never asked
+// of the model. `narrative` is the one genuinely new thing: a consult-drafted
+// read of what the feature now does AS A WHOLE, grounded on the combined
+// feature-branch diff, same stateless discipline as the diff walkthrough /
+// merge brief. Null narrative = the draft failed or the provider has no
+// `consult` support — the brief (and the PR) are never blocked on it. Only
+// ever set on a BATCHED feature PR's briefing; a single-run PR's
+// MergeBriefing never carries one (see buildMergeBriefing below).
+export const FeatureBriefTask = z.object({
+  taskId: z.string(),
+  text: z.string(), // Task.text, the one-liner
+  verdict: z.enum(["approve", "flag"]).nullable().default(null), // Task.reviewVerdict.decision, when recorded
+  reviewedBy: z.string().nullable().default(null), // Task.reviewVerdict.by
+});
+export type FeatureBriefTask = z.infer<typeof FeatureBriefTask>;
+
+export const FeatureBrief = z.object({
+  tasks: z.array(FeatureBriefTask).default([]),
+  spend: Usage.nullable().default(null), // sum of every sibling run's Usage; null when none reported any
+  // Short lines naming what verified this batch — today, the recorded review
+  // verdicts + whether a verifier gate runs after merge; once Task 5/6 (real
+  // verifier + adversarial breaker runs) land, their recorded evidence slots
+  // in here too. Never fabricated: an empty array means nothing recorded, not
+  // "nothing happened".
+  evidenceSummary: z.array(z.string()).default([]),
+  narrative: z.string().nullable().default(null), // consult-drafted "what this feature now does"
+});
+export type FeatureBrief = z.infer<typeof FeatureBrief>;
+
 /** Append-only activity log line. Streamed via the `agent.log` event. */
 export const LogLine = z.object({
   at: Timestamp,
@@ -174,6 +207,10 @@ export const MergeBriefing = z.object({
   recommendation: z.enum(["merge", "rework", "hold"]), // the suggested action
   rationale: z.string(), // WHY — the reviewer's words (or the heuristic's reason)
   by: z.string(), // reviewer agent name, or "heuristic"
+  // Feature-batch-only: see FeatureBrief above. Null for every single-run PR's
+  // briefing (see buildMergeBriefing) — nullable + defaulted so an older
+  // record written before this field existed still parses.
+  featureBrief: FeatureBrief.nullable().default(null),
 });
 export type MergeBriefing = z.infer<typeof MergeBriefing>;
 
