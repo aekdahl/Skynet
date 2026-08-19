@@ -245,6 +245,72 @@ export function assertApprovable(command: string, policy: CommandPolicy = DEFAUL
   return verdict;
 }
 
+// ─── Context-aware blast-radius analysis ─────────────────────────────────────
+// classifyCommand() judges a command by its OWN shape; blastRadiusFlags() judges
+// it by WHERE it operates. A command writing outside the agent's private worktree
+// has a higher blast radius than the same command running inside it — a mistake
+// in a disposable worktree branch can be abandoned, while one outside it cannot.
+//
+// Returns an array of short flag strings (suitable for HitlItem.flags) that
+// callers add to the gate and use to bump the risk floor. Returns [] when no
+// extra context-driven risk is detected.
+
+export interface BlastContext {
+  /** Absolute path to the agent's git worktree root. When absent, all absolute
+   *  paths found in the command are treated as outside-worktree. */
+  worktreePath?: string;
+}
+
+// Matches absolute paths embedded in a command line.
+const ABS_PATH_RE = /(?:^|[\s'"=:,])(\/([\w.-]+\/)*[\w.-]*)/g;
+
+// System paths where writes are almost never intentional from an agent.
+const SYSTEM_PREFIXES = ["/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/root", "/proc", "/sys", "/dev", "/boot", "/var", "/home"];
+
+// Network-egress leaders not already covered by the pipe-to-shell deny rules.
+// Matches curl/wget/fetch that do NOT immediately pipe into a shell (those are
+// already a hard deny via DENY_RULES). Also flags ssh/scp/rsync/nc.
+const EGRESS_RE = /\b(curl|wget|fetch|ssh|scp|rsync)\b|\bnc\s+/i;
+
+/**
+ * Returns blast-radius flags for a command given its runtime context.
+ * Flags:
+ *   "outside-worktree:<path>" — an absolute path in the command falls outside the
+ *     agent's worktree (or is a known system path when no worktreePath is given).
+ *   "network-egress:<tool>" — the command makes an outbound network connection.
+ */
+export function blastRadiusFlags(command: string, ctx: BlastContext = {}): string[] {
+  const { worktreePath } = ctx;
+  const wtRoot = worktreePath ? (worktreePath.endsWith("/") ? worktreePath : worktreePath + "/") : null;
+  const flags: string[] = [];
+  const seen = new Set<string>();
+
+  // Absolute-path scan.
+  let m: RegExpExecArray | null;
+  ABS_PATH_RE.lastIndex = 0;
+  while ((m = ABS_PATH_RE.exec(command)) !== null) {
+    const p = m[1];
+    if (p === undefined) continue;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    if (wtRoot && (p === worktreePath || p.startsWith(wtRoot))) continue; // inside worktree — safe
+    const isSystem = SYSTEM_PREFIXES.some((sp) => p === sp || p.startsWith(sp + "/"));
+    if (isSystem || wtRoot) {
+      // Cap path length to keep flags readable.
+      flags.push(`outside-worktree:${p.length > 60 ? p.slice(0, 60) + "…" : p}`);
+    }
+  }
+
+  // Network egress.
+  EGRESS_RE.lastIndex = 0;
+  const eg = EGRESS_RE.exec(command);
+  if (eg) {
+    flags.push(`network-egress:${eg[1] ?? "nc"}`);
+  }
+
+  return flags;
+}
+
 // ─── Bounded execution ────────────────────────────────────────────────────────
 
 export interface BoundedExecOptions {

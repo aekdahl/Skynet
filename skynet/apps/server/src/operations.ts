@@ -29,6 +29,7 @@ import type {
   Milestone,
   PolicyDryRunResult,
   PolicyVersion,
+  PrChecksStatus,
   Project,
   ProviderInfo,
   ResolveRequest,
@@ -658,6 +659,12 @@ export class Operations {
     await this.getRun(ws, runId);
     return this.orchestrator.dismissReadyPr(ws, runId);
   }
+  /** Live GitHub check-run status for a ready PR — fetched on demand by the
+   *  card, not part of the polled snapshot (a real GitHub API call). */
+  async prChecksForRun(ws: string, runId: string): Promise<PrChecksStatus | null> {
+    await this.getRun(ws, runId);
+    return this.orchestrator.prChecksForRun(ws, runId);
+  }
 
   // ── Ready-to-merge, feature-scoped batches (feature-scoped branch batching) ─
   /** Fetch a feature scoped to the workspace, or throw NotFoundError (404). */
@@ -681,6 +688,11 @@ export class Operations {
   async dismissReadyFeaturePr(ws: string, featureId: string): Promise<void> {
     await this.getFeatureScoped(ws, featureId);
     return this.orchestrator.dismissReadyFeaturePr(ws, featureId);
+  }
+  /** Live GitHub check-run status for a feature's aggregate ready PR. */
+  async prChecksForFeature(ws: string, featureId: string): Promise<PrChecksStatus | null> {
+    await this.getFeatureScoped(ws, featureId);
+    return this.orchestrator.prChecksForFeature(ws, featureId);
   }
   async archiveAgent(ws: string, runId: string, archived: boolean): Promise<TaskRun> {
     await this.getRun(ws, runId);
@@ -823,6 +835,11 @@ export class Operations {
         : { roadmapPath: patch.roadmapPath?.trim() ? patch.roadmapPath.trim() : null };
     const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions, ...baseBranch, ...roadmapPath });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
+    // Re-enabling autonomy (whether the operator turned it off themselves, or
+    // the session circuit-breaker did) starts the streak fresh — otherwise an
+    // already-at-threshold in-memory count could re-trip on the very next bad
+    // outcome instead of giving the project a clean run.
+    if (patch.autonomy === true) this.orchestrator.resetAutonomyStreak(id);
     return updated;
   }
   /** Remove one standing "approve always" rule from a project (the operator

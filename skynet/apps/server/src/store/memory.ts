@@ -21,6 +21,7 @@ import type {
   WorkspaceSettings,
 } from "@skynet/shared";
 import type { AuditRecord } from "@skynet/shared";
+import { chainAuditRecord } from "../audit-chain.js";
 import { now } from "../config.js";
 import type { Store } from "./store.js";
 import type { StoredServiceToken } from "../auth/service-tokens.js";
@@ -119,7 +120,12 @@ export class MemoryStore implements Store {
   async listDeps(_ws: string) { return this.deps; }
   async listProviders() { return this.providers; }
 
-  async recordAudit(entry: AuditRecord) { this.audit.push(entry); this.persist(); }
+  async recordAudit(entry: AuditRecord) {
+    const wsAudit = this.audit.filter((e) => e.workspaceId === entry.workspaceId);
+    const prevHash = wsAudit.at(-1)?.hash ?? null;
+    this.audit.push(chainAuditRecord(entry, prevHash));
+    this.persist();
+  }
   async listAudit(ws: string) { return this.audit.filter((e) => e.workspaceId === ws).reverse(); }
   async setAuditArchived(ws: string, hitlId: string, archived: boolean) {
     for (const e of this.audit) if (e.workspaceId === ws && e.hitlId === hitlId) e.archived = archived;
