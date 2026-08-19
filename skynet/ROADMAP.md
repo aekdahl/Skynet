@@ -784,6 +784,71 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   work") doesn't need; only the merge *destination* changed. A different axis from **Structural
   agent-hierarchy hooks** just above (that's agent *role* — worker/manager; this is *Feature/task*
   grouping) — complementary, not dependent.
+- [ ] **🔬⭐ Autonomous backlog sweep — the v1 path to the auto dev team.** Point Skynet at a whole
+  backlog/roadmap under an explicit daily budget and let the fleet build it out unattended: humans
+  approve only *completed, working* features, agents test and try to break their own work before a
+  human ever sees it, and the fleet replenishes the backlog from what it finds along the way — every
+  autonomous loop bounded by construction, never by hope. This is the concrete v1 path toward
+  **⭐ North star: the auto dev team** and its **🔗 Product steward & the living Plan** substrate (v2,
+  above): Charter → Blueprint → Plan needs exactly this — a fleet that can run unattended for a whole
+  work session without drifting, overspending, or silently shipping broken work. It **composes existing
+  v1 machinery into five phases; only the gates and the budget rollup below are genuinely new**:
+  1. **Budget ceiling.** `tickAutonomy`'s auto-pick step (`orchestrator.ts`) already rank-orders
+     eligible `todo` tasks by `order` and fires them while idle capacity lasts — but nothing today rolls
+     per-run spend (`TaskRun.usage.costUsd`, already tracked, nullable when a vendor omits it) into a
+     project- or workspace-level daily total, and nothing gates auto-pick on it. New: a daily spend
+     rollup that auto-pick checks before starting another task — an exhausted budget pauses auto-pick
+     for the rest of the window, not the project's `autonomy` toggle itself (see the gate philosophy
+     below — a human can always still assign manually). Per-run wall-clock/idle-stall caps
+     (`runtimeCapMs`/`idleCapMs`, `runner-sdk/src/caps.ts`) already bound a single run's worst case;
+     this is the same idea one level up, in dollars instead of minutes.
+  2. **Two-lens review: verifier + breaker.** Today's `autoReview` (`orchestrator.ts`) is a single
+     reviewer-≠-author `consult` call — stateless, text-in/text-out, the last 30 log lines as context,
+     **no tool use at all**. That's enough to judge "does this look right on paper" but not to actually
+     RUN the change. New: a **verifier** lens that exercises the live change for real — a bounded second
+     agent RUN (not a `consult`) using the browser tools already landed for most vendors
+     (`browserMcpServers`, `runner-sdk/src/claude.ts` + the per-vendor CLI wiring above) so it can click
+     through a UI change or hit an endpoint, not just read the diff. A **breaker** lens sits alongside it
+     with the opposite brief — try to make the change fail (edge inputs, a wrong assumption, a missed
+     error path) — same reviewer-as-run mechanism, adversarial framing instead of confirmatory. Both
+     compose with (never replace) the existing consult-based verdict; a flag from either lens behaves
+     exactly like today's `reviewVerdict: flag` — parked in review for a human.
+  3. **Circuit breakers + right-sized batches.** Three guardrails, one spirit — an autonomous loop must
+     be able to stop *itself*, with no human watching: **(a)** a **session circuit-breaker** — N
+     consecutive flagged/failed TASKS on the same project pauses that project's `autonomy` toggle with
+     ONE summary escalation, not N separate HITL gates — distinct from the existing PER-RUN retry
+     ceiling (`config.runMaxFailures`/`failCounts`, which bounds retries on a single run, never a
+     project's whole unattended session); **(b)** a **feature size guardrail** — cap how large a
+     Feature's auto-picked task batch may grow unattended before it forces a human check-in, so a
+     mis-scoped Feature can't silently balloon into a week of unattended spend; **(c)** a
+     **feature-altitude merge brief** — **Guided merge**'s `MergeBrief` (`merge-brief.ts` /
+     `Orchestrator.draftMergeBrief`, above) synthesizes a brief per TASK diff today, and **Feature-scoped
+     branch hierarchy** (above) already batches a Feature's tasks into one aggregate PR — the brief needs
+     to move up to that same altitude, one synthesized brief for the whole batch, not N per-task ones a
+     human has to mentally reassemble.
+  4. **Self-replenishing backlog, scope-taxonomied.** GitHub issue import
+     (`Operations.importGithubIssues`) already turns an external backlog into tasks; the sweep needs the
+     fleet to write back to its OWN backlog from what it learns while building. New: a scope taxonomy on
+     every fleet-authored discovery — **in-scope** (a defect in what the sweep just built, or a gap the
+     verifier/breaker lenses above surfaced) may auto-promote to a new task WITHIN the same Feature's
+     already-approved budget, no extra human step; **new-scope** (an idea, an unrequested feature, work
+     outside what was actually approved) always parks for human promotion, full stop — the fleet can
+     *propose* scope, it can never *grant itself* scope.
+  5. **Budget as allocation, not just a ceiling.** `assessTask`'s triage consult already estimates
+     `estimatedDurationMs` per task (`orchestrator.ts`); extend that same consult to estimate cost too
+     (or derive it from duration × a per-model rate) and use it for PACING, not only a stop-loss —
+     auto-pick spends the day's budget against the rank-ordered backlog instead of burning it on
+     whichever task happened to be first, and slows down as the ceiling approaches rather than running
+     at full tilt until it hits a wall.
+
+  **Gate philosophy, stated once:** budget gates *autonomy* only — a human can always assign a task
+  manually regardless of spend; autonomy is a convenience toggle, never the only door. **Scope growth
+  needs a human; quality growth is self-serve within budget** — the fleet can spend its already-approved
+  budget finding and fixing its own bugs without asking, but it can never expand what it's building
+  without asking. Every autonomous loop terminates **by construction** — the budget ceiling (phase 1) is
+  the hard stop that needs no judgment call — **plus one behavioral breaker**, the consecutive-failure
+  circuit-breaker (phase 3a), for the case a loop is technically under budget but visibly going wrong
+  faster than the budget alone would catch.
 
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
@@ -973,6 +1038,9 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
   review → secure → merge → document → learn) where the blueprint may delegate *who holds* a gate but
   never remove one, and **nothing self-approves**. **All of it BYOK** — intake, planning, and every
   role resolve the user's own keys via the existing secret store, metered under the project budget.
+  The concrete v1 path here is **🔬⭐ Autonomous backlog sweep** (above): budget-gated unattended
+  building, verify-and-break review, and a self-replenishing backlog are exactly the "run a whole
+  session without drifting or overspending" primitives this endgame needs.
   Full sketch: [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) (phased: Charter rides v1.5 ·
   CoS+Leads+QA ride v2 · Security/Spec/Scribe ride v1 governance + v3 triggers · Curator/retro ride v4/v5).
 - **🔗 Product steward & the living Plan** — the concrete substrate under the north star: a
