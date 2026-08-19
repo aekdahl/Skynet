@@ -139,6 +139,24 @@ export class MergeEngine {
     return stat;
   }
 
+  /** Full unified diff (patch) of `branch` vs `base` — read directly against
+   *  the shared repo, no worktree needed (mirrors diffStat's no-checkout
+   *  style, and worktrees.patch's own truncation/maxBuffer shape). Used to
+   *  ground the feature-level brief's consult-drafted narrative on the
+   *  combined batch diff (see Orchestrator.draftFeatureBrief). Best-effort +
+   *  capped; empty string on any failure — a missing patch just means no
+   *  narrative gets drafted, never a blocked PR. */
+  async patch(branch: string, base: string, maxBytes = 200_000): Promise<string> {
+    try {
+      const { stdout } = await exec(gitBin(), ["-C", this.repo, "diff", `${base}...${branch}`], {
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      return stdout.length > maxBytes ? stdout.slice(0, maxBytes) + "\n… (diff truncated — review the full branch)" : stdout;
+    } catch {
+      return "";
+    }
+  }
+
   /** The merge DESTINATION for a request — the operator's explicit
    *  `targetBranch` (guided merge) if set, else (feature-scoped branch
    *  batching) a shared per-feature branch when `req.featureId` is set,

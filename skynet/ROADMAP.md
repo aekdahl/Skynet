@@ -856,6 +856,29 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   work") doesn't need; only the merge *destination* changed. A different axis from **Structural
   agent-hierarchy hooks** just above (that's agent *role* — worker/manager; this is *Feature/task*
   grouping) — complementary, not dependent.
+- [x] **Make the one human approval reviewable — feature-level brief.** Approving a 30-task batched
+  feature PR off the plain diff card is rubber-stamping or drowning: `Feature.pr.briefing` gains a
+  nullable `featureBrief` (`packages/shared/src/contracts.ts`), composed once in `openPrForFeature` right
+  alongside the existing heuristic. Everything except the narrative is SYSTEM-composed from data already
+  in hand (`composeFeatureBrief`, `apps/server/src/feature-brief.ts`), never asked of the model: a
+  one-liner + recorded review verdict per bundled task, the batch's aggregate spend (every sibling run's
+  `Usage` summed elementwise — a vendor-omitted `costUsd`/`durationMs` on some runs is excluded from the
+  sum, not treated as zero), and an evidence summary (today: the review-verdict tally + whether a verifier
+  gate runs after merge; the extension point once real verifier/breaker runs record their own evidence).
+  The one genuinely new thing is a consult-drafted `narrative` — what the feature now does AS A WHOLE,
+  grounded on the real combined branch diff (`MergeEngine.patch`, mirroring `diffStat`'s no-worktree-
+  needed style) via the batch's anchor run's own provider — same stateless, structured-JSON-only
+  discipline as the diff walkthrough / per-run merge brief (`draftFeatureBrief`). Best-effort throughout:
+  no consult support, no credential, or an unreadable reply all just leave `narrative: null` — the PR
+  still opens with the system-composed half of the brief, never blocked on the model. `FeatureMergeCard`
+  (`apps/web/src/views/merges.tsx`) renders it collapsed by default (a 30-task card shouldn't force a wall
+  of text on everyone) — expand for the narrative, evidence lines, per-task verdict list, and total spend.
+  `featureBrief` is nullable + defaulted so a PR opened before this shipped still parses unchanged
+  (`tests/file-store-migration.test.ts`). Never drafted for a single-run PR — `buildMergeBriefing`
+  hardcodes `featureBrief: null`. Verified with fixture-composed unit coverage
+  (`tests/feature-brief.test.ts`) and an orchestrator-level test driving two real tasks through a real
+  git batch completion, including a forced consult failure proving the PR still opens
+  (`tests/feature-brief-orchestrator.test.ts`).
 - [ ] **🔬⭐ Autonomous backlog sweep — the v1 path to the auto dev team.** Point Skynet at a whole
   backlog/roadmap under an explicit daily budget and let the fleet build it out unattended: humans
   approve only *completed, working* features, agents test and try to break their own work before a
@@ -892,12 +915,10 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
      ceiling (`config.runMaxFailures`/`failCounts`, which bounds retries on a single run, never a
      project's whole unattended session); **(b)** a **feature size guardrail** — cap how large a
      Feature's auto-picked task batch may grow unattended before it forces a human check-in, so a
-     mis-scoped Feature can't silently balloon into a week of unattended spend; **(c)** a
-     **feature-altitude merge brief** — **Guided merge**'s `MergeBrief` (`merge-brief.ts` /
-     `Orchestrator.draftMergeBrief`, above) synthesizes a brief per TASK diff today, and **Feature-scoped
-     branch hierarchy** (above) already batches a Feature's tasks into one aggregate PR — the brief needs
-     to move up to that same altitude, one synthesized brief for the whole batch, not N per-task ones a
-     human has to mentally reassemble.
+     mis-scoped Feature can't silently balloon into a week of unattended spend; **(c)** ~~a
+     feature-altitude merge brief~~ — **shipped**, see **Make the one human approval reviewable** above:
+     one synthesized brief for the whole batched-feature PR, not N per-task ones a human has to mentally
+     reassemble.
   4. **Self-replenishing backlog, scope-taxonomied.** GitHub issue import
      (`Operations.importGithubIssues`) already turns an external backlog into tasks; the sweep needs the
      fleet to write back to its OWN backlog from what it learns while building. New: a scope taxonomy on

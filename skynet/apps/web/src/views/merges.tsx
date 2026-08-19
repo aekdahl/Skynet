@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import type { Feature, MergeBriefing, PrChecksStatus, TaskRun } from "@skynet/shared";
+import type { Feature, FeatureBrief, MergeBriefing, PrChecksStatus, TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
-import { readyMerges, readyFeatureMerges, fleetAgentName, projectName } from "../lib/derive";
+import { readyMerges, readyFeatureMerges, fmtCost, fmtNum, fleetAgentName, projectName } from "../lib/derive";
 import { RiskChip } from "../components/hitl-context";
 import { Blocked } from "../components/empty";
 
@@ -222,6 +222,53 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
   );
 }
 
+// Makes approving a batched multi-task feature PR reviewable instead of a
+// rubber stamp: what each bundled task did (+ its own reviewer verdict), the
+// total spend across every run in the batch, what verified it, and a
+// consult-drafted read of what the feature now does as a whole. Collapsed by
+// default — a card with 30 tasks shouldn't force a wall of text on everyone;
+// an operator who wants the detail expands it. `brief` is null for an older
+// PR record opened before this existed, or when the composing consult
+// couldn't reach a provider — the card just omits this section either way.
+function FeatureBriefDetail({ brief }: { brief: FeatureBrief }) {
+  const [open, setOpen] = useState(false);
+  const flagged = brief.tasks.filter((t) => t.verdict === "flag").length;
+  return (
+    <div className="feature-brief">
+      <button className="btn btn-ghost btn-sm feature-brief-toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        {open ? "▾" : "▸"} {brief.tasks.length} task{brief.tasks.length === 1 ? "" : "s"}
+        {flagged > 0 ? ` · ${flagged} flagged` : ""}
+        {brief.spend && (brief.spend.costUsd != null ? ` · ${fmtCost(brief.spend.costUsd)}` : ` · ${fmtNum(brief.spend.inputTokens + brief.spend.outputTokens)} tok`)}
+      </button>
+      {open && (
+        <div className="feature-brief-body">
+          {brief.narrative && <p className="feature-brief-narrative">{brief.narrative}</p>}
+          {brief.evidenceSummary.length > 0 && (
+            <ul className="feature-brief-evidence">
+              {brief.evidenceSummary.map((line, i) => <li key={i}>{line}</li>)}
+            </ul>
+          )}
+          <ul className="feature-brief-tasks">
+            {brief.tasks.map((t) => (
+              <li key={t.taskId} className={t.verdict === "flag" ? "feature-brief-flagged" : undefined}>
+                <span className="feature-brief-task-mark">{t.verdict === "flag" ? "⚑" : t.verdict === "approve" ? "✓" : "·"}</span>
+                {t.text}
+                {t.reviewedBy && <span className="feature-brief-reviewer mono"> — {t.reviewedBy}</span>}
+              </li>
+            ))}
+          </ul>
+          {brief.spend && (
+            <p className="feature-brief-spend mono">
+              {brief.spend.costUsd != null ? fmtCost(brief.spend.costUsd) : "cost unreported"}
+              {" · "}{fmtNum(brief.spend.inputTokens)} in / {fmtNum(brief.spend.outputTokens)} out{" · "}{brief.spend.turns} turn{brief.spend.turns === 1 ? "" : "s"}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Feature-scoped branch batching's aggregate PR — one card per completed
 // Feature bundling several tasks, instead of one card per task. Same visual
 // shape as MergeCard, minus Rework/Update-branch (not supported for a batch —
@@ -266,6 +313,7 @@ function FeatureMergeCard({ feature, taskNames }: { feature: Feature; taskNames:
         {taskNames.length} task{taskNames.length === 1 ? "" : "s"} batched: {taskNames.join(", ")}
       </p>
       {b && <MergeBriefingDetail b={b} fleet={fleet} />}
+      {b?.featureBrief && <FeatureBriefDetail brief={b.featureBrief} />}
       <p className="merge-branch mono">{pr.branch} → {pr.base} · <a href={pr.url} target="_blank" rel="noreferrer">view diff on GitHub ↗</a></p>
 
       <div className="qcard-actions">
