@@ -16,7 +16,7 @@ import {
 import { basename, join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { classifyCommand } from "./command-safety.js";
+import { blastRadiusFlags, classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
 import { resolveActivePolicy } from "./command-policy.js";
 import { resolveMergeTarget } from "./derive/merge-target.js";
@@ -499,6 +499,18 @@ export class Orchestrator {
         }
       } catch (err) {
         await this.hub.runLog(runId, `injection firewall check failed, failing open: ${(err as Error).message}`);
+      }
+    }
+    // Context-aware blast-radius: classifyCommand judges the command string;
+    // this judges WHERE it runs. An absolute path outside the agent's private
+    // worktree means a mistake can't be confined to the disposable branch —
+    // flag it and bump to high so auto-approval never quietly runs it.
+    if (raise.kind === "approval" && raise.command) {
+      const worktreePath = this.live.get(runId)?.git?.worktrees.pathFor(runId);
+      const radiusFlags = blastRadiusFlags(raise.command, { worktreePath });
+      if (radiusFlags.length) {
+        flags = [...flags, ...radiusFlags];
+        if (rank[risk] < rank.high) risk = "high";
       }
     }
     const item: HitlItem = {

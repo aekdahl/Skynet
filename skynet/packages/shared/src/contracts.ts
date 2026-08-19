@@ -787,6 +787,12 @@ export const AuditRecord = z.object({
   // back-compat with records persisted before this field existed (treat
   // undefined as not-archived).
   archived: z.boolean().optional(),
+  // Tamper-evident hash chain — SHA-256 of the immutable decision fields
+  // (workspaceId/hitlId/runId/action/operatorId/at/payload/prevHash). Both
+  // fields are optional for back-compat with records written before chaining
+  // landed; absent = pre-chain record, not evidence of tampering.
+  hash: z.string().optional(),
+  prevHash: z.string().nullable().optional(),
 });
 export type AuditRecord = z.infer<typeof AuditRecord>;
 
