@@ -399,6 +399,14 @@ function TaskCard({
             📄 {task.source.path.split("/").pop()}
           </span>
         )}
+        {task.source?.kind === "fleet" && (
+          <span
+            className="kb-source mono"
+            title={`Proposed by the fleet while reviewing run ${task.source.byRun}${task.source.reason ? ` — ${task.source.reason}` : ""}`}
+          >
+            🤖 fleet-proposed
+          </span>
+        )}
         {locked && (
           <span
             className="kb-lock"

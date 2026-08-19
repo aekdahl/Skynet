@@ -959,14 +959,29 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
      feature-altitude merge brief~~ — **shipped**, see **Make the one human approval reviewable** above:
      one synthesized brief for the whole batched-feature PR, not N per-task ones a human has to mentally
      reassemble.
-  4. **Self-replenishing backlog, scope-taxonomied.** GitHub issue import
-     (`Operations.importGithubIssues`) already turns an external backlog into tasks; the sweep needs the
-     fleet to write back to its OWN backlog from what it learns while building. New: a scope taxonomy on
-     every fleet-authored discovery — **in-scope** (a defect in what the sweep just built, or a gap the
-     verifier/breaker lenses above surfaced) may auto-promote to a new task WITHIN the same Feature's
-     already-approved budget, no extra human step; **new-scope** (an idea, an unrequested feature, work
-     outside what was actually approved) always parks for human promotion, full stop — the fleet can
-     *propose* scope, it can never *grant itself* scope.
+  4. ~~**Self-replenishing backlog, scope-taxonomied.**~~ — **shipped.** GitHub issue import
+     (`Operations.importGithubIssues`) already turned an external backlog into tasks; this closes the
+     loop so the fleet writes back to its OWN backlog from what it learns while building. The verdict
+     reply (plain consult AND the deep-review run — one shared field-based contract, `review-verdict.ts`)
+     may carry an optional `proposals: [{title, why, scope}]` (capped at
+     `MAX_PROPOSALS_PER_REVIEW = 3`, malformed entries dropped, never parsed from prose — same discipline
+     as the verdict field itself). `orchestrator.ts`'s `resolveProposalPlacement` (pure, unit-tested) is
+     the scope-taxonomy valve: **in-scope** (a defect/gap in what the sweep just built) auto-promotes
+     straight to `todo`/auto-pickable under the SAME Feature — but ONLY while that Feature is still
+     `active`, its sibling-task count is under the feature-batch guardrail (Task 4/§3b above), and the
+     project is still under its daily budget (§1 above); any one of those failing degrades it to a parked
+     proposal, same as **new-scope** (anything else) always is, full stop — the fleet can *propose* scope,
+     it can never *grant itself* scope. Bounded four ways at once, by construction: the per-review cap,
+     a `config.fleetProposalMaxPerProjectPerDay` daily ceiling per project (default 10, counts parked
+     proposals too — a flood of parked ones is still human triage load), dedup against the project's own
+     open task titles (normalized, near-exact — "when in doubt, create parked" is the tie-break, never
+     silently drop), and the session circuit-breaker (§3a above) as the last-resort behavioral backstop.
+     A parked proposal carries real provenance (`Task.source: {kind:"fleet", byRun, reason, proposedAt}`)
+     and a "🤖 fleet-proposed" board badge — never silently indistinguishable from a human-authored task.
+     22 tests (`tests/fleet-proposals.test.ts`): field-based parsing (prose ignored, overflow capped,
+     malformed entries dropped), every placement branch as a pure decision, and the full path through a
+     real `tickAutonomy()` — new-scope parked, in-scope promoted, each of the three degradation paths,
+     dedup, and the daily cap.
   5. **Budget as allocation, not just a ceiling.** `assessTask`'s triage consult already estimates
      `estimatedDurationMs` per task (`orchestrator.ts`); extend that same consult to estimate cost too
      (or derive it from duration × a per-model rate) and use it for PACING, not only a stop-loss —

@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, Milestone, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
+import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
 import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -20,7 +20,7 @@ import { blastRadiusFlags, classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
 import { resolveActivePolicy } from "./command-policy.js";
 import { resolveMergeTarget } from "./derive/merge-target.js";
-import { parseReviewVerdict, extractJsonObject, REVIEW_OUTPUT_INSTRUCTION } from "./review-verdict.js";
+import { parseReviewVerdict, extractJsonObject, REVIEW_OUTPUT_INSTRUCTION, parseReviewProposals, type ProposedTask } from "./review-verdict.js";
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
 import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./merge-brief.js";
@@ -253,6 +253,108 @@ export function checkFeatureBatchSize(
     overs.push(`${batch.filesChanged} files changed (${batch.filesChanged - thresholds.maxFiles} over the ${thresholds.maxFiles}-file limit)`);
   }
   return { tripped: overs.length > 0, reason: overs.length ? overs.join("; ") : null };
+}
+
+// ─── Self-replenishing backlog — scope taxonomy is the valve ────────────────
+// The fleet may PROPOSE new work from what it discovers while reviewing a run
+// (see review-verdict.ts's ProposedTask); it can never GRANT itself scope.
+// Bounded so the loop can't run away by construction, not by judgment call:
+//   • in-scope (a defect/gap in what THIS change just built) may auto-promote
+//     into the SAME Feature's already-approved batch — but only while that
+//     batch is still under the feature-size guardrail (Task 4) AND the
+//     project is still under its daily budget (Task 2); either one tripping
+//     degrades the proposal to a parked, human-promoted one instead, same as
+//     new-scope. A Feature that's shipped/paused, or a proposal with no
+//     Feature to place it under at all, degrades the same way.
+//   • new-scope (anything outside what was actually asked) ALWAYS parks —
+//     full stop, no setting relaxes this. Growth into new territory needs a
+//     human; growth fixing what's already approved does not.
+//   • MAX_PROPOSALS_PER_REVIEW caps the fastest possible rate from any single
+//     review; the daily per-project cap (config.fleetProposalMaxPerProjectPerDay)
+//     backstops the cumulative rate across a whole day of reviews; dedup
+//     against the project's own open tasks stops the same discovery from
+//     re-proposing itself review after review. The session circuit-breaker
+//     (Task 3) is the last-resort behavioral backstop if a project is
+//     technically under every one of these ceilings but visibly churning.
+
+/** Case/whitespace-normalized task title for near-exact dedup — same
+ *  discipline as the repo-file checklist import's own `.trim().toLowerCase()`
+ *  dedup (operations.ts's `maybeAutoClone`-adjacent import path). Deliberately
+ *  simple: exact-after-normalization only, never fuzzy/semantic matching — a
+ *  near-miss that ISN'T a true duplicate must still get through (the brief's
+ *  "when in doubt, create as parked" default), not be silently swallowed by
+ *  an overzealous matcher. */
+export function normalizeProposalTitle(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export interface ProposalPlacementContext {
+  /** Already-normalized titles of the project's own OPEN tasks (not done, not
+   *  archived) — the caller adds each newly-created title as it goes, so two
+   *  identical proposals in the SAME review batch don't both land. */
+  openTaskTitles: Set<string>;
+  /** Status of the Feature the source task belongs to; null when the source
+   *  task isn't under any Feature — there's nothing for "in-scope" to mean in
+   *  that case, so it always degrades. */
+  featureStatus: FeatureStatus | null;
+  /** Non-archived task count already under that Feature (excluding the one
+   *  about to be added) — same count `maybeWarnFeatureBatchSize` computes. */
+  siblingCountInFeature: number;
+  featureBatchMaxTasks: number;
+  /** Orchestrator.underDailyBudget's answer for the project right now. */
+  underBudget: boolean;
+}
+
+export type ProposalPlacement =
+  | { action: "skip-duplicate" }
+  | { action: "create-parked"; degradedReason: string | null }
+  | { action: "create-active" };
+
+/** The scope-taxonomy valve, as a pure decision — no I/O, so every branch is
+ *  directly unit-testable. `degradedReason` on a parked in-scope proposal
+ *  names exactly which gate it failed, so the operator sees why it didn't
+ *  auto-promote instead of a bare "parked". */
+export function resolveProposalPlacement(
+  proposal: Pick<ProposedTask, "title" | "scope">,
+  ctx: ProposalPlacementContext,
+): ProposalPlacement {
+  if (ctx.openTaskTitles.has(normalizeProposalTitle(proposal.title))) return { action: "skip-duplicate" };
+  if (proposal.scope === "new-scope") return { action: "create-parked", degradedReason: null };
+  // in-scope from here — every gate must pass, or it degrades like new-scope.
+  if (!ctx.featureStatus) return { action: "create-parked", degradedReason: "no feature to place it under" };
+  if (ctx.featureStatus !== "active") {
+    return { action: "create-parked", degradedReason: `feature is ${ctx.featureStatus}, not active` };
+  }
+  if (ctx.siblingCountInFeature >= ctx.featureBatchMaxTasks) {
+    return { action: "create-parked", degradedReason: `feature already at the ${ctx.featureBatchMaxTasks}-task batch guardrail` };
+  }
+  if (!ctx.underBudget) return { action: "create-parked", degradedReason: "project is over its daily budget" };
+  return { action: "create-active" };
+}
+
+/** How many fleet-authored tasks (source.kind === "fleet") this project has
+ *  already accepted since local midnight — counts BOTH auto-promoted and
+ *  parked proposals (a flood of parked ones is still noise a human has to
+ *  triage, so both count against the same daily ceiling). Mirrors
+ *  computeDailySpend's own dayWindow so "today" means the same thing here as
+ *  it does for the budget gate. */
+export function countFleetProposalsToday(projectTasks: Task[], at: number): number {
+  const { start, end } = dayWindow(at);
+  return projectTasks.filter((t) => {
+    if (t.source?.kind !== "fleet") return false;
+    const createdAt = fleetTaskCreatedAt(t);
+    return createdAt >= start && createdAt < end;
+  }).length;
+}
+
+/** Task has no createdAt field — order (append-only, increases with age) is
+ *  the closest existing proxy, but a fleet task's OWN `id` embeds ordering
+ *  via Orchestrator's monotonic `this.seq`, which isn't recoverable here
+ *  either. Fleet proposals are the only Task producer that needs a real
+ *  creation timestamp, so it rides in `TaskSource.fleet` itself rather than
+ *  adding a field every other Task producer would need to backfill. */
+function fleetTaskCreatedAt(task: Task): number {
+  return task.source?.kind === "fleet" ? task.source.proposedAt : 0;
 }
 
 // ─── Ready-to-merge briefing — pure, exported for direct unit tests ─────────
@@ -3887,7 +3989,7 @@ export class Orchestrator {
     run: TaskRun,
     hitl: HitlItem,
     project: Project,
-  ): Promise<{ decision: "approve" | "flag"; reason: string; evidence: string[] } | null> {
+  ): Promise<{ decision: "approve" | "flag"; reason: string; evidence: string[]; proposals: ProposedTask[] } | null> {
     // Browser tools + the read-only lockdown below are verified only for the
     // Claude runner today — see StartSpec.disallowedTools/browser docs.
     if (reviewer.provider !== "claude") return null;
@@ -4017,7 +4119,12 @@ export class Orchestrator {
       const field = obj && typeof obj.verdict === "string" ? obj.verdict.trim().toLowerCase() : "";
       if (field !== "approve" && field !== "flag") return null;
       const verdict = parseReviewVerdict(lastText);
-      return { decision: verdict.approve ? "approve" : "flag", reason: verdict.reason, evidence: [...evidence] };
+      return {
+        decision: verdict.approve ? "approve" : "flag",
+        reason: verdict.reason,
+        evidence: [...evidence],
+        proposals: parseReviewProposals(lastText),
+      };
     } finally {
       await previewMgr.stop(previewKey).catch(() => undefined);
     }
@@ -4041,8 +4148,10 @@ export class Orchestrator {
     let decision: "approve" | "flag" = "approve";
     let reason = "auto-approved";
     let evidence: string[] | undefined;
+    let proposals: ProposedTask[] = [];
+    let project: Project | undefined;
     try {
-      const project = await this.store.getProject(task.projectId);
+      project = await this.store.getProject(task.projectId);
       // `deepReview` opt-in: try a real, browser-driven second agent run first.
       // runDeepReview returns null on ANY failure (wrong provider, no repo,
       // preview wouldn't start, timeout, unreadable verdict) — every one of
@@ -4055,6 +4164,7 @@ export class Orchestrator {
         decision = deep.decision;
         reason = deep.reason;
         evidence = deep.evidence;
+        proposals = deep.proposals;
       } else {
         const provider = await this.getProvider(agent.provider);
         if (provider.consult && run) {
@@ -4070,6 +4180,7 @@ export class Orchestrator {
           const verdict = parseReviewVerdict(reply);
           decision = verdict.approve ? "approve" : "flag";
           reason = verdict.reason;
+          proposals = parseReviewProposals(reply);
         }
       }
     } catch (err) {
@@ -4115,6 +4226,15 @@ export class Orchestrator {
       } else {
         this.noteAutonomyGoodOutcome(breakerProject.id);
       }
+      // Self-replenishing backlog: independent of the verdict itself — a
+      // flagged run's reviewer can still have noticed something worth a task,
+      // same as an approved one. Never blocks/slows the verdict path above;
+      // best-effort, logged rather than thrown into the caller on failure.
+      if (proposals.length > 0) {
+        await this.processFleetProposals(breakerProject, freshTask, hitl.runId, proposals).catch((err) =>
+          this.hub.runLog(hitl.runId, `fleet proposal processing failed: ${(err as Error).message}`).catch(() => undefined),
+        );
+      }
     }
     if (decision === "approve" && canResolve) {
       const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "autonomy", at };
@@ -4138,6 +4258,125 @@ export class Orchestrator {
     // decision === "flag" OR (approve without autonomy) → verdict is recorded
     // (`withVerdict`), HITL stays open for the human. Nothing else to do here.
     void withVerdict;
+  }
+
+  /**
+   * Self-replenishing backlog: turn a review's fleet-authored proposals into
+   * real tasks, per resolveProposalPlacement's scope taxonomy. Gathers the
+   * context each proposal is judged against ONCE per batch (open task titles,
+   * the source task's Feature + its current sibling count, today's budget),
+   * then walks the (already ≤ MAX_PROPOSALS_PER_REVIEW) proposals in order,
+   * updating that context as it goes so two proposals in the SAME batch never
+   * both create the same title, and a second in-scope proposal for the same
+   * Feature sees the first one's sibling count.
+   */
+  private async processFleetProposals(
+    project: Project,
+    sourceTask: Task,
+    runId: string,
+    proposals: ProposedTask[],
+  ): Promise<void> {
+    const ws = project.workspaceId;
+    const allTasks = await this.store.listTasks(ws);
+    const projectTasks = allTasks.filter((t) => t.projectId === project.id);
+    const openTitles = new Set(
+      projectTasks.filter((t) => !t.archived && t.state !== "done").map((t) => normalizeProposalTitle(t.text)),
+    );
+    let dailyCount = countFleetProposalsToday(projectTasks, now());
+    const feature = sourceTask.featureId ? (await this.store.getFeature(sourceTask.featureId)) ?? null : null;
+    let siblingCount = feature
+      ? projectTasks.filter((t) => t.featureId === feature.id && !t.archived).length
+      : 0;
+    const runs = await this.store.listRuns(ws);
+    const underBudget = await this.underDailyBudget(project, runs);
+    let cappedLogged = false;
+
+    for (const proposal of proposals) {
+      if (dailyCount >= config.fleetProposalMaxPerProjectPerDay) {
+        if (!cappedLogged) {
+          cappedLogged = true;
+          const line = `fleet proposal daily cap (${config.fleetProposalMaxPerProjectPerDay}/day) reached — "${proposal.title}" and any further proposals today are dropped, not parked`;
+          console.warn(`[project ${project.id}] ${line}`);
+          await this.hub.runLog(runId, line).catch(() => undefined);
+        }
+        continue;
+      }
+      const placement = resolveProposalPlacement(proposal, {
+        openTaskTitles: openTitles,
+        featureStatus: feature?.status ?? null,
+        siblingCountInFeature: siblingCount,
+        featureBatchMaxTasks: config.featureBatchMaxTasks,
+        underBudget,
+      });
+      if (placement.action === "skip-duplicate") continue;
+      const created = await this.createFleetTask(project, sourceTask, runId, proposal, placement, feature);
+      dailyCount++;
+      openTitles.add(normalizeProposalTitle(created.text));
+      if (placement.action === "create-active") siblingCount++;
+    }
+  }
+
+  /** Write one fleet proposal as a real Task, per the placement
+   *  resolveProposalPlacement already decided. `create-active` lands it
+   *  directly in the source task's Feature, `todo`, auto-pickable — no extra
+   *  human step, since every gate that matters already passed. Anything else
+   *  parks in `backlog`, unassigned, never auto-picked, with the degraded
+   *  reason (if any) folded into the run log so the operator sees WHY an
+   *  in-scope proposal didn't auto-promote, not just that it didn't. */
+  private async createFleetTask(
+    project: Project,
+    sourceTask: Task,
+    runId: string,
+    proposal: ProposedTask,
+    placement: ProposalPlacement,
+    feature: Feature | null,
+  ): Promise<Task> {
+    const ws = project.workspaceId;
+    const inProject = (await this.store.listTasks(ws)).filter((t) => t.projectId === project.id);
+    const source: TaskSource = { kind: "fleet", byRun: runId, reason: proposal.why, proposedAt: now() };
+    const base: Task = {
+      id: `t-${this.slug(project.name)}-${++this.seq}`,
+      workspaceId: ws,
+      projectId: project.id,
+      text: proposal.title,
+      description: null,
+      state: "backlog",
+      runId: null,
+      autoPick: false,
+      assessment: null,
+      assessmentEffort: null,
+      assessmentRisks: [],
+      reviewVerdict: null,
+      assignment: { mode: "unassigned", agentIds: [] },
+      order: inProject.length,
+      archived: false,
+      estimatedDurationMs: null,
+      plannedStartAt: null,
+      featureId: null,
+      milestoneId: null,
+      source,
+      lint: null,
+      preferredProvider: null,
+      preferredModel: null,
+    };
+    if (placement.action === "create-active" && feature) {
+      const task = await this.hub.upsertTask({
+        ...base,
+        state: "todo",
+        featureId: feature.id,
+        assignment: { mode: "any", agentIds: [] },
+        autoPick: true,
+      });
+      await this.hub
+        .runLog(runId, `⊕ fleet proposed + auto-promoted an in-scope task under "${feature.name}": "${proposal.title}"`, proposal.why)
+        .catch(() => undefined);
+      return task;
+    }
+    const degradeNote =
+      placement.action === "create-parked" && placement.degradedReason ? ` — parked (${placement.degradedReason})` : " — parked for a human";
+    const task = await this.hub.upsertTask(base);
+    await this.hub.runLog(runId, `⊕ fleet proposed a task${degradeNote}: "${proposal.title}"`, proposal.why).catch(() => undefined);
+    return task;
   }
 
   /**
