@@ -1065,6 +1065,16 @@ memory (v4) + thin runner adapters.
 - **Distribution:** hosted (our GCP) vs. self-host (`docker compose`) vs. **BYO-runner** (containers on
   the customer's infra, only the UI hosted) for code-privacy.
 - **Retention/policy** for logs, audit, and memory.
+- **Steward-mediated agent questions** — today an agent's mid-run clarifying question
+  (Claude's `AskUserQuestion`, etc.) raises a `question`-kind HITL that goes straight to the
+  operator's Inbox + a Telegram notice (`telegram/notices.ts`), answered directly by a human —
+  there's no relay through Steward. Idea: let Steward (`apps/server/src/steward/assistant.ts`,
+  already repo/project-grounded) see the question first and attempt an answer itself when it's
+  confident, falling back to the human (same Inbox/Telegram path as today) only when it isn't —
+  so routine "which file/convention should I use" questions don't all need a human, while
+  anything Steward can't ground stays a real human decision. Would reuse the existing
+  confirm-first discipline (nothing model-trusted) rather than let Steward silently resolve a
+  HITL on its own authority.
 
 ## Parked / explicitly out
 - **Building our own coding agent** — never. Wrap, don't rebuild ([docs/positioning.md](docs/positioning.md)).
