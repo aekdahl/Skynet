@@ -4,7 +4,7 @@
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
 import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, Milestone, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
-import { WorkspaceSettings } from "@skynet/shared";
+import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow } from "@skynet/shared";
 import {
   isCreditExhaustionError,
   type HitlRaise,
@@ -411,6 +411,11 @@ export class Orchestrator {
   // Runs already told "main moved" — so the periodic freshness sweep nudges once,
   // not every tick. Cleared if the branch catches back up (e.g. after a resync).
   private baseMovedFlagged = new Set<string>();
+  // Projects currently paused by their daily budget — so the "autonomy paused
+  // for today" line logs once per PAUSE, not once per tick. Cleared (re-armed,
+  // silently) once spend drops back under budget — which happens on its own at
+  // local midnight, since the spend window is always recomputed from `now()`.
+  private budgetPausedFlagged = new Set<string>();
 
   // `providerOverride` is a test seam — inject a runner provider directly instead
   // of resolving the runner's own provider. Production always passes (store, hub) only.
@@ -3449,6 +3454,99 @@ export class Orchestrator {
   private autonomyTicking = false;
 
   /**
+   * The daily-budget safety floor: false once a project's KNOWN spend today
+   * has reached its `dailyBudgetUsd` — the only thing this blocks is
+   * autonomous auto-pick (tickAutonomy step 2); a human can still assign
+   * manually at any time (assignTask itself is never gated). null budget =
+   * always true (no limit, today's behavior). Logs the pause transition once
+   * via the hub (not every tick) and re-arms silently once spend drops back
+   * under budget — which happens on its own at local midnight, since
+   * computeDailySpend always recomputes "today" from `now()`.
+   */
+  private async underDailyBudget(project: Project, runs: TaskRun[]): Promise<boolean> {
+    if (project.dailyBudgetUsd == null) {
+      this.budgetPausedFlagged.delete(project.id); // re-arm if a budget was cleared while paused
+      return true;
+    }
+    const spend = computeDailySpend(runs, project.id, now());
+    const exhausted = spend.spentUsd >= project.dailyBudgetUsd;
+    if (!exhausted) {
+      this.budgetPausedFlagged.delete(project.id);
+      return true;
+    }
+    if (!this.budgetPausedFlagged.has(project.id)) {
+      this.budgetPausedFlagged.add(project.id);
+      const floorNote = spend.unknownCostRuns > 0 ? ` (+${spend.unknownCostRuns} run(s) with unreported cost, not counted)` : "";
+      await this.hub
+        .runLog(
+          `budget-${project.id}`,
+          `autonomy paused for today — $${spend.spentUsd.toFixed(2)} of $${project.dailyBudgetUsd.toFixed(2)} budget spent${floorNote}. You can still assign tasks manually.`,
+        )
+        .catch(() => undefined);
+    }
+    return false;
+  }
+
+  /**
+   * Budget-as-allocation, pacing half: how much of the daily budget is
+   * "available to commit right now"? With `budgetPacing` off (default), the
+   * whole remaining budget is available immediately — unchanged from before
+   * this existed. With it on, availability grows linearly from $0 at local
+   * midnight to the full budget at `config.budgetPacingWindowMs` later, so a
+   * $20 budget doesn't get committed to the very first task the tick sees.
+   * Never exceeds the true remaining headroom (spend already made today) —
+   * pacing can only make the picker MORE conservative, never let it overspend
+   * a budget that's already tight. Returns Infinity for an unset budget (no
+   * ceiling at all — callers checking against it will just always fit).
+   */
+  private pacedAvailableUsd(project: Project, spentUsd: number, atMs: number): number {
+    if (project.dailyBudgetUsd == null) return Infinity;
+    const headroom = Math.max(0, project.dailyBudgetUsd - spentUsd);
+    if (!project.budgetPacing) return headroom;
+    const { start } = dayWindow(atMs);
+    const elapsed = Math.min(1, Math.max(0, (atMs - start) / config.budgetPacingWindowMs));
+    const pacedCeiling = project.dailyBudgetUsd * elapsed;
+    const pacedHeadroom = Math.max(0, pacedCeiling - spentUsd);
+    return Math.min(headroom, pacedHeadroom);
+  }
+
+  /**
+   * Budget-as-allocation, selection half: from `pickable` (already priority-
+   * sorted), greedily choose which tasks actually fit the budget available
+   * right now — walking in the SAME order, so priority always wins among
+   * whatever's affordable; a task is only ever SKIPPED (never reordered)
+   * when its rough cost band (`costBandFor`, from the free triage effort
+   * signal) would blow the remaining allowance, and the walk continues past
+   * it so a cheaper lower-priority task can still fit. No budget set → the
+   * full list, unchanged (byte-for-byte the pre-existing behavior). Logs
+   * once per tick (not once per skipped task) when anything was skipped, so
+   * a tight budget doesn't spam the run log every 15s.
+   */
+  private async selectAffordable(project: Project, runs: TaskRun[], pickable: Task[]): Promise<Task[]> {
+    if (project.dailyBudgetUsd == null || pickable.length === 0) return pickable;
+    const spend = computeDailySpend(runs, project.id, now());
+    let available = this.pacedAvailableUsd(project, spend.spentUsd, now());
+    const selected: Task[] = [];
+    const skipped: Task[] = [];
+    for (const t of pickable) {
+      const band = costBandFor(t.assessmentEffort);
+      if (band <= available) {
+        selected.push(t);
+        available -= band;
+      } else {
+        skipped.push(t);
+      }
+    }
+    if (skipped.length > 0) {
+      const names = skipped.map((t) => `"${t.text}"`).join(", ");
+      await this.hub
+        .runLog(`budget-${project.id}`, `skipped ${skipped.length} task(s) this tick — over today's remaining allowance: ${names}`)
+        .catch(() => undefined);
+    }
+    return selected;
+  }
+
+  /**
    * Autonomy loop: for each project with `autonomy` on and idle-agent capacity,
    * do the low-risk moves so tasks flow without a human — triage a backlog item
    * (agent writes an assessment), start an auto-pick todo task, and review a
@@ -3471,6 +3569,9 @@ export class Orchestrator {
         const projects = await this.store.listProjects(ws);
         if (projects.length === 0) continue;
         const tasks = await this.store.listTasks(ws);
+        // Only fetched when at least one project actually has a budget set —
+        // every other workspace's tick stays exactly as cheap as before.
+        const runs = projects.some((p) => p.dailyBudgetUsd != null) ? await this.store.listRuns(ws) : [];
         for (const p of projects) {
           // Re-read idle capacity per project (an earlier project may have used it).
           const idle = (await this.store.listAgents(ws)).filter((a) => a.status === "idle");
@@ -3535,11 +3636,16 @@ export class Orchestrator {
             //    that when capacity is short, the acquireExclusive queue — which
             //    serializes in call order — grants idle agents to the
             //    highest-priority tasks first instead of array/insertion order.
-            if (p.autonomy) {
+            if (p.autonomy && (await this.underDailyBudget(p, runs))) {
               const pickable = mine
                 .filter((t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned")
                 .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
-              await Promise.allSettled(pickable.map((t) => this.assignTask(p.id, t.id)));
+              // Budget-as-allocation: still fires in the SAME priority order —
+              // this only trims tasks that don't fit what's left (see
+              // selectAffordable's own comment) — a no-op list transform when
+              // no budget is set.
+              const affordable = await this.selectAffordable(p, runs, pickable);
+              await Promise.allSettled(affordable.map((t) => this.assignTask(p.id, t.id)));
             }
             // 3) Review a finished run — runs REGARDLESS of `p.autonomy`.
             //    Recording a verdict is diagnostic (an LLM consult), not a

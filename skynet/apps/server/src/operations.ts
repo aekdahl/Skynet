@@ -762,6 +762,11 @@ export class Operations {
       // Governance is chosen at creation when the form sends it, else the
       // server defaults (autonomy on; approvalLevel from SKYNET_APPROVAL_LEVEL).
       autonomy: input.autonomy ?? true,
+      // No daily budget at creation unless the form sends one — set later in
+      // project settings too. null = no limit (today's behavior, unchanged).
+      dailyBudgetUsd: input.dailyBudgetUsd ?? null,
+      // Pacing off at creation unless the form opts in — set later too.
+      budgetPacing: input.budgetPacing ?? false,
       approvalLevel: input.approvalLevel ?? config.defaultApprovalLevel,
       approvalRules: [],
       // Plan-mode gating is off by default — set later in project settings.

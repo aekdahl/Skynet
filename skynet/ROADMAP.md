@@ -486,6 +486,45 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     recorded on the policy but inert — no runtime enforcement exists for either yet (network-egress
     enforcement is explicitly out of scope here; see 🏢 below). Path scopes were scoped out (no per-path
     command semantics existed to attach them to). Tests: `tests/command-policy.test.ts`.
+  - [x] **Budget ceiling — daily spend rollup + auto-pick gating.** A per-project `dailyBudgetUsd` (USD,
+    null = no limit — today's behavior, unchanged): once the project's KNOWN spend today reaches it, the
+    autonomy loop's auto-pick step stops starting NEW work on that project for the rest of the day —
+    in-flight runs finish, and a human can still assign manually at any time (`assignTask` itself is never
+    gated). The safety floor for "today we develop for $20." A different mechanism from
+    `CommandPolicy.resourceCaps.maxTokenBudget` above (per-command policy, still inert) — this is a
+    per-project daily USD ceiling on real spend. *Landed:* `computeDailySpend`
+    (`packages/shared/src/budget.ts`, pure — sums `TaskRun.usage.costUsd` for a project's runs started in
+    the current local day) is the ONE place "today's spend" is computed, shared by the server gate
+    (`orchestrator.ts#underDailyBudget`, called from `tickAutonomy` step 2) and the web project header, so
+    the number an operator sees is exactly the number the gate acted on. Vendors that don't report cost are
+    tracked as a separate `unknownCostRuns` count and treated as a floor, never silently dropped and never
+    fabricated into the enforcement number (so the gate can't be tripped by spend it can't actually see).
+    Logs the pause transition once via the hub, not every tick (`budgetPausedFlagged`, re-arms silently once
+    spend drops back under budget — which happens on its own at local midnight, since "today" is always
+    recomputed from `now()`, no separate reset). Project settings gets a "Daily budget" field; the project
+    header shows "spent today / budget" once one is set.
+  - [x] **Budget-as-allocation — cost-aware picking + pacing.** The ceiling above is a stop-gate: it halts
+    ALL new work once spend is exhausted, with no sense of what fits along the way. This turns the same
+    budget into an allocator — "$20 today" shapes which tasks the fleet starts, not just when it stops.
+    *Landed:* `tickAutonomy`'s existing triage step already produces `Task.assessmentEffort`
+    (small/medium/large) via a real LLM call — reused as-is, no second estimation call. `costBandFor`
+    (`packages/shared/src/budget.ts`) maps that FREE signal to a static $ band (0.50/2/8); an untriaged task
+    (`null` effort) assumes the MEDIUM band, never zero, so an unclassified task can't look free to the
+    picker. Auto-pick's `pickable` list (already sorted by `order`, the same rank the ↑/↓ column writes)
+    is walked in that SAME order by `orchestrator.ts#selectAffordable`: a task is skipped — never
+    reordered — only when its cost band would exceed what's left, and the walk continues so a cheaper
+    lower-priority task can still fit past an expensive one that didn't. Skips log once per tick (not once
+    per task) naming what was skipped. **Pacing** (`Project.budgetPacing`, off by default): spreads the
+    budget across a working window (`config.budgetPacingWindowMs`, default 8h) instead of committing it all
+    to the first tick — availability grows linearly from $0 at local midnight to the full budget as the
+    window elapses (`orchestrator.ts#pacedAvailableUsd`), and never exceeds the TRUE remaining headroom
+    (real spend already made) regardless of how much of the window has passed — pacing can only make the
+    picker more conservative, never let it overspend a tight budget. `committedUsd` (same file) gives a
+    rough forward-looking $ estimate for tasks already `ongoing` (in flight, not yet cost-reported); the
+    project header's "spent today / budget" gains "(≈$X committed)" when nonzero. A project settings toggle
+    ("Pace spend") only appears once a daily budget is set. Deliberately not built: no scheduler/queue
+    (this is a per-tick greedy filter, not a planner), no auto-adjusting budgets, no calibration of the cost
+    bands against real spend (a static table — tune it by hand from `Usage.costUsd` data if it drifts).
   - [x] **Context-aware risk** — classify by *blast radius*, not string match: outside the worktree, touching
     secrets, git-history-destructive, package publish, DB migration, network egress.
     *Landed: `blastRadiusFlags()` in `command-safety.ts` scans a command's absolute paths against the agent's
