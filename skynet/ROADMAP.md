@@ -435,6 +435,39 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   **stop**. The halted run frees its runner but keeps its worktree so a resume/reassign can continue the
   work. *(Verified live: a real agent correctly escalated rather than fabricate a secret; help & resume
   round-tripped. Foundation for the "escalation SLAs / delegated approval" governance items below.)*
+- [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
+  Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
+  credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself
+  from grinding through task after task while each one individually failed or got flagged — financially
+  bounded by a spend budget (see the budget guard elsewhere on this roadmap), but not stopped
+  *behaviorally*. Now: `config.autonomyMaxConsecutiveFailures` (`SKYNET_AUTONOMY_MAX_CONSECUTIVE_FAILURES`,
+  default 3) consecutive BAD autonomy outcomes for the SAME project — a flagged auto-review verdict, or a
+  run that failed — with no good outcome in between, turns that project's own `autonomy` toggle off
+  (persisted, the existing UI switch reflects it) and raises ONE summary `escalation` HITL naming which
+  tasks and why, instead of letting the sweep grind through more. Composes the two EXISTING outcome
+  signals rather than adding a new one: `autoReview`'s verdict (approve resets the streak, flag extends
+  it) and `fail()`'s run failures — counted ONCE per run (the first `fail()` call for a runId), not once
+  per internal retry attempt, so a single flaky run's own 3-strikes retry loop can't also trip this on top
+  of (and racing) its own dedicated escalation. Only tracks outcomes produced WHILE the project is
+  autonomous — a manually-supervised project isn't "sweeping". In-memory, keyed by project id (a restart
+  resets it to 0 — fails OPEN, one more attempt is allowed before it can trip again; an accepted trade-off
+  given the layered guardrails above and the spend budget still bound the actual damage). Re-enabling the
+  toggle (the operator's own action, or a future auto-resume) resumes the sweep and resets the streak
+  (`Orchestrator.resetAutonomyStreak`, wired from `operations.ts#updateProject`). The summary escalation
+  reuses the existing `escalation` HITL kind/UI rather than adding a new surface, but is purely
+  informational — resolving it (any action) just dismisses the notice; deliver() special-cases its
+  `flags: ["autonomy-paused"]` marker to skip the real escalation's run-lifecycle resolution (help &
+  resume / reassign / stop don't apply — there's no single run to act on, and the actual "resume" lever is
+  the toggle, not this item). Manual "Start now" assignment is untouched and still works on a paused
+  project (`assignTask` never gated on `autonomy` to begin with — only the autonomy tick's own auto-pick
+  step is). Known gap, flagged rather than silently missing: a `full`-approval-level project's own
+  unattended diff auto-merges (`raiseDiffReview`'s `policy:full-autonomy` path) don't feed the streak's
+  good-outcome signal — only `autoReview`'s approve does, per this feature's explicit scope (composing the
+  two named mechanisms, not every path that can succeed). Tests: `tests/autonomy-circuit-breaker.test.ts`
+  — 3 flags trip + exactly one escalation (not three); a 4th bad outcome after tripping doesn't raise a
+  second; an approve in between resets the streak; a failed run composes into the same streak as flags
+  without double-counting its own retries; manual assignment while paused; pause is per-project, not
+  per-workspace; re-enabling resets; resolving the escalation has no run-lifecycle side effect.
 - [~] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).** A 6-way
   competitor deep-dive found *none* ship a real safety/policy layer, decision audit, or (bar one) a HITL
   inbox — so this is where we win now:
@@ -470,8 +503,14 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     spend drops back under budget — which happens on its own at local midnight, since "today" is always
     recomputed from `now()`, no separate reset). Project settings gets a "Daily budget" field; the project
     header shows "spent today / budget" once one is set.
-  - **Context-aware risk** — classify by *blast radius*, not string match: outside the worktree, touching
+  - [x] **Context-aware risk** — classify by *blast radius*, not string match: outside the worktree, touching
     secrets, git-history-destructive, package publish, DB migration, network egress.
+    *Landed: `blastRadiusFlags()` in `command-safety.ts` scans a command's absolute paths against the agent's
+    worktree root and flags any path that falls outside it as `outside-worktree:<path>`. Also flags network-egress
+    commands (curl/wget/ssh/scp/rsync/nc — distinct from the already-denied pipe-to-shell patterns). Both signals
+    are added to the gate's `flags` chips and bump risk to `high` in `orchestrator.ts#raise()`, so auto-approval
+    can never quietly run an outside-worktree or network-egress command regardless of the project's approval level.
+    Tests: `tests/blast-radius.test.ts`.*
   - [x] **⭐ Prompt-injection / tool-poisoning firewall** — detect when untrusted content the agent read (an
     issue, a web page, a dependency README) is steering its tool calls, and gate it. No competitor has this.
     *Landed (v1): a structured LLM consult (`injection-firewall.ts`, same prompt-builder + safe-default-parser
@@ -501,8 +540,19 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     own gate still applies); and — as the live verification also showed — a sufficiently blunt injection often
     gets refused by the model's own training before any tool call is even attempted, so this firewall is
     defense-in-depth for the cases where the model *does* comply, not the only line of defense.*
-  - **Tamper-evident audit** — hash-chained, append-only decision records (who saw which diff/command, what
+  - [x] **Tamper-evident audit** — hash-chained, append-only decision records (who saw which diff/command, what
     the policy said, what the agent did after); exportable to SIEM.
+    *Landed: every `AuditRecord` now carries a `hash` (SHA-256 of the canonical JSON of its immutable decision
+    fields: workspaceId/hitlId/runId/action/operatorId/at/payload/prevHash) and a `prevHash` linking it to the
+    preceding record in the same workspace's chain — a linked list where any alteration to a field or to the
+    record's position in the trail is immediately detectable offline. Genesis record has `prevHash=null`;
+    pre-chain records (written before this feature landed) have neither field and are skipped by verification.
+    All three Store adapters (memory/file/Postgres) chain records at write time; Postgres adds `hash` and
+    `prev_hash` columns via `ALTER TABLE IF NOT EXISTS`. `verifyAuditChain()` (`audit-chain.ts`) re-computes and
+    verifies the full chain in oldest-first order. SIEM export: `GET /api/audit/export` returns the workspace
+    trail as NDJSON (one record per line, oldest-first, `application/x-ndjson`, `Content-Disposition: attachment`)
+    so a SIEM agent can ingest the stream and verify the chain offline. Optional `?from=<ms>&?to=<ms>` narrow
+    the window. Tests: `tests/audit-chain.test.ts`.*
   - **⭐ Compliance evidence pack** — one-click signed "AI change report" for auditors (EU AI Act tailwind).
     *Landed: a project / run / date-range-scoped report built entirely from the existing tamper-evident
     `AuditRecord` trail — no new decision-recording path. Every approved diff/merge, who approved it (a
@@ -589,6 +639,30 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     the audit trail records who reviewed what. Auto-approve merges only when the project's autonomy toggle is
     on; flagged runs stay in `review` for a human. Verdict parsing is field-based (JSON tail), not prose,
     so a reason mentioning "flagged" never false-flags an APPROVE.*
+  - *Landed: **the ready-to-merge card shows its evidence, not just its verdict.** A "RECOMMEND MERGE / HIGH
+    RISK" card that only shows a one-line prose verdict on a 274-file diff isn't enough to click Merge on — an
+    operator either trusts the badge blind or re-derives the same reasoning by hand from the GitHub diff. The
+    ingredients `buildMergeBriefing`/`buildFeatureMergeBriefing` (`orchestrator.ts`) always computed (diff stat,
+    matched modules, which files tripped the sensitive-area heuristic, tests-changed) were being collapsed into
+    an opaque `impact` string and discarded — now they're real `MergeBriefing` fields (`add`/`del`/
+    `filesChanged`/`modules`/`sensitiveFiles`/`testsChanged`/`authoredBy`/`reviewedBy`/`reviewDecision`), and
+    the card renders them directly: the actual sensitive file PATHS (not just the flag), a real diff-composition
+    line, and — since the reviewer is already guaranteed structurally to be a different fleet agent than the
+    author (`orchestrator.ts`'s `autoReview`) — an explicit "Authored by X → reviewed by Y (approved/flagged)"
+    line, so that independence is visible instead of implicit. The two `buildMergeBriefing`/
+    `buildFeatureMergeBriefing` computations were also lifted out of the orchestrator into pure, exported
+    functions (`computeMergeBriefing`/`computeFeatureMergeBriefing`/`mergeSensitiveFiles`/`mergeRisk`) so this
+    logic — previously untested — is directly unit-tested without a git worktree. Biggest gap closed: GitHub's
+    real check-run status (`githubService.prStatus` — already implemented, but only ever consulted reactively
+    *after* a merge attempt was blocked) is now fetched by the card itself on load and shown BEFORE the merge
+    decision (`GET /api/merges/:id/checks`, best-effort/on-demand — never baked into the polled snapshot, since
+    it's a real GitHub API call): passing/pending/failing render as a colored badge, and — since silence isn't
+    the same as passing — a repo with no CI configured says so explicitly rather than showing nothing. Verified
+    live against a seeded ready-to-merge card end to end (sensitive-file chips, authored/reviewed line, diff
+    stat all correct; the checks badge fails silent — no misleading badge — when no GitHub connection exists,
+    exactly the intended fallback). Not built: the Verifier gate (above) still only runs on the local
+    merge-queue path, never for GitHub-PR-based runs — so a repo with no CI configured genuinely has no
+    automated pass/fail signal yet, which the card now says outright instead of staying silent about it.*
   - *Landed: **`error_max_turns` is resumable** — a run that hits the Claude turn cap parks with the current
     plan + guidance instead of dead-ending; the operator resolves it forward.*
   - *Landed: **checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks
@@ -760,6 +834,71 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   work") doesn't need; only the merge *destination* changed. A different axis from **Structural
   agent-hierarchy hooks** just above (that's agent *role* — worker/manager; this is *Feature/task*
   grouping) — complementary, not dependent.
+- [ ] **🔬⭐ Autonomous backlog sweep — the v1 path to the auto dev team.** Point Skynet at a whole
+  backlog/roadmap under an explicit daily budget and let the fleet build it out unattended: humans
+  approve only *completed, working* features, agents test and try to break their own work before a
+  human ever sees it, and the fleet replenishes the backlog from what it finds along the way — every
+  autonomous loop bounded by construction, never by hope. This is the concrete v1 path toward
+  **⭐ North star: the auto dev team** and its **🔗 Product steward & the living Plan** substrate (v2,
+  above): Charter → Blueprint → Plan needs exactly this — a fleet that can run unattended for a whole
+  work session without drifting, overspending, or silently shipping broken work. It **composes existing
+  v1 machinery into five phases; only the gates and the budget rollup below are genuinely new**:
+  1. **Budget ceiling.** `tickAutonomy`'s auto-pick step (`orchestrator.ts`) already rank-orders
+     eligible `todo` tasks by `order` and fires them while idle capacity lasts — but nothing today rolls
+     per-run spend (`TaskRun.usage.costUsd`, already tracked, nullable when a vendor omits it) into a
+     project- or workspace-level daily total, and nothing gates auto-pick on it. New: a daily spend
+     rollup that auto-pick checks before starting another task — an exhausted budget pauses auto-pick
+     for the rest of the window, not the project's `autonomy` toggle itself (see the gate philosophy
+     below — a human can always still assign manually). Per-run wall-clock/idle-stall caps
+     (`runtimeCapMs`/`idleCapMs`, `runner-sdk/src/caps.ts`) already bound a single run's worst case;
+     this is the same idea one level up, in dollars instead of minutes.
+  2. **Two-lens review: verifier + breaker.** Today's `autoReview` (`orchestrator.ts`) is a single
+     reviewer-≠-author `consult` call — stateless, text-in/text-out, the last 30 log lines as context,
+     **no tool use at all**. That's enough to judge "does this look right on paper" but not to actually
+     RUN the change. New: a **verifier** lens that exercises the live change for real — a bounded second
+     agent RUN (not a `consult`) using the browser tools already landed for most vendors
+     (`browserMcpServers`, `runner-sdk/src/claude.ts` + the per-vendor CLI wiring above) so it can click
+     through a UI change or hit an endpoint, not just read the diff. A **breaker** lens sits alongside it
+     with the opposite brief — try to make the change fail (edge inputs, a wrong assumption, a missed
+     error path) — same reviewer-as-run mechanism, adversarial framing instead of confirmatory. Both
+     compose with (never replace) the existing consult-based verdict; a flag from either lens behaves
+     exactly like today's `reviewVerdict: flag` — parked in review for a human.
+  3. **Circuit breakers + right-sized batches.** Three guardrails, one spirit — an autonomous loop must
+     be able to stop *itself*, with no human watching: **(a)** a **session circuit-breaker** — N
+     consecutive flagged/failed TASKS on the same project pauses that project's `autonomy` toggle with
+     ONE summary escalation, not N separate HITL gates — distinct from the existing PER-RUN retry
+     ceiling (`config.runMaxFailures`/`failCounts`, which bounds retries on a single run, never a
+     project's whole unattended session); **(b)** a **feature size guardrail** — cap how large a
+     Feature's auto-picked task batch may grow unattended before it forces a human check-in, so a
+     mis-scoped Feature can't silently balloon into a week of unattended spend; **(c)** a
+     **feature-altitude merge brief** — **Guided merge**'s `MergeBrief` (`merge-brief.ts` /
+     `Orchestrator.draftMergeBrief`, above) synthesizes a brief per TASK diff today, and **Feature-scoped
+     branch hierarchy** (above) already batches a Feature's tasks into one aggregate PR — the brief needs
+     to move up to that same altitude, one synthesized brief for the whole batch, not N per-task ones a
+     human has to mentally reassemble.
+  4. **Self-replenishing backlog, scope-taxonomied.** GitHub issue import
+     (`Operations.importGithubIssues`) already turns an external backlog into tasks; the sweep needs the
+     fleet to write back to its OWN backlog from what it learns while building. New: a scope taxonomy on
+     every fleet-authored discovery — **in-scope** (a defect in what the sweep just built, or a gap the
+     verifier/breaker lenses above surfaced) may auto-promote to a new task WITHIN the same Feature's
+     already-approved budget, no extra human step; **new-scope** (an idea, an unrequested feature, work
+     outside what was actually approved) always parks for human promotion, full stop — the fleet can
+     *propose* scope, it can never *grant itself* scope.
+  5. **Budget as allocation, not just a ceiling.** `assessTask`'s triage consult already estimates
+     `estimatedDurationMs` per task (`orchestrator.ts`); extend that same consult to estimate cost too
+     (or derive it from duration × a per-model rate) and use it for PACING, not only a stop-loss —
+     auto-pick spends the day's budget against the rank-ordered backlog instead of burning it on
+     whichever task happened to be first, and slows down as the ceiling approaches rather than running
+     at full tilt until it hits a wall.
+
+  **Gate philosophy, stated once:** budget gates *autonomy* only — a human can always assign a task
+  manually regardless of spend; autonomy is a convenience toggle, never the only door. **Scope growth
+  needs a human; quality growth is self-serve within budget** — the fleet can spend its already-approved
+  budget finding and fixing its own bugs without asking, but it can never expand what it's building
+  without asking. Every autonomous loop terminates **by construction** — the budget ceiling (phase 1) is
+  the hard stop that needs no judgment call — **plus one behavioral breaker**, the consecutive-failure
+  circuit-breaker (phase 3a), for the case a loop is technically under budget but visibly going wrong
+  faster than the budget alone would catch.
 
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
@@ -949,6 +1088,9 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
   review → secure → merge → document → learn) where the blueprint may delegate *who holds* a gate but
   never remove one, and **nothing self-approves**. **All of it BYOK** — intake, planning, and every
   role resolve the user's own keys via the existing secret store, metered under the project budget.
+  The concrete v1 path here is **🔬⭐ Autonomous backlog sweep** (above): budget-gated unattended
+  building, verify-and-break review, and a self-replenishing backlog are exactly the "run a whole
+  session without drifting or overspending" primitives this endgame needs.
   Full sketch: [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) (phased: Charter rides v1.5 ·
   CoS+Leads+QA ride v2 · Security/Spec/Scribe ride v1 governance + v3 triggers · Curator/retro ride v4/v5).
 - **🔗 Product steward & the living Plan** — the concrete substrate under the north star: a
@@ -1082,6 +1224,16 @@ memory (v4) + thin runner adapters.
 - **Distribution:** hosted (our GCP) vs. self-host (`docker compose`) vs. **BYO-runner** (containers on
   the customer's infra, only the UI hosted) for code-privacy.
 - **Retention/policy** for logs, audit, and memory.
+- **Steward-mediated agent questions** — today an agent's mid-run clarifying question
+  (Claude's `AskUserQuestion`, etc.) raises a `question`-kind HITL that goes straight to the
+  operator's Inbox + a Telegram notice (`telegram/notices.ts`), answered directly by a human —
+  there's no relay through Steward. Idea: let Steward (`apps/server/src/steward/assistant.ts`,
+  already repo/project-grounded) see the question first and attempt an answer itself when it's
+  confident, falling back to the human (same Inbox/Telegram path as today) only when it isn't —
+  so routine "which file/convention should I use" questions don't all need a human, while
+  anything Steward can't ground stays a real human decision. Would reuse the existing
+  confirm-first discipline (nothing model-trusted) rather than let Steward silently resolve a
+  HITL on its own authority.
 
 ## Parked / explicitly out
 - **Building our own coding agent** — never. Wrap, don't rebuild ([docs/positioning.md](docs/positioning.md)).

@@ -23,6 +23,7 @@ import type {
   Task,
   WorkspaceSettings,
 } from "@skynet/shared";
+import { chainAuditRecord } from "../audit-chain.js";
 import { now } from "../config.js";
 import type { Store } from "./store.js";
 import type { StoredServiceToken } from "../auth/service-tokens.js";
@@ -45,6 +46,8 @@ CREATE TABLE IF NOT EXISTS hitl_audit (id bigserial PRIMARY KEY, workspace_id te
                                        run_id text NOT NULL, action text NOT NULL, operator_id text NOT NULL,
                                        at bigint NOT NULL, payload jsonb);
 ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
+ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS hash text;
+ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS prev_hash text;
 CREATE TABLE IF NOT EXISTS github_connections (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS workspace_settings (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS command_policy_versions (id text PRIMARY KEY, workspace_id text NOT NULL, version int NOT NULL, active boolean NOT NULL DEFAULT false, data jsonb NOT NULL);
@@ -206,22 +209,35 @@ export class PostgresStore implements Store {
   async listProviders(): Promise<ProviderInfo[]> { return PROVIDERS; }
 
   async recordAudit(e: AuditRecord): Promise<void> {
+    // Fetch the last hash in the workspace chain, then insert the chained record.
+    // Single-process + Node.js event-loop serialization means no concurrent
+    // writes interleave between the SELECT and INSERT for a given workspace.
+    const { rows: lastRows } = await this.pool.query<{ hash: string | null }>(
+      "SELECT hash FROM hitl_audit WHERE workspace_id=$1 ORDER BY id DESC LIMIT 1",
+      [e.workspaceId],
+    );
+    const prevHash = lastRows[0]?.hash ?? null;
+    const chained = chainAuditRecord(e, prevHash);
     await this.pool.query(
-      "INSERT INTO hitl_audit(workspace_id,hitl_id,run_id,action,operator_id,at,payload,archived) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8)",
-      [e.workspaceId, e.hitlId, e.runId, e.action, e.operatorId, e.at, J(e.payload), e.archived ?? false],
+      "INSERT INTO hitl_audit(workspace_id,hitl_id,run_id,action,operator_id,at,payload,archived,hash,prev_hash) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)",
+      [chained.workspaceId, chained.hitlId, chained.runId, chained.action, chained.operatorId, chained.at, J(chained.payload), chained.archived ?? false, chained.hash ?? null, chained.prevHash ?? null],
     );
   }
 
   async listAudit(ws: string): Promise<AuditRecord[]> {
     const { rows } = await this.pool.query<{
-      workspace_id: string; hitl_id: string; run_id: string; action: string; operator_id: string; at: string; payload: unknown; archived: boolean;
+      workspace_id: string; hitl_id: string; run_id: string; action: string; operator_id: string; at: string; payload: unknown; archived: boolean; hash: string | null; prev_hash: string | null;
     }>(
-      "SELECT workspace_id,hitl_id,run_id,action,operator_id,at,payload,archived FROM hitl_audit WHERE workspace_id=$1 ORDER BY at DESC, id DESC",
+      "SELECT workspace_id,hitl_id,run_id,action,operator_id,at,payload,archived,hash,prev_hash FROM hitl_audit WHERE workspace_id=$1 ORDER BY at DESC, id DESC",
       [ws],
     );
     return rows.map((r) => ({
       workspaceId: r.workspace_id, hitlId: r.hitl_id, runId: r.run_id,
       action: r.action, operatorId: r.operator_id, at: Number(r.at), payload: r.payload, archived: r.archived,
+      // Include hash/prevHash only for chained records (hash present). A chained
+      // genesis record has hash set + prev_hash=null, and both must be included so
+      // verifyAuditChain can compare prevHash===null against its expectedPrev===null.
+      ...(r.hash != null ? { hash: r.hash, prevHash: r.prev_hash } : {}),
     }));
   }
 
