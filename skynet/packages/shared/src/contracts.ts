@@ -333,6 +333,14 @@ export const Project = z.object({
   // midnight — "today" is always recomputed from the current runs, there's no
   // separate counter to reset.
   dailyBudgetUsd: z.number().nullable().default(null),
+  // Budget-as-allocation: when on (and a dailyBudgetUsd is set), auto-pick
+  // spreads spend across a working window instead of committing the whole
+  // remaining budget in the first tick — early in the day only a fraction of
+  // the budget is available to NEW work, growing toward the full amount as
+  // the window elapses (see orchestrator.ts's pacedAvailableUsd). Off by
+  // default: with pacing off, a set budget behaves exactly as it did before
+  // this field existed (all of it available immediately).
+  budgetPacing: z.boolean().default(false),
   // Agent-action approval policy (see ApprovalLevel). Defaults to `trusted` so
   // reversible in-sandbox commands flow without a confirm each time; high-risk /
   // boundary ops still gate. `approvalRules` are this project's standing
@@ -1022,6 +1030,7 @@ export const CreateProjectRequest = z.object({
   autonomy: z.boolean().optional(),
   approvalLevel: ApprovalLevel.optional(),
   dailyBudgetUsd: z.number().nullable().optional(), // see Project.dailyBudgetUsd; omit → no limit
+  budgetPacing: z.boolean().optional(), // see Project.budgetPacing; omit → off
   // Project-scoped agent guidance that rides every prompt (see Project.instructions).
   instructions: z.string().optional(),
   baseBranch: z.string().optional(), // branch to stack runs/PRs onto (omit → global default)
@@ -1048,6 +1057,7 @@ export const UpdateProjectRequest = z.object({
   status: ProjectStatus.optional(),
   autonomy: z.boolean().optional(),
   dailyBudgetUsd: z.number().nullable().optional(), // see Project.dailyBudgetUsd; null clears → no limit
+  budgetPacing: z.boolean().optional(), // see Project.budgetPacing
   approvalLevel: ApprovalLevel.optional(),
   planModeGate: z.boolean().optional(), // see Project.planModeGate
   // Tool names to block for this project's agents. `null` clears back to "no

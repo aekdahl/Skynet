@@ -470,6 +470,28 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     spend drops back under budget — which happens on its own at local midnight, since "today" is always
     recomputed from `now()`, no separate reset). Project settings gets a "Daily budget" field; the project
     header shows "spent today / budget" once one is set.
+  - [x] **Budget-as-allocation — cost-aware picking + pacing.** The ceiling above is a stop-gate: it halts
+    ALL new work once spend is exhausted, with no sense of what fits along the way. This turns the same
+    budget into an allocator — "$20 today" shapes which tasks the fleet starts, not just when it stops.
+    *Landed:* `tickAutonomy`'s existing triage step already produces `Task.assessmentEffort`
+    (small/medium/large) via a real LLM call — reused as-is, no second estimation call. `costBandFor`
+    (`packages/shared/src/budget.ts`) maps that FREE signal to a static $ band (0.50/2/8); an untriaged task
+    (`null` effort) assumes the MEDIUM band, never zero, so an unclassified task can't look free to the
+    picker. Auto-pick's `pickable` list (already sorted by `order`, the same rank the ↑/↓ column writes)
+    is walked in that SAME order by `orchestrator.ts#selectAffordable`: a task is skipped — never
+    reordered — only when its cost band would exceed what's left, and the walk continues so a cheaper
+    lower-priority task can still fit past an expensive one that didn't. Skips log once per tick (not once
+    per task) naming what was skipped. **Pacing** (`Project.budgetPacing`, off by default): spreads the
+    budget across a working window (`config.budgetPacingWindowMs`, default 8h) instead of committing it all
+    to the first tick — availability grows linearly from $0 at local midnight to the full budget as the
+    window elapses (`orchestrator.ts#pacedAvailableUsd`), and never exceeds the TRUE remaining headroom
+    (real spend already made) regardless of how much of the window has passed — pacing can only make the
+    picker more conservative, never let it overspend a tight budget. `committedUsd` (same file) gives a
+    rough forward-looking $ estimate for tasks already `ongoing` (in flight, not yet cost-reported); the
+    project header's "spent today / budget" gains "(≈$X committed)" when nonzero. A project settings toggle
+    ("Pace spend") only appears once a daily budget is set. Deliberately not built: no scheduler/queue
+    (this is a per-tick greedy filter, not a planner), no auto-adjusting budgets, no calibration of the cost
+    bands against real spend (a static table — tune it by hand from `Usage.costUsd` data if it drifts).
   - **Context-aware risk** — classify by *blast radius*, not string match: outside the worktree, touching
     secrets, git-history-destructive, package publish, DB migration, network egress.
   - [x] **⭐ Prompt-injection / tool-poisoning firewall** — detect when untrusted content the agent read (an

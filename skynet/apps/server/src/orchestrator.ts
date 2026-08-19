@@ -4,7 +4,7 @@
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
 import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, Risk, Feature, Milestone, DiffWalkthrough, PullRequest } from "@skynet/shared";
-import { WorkspaceSettings, computeDailySpend } from "@skynet/shared";
+import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow } from "@skynet/shared";
 import {
   isCreditExhaustionError,
   type HitlRaise,
@@ -3184,6 +3184,65 @@ export class Orchestrator {
   }
 
   /**
+   * Budget-as-allocation, pacing half: how much of the daily budget is
+   * "available to commit right now"? With `budgetPacing` off (default), the
+   * whole remaining budget is available immediately — unchanged from before
+   * this existed. With it on, availability grows linearly from $0 at local
+   * midnight to the full budget at `config.budgetPacingWindowMs` later, so a
+   * $20 budget doesn't get committed to the very first task the tick sees.
+   * Never exceeds the true remaining headroom (spend already made today) —
+   * pacing can only make the picker MORE conservative, never let it overspend
+   * a budget that's already tight. Returns Infinity for an unset budget (no
+   * ceiling at all — callers checking against it will just always fit).
+   */
+  private pacedAvailableUsd(project: Project, spentUsd: number, atMs: number): number {
+    if (project.dailyBudgetUsd == null) return Infinity;
+    const headroom = Math.max(0, project.dailyBudgetUsd - spentUsd);
+    if (!project.budgetPacing) return headroom;
+    const { start } = dayWindow(atMs);
+    const elapsed = Math.min(1, Math.max(0, (atMs - start) / config.budgetPacingWindowMs));
+    const pacedCeiling = project.dailyBudgetUsd * elapsed;
+    const pacedHeadroom = Math.max(0, pacedCeiling - spentUsd);
+    return Math.min(headroom, pacedHeadroom);
+  }
+
+  /**
+   * Budget-as-allocation, selection half: from `pickable` (already priority-
+   * sorted), greedily choose which tasks actually fit the budget available
+   * right now — walking in the SAME order, so priority always wins among
+   * whatever's affordable; a task is only ever SKIPPED (never reordered)
+   * when its rough cost band (`costBandFor`, from the free triage effort
+   * signal) would blow the remaining allowance, and the walk continues past
+   * it so a cheaper lower-priority task can still fit. No budget set → the
+   * full list, unchanged (byte-for-byte the pre-existing behavior). Logs
+   * once per tick (not once per skipped task) when anything was skipped, so
+   * a tight budget doesn't spam the run log every 15s.
+   */
+  private async selectAffordable(project: Project, runs: TaskRun[], pickable: Task[]): Promise<Task[]> {
+    if (project.dailyBudgetUsd == null || pickable.length === 0) return pickable;
+    const spend = computeDailySpend(runs, project.id, now());
+    let available = this.pacedAvailableUsd(project, spend.spentUsd, now());
+    const selected: Task[] = [];
+    const skipped: Task[] = [];
+    for (const t of pickable) {
+      const band = costBandFor(t.assessmentEffort);
+      if (band <= available) {
+        selected.push(t);
+        available -= band;
+      } else {
+        skipped.push(t);
+      }
+    }
+    if (skipped.length > 0) {
+      const names = skipped.map((t) => `"${t.text}"`).join(", ");
+      await this.hub
+        .runLog(`budget-${project.id}`, `skipped ${skipped.length} task(s) this tick — over today's remaining allowance: ${names}`)
+        .catch(() => undefined);
+    }
+    return selected;
+  }
+
+  /**
    * Autonomy loop: for each project with `autonomy` on and idle-agent capacity,
    * do the low-risk moves so tasks flow without a human — triage a backlog item
    * (agent writes an assessment), start an auto-pick todo task, and review a
@@ -3277,7 +3336,12 @@ export class Orchestrator {
               const pickable = mine
                 .filter((t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned")
                 .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
-              await Promise.allSettled(pickable.map((t) => this.assignTask(p.id, t.id)));
+              // Budget-as-allocation: still fires in the SAME priority order —
+              // this only trims tasks that don't fit what's left (see
+              // selectAffordable's own comment) — a no-op list transform when
+              // no budget is set.
+              const affordable = await this.selectAffordable(p, runs, pickable);
+              await Promise.allSettled(affordable.map((t) => this.assignTask(p.id, t.id)));
             }
             // 3) Review a finished run — runs REGARDLESS of `p.autonomy`.
             //    Recording a verdict is diagnostic (an LLM consult), not a
