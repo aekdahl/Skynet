@@ -5,7 +5,7 @@
 // gate acted on, never a second re-derivation. Pure (no I/O, no Date.now())
 // so both sides can call it with an already-fetched run list.
 
-import type { TaskRun } from "./contracts.js";
+import type { Task, TaskRun } from "./contracts.js";
 
 export interface DailySpend {
   /** Sum of `usage.costUsd` for the project's runs started in the window —
@@ -47,4 +47,43 @@ export function computeDailySpend(runs: TaskRun[], projectId: string, at: number
     else unknownCostRuns++;
   }
   return { spentUsd, unknownCostRuns, windowStart: start, windowEnd: end };
+}
+
+// ─── Cost-aware picking: rough $ bands from triage's existing effort call ───
+// Budget-as-allocation (ROADMAP: "$20 today" plans what fits, not just a stop-
+// gate). tickAutonomy's triage step already produces `Task.assessmentEffort`
+// (small/medium/large) via a real LLM call — this maps that FREE signal to a
+// static $ band. Deliberately not a second estimation call, and deliberately
+// not calibrated against actual spend by any automatic process (no ML here) —
+// callers that want to tune the table do it by hand from real cost data.
+
+/** Rough USD cost per triage effort bucket. */
+export const EFFORT_COST_BAND_USD: Record<"small" | "medium" | "large", number> = {
+  small: 0.5,
+  medium: 2,
+  large: 8,
+};
+
+/** Unknown effort (triage never ran, or produced no signal) assumes the
+ *  MIDDLE band, not zero — an un-triaged task must never look free to a
+ *  budget-aware picker, or unclassified work would always win a tight budget. */
+export const DEFAULT_COST_BAND_USD = EFFORT_COST_BAND_USD.medium;
+
+export function costBandFor(effort: Task["assessmentEffort"]): number {
+  return effort ? EFFORT_COST_BAND_USD[effort] : DEFAULT_COST_BAND_USD;
+}
+
+/** Rough USD "committed" to the project's currently in-flight (`ongoing`)
+ *  tasks — their cost bands, summed. Distinct from `computeDailySpend`'s
+ *  `spentUsd` (real, vendor-reported, only for FINISHED cost reporting): this
+ *  is a forward-looking estimate of what's already been started but hasn't
+ *  settled yet, so an operator sees "spent + committed" as the fuller picture
+ *  of where today's budget is actually headed. */
+export function committedUsd(tasks: Task[], projectId: string): number {
+  let total = 0;
+  for (const t of tasks) {
+    if (t.projectId !== projectId || t.state !== "ongoing") continue;
+    total += costBandFor(t.assessmentEffort);
+  }
+  return total;
 }
