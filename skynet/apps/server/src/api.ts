@@ -467,6 +467,16 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return fail(reply, err);
     }
   });
+  // Live GitHub check-run status — a real API call, fetched on demand by the
+  // card (not part of the polled snapshot). null = unreachable/unknown; the
+  // card falls back to showing no check-status affordance.
+  app.get<{ Params: { id: string } }>("/api/merges/:id/checks", async (req, reply) => {
+    try {
+      return await ops.prChecksForRun(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
 
   // Feature-scoped branch batching's aggregate PR — one per completed Feature,
   // not per task (see orchestrator.ts's checkFeatureCompletion). Only Merge +
@@ -485,6 +495,13 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     try {
       await ops.dismissReadyFeaturePr(ws(req), req.params.id);
       return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.get<{ Params: { id: string } }>("/api/features/:id/pr/checks", async (req, reply) => {
+    try {
+      return await ops.prChecksForFeature(ws(req), req.params.id);
     } catch (err) {
       return fail(reply, err);
     }

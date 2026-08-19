@@ -120,6 +120,10 @@ const ALLOW = new Set<string>([
   // end with real repos in merge.test.ts. No fleet journey completes an entire
   // multi-task feature batch, so allowlisted like the per-run actions above.
   "mergeFeaturePr", "dismissFeaturePr",
+  // Live GitHub check-run status for the ready-to-merge card — a real API call
+  // the card makes on mount, not a state-changing action a journey would drive.
+  // Covered server-side by ready-merge.test.ts's prChecksForRun/ForFeature tests.
+  "fetchPrChecks", "fetchFeaturePrChecks",
   // Checkpoint / snapshot-restore — creates a real git commit + pinned ref and,
   // on restore, stops the live handle and relaunches the provider with a
   // resumed SDK session. No offline journey can exercise the worktree
