@@ -13,11 +13,63 @@ export interface ReviewVerdict {
   reason: string;
 }
 
+// ─── Self-replenishing backlog: fleet-authored proposals ────────────────────
+// The reviewer (plain consult OR the deep-review run — both funnel through
+// this same field-based contract) may notice a discovery worth a new task
+// while looking at the change: a defect in what was just built, or a genuine
+// gap outside what was asked. Scope taxonomy is the valve — see
+// orchestrator.ts's processFleetProposals for what happens to each one.
+// Never parsed from prose: an absent/malformed `proposals` field is simply no
+// proposals, exactly like an unreadable verdict is simply a flag.
+export const PROPOSAL_SCOPE = ["in-scope", "new-scope"] as const;
+export type ProposalScope = (typeof PROPOSAL_SCOPE)[number];
+
+export interface ProposedTask {
+  title: string;
+  why: string;
+  scope: ProposalScope;
+}
+
+/** Hard cap on how many proposals one review can surface — bounds the fastest
+ *  possible growth rate of the backlog to a single number, independent of
+ *  every other guardrail (dedup / daily cap / feature size / budget) below.
+ *  Extra entries past this are silently ignored, never an error. */
+export const MAX_PROPOSALS_PER_REVIEW = 3;
+
 /** The instruction appended to the review consult so the model returns a verdict
  *  we can read as a field, not parse out of prose. */
 export const REVIEW_OUTPUT_INSTRUCTION =
-  'Respond with ONLY a JSON object and nothing else: {"verdict":"approve"|"flag","reason":"<one short line>"}. ' +
-  'Use "approve" if the run satisfies the task, "flag" if a human should look.';
+  'Respond with ONLY a JSON object and nothing else: {"verdict":"approve"|"flag","reason":"<one short line>",' +
+  '"proposals":[{"title":"<task name>","why":"<one short line>","scope":"in-scope"|"new-scope"}]}. ' +
+  'Use "approve" if the run satisfies the task, "flag" if a human should look. ' +
+  `"proposals" is OPTIONAL and OMIT it entirely unless you genuinely noticed something worth a new task — up to ${MAX_PROPOSALS_PER_REVIEW}, ` +
+  '"in-scope" ONLY for a defect/gap in what THIS change just built (something you\'d expect to be fixed as part of the same feature), ' +
+  '"new-scope" for anything else — an idea, an unrequested feature, or work outside what was actually asked for. ' +
+  'When genuinely unsure which scope applies, use "new-scope" — it always waits for a human either way.';
+
+/** Read the optional `proposals` field the SAME structured reply carries
+ *  alongside the verdict. Defensive at every level: a missing/non-array field
+ *  is no proposals; a malformed entry (missing title, empty title, unknown
+ *  scope) is dropped rather than rejecting the whole batch; the result is
+ *  always capped at {@link MAX_PROPOSALS_PER_REVIEW}, silently discarding any
+ *  overflow rather than erroring. Never invents a proposal from prose. */
+export function parseReviewProposals(reply: string): ProposedTask[] {
+  const obj = extractJsonObject(reply);
+  const raw = obj && Array.isArray(obj.proposals) ? obj.proposals : [];
+  const out: ProposedTask[] = [];
+  for (const entry of raw) {
+    if (out.length >= MAX_PROPOSALS_PER_REVIEW) break;
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const title = typeof e.title === "string" ? e.title.trim().slice(0, 200) : "";
+    if (!title) continue;
+    const scope = e.scope === "in-scope" || e.scope === "new-scope" ? e.scope : null;
+    if (!scope) continue;
+    const why = typeof e.why === "string" ? e.why.trim().slice(0, 500) : "";
+    out.push({ title, why, scope });
+  }
+  return out;
+}
 
 /** Pull the last balanced top-level `{…}` object out of a reply that may be
  *  wrapped in prose or a ```json fence. Returns the parsed object or null.

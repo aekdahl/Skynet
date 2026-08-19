@@ -220,6 +220,17 @@ export const config = {
   // streak. >0 enables (default 3); 0 disables. See orchestrator.ts
   // noteAutonomyOutcome / noteAutonomyBadOutcome.
   autonomyMaxConsecutiveFailures: Number(process.env.SKYNET_AUTONOMY_MAX_CONSECUTIVE_FAILURES ?? 3),
+  // Self-replenishing backlog: hard backstop on the fastest possible growth
+  // rate of a project's backlog from fleet-authored proposals (see
+  // review-verdict.ts's ProposedTask / orchestrator.ts's
+  // processFleetProposals) — independent of the per-review cap
+  // (MAX_PROPOSALS_PER_REVIEW), the feature-size guardrail, and the daily
+  // budget, all of which already bound growth from different angles. Counts
+  // EVERY fleet proposal accepted today (both auto-promoted in-scope tasks and
+  // parked new-scope ones — a flood of parked proposals is still noise a human
+  // has to triage). >0 enables (default 10); 0 disables fleet proposals
+  // entirely for every project.
+  fleetProposalMaxPerProjectPerDay: Number(process.env.SKYNET_FLEET_PROPOSAL_MAX_PER_PROJECT_PER_DAY ?? 10),
   // Expose the local folder browser (/api/fs/list) so the desktop UI can offer a
   // folder *picker* for connecting a project to a local repo. Local-only: it
   // reveals the server machine's filesystem, so it's ON only outside production

@@ -535,6 +535,15 @@ export const TaskSource = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("github_issue"), repo: z.string(), number: z.number().int(), url: z.string().default("") }),
   z.object({ kind: z.literal("repo_file"), path: z.string(), anchor: z.string().default("") }), // Phase 2
   z.object({ kind: z.literal("external"), system: z.string(), id: z.string(), url: z.string().default("") }), // Phase 3
+  // Self-replenishing backlog (v1 "autonomous sweep"): a task the fleet itself
+  // proposed while reviewing another run's work, never a human. `byRun` is the
+  // run whose review surfaced it; `reason` is the model's own "why" for the
+  // proposal, carried through for the operator's audit trail. `proposedAt` is
+  // the ONE place a fleet task's real creation time lives — Task itself has no
+  // generic createdAt field, and the daily-proposal-cap window needs a real
+  // timestamp, not `order` (a priority rank, not a clock). See
+  // review-verdict.ts's `ProposedTask` / orchestrator.ts's processFleetProposals.
+  z.object({ kind: z.literal("fleet"), byRun: z.string(), reason: z.string().default(""), proposedAt: Timestamp }),
 ]);
 export type TaskSource = z.infer<typeof TaskSource>;
 
