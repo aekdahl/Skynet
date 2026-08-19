@@ -158,6 +158,9 @@ export interface Store extends StoreState {
       autonomy?: boolean;
       // A daily USD ceiling on known spend; null clears back to "no limit".
       dailyBudgetUsd?: number | null;
+      // Spread the daily budget across a working window instead of committing
+      // it all in the first tick. Ignored unless dailyBudgetUsd is also set.
+      budgetPacing?: boolean;
       approvalLevel?: string;
       planModeGate?: boolean;
       // Tool names to block for this project's agents; null clears the restriction.

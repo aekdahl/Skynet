@@ -162,6 +162,12 @@ export const config = {
   // runs. 0 disables it entirely (fully human-driven). Per-project autonomy
   // flag still gates each project.
   autonomyMs: Number(process.env.SKYNET_AUTONOMY_MS ?? 15_000),
+  // Budget-as-allocation pacing window (ms): with `Project.budgetPacing` on,
+  // auto-pick treats the daily budget as available in proportion to how much
+  // of this window has elapsed since local midnight, instead of all at once.
+  // Default 8h — a rough workday. Purely a pacing knob; a project with pacing
+  // off ignores this entirely.
+  budgetPacingWindowMs: Number(process.env.SKYNET_BUDGET_PACING_WINDOW_MS ?? 8 * 60 * 60 * 1000),
   // Default agent-action approval level for NEW projects (existing projects keep
   // their stored level). See ApprovalLevel: `manual` gates every command,
   // `assisted` auto-approves low-risk, `trusted` (default) auto-approves

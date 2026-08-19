@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta, ProviderId, ProviderInfo } from "@skynet/shared";
-import { computeDailySpend } from "@skynet/shared";
+import { computeDailySpend, committedUsd } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { Blocked, PrimaryButton } from "../components/empty";
@@ -892,14 +892,19 @@ function ProjectStats({
     // spend that rounds to nothing) — special-case exact zero so a project with
     // no runs yet today reads as "$0.00", not the confusingly-nonzero-looking "<$0.01".
     const spentLabel = spend.spentUsd === 0 ? "$0.00" : fmtCost(spend.spentUsd);
+    // Rough $ estimate for tasks already IN FLIGHT (ongoing, no reported cost
+    // yet) — forward-looking, not real spend, so it's called out as "≈" and
+    // kept visually distinct from the known-spend number above.
+    const committed = committedUsd(tasks, project.id);
     cells.push({
       label: "Budget today",
-      value: `${spentLabel} / ${fmtCost(project.dailyBudgetUsd)}${paused ? " ⏸" : ""}`,
+      value: `${spentLabel} / ${fmtCost(project.dailyBudgetUsd)}${committed > 0 ? ` (≈${fmtCost(committed)} committed)` : ""}${paused ? " ⏸" : ""}`,
       title:
         (paused ? "Auto-pick is paused for the rest of today — you can still assign tasks manually. " : "") +
         (spend.unknownCostRuns > 0
-          ? `Known spend only — ${spend.unknownCostRuns} run(s) today didn't report a cost, so the real total may be higher.`
-          : "Known spend today vs. the daily budget."),
+          ? `Known spend only — ${spend.unknownCostRuns} run(s) today didn't report a cost, so the real total may be higher. `
+          : "Known spend today vs. the daily budget. ") +
+        (committed > 0 ? `≈${fmtCost(committed)} is a rough estimate for tasks currently in flight, not yet reported — not counted toward the ceiling itself.` : ""),
     });
   }
 
@@ -1499,6 +1504,24 @@ export function ProjectView({
               </span>
             </label>
             <ProjectDailyBudget project={project} onChange={(v) => updateProject(project.id, { dailyBudgetUsd: v })} />
+            {project.dailyBudgetUsd != null && (
+              <label
+                className="proj-autonomy"
+                title="Spread today's budget across a working window instead of committing it all to the first tasks the tick sees — early in the day only a fraction is available to new work, growing toward the full budget as the window elapses. Off by default: with it off, the whole remaining budget is available immediately."
+              >
+                <input
+                  type="checkbox"
+                  className="proj-autonomy-cb"
+                  checked={project.budgetPacing}
+                  onChange={(e) => updateProject(project.id, { budgetPacing: e.target.checked })}
+                />
+                <span className="proj-autonomy-switch" aria-hidden="true" />
+                <span className="proj-autonomy-text">
+                  <span className="proj-autonomy-label">Pace spend</span>
+                  <span className="proj-autonomy-hint">Spread the daily budget across the day instead of the first tasks picked.</span>
+                </span>
+              </label>
+            )}
             <label
               className="proj-autonomy"
               title="Every run proposes a plan first and pauses for your approval before making any changes. Off by default; Claude runners only for now."

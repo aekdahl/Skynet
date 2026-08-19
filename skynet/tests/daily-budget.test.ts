@@ -151,7 +151,13 @@ describe("tickAutonomy — daily budget gate", () => {
     // above $1, but the gate only acts on KNOWN spend (which is $0 here).
     await store.putRun(mkRun({ id: "u1", startedAt: Date.now(), usage: null }));
     await store.putRun(mkRun({ id: "u2", startedAt: Date.now(), usage: cost(null) }));
-    await store.putTask(mkTask());
+    // assessmentEffort: "small" — an unrelated dimension (budget-allocation's
+    // cost-band picking, see budget-allocation.test.ts) treats a task with NO
+    // effort signal as the conservative "medium" band ($2), which would
+    // itself exceed this test's $1 budget and mask what THIS test is actually
+    // checking (that unreported RUN cost doesn't trip the gate). Pin it small
+    // ($0.5, well under $1) so only the dimension under test varies.
+    await store.putTask(mkTask({ assessmentEffort: "small" }));
 
     await orch.tickAutonomy();
 
