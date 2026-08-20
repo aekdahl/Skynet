@@ -35,7 +35,7 @@ import { seedBootstrapToken } from "./auth/bootstrap.js";
 import { MemoryOperatorDirectory, seedOperators } from "./auth/operators.js";
 import { MemoryElevationStore } from "./auth/elevations.js";
 import { registerAuthRoutes, registerServiceTokenRoutes } from "./auth/routes.js";
-import { mfaEnabled, ensureRecoveryCodes } from "./auth/mfa.js";
+import { ensureRecoveryCodes } from "./auth/mfa.js";
 import { startTelegramBridge } from "./telegram/index.js";
 import { MemoryStore } from "./store/memory.js";
 import type { Store } from "./store/store.js";
@@ -128,9 +128,14 @@ async function main() {
   // written to disk.
   const serviceTokens = new StoreServiceTokenStore(store);
   configureAuth({ sessions, serviceTokens, elevations });
-  // MFA on (SKYNET_MFA): generate recovery codes once (plaintext written to a
-  // 0600 file on /data for one-time SSH retrieval; hashes persisted).
-  if (mfaEnabled()) ensureRecoveryCodes((m) => console.log(m));
+  // Recovery codes: generate once (plaintext written to a 0600 file on /data
+  // for one-time SSH retrieval; hashes persisted) — idempotent, a no-op past
+  // the first boot. Unconditional now (not gated on mfaEnabled()): a
+  // workspace can turn MFA on LIVE via its own Settings toggle
+  // (requireLoginVerification), with SKYNET_MFA never set at boot — codes
+  // must already exist before that happens, or a Telegram delivery failure
+  // could lock the operator out with no escape but SSH break-glass.
+  ensureRecoveryCodes((m) => console.log(m));
   // Headless/sandbox deploys: register the agent-provided bootstrap token so it
   // can call /mcp without a human login (no-op unless SKYNET_BOOTSTRAP_TOKEN set).
   const bootstrap = await seedBootstrapToken(serviceTokens);
@@ -181,7 +186,7 @@ async function main() {
 
   app.get("/health", async () => ({ ok: true, store: config.store, bus: config.bus, runner: "per-runner", sessions: config.sessions }));
 
-  await registerAuthRoutes(app, { sessions, operators, elevations });
+  await registerAuthRoutes(app, { sessions, operators, elevations, operations });
   await registerServiceTokenRoutes(app, { serviceTokens, operations });
   await registerApi(app, { operations, orchestrator });
   // MCP endpoint (Streamable HTTP) — runs drive Skynet through the same

@@ -1392,6 +1392,27 @@ function AdminPromotionSection() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Login verification (MFA) toggle — a separate fetch/save from the
+  // promotion state above (a different backing record, WorkspaceSettings),
+  // same local-state pattern FleetAutomationSection uses for the same type.
+  const [mfaSettings, setMfaSettings] = useState<WorkspaceSettings | null>(null);
+  const [mfaBusy, setMfaBusy] = useState(false);
+  const [mfaErr, setMfaErr] = useState<string | null>(null);
+  useEffect(() => {
+    api.fetchWorkspaceSettings().then(setMfaSettings).catch(() => setMfaErr("Couldn't load the login setting."));
+  }, []);
+  const saveMfa = async (patch: UpdateWorkspaceSettingsRequest) => {
+    setMfaBusy(true);
+    setMfaErr(null);
+    try {
+      setMfaSettings(await api.updateWorkspaceSettings(patch));
+    } catch (e) {
+      setMfaErr((e as Error).message);
+    } finally {
+      setMfaBusy(false);
+    }
+  };
+
   const load = useCallback(async () => {
     try {
       const [ops, evs] = await Promise.all([fetchOperators(), fetchElevations()]);
@@ -1430,6 +1451,24 @@ function AdminPromotionSection() {
         Time-limited admin promotion — grant a viewer a bounded full-authority window (break-glass /
         sudo-style). It reverts on its own once the window lapses; every grant and expiry is audited below.
       </div>
+
+      {mfaErr && <div className="settings-warn">{mfaErr}</div>}
+      {mfaSettings && (
+        <label
+          className="proj-autonomy"
+          title="Require a one-time verification code (sent via Telegram, or a recovery code) after the password, before a session is issued. A server-wide SKYNET_MFA=true env flag can also force this on regardless of this toggle."
+        >
+          <input
+            type="checkbox"
+            className="proj-autonomy-cb"
+            checked={mfaSettings.requireLoginVerification}
+            disabled={mfaBusy}
+            onChange={(e) => void saveMfa({ requireLoginVerification: e.target.checked })}
+          />
+          <span className="proj-autonomy-switch" aria-hidden="true" />
+          <span className="proj-autonomy-label">Require a verification code on login</span>
+        </label>
+      )}
 
       {err && <div className="settings-warn">{err}</div>}
 

@@ -27,9 +27,18 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ha, hb);
 }
 
-/** MFA is active only when explicitly enabled and not broken-glass (SSH escape). */
-export function mfaEnabled(): boolean {
-  return config.mfa && !config.mfaBreakGlass;
+/**
+ * MFA is active for a login when EITHER the server-wide env flag
+ * (`SKYNET_MFA=true`, an infra-level override for a hosted deploy that wants
+ * it non-negotiable) OR the logging-in operator's own workspace has the live
+ * Settings toggle on (`WorkspaceSettings.requireLoginVerification` — the
+ * day-to-day control, flippable with no restart) — but NEVER while the SSH
+ * break-glass (`SKYNET_MFA_DISABLE`) is set, which always wins over both.
+ * `workspaceRequiresIt` defaults false so every existing call site (and every
+ * test) that doesn't pass it keeps today's env-var-only behavior unchanged.
+ */
+export function mfaEnabled(workspaceRequiresIt = false): boolean {
+  return (config.mfa || workspaceRequiresIt) && !config.mfaBreakGlass;
 }
 
 interface Challenge {

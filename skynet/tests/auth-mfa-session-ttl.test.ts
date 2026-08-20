@@ -13,6 +13,14 @@ import { MemorySessionStore } from "../apps/server/src/auth/sessions.js";
 import { MemoryOperatorDirectory, makeOperator } from "../apps/server/src/auth/operators.js";
 import { MemoryElevationStore } from "../apps/server/src/auth/elevations.js";
 import { config } from "../apps/server/src/config.js";
+import { WorkspaceSettings } from "@skynet/shared";
+
+// The login route reads the operator's own workspace's live
+// requireLoginVerification toggle (see mfa.ts's mfaEnabled) — this suite
+// exercises the SKYNET_MFA env flag path only, so the toggle stays off.
+const operationsStub = {
+  getWorkspaceSettings: async (ws: string) => WorkspaceSettings.parse({ workspaceId: ws }),
+};
 
 const EMAIL = "op@example.com";
 const PASSWORD = "correct-horse-battery-staple";
@@ -34,7 +42,7 @@ describe("MFA-verified sessions get the long TTL", () => {
     sessions = new MemorySessionStore();
     operators = new MemoryOperatorDirectory([makeOperator("op", "cyberdyne", EMAIL, PASSWORD)]);
     app = Fastify();
-    await registerAuthRoutes(app, { sessions, operators, elevations: new MemoryElevationStore() });
+    await registerAuthRoutes(app, { sessions, operators, elevations: new MemoryElevationStore(), operations: operationsStub });
     await app.ready();
 
     // Deterministic TTLs so the assertions can compare on the exact value.
