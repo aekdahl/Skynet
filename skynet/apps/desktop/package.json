@@ -41,7 +41,14 @@
     "mac": {
       "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
       "category": "public.app-category.developer-tools",
-      "icon": "build-assets/icon.png"
+      "icon": "build-assets/icon.png",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build-assets/entitlements.mac.plist",
+      "entitlementsInherit": "build-assets/entitlements.mac.plist",
+      "notarize": {
+        "teamId": "${APPLE_TEAM_ID}"
+      }
     },
     "win": {
       "target": [{ "target": "nsis", "arch": ["x64"] }],

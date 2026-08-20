@@ -123,10 +123,30 @@ the macOS + Windows installers and publishes them to that tag's GitHub Release.
 `electron-updater` checks the same releases on launch and updates in the
 background.
 
-> **Code signing is deferred.** Builds are unsigned for now: macOS users must
-> right-click → Open the first time, and macOS auto-update stays inactive until
-> the build is signed (Windows background update works unsigned). Add an Apple
-> Developer ID + Windows cert before wider distribution.
+> **Code signing requires GitHub secrets.** When the secrets below are set the
+> CI release workflow signs and notarizes automatically. Without them the build
+> is unsigned (macOS Gatekeeper warning + no mac auto-update; SmartScreen
+> warning on Windows).
+>
+> **macOS** — set these secrets on the repo:
+>
+> | Secret | What it is |
+> |--------|-----------|
+> | `APPLE_CSC_LINK` | Apple Developer ID Application certificate, base64-encoded `.p12` (`base64 -i cert.p12`) |
+> | `APPLE_CSC_KEY_PASSWORD` | Password for that `.p12` |
+> | `APPLE_ID` | Apple ID email used for notarization |
+> | `APPLE_APP_SPECIFIC_PASSWORD` | [App-specific password](https://support.apple.com/en-us/102654) for that Apple ID |
+> | `APPLE_TEAM_ID` | 10-character Apple Developer team ID (visible in the Apple Developer portal) |
+>
+> **Windows** — set these secrets on the repo:
+>
+> | Secret | What it is |
+> |--------|-----------|
+> | `WIN_CSC_LINK` | Code-signing certificate, base64-encoded `.pfx` (`base64 -i cert.pfx`) |
+> | `WIN_CSC_KEY_PASSWORD` | Password for that `.pfx` |
+>
+> Secrets that are absent or empty are silently skipped — the build still
+> completes, just unsigned.
 
 ## App icon
 
