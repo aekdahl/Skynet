@@ -5,6 +5,7 @@ import * as api from "../lib/client";
 import { readyMerges, readyFeatureMerges, fmtCost, fmtNum, fleetAgentName, projectName } from "../lib/derive";
 import { RiskChip } from "../components/hitl-context";
 import { Blocked } from "../components/empty";
+import { RefreshIcon } from "../components/icons";
 
 // The recommendation the AI reviewer left, as a colored chip. Merge = the run
 // satisfies the task; rework = a reviewer flagged it; hold = neither (unclear).
@@ -51,7 +52,7 @@ function PrChecksBadge({ fetchChecks }: { fetchChecks: () => Promise<PrChecksSta
   return (
     <span className={`merge-checks ${meta.cls}`}>
       {meta.label}
-      <button className="merge-checks-refresh" onClick={load} title="Re-check">↻</button>
+      <button className="merge-checks-refresh" onClick={load} title="Re-check CI status" aria-label="Re-check CI status"><RefreshIcon /></button>
     </span>
   );
 }

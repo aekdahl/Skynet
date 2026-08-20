@@ -253,9 +253,9 @@ export function OpSidebar({
     active: boolean,
     badge?: number,
   ) => (
-    <button className={"op-navitem" + (active ? " on" : "")} onClick={onClick}>
-      <span className="ic"><Ic /></span> {label}
-      {badge != null && badge > 0 && <span className="badge">{badge}</span>}
+    <button className={"op-navitem" + (active ? " on" : "")} onClick={onClick} aria-current={active ? "page" : undefined}>
+      <span className="ic" aria-hidden="true"><Ic /></span> {label}
+      {badge != null && badge > 0 && <span className="badge" aria-label={`${badge} pending`}>{badge}</span>}
     </button>
   );
 
@@ -318,7 +318,7 @@ export function OpSidebar({
             className="op-pitem"
             onClick={() => onOpenProject(p.id)}
           >
-            <span className="op-pdot" style={{ background: dotColor(p) }} />
+            <span className="op-pdot" style={{ background: dotColor(p) }} aria-hidden="true" />
             <span className="nm">{p.name}</span>
           </button>
         ))}
@@ -363,12 +363,13 @@ export function OpStatusBar({
       <button
         className={"op-sb-stat" + (open === key ? " on" : "")}
         onClick={() => setOpen(open === key ? null : key)}
+        aria-expanded={open === key}
       >
-        <span className={"dot " + dot} />
+        <span className={"dot " + dot} aria-hidden="true" />
         <b>{list.length}</b> {label}
       </button>
       {open === key && (
-        <span className="op-sb-menu">
+        <span className="op-sb-menu" role="listbox" aria-label={label}>
           {list.length === 0 && (
             <span className="op-sb-empty">nothing here right now</span>
           )}
@@ -404,7 +405,7 @@ export function OpStatusBar({
           </>
         )}
       </span>
-      {open && <span className="stat-backdrop" onClick={() => setOpen(null)} />}
+      {open && <span className="stat-backdrop" onClick={() => setOpen(null)} aria-hidden="true" />}
     </footer>
   );
 }
