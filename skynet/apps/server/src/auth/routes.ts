@@ -47,6 +47,7 @@ export interface AuthRouteDeps {
   sessions: SessionStore;
   operators: OperatorDirectory;
   elevations: ElevationStore;
+  operations: Pick<Operations, "getWorkspaceSettings">;
 }
 
 /** A minimal, non-secret view of an operator record for the promotion UI —
@@ -69,7 +70,7 @@ function clearSessionCookie(reply: FastifyReply): void {
 }
 
 export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): Promise<void> {
-  const { sessions, operators, elevations } = deps;
+  const { sessions, operators, elevations, operations } = deps;
 
   // Never trust a live Principal's CURRENT scopes for an admin-only check —
   // a temporarily-elevated viewer's scopes look identical to a real admin's
@@ -108,8 +109,11 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     const principal = operators.verify(body.data.email, body.data.password);
     if (!principal) return reply.code(401).send({ error: "Invalid credentials" });
-    // No MFA (or broken-glass via SKYNET_MFA_DISABLE): issue the session directly.
-    if (!mfaEnabled()) return issueSession(reply, principal, { mfa: false });
+    // Required either server-wide (SKYNET_MFA=true) or by this operator's own
+    // workspace's live Settings toggle — see mfa.ts's mfaEnabled doc. Broken-
+    // glass (SKYNET_MFA_DISABLE) always wins over both, checked inside it.
+    const { requireLoginVerification } = await operations.getWorkspaceSettings(principal.workspaceId);
+    if (!mfaEnabled(requireLoginVerification)) return issueSession(reply, principal, { mfa: false });
     // MFA on: don't issue a session yet. Send a one-time code to the owner's
     // Telegram and require it (or a recovery code) at /api/auth/mfa. The code
     // never leaves the server except via Telegram, so a stolen password alone

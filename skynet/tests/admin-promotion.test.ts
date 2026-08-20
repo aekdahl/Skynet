@@ -160,7 +160,7 @@ describe("POST /api/operators/:operatorId/promote — real Fastify app, real sto
     const operations = new Operations({ store, hub, orchestrator });
 
     app = Fastify();
-    await registerAuthRoutes(app, { sessions, operators, elevations });
+    await registerAuthRoutes(app, { sessions, operators, elevations, operations });
     await registerApi(app, { operations, orchestrator });
     app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: "Not found" }));
     await app.ready();

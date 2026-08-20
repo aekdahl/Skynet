@@ -1495,6 +1495,15 @@ export const WorkspaceSettings = z.object({
   // every browser action (navigate/click/…) still rides the normal HITL approval
   // gate like any other non-read tool. Claude runners only for now.
   browserTools: z.boolean().default(false),
+  // Require the Telegram-OTP / recovery-code second factor on login for this
+  // workspace's operators (see apps/server/src/auth/mfa.ts). Off by default —
+  // matches today's behavior for a workspace that never touches this toggle.
+  // `SKYNET_MFA=true` still forces it on server-wide regardless of this
+  // setting (an infra-level override for a hosted deploy that wants MFA
+  // non-negotiable); `SKYNET_MFA_DISABLE` (the SSH break-glass) still wins
+  // over both. This toggle is the day-to-day operator control — flip it live,
+  // no restart, no env var edit.
+  requireLoginVerification: z.boolean().default(false),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 
@@ -1505,6 +1514,7 @@ export const UpdateWorkspaceSettingsRequest = z.object({
   maxRunners: z.number().int().min(0).optional(),
   retireIdleRunnersAfterMinutes: z.number().int().min(0).optional(),
   browserTools: z.boolean().optional(),
+  requireLoginVerification: z.boolean().optional(),
 });
 export type UpdateWorkspaceSettingsRequest = z.infer<typeof UpdateWorkspaceSettingsRequest>;
 
