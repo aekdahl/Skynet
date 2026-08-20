@@ -59,3 +59,14 @@ jobs:
         run: pnpm run publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS: Apple Developer ID certificate (base64-encoded .p12) + notarization creds.
+          # Leave unset to build unsigned (Gatekeeper warning, auto-update disabled on mac).
+          CSC_LINK: ${{ secrets.APPLE_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows: code-signing certificate (base64-encoded .pfx) to clear SmartScreen.
+          # Leave unset to build unsigned.
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}

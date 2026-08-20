@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!--
+      Required for Electron's V8 engine JIT compilation.
+      Without this, the app crashes immediately under hardened runtime.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!--
+      Required for Node.js (used by the bundled server child process)
+      to write executable memory without code-signing that memory.
+    -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!--
+      Required for Electron to set DYLD_INSERT_LIBRARIES and related vars
+      when launching helper processes.
+    -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+  </dict>
+</plist>
