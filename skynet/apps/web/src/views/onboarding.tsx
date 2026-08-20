@@ -1,8 +1,9 @@
 // ─── First-run setup ──────────────────────────────────────────────────────
 // Shown once for a fresh, empty workspace (App gates on it). Sets the workspace
 // up against the REAL backend: name it (local), review the module map (read-only
-// — it's defined by .skynet/modules.json in the repo), and configure the fleet
-// (creates runners → /api/fleet/runners). No workspace-create API is needed.
+// — it's defined by .skynet/modules.json in the repo), connect a provider (enter
+// + live-verify an API key), and configure the fleet (creates runners →
+// /api/fleet/runners). No workspace-create API is needed.
 // GitHub is deliberately NOT a wizard step — Integrations owns that connect flow
 // post-onboarding, so a first-run user never meets it mid-wizard.
 
@@ -11,14 +12,16 @@ import type { ProviderInfo } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { operatorHandle, setOnboarded, setOperatorHandle } from "../lib/firstrun";
 import { PrimaryButton } from "../components/empty";
+import * as api from "../lib/client";
 
-const STEPS = ["Workspace", "Module map", "Fleet"];
+const STEPS = ["Workspace", "Module map", "Connect", "Fleet"];
 
 // Right-column context for each step — the "why" and what happens next, so the
 // form column stays focused on the single input the step asks for.
 const STEP_NOTES = [
   "Name your team's mission control. Every project, agent, and decision lives under it — you can rename it later.",
   "Read-only here. The map comes from .skynet/modules.json in your repo and powers conflict detection and the allowlist.",
+  "Paste your API key — stored encrypted on this machine, never sent to us. Skynet pings the vendor to confirm the key works before you continue.",
   "Each row becomes an agent you can assign work to — same provider on different models is fine. Agents are auto-named; add, retire, rename, or retune the fleet anytime.",
 ];
 
@@ -31,6 +34,23 @@ function Mark() {
       </text>
     </svg>
   );
+}
+
+// Minimal verify-state type + badge for the Connect step — mirrors the one in
+// settings.tsx but defined here so onboarding has no dependency on that view.
+type ConnectVerifyState =
+  | { status: "verifying" }
+  | { status: "ok"; message?: string }
+  | { status: "fail"; message?: string };
+
+function ConnectVerifyBadge({ state }: { state: ConnectVerifyState }) {
+  if (state.status === "verifying") {
+    return <span className="settings-verify settings-verify-pending mono">⟳ verifying…</span>;
+  }
+  if (state.status === "ok") {
+    return <span className="settings-verify settings-verify-ok mono">✓ {state.message ?? "verified"}</span>;
+  }
+  return <span className="settings-verify settings-verify-fail mono">✕ {state.message ?? "verification failed — double-check the key"}</span>;
 }
 
 export function Onboarding({ onDone }: { onDone: () => void }) {
@@ -48,6 +68,49 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const [fleetRows, setFleetRows] = useState<{ provider: string; model: string }[]>([]);
   const [busy, setBusy] = useState(false);
 
+  // ── Connect step state ───────────────────────────────────────────────────
+  // connectOk: true once any provider has a credential (env or stored), or
+  // after the user saves a key or explicitly skips.
+  const [connectOk, setConnectOk] = useState(() =>
+    store.providers.some((p) => p.available !== false),
+  );
+  // Default to the first provider without a credential (most useful for the new
+  // user), falling back to the first provider overall.
+  const [connectProvider, setConnectProvider] = useState(
+    () => store.providers.find((p) => p.available === false)?.id ?? store.providers[0]?.id ?? "",
+  );
+  const [connectKey, setConnectKey] = useState("");
+  const [connectBusy, setConnectBusy] = useState(false);
+  const [connectVerify, setConnectVerify] = useState<ConnectVerifyState | null>(null);
+  const [connectErr, setConnectErr] = useState<string | null>(null);
+
+  const saveConnectKey = async () => {
+    const key = connectKey.trim();
+    if (!key || connectBusy) return;
+    setConnectBusy(true);
+    setConnectErr(null);
+    setConnectVerify(null);
+    try {
+      await api.setSecret(connectProvider, key);
+      store.setProviderAvailable(connectProvider, true);
+      setConnectOk(true);
+      setConnectKey("");
+      setConnectBusy(false);
+      // Non-blocking live verify — updates the badge but never blocks progress.
+      const provider = connectProvider;
+      setConnectVerify({ status: "verifying" });
+      void api.verifyCredential(provider).then((result) => {
+        setConnectVerify({ status: result.ok ? "ok" : "fail", message: result.message });
+      }).catch(() => {
+        setConnectVerify({ status: "fail", message: "Couldn't reach the vendor to verify." });
+      });
+    } catch (e) {
+      setConnectErr(`Couldn't save the key: ${(e as Error).message}`);
+      setConnectVerify(null);
+      setConnectBusy(false);
+    }
+  };
+
   const firstReadyProvider = (): ProviderInfo | undefined =>
     store.providers.find((p) => p.available !== false) ?? store.providers[0];
 
@@ -63,7 +126,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const valid = [
     workspace.trim().length > 0,
     true,
-    fleetRows.length > 0 && fleetRows.every((r) => r.model),
+    connectOk,
+    fleetRows.length > 0 && fleetRows.every((r) => r.model && store.providers.find((p) => p.id === r.provider)?.available !== false),
   ];
   const last = step === STEPS.length - 1;
   const canNext = valid[step];
@@ -118,9 +182,11 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const blockReason = !canNext
     ? step === 0
       ? "Enter a workspace name to continue."
-      : step === STEPS.length - 1
-        ? "Select at least one provider to start your fleet."
-        : undefined
+      : step === 2
+        ? "Save a key above, or click \"Skip\" to add one later."
+        : step === STEPS.length - 1
+          ? "Select at least one provider to start your fleet."
+          : undefined
     : undefined;
 
   return (
@@ -192,6 +258,61 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
         {step === 2 && (
           <>
+            <h1 className="ob-h">Connect a provider</h1>
+            <p className="ob-sub">Paste your API key — stored encrypted on this machine, never sent to us. Skynet pings the vendor to confirm the key works before you continue.</p>
+            <div className="ob-field">
+              <label className="ob-label">Provider</label>
+              <select
+                className="ob-fleet-select"
+                value={connectProvider}
+                onChange={(e) => {
+                  setConnectProvider(e.target.value);
+                  setConnectKey("");
+                  setConnectVerify(null);
+                  setConnectErr(null);
+                }}
+              >
+                {store.providers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}{p.available !== false ? " ✓" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="ob-field">
+              <label className="ob-label">API key</label>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  className="qx-input"
+                  type="password"
+                  placeholder="Paste key here…"
+                  value={connectKey}
+                  onChange={(e) => setConnectKey(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void saveConnectKey()}
+                  disabled={connectBusy}
+                  style={{ flex: 1 }}
+                />
+                <button
+                  className="btn btn-primary"
+                  onClick={() => void saveConnectKey()}
+                  disabled={!connectKey.trim() || connectBusy}
+                >
+                  {connectBusy ? "Saving…" : "Save"}
+                </button>
+              </div>
+              {connectVerify && <ConnectVerifyBadge state={connectVerify} />}
+              {connectErr && <p className="ob-hint" style={{ color: "var(--danger)" }}>{connectErr}</p>}
+            </div>
+            {connectOk && (
+              <p className="ob-hint" style={{ color: "var(--ok)" }}>
+                ✓ Provider connected — you can continue.
+              </p>
+            )}
+          </>
+        )}
+
+        {step === 3 && (
+          <>
             <h1 className="ob-h">Configure your fleet</h1>
             <p className="ob-sub">Add the agents Skynet can spin up — a provider and model each. Add several (even the same provider on different models); rename, retire, or tune them anytime in Fleet.</p>
             <div className="ob-fleet-rows">
@@ -233,6 +354,9 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           </PrimaryButton>
         </div>
         {step === 0 && <button className="ob-skip" onClick={skip}>Skip setup</button>}
+        {step === 2 && !connectOk && (
+          <button className="ob-skip" onClick={() => setConnectOk(true)}>Skip — add a key later in Settings</button>
+        )}
         </div>
       </div>
     </div>
