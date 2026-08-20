@@ -663,6 +663,12 @@ function TaskCard({
                 ×
               </button>
             </div>
+            {s === "triage" && (
+              <p className="kb-detail-desc kb-detail-empty">
+                Parked here because the autonomy assessment was unclear — nothing re-checks a parked task
+                automatically. Move it to Todo (or back to Backlog) yourself when it's ready.
+              </p>
+            )}
             <h3 className="kb-detail-title">{task.text}</h3>
             {task.description ? (
               <p className="kb-detail-desc">{task.description}</p>
@@ -1792,6 +1798,11 @@ export function ProjectView({
               <div className="kb-head" style={{ color: meta.color }}>
                 <span className="kb-pip" style={{ background: meta.color }} aria-hidden="true" />
                 {meta.label}
+                {meta.hint && (
+                  <span className="kb-head-hint" title={meta.hint} aria-label={meta.hint}>
+                    ⓘ
+                  </span>
+                )}
                 <span className="kb-count">{colTasks.length}</span>
               </div>
               <div className="kb-lane-body">

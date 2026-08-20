@@ -321,9 +321,18 @@ export function conflicts(runs: TaskRun[]): Array<[string, TaskRun[]]> {
 
 // The kanban pipeline, in column order, with per-state label + accent.
 export const TASK_STATES = ["backlog", "triage", "todo", "ongoing", "review", "done"] as const;
-export const TASK_STATE_META: Record<TaskState, { label: string; color: string }> = {
+export const TASK_STATE_META: Record<TaskState, { label: string; color: string; hint?: string }> = {
   backlog: { label: "BACKLOG", color: "var(--muted)" },
-  triage: { label: "TRIAGE", color: "var(--info)" },
+  // A task lands here when autonomy's triage step read its assessment as
+  // unclear (or backlog is being triaged with no clear signal at all) — it
+  // does NOT get re-visited automatically: the triage step only ever looks at
+  // `backlog`-state tasks, never `triage`-state ones. Moving it on to Todo (or
+  // back to Backlog) is a human call every time.
+  triage: {
+    label: "TRIAGE",
+    color: "var(--info)",
+    hint: "Parked here because the autonomy assessment was unclear. Nothing re-checks a parked task automatically — move it to Todo (or back to Backlog) yourself when it's ready.",
+  },
   todo: { label: "TODO", color: "var(--accent)" },
   ongoing: { label: "ONGOING", color: "var(--ok)" },
   review: { label: "REVIEW", color: "var(--warn)" },
