@@ -1546,6 +1546,40 @@ export function ProjectView({
                 <span className="proj-autonomy-hint">Agents propose a plan and pause for approval before writing any changes.</span>
               </span>
             </label>
+            <label
+              className="proj-autonomy"
+              title="At review time, a second bounded Claude agent opens a live preview of the changed branch and actually clicks through the behavior before writing its verdict — instead of a stateless one-shot text consult. Off by default (a real agent run, not a cheap call); falls back to the plain consult if the preview can't start or the reviewer times out."
+            >
+              <input
+                type="checkbox"
+                className="proj-autonomy-cb"
+                checked={project.deepReview}
+                onChange={(e) => updateProject(project.id, { deepReview: e.target.checked })}
+              />
+              <span className="proj-autonomy-switch" aria-hidden="true" />
+              <span className="proj-autonomy-text">
+                <span className="proj-autonomy-label">Deep review</span>
+                <span className="proj-autonomy-hint">A second agent actually runs the change in a live preview before approving — not just reading the diff.</span>
+              </span>
+            </label>
+            {project.deepReview && (
+              <label
+                className="proj-autonomy"
+                title="After the deep reviewer approves, a third agent tries to BREAK the change — malformed input, edge cases, auth boundaries, concurrent actions. Any reproduced medium+ severity finding flips the verdict to flag. Requires deep review on. Off by default."
+              >
+                <input
+                  type="checkbox"
+                  className="proj-autonomy-cb"
+                  checked={project.breakerReview}
+                  onChange={(e) => updateProject(project.id, { breakerReview: e.target.checked })}
+                />
+                <span className="proj-autonomy-switch" aria-hidden="true" />
+                <span className="proj-autonomy-text">
+                  <span className="proj-autonomy-label">Breaker review</span>
+                  <span className="proj-autonomy-hint">After the verifier approves, an adversarial agent tries to reproduce failures before it passes.</span>
+                </span>
+              </label>
+            )}
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectFlyAccount project={project} onChange={(id) => updateProject(project.id, { flyCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
