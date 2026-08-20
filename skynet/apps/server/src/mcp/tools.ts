@@ -56,7 +56,8 @@ const INSTRUCTIONS = `Skynet orchestrates a fleet of coding runs across projects
 5. wait_for_agent to block until an agent finishes or needs review.
 6. Move work across the board with transition_task (triage→todo, review→done, ongoing→todo to abandon); prioritize with move_task / reorder_task; group with features + milestones.
 Risky actions (approving diffs, pushing to GitHub) are gated behind HITL. A token without the "approver" scope can observe and drive runs but cannot resolve gates — a human must.
-list_agents / list_tasks / list_audit / get_snapshot return COMPACT SUMMARIES, not full records — no activity logs, descriptions, or captured diff patches, so listing a busy workspace stays cheap. Once you've found the ONE run/task/decision you care about, drill in with get_agent / get_task / get_audit for its full detail. get_agent's log defaults to the most recent entries (see logTotal/logTruncated) rather than a run's entire history.`;
+list_agents / list_tasks / list_audit / get_snapshot return COMPACT SUMMARIES, not full records — no activity logs, descriptions, or captured diff patches, so listing a busy workspace stays cheap. Once you've found the ONE run/task/decision you care about, drill in with get_agent / get_task / get_audit for its full detail. get_agent's log defaults to the most recent entries (see logTotal/logTruncated) rather than a run's entire history.
+Every update_* tool (update_task, update_feature, update_milestone, update_project, update_runner, update_workspace_settings) is a true PATCH: send ONLY the field(s) you actually want to change. Omitting a field leaves it untouched; explicitly passing a nullable field as null CLEARS it (e.g. update_task's featureId: null removes the task from its feature). Sending null for a field you don't intend to change WILL wipe it out — never fill in every schema property just because it's listed as a parameter.`;
 
 type Shape = z.ZodRawShape;
 type Args<S extends Shape> = z.infer<z.ZodObject<S>>;
@@ -369,7 +370,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     const { projectId, ...body } = a;
     return operations.createTask(ws, projectId, body);
   });
-  tool("update_task", "author", "Update a task's editable fields: text, description, autoPick, agent eligibility (assignment), schedule (estimatedDurationMs / plannedStartAt), or roadmap link (featureId / milestoneId). To MOVE a task through the board (change its state) use transition_task — state transitions are guarded and can't be set here.", { taskId: z.string(), ...UpdateTaskRequest.shape }, (a) => {
+  tool("update_task", "author", "Update a task's editable fields: text, description, autoPick, agent eligibility (assignment), schedule (estimatedDurationMs / plannedStartAt), or roadmap link (featureId / milestoneId). To MOVE a task through the board (change its state) use transition_task — state transitions are guarded and can't be set here. PATCH semantics: omit any field you don't want to change — every field here is nullable, and passing one as null explicitly CLEARS it (e.g. featureId: null un-links the task). Never include a field just because it's in the schema; only send what you're actually changing.", { taskId: z.string(), ...UpdateTaskRequest.shape }, (a) => {
     const { taskId, ...patch } = a;
     return operations.updateTask(ws, taskId, patch);
   });
