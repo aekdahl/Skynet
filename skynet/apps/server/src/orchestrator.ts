@@ -490,6 +490,11 @@ export function computeFeatureMergeBriefing(input: {
   };
 }
 
+/** Why a run got halted and handed to a human — see `escalate()`/`raiseEscalationCard()`.
+ *  "agent" is agent-driven (the run itself called AskUserQuestion with header
+ *  "ESCALATE") and is set directly in `raise()`, never via `escalate()`. */
+type EscalationSource = "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing" | "agent";
+
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   // Global kill switch. When paused, the autonomy loop is a no-op (no new work is
@@ -532,7 +537,7 @@ export class Orchestrator {
   // after the live handle is torn down. Presence = "already escalated" (so a
   // guard doesn't re-raise). Cleared when the escalation is resolved or the run
   // completes. See escalate() / deliverEscalation() / relaunchEscalated().
-  private escalations = new Map<string, { git?: GitContext; baseRef?: string; taskId: string | null; source: string }>();
+  private escalations = new Map<string, { git?: GitContext; baseRef?: string; taskId: string | null; source: EscalationSource }>();
   // Per-run failure counter (onFailed): past config.runMaxFailures the run is
   // escalated instead of parked in `review`. Cleared on success/resolution.
   private failCounts = new Map<string, number>();
@@ -2227,22 +2232,37 @@ export class Orchestrator {
    *  frees the runner (but never retires the worktree), and raises an
    *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes through
    *  raise() instead (the live gate stays parked). */
-  private async escalate(runId: string, reason: string, source: "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing"): Promise<void> {
+  private async escalate(runId: string, reason: string, source: EscalationSource): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
     if (!run) return;
     const live = this.live.get(runId);
     const git = live?.git ?? (await this.gitContextForAgent(runId).catch(() => undefined));
-    this.escalations.set(runId, { git, baseRef: live?.baseRef, taskId: live?.taskId ?? null, source });
     // Halt the stuck/failed session so it stops holding its slot + burning
     // tokens, and free the runner — but DO NOT retire the worktree (resume needs it).
     if (live) await live.handle.stop().catch(() => undefined);
     await this.freeRunner(live?.agentId ?? null);
     this.live.delete(runId);
+    await this.raiseEscalationCard(run, reason, source, { git, baseRef: live?.baseRef, taskId: live?.taskId ?? null });
+  }
+
+  /** Build + raise the actual escalation HITL — factored out of `escalate()` so
+   *  `relaunchEscalated`'s failure path (below) can re-raise a fresh, actionable
+   *  card after a failed resume/reassign attempt, without `escalate()`'s
+   *  idempotency guard swallowing it (at that point `this.escalations` still
+   *  holds the ORIGINAL record — the resolved HITL that led here is already
+   *  gone, so silently no-op'ing would strand the run with nothing to click). */
+  private async raiseEscalationCard(
+    run: TaskRun,
+    reason: string,
+    source: EscalationSource,
+    ctx: { git?: GitContext; baseRef?: string; taskId?: string | null },
+  ): Promise<void> {
+    this.escalations.set(run.id, { git: ctx.git, baseRef: ctx.baseRef, taskId: ctx.taskId ?? null, source });
     const item: HitlItem = {
-      id: `q-${runId}-${++this.seq}`,
+      id: `q-${run.id}-${++this.seq}`,
       workspaceId: run.workspaceId,
-      runId,
+      runId: run.id,
       kind: "escalation",
       title:
         source === "timeout"
@@ -2272,9 +2292,9 @@ export class Orchestrator {
       flags: [source],
       sourceBranchOverride: null,
     };
-    await this.hub.runStatus(runId, "waiting");
+    await this.hub.runStatus(run.id, "waiting");
     await this.hub.raiseHitl(item);
-    await this.hub.runLog(runId, `escalated (${source}) — ${reason}`);
+    await this.hub.runLog(run.id, `escalated (${source}) — ${reason}`);
   }
 
   /**
@@ -2451,7 +2471,20 @@ export class Orchestrator {
       this.escalations.delete(runId);
       this.failCounts.delete(runId);
     } catch (err) {
-      await this.failStartup(runId, acq.id, (err as Error).message);
+      // NOT failStartup() — that retires the worktree and dumps the run into a
+      // dead "review" limbo with no HITL to act on, which is exactly right for
+      // a brand-new run that never produced anything, but wrong here: this
+      // worktree holds real prior work, the operator already tried to resume
+      // it once, and the resolved HITL that got us here is gone. Re-raise a
+      // fresh, actionable escalation instead (worktree untouched) so Resume /
+      // Reassign / Stop are on the table again — the one-shot failure (a
+      // transient provider outage, say) doesn't have to be the end of the run.
+      await this.freeRunner(acq.id);
+      await this.raiseEscalationCard(run, `resume failed — ${(err as Error).message}`, ctx?.source ?? "stalled", {
+        git,
+        baseRef: ctx?.baseRef,
+        taskId: ctx?.taskId ?? null,
+      }).catch(() => undefined);
     }
   }
 

@@ -454,6 +454,16 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   **stop**. The halted run frees its runner but keeps its worktree so a resume/reassign can continue the
   work. *(Verified live: a real agent correctly escalated rather than fabricate a secret; help & resume
   round-tripped. Foundation for the "escalation SLAs / delegated approval" governance items below.)*
+  *Bug fixed: a "Runner went silent" escalation (raised by `reapStaleAgents` after a server restart
+  orphans a run's heartbeat) could NOT actually be resumed. `resolveHitl` marks the HITL resolved
+  before `relaunchEscalated` attempts the relaunch, so if `provider.start()` then threw for any reason
+  (a transient provider outage, say), the old catch path called `failStartup()` — which retires the
+  run's worktree and drops it into a dead `"review"` state with no HITL left to act on. Every button
+  the operator could still see just re-triggered the same failure into the same dead end — exactly
+  "I tried all buttons." Fixed by re-raising a fresh, actionable escalation on relaunch failure instead
+  (worktree untouched, Resume/Reassign/Stop back on the table) — see `raiseEscalationCard()` in
+  `orchestrator.ts`, factored out of `escalate()` so both the original raise and the retry path share
+  it. Regression-proofed with a real-git test using a provider whose `start()` fails once on demand.*
 - [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
   Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
   credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself

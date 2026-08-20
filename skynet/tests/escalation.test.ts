@@ -3,13 +3,18 @@
 // reassigns, or stops it. These drive the REAL orchestrator with a controllable
 // provider (captures the RunnerEvents, records resume/stop on the handle) so the
 // raise → HITL → resolve → deliver path is exercised end to end.
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { HitlItem, ProviderId, Resolution, ServerEvent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
 import { Orchestrator } from "../apps/server/src/orchestrator.js";
 import { Operations } from "../apps/server/src/operations.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
+import { WorktreeProvisioner } from "../apps/server/src/worktrees.js";
 import type { Bus } from "../apps/server/src/bus.js";
 import type { RunnerEvents, RunnerHandle, RunnerProvider, StartSpec } from "@skynet/runner-sdk";
 
@@ -238,5 +243,108 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     // No git backend → relaunch can't proceed; the run must remain waiting (not crash / not "done").
     await waitFor(async () => (await store.getRun(run.id))?.status === "waiting");
     expect((await store.getRun(run.id))?.status).toBe("waiting");
+  });
+});
+
+// A "Runner went silent" escalation (the reaper's stalled-agent path) is the
+// exact shape a real server restart produces: this.live is in-memory, so a
+// restart orphans every previously-running agent — the next reap sweep
+// escalates all of them as "stalled", and the FIRST thing an operator does is
+// click Resume. If that resume attempt itself fails to start (a provider
+// outage, a misconfigured key — anything), the run must NOT be stranded: no
+// dead-ending into "review" with nothing to click, and critically no retiring
+// the worktree that holds the agent's actual prior work. These use a REAL git
+// repo (unlike the lightweight harness above) so the worktree's on-disk
+// survival is a genuine assertion, not a mocked one.
+describe("escalation — a failed resume attempt re-raises instead of dead-ending", () => {
+  let store: MemoryStore;
+  let bus: RecordingBus;
+  let hub: Hub;
+  let ops: Operations;
+  let orchestrator: Orchestrator;
+  let repo: string;
+  let provider: FlakyProvider;
+
+  class FlakyProvider implements RunnerProvider {
+    readonly id: ProviderId = "claude";
+    events = new Map<string, RunnerEvents>();
+    handles = new Map<string, Handle>();
+    /** Set true right before the call you want to fail; auto-resets after one use. */
+    failNextStart = false;
+    async start(spec: StartSpec, events: RunnerEvents): Promise<RunnerHandle> {
+      if (this.failNextStart) {
+        this.failNextStart = false;
+        throw new Error("provider unavailable (simulated)");
+      }
+      this.events.set(spec.runId, events);
+      const h = new Handle(spec.runId);
+      this.handles.set(spec.runId, h);
+      return h;
+    }
+  }
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), "esc-repo-"));
+    execFileSync("git", ["init", "-q", "-b", "main", repo]);
+    execFileSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+    execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
+    writeFileSync(join(repo, "README.md"), "base\n");
+    execFileSync("git", ["-C", repo, "add", "-A"]);
+    execFileSync("git", ["-C", repo, "commit", "-q", "-m", "base"]);
+
+    store = new MemoryStore({ seed: false });
+    bus = new RecordingBus();
+    hub = new Hub(store, bus);
+    provider = new FlakyProvider();
+    orchestrator = new Orchestrator(store, hub, provider);
+    ops = new Operations({ store, hub, orchestrator });
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("a resume attempt that fails to start does NOT retire the worktree or dead-end the run — it re-raises for another try", async () => {
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repoPath: repo });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "do the thing" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    const worktrees = new WorktreeProvisioner(repo, "main");
+    expect(worktrees.exists(run.id)).toBe(true); // sanity: provisioning actually happened
+
+    // Simulate what a real server restart does: the in-memory live handle is
+    // gone, the heartbeat is frozen, and the next reap sweep escalates it.
+    const cur = (await store.getRun(run.id))!;
+    await store.putRun({ ...cur, status: "running", lastHeartbeatAt: 0 });
+    await orchestrator.reapStaleAgents();
+    await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+    const esc1 = bus.raised().find((i) => i.kind === "escalation")!;
+    expect(esc1.flags).toContain("stalled");
+    expect((await store.getAgent("r1"))?.status).toBe("idle"); // freed by the reap, ready to relaunch onto
+
+    // Click "Help & resume" — but the provider fails to start this time.
+    provider.failNextStart = true;
+    await ops.resolveHitl(DEFAULT_WORKSPACE, esc1.id, { action: "modify", guidance: "try again" }, "op-1");
+
+    // A SECOND, actionable escalation must appear — never a dead end.
+    await waitFor(async () => bus.raised().filter((i) => i.kind === "escalation").length >= 2);
+    const escalations = bus.raised().filter((i) => i.kind === "escalation");
+    expect(escalations).toHaveLength(2);
+    const esc2 = escalations[1]!;
+    expect(esc2.runId).toBe(run.id);
+    expect(esc2.why).toMatch(/resume failed/i);
+    expect(esc2.flags).toContain("stalled"); // the original escalation reason carries forward
+
+    const runAfterFailure = await store.getRun(run.id);
+    expect(runAfterFailure?.status).toBe("waiting"); // NOT "review" (no diff to act on), NOT "done"
+    expect((await store.getTask(task.id))?.state).not.toBe("done");
+
+    // The worktree — the agent's real prior work — must still be there.
+    expect(worktrees.exists(run.id)).toBe(true);
+
+    // And a follow-up resume, now succeeding, actually relaunches the run.
+    await ops.resolveHitl(DEFAULT_WORKSPACE, esc2.id, { action: "modify", guidance: "try again" }, "op-1");
+    await waitFor(async () => (await store.getRun(run.id))?.status === "running");
+    expect(provider.events.has(run.id)).toBe(true); // the second, SUCCESSFUL start landed
   });
 });
