@@ -741,6 +741,26 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     exactly the intended fallback). Not built: the Verifier gate (above) still only runs on the local
     merge-queue path, never for GitHub-PR-based runs — so a repo with no CI configured genuinely has no
     automated pass/fail signal yet, which the card now says outright instead of staying silent about it.*
+  - *Bug fixed: a "write one line into the roadmap" PR reported 900+ files changed, HIGH RISK, sensitive-area
+    hits on files it never touched — the exact evidence the entry above just made visible was itself wrong.
+    Root cause: `openPrForRun`/`openPrForFeature` (`orchestrator.ts`) computed the diff stat/patch/PR-body
+    against the bare `base` branch NAME (e.g. `"main"`) — this shared repo's own LOCAL branch pointer, which
+    nothing ever fast-forwards (`WorktreeProvisioner.fetchBase()` only ever advances
+    `refs/remotes/origin/<base>`, never the local branch itself). Three-dot diff (`base...HEAD`) only
+    overcounts once HEAD has actually incorporated the base's advancing history via a real merge commit —
+    which is exactly what happens routinely (`mergeBase()` folding fresh `origin/main` into a run before its
+    PR opens, or a feature batch's own task branches having done the same before landing in the feature
+    branch) — so a stale LOCAL base then computes its merge-base far in the past and the "diff" balloons to
+    include everything real `main` gained since the local ref was last touched, misattributed to one small
+    PR. Fix: diff against the FETCHED remote-tracking ref (`WorktreeProvisioner.freshBase()`, already existed
+    for exactly this class of problem — see "worktree freshness" below) instead of the bare name; the actual
+    PR target branch (GitHub's `base` field, the stored `PullRequest.base`) is untouched, only the diff
+    computation moved. `openPrForFeature` additionally gained its own `fetchBase()` call — `MergeEngine` never
+    fetched origin at all, unlike `openPrForRun`'s caller (`pushToGithub`'s `mergeBase()`), so that path could
+    overcount even without the ref-name bug alone. Reproduced and verified with two real-git regression tests
+    (`tests/worktree-freshness.test.ts`) that fail on the old code and pass on the new: one for each call
+    site, each constructing the exact "local base frozen, HEAD transitively contains origin's advance via a
+    real merge" scenario that makes three-dot diff overcount.*
   - *Landed: **`error_max_turns` is resumable** — a run that hits the Claude turn cap parks with the current
     plan + guidance instead of dead-ending; the operator resolves it forward.*
   - *Landed: **checkpoint / snapshot-restore** a run's state — extends fork/resume for long tasks

@@ -2621,7 +2621,17 @@ export class Orchestrator {
       );
     }
     const worktreePath = git.worktrees.pathFor(agent.id);
-    const stat = await git.worktrees.diffStat(agent.id, base);
+    // Diff against the FETCHED remote-tracking ref, not the bare `base` branch
+    // name: `base` resolves to this shared repo's own local branch pointer,
+    // which nothing here ever fast-forwards (the caller's `mergeBase()` only
+    // ever advances `refs/remotes/origin/<base>`, via fetchBase() — never the
+    // local branch itself). A stale local `main` makes `main...HEAD` compute
+    // its merge-base far in the past, so the "diff" balloons to include every
+    // commit real `main` has gained since then, misattributed to this one PR
+    // (surfaced live: a one-line ROADMAP edit reporting 900+ files changed).
+    // freshBase() is a no-op ref lookup here — mergeBase() already fetched.
+    const diffBase = await git.worktrees.freshBase();
+    const stat = await git.worktrees.diffStat(agent.id, diffBase);
     const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
     await this.hub.runStatus(agent.id, "review");
     // A task imported from a GitHub issue (Task.source) gets GitHub's own
@@ -2709,7 +2719,17 @@ export class Orchestrator {
   ): Promise<void> {
     const base = this.baseBranchFor(project);
     const branch = `${FEATURE_BRANCH_PREFIX}${feature.id}`;
-    const stat = await git.merge.diffStat(branch, base);
+    // Same fix as openPrForRun's: `base` is a bare branch name — this shared
+    // repo's own local pointer for it, which MergeEngine never fast-forwards
+    // (it has no fetch of its own at all, unlike openPrForRun's caller). Fetch
+    // + diff against the tracked remote ref instead, or the "diff" balloons to
+    // include everything real `main` has gained since the local ref was last
+    // touched. `git.worktrees` operates on the SAME repo path `git.merge`
+    // does (both constructed from the one `gitContextForRepo` call) — reused
+    // here purely for its fetch/ref-resolution, no worktree needed for either.
+    await git.worktrees.fetchBase();
+    const diffBase = await git.worktrees.freshBase();
+    const stat = await git.merge.diffStat(branch, diffBase);
     const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
     const siblings = (await this.store.listTasks(feature.workspaceId)).filter((t) => t.featureId === feature.id && !t.archived);
     const heuristic = this.buildFeatureMergeBriefing(feature, taskNames, stat, modules, siblings);
@@ -2721,7 +2741,7 @@ export class Orchestrator {
     const siblingRuns = (
       await Promise.all(siblings.map((t) => (t.runId ? this.store.getRun(t.runId) : Promise.resolve(undefined))))
     ).filter((r): r is TaskRun => r != null);
-    const patch = await git.merge.patch(branch, base);
+    const patch = await git.merge.patch(branch, diffBase); // same fresh ref as the stat above — not the bare `base`
     const checksConfigured = !!(project.checkCmd?.trim() || config.checkCmd);
     const featureBrief = await this.draftFeatureBrief(anchorRun, siblings, siblingRuns, patch, checksConfigured);
     const briefing: MergeBriefing = { ...heuristic, featureBrief };

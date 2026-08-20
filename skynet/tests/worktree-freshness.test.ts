@@ -10,6 +10,17 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorktreeProvisioner } from "../apps/server/src/worktrees.js";
+import { MergeEngine, type MergeCallbacks } from "../apps/server/src/merge.js";
+
+// Never invoked by diffStat/patch (pure git reads) — present only to satisfy
+// the constructor.
+const UNUSED_MERGE_CALLBACKS: MergeCallbacks = {
+  onMerged: async () => { throw new Error("not used by this test"); },
+  onConflict: async () => { throw new Error("not used by this test"); },
+  onChecksFailed: async () => { throw new Error("not used by this test"); },
+  onMergeFailed: async () => { throw new Error("not used by this test"); },
+  onLog: () => {},
+};
 
 const ENV = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe", env: ENV }).toString().trim();
@@ -109,5 +120,93 @@ describe("worktree freshness — branch from latest origin/main, sync before PR"
     advanceOrigin("later.md", "later\n", "a later merge");
     await prov.fetchBase(); // the periodic sweep fetches, then checks
     expect(await prov.baseAheadOf("refs/heads/agent/r4")).toBe(true); // now behind
+  });
+
+  // Reproduces the exact bug a live "roadmap.md" PR surfaced: after mergeBase()
+  // folds a moved-forward main into the branch (worktree content correct), the
+  // PR's diff/stat was computed against the bare "main" branch NAME — this
+  // repo's own local ref for it, which nothing here ever fast-forwards
+  // (fetchBase() only ever advances refs/remotes/origin/main). A stale local
+  // "main" makes `main...HEAD`'s merge-base land far in the past, so the diff
+  // balloons to include every commit real main gained since the local clone
+  // was made — misattributed to the agent's own one-line change.
+  it("diffing against the bare local branch name OVERCOUNTS once main has moved — freshBase() doesn't", async () => {
+    const { cwd } = await prov.provision("r6", "agent/r6");
+    writeFileSync(join(cwd, "roadmap-note.md"), "one line\n"); // the agent's actual, tiny change
+    git(cwd, "add", "-A");
+    git(cwd, "commit", "-q", "-m", "agent's real change");
+    // Meanwhile, unrelated work lands on the true main — this repo's local
+    // "main" ref (frozen at clone time) never learns about any of it.
+    advanceOrigin("unrelated-1.md", "x\n", "unrelated merge 1");
+    advanceOrigin("unrelated-2.md", "y\n", "unrelated merge 2");
+    advanceOrigin("unrelated-3.md", "z\n", "unrelated merge 3");
+    const sync = await prov.mergeBase("r6"); // folds the TRUE fresh main in — worktree content is correct
+    expect(sync.ok).toBe(true);
+
+    const staleStat = await prov.diffStat("r6", "main"); // the bug: bare local name
+    const freshStat = await prov.diffStat("r6", await prov.freshBase()); // the fix: fetched ref
+
+    // The stale comparison drags in every "unrelated" file main gained —
+    // exactly the "one-line roadmap edit → 900 files" shape.
+    expect(staleStat.files).toContain("unrelated-1.md");
+    expect(staleStat.files).toContain("unrelated-2.md");
+    expect(staleStat.files).toContain("unrelated-3.md");
+    expect(staleStat.files.length).toBeGreaterThan(freshStat.files.length);
+
+    // The fresh comparison reports ONLY the agent's own change.
+    expect(freshStat.files).toEqual(["roadmap-note.md"]);
+    expect(freshStat.files).not.toContain("unrelated-1.md");
+  });
+
+  // Same bug, feature-scoped branch batching's side (openPrForFeature): unlike
+  // openPrForRun's caller (pushToGithub), NOTHING fetches origin before this
+  // path diffs — MergeEngine has no fetch of its own at all. Reproduced via
+  // the SAME mechanism as the worktree case: a real merge commit is what
+  // makes a stale comparison base overcount (three-dot diff only shows what's
+  // UNIQUE to the diffed branch since the common ancestor — a stale base
+  // alone changes nothing unless the diffed branch has actually incorporated
+  // the base's new commits). Here that merge happens because the task feeding
+  // the batch synced to fresh origin (mergeBase(), same as any run) before
+  // landing in the feature branch — exactly what step 1 of a real feature
+  // batch does.
+  it("MergeEngine.diffStat has the identical staleness bug — fetchBase()+freshBase() fixes it the same way", async () => {
+    // A task's own branch, synced to fresh origin (mergeBase — same as any
+    // run) before it lands in the feature branch — this is what actually
+    // pulls origin's advancing history into the batch's own line of descent.
+    const { cwd } = await prov.provision("t1", "agent/t1");
+    writeFileSync(join(cwd, "feature-change.md"), "batched work\n");
+    git(cwd, "add", "-A");
+    git(cwd, "commit", "-q", "-m", "feature batch work");
+    advanceOrigin("unrelated-a.md", "x\n", "unrelated merge a");
+    advanceOrigin("unrelated-b.md", "y\n", "unrelated merge b");
+    const sync = await prov.mergeBase("t1"); // folds fresh origin/main into the task branch
+    expect(sync.ok).toBe(true);
+
+    // Step 1: the task branch merges into the feature branch (mirroring
+    // checkFeatureCompletion's per-task merges) — a plain fast-forward-capable
+    // merge is enough to test diffStat's read behavior; the queueing/rollback
+    // machinery around it (MergeEngine.enqueue) isn't what's under test here.
+    git(repo, "checkout", "-q", "-b", "skynet/feature/f1", "main");
+    git(repo, "merge", "-q", "--no-edit", "agent/t1");
+
+    const merge = new MergeEngine(repo, "main", UNUSED_MERGE_CALLBACKS);
+
+    // The bug: bare local "main" (still frozen at clone time) massively
+    // overcounts — the feature branch's history now transitively contains
+    // origin's unrelated commits via the task's own merge.
+    const staleStat = await merge.diffStat("skynet/feature/f1", "main");
+    expect(staleStat.files).toContain("unrelated-a.md");
+    expect(staleStat.files).toContain("unrelated-b.md");
+
+    // The fix: openPrForFeature now calls fetchBase() itself (MergeEngine has
+    // none of its own — reuses the provisioner's, same repo) and diffs
+    // against freshBase() instead of the bare name.
+    await prov.fetchBase();
+    const freshRef = await prov.freshBase();
+    const freshStat = await merge.diffStat("skynet/feature/f1", freshRef);
+
+    expect(freshStat.files).toEqual(["feature-change.md"]);
+    expect(freshStat.files).not.toContain("unrelated-a.md");
+    expect(freshStat.files).not.toContain("unrelated-b.md");
   });
 });
