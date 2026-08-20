@@ -89,23 +89,24 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     if (!key || connectBusy) return;
     setConnectBusy(true);
     setConnectErr(null);
-    setConnectVerify({ status: "verifying" });
+    setConnectVerify(null);
     try {
       await api.setSecret(connectProvider, key);
       store.setProviderAvailable(connectProvider, true);
       setConnectOk(true);
       setConnectKey("");
+      setConnectBusy(false);
       // Non-blocking live verify — updates the badge but never blocks progress.
-      try {
-        const result = await api.verifyCredential(connectProvider);
+      const provider = connectProvider;
+      setConnectVerify({ status: "verifying" });
+      void api.verifyCredential(provider).then((result) => {
         setConnectVerify({ status: result.ok ? "ok" : "fail", message: result.message });
-      } catch {
+      }).catch(() => {
         setConnectVerify({ status: "fail", message: "Couldn't reach the vendor to verify." });
-      }
+      });
     } catch (e) {
       setConnectErr(`Couldn't save the key: ${(e as Error).message}`);
       setConnectVerify(null);
-    } finally {
       setConnectBusy(false);
     }
   };
@@ -126,7 +127,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     workspace.trim().length > 0,
     true,
     connectOk,
-    fleetRows.length > 0 && fleetRows.every((r) => r.model),
+    fleetRows.length > 0 && fleetRows.every((r) => r.model && store.providers.find((p) => p.id === r.provider)?.available !== false),
   ];
   const last = step === STEPS.length - 1;
   const canNext = valid[step];
