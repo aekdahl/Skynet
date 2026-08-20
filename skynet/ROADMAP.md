@@ -1069,6 +1069,29 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   the hard stop that needs no judgment call — **plus one behavioral breaker**, the consecutive-failure
   circuit-breaker (phase 3a), for the case a loop is technically under budget but visibly going wrong
   faster than the budget alone would catch.
+- [ ] **🐛 Task-write atomicity — no optimistic concurrency, confirmed real data loss.** Reported
+  live (2026-08): an operator batch-updating 7 tasks lost `description` on all seven (their first
+  attempt sent `null` for fields they didn't mean to touch — a genuine PATCH-semantics footgun,
+  since `UpdateTaskRequest`'s fields are `.nullable().optional()`, so omitted = untouched but an
+  explicit `null` legitimately clears the field; **mitigated** by tightening the MCP `update_task`
+  tool's description + a new server-wide MCP instruction to never fill in a field just because it's
+  in the schema). But a SEPARATE, deeper issue surfaced during their manual recovery: restoring one
+  field on `t-skynet-mt0ebjfq-10` raced against the autonomous **triage** step writing the same task
+  concurrently, and the triage write — built the same way every `Task` write in this codebase is
+  (`Operations.updateTask`/`orchestrator.ts`: fetch the current record, spread `{...current,
+  ...patch}`, write the whole thing back via `Hub.upsertTask` → `store.putTask`, no version/etag
+  check) — silently clobbered the recovery. This is a genuine, unguarded **lost-update race**, not
+  specific to `update_task`: EVERY one of the 25+ `upsertTask` call sites across `orchestrator.ts`/
+  `operations.ts` does the same non-atomic read-modify-write. It was a low-risk pattern when a task
+  had effectively one writer at a time; it stops being safe now that autonomous writers (triage,
+  auto-review, the self-replenishing-backlog proposal path above) run concurrently with human/
+  scripted edits on the same record. **Needs a real design decision before implementing** (broad
+  blast radius — 25+ call sites, likely more than just `Task`): options include a monotonic
+  `version`/`updatedAt` field checked-and-incremented atomically at the Store layer (reject/retry a
+  stale write), narrowing the highest-risk autonomous paths (triage, auto-review) to single-field
+  atomic patches instead of whole-record read-modify-write, or a compare-and-swap primitive on
+  `Store.putTask` that every caller routes through. Scope this deliberately rather than bolting a
+  fix onto one call site — the race is systemic, not local to triage or to `update_task`.
 
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
