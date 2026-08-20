@@ -1554,7 +1554,7 @@ export function ProjectView({
                 type="checkbox"
                 className="proj-autonomy-cb"
                 checked={project.deepReview}
-                onChange={(e) => updateProject(project.id, { deepReview: e.target.checked })}
+                onChange={(e) => updateProject(project.id, e.target.checked ? { deepReview: true } : { deepReview: false, breakerReview: false })}
               />
               <span className="proj-autonomy-switch" aria-hidden="true" />
               <span className="proj-autonomy-text">
