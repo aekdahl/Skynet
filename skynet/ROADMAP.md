@@ -43,6 +43,25 @@ mostly already built) + **guided provider connect**; **(3) v1.5** ease-of-use + 
 makes us not-just-another-orchestrator); **(4) Cross-vendor consensus runs** (needs the v1 providers).
 Everything below stays directional.
 
+**Current batch priority order** — see [docs/operating-memo.md](docs/operating-memo.md) §8 for full rationale.
+Items are ranked PMF > Platform > Product within each batch:
+
+| Batch | # | Item | Track |
+|-------|---|------|-------|
+| **N (now)** | 1 | deep-review / breaker-review settings UI toggle | PMF |
+| | 2 | Memory v0 — operator-authored facts, injected per project | Platform |
+| | 3 | Kimi Code runner + reactive runner breadth | Product |
+| | 4 | First-run onboarding telemetry (anonymous install events) | PMF |
+| | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
+| **N+1** | 1 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
+| | 2 | Desktop code-signing (macOS + Windows) | GTM |
+| | 3 | Cross-vendor consensus runs (same task, two agents, auto-diff) | Platform |
+| | 4 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
+| **N+2** | 1 | Memory v0 — workspace-scoped MCP read/write server | Platform |
+| | 2 | Autonomy telemetry dashboard (ZTMR, HITL volume, resolution time) | PMF |
+| | 3 | Approve-with-rule batch mode (similar gates, one decision) | PMF |
+| | 4 | Plan entity + project view panel (Product Steward foundation) | Platform |
+
 Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ = depends on earlier version ·
 🏢 = hosted-only (deferred; **not** needed for the local desktop release).
 
