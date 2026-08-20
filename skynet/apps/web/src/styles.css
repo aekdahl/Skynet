@@ -151,6 +151,8 @@ kbd {
   display: flex; flex-direction: column; gap: 6px; color: var(--text);
 }
 .agent-row:hover { background: var(--raised); }
+.agent-row:active { transform: scale(0.99); }
+@media (prefers-reduced-motion: reduce) { .agent-row:active { transform: none; } }
 .agent-row.sel { background: var(--raised); border-color: var(--line); }
 .agent-row-top { display: flex; align-items: center; gap: 8px; }
 .agent-name { font-size: var(--fs); font-weight: 500; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -186,6 +188,8 @@ kbd {
   transition: border-color var(--motion-fast), transform var(--motion-fast);
 }
 .proj:hover { border-color: var(--faint); transform: translateY(-1px); }
+.proj:active { transform: scale(0.99); border-color: var(--faint); }
+@media (prefers-reduced-motion: reduce) { .proj:active { transform: none; } }
 .proj-done { opacity: 0.55; }
 .proj-top { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
 .proj-name { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
@@ -204,7 +208,10 @@ kbd {
 .proj-conflict { font-family: var(--font-mono); font-size: 11px; color: var(--danger); }
 
 /* ---------- project view ---------- */
-.projview { position: relative; z-index: 1; max-width: 1240px; margin: 0 auto; padding: calc(var(--sp) * 1.6) calc(var(--sp) * 2) 80px; display: flex; flex-direction: column; gap: calc(var(--sp) * 1.2); }
+/* 1240px overflowed the ~1220px content area at 1440px viewport (220px sidebar),
+   left-hugging with no centering margin. 1100px gives ~60px breathing room each
+   side at 1440 and keeps the kanban columns generous enough not to crush. */
+.projview { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: calc(var(--sp) * 1.6) calc(var(--sp) * 2) 80px; display: flex; flex-direction: column; gap: calc(var(--sp) * 1.2); }
 .projview-head h2 { font-size: 24px; font-weight: 600; letter-spacing: -0.015em; }
 .projview-head p { margin-top: 8px; font-size: 14px; color: var(--muted); max-width: 640px; }
 .projview-queue { display: flex; flex-direction: column; gap: var(--sp); }
@@ -244,6 +251,8 @@ kbd {
   transition: border-color var(--motion-fast);
 }
 .pa-card:hover { border-color: var(--faint); }
+.pa-card:active { transform: scale(0.99); }
+@media (prefers-reduced-motion: reduce) { .pa-card:active { transform: none; } }
 .pa-top { display: flex; align-items: center; gap: 10px; }
 .pa-name { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pa-step { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -288,6 +297,12 @@ kbd {
      prop → .leaving below) fades + slides out on the base tier; border-color
      (hover/select, no real motion) stays on the fast tier. */
   transition: opacity var(--motion-base), transform var(--motion-base), border-color var(--motion-fast);
+}
+/* Card enter — plays once when a .qcard mounts (new item appears in the queue).
+   Staggering would need JS; a single 200ms fade-up is enough to signal "new". */
+@media (prefers-reduced-motion: no-preference) {
+  .qcard { animation: card-enter var(--motion-base) ease-out both; }
+  @keyframes card-enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 }
 .qcard.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 8px 32px rgba(0,0,0,0.35); }
 .qcard.leaving { opacity: 0; transform: translateX(32px); }
@@ -444,8 +459,9 @@ kbd {
 .merge-checks.checks-passing { border-color: color-mix(in oklch, var(--ok), transparent 55%); color: var(--ok); background: color-mix(in oklch, var(--ok), transparent 90%); }
 .merge-checks.checks-failing { border-color: color-mix(in oklch, var(--danger), transparent 55%); color: var(--danger); background: color-mix(in oklch, var(--danger), transparent 90%); }
 .merge-checks.checks-pending { border-color: color-mix(in oklch, var(--warn), transparent 55%); color: var(--warn); background: color-mix(in oklch, var(--warn), transparent 90%); }
-.merge-checks-refresh { background: none; border: none; color: inherit; cursor: pointer; padding: 0; font-size: 11px; opacity: 0.7; }
+.merge-checks-refresh { background: none; border: none; color: inherit; cursor: pointer; padding: 0; display: inline-flex; align-items: center; opacity: 0.7; }
 .merge-checks-refresh:hover { opacity: 1; }
+.merge-checks-refresh:active { opacity: 0.5; }
 .merge-stat { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
 .merge-stat b.add { color: var(--ok); font-weight: 600; }
 .merge-stat b.del { color: var(--danger); font-weight: 600; }
@@ -623,10 +639,29 @@ kbd {
   padding: 8px 11px; cursor: pointer; color: var(--text); font-family: var(--font-ui); font-size: 12px;
 }
 .area-agent:hover { border-color: var(--faint); }
+.area-agent:active { transform: scale(0.99); }
+@media (prefers-reduced-motion: reduce) { .area-agent:active { transform: none; } }
 .area-agent-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .area-agent-state { font-family: var(--font-mono); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* ===== view scaffolding ===== */
+/* View/lens crossfade — plays whenever the container mounts (route change or
+   lens switch that conditionally renders its panel). The same keyframe is reused
+   for lens panels below at --motion-fast so they feel lighter than a full view
+   transition. Kept inside prefers-reduced-motion: no-preference so users who
+   have opted out of motion get instant transitions instead. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes view-enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .overview, .queue, .detail, .map, .vw, .home-bar, .audit, .projview {
+    animation: view-enter var(--motion-base) ease-out both;
+  }
+  /* Lens panels within a view (kanban / timeline / features / roadmap) mount and
+     unmount when the operator switches lens tabs, so the same enter keyframe
+     gives them a quick crossfade at the faster tier. */
+  .kb-cols, .kb-cols-6, .projview-timeline, .projview-features, .projview-roadmap, .projview-line, .projview-queue {
+    animation: view-enter var(--motion-fast) ease-out both;
+  }
+}
 .vw { position: relative; z-index: 1; max-width: 1180px; margin: 0 auto; padding: calc(var(--sp) * 1.8) calc(var(--sp) * 2) 70px; display: flex; flex-direction: column; gap: 26px; }
 .vw-head h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.015em; }
 .vw-head p { margin-top: 8px; font-size: 13px; color: var(--muted); }
@@ -673,7 +708,10 @@ button.chip:hover { border-color: var(--faint); }
 .swb-name:hover .sw-tname { color: var(--accent); }
 .swb-count { position: absolute; right: 0; font-size: 11px; color: var(--muted); }
 .swb-canvas { position: absolute; left: 274px; right: 56px; top: 0; bottom: 0; }
-.swb-seg { position: absolute; height: 2px; background: var(--line); margin-top: -1px; }
+/* Subway merge draw-in: when a task completes, the segment transitions from
+   grey (var(--line)) to green (var(--ok)) — background transition on the base
+   token makes the colour-fill animate at the same speed as other state changes. */
+.swb-seg { position: absolute; height: 2px; background: var(--line); margin-top: -1px; transition: background var(--motion-base); }
 .swb-seg-done { background: var(--ok); }
 /* stations are buttons — click opens the task's run detail */
 .swb-st { position: absolute; width: 12px; height: 12px; border-radius: 50%; transform: translate(-50%, -50%); z-index: 2; padding: 0; border: none; background: none; cursor: pointer; font-family: inherit; }
@@ -687,6 +725,12 @@ button.chip:hover { border-color: var(--faint); }
 .swb-st.sw-todo { width: 10px; height: 10px; border: 2px solid var(--line); }
 .swb-st:hover { filter: brightness(1.3); }
 .swb-st:hover .sw-label { color: var(--text); }
+.swb-st:active { filter: brightness(0.85); transform: translate(-50%, -50%) scale(0.85); }
+/* Explicit focus ring: the global button:focus-visible rule fires here, but
+   outline-offset: 2px on a tiny circle looks off — pull it in to 1px so the
+   ring hugs the dot shape. */
+.swb-st:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .swb-st:active { transform: translate(-50%, -50%); } }
 /* ONE connector style: dashed grey elbow = "joins from / branches off" — used by
    forks and independent agents alike. Fork-ness is marked at the NODES (violet ⑂
    label + re-point ring), not by line color. */
@@ -735,7 +779,7 @@ button.chip:hover { border-color: var(--faint); }
 .swb2 { padding: 30px 46px 34px; }
 .swb2-track { position: relative; height: 2px; }
 .swb2-line { position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--line); }
-.swb2-seg { position: absolute; top: 0; height: 2px; background: var(--line); }
+.swb2-seg { position: absolute; top: 0; height: 2px; background: var(--line); transition: background var(--motion-base); }
 .swb2-seg-done { background: var(--ok); }
 .swb2-st { position: absolute; top: 0; transform: translate(-50%, -50%); width: 13px; height: 13px; padding: 0; background: none; border: none; cursor: pointer; }
 .swb2-st:disabled { cursor: default; }
@@ -969,6 +1013,8 @@ button.ct-seg { cursor: pointer; }
 .kb-backlog { border-style: dashed; }
 .kb-task { font-size: 13px; font-weight: 600; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .kb-card[role="button"] { cursor: pointer; }
+.kb-card[role="button"]:active { transform: scale(0.99); }
+@media (prefers-reduced-motion: reduce) { .kb-card[role="button"]:active { transform: none; } }
 /* Board drag & drop — cards move between lanes (and reorder in backlog) instead
    of clicking move buttons. */
 .kb-card[draggable="true"] { cursor: grab; }
@@ -1888,6 +1934,8 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .blocker { flex: 0 0 320px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; text-align: left; font-family: var(--font-ui); color: var(--text); transition: border-color var(--motion-fast), transform var(--motion-fast); }
 .blocker:hover { border-color: color-mix(in oklch, var(--accent), transparent 45%); transform: translateY(-1px); }
 .blocker:hover .blocker-cta { color: var(--accent); }
+.blocker:active { transform: scale(0.99); border-color: color-mix(in oklch, var(--accent), transparent 45%); }
+@media (prefers-reduced-motion: reduce) { .blocker:active { transform: none; } }
 .blocker-hot { border-color: color-mix(in oklch, var(--warn), transparent 55%); }
 .blocker-top { display: flex; align-items: center; gap: 10px; }
 .blocker-kind { font-family: var(--font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em; border: 1px solid; border-radius: 4px; padding: 2px 7px; white-space: nowrap; }
@@ -1909,8 +1957,10 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 
 /* lens switcher */
 .lens-switch { display: inline-flex; gap: 3px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 3px; align-self: flex-start; }
-.lens-btn { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 13px; font-weight: 500; color: var(--muted); padding: 7px 16px; border-radius: 6px; }
+.lens-btn { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: 13px; font-weight: 500; color: var(--muted); padding: 7px 16px; border-radius: 6px; transition: color var(--motion-fast), background var(--motion-fast); }
 .lens-btn:hover { color: var(--text); }
+.lens-btn:active { background: var(--raised); transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) { .lens-btn:active { transform: none; } }
 .lens-btn.on { background: var(--raised); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
 /* Count chip inside a lens button (e.g. "Archived 3") — same shape as an
    inbox/queue badge, muted so it doesn't compete with the active-tab pill. */
@@ -2690,6 +2740,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .fcard-head { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: none; padding: 0; margin: 0; cursor: pointer; font: inherit; color: inherit; text-align: left; }
 .fcard-name { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fcard-head:hover .fcard-name { color: var(--accent); }
+.fcard-head:active { opacity: 0.85; }
 .fcard-ms { font-size: 10.5px; font-family: var(--font-mono); color: var(--violet); border: 1px solid color-mix(in oklch, var(--violet), transparent 62%); border-radius: 20px; padding: 1px 7px; flex: none; }
 .fcard-pct { font-size: 12.5px; font-weight: 600; color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
 .fcard-sum { font-size: 12px; color: var(--muted); }

@@ -480,6 +480,7 @@ function TaskCard({
             <button
               className="kb-lint-dismiss"
               title="Dismiss — this is just a hint, not a blocker"
+              aria-label="Dismiss lint hint"
               onClick={() => void dismissTaskLint(pid, task.id)}
             >
               ×
