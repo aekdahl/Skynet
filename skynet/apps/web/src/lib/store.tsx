@@ -180,6 +180,8 @@ export interface Store extends StoreState {
       roadmapPath?: string | null;
       // Verifier gate command; null clears back to the global default.
       checkCmd?: string | null;
+      deepReview?: boolean;
+      breakerReview?: boolean;
     },
   ) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;

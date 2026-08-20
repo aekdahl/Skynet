@@ -615,6 +615,8 @@ export function updateProject(
     roadmapPath?: string | null;
     // Verifier gate command; null clears back to the global default.
     checkCmd?: string | null;
+    deepReview?: boolean;
+    breakerReview?: boolean;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);
