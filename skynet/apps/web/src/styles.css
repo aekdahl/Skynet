@@ -2410,6 +2410,18 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .np-confirm-text { font-size: 13px; line-height: 1.5; color: var(--text); margin: 0; }
 .np-confirm-repo { font-family: var(--font-mono); font-size: 12.5px; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
 .np-error { font-size: 12.5px; color: var(--danger); }
+/* Charter-assisted creation */
+.np-charter-row { display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
+.np-charter-btn { font-size: 12.5px; align-self: flex-start; }
+.np-charter-error { font-size: 12px; color: var(--danger); }
+.np-charter { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line-soft); border-radius: 10px; padding: 12px; background: var(--raised); }
+.np-charter-header { display: flex; align-items: baseline; gap: 8px; }
+.np-charter-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.np-charter-hint { font-size: 12px; color: var(--muted); flex: 1; }
+.np-charter-clear { font-size: 12px; padding: 0 6px; color: var(--muted); }
+.np-charter-field { display: flex; flex-direction: column; gap: 4px; }
+.np-charter-label { font-size: 11.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.np-charter-textarea { font-size: 12.5px; resize: vertical; min-height: 52px; }
 .proj-repo { color: var(--muted); font-size: 11px; margin: 2px 0 8px; }
 .proj-repo-line { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .proj-clone { display: flex; align-items: center; gap: 10px; margin-top: 8px; }

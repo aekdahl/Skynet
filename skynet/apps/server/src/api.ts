@@ -13,6 +13,7 @@ import {
   CreateMilestoneRequest,
   CreateProjectRequest,
   CreateTaskRequest,
+  DraftCharterRequest,
   DryRunPolicyRequest,
   ProviderId,
   ResolveRequest,
@@ -562,6 +563,20 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   });
 
   // ── projects ───────────────────────────────────────────────────────────
+
+  // Gate G-1: draft a Project Charter from the operator's raw goal using the
+  // workspace's own Claude key (one cheap Haiku call). The operator corrects/
+  // approves the result in the UI before creating the project.
+  app.post("/api/projects/draft-charter", async (req, reply) => {
+    const body = DraftCharterRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.draftCharter(ws(req), body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.post("/api/projects", async (req, reply) => {
     const body = CreateProjectRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
