@@ -1213,6 +1213,39 @@ features below are white space.)
   feature actually reach the relaunch prompt at checkpoint-restore / review-revise / escalation-resume), and
   new cases in `tests/project-instructions.test.ts` (assignTask/forkAgent goal + feature threading, on top of
   the existing instructions-threading cases).)*
+  *(S2 — project primer, auto-draftable: `Project.primer` — a free-form markdown "what we're building & how"
+  doc (goal elaboration, stack, layout, conventions, build/test commands) — mirrors `instructions`'s shape
+  (contracts + `UpdateProjectRequest` + client.ts's hand-written `updateProject` body type, which had the SAME
+  missed-field bug the S1 PR fixed for `deepReview`/`breakerReview` — added `primer` there too) and threads
+  into S1's `=== PRIMER ===` section at all 10 `buildAgentContext()` call sites. New
+  `POST /api/projects/:id/primer/draft` (`apps/server/src/primer-draft.ts`) gathers a bounded, DETERMINISTIC
+  repo digest — a depth-3 local file tree (noise dirs like `node_modules`/`.git`/`dist` excluded, entry- and
+  char-capped), root-level package manifests (`package.json`, `pyproject.toml`, `Cargo.toml`, …), and the
+  README head (`readProjectDoc`/`listProjectRoot` from steward/docs.ts handle both a local `repoPath` and a
+  GitHub-only `repo`, the latter getting a shallower top-level-only digest since there's no recursive tree
+  fetch) — then feeds it through ONE `oneShotText` consult call. Returns the draft text only; NEVER
+  auto-saves it — the operator's own edit + Save (a plain `updateProject({ primer })`) is the real approval.
+  Clear, thrown errors (no bound repo, nothing readable, consult failure, empty reply) map to a 400, never a
+  silent no-op. UI: a "Primer" textarea + "Draft from repo →" button beside Instructions in project settings,
+  plus a "📖 Primer set" read-only chip (same pattern as Instructions' "ⓘ Instructions active"). Verified live
+  end-to-end in the browser against this repo's own worktree as the bound local repo: the digest/prompt/draft/
+  Save/reload round-trip all confirmed for real (no real Claude credential in the sandbox, so the consult
+  itself returned an auth-failure string rather than real repo content — expected, and orthogonal to what this
+  feature owns; the "no bound repo" and "nothing readable" error paths were confirmed against the REAL
+  function, not a stub). Caught and fixed live in the browser: the Primer placeholder's `\n`s were inert as a
+  bare JSX attribute string (`placeholder="...\n..."` — JSX doesn't run JS escapes on unbraced attribute
+  literals, unlike the pre-existing Instructions placeholder's `{"...\n..."}`) — only visible by actually
+  rendering it, not from source or typecheck. Also fixed: `vitest.config.ts` had no alias for
+  `@skynet/runner-sdk/claude` (only `@skynet/shared` was aliased to source) — `vi.mock` on that package
+  subpath silently fell through to a REAL `oneShotText` call (a real, failing network round-trip) instead of
+  the stub; aliased it to source, same as `@skynet/shared`, so the test's mock actually intercepts. Tests:
+  `tests/primer-draft.test.ts` (the digest + draft logic itself, real local repo, only `oneShotText` stubbed),
+  `tests/project-primer.test.ts` (create/update normalization, S1 threading, the draft endpoint's own
+  never-auto-saves contract, and the HTTP route — `draftPrimer` mocked here, same approach
+  `task-linter-ops.test.ts` uses for `lintTask`), plus a new `project-primer-draft` acceptance scenario
+  (control-plane-only: an unbound project's draft call is refused with 400 — no live provider key needed) so
+  the client-coverage guard's new-export check stays green. Regression-proofed (stashed the wiring, confirmed
+  9 new assertions fail, popped it back).)*
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.* Also landed: the Roadmap tab's "reads ROADMAP.md" lookup used to dead-end when a repo kept its plan somewhere else — `Project.roadmapPath` now lets the operator (a picker on the tab's empty state) or Steward (`set_roadmap_path`, confirm-first, e.g. "the roadmap is at docs/PLAN.md") point it at any repo-relative file; `resolveRoadmapDoc` is the single place both the tab's API and Steward's own grounding resolve through, so they can't drift.
 - [~] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third

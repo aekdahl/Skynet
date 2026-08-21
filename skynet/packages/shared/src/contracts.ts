@@ -492,6 +492,16 @@ export const Project = z.object({
   // vendor-neutral rule set travels with the codebase; for now it's stored
   // on the project record for instant editability without a commit.
   instructions: z.string().nullable().default(null),
+  // Free-form markdown "project primer" — the elaborated goal, tech stack, repo
+  // layout, conventions, build/test commands, architecture notes: everything an
+  // agent benefits from knowing about what this codebase IS before touching a
+  // task in it (complements `instructions`, which is house RULES, not context).
+  // Rides every agent prompt via S1's buildAgentContext (`=== PRIMER ===`).
+  // Editable by hand, or auto-drafted from the bound repo via
+  // POST /api/projects/:id/primer/draft (see primer-draft.ts) — a draft is
+  // NEVER auto-saved here; the operator's edit + Save IS the approval.
+  // Nullable = no primer set (today's behavior, unchanged).
+  primer: z.string().nullable().default(null),
   // Which stored GitHub credential this project's git operations (clone / push /
   // PR / repo listing) authenticate with — a secret-store credential id of a
   // `github` PAT. null → the workspace's default GitHub connection. Lets one
@@ -1233,6 +1243,8 @@ export const UpdateProjectRequest = z.object({
   repo: z.string().optional(),
   // Project-scoped agent guidance. `null` clears the field back to "no rules".
   instructions: z.string().nullable().optional(),
+  // See Project.primer. `null` clears the field back to "no primer set".
+  primer: z.string().nullable().optional(),
   githubCredentialId: z.string().nullable().optional(), // pick the GitHub account (null clears → default)
   flyCredentialId: z.string().nullable().optional(), // pick the Fly.io account (null clears → default)
   baseBranch: z.string().nullable().optional(), // stack onto a branch; null clears → global default

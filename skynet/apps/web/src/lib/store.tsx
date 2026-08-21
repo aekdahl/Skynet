@@ -182,6 +182,7 @@ export interface Store extends StoreState {
       checkCmd?: string | null;
       deepReview?: boolean;
       breakerReview?: boolean;
+      primer?: string | null;
     },
   ) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;

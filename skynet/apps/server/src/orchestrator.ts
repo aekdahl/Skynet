@@ -1239,7 +1239,7 @@ export class Orchestrator {
       const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
       const reply = await provider.consult(
         {
-          task: buildAgentContext({ project, body: run.name }),
+          task: buildAgentContext({ project, primer: project?.primer, body: run.name }),
           model: run.model,
           cwd: config.runnerCwd,
           apiKey,
@@ -1281,7 +1281,7 @@ export class Orchestrator {
       const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
       const reply = await provider.consult(
         {
-          task: buildAgentContext({ project, body: run.name }),
+          task: buildAgentContext({ project, primer: project?.primer, body: run.name }),
           model: run.model,
           cwd: config.runnerCwd,
           apiKey,
@@ -1753,7 +1753,7 @@ export class Orchestrator {
       // description when one exists (the run's display name stays the short text).
       const taskBody = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
       const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
-      const brief = buildAgentContext({ project, feature, body: taskBody });
+      const brief = buildAgentContext({ project, feature, primer: project.primer, body: taskBody });
       // Opt-in browser tooling is a per-workspace setting, off by default; the
       // runner decides how to expose it (Claude → a Playwright MCP server).
       const { browserTools } = await this.fleetPolicy(project.workspaceId);
@@ -1833,7 +1833,7 @@ export class Orchestrator {
         {
           runId,
           projectId: parent.projectId,
-          task: buildAgentContext({ project, feature, body: parent.name }),
+          task: buildAgentContext({ project, feature, primer: project?.primer, body: parent.name }),
           model: runner.model,
           branch: agent.branch,
           cwd,
@@ -1957,7 +1957,7 @@ export class Orchestrator {
         {
           runId,
           projectId: run.projectId,
-          task: buildAgentContext({ project, feature, body: run.name }),
+          task: buildAgentContext({ project, feature, primer: project?.primer, body: run.name }),
           model: runner.model,
           branch: run.branch,
           cwd,
@@ -2157,7 +2157,7 @@ export class Orchestrator {
     const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
     const task = taskId ? await this.store.getTask(taskId) : undefined;
     const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
-    const prompt = buildAgentContext({ project, feature, body: decisionResumePrompt(item, resolution, run.branch) });
+    const prompt = buildAgentContext({ project, feature, primer: project?.primer, body: decisionResumePrompt(item, resolution, run.branch) });
     await this.hub.runStatus(runId, "running");
     if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
     await this.hub.runLog(runId, `re-acquired compute to deliver "${resolution.action}" — resuming in the run's worktree`);
@@ -2202,6 +2202,7 @@ export class Orchestrator {
     const revisePrompt = buildAgentContext({
       project,
       feature,
+      primer: project?.primer,
       body:
         `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
         `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
@@ -2446,6 +2447,7 @@ export class Orchestrator {
     const prompt = buildAgentContext({
       project,
       feature,
+      primer: project?.primer,
       body: reassign
         ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
         : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
@@ -3976,7 +3978,7 @@ export class Orchestrator {
       const taskBody = task.description ? `${task.text}\n\n${task.description}` : task.text;
       const feature = task.featureId ? features.find((f) => f.id === task.featureId) : undefined;
       const reply = await provider.consult(
-        { task: buildAgentContext({ project, feature, body: taskBody }), model: agent.model, cwd: config.runnerCwd, apiKey },
+        { task: buildAgentContext({ project, feature, primer: project?.primer, body: taskBody }), model: agent.model, cwd: config.runnerCwd, apiKey },
         [
           "You are triaging a backlog item for a coding project.",
           "In ONE short line: summarize the ask (is it clear, what's the gist). Be terse — the effort size and any risks go in the JSON tag below, not this line.",
@@ -4409,7 +4411,7 @@ export class Orchestrator {
           const context = run.log.slice(-30).map((l) => l.line).join("\n").slice(-3000);
           const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
           const reply = await provider.consult(
-            { task: buildAgentContext({ project, feature, body: task.text }), model: agent.model, cwd: config.runnerCwd, apiKey, context },
+            { task: buildAgentContext({ project, feature, primer: project?.primer, body: task.text }), model: agent.model, cwd: config.runnerCwd, apiKey, context },
             `Review whether this run satisfies the task "${task.text}". ${REVIEW_OUTPUT_INSTRUCTION}`,
           );
           // The verdict is the MODEL's, read from a structured field — we never
