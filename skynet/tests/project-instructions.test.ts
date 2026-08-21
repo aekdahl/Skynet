@@ -260,6 +260,80 @@ describe("Orchestrator — StartSpec.task actually carries Project.instructions"
   });
 });
 
+// ── 5) buildAgentContext wiring — goal + feature threading ───────────────
+// S1: every agent-facing prompt now runs through buildAgentContext, which adds
+// the project's goal and (when the task belongs to one) the Feature — on top
+// of the instructions banner already proven above. These pin that the two
+// NEW sections actually reach the runner's StartSpec.task on the two call
+// sites this file already exercises (assignTask/forkAgent); the deeper
+// resume/revise/escalation-resume paths are covered in
+// tests/agent-context-wiring.test.ts (they need a real git worktree to reach).
+
+describe("Orchestrator — StartSpec.task carries Project.goal and the task's Feature", () => {
+  it("assignTask: the goal appears under its own === PROJECT === section", async () => {
+    const { ops, provider } = await setupRecording();
+    const p = await ops.createProject(DEFAULT_WORKSPACE, { name: "Acme", goal: "Ship the checkout redesign" });
+    const t = await ops.createTask(DEFAULT_WORKSPACE, p.id, { text: "Add a health check endpoint" });
+    await ops.assignTask(DEFAULT_WORKSPACE, p.id, t.id);
+
+    const { task } = provider.specs[0]!;
+    expect(task).toContain("=== PROJECT ===");
+    expect(task).toContain("Ship the checkout redesign");
+    expect(task.indexOf("=== PROJECT ===")).toBeLessThan(task.indexOf("=== TASK ==="));
+  });
+
+  it("assignTask: an empty goal emits no === PROJECT === section", async () => {
+    const { ops, provider } = await setupRecording();
+    const p = await ops.createProject(DEFAULT_WORKSPACE, { name: "Acme", goal: "" });
+    const t = await ops.createTask(DEFAULT_WORKSPACE, p.id, { text: "Add a health check endpoint" });
+    await ops.assignTask(DEFAULT_WORKSPACE, p.id, t.id);
+
+    const { task } = provider.specs[0]!;
+    expect(task).not.toContain("=== PROJECT ===");
+  });
+
+  it("assignTask: a feature-member task's brief carries the feature's name + description", async () => {
+    const { ops, provider } = await setupRecording();
+    const p = await ops.createProject(DEFAULT_WORKSPACE, { name: "Acme", goal: "" });
+    const feature = await ops.createFeature(DEFAULT_WORKSPACE, p.id, {
+      name: "Checkout redesign",
+      description: "A new one-page checkout flow.",
+    });
+    const t = await ops.createTask(DEFAULT_WORKSPACE, p.id, { text: "Add a health check endpoint" });
+    await ops.updateTask(DEFAULT_WORKSPACE, t.id, { featureId: feature.id });
+    await ops.assignTask(DEFAULT_WORKSPACE, p.id, t.id);
+
+    const { task } = provider.specs[0]!;
+    expect(task).toContain("=== FEATURE ===");
+    expect(task).toContain("Checkout redesign");
+    expect(task).toContain("A new one-page checkout flow.");
+  });
+
+  it("assignTask: a task with no feature emits no === FEATURE === section", async () => {
+    const { ops, provider } = await setupRecording();
+    const p = await ops.createProject(DEFAULT_WORKSPACE, { name: "Acme", goal: "" });
+    const t = await ops.createTask(DEFAULT_WORKSPACE, p.id, { text: "Add a health check endpoint" });
+    await ops.assignTask(DEFAULT_WORKSPACE, p.id, t.id);
+
+    const { task } = provider.specs[0]!;
+    expect(task).not.toContain("=== FEATURE ===");
+  });
+
+  it("forkAgent: the fork's brief ALSO carries the project's goal", async () => {
+    const { ops, provider } = await setupRecording();
+    const p = await ops.createProject(DEFAULT_WORKSPACE, { name: "Acme", goal: "Ship the checkout redesign" });
+    const t = await ops.createTask(DEFAULT_WORKSPACE, p.id, { text: "Add a health check endpoint" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, p.id, t.id);
+    provider.specs.length = 0;
+
+    await ops.forkAgent(DEFAULT_WORKSPACE, run.id);
+
+    const { task } = provider.specs[0]!;
+    expect(task).toContain("=== PROJECT ===");
+    expect(task).toContain("Ship the checkout redesign");
+  });
+});
+
 // Reserved-name imports kept so future tests can extend without re-adding.
 void (undefined as unknown as Task);
 void (undefined as unknown as TaskRun);
