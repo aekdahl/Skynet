@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HitlItem, ProviderId, Resolution, ServerEvent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE, WorkspaceSettings } from "@skynet/shared";
+import { config } from "../apps/server/src/config.js";
 import { Hub } from "../apps/server/src/hub.js";
 import { Orchestrator } from "../apps/server/src/orchestrator.js";
 import { Operations } from "../apps/server/src/operations.js";
@@ -141,23 +142,31 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     expect((await store.getRun(run.id))?.status).toBe("running");
   });
 
-  it("too many failures → auto-escalate (not a silent 'review' spin)", async () => {
+  it("every generic failure auto-escalates immediately (not a silent 'review' spin)", async () => {
     const { run, events } = await assignRun();
-    // First failures park in `review` (the existing behaviour), not escalation.
+    // A single failure must escalate right away — nothing retries a run on its
+    // own, so silently absorbing the first couple of failures just dead-ends the
+    // task in `review` with no HITL. See fail() in orchestrator.ts.
     events.onFailed(run.id, "attempt 1 crashed");
-    await waitFor(async () => (await store.getRun(run.id))?.status === "review");
-    expect(bus.raised().some((i) => i.kind === "escalation")).toBe(false);
-
-    events.onFailed(run.id, "attempt 2 crashed");
-    await waitFor(async () => (await store.getRun(run.id))?.status === "review");
-    // The 3rd failure (default SKYNET_RUN_MAX_FAILURES=3) escalates to a human.
-    events.onFailed(run.id, "attempt 3 crashed");
     await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
 
     const esc = bus.raised().find((i) => i.kind === "escalation")!;
     expect(esc.flags).toContain("failures");
-    expect(esc.why).toMatch(/3 failed attempts/i);
-    expect((await store.getRun(run.id))?.status).toBe("waiting");
+    expect(esc.why).toMatch(/1 failed attempt/i);
+    expect((await store.getRun(run.id))?.status).toBe("waiting"); // resumable, not silently "review"
+  });
+
+  it("runMaxFailures=0 opts back into the old silent 'review' parking", async () => {
+    const before = config.runMaxFailures;
+    config.runMaxFailures = 0;
+    try {
+      const { run, events } = await assignRun();
+      events.onFailed(run.id, "attempt 1 crashed");
+      await waitFor(async () => (await store.getRun(run.id))?.status === "review");
+      expect(bus.raised().some((i) => i.kind === "escalation")).toBe(false);
+    } finally {
+      config.runMaxFailures = before;
+    }
   });
 
   it("running out of turns escalates immediately (resumable), not counted as a failure", async () => {
