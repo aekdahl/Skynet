@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
+import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, DiffWalkthrough, PullRequest, PrChecksStatus, SolutionBrief } from "@skynet/shared";
 import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -13,7 +13,7 @@ import {
   type RunnerProvider,
   type UntrustedRead,
 } from "@skynet/runner-sdk";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { blastRadiusFlags, classifyCommand } from "./command-safety.js";
@@ -36,6 +36,7 @@ import { providerUsableFromEnv } from "./provider-env.js";
 import { secretService } from "./secrets/index.js";
 import { previewService } from "./preview/index.js";
 import { projectPreview, type ProjectPreviewManager } from "./preview/project-preview.js";
+import { prepareWorktree } from "./preview/worktree.js";
 import type { Store } from "./store/store.js";
 import { WorktreeProvisioner } from "./worktrees.js";
 
@@ -210,6 +211,16 @@ const DEEP_REVIEW_TIMEOUT_MS = 6 * 60_000;
 // still: fewer turns, a shorter wall-clock backstop.
 const BREAKER_MAX_TURNS = 12;
 const BREAKER_TIMEOUT_MS = 4 * 60_000;
+
+// S6's explore run (Orchestrator.exploreBrief) is read-only codebase grounding
+// for a draft plan, not a live-app review — cheaper turn budget than deepReview
+// (no browsing back and forth), shorter wall-clock backstop. No Agent exists
+// yet at this point in a brief's life (it's pre-work, before any run/task), so
+// there's no per-agent model to inherit — hardcoded to Claude's default model
+// (matches DEFAULT_PROVIDERS' first "claude" entry in packages/shared/src/providers.ts).
+const EXPLORE_MODEL = "opus-4.8";
+const EXPLORE_MAX_TURNS = 14;
+const EXPLORE_TIMEOUT_MS = 4 * 60_000;
 
 /** Prepend the project's `instructions` (the "house rules" for this codebase)
  *  to any prompt an agent will see. When there are no instructions this is a
@@ -580,6 +591,12 @@ export class Orchestrator {
     // singleton, so a deep-review test can point at an isolated worktrees dir
     // instead of the process-wide default.
     private previewOverride?: Pick<ProjectPreviewManager, "startRun" | "dirFor" | "stop">,
+    // Test seam for exploreBrief's detached checkouts: `config.worktreesDir` is
+    // a plain value read ONCE at module-import time (not a live env lookup),
+    // so a test can't retarget it via process.env in beforeEach the way
+    // previewOverride's injected manager sidesteps the same problem — this
+    // does the equivalent for exploreBrief specifically.
+    private exploreWorktreesDirOverride?: string,
   ) {}
 
   /** Build (or reuse) the git backend for a repo path + base branch. Cached so
@@ -4365,6 +4382,125 @@ export class Orchestrator {
       return { ...parsed, note: null };
     } finally {
       await previewMgr.stop(previewKey).catch(() => undefined);
+    }
+  }
+
+  /**
+   * S6: opt-in rigor for a SolutionBrief (S4) — before an operator approves
+   * it, spin up a real bounded agent run that actually READS the codebase (a
+   * detached checkout of the project's base branch, via the same
+   * `prepareWorktree` the local preview and Fly deploy engines share) and
+   * annotates the draft: wrong assumptions, real touchpoints, blast radius —
+   * instead of trusting the brief's prose alone. Same "invisible, private
+   * RunnerEvents adapter" shape as `runDeepReview` (no TaskRun, no
+   * fleet-runner row, no human to ask — every gate auto-resolves), but no
+   * live preview/browser: this reads code, it doesn't exercise a running app.
+   * Categorically no write/edit/shell tools (`disallowedTools`) — a run that
+   * could mutate the checkout wouldn't be trustworthy grounding for an
+   * approval decision. Returns null on ANY failure (no repo, no usable Claude
+   * credential, worktree prep fails, timeout, unreadable output) — purely
+   * advisory, never blocks approval; the caller (Operations.exploreBrief)
+   * turns a null into a visible error and leaves the brief untouched.
+   */
+  async exploreBrief(ws: string, brief: SolutionBrief, project: Project): Promise<{ findings: string[]; touchpoints: string[] } | null> {
+    if (!project.repoPath) return null; // nothing to check out and read
+
+    const dir = join(this.exploreWorktreesDirOverride ?? config.worktreesDir ?? resolve(process.cwd(), ".skynet-worktrees"), `explore-${brief.id}`);
+    let cwd: string;
+    try {
+      cwd = await prepareWorktree(project.repoPath, dir, this.baseBranchFor(project));
+    } catch {
+      return null;
+    }
+
+    try {
+      const provider = await this.getProvider("claude").catch(() => null);
+      if (!provider) return null;
+      const apiKey = (await secretService.resolve(ws, "claude").catch(() => undefined)) ?? undefined;
+
+      const prompt = [
+        `You are grounding a DRAFT plan against the ACTUAL codebase before a human decides whether to approve it. Read the repo — don't assume.`,
+        `Draft brief: "${brief.title}"`,
+        brief.problem ? `Problem:\n${brief.problem}` : null,
+        brief.approach ? `Proposed approach:\n${brief.approach}` : null,
+        brief.risks.length ? `Risks already named:\n${brief.risks.map((r) => `- ${r}`).join("\n")}` : null,
+        brief.acceptanceCriteria.length ? `Acceptance criteria:\n${brief.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}` : null,
+        `Actually verify the plan's assumptions against the real code — don't just restate the brief. List concrete, real touchpoints (files/modules/areas this plan would actually touch), and note any wrong assumptions, missing risks, or blast radius the brief didn't mention.`,
+        `You are a READ-ONLY explorer — you have no edit/write/shell tools and must not attempt to fix or scaffold anything. Reading and reporting is the whole job.`,
+        `Reply with ONLY this JSON — no other text, no code fence: {"findings": ["<string>", ...], "touchpoints": ["<string>", ...]}. Empty arrays are fine if you genuinely found nothing to flag.`,
+      ]
+        .filter((l): l is string => !!l)
+        .join("\n\n");
+
+      const exploreRunId = `explore-${brief.id}-${++this.seq}`;
+      let lastText = "";
+      let handle: RunnerHandle | undefined;
+      const outcome = await Promise.race([
+        new Promise<"completed" | "failed">((resolvePromise) => {
+          const events: RunnerEvents = {
+            onLog: (_id, line, detail) => {
+              if (detail === undefined && line.trim()) lastText = line;
+            },
+            onProgress: () => {},
+            onHeartbeat: () => {},
+            onStatus: () => {},
+            // No human is watching — auto-resolve every gate. A read-only
+            // explorer should never need a tool-call gate (Read/LS/Glob/Grep
+            // don't raise one), but a question/escalation is nudged back to
+            // just answering with the required JSON rather than left to hang.
+            onHitl: (_id, raise) => {
+              if (!handle) return;
+              const resolution: Resolution =
+                raise.kind === "approval"
+                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "explore-harness", at: now() }
+                  : {
+                      action: "reject",
+                      optionIndex: null,
+                      guidance: "Don't ask questions — just read the code, then reply with only the required JSON.",
+                      targetBranch: null,
+                      memoryNote: null,
+                      by: "explore-harness",
+                      at: now(),
+                    };
+              void handle.resume(resolution).catch(() => undefined);
+            },
+            onCompleted: () => resolvePromise("completed"),
+            onFailed: () => resolvePromise("failed"),
+            onChatReply: () => {},
+          };
+          provider
+            .start(
+              {
+                runId: exploreRunId,
+                projectId: project.id,
+                task: prompt,
+                model: EXPLORE_MODEL,
+                branch: this.baseBranchFor(project),
+                cwd,
+                apiKey,
+                maxTurns: EXPLORE_MAX_TURNS,
+                disallowedTools: ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"],
+              },
+              events,
+            )
+            .then((h) => {
+              handle = h;
+            })
+            .catch(() => resolvePromise("failed"));
+        }),
+        new Promise<"failed">((resolvePromise) => setTimeout(() => resolvePromise("failed"), EXPLORE_TIMEOUT_MS)),
+      ]);
+      await handle?.stop().catch(() => undefined);
+
+      if (outcome !== "completed" || !lastText) return null;
+      const obj = extractJsonObject(lastText);
+      if (!obj || !Array.isArray(obj.findings) || !Array.isArray(obj.touchpoints)) return null;
+      return {
+        findings: obj.findings.filter((f): f is string => typeof f === "string"),
+        touchpoints: obj.touchpoints.filter((t): t is string => typeof t === "string"),
+      };
+    } catch {
+      return null;
     }
   }
 

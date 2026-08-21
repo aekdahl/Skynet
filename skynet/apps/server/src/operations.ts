@@ -1413,6 +1413,7 @@ export class Operations {
       approvedAt: null,
       approvedBy: null,
       sourceConversation: input.sourceConversation?.trim().slice(0, Operations.SOURCE_CONVERSATION_MAX) || null,
+      exploration: null,
     };
     return this.hub.upsertSolutionBrief(brief);
   }
@@ -1446,6 +1447,29 @@ export class Operations {
     const brief = await this.store.getSolutionBrief(briefId);
     if (!brief || brief.workspaceId !== ws) throw new NotFoundError("SolutionBrief");
     await this.hub.deleteSolutionBrief(briefId);
+  }
+
+  /**
+   * S6 (optional): opt-in rigor before approving a brief — spins a bounded,
+   * read-only agent run (Orchestrator.exploreBrief) that actually reads the
+   * codebase and appends its findings/touchpoints to the brief. Advisory
+   * only: `status`/every operator-authored field is untouched either way.
+   * `exploreBrief` returns null on ANY failure (no local repo, no usable
+   * credential, worktree prep failed, timeout, unreadable output) — turned
+   * into a real thrown Error here so the failure is VISIBLE at the API
+   * boundary (a 400 the caller sees), rather than a silent 200 that looks
+   * like success. The brief itself is never written on failure.
+   */
+  async exploreBrief(ws: string, projectId: string, briefId: string): Promise<SolutionBrief> {
+    const brief = await this.getBrief(ws, briefId);
+    if (brief.projectId !== projectId) throw new NotFoundError("SolutionBrief");
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const result = await this.orchestrator.exploreBrief(ws, brief, project);
+    if (!result) {
+      throw new Error("Explore couldn't complete (no local repo, no usable Claude credential, or it timed out) — the brief is unchanged.");
+    }
+    return this.hub.upsertSolutionBrief({ ...brief, exploration: { at: now(), findings: result.findings, touchpoints: result.touchpoints } });
   }
 
   // ── roadmap doc (ROADMAP.md read straight from the project's bound repo) ──
