@@ -3867,6 +3867,16 @@ export class Orchestrator {
             if (p.autonomy && (await this.underDailyBudget(p, runs))) {
               const pickable = mine
                 .filter((t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned")
+                // S7: a task generated from a brief decomposition may declare
+                // dependencies on other tasks from the same plan — skip it
+                // until every one of those is `done`. `mine` already holds
+                // the full live project task set for this tick, so this is a
+                // pure in-memory check. A missing dependency (e.g. deleted)
+                // counts as unsatisfied — the safe default, never silently
+                // skip a gate on ambiguity. A manual "Start now" (assignTask
+                // called directly, outside this loop) still bypasses it, same
+                // as autoPick itself is bypassed by a manual start.
+                .filter((t) => (t.dependsOnTaskIds ?? []).every((depId) => mine.find((d) => d.id === depId)?.state === "done"))
                 .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
               // Budget-as-allocation: still fires in the SAME priority order —
               // this only trims tasks that don't fit what's left (see
@@ -4613,6 +4623,7 @@ export class Orchestrator {
       featureId: null,
       milestoneId: null,
       source,
+      dependsOnTaskIds: [],
       lint: null,
       preferredProvider: null,
       preferredModel: null,

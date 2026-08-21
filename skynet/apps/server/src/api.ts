@@ -981,6 +981,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return fail(reply, err);
     }
   });
+  // S7: the payoff — one call turns an approved brief into a Feature + its
+  // ordered, sized, linked tasks. Rejects a non-approved brief, a brief
+  // already decomposed, or an unreadable plan (see Operations.decomposeBrief
+  // for the exact retry-once-then-4xx / nothing-half-created contract).
+  app.post<{ Params: { id: string; bid: string } }>("/api/projects/:id/briefs/:bid/decompose", async (req, reply) => {
+    try {
+      return await ops.decomposeBrief(ws(req), req.params.id, req.params.bid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
 
   // ── milestones (roadmap) ──────────────────────────────────────────────
   app.post<{ Params: { id: string } }>("/api/projects/:id/milestones", async (req, reply) => {

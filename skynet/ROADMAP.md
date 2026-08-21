@@ -876,6 +876,45 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   destructive brief operations off the agent surface the same way approval is). Naming note: this
   landed on `docs/`-less territory — no prior "Solutioning layer" section existed in this file before
   S4; this bullet is that section's first entry.
+  **S7 — decompose: approved brief → Feature + ordered, sized, linked tasks (the payoff).** One call,
+  `POST /api/projects/:id/briefs/:bid/decompose` (`Operations.decomposeBrief`), turns an approved
+  brief into a Feature + a batch of concrete tasks a fleet can actually pick up — one structured-output
+  consult (`decompose.ts`, same discipline as `merge-brief.ts`/`review-verdict.ts`: a field-based
+  parser, never prose classification) asks for `{feature:{name,description}, tasks:[{text,description,
+  acceptanceCriteria,effort,dependsOnIndex}]}`, retried once on an unreadable reply, then a thrown
+  error (400) with **nothing created** — the Feature and every Task are written only once the whole
+  plan parses; a partial/bad reply never half-creates. Each task lands `state: "backlog"` (triage +
+  the task linter run on it same as any manually-created task), `source: {kind:"brief", briefId}`,
+  `assessmentEffort` from the model's own sizing, and its acceptance criteria folded into the
+  description under a `## Acceptance` heading. New `Task.dependsOnTaskIds: string[]` (contracts.ts)
+  carries the plan's ordering intent past creation — `dependsOnIndex` (an index into the SAME response
+  array) is sanitized to only in-range, *strictly earlier* indices before being resolved to real task
+  ids, so a self/forward reference or an out-of-range one is silently dropped rather than failing the
+  whole plan (the one thing a null return protects against is a nameless feature or an empty task
+  list, not a single stray index — same "drop the bad entry, keep the good ones" discipline
+  `merge-brief.ts`'s risks/mitigations already use). The autonomy loop's auto-pick eligibility filter
+  (`tickAutonomy`) now skips a `todo`+`autoPick` task until every id in `dependsOnTaskIds` is `done` —
+  a pure in-memory check against the tick's own already-fetched task list, no extra store round-trip;
+  a missing/deleted dependency counts as unsatisfied (the safe default); a manual "Start now" still
+  bypasses it, same as `autoPick` itself is bypassed by a manual start. Idempotent by **content**, not
+  by `brief.featureId` (a brief can carry a featureId from manual pre-linking at creation time without
+  ever having been decomposed — see S4's `CreateSolutionBriefRequest.featureId`): a brief counts as
+  "already decomposed" only once a real task in the project carries `source.briefId` matching it;
+  regenerating means deleting those tasks first, a manual operator action, never an implicit overwrite.
+  Sets the brief's `featureId` on success; deliberately leaves `status` at `"approved"` — the
+  approved→`"building"` transition belongs to S8, not this step. Verified: 13 tests (`parseDecomposition`
+  as a pure unit — sanitization, safe-default nulls, effort validation — plus the full `Operations`
+  path: creation, idempotency-by-content vs. the pre-linked-featureId non-collision, the
+  retry-once-then-nothing-created contract, 404s) and a dependency-gated-autopick test proving a task
+  stays `todo` until its dependency is `done`, then picks up the next tick; a live, unscripted run of
+  the real prompt against the real Claude API on a realistic brief confirmed a sensibly-ordered,
+  correctly-dependent plan comes back parseable as-is. The consult itself is injectable
+  (`OperationsDeps.decomposeConsult`, mirroring `Orchestrator`'s `providerOverride`/`previewOverride`
+  test seams) rather than mocked at the module level — `oneShotText` resolves through
+  `@skynet/runner-sdk/claude`'s package-exports subpath (`dist/claude.js`, not source), and `vi.mock`
+  on a node_modules-resolved subpath silently failed to intercept calls made from `operations.ts` (a
+  Vite dep-optimizer caching gap, not a vitest bug) — the injected-function seam sidesteps the whole
+  class of issue and is the more idiomatic fit anyway, given the codebase's own precedent.
 - [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** *Landed:* **amber
   untangled** — `--accent` (brand/primary) and `--warn` (caution/waiting status) were an accidental
   hex duplicate (`#FFB224` both, not just visually close); `--warn` is now a genuinely distinct

@@ -66,6 +66,8 @@ import { flyDeploy, type FlyDeployState } from "./fly/deploy.js";
 import { githubService, parseRepoRef } from "./github/index.js";
 import { parseChecklist } from "./tasks/checklist.js";
 import { lintTask } from "./task-linter.js";
+import { buildDecomposePrompt, parseDecomposition } from "./decompose.js";
+import { oneShotText } from "@skynet/runner-sdk/claude";
 import {
   answerProjectQuestion,
   type AssistantAction,
@@ -145,6 +147,13 @@ export interface OperationsDeps {
   store: Store;
   hub: Hub;
   orchestrator: Orchestrator;
+  // Test seam, mirroring Orchestrator's providerOverride/previewOverride: the
+  // one-shot consult decomposeBrief uses to turn a brief into a plan. Defaults
+  // to the real oneShotText. Injectable because it's a module-level function
+  // (not something reachable via an injected RunnerProvider — decomposeBrief
+  // has no live run to ride a provider's own consult() on), so a deterministic
+  // test needs its own seam rather than mocking the imported module.
+  decomposeConsult?: (opts: { prompt: string; model: string; apiKey?: string | null }) => Promise<string>;
 }
 
 export class Operations {
@@ -152,11 +161,13 @@ export class Operations {
   private readonly store: Store;
   private readonly hub: Hub;
   private readonly orchestrator: Orchestrator;
+  private readonly decomposeConsult: (opts: { prompt: string; model: string; apiKey?: string | null }) => Promise<string>;
 
   constructor(deps: OperationsDeps) {
     this.store = deps.store;
     this.hub = deps.hub;
     this.orchestrator = deps.orchestrator;
+    this.decomposeConsult = deps.decomposeConsult ?? ((opts) => oneShotText({ ...opts, apiKey: opts.apiKey ?? undefined }));
   }
 
   private uid(prefix: string): string {
@@ -962,6 +973,9 @@ export class Operations {
       milestoneId: null,
       // Provenance — set when importing from a source of truth (GitHub issue, …).
       source: input.source ?? null,
+      // Ordering intent starts empty — only a brief decomposition (S7) sets
+      // this, at creation time, directly (bypassing this generic constructor).
+      dependsOnTaskIds: [],
       lint: null,
       // Start-picker preference starts unset — plain auto-pick until an operator
       // saves one via updateTask.
@@ -1446,6 +1460,119 @@ export class Operations {
     const brief = await this.store.getSolutionBrief(briefId);
     if (!brief || brief.workspaceId !== ws) throw new NotFoundError("SolutionBrief");
     await this.hub.deleteSolutionBrief(briefId);
+  }
+
+  /**
+   * S7: turn an APPROVED brief into a Feature + an ordered, sized, linked batch
+   * of Tasks — one LLM call (structured output, see decompose.ts), retried once
+   * on an unreadable reply, then a thrown error (4xx at the route) with
+   * NOTHING created — the Feature and every Task are only ever written once
+   * the whole plan parses, never half-created from a partial/bad reply.
+   *
+   * Idempotent by CONTENT, not by `brief.featureId` (a brief may already carry
+   * a featureId from manual pre-linking at creation time — see
+   * CreateSolutionBriefRequest — without ever having been decomposed): a brief
+   * counts as "already decomposed" only once a real Task in this project
+   * carries `source: {kind:"brief", briefId}`. Regenerating means deleting
+   * those tasks (and, typically, the feature) first — a manual, explicit
+   * operator action, never an implicit overwrite of work that may already be
+   * underway.
+   */
+  async decomposeBrief(ws: string, projectId: string, briefId: string): Promise<{ feature: Feature; tasks: Task[] }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const brief = await this.store.getSolutionBrief(briefId);
+    if (!brief || brief.workspaceId !== ws || brief.projectId !== projectId) throw new NotFoundError("SolutionBrief");
+    if (brief.status !== "approved") {
+      throw new Error("Only an approved brief can be decomposed into tasks.");
+    }
+    const projectTasks = await this.store.listTasks(ws);
+    const alreadyDecomposed = projectTasks.some(
+      (t) => t.projectId === projectId && t.source?.kind === "brief" && t.source.briefId === briefId,
+    );
+    if (alreadyDecomposed) {
+      throw new Error("This brief has already been decomposed — delete the resulting feature/tasks first to regenerate.");
+    }
+
+    const apiKey = await secretService.resolve(ws, "claude");
+    const model = process.env.SKYNET_DECOMPOSE_MODEL || "sonnet";
+    const prompt = buildDecomposePrompt(brief);
+    let plan: ReturnType<typeof parseDecomposition> = null;
+    for (let attempt = 0; attempt < 2 && !plan; attempt++) {
+      const reply = await this.decomposeConsult({ prompt, model, apiKey }).catch(() => "");
+      plan = parseDecomposition(reply);
+    }
+    if (!plan) {
+      throw new Error("Couldn't generate a plan from this brief — the model's reply wasn't readable as one. Try again.");
+    }
+
+    const at = now();
+    const inFeatures = (await this.store.listFeatures(ws)).filter((f) => f.projectId === projectId);
+    const feature: Feature = {
+      id: this.uid(`f-${this.slug(project.name)}`),
+      workspaceId: ws,
+      projectId,
+      name: plan.feature.name,
+      description: plan.feature.description || brief.approach.trim().slice(0, 500) || null,
+      status: "active",
+      milestoneId: null,
+      order: inFeatures.length,
+      archived: false,
+      createdAt: at,
+      pr: null,
+      sizeWarning: null,
+    };
+    await this.hub.upsertFeature(feature);
+
+    const inProject = projectTasks.filter((t) => t.projectId === projectId);
+    // Ids are minted up front so dependsOnIndex (an index into THIS plan) can
+    // resolve to real task ids before any task is written.
+    const ids = plan.tasks.map((_, i) => this.uid(`t-${this.slug(project.name)}-${i}`));
+    const tasks: Task[] = plan.tasks.map((t, i) => {
+      const acceptance = t.acceptanceCriteria.length
+        ? `\n\n## Acceptance\n${t.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}`
+        : "";
+      const description = `${t.description}${acceptance}`.trim();
+      return {
+        id: ids[i]!,
+        workspaceId: ws,
+        projectId,
+        text: t.text,
+        description: description || null,
+        // Lands in backlog, not todo — triage + the task linter run on it
+        // normally, same as any other newly-created task (see S7 spec).
+        state: "backlog",
+        runId: null,
+        autoPick: false,
+        assessment: null,
+        assessmentEffort: t.effort,
+        assessmentRisks: [],
+        reviewVerdict: null,
+        assignment: { mode: "unassigned", agentIds: [] },
+        order: inProject.length + i,
+        archived: false,
+        estimatedDurationMs: null,
+        plannedStartAt: null,
+        featureId: feature.id,
+        milestoneId: null,
+        source: { kind: "brief", briefId: brief.id },
+        dependsOnTaskIds: t.dependsOnIndex.map((idx) => ids[idx]!),
+        lint: null,
+        preferredProvider: null,
+        preferredModel: null,
+      };
+    });
+    for (const t of tasks) {
+      const created = await this.hub.upsertTask(t);
+      this.maybeLintTask(ws, created);
+    }
+
+    // Link the brief to the feature it just produced. Deliberately leaves
+    // `status` at "approved" — the approved→"building" transition belongs to
+    // S8, not this step.
+    await this.hub.upsertSolutionBrief({ ...brief, featureId: feature.id, updatedAt: at });
+
+    return { feature, tasks };
   }
 
   // ── roadmap doc (ROADMAP.md read straight from the project's bound repo) ──
