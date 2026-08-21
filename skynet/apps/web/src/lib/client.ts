@@ -441,6 +441,13 @@ export function commitProjectRoadmap(
   return req<ProjectRoadmapResult>("POST", `/api/projects/${projectId}/roadmap`, body);
 }
 
+// ─── Project primer auto-draft (from the bound repo) ───────────────────────
+// Returns the draft text only — never saved server-side; the caller saves it
+// via updateProject({ primer }) once the operator reviews/edits it.
+export function draftProjectPrimer(projectId: string) {
+  return req<{ draft: string }>("POST", `/api/projects/${projectId}/primer/draft`);
+}
+
 // ─── Advanced env settings (desktop) ───────────────────────────────────────
 export type EnvFieldType = "text" | "number" | "toggle" | "secret";
 export interface EnvSettingField {
@@ -617,6 +624,7 @@ export function updateProject(
     checkCmd?: string | null;
     deepReview?: boolean;
     breakerReview?: boolean;
+    primer?: string | null;
   },
 ) {
   return req<unknown>("PATCH", `/api/projects/${id}`, body);

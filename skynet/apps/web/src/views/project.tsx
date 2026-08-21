@@ -1299,6 +1299,13 @@ export function ProjectView({
   // grounding). Kept as its own local state so Cancel restores the pristine
   // value if the operator opened the editor and changed their mind.
   const [instructions, setInstructions] = useState(project.instructions ?? "");
+  // The project primer — goal elaboration, stack, layout, conventions, build/
+  // test commands. Same "own local state so Cancel restores it" shape as
+  // instructions above; drafting from the repo only fills this box, it never
+  // saves on its own (the operator's Save is the real approval).
+  const [primer, setPrimer] = useState(project.primer ?? "");
+  const [drafting, setDrafting] = useState(false);
+  const [draftErr, setDraftErr] = useState<string | null>(null);
   // Which branch this project stacks its runs/PRs onto. Blank = the global default
   // (usually main). Only meaningful for a git-backed / repo-bound project.
   const [baseBranch, setBaseBranch] = useState(project.baseBranch ?? "");
@@ -1314,11 +1321,12 @@ export function ProjectView({
     setName(project.name);
     setGoal(project.goal);
     setInstructions(project.instructions ?? "");
+    setPrimer(project.primer ?? "");
     setBaseBranch(project.baseBranch ?? "");
     setCheckCmd(project.checkCmd ?? "");
     setSyncToSource(project.syncSourceStatus);
     setFolded(false);
-  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch, project.checkCmd, project.syncSourceStatus]);
+  }, [project.id, project.name, project.goal, project.instructions, project.primer, project.baseBranch, project.checkCmd, project.syncSourceStatus]);
 
   return (
     <section className="projview">
@@ -1345,6 +1353,39 @@ export function ProjectView({
             value={instructions}
             onChange={(e) => setInstructions(e.target.value)}
           />
+          <label className="projview-instructions-label mono">
+            Primer <span className="projview-instructions-hint">— what we're building &amp; how: goal elaboration, tech stack, repo layout, conventions, build/test commands. Markdown OK.</span>
+          </label>
+          <textarea
+            className="qx-input projview-instructions"
+            rows={10}
+            placeholder={"e.g.\n## Stack\nTypeScript monorepo, pnpm workspaces...\n\n## Layout\napps/server (Fastify API), apps/web (React SPA)...\n\n## Build & test\npnpm build, pnpm exec vitest run..."}
+            value={primer}
+            disabled={drafting}
+            onChange={(e) => setPrimer(e.target.value)}
+          />
+          <div className="qx-row">
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={drafting || !hasRepo}
+              title={hasRepo ? "Draft a primer from the bound repo — review and edit before saving." : "Connect a local folder or GitHub repo first."}
+              onClick={async () => {
+                setDrafting(true);
+                setDraftErr(null);
+                try {
+                  const { draft } = await api.draftProjectPrimer(project.id);
+                  setPrimer(draft);
+                } catch (e) {
+                  setDraftErr((e as Error)?.message || "Couldn't draft a primer from this repo.");
+                } finally {
+                  setDrafting(false);
+                }
+              }}
+            >
+              {drafting ? "Drafting…" : "Draft from repo →"}
+            </button>
+            {draftErr && <span className="projview-instructions-hint">{draftErr}</span>}
+          </div>
           {hasRepo && (
             <label className="projview-instructions-label mono">
               Base branch <span className="projview-instructions-hint">— the branch runs cut from and open PRs against. Blank = the default (main). Set a feature branch to stack this project's work onto it.</span>
@@ -1385,10 +1426,12 @@ export function ProjectView({
               onClick={() => {
                 // Trim to detect real content; blank clears the field on the server.
                 const nextInstructions = instructions.trim() ? instructions.trim() : null;
+                const nextPrimer = primer.trim() ? primer.trim() : null;
                 updateProject(project.id, {
                   name: name.trim() || project.name,
                   goal: goal.trim(),
                   instructions: nextInstructions,
+                  primer: nextPrimer,
                   baseBranch: baseBranch.trim() || null,
                   checkCmd: checkCmd.trim() || null,
                   syncSourceStatus: syncToSource,
@@ -1404,6 +1447,7 @@ export function ProjectView({
                 setName(project.name);
                 setGoal(project.goal);
                 setInstructions(project.instructions ?? "");
+                setPrimer(project.primer ?? "");
                 setBaseBranch(project.baseBranch ?? "");
                 setCheckCmd(project.checkCmd ?? "");
                 setSyncToSource(project.syncSourceStatus);
@@ -1426,6 +1470,15 @@ export function ProjectView({
                 onClick={() => setEditing(true)}
               >
                 ⓘ Instructions active — click to view/edit
+              </button>
+            )}
+            {project.primer && (
+              <button
+                className="proj-instructions-chip mono"
+                title={project.primer}
+                onClick={() => setEditing(true)}
+              >
+                📖 Primer set — click to view/edit
               </button>
             )}
             {/* Identity first: the GitHub repo (a human recognizes "org/repo";

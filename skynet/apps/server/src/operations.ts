@@ -63,6 +63,7 @@ import { flyDeploy, type FlyDeployState } from "./fly/deploy.js";
 import { githubService, parseRepoRef } from "./github/index.js";
 import { parseChecklist } from "./tasks/checklist.js";
 import { lintTask } from "./task-linter.js";
+import { draftPrimer } from "./primer-draft.js";
 import {
   answerProjectQuestion,
   type AssistantAction,
@@ -785,6 +786,9 @@ export class Operations {
       // Project-scoped agent guidance is optional at creation. Trimmed to null
       // when blank so the "no rules" grounding path is unambiguous downstream.
       instructions: input.instructions?.trim() || null,
+      // No primer at creation — there's usually no bound repo yet to draft one
+      // from. Set later, by hand or via "Draft from repo" in project settings.
+      primer: null,
       // Optional: pin to a specific GitHub account at creation, else the default
       // connection (chosen later in project settings).
       githubCredentialId: input.githubCredentialId ?? null,
@@ -829,6 +833,13 @@ export class Operations {
       patch.instructions === undefined
         ? {}
         : { instructions: patch.instructions?.trim() ? patch.instructions.trim() : null };
+    // Same normalization for the primer: empty/whitespace-only clears back to
+    // null (= "no primer set"), so downstream threading never has to
+    // distinguish "" from null.
+    const primer =
+      patch.primer === undefined
+        ? {}
+        : { primer: patch.primer?.trim() ? patch.primer.trim() : null };
     // Same normalization for the base branch: empty/whitespace clears back to null
     // (= the global default), so `project.baseBranch ?? config.baseBranch` is never "".
     const baseBranch =
@@ -841,7 +852,7 @@ export class Operations {
       patch.roadmapPath === undefined
         ? {}
         : { roadmapPath: patch.roadmapPath?.trim() ? patch.roadmapPath.trim() : null };
-    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions, ...baseBranch, ...roadmapPath });
+    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions, ...primer, ...baseBranch, ...roadmapPath });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     // Re-enabling autonomy (whether the operator turned it off themselves, or
     // the session circuit-breaker did) starts the streak fresh — otherwise an
@@ -1412,6 +1423,16 @@ export class Operations {
       throw err;
     }
     return { state: "ok", path: body.path, content: body.content, source: "github" };
+  }
+
+  /** Auto-draft `Project.primer` from the bound repo — a bounded, deterministic
+   *  digest (file tree, manifests, README head) fed into one consult call.
+   *  Returns the draft text ONLY; never saves it. The operator's own edit +
+   *  Save (a plain `updateProject({ primer })` call) is the real approval. */
+  async draftProjectPrimer(ws: string, id: string): Promise<{ draft: string }> {
+    const project = await this.store.getProject(id);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return { draft: await draftPrimer(ws, project) };
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────

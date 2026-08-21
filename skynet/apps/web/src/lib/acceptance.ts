@@ -307,4 +307,25 @@ export const SCENARIOS: Scenario[] = [
       return steps;
     },
   },
+  {
+    id: "project-primer-draft",
+    name: "Project primer draft refuses an unbound project",
+    desc: "The auto-draft endpoint's bound-repo precondition — control-plane only, no real consult call (that needs a live provider key, so it's not exercised offline here).",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: primer draft ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      const s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const project = s.projects.find((p) => p.name === name)!;
+      try {
+        await api.draftProjectPrimer(project.id);
+        steps.push(step("draft on an unbound project is refused", false, "did not throw"));
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : 0;
+        steps.push(step("draft on an unbound project is refused", status === 400, `status ${status}`));
+      }
+      await swallow(api.deleteProject(project.id));
+      return steps;
+    },
+  },
 ];

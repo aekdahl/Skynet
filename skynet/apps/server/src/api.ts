@@ -614,6 +614,16 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Auto-draft Project.primer from the bound repo — returns the draft text for
+  // the operator to review/edit; never saves it (a plain PATCH does that).
+  app.post<{ Params: { id: string } }>("/api/projects/:id/primer/draft", async (req, reply) => {
+    try {
+      return await ops.draftProjectPrimer(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // Global Steward chat (the sidebar dock, every page). Optional `projectId`
   // focuses the page you're on — then it's the full project assistant (actions);
   // otherwise it answers workspace-wide.
