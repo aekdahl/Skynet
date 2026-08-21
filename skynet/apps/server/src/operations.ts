@@ -73,6 +73,8 @@ import {
 } from "./project-assistant.js";
 import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
 import { contentHash, readProjectDoc, resolveRoadmapDoc } from "./steward/docs.js";
+import { draftBriefFromConversation, summarizeConversation } from "./steward/crystallize.js";
+import { oneShotText } from "@skynet/runner-sdk/claude";
 import { commitLocalRepoFile } from "./local-repo-write.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
 import type { CapturedDiff, Hub } from "./hub.js";
@@ -145,6 +147,12 @@ export interface OperationsDeps {
   store: Store;
   hub: Hub;
   orchestrator: Orchestrator;
+  /** Test seam: override the model call crystallizeBrief makes (see
+   *  draftBriefFromConversation's `ask` param). Defaults to a real Claude
+   *  one-shot call authenticated via the workspace's "claude" secret — tests
+   *  inject a stub here so the retry contract is verifiable without a real
+   *  LLM call or a configured API key. */
+  crystallizeAsk?: (prompt: string) => Promise<string>;
 }
 
 export class Operations {
@@ -152,11 +160,13 @@ export class Operations {
   private readonly store: Store;
   private readonly hub: Hub;
   private readonly orchestrator: Orchestrator;
+  private readonly crystallizeAsk?: (prompt: string) => Promise<string>;
 
   constructor(deps: OperationsDeps) {
     this.store = deps.store;
     this.hub = deps.hub;
     this.orchestrator = deps.orchestrator;
+    this.crystallizeAsk = deps.crystallizeAsk;
   }
 
   private uid(prefix: string): string {
@@ -1446,6 +1456,26 @@ export class Operations {
     const brief = await this.store.getSolutionBrief(briefId);
     if (!brief || brief.workspaceId !== ws) throw new NotFoundError("SolutionBrief");
     await this.hub.deleteSolutionBrief(briefId);
+  }
+
+  /** "Crystallize" (S5): turn a Steward conversation into a draft SolutionBrief.
+   *  One LLM call (retried once on an unreadable/invalid reply — see
+   *  draftBriefFromConversation) drafts the content-bearing fields; this method
+   *  fills the system-owned ones the SAME way createBrief always does (id,
+   *  status: "draft", timestamps) — the model is never trusted with those. On a
+   *  second bad reply this throws CrystallizeParseError (→ 4xx at the HTTP
+   *  boundary) and no brief is created — never a half-parsed one. */
+  async crystallizeBrief(ws: string, projectId: string, history: ChatTurn[]): Promise<SolutionBrief> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const ask =
+      this.crystallizeAsk ??
+      (async (prompt: string) => {
+        const apiKey = (await secretService.resolve(ws, "claude")) ?? undefined;
+        return oneShotText({ prompt, apiKey });
+      });
+    const draft = await draftBriefFromConversation(ask, project.name, history);
+    return this.createBrief(ws, projectId, { ...draft, sourceConversation: summarizeConversation(history) });
   }
 
   // ── roadmap doc (ROADMAP.md read straight from the project's bound repo) ──

@@ -22,6 +22,7 @@ import {
   type PolicyDryRunResult,
   type PrChecksStatus,
   SignedComplianceReport,
+  type SolutionBrief,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -831,6 +832,19 @@ export async function streamStewardChat(
     }
   })();
   return parseStewardStream(chunks, onDelta);
+}
+
+/** S5 "crystallize": turn a Steward conversation into a draft SolutionBrief.
+ *  `history` is the transcript the caller already holds (the dock's own chat
+ *  state) — same shape/convention as streamStewardChat's history param. On a
+ *  model reply that still can't be read after a server-side retry, this
+ *  rejects with an ApiError(422); the caller shows that message and the
+ *  thread is left untouched (no brief was created). */
+export function crystallizeBrief(
+  projectId: string,
+  history: { role: "user" | "assistant"; content: string }[],
+) {
+  return req<SolutionBrief>("POST", `/api/projects/${projectId}/briefs/crystallize`, { history });
 }
 
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────

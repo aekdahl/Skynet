@@ -54,6 +54,7 @@ export function StewardDock({
   const [input, setInput] = useState(draftCache);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [crystallizing, setCrystallizing] = useState(false);
   // From the workspace view Steward can resolve + focus a project from the chat
   // itself; remember it so the header, placeholder, and action-targeting reflect
   // the project it's now working on (a page focus, when present, always wins).
@@ -225,6 +226,27 @@ export function StewardDock({
     }
   };
 
+  // S5 "crystallize": one action turns this conversation into a durable draft
+  // SolutionBrief. Needs a resolved project (the server route is nested under
+  // /api/projects/:id/briefs) and at least one real turn to draft from — the
+  // button below is only shown when both hold. No brief-viewing UI exists yet
+  // (S4 deferred it), so success is surfaced as a confirmation line in the
+  // thread itself rather than a navigation that has nowhere to go.
+  const crystallize = async () => {
+    if (crystallizing || !effFocusId || msgs.length === 0) return;
+    setErr(null);
+    setCrystallizing(true);
+    try {
+      const history = msgs.map(({ role, content }) => ({ role, content })).filter((m) => m.content.trim());
+      const brief = await api.crystallizeBrief(effFocusId, history);
+      setMsgs((m) => [...m, { role: "assistant", content: `✓ Crystallized into a draft solution brief: **${brief.title}**` }]);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't crystallize this conversation — try again.");
+    } finally {
+      setCrystallizing(false);
+    }
+  };
+
   return (
     <aside className="steward-dock" aria-label="Steward">
       <div className="steward-head">
@@ -296,6 +318,18 @@ export function StewardDock({
         ))}
       </div>
       {err && <div className="asst-err">{err}</div>}
+      {effFocusId && msgs.length > 0 && (
+        <div className="asst-crystallize">
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => void crystallize()}
+            disabled={crystallizing || busy}
+            title="Turn this conversation into a durable draft solution brief"
+          >
+            {crystallizing ? "Crystallizing…" : "Crystallize into a solution brief →"}
+          </button>
+        </div>
+      )}
       <form className="asst-input" onSubmit={(e) => { e.preventDefault(); void ask(input); }}>
         <input
           ref={inputRef}

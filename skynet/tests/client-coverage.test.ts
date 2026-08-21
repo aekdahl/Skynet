@@ -78,6 +78,14 @@ const ALLOW = new Set<string>([
   // it; the project-chat parse contract is covered by project-assistant.test.ts.
   "stewardChat",
   "streamStewardChat", // streaming variant of stewardChat — same live-key requirement
+  // S5 "crystallize" — turns a Steward conversation into a draft SolutionBrief
+  // via one real LLM call; same live-provider-key requirement as stewardChat
+  // above, so no offline journey exercises it. The retry/parse contract and
+  // the full Operations path (a real store, a real created brief, the
+  // no-brief-on-failure guarantee) are covered with a stubbed model reply in
+  // crystallize-brief.test.ts; the HTTP route (body validation, 400/422
+  // mapping) in crystallize-brief-routes.test.ts.
+  "crystallizeBrief",
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",

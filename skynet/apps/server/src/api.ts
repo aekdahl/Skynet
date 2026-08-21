@@ -50,6 +50,7 @@ import {
 import { CommandDeniedError } from "./command-safety.js";
 import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import { NotFoundError, type Operations, RoadmapConflictError, RunnerBusyError } from "./operations.js";
+import { CrystallizeParseError } from "./steward/crystallize.js";
 import type { ChatTurn } from "./project-assistant.js";
 import { simulateConversational } from "./telegram/index.js";
 import { simulationGrade } from "./simulation/grade.js";
@@ -73,6 +74,9 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
   if (err instanceof NotFoundError) return reply.code(404).send({ error: err.message });
   // A denylisted command can never be approved — policy refusal, not a bad request.
   if (err instanceof CommandDeniedError) return reply.code(422).send({ error: err.message });
+  // The request was well-formed, but the model couldn't produce a valid draft
+  // even after a retry — semantically unprocessable, not a malformed request.
+  if (err instanceof CrystallizeParseError) return reply.code(422).send({ error: err.message });
   if (
     err instanceof NoCapacityError ||
     err instanceof TaskAlreadyAssignedError ||
@@ -977,6 +981,24 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       if (brief.projectId !== req.params.id) throw new NotFoundError("SolutionBrief");
       await ops.deleteBrief(ws(req), req.params.bid);
       return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  // S5: turn a Steward conversation into a draft SolutionBrief. `history` is
+  // the transcript the CALLER already holds (the steward dock's own chat
+  // state) — there's no server-side steward session to reference instead, so
+  // this is the only shape that makes sense (mirrors /api/steward/chat's own
+  // client-supplied-history contract exactly). A retry happens INSIDE
+  // crystallizeBrief; a second bad model reply throws CrystallizeParseError,
+  // mapped to 422 below — never a half-parsed brief.
+  app.post<{ Params: { id: string }; Body: { history?: ChatTurn[] } }>("/api/projects/:id/briefs/crystallize", async (req, reply) => {
+    const history = Array.isArray(req.body?.history)
+      ? req.body!.history.filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
+      : [];
+    if (history.length === 0) return reply.code(400).send({ error: "Crystallize needs a conversation to draft from — pass `history`." });
+    try {
+      return await ops.crystallizeBrief(ws(req), req.params.id, history);
     } catch (err) {
       return fail(reply, err);
     }
