@@ -11,6 +11,7 @@ import {
   Resolution,
   ServerEvent,
   Snapshot,
+  SolutionBrief,
   WsMessage,
   DEFAULT_PROVIDERS,
   DEFAULT_WORKSPACE,
@@ -62,6 +63,29 @@ const runner: Agent = {
   autoProvisioned: false,
   canReview: true,
   role: "worker",
+};
+
+const brief: SolutionBrief = {
+  id: "brief-billing-1",
+  workspaceId: DEFAULT_WORKSPACE,
+  projectId: "payments",
+  title: "Reconcile Stripe webhooks",
+  problem: "Webhook retries can double-post a charge.",
+  approach: "Idempotency key on the ledger insert.",
+  optionsConsidered: [
+    { name: "DB unique constraint", verdict: "chosen", why: "cheapest, no new infra" },
+    { name: "Dedup queue", verdict: "rejected — too slow", why: "adds a network hop per event" },
+  ],
+  risks: ["migration must run before the flag flips"],
+  acceptanceCriteria: ["a replayed webhook never double-posts"],
+  openQuestions: ["do we backfill existing duplicates?"],
+  status: "draft",
+  featureId: null,
+  createdAt: 1_000,
+  updatedAt: 1_000,
+  approvedAt: null,
+  approvedBy: null,
+  sourceConversation: null,
 };
 
 const wire = <T>(v: T): unknown => JSON.parse(JSON.stringify(v));
@@ -126,6 +150,36 @@ describe("contracts round-trip", () => {
     expect(() => TaskRun.parse({ ...agent, status: "frozen" })).toThrow();
   });
 
+  it("SolutionBrief survives JSON serialize → parse unchanged", () => {
+    expect(SolutionBrief.parse(wire(brief))).toEqual(brief);
+  });
+
+  it("SolutionBrief zod defaults fill array/status fields on parse", () => {
+    const minimal = {
+      id: "b1", workspaceId: "w", projectId: "p", title: "t",
+      problem: "", approach: "", createdAt: 0, updatedAt: 0,
+    };
+    const parsed = SolutionBrief.parse(minimal);
+    expect(parsed.status).toBe("draft");
+    expect(parsed.optionsConsidered).toEqual([]);
+    expect(parsed.risks).toEqual([]);
+    expect(parsed.acceptanceCriteria).toEqual([]);
+    expect(parsed.openQuestions).toEqual([]);
+    expect(parsed.featureId).toBeNull();
+    expect(parsed.approvedAt).toBeNull();
+    expect(parsed.approvedBy).toBeNull();
+    expect(parsed.sourceConversation).toBeNull();
+  });
+
+  it("rejects an unknown SolutionBrief status", () => {
+    expect(() => SolutionBrief.parse({ ...brief, status: "shipped" })).toThrow();
+  });
+
+  it("Task.source round-trips the 'brief' provenance kind", () => {
+    const withSource = { id: "t1", workspaceId: "w", projectId: "p", text: "x", state: "backlog", source: { kind: "brief", briefId: "brief-billing-1" } };
+    expect(Task.parse(wire(withSource)).source).toEqual({ kind: "brief", briefId: "brief-billing-1" });
+  });
+
   it("every ServerEvent variant round-trips through its discriminated union", () => {
     const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "op-1", at: 5 };
     const hitl: HitlItem = {
@@ -148,6 +202,8 @@ describe("contracts round-trip", () => {
       { type: "project.deleted", id: "payments" },
       { type: "task.deleted", id: "t-1" },
       { type: "agent.deleted", id: "runner-09" },
+      { type: "solutionBrief.upserted", brief },
+      { type: "solutionBrief.deleted", id: "brief-billing-1" },
       { type: "audit.archived", hitlId: "q1", archived: true },
       { type: "audit.deleted", hitlId: "q1" },
       { type: "audit.archived-all" },
@@ -164,7 +220,7 @@ describe("contracts round-trip", () => {
 
   it("Snapshot validates a full default-provider catalog and WsMessage wraps it", () => {
     const snapshot: Snapshot = {
-      runs: [agent], queue: [], projects: [], tasks: [], features: [], milestones: [], fleet: [],
+      runs: [agent], queue: [], projects: [], tasks: [], features: [], milestones: [], solutionBriefs: [brief], fleet: [],
       modules: [], deps: [], providers: DEFAULT_PROVIDERS, serverTime: 42,
     };
     expect(Snapshot.parse(wire(snapshot))).toEqual(snapshot);
