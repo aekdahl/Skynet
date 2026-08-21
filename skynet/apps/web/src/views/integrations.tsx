@@ -101,6 +101,15 @@ export function GithubConnect({
   const [phase, setPhase] = useState<"idle" | "account" | "repos">("idle");
   const [account, setAccount] = useState<(typeof MOCK_ACCOUNTS)[number] | null>(null);
   const [picked, setPicked] = useState<Record<number, boolean>>({});
+  // "Edit repository access" on an EXISTING (real) connection re-lists that
+  // installation's repos live — `null` while loading, distinct from `[]` (a
+  // real installation with zero repos). Kept separate from the `account`/
+  // MOCK_REPOS path below, which is unreachable stub scaffolding for the
+  // not-yet-built App-install redirect (see docs/github-integration.md §9) —
+  // editing an ALREADY-connected installation has a real id to query, no
+  // account picker needed.
+  const [editRepos, setEditRepos] = useState<GithubRepo[] | null>(null);
+  const [editErr, setEditErr] = useState<string | null>(null);
   const [pat, setPat] = useState("");
   const [patBusy, setPatBusy] = useState(false);
   const [patErr, setPatErr] = useState<string | null>(null);
@@ -325,10 +334,23 @@ export function GithubConnect({
         <div className="gh-row">
           <button
             className="btn btn-ghost"
-            onClick={() => {
+            onClick={async () => {
+              // Seed from the current (possibly stale) snapshot immediately so
+              // the panel isn't blank while the live fetch is in flight, then
+              // replace with the real list — carrying forward which repos were
+              // already selected, same as the server does for the picker.
               setPicked(Object.fromEntries(github.repos.map((r) => [r.id, r.selected])));
-              setAccount(MOCK_ACCOUNTS.find((a) => a.login === inst.account) ?? null);
+              setEditRepos(null);
+              setEditErr(null);
               setPhase("repos");
+              try {
+                const live = await api.fetchGithubInstallationRepos(inst.id);
+                setEditRepos(live);
+                setPicked((p) => Object.fromEntries(live.map((r) => [r.id, p[r.id] ?? r.selected])));
+              } catch (e) {
+                setEditErr((e as Error).message);
+                setEditRepos(github.repos); // degrade to the stale snapshot, not a dead end
+              }
             }}
           >
             Edit repository access
@@ -455,28 +477,43 @@ export function GithubConnect({
     );
   }
 
-  // phase === "repos"
-  const repos = account ? MOCK_REPOS[account.login] ?? [] : [];
+  // phase === "repos" — two distinct sources: editing an EXISTING connection
+  // (real, live-fetched via editRepos) vs the not-yet-built App-install
+  // redirect's stand-in account picker (MOCK_REPOS, unreachable today — see
+  // the editRepos state comment above).
+  const editing = github.connected;
+  const repos = editing ? editRepos ?? [] : account ? MOCK_REPOS[account.login] ?? [] : [];
   const pickedCount = Object.values(picked).filter(Boolean).length;
   const confirm = () => {
-    if (!account) return;
     const chosen: GithubRepo[] = repos.map((r) => ({ ...r, selected: !!picked[r.id] }));
-    onConnected(
-      { id: 42, account: account.login, type: account.type, appSlug: "skynet" },
-      chosen,
-    );
+    if (editing) {
+      if (!github.installation) return;
+      onConnected(github.installation, chosen);
+    } else {
+      if (!account) return;
+      onConnected({ id: 42, account: account.login, type: account.type, appSlug: "skynet" }, chosen);
+    }
     setPhase("idle");
   };
   return (
     <div className="gh-card">
       <div className="gh-card-head">
         <Octicon />
-        <span className="gh-card-title">Select repositories</span>
+        <span className="gh-card-title">{editing ? "Edit repository access" : "Select repositories"}</span>
       </div>
       <p className="gh-card-sub">
-        Grant the Skynet App access to the repos the fleet will work in. You can change this anytime.
+        {editing
+          ? "Which of this installation's repos the fleet may work in."
+          : "Grant the Skynet App access to the repos the fleet will work in. You can change this anytime."}
       </p>
-      <PlaceholderNote>Sample repositories — not fetched from GitHub yet.</PlaceholderNote>
+      {editing ? (
+        <>
+          {editRepos === null && <p className="gh-card-sub">Loading repositories…</p>}
+          {editErr && <div className="gh-pat-err">Couldn't refresh the live list ({editErr}) — showing what was last saved.</div>}
+        </>
+      ) : (
+        <PlaceholderNote>Sample repositories — not fetched from GitHub yet.</PlaceholderNote>
+      )}
       {repos.map((r) => (
         <div key={r.id} className="gh-repo" onClick={() => setPicked((p) => ({ ...p, [r.id]: !p[r.id] }))}>
           <span className={"gh-check" + (picked[r.id] ? " on" : "")}>{picked[r.id] ? "✓" : ""}</span>
@@ -492,8 +529,8 @@ export function GithubConnect({
           ← Back
         </button>
         <span className="gh-spacer" />
-        <button className="btn btn-primary" disabled={pickedCount === 0} onClick={confirm}>
-          {github.connected ? "Save access" : `Connect ${pickedCount} repo${pickedCount === 1 ? "" : "s"}`}
+        <button className="btn btn-primary" disabled={pickedCount === 0 || (editing && editRepos === null)} onClick={confirm}>
+          {editing ? "Save access" : `Connect ${pickedCount} repo${pickedCount === 1 ? "" : "s"}`}
         </button>
       </div>
     </div>

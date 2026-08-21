@@ -770,6 +770,28 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     exactly the intended fallback). Not built: the Verifier gate (above) still only runs on the local
     merge-queue path, never for GitHub-PR-based runs — so a repo with no CI configured genuinely has no
     automated pass/fail signal yet, which the card now says outright instead of staying silent about it.*
+  - *Bug fixed: the "Autonomy"/"Deep review"/"Plan mode" toggle box (`.proj-autonomy`, shared by the
+    new-project form and the project page) had a fixed `height: 36px` sized for its original single-line
+    usage; once a two-line hint (`.proj-autonomy-hint`) was added under the label, the text overflowed past
+    the box's rounded border instead of the box growing to fit — reported live with a screenshot. Fixed by
+    switching to `min-height` + real vertical padding, so a single-line pill still lands at 36px (unchanged)
+    while a wrapped hint grows the box to fit. Verified live on all three affected toggles (new-project form,
+    project page).*
+  - *Bug fixed: the GitHub repo picker (project creation) and "Edit repository access" (Integrations) showed
+    "far from all repos I have access to," reported live. Two compounding causes: (1) `availableRepos()`
+    (`github/service.ts`) only re-listed LIVE for a PAT connection — an App/broker connection (the common
+    path) returned the connect-time snapshot FOREVER, silently missing every repo added to the org/account
+    (or newly granted to the installation) afterward; the PAT branch already had this live-refresh, App mode
+    just never got it. (2) "Edit repository access" was worse: it rendered `MOCK_REPOS`, hardcoded sample
+    data left over from before the real broker/device-flow connect path was built (`PlaceholderNote: "Sample
+    repositories — not fetched from GitHub yet"`) — for a real org it either showed 0 (no `MOCK_ACCOUNTS`
+    match) or entirely fictitious repos, with no way to ever discover or select a newly-visible repo. Fixed
+    both: `availableRepos()` now re-lists live for App/broker too (`listInstallationRepos`, already correctly
+    paginated), carrying each repo's PRIOR `selected` flag forward by id so this is a pure live refresh, not
+    a silent re-opt-in of repos the operator deliberately left unselected; "Edit repository access" now fetches
+    that same live list (instead of the mock stub) when editing an already-connected installation. Regression-
+    proofed: stashing the service fix makes the new `github-app-repos.test.ts` suite fail exactly as reported
+    (returns the stale 1-repo snapshot instead of the live 3).*
   - *Bug fixed: a "write one line into the roadmap" PR reported 900+ files changed, HIGH RISK, sensitive-area
     hits on files it never touched — the exact evidence the entry above just made visible was itself wrong.
     Root cause: `openPrForRun`/`openPrForFeature` (`orchestrator.ts`) computed the diff stat/patch/PR-body

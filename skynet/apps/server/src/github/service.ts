@@ -83,23 +83,45 @@ export class GithubService {
 
   /**
    * The repos a project can currently bind to — fetched LIVE, not from the
-   * connect-time snapshot. A PAT connection can reach every repo its token sees,
-   * so we re-list them (paginated) and refresh the stored snapshot: a connection
-   * made before the repo list was paginated (or before newer repos existed)
-   * otherwise shows a stale subset. For an App installation the SELECTED set is
-   * authoritative (changing it is a GitHub-side action), so return what's stored.
-   * Falls back to the stored snapshot if the token is unavailable.
+   * connect-time snapshot, for BOTH auth modes: a stale snapshot otherwise
+   * hides repos added to the org/account (or granted to the App installation)
+   * after the connection was made — a connection made before the repo list
+   * was paginated (or before newer repos existed) shows a permanently stale
+   * subset. Falls back to the stored snapshot if the token is unavailable.
    */
   async availableRepos(workspaceId: string): Promise<GithubRepo[]> {
     const conn = await this.store.get(workspaceId);
     if (!conn?.connected) return [];
-    if (conn.auth !== "pat") return conn.repos;
-    const key = masterKey();
-    const ct = await this.store.getToken(workspaceId);
-    if (!key || !ct) return conn.repos;
-    const repos = (await this.provider.listRepos(open(ct, key))).map((r) => ({ ...r, selected: true }));
-    await this.store.put({ ...conn, repos });
-    return repos;
+    if (conn.auth === "pat") {
+      const key = masterKey();
+      const ct = await this.store.getToken(workspaceId);
+      if (!key || !ct) return conn.repos;
+      const repos = (await this.provider.listRepos(open(ct, key))).map((r) => ({ ...r, selected: true }));
+      await this.store.put({ ...conn, repos });
+      return repos;
+    }
+    // App/broker connection: re-list the installation's repos live, same as the
+    // PAT branch above — otherwise this returns the connect-time snapshot
+    // forever, silently missing repos added to the org/account (or granted to
+    // the installation) afterward. listInstallationRepos returns every repo
+    // fresh with selected:false (it has no notion of the user's prior choice);
+    // carry each repo's previous `selected` flag forward by id so this stays a
+    // pure live-refresh of the SAME list, not a silent re-opt-in of repos the
+    // user deliberately left unselected. Falls back to the stored snapshot only
+    // if the user token is unavailable/expired (never a hard error — the picker
+    // should degrade, not break).
+    if (!conn.installation) return conn.repos;
+    try {
+      const prevSelected = new Map(conn.repos.map((r) => [r.id, r.selected]));
+      const repos = (await this.listInstallationRepos(workspaceId, conn.installation.id)).map((r) => ({
+        ...r,
+        selected: prevSelected.get(r.id) ?? false,
+      }));
+      await this.store.put({ ...conn, repos });
+      return repos;
+    } catch {
+      return conn.repos;
+    }
   }
 
   /** The git token for a connection: the stored PAT, or a freshly-minted App
