@@ -464,6 +464,11 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   (worktree untouched, Resume/Reassign/Stop back on the table) — see `raiseEscalationCard()` in
   `orchestrator.ts`, factored out of `escalate()` so both the original raise and the retry path share
   it. Regression-proofed with a real-git test using a provider whose `start()` fails once on demand.*
+  *Follow-up fix: the same dead end also hit ONE step earlier — `acquireOrProvisionRunner` itself
+  throwing (no idle runner within the fleet cap, or the assigned runner removed — "reassign when the
+  runner left") only logged and set the run back to `"waiting"`, with no HITL left to click since the
+  original one was already resolved. Now re-raises a fresh escalation the same way, so Resume/Reassign
+  keep working even when there's genuinely no runner to hand the run to right now.*
 - [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
   Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
   credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself
