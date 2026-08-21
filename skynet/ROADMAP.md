@@ -485,6 +485,15 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   live handle to read `taskId` off (needed for the sweep to move the task back to `ongoing` on a
   successful resume). Regression-proofed by stashing the fix and re-running the new tests against old
   code — all 3 fail exactly as reported.*
+  *UI follow-up: the global Runs dashboard had its OWN version of this bug, reported live — a run
+  reading "starting…" with a growing elapsed clock 20+ hours in. Its per-row classifier only had 3
+  explicit buckets (done / has-an-open-HITL / paused) and dumped everything else — including a `review`
+  run with a frozen heartbeat and no HITL, exactly the dead end above — into the generic "running" bucket,
+  which just shows elapsed-since-start with no regard for whether anything is actually happening. Extracted
+  the classifier into a pure, unit-tested `classifyRun()` (`derive.ts`) and added a branch: a non-`running`
+  status with a stale heartbeat (the dashboard's existing 60s early-warning line) and no open HITL now
+  sorts and labels the same as an open HITL ("stuck in review — no pending decision"), instead of hiding
+  among genuinely active runs.*
 - [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
   Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
   credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself
