@@ -1213,6 +1213,24 @@ features below are white space.)
   feature actually reach the relaunch prompt at checkpoint-restore / review-revise / escalation-resume), and
   new cases in `tests/project-instructions.test.ts` (assignTask/forkAgent goal + feature threading, on top of
   the existing instructions-threading cases).)*
+  *(S3 — sibling-awareness digest: `buildSiblingDigest()` (`apps/server/src/sibling-digest.ts`) is a pure
+  derivation — no LLM — over the ongoing/review siblings, last-5 recently-merged runs (`mergedAt`, newest
+  first), and top-3 queued-up-next tasks (`order`) on the SAME project, plus a fixed steering line ("prefer
+  building on it over duplicating it; flag genuine conflicts via escalation"). Wired into S1's `siblings`
+  field at the genuine "an agent is starting FRESH" call sites only — `assignTask`, `fork`, and
+  `relaunchEscalated` (covers both reassign and escalation-relaunch via its own `reassign` flag) — via one
+  shared `siblingDigestFor` helper; deliberately NOT wired into continuation paths (checkpoint restore,
+  review-revise) where the agent already has full context of its own prior turns. Snapshot-at-start only,
+  never a live feed (the `inform` seam is the mid-run path — out of scope here). Hard-capped at ~1.2k chars,
+  dropping content in priority order (queued → merged → the ongoing/review tail) while the steering line
+  always survives. Also bumped S1's own per-sibling cap in `agent-context.ts` from 200→1200 chars, since this
+  produces ONE combined digest string rather than many independent one-liners (S1's own `agent-context.test.ts`
+  pins behavior, not the literal cap value — unaffected). `tests/sibling-digest.test.ts` (11 pure unit tests —
+  empty-project, excludes-own-task, cross-project isolation, merged-recency ordering, queued `order` ordering,
+  the ~1.2k cap and its drop priority) + `tests/sibling-digest-wiring.test.ts` (3 orchestrator tests — a busy
+  sibling reaches the real `StartSpec.task` at assign and fork time, and a solo project renders no
+  `=== IN FLIGHT ===` section at all). Regression-proofed (removed the implementation, confirmed all 14 new
+  tests fail, restored it).)*
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.* Also landed: the Roadmap tab's "reads ROADMAP.md" lookup used to dead-end when a repo kept its plan somewhere else — `Project.roadmapPath` now lets the operator (a picker on the tab's empty state) or Steward (`set_roadmap_path`, confirm-first, e.g. "the roadmap is at docs/PLAN.md") point it at any repo-relative file; `resolveRoadmapDoc` is the single place both the tab's API and Steward's own grounding resolve through, so they can't drift.
 - [~] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third

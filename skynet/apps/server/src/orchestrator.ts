@@ -28,6 +28,7 @@ import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./
 import { composeFeatureBrief, parseFeatureNarrative, FEATURE_BRIEF_INSTRUCTION, FEATURE_BRIEF_SYSTEM } from "./feature-brief.js";
 import { decisionResumePrompt } from "./decision-resume.js";
 import { buildAgentContext, withInstructions } from "./agent-context.js";
+import { buildSiblingDigest } from "./sibling-digest.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
@@ -1641,6 +1642,31 @@ export class Orchestrator {
     await rm(scratchCwd, { recursive: true, force: true }).catch(() => undefined);
   }
 
+  /**
+   * S3: a fresh-start sibling-awareness digest (see buildSiblingDigest) for
+   * `project`, excluding `excludeTaskId` — wrapped in the single-element array
+   * `buildAgentContext`'s `siblings` field expects (see agent-context.ts).
+   * Snapshot-at-start only (a fresh listTasks/listRuns per call, never a live
+   * feed) — wired only at the genuine "an agent is starting FRESH on this run"
+   * moments (assign, fork, reassign/escalation-relaunch), not at continuations
+   * of already-in-progress work (checkpoint restore, revise-after-review)
+   * where the agent already has full context of its own prior turns. Never
+   * throws — a store failure here shouldn't stop the run from starting.
+   */
+  private async siblingDigestFor(project: Project, excludeTaskId: string): Promise<string[] | undefined> {
+    try {
+      const [tasks, runs, features] = await Promise.all([
+        this.store.listTasks(project.workspaceId),
+        this.store.listRuns(project.workspaceId),
+        this.store.listFeatures(project.workspaceId),
+      ]);
+      const digest = buildSiblingDigest(project, tasks, runs, excludeTaskId, features);
+      return digest ? [digest] : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   // ── assignTask ────────────────────────────────────────────────────────────
   async assignTask(projectId: string, taskId: string): Promise<TaskRun> {
     const task = await this.store.getTask(taskId);
@@ -1753,7 +1779,8 @@ export class Orchestrator {
       // description when one exists (the run's display name stays the short text).
       const taskBody = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
       const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
-      const brief = buildAgentContext({ project, feature, body: taskBody });
+      const siblings = await this.siblingDigestFor(project, taskId);
+      const brief = buildAgentContext({ project, feature, siblings, body: taskBody });
       // Opt-in browser tooling is a per-workspace setting, off by default; the
       // runner decides how to expose it (Claude → a Playwright MCP server).
       const { browserTools } = await this.fleetPolicy(project.workspaceId);
@@ -1829,11 +1856,12 @@ export class Orchestrator {
       const apiKey = await secretService.resolve(parent.workspaceId, runner.credentialId ?? runner.provider);
       const parentTask = (await this.store.listTasks(parent.workspaceId)).find((t) => t.runId === parentId);
       const feature = parentTask?.featureId ? await this.store.getFeature(parentTask.featureId).catch(() => undefined) : undefined;
+      const siblings = project && parentTask ? await this.siblingDigestFor(project, parentTask.id) : undefined;
       const handle = await provider.start(
         {
           runId,
           projectId: parent.projectId,
-          task: buildAgentContext({ project, feature, body: parent.name }),
+          task: buildAgentContext({ project, feature, siblings, body: parent.name }),
           model: runner.model,
           branch: agent.branch,
           cwd,
@@ -2443,9 +2471,11 @@ export class Orchestrator {
     const project = await this.store.getProject(run.projectId);
     const task = ctx?.taskId ? await this.store.getTask(ctx.taskId) : undefined;
     const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
+    const siblings = project && task ? await this.siblingDigestFor(project, task.id) : undefined;
     const prompt = buildAgentContext({
       project,
       feature,
+      siblings,
       body: reassign
         ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
         : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
