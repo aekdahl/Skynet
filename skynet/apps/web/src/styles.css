@@ -2646,6 +2646,14 @@ button.firstrun-step:hover { border-color: var(--accent); }
   border-radius: 8px;
   border: 1px solid var(--accent-line, rgba(107,91,255,0.25));
 }
+.kb-brief-chip {
+  font-size: 11px;
+  color: var(--info, #3b82f6);
+  background: var(--bg-soft, rgba(59,130,246,0.06));
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in oklch, var(--info, #3b82f6), transparent 75%);
+}
 
 /* Detail-modal grouping section (task detail) */
 .kb-detail-grouping { display: flex; flex-direction: column; gap: 6px; }

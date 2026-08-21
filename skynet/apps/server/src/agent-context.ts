@@ -44,7 +44,7 @@ export interface AgentContextOptions {
 const TOTAL_CHAR_CAP = 6_000;
 const PRIMER_CHAR_CAP = 2_000;
 const FEATURE_DESCRIPTION_CHAR_CAP = 1_000;
-const SOLUTION_BRIEF_CHAR_CAP = 2_000;
+const SOLUTION_BRIEF_CHAR_CAP = 1_500;
 const SIBLING_CHAR_CAP = 200;
 const MAX_SIBLINGS = 10;
 

@@ -24,6 +24,7 @@ import type {
   Agent,
   ServerEvent,
   Snapshot,
+  SolutionBrief,
   Task,
   TaskAssignment,
   WorkspaceSettings,
@@ -55,6 +56,7 @@ export interface StoreState {
   tasks: Task[];
   features: Feature[];
   milestones: Milestone[];
+  solutionBriefs: SolutionBrief[];
   fleet: Agent[];
   modules: Module[];
   deps: Dependency[];
@@ -374,6 +376,10 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
       return { ...state, milestones: upsert(state.milestones, ev.milestone) };
     case "milestone.deleted":
       return { ...state, milestones: state.milestones.filter((m) => m.id !== ev.id) };
+    case "solutionBrief.upserted":
+      return { ...state, solutionBriefs: upsert(state.solutionBriefs, ev.brief) };
+    case "solutionBrief.deleted":
+      return { ...state, solutionBriefs: state.solutionBriefs.filter((b) => b.id !== ev.id) };
     case "agent.upserted":
       return { ...state, fleet: upsert(state.fleet, ev.agent) };
     case "agent.deleted":
@@ -396,6 +402,7 @@ const EMPTY: StoreState = {
   tasks: [],
   features: [],
   milestones: [],
+  solutionBriefs: [],
   fleet: [],
   modules: [],
   deps: [],
@@ -415,6 +422,7 @@ function fromSnapshot(snap: Snapshot): StoreState {
     tasks: snap.tasks,
     features: snap.features,
     milestones: snap.milestones,
+    solutionBriefs: snap.solutionBriefs,
     fleet: snap.fleet,
     modules: snap.modules,
     deps: snap.deps,

@@ -876,6 +876,40 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   destructive brief operations off the agent surface the same way approval is). Naming note: this
   landed on `docs/`-less territory — no prior "Solutioning layer" section existed in this file before
   S4; this bullet is that section's first entry.
+  *(S8 — brief threading + the feedback loop, stacked on S1's `buildAgentContext` (its `brief` field
+  was reserved, unwired) and S4's `SolutionBrief` entity: a starting task's `=== SOLUTION BRIEF ===`
+  section is no longer dead data — `Orchestrator.findTaskBrief` resolves the brief a task is scoped
+  under (a direct `Task.source.briefId` when the task was spawned straight from one, else the brief
+  whose own `featureId` matches the task's — the reverse link Feature itself doesn't carry) and
+  threads its approach + acceptance criteria (not problem/risks/options/open-questions — the
+  turn-to-turn "what to build and how we'll know it's done", not the full planning doc) into EVERY
+  `buildAgentContext` call site that produces a real `StartSpec` — assign, fork, checkpoint restore,
+  decision resume, review-revise, escalation resume/reassign (six sites; the four `consult`-only
+  sites — diff walkthrough ×2, triage, auto-review — stay feature-only, unchanged, matching their
+  narrower "judge, don't build" role). `SOLUTION_BRIEF_CHAR_CAP` tightened 2,000→1,500 chars to match
+  this task's own spec. **Feedback**: a fleet-proposed task that PARKS (backlog, unassigned — the
+  human/autonomy-judgment path, untouched) now still inherits the source task's feature when a brief
+  backs it, so a discovery shows up in the brief's scope instead of floating unscoped — `create-active`'s
+  auto-promote fast path (already feature-scoped before this) is unaffected either way, since the
+  brief link only fires on the path that DOESN'T already set one. **Status** rides the two real
+  moments a brief's progress is actually observable, no new polling: `approved` → `building` the
+  instant a task under it leaves `todo` (checked inline in `assignTask`, gated on the ORIGINAL
+  pre-assign state so a re-assign or a backlog→ongoing skip never re-fires it, and on the brief
+  genuinely being `approved` — a still-`draft` brief is never silently promoted); `building` → `done`
+  inside the existing `checkFeatureCompletion` hook, the moment every sibling task under the feature
+  is done — independent of the PR/merge machinery it also drives, so a brief with no git backend or
+  no GitHub connection still completes. A manual `updateBrief` status write is never fought — nothing
+  here re-derives or re-asserts a status, it only ever writes on its own two specific transitions.
+  UI: a `▤` chip on task cards (`kb-brief-chip`, same row as the feature/milestone chips), and the web
+  store now actually carries `solutionBriefs` (S4 shipped the `Snapshot` field + `ServerEvent`s for it
+  server-side but never wired the client reducer — a real gap this closes, since nothing could render
+  a brief without it). `resolveTaskBrief` itself lives in `packages/shared` (not orchestrator.ts) so
+  the exact same resolution rule drives the server's threading/status AND the client's chip — never
+  two definitions of "which brief is this." Regression-proofed the same way S1 did (stashed the
+  orchestrator/shared wiring, confirmed 9 of 14 new assertions fail, popped it back):
+  `tests/brief-threading.test.ts` — pure `resolveTaskBrief` resolution rules, the feedback-loop
+  in-memory harness (`tests/fleet-proposals.test.ts`'s pattern), and the threading/status transitions
+  against a real git repo (`tests/feature-brief-orchestrator.test.ts`'s pattern).)*
 - [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** *Landed:* **amber
   untangled** — `--accent` (brand/primary) and `--warn` (caution/waiting status) were an accidental
   hex duplicate (`#FFB224` both, not just visually close); `--warn` is now a genuinely distinct
