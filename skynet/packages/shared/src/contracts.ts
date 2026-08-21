@@ -1085,6 +1085,11 @@ export const ProviderRequirements = z.object({
   // One-line "how to install / set up" hint, and a docs link if we have one.
   installHint: z.string().nullable().default(null),
   docsUrl: z.string().nullable().default(null),
+  // Where to create / find your API key for this provider — shown in the
+  // onboarding Connect step so the user knows exactly where to go, without
+  // having to leave the app to find it. Null for providers that authenticate
+  // exclusively via CLI login (no key to create).
+  keyUrl: z.string().nullable().default(null),
   // Structured install: when set, the UI can offer a one-click "Install CLI"
   // button that runs this exact command server-side and streams the output.
   // Only set for providers whose install is scriptable (`npm i -g <pkg>`); brew,
