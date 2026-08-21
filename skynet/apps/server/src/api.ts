@@ -12,6 +12,7 @@ import {
   CreateFeatureRequest,
   CreateMilestoneRequest,
   CreateProjectRequest,
+  CreateSolutionBriefRequest,
   CreateTaskRequest,
   DryRunPolicyRequest,
   ProviderId,
@@ -25,6 +26,7 @@ import {
   UpdateProjectRoadmapRequest,
   UpdateWorkspaceSettingsRequest,
   UpdateRunnerRequest,
+  UpdateSolutionBriefRequest,
   UpdateTaskRequest,
   MoveTaskRequest,
   ReorderTaskRequest,
@@ -910,6 +912,70 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.delete<{ Params: { fid: string } }>("/api/features/:fid", async (req, reply) => {
     try {
       await ops.deleteFeature(ws(req), req.params.fid);
+      return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── solution briefs (S4: the persistent pre-work planning doc) ─────────
+  // Nested entirely under /api/projects/:id/briefs (list/create/get/update/
+  // delete) rather than features' flat /api/features/:fid for update/delete —
+  // a deliberate simplification for this entity. GET/PATCH/DELETE re-check
+  // the fetched brief's projectId against the URL's :id so a mismatched pair
+  // 404s instead of silently acting through the "wrong" project's URL.
+  app.get<{ Params: { id: string } }>("/api/projects/:id/briefs", async (req, reply) => {
+    try {
+      const all = await ops.listBriefs(ws(req));
+      return all.filter((b) => b.projectId === req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/projects/:id/briefs", async (req, reply) => {
+    const body = CreateSolutionBriefRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.createBrief(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.get<{ Params: { id: string; bid: string } }>("/api/projects/:id/briefs/:bid", async (req, reply) => {
+    try {
+      const brief = await ops.getBrief(ws(req), req.params.bid);
+      if (brief.projectId !== req.params.id) throw new NotFoundError("SolutionBrief");
+      return brief;
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.patch<{ Params: { id: string; bid: string } }>("/api/projects/:id/briefs/:bid", async (req, reply) => {
+    const body = UpdateSolutionBriefRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    // Approval is human/API only — never an agent-scoped token. `scopes` is
+    // undefined ONLY for a human session or an unscoped token (full
+    // authority, see auth.ts's Principal doc comment); any token minted with
+    // an explicit scope list — including one that happens to carry "approver"
+    // for HITL/merge decisions elsewhere — is refused here specifically. The
+    // MCP surface (mcp/tools.ts's update_brief) enforces the SAME rule
+    // structurally, by never accepting "approved" in its input schema at all.
+    if (body.data.status === "approved" && req.principal!.scopes !== undefined) {
+      return reply.code(403).send({ error: "Approving a solution brief requires a human/unscoped token — not exposed to agent-scoped tokens." });
+    }
+    try {
+      const brief = await ops.getBrief(ws(req), req.params.bid);
+      if (brief.projectId !== req.params.id) throw new NotFoundError("SolutionBrief");
+      return await ops.updateBrief(ws(req), req.params.bid, body.data, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.delete<{ Params: { id: string; bid: string } }>("/api/projects/:id/briefs/:bid", async (req, reply) => {
+    try {
+      const brief = await ops.getBrief(ws(req), req.params.bid);
+      if (brief.projectId !== req.params.id) throw new NotFoundError("SolutionBrief");
+      await ops.deleteBrief(ws(req), req.params.bid);
       return { ok: true };
     } catch (err) {
       return fail(reply, err);

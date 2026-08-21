@@ -76,6 +76,7 @@ describe("MCP tool core", () => {
         "import_github_issues", "import_repo_file",
         "list_tasks", "get_task", "list_features", "list_milestones",
         "list_audit", "get_audit",
+        "list_briefs", "get_brief", "create_brief", "update_brief",
       ]),
     );
 
@@ -146,6 +147,128 @@ describe("MCP tool core", () => {
     const res = json(await client.callTool({ name: "wait_for_hitl", arguments: { timeoutMs: 1000 } }));
     expect(res.waited).toBe(false);
     expect(res.hitl.id).toBe("q9");
+  });
+});
+
+// SolutionBrief (S4): CRUD via MCP, plus the one rule this surface enforces
+// STRUCTURALLY rather than by scope — an agent token can never approve a
+// brief, because update_brief's exposed `status` field excludes "approved"
+// from its enum entirely (there's no scope check to bypass; the SDK itself
+// refuses the tool call before Operations is ever reached). The HTTP-side
+// version of the same rule (a runtime scope check, since that route CAN see
+// "approved" in its body) is covered by solution-brief-routes.test.ts.
+describe("MCP solution briefs", () => {
+  const observer: Principal = { workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:observer", scopes: ["observe"] };
+
+  it("creates, lists, gets, and updates a brief (non-approval fields)", async () => {
+    const { client } = await connect(author);
+    const project = json(await client.callTool({ name: "create_project", arguments: { name: "P", goal: "g" } }));
+
+    const created = json(
+      await client.callTool({
+        name: "create_brief",
+        arguments: { projectId: project.id, title: "Reconcile webhooks", problem: "double-posts", risks: ["migration"] },
+      }),
+    );
+    expect(created.projectId).toBe(project.id);
+    expect(created.status).toBe("draft");
+    expect(created.risks).toEqual(["migration"]);
+
+    const listed = json(await client.callTool({ name: "list_briefs", arguments: {} }));
+    expect(listed.map((b: { id: string }) => b.id)).toContain(created.id);
+
+    const fetched = json(await client.callTool({ name: "get_brief", arguments: { briefId: created.id } }));
+    expect(fetched.id).toBe(created.id);
+
+    const updated = json(
+      await client.callTool({ name: "update_brief", arguments: { briefId: created.id, title: "Renamed", status: "building" } }),
+    );
+    expect(updated.title).toBe("Renamed");
+    expect(updated.status).toBe("building");
+  });
+
+  it("update_brief structurally refuses status: 'approved' — the SDK rejects it before the tool body ever runs", async () => {
+    const { client, store } = await connect(author);
+    const project = json(await client.callTool({ name: "create_project", arguments: { name: "P", goal: "g" } }));
+    const brief = json(await client.callTool({ name: "create_brief", arguments: { projectId: project.id, title: "T" } }));
+
+    let threw = false;
+    let result: Awaited<ReturnType<typeof client.callTool>> | undefined;
+    try {
+      result = await client.callTool({ name: "update_brief", arguments: { briefId: brief.id, status: "approved" } });
+    } catch {
+      threw = true; // some SDK versions reject invalid tool args at the transport level
+    }
+    // Either the call rejected outright, or it came back as a tool error —
+    // either way it must NOT have succeeded.
+    if (!threw) expect(result!.isError).toBe(true);
+    // The record itself was never touched.
+    expect((await store.getSolutionBrief(brief.id))?.status).toBe("draft");
+  });
+
+  it("an observe-only token can list/get briefs but not create/update them", async () => {
+    const { client, store } = await connect(observer);
+    await store.putProject({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" });
+    await store.putSolutionBrief({
+      id: "brief-1", workspaceId: DEFAULT_WORKSPACE, projectId: "P", title: "Readable",
+      problem: "", approach: "", optionsConsidered: [], risks: [], acceptanceCriteria: [],
+      openQuestions: [], status: "draft", featureId: null, createdAt: 0, updatedAt: 0,
+      approvedAt: null, approvedBy: null, sourceConversation: null,
+    });
+
+    // Reads work at "observe".
+    const listed = json(await client.callTool({ name: "list_briefs", arguments: {} }));
+    expect(listed.map((b: { id: string }) => b.id)).toContain("brief-1");
+    const fetched = json(await client.callTool({ name: "get_brief", arguments: { briefId: "brief-1" } }));
+    expect(fetched.id).toBe("brief-1");
+
+    // Mutations are refused — the scope gate fires before any project/brief
+    // lookup, so a fake projectId is enough to prove it.
+    const denied = await client.callTool({ name: "create_brief", arguments: { projectId: "P", title: "nope" } });
+    expect(denied.isError).toBe(true);
+    expect(text(denied)).toMatch(/scope/i);
+
+    const deniedUpdate = await client.callTool({ name: "update_brief", arguments: { briefId: "brief-1", title: "nope" } });
+    expect(deniedUpdate.isError).toBe(true);
+    expect((await store.getSolutionBrief("brief-1"))?.title).toBe("Readable"); // untouched
+  });
+
+  it("a project-scoped token's list_briefs/create_brief/update_brief are confined to its allowed projects", async () => {
+    const scoped: Principal = {
+      workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:scoped-briefs",
+      scopes: ["observe", "author"], projectIds: ["A"],
+    };
+    const { client, store } = await connect(scoped);
+    await store.putProject({ id: "A", workspaceId: DEFAULT_WORKSPACE, name: "A", goal: "", runIds: [], status: "active" });
+    await store.putProject({ id: "B", workspaceId: DEFAULT_WORKSPACE, name: "B", goal: "", runIds: [], status: "active" });
+    await store.putSolutionBrief({
+      id: "brief-a", workspaceId: DEFAULT_WORKSPACE, projectId: "A", title: "In A",
+      problem: "", approach: "", optionsConsidered: [], risks: [], acceptanceCriteria: [],
+      openQuestions: [], status: "draft", featureId: null, createdAt: 0, updatedAt: 0,
+      approvedAt: null, approvedBy: null, sourceConversation: null,
+    });
+    await store.putSolutionBrief({
+      id: "brief-b", workspaceId: DEFAULT_WORKSPACE, projectId: "B", title: "In B",
+      problem: "", approach: "", optionsConsidered: [], risks: [], acceptanceCriteria: [],
+      openQuestions: [], status: "draft", featureId: null, createdAt: 0, updatedAt: 0,
+      approvedAt: null, approvedBy: null, sourceConversation: null,
+    });
+
+    const listed = json(await client.callTool({ name: "list_briefs", arguments: {} }));
+    expect(listed.map((b: { id: string }) => b.id)).toEqual(["brief-a"]);
+
+    const okCreate = json(await client.callTool({ name: "create_brief", arguments: { projectId: "A", title: "new" } }));
+    expect(okCreate.id).toBeTruthy();
+    const deniedCreate = await client.callTool({ name: "create_brief", arguments: { projectId: "B", title: "nope" } });
+    expect(deniedCreate.isError).toBe(true);
+    expect(text(deniedCreate)).toMatch(/scoped to project "B"/);
+
+    const okUpdate = json(await client.callTool({ name: "update_brief", arguments: { briefId: "brief-a", title: "renamed" } }));
+    expect(okUpdate.title).toBe("renamed");
+    const deniedUpdate = await client.callTool({ name: "update_brief", arguments: { briefId: "brief-b", title: "nope" } });
+    expect(deniedUpdate.isError).toBe(true);
+    expect(text(deniedUpdate)).toMatch(/scoped to project "B"/);
+    expect((await store.getSolutionBrief("brief-b"))?.title).toBe("In B"); // untouched
   });
 });
 

@@ -20,6 +20,7 @@ import type {
   ProviderInfo,
   Agent,
   Snapshot,
+  SolutionBrief,
   Task,
   WorkspaceSettings,
 } from "@skynet/shared";
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS projects   (id text PRIMARY KEY, workspace_id text NO
 CREATE TABLE IF NOT EXISTS tasks      (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS features   (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS milestones (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS solution_briefs (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS agents    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS modules    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS deps       (id bigserial PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
@@ -63,6 +65,7 @@ CREATE INDEX IF NOT EXISTS projects_ws ON projects(workspace_id);
 CREATE INDEX IF NOT EXISTS tasks_ws    ON tasks(workspace_id);
 CREATE INDEX IF NOT EXISTS features_ws   ON features(workspace_id);
 CREATE INDEX IF NOT EXISTS milestones_ws ON milestones(workspace_id);
+CREATE INDEX IF NOT EXISTS solution_briefs_ws ON solution_briefs(workspace_id);
 CREATE INDEX IF NOT EXISTS agents_ws  ON agents(workspace_id);
 CREATE INDEX IF NOT EXISTS log_run   ON run_log(run_id);
 `;
@@ -194,6 +197,11 @@ export class PostgresStore implements Store {
   getMilestone(id: string) { return this.get<Milestone>("milestones", id); }
   async putMilestone(m: Milestone) { await this.put("milestones", m.id, m.workspaceId, m); return m; }
   deleteMilestone(id: string) { return this.del("milestones", id); }
+
+  listSolutionBriefs(ws: string) { return this.list<SolutionBrief>("solution_briefs", ws); }
+  getSolutionBrief(id: string) { return this.get<SolutionBrief>("solution_briefs", id); }
+  async putSolutionBrief(b: SolutionBrief) { await this.put("solution_briefs", b.id, b.workspaceId, b); return b; }
+  deleteSolutionBrief(id: string) { return this.del("solution_briefs", id); }
 
   listAgents(ws: string) { return this.list<Agent>("agents", ws); }
   async listAllAgents(): Promise<Agent[]> {
@@ -362,17 +370,18 @@ export class PostgresStore implements Store {
   }
 
   async snapshot(ws: string): Promise<Snapshot> {
-    const [runs, queue, projects, tasks, features, milestones, fleet, modules, deps] = await Promise.all([
+    const [runs, queue, projects, tasks, features, milestones, solutionBriefs, fleet, modules, deps] = await Promise.all([
       this.listRuns(ws),
       this.listQueue(ws),
       this.listProjects(ws),
       this.listTasks(ws),
       this.listFeatures(ws),
       this.listMilestones(ws),
+      this.listSolutionBriefs(ws),
       this.listAgents(ws),
       this.listModules(ws),
       this.listDeps(ws),
     ]);
-    return { runs, queue, projects, tasks, features, milestones, fleet, modules, deps, providers: PROVIDERS, serverTime: now() };
+    return { runs, queue, projects, tasks, features, milestones, solutionBriefs, fleet, modules, deps, providers: PROVIDERS, serverTime: now() };
   }
 }

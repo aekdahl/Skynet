@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import type { GithubConnection, WorkspaceSettings } from "@skynet/shared";
-import { Agent, AuditRecord, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, PolicyVersion, Project, Task, TaskRun } from "@skynet/shared";
+import { Agent, AuditRecord, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, PolicyVersion, Project, SolutionBrief, Task, TaskRun } from "@skynet/shared";
 import type { z } from "zod";
 import { MemoryStore } from "./memory.js";
 
@@ -79,6 +79,7 @@ export class FileStore extends MemoryStore {
       fill(this.tasks, d.tasks, Task, "task");
       fill(this.features, d.features, Feature, "feature");
       fill(this.milestones, d.milestones, Milestone, "milestone");
+      fill(this.solutionBriefs, d.solutionBriefs, SolutionBrief, "solution brief");
       fill(this.fleet, d.fleet, Agent, "agent");
       this.modules = fillArray(d.modules, Module, "module");
       this.deps = fillArray(d.deps, Dependency, "dependency");
@@ -124,6 +125,7 @@ export class FileStore extends MemoryStore {
       tasks: [...this.tasks.values()],
       features: [...this.features.values()],
       milestones: [...this.milestones.values()],
+      solutionBriefs: [...this.solutionBriefs.values()],
       fleet: [...this.fleet.values()],
       modules: this.modules,
       deps: this.deps,
