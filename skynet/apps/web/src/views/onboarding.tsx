@@ -256,7 +256,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           </>
         )}
 
-        {step === 2 && (
+        {step === 2 && (() => {
+          const activeProviderInfo = store.providers.find((p) => p.id === connectProvider);
+          const activeKeyUrl = activeProviderInfo?.requirements?.keyUrl ?? null;
+          return (
           <>
             <h1 className="ob-h">Connect a provider</h1>
             <p className="ob-sub">Paste your API key — stored encrypted on this machine, never sent to us. Skynet pings the vendor to confirm the key works before you continue.</p>
@@ -280,7 +283,14 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               </select>
             </div>
             <div className="ob-field">
-              <label className="ob-label">API key</label>
+              <label className="ob-label">
+                API key
+                {activeKeyUrl && (
+                  <a href={activeKeyUrl} target="_blank" rel="noreferrer" className="ob-key-link">
+                    Get {activeProviderInfo?.name} key ↗
+                  </a>
+                )}
+              </label>
               <div style={{ display: "flex", gap: 8 }}>
                 <input
                   className="qx-input"
@@ -309,7 +319,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               </p>
             )}
           </>
-        )}
+          );
+        })()}
 
         {step === 3 && (
           <>
