@@ -18,6 +18,7 @@ import type {
   ProviderInfo,
   Agent,
   Snapshot,
+  SolutionBrief,
   Task,
   WorkspaceSettings,
 } from "@skynet/shared";
@@ -72,6 +73,12 @@ export interface Store {
   getMilestone(id: string): Promise<Milestone | undefined>;
   putMilestone(milestone: Milestone): Promise<Milestone>;
   deleteMilestone(id: string): Promise<void>;
+
+  // solution briefs (pre-work planning docs)
+  listSolutionBriefs(workspaceId: string): Promise<SolutionBrief[]>;
+  getSolutionBrief(id: string): Promise<SolutionBrief | undefined>;
+  putSolutionBrief(brief: SolutionBrief): Promise<SolutionBrief>;
+  deleteSolutionBrief(id: string): Promise<void>;
 
   // fleet
   listAgents(workspaceId: string): Promise<Agent[]>;

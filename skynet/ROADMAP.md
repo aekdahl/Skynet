@@ -852,6 +852,35 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   quick-approve (`task.tsx`) keeps the default branch with no picker (the full guided surface is the Inbox
   card, which has the room for it); "Verifier gate" itself is still unbuilt (see above) — the brief notes the
   project's post-merge check command when one is configured, nothing more.
+- [~] **Solutioning layer (S1–S9) — `SolutionBrief`, the persistent pre-work planning doc
+  everything else hangs off (S4: schema, store, API, MCP).** A human-authored (or human-approved)
+  design doc for a chunk of work — problem, approach, options weighed (with the ones NOT taken kept
+  for the reasoning), risks, acceptance criteria, open questions — BEFORE any task or run exists for
+  it. Modeled closely on `Feature` (contracts.ts): full 3-store CRUD (memory/file/postgres,
+  `solution_briefs` JSONB table), `list/create/get/update/delete` under
+  `/api/projects/:id/briefs`, live-synced like every other collection (`solutionBriefs` in
+  `Snapshot`, `solutionBrief.upserted`/`.deleted` `ServerEvent`s — the same real-time contract
+  Feature/Milestone already have, not a static REST-only afterthought), and 4 MCP tools
+  (`list_briefs`/`get_brief`/`create_brief`/`update_brief`, "author" scope). `Task.source` gains a
+  `"brief"` provenance kind (`{briefId}`) for S7 to spawn tasks off an approved brief and still know
+  where they came from. **The one rule enforced two different ways on purpose:** approving a brief
+  (`status: "approved"`) is human/API only, never an agent-scoped token — on the HTTP route it's a
+  runtime scope check (`principal.scopes !== undefined` refuses ANY scoped token, even one holding
+  "approver" elsewhere in this system, since "agent-scoped" per auth.ts means "scoped at all", not
+  "lacks this one scope"); on MCP, `update_brief`'s exposed `status` field structurally excludes
+  `"approved"` from its enum, so there's nothing to bypass — the SDK itself refuses the tool call
+  before Operations is ever reached (verified live via a real MCP client, not just asserted).
+  `approvedAt`/`approvedBy` are stamped server-side only, on the actual draft→approved transition
+  (never re-stamped by a later edit, never cleared by moving past it to building/done) —
+  `UpdateSolutionBriefRequest` carries no such fields at all, so a client-supplied stamp has nowhere
+  to land (zod's default non-strict parse drops it). **Deliberately out of scope for S4** (later
+  S-numbers, not silently dropped): no UI (the Inbox/project views don't render briefs yet); no
+  agent-driven brief authoring or brief→task spawning (S7); no `delete_brief` MCP tool (the HTTP
+  route has DELETE, matching the task's own "list/create/update/delete" route spec, but the MCP tool
+  list was named exactly 4 tools — deletion stays a human/API-console action, consistent with keeping
+  destructive brief operations off the agent surface the same way approval is). Naming note: this
+  landed on `docs/`-less territory — no prior "Solutioning layer" section existed in this file before
+  S4; this bullet is that section's first entry.
 - [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** *Landed:* **amber
   untangled** — `--accent` (brand/primary) and `--warn` (caution/waiting status) were an accidental
   hex duplicate (`#FFB224` both, not just visually close); `--warn` is now a genuinely distinct
