@@ -65,8 +65,11 @@ describe("runner failure is loud, not a fake completion", () => {
     await tick(); // let the (async) failure propagate
 
     const after = await store.getRun(agent.id);
-    expect(after?.status).toBe("review"); // surfaced, NOT "done"
+    // Surfaced via an actionable escalation (Resume/Reassign/Stop), not a
+    // silent "review" park with nothing to click — see fail() in orchestrator.ts.
+    expect(after?.status).toBe("waiting");
     expect(after?.status).not.toBe("done");
+    expect(bus.events.some((e) => e.type === "hitl.raised" && (e as { item: { kind: string } }).item.kind === "escalation")).toBe(true);
 
     // The runner was returned to the idle pool (not leaked as busy).
     expect((await store.getAgent("r1"))?.status).toBe("idle");

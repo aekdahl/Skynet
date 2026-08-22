@@ -28,10 +28,15 @@ export interface AgentContextOptions {
   // S2 (not yet built): a per-project "primer" doc. Optional so this call
   // never has to be re-plumbed once S2 lands — it just starts passing data.
   primer?: string | null;
-  // S8 (not yet built): the project's Solution Brief.
+  // S8: the SolutionBrief a task is scoped under (its approach + acceptance
+  // criteria, not the full planning doc) — see Orchestrator.findTaskBrief.
   brief?: string | null;
-  // S3 (not yet built): one-line summaries of sibling runs currently in
-  // flight on the same project/feature, for "don't duplicate that work" context.
+  // S3: sibling-awareness digest(s) for "don't duplicate that work" context —
+  // see buildSiblingDigest (sibling-digest.ts), which composes ongoing/review
+  // siblings + recently merged + queued-up-next into ONE combined string, so
+  // callers pass a single-element array (`[digest]`); the array shape stays
+  // general in case a future caller wants several independent one-liners
+  // instead.
   siblings?: string[] | null;
   // The task-specific ask — the one section that's always present.
   body: string;
@@ -45,7 +50,11 @@ const TOTAL_CHAR_CAP = 6_000;
 const PRIMER_CHAR_CAP = 2_000;
 const FEATURE_DESCRIPTION_CHAR_CAP = 1_000;
 const SOLUTION_BRIEF_CHAR_CAP = 1_500;
-const SIBLING_CHAR_CAP = 200;
+// S3's buildSiblingDigest self-caps its own combined string at ~1.2k chars —
+// this per-element cap matches that (raised from an earlier 200, sized for
+// many independent one-liners) so a caller's single combined digest survives
+// intact rather than getting clipped to a fifth of its own budget.
+const SIBLING_CHAR_CAP = 1_200;
 const MAX_SIBLINGS = 10;
 
 function truncateTail(text: string, cap: number): string {
