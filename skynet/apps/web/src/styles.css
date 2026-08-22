@@ -1203,7 +1203,11 @@ button.kb-done:hover { opacity: 1; }
    Preview app / gear / Delete next to them, so the row reads as one toolbar
    instead of a mix of bare form fields and real buttons. */
 .proj-autonomy {
-  display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px;
+  /* min-height (not height): the plain single-line pills (a bare .proj-autonomy-label,
+     no .proj-autonomy-hint below it) still land at exactly 36px via align-items:center,
+     but a .proj-autonomy-text variant whose hint wraps to 2 lines needs the box to grow
+     with it — a fixed height clipped/overflowed that text past the border. */
+  display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 12px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--raised);
   font-size: 12.5px; color: var(--muted); cursor: pointer;
 }
