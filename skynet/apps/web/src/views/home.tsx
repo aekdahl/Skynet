@@ -3,8 +3,8 @@ import type { TaskRun, Project, ProviderInfo } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import {
   agentsForProject,
+  classifyRun,
   conflicts,
-  curStep,
   fmtWait,
   heartbeatSecs,
   idleRunners,
@@ -15,6 +15,7 @@ import {
   providerInfo,
   providerReadiness,
   runnerName,
+  type RunTag,
   waitedSecs,
 } from "../lib/derive";
 import { EmptyState, PrimaryButton } from "../components/empty";
@@ -399,7 +400,6 @@ const DONE_CAP = 8;
 // reaper would actually act — the operator sees "this looks stuck" before
 // Skynet decides it IS stuck.
 const STALE_HEARTBEAT_SEC = 60;
-type RunTag = "running" | "blocked" | "paused" | "done";
 interface RunRow {
   run: TaskRun;
   agentId: string | null;
@@ -470,22 +470,7 @@ function RunsBoard({
   const toRow = (r: TaskRun): RunRow => {
     const hitl = oq.find((q) => q.runId === r.id);
     const project = projects.find((p) => p.id === r.projectId);
-    let tag: RunTag, statusLabel: string, timeLabel: string, sortKey: number;
-    if (r.status === "done") {
-      tag = "done"; statusLabel = "done"; timeLabel = "—";
-      sortKey = -r.lastHeartbeatAt; // most recently finished first
-    } else if (hitl) {
-      const waited = waitedSecs(hitl, now);
-      tag = "blocked"; statusLabel = KIND_META[hitl.kind].label.toLowerCase(); timeLabel = fmtWait(waited) + " waiting";
-      sortKey = -waited; // longest-waiting first
-    } else if (r.status === "paused") {
-      tag = "paused"; statusLabel = "paused"; timeLabel = fmtWait(heartbeatSecs(r, now)) + " ago";
-      sortKey = heartbeatSecs(r, now);
-    } else {
-      const elapsed = (now - r.startedAt) / 1000;
-      tag = "running"; statusLabel = curStep(r); timeLabel = fmtWait(elapsed) + " elapsed";
-      sortKey = elapsed; // most recently started first
-    }
+    const { tag, statusLabel, timeLabel, sortKey } = classifyRun(r, hitl, now, STALE_HEARTBEAT_SEC);
     return {
       run: r,
       agentId: r.agentId,

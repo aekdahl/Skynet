@@ -9,7 +9,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HitlItem, ProviderId, Resolution, ServerEvent } from "@skynet/shared";
-import { DEFAULT_WORKSPACE } from "@skynet/shared";
+import { DEFAULT_WORKSPACE, WorkspaceSettings } from "@skynet/shared";
+import { config } from "../apps/server/src/config.js";
 import { Hub } from "../apps/server/src/hub.js";
 import { Orchestrator } from "../apps/server/src/orchestrator.js";
 import { Operations } from "../apps/server/src/operations.js";
@@ -141,23 +142,31 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     expect((await store.getRun(run.id))?.status).toBe("running");
   });
 
-  it("too many failures → auto-escalate (not a silent 'review' spin)", async () => {
+  it("every generic failure auto-escalates immediately (not a silent 'review' spin)", async () => {
     const { run, events } = await assignRun();
-    // First failures park in `review` (the existing behaviour), not escalation.
+    // A single failure must escalate right away — nothing retries a run on its
+    // own, so silently absorbing the first couple of failures just dead-ends the
+    // task in `review` with no HITL. See fail() in orchestrator.ts.
     events.onFailed(run.id, "attempt 1 crashed");
-    await waitFor(async () => (await store.getRun(run.id))?.status === "review");
-    expect(bus.raised().some((i) => i.kind === "escalation")).toBe(false);
-
-    events.onFailed(run.id, "attempt 2 crashed");
-    await waitFor(async () => (await store.getRun(run.id))?.status === "review");
-    // The 3rd failure (default SKYNET_RUN_MAX_FAILURES=3) escalates to a human.
-    events.onFailed(run.id, "attempt 3 crashed");
     await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
 
     const esc = bus.raised().find((i) => i.kind === "escalation")!;
     expect(esc.flags).toContain("failures");
-    expect(esc.why).toMatch(/3 failed attempts/i);
-    expect((await store.getRun(run.id))?.status).toBe("waiting");
+    expect(esc.why).toMatch(/1 failed attempt/i);
+    expect((await store.getRun(run.id))?.status).toBe("waiting"); // resumable, not silently "review"
+  });
+
+  it("runMaxFailures=0 opts back into the old silent 'review' parking", async () => {
+    const before = config.runMaxFailures;
+    config.runMaxFailures = 0;
+    try {
+      const { run, events } = await assignRun();
+      events.onFailed(run.id, "attempt 1 crashed");
+      await waitFor(async () => (await store.getRun(run.id))?.status === "review");
+      expect(bus.raised().some((i) => i.kind === "escalation")).toBe(false);
+    } finally {
+      config.runMaxFailures = before;
+    }
   });
 
   it("running out of turns escalates immediately (resumable), not counted as a failure", async () => {
@@ -346,5 +355,47 @@ describe("escalation — a failed resume attempt re-raises instead of dead-endin
     await ops.resolveHitl(DEFAULT_WORKSPACE, esc2.id, { action: "modify", guidance: "try again" }, "op-1");
     await waitFor(async () => (await store.getRun(run.id))?.status === "running");
     expect(provider.events.has(run.id)).toBe(true); // the second, SUCCESSFUL start landed
+  });
+
+  it("a reassign that can't acquire ANY runner does NOT dead-end the run — it re-raises for another try", async () => {
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    // Fleet capped at the one runner that exists — so once it's unavailable,
+    // acquireOrProvisionRunner has nothing to acquire AND can't auto-provision.
+    await store.putWorkspaceSettings(WorkspaceSettings.parse({ workspaceId: DEFAULT_WORKSPACE, maxRunners: 1 }));
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repoPath: repo });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "do the thing" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    const worktrees = new WorktreeProvisioner(repo, "main");
+
+    const cur = (await store.getRun(run.id))!;
+    await store.putRun({ ...cur, status: "running", lastHeartbeatAt: 0 });
+    await orchestrator.reapStaleAgents();
+    await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+    const esc1 = bus.raised().find((i) => i.kind === "escalation")!;
+
+    // The runner the reap freed has since picked up other work, or left the
+    // fleet entirely (removed/disabled) — either way, by the time the operator
+    // clicks Reassign there is nothing within the cap to reassign onto.
+    const r1 = (await store.getAgent("r1"))!;
+    await store.putAgent({ ...r1, status: "busy", idleSince: null });
+
+    await ops.resolveHitl(DEFAULT_WORKSPACE, esc1.id, { action: "reassign" }, "op-1");
+
+    // A SECOND, actionable escalation must appear — never a dead end.
+    await waitFor(async () => bus.raised().filter((i) => i.kind === "escalation").length >= 2);
+    const escalations = bus.raised().filter((i) => i.kind === "escalation");
+    expect(escalations).toHaveLength(2);
+    const esc2 = escalations[1]!;
+    expect(esc2.runId).toBe(run.id);
+    expect(esc2.why).toMatch(/reassign failed/i);
+
+    const runAfterFailure = await store.getRun(run.id);
+    expect(runAfterFailure?.status).toBe("waiting"); // NOT "review", NOT "done"
+    expect(worktrees.exists(run.id)).toBe(true); // the worktree survives
+
+    // Free up capacity and confirm a follow-up reassign now succeeds.
+    await store.putAgent({ ...r1, status: "idle", idleSince: 0 });
+    await ops.resolveHitl(DEFAULT_WORKSPACE, esc2.id, { action: "reassign" }, "op-1");
+    await waitFor(async () => (await store.getRun(run.id))?.status === "running");
   });
 });

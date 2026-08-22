@@ -17,6 +17,7 @@ import type {
   ProviderInfo,
   Agent,
   Snapshot,
+  SolutionBrief,
   Task,
   WorkspaceSettings,
 } from "@skynet/shared";
@@ -36,6 +37,7 @@ export class MemoryStore implements Store {
   protected tasks = new Map<string, Task>();
   protected features = new Map<string, Feature>();
   protected milestones = new Map<string, Milestone>();
+  protected solutionBriefs = new Map<string, SolutionBrief>();
   protected fleet = new Map<string, Agent>();
   protected modules: Module[] = [];
   protected deps: Dependency[] = [];
@@ -63,6 +65,7 @@ export class MemoryStore implements Store {
       tasks: await this.listTasks(workspaceId),
       features: await this.listFeatures(workspaceId),
       milestones: await this.listMilestones(workspaceId),
+      solutionBriefs: await this.listSolutionBriefs(workspaceId),
       fleet: await this.listAgents(workspaceId),
       modules: this.modules,
       deps: this.deps,
@@ -109,6 +112,11 @@ export class MemoryStore implements Store {
   async getMilestone(id: string) { return this.milestones.get(id); }
   async putMilestone(m: Milestone) { this.milestones.set(m.id, m); this.persist(); return m; }
   async deleteMilestone(id: string) { this.milestones.delete(id); this.persist(); }
+
+  async listSolutionBriefs(ws: string) { return [...this.solutionBriefs.values()].filter((b) => b.workspaceId === ws); }
+  async getSolutionBrief(id: string) { return this.solutionBriefs.get(id); }
+  async putSolutionBrief(b: SolutionBrief) { this.solutionBriefs.set(b.id, b); this.persist(); return b; }
+  async deleteSolutionBrief(id: string) { this.solutionBriefs.delete(id); this.persist(); }
 
   async listAgents(ws: string) { return [...this.fleet.values()].filter((r) => r.workspaceId === ws); }
   async listAllAgents() { return [...this.fleet.values()]; }

@@ -202,6 +202,7 @@ export function App() {
       autonomy?: boolean;
       approvalLevel?: string;
       importGithubIssues?: boolean;
+      charter?: import("@skynet/shared").ProjectCharter;
     },
   ) => {
     const created = await store.createProject(name, goal, opts);

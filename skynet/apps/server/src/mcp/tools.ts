@@ -15,13 +15,16 @@ import {
   CreateFeatureRequest,
   CreateMilestoneRequest,
   CreateProjectRequest,
+  CreateSolutionBriefRequest,
   CreateTaskRequest,
   ResolveRequest,
+  SolutionBriefStatus,
   TaskState,
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
   UpdateRunnerRequest,
+  UpdateSolutionBriefRequest,
   UpdateTaskRequest,
   UpdateWorkspaceSettingsRequest,
   type ServerEvent,
@@ -320,6 +323,11 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     readOnly: true,
     filter: (r) => projectAccess.filterByProjectId(r as { projectId: string }[]),
   });
+  tool("list_briefs", "observe", "List the workspace's solution briefs (pre-work planning docs — problem/approach/options/risks/acceptance criteria, ahead of any task or run). Scoped tokens see only their projects'.", {}, () => operations.listBriefs(ws), {
+    readOnly: true,
+    filter: (r) => projectAccess.filterByProjectId(r as { projectId: string }[]),
+  });
+  tool("get_brief", "observe", "Get one solution brief's full detail.", { briefId: z.string() }, (a) => operations.getBrief(ws, a.briefId), { readOnly: true });
   tool("list_hitl", "observe", "List the open human-in-the-loop queue (decisions awaiting an operator).", {}, () => operations.listHitl(ws), {
     readOnly: true,
     filter: (r) => projectAccess.filterByRun(r as { runId: string }[]),
@@ -415,6 +423,26 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     await operations.deleteFeature(ws, a.featureId);
     return { deleted: a.featureId };
   });
+  tool(
+    "create_brief",
+    "author",
+    "Create a solution brief (a pre-work planning doc — problem, approach, options considered, risks, acceptance criteria, open questions — for a chunk of work BEFORE any task or run exists for it) in a project. Optionally roll it up into a feature via `featureId`.",
+    { projectId: z.string(), ...CreateSolutionBriefRequest.shape },
+    (a) => {
+      const { projectId, ...body } = a;
+      return operations.createBrief(ws, projectId, body);
+    },
+  );
+  tool(
+    "update_brief",
+    "author",
+    'Update a solution brief\'s content (title/problem/approach/optionsConsidered/risks/acceptanceCriteria/openQuestions), its feature link (featureId), or move its status to "building"/"done". PATCH semantics: omit any field you don\'t want to change. Approving a brief (status: "approved") is NOT available here — that\'s human/API only (the web UI, or a direct call carrying full/unscoped authority), never an agent-scoped token like this one; this tool\'s status field structurally excludes "approved", so there is nothing to bypass — ask the operator to approve it themselves.',
+    { briefId: z.string(), ...UpdateSolutionBriefRequest.shape, status: SolutionBriefStatus.exclude(["approved"]).optional() },
+    (a) => {
+      const { briefId, ...patch } = a;
+      return operations.updateBrief(ws, briefId, patch, principal.operatorId);
+    },
+  );
   tool("assign_task", "author", "Assign a task to a fresh agent on an idle runner. Idempotent: re-assigning an already-assigned task returns the existing agent.", { projectId: z.string(), taskId: z.string() }, (a) => operations.assignTask(ws, a.projectId, a.taskId));
   tool("message_agent", "author", "Send a chat message to an agent and get its reply.", { runId: z.string(), ...ChatRequest.shape }, async (a) => ({ reply: await operations.chatAgent(ws, a.runId, a.text) }));
   tool("fork_agent", "author", "Fork an agent to explore an alternative from its current step.", { runId: z.string() }, (a) => operations.forkAgent(ws, a.runId));

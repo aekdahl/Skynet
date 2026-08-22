@@ -62,9 +62,10 @@ class PrematureDoneProvider implements RunnerProvider {
 }
 
 // A runner that fails outright (binary missing, auth error, crash) — it reports
-// onFailed instead of doing work. The orchestrator parks the run in "review" as
-// needs-attention; its task must follow into the review column, not strand in
-// "ongoing" (where the card is locked and undraggable).
+// onFailed instead of doing work. The orchestrator escalates it (Resume/Reassign/
+// Stop) rather than silently parking in "review" with nothing to act on; the
+// task stays "ongoing" — the same lane every other escalation uses, its card
+// locked but showing a visible "⏸ <title>" wait-tag from the open HITL.
 class FailingProvider implements RunnerProvider {
   readonly id: ProviderId = "claude";
   async start(spec: StartSpec, events: RunnerEvents): Promise<RunnerHandle> {
@@ -212,21 +213,26 @@ describe("agent completion integrity: successful work is never silently dropped"
     expect(bus.events.some((e) => e.type === "run.completed")).toBe(true);
   });
 
-  it("a runner FAILURE parks the run in 'review' AND moves its task there — never stranded in 'ongoing'", async () => {
-    // The board places cards by task.state, and 'ongoing' cards are locked. A
-    // needs-attention exit (here: a runner crash → onFailed) used to flip only the
-    // RUN to 'review', leaving the task in 'ongoing' — a "review" chip on a locked
-    // Ongoing card that a human couldn't move. The task must follow the run.
+  it("a runner FAILURE escalates the run (actionable, not silently parked) — task stays 'ongoing'", async () => {
+    // A runner crash used to just flip the RUN to a silent 'review' with no
+    // HITL (and, in an earlier bug, without even moving the task, stranding a
+    // "review" chip on a locked Ongoing card). Both are gone: the run escalates
+    // — an actionable Resume/Reassign/Stop card — and the task stays 'ongoing',
+    // the same lane every other escalation (turn budget, stalled, 3-strikes)
+    // uses, its locked card showing a "⏸ <title>" wait-tag from the open HITL.
     const provider = new FailingProvider();
     const { hub } = await seed();
     const orchestrator = new Orchestrator(store, hub, provider);
 
     const agent = await orchestrator.assignTask("p1", "t1");
-    await waitFor(async () => (await store.getRun(agent.id))?.status === "review");
+    await waitFor(async () => (await store.getRun(agent.id))?.status === "waiting");
 
-    expect((await store.getRun(agent.id))?.status).toBe("review"); // needs-attention
-    // The fix: the linked task is in 'review' too, so the card is in the Review
-    // lane and movable (review → todo to retry, review → done to accept).
-    expect((await store.getTask("t1"))?.state).toBe("review");
+    expect((await store.getRun(agent.id))?.status).toBe("waiting"); // resumable, not "review"
+    expect((await store.getTask("t1"))?.state).toBe("ongoing");
+    const esc = (await store.listQueue(DEFAULT_WORKSPACE)).find(
+      (q) => q.runId === agent.id && q.kind === "escalation",
+    );
+    expect(esc).toBeDefined();
+    expect(esc!.resolvedAt).toBeNull();
   });
 });

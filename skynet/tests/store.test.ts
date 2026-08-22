@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Snapshot, DEFAULT_WORKSPACE, SAFETY_DEFAULTS, type TaskRun, type AuditRecord, type GithubConnection, type Project } from "@skynet/shared";
+import { Snapshot, DEFAULT_WORKSPACE, SAFETY_DEFAULTS, type TaskRun, type AuditRecord, type GithubConnection, type Project, type SolutionBrief } from "@skynet/shared";
 import type { Store } from "../apps/server/src/store/store.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
 import { FileStore } from "../apps/server/src/store/file.js";
@@ -132,6 +132,24 @@ function storeContract(name: string, make: () => Promise<Store>) {
       expect((await store.listAudit("amx-keep")).some((e) => e.hitlId === "keep-1")).toBe(true);
     });
 
+    it("put → get → list → delete round-trips a solution brief", async () => {
+      const brief: SolutionBrief = {
+        id: "sb-test-1", workspaceId: DEFAULT_WORKSPACE, projectId: "seed-proj",
+        title: "T", problem: "p", approach: "a", optionsConsidered: [], risks: [],
+        acceptanceCriteria: [], openQuestions: [], status: "draft", featureId: null,
+        createdAt: 1, updatedAt: 1, approvedAt: null, approvedBy: null, sourceConversation: null,
+      };
+      await store.putSolutionBrief(brief);
+      expect(await store.getSolutionBrief("sb-test-1")).toEqual(brief);
+      expect((await store.listSolutionBriefs(DEFAULT_WORKSPACE)).some((b) => b.id === "sb-test-1")).toBe(true);
+      expect(await store.listSolutionBriefs("no-such-workspace")).toEqual([]);
+      // Upsert: a second put with a changed field replaces, not duplicates.
+      await store.putSolutionBrief({ ...brief, status: "approved" });
+      expect((await store.getSolutionBrief("sb-test-1"))?.status).toBe("approved");
+      await store.deleteSolutionBrief("sb-test-1");
+      expect(await store.getSolutionBrief("sb-test-1")).toBeUndefined();
+    });
+
     it("put → get → delete round-trips a GitHub connection (one per workspace)", async () => {
       expect(await store.getGithubConnection("ws-gh")).toBeUndefined();
       const conn: GithubConnection = {
@@ -204,6 +222,19 @@ describePg("Store contract — postgres (DATABASE_URL set)", () => {
     expect(await store.getProject("pg-test-proj")).toEqual(project);
     await store.deleteProject("pg-test-proj");
     expect(await store.getProject("pg-test-proj")).toBeUndefined();
+  });
+
+  it("put → get → delete round-trips a solution brief", async () => {
+    const brief: SolutionBrief = {
+      id: "pg-sb-1", workspaceId: DEFAULT_WORKSPACE, projectId: "pg-test-proj",
+      title: "T", problem: "p", approach: "a", optionsConsidered: [], risks: [],
+      acceptanceCriteria: [], openQuestions: [], status: "draft", featureId: null,
+      createdAt: 1, updatedAt: 1, approvedAt: null, approvedBy: null, sourceConversation: null,
+    };
+    await store.putSolutionBrief(brief);
+    expect(await store.getSolutionBrief("pg-sb-1")).toEqual(brief);
+    await store.deleteSolutionBrief("pg-sb-1");
+    expect(await store.getSolutionBrief("pg-sb-1")).toBeUndefined();
   });
 
   it("recordAudit → listAudit returns newest-first", async () => {
