@@ -78,6 +78,10 @@ const ALLOW = new Set<string>([
   // it; the project-chat parse contract is covered by project-assistant.test.ts.
   "stewardChat",
   "streamStewardChat", // streaming variant of stewardChat — same live-key requirement
+  // Draft a Project Charter from the operator's raw goal (Gate G-1, new-project
+  // creation) — a real LLM call on the workspace's own key, same "needs a live
+  // provider" shape as stewardChat above; no offline journey drafts one.
+  "draftCharter",
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",
