@@ -853,6 +853,21 @@ export const SolutionBrief = z.object({
   // breadcrumb, not a full transcript. Truncated at write time (operations.ts),
   // not here — the schema stays permissive; length policy is a product choice.
   sourceConversation: z.string().nullable().default(null),
+  // S6 (optional): the result of a bounded, READ-ONLY agent run that actually
+  // read the codebase (a detached checkout of the base branch) to verify this
+  // draft's assumptions before an operator approves it — see
+  // Orchestrator.exploreBrief / POST .../briefs/:bid/explore. Purely advisory:
+  // never gates approval, never overwrites operator-authored fields above.
+  // Null until an explore run has ever completed successfully; a FAILED run
+  // leaves this untouched (see the route's error response instead).
+  exploration: z
+    .object({
+      at: Timestamp,
+      findings: z.array(z.string()), // wrong/confirmed assumptions, surprises
+      touchpoints: z.array(z.string()), // files/modules/areas this plan would actually touch
+    })
+    .nullable()
+    .default(null),
 });
 export type SolutionBrief = z.infer<typeof SolutionBrief>;
 

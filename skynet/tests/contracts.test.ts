@@ -86,6 +86,7 @@ const brief: SolutionBrief = {
   approvedAt: null,
   approvedBy: null,
   sourceConversation: null,
+  exploration: null,
 };
 
 const wire = <T>(v: T): unknown => JSON.parse(JSON.stringify(v));

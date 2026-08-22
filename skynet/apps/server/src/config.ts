@@ -191,8 +191,11 @@ export const config = {
   // Escalation guards — when a run can't finish on its own, hand it to a human
   // (an "escalation" HITL: help & resume, reassign, or stop) instead of spinning
   // or failing silently. The agent can also escalate itself at any time.
-  //   • runMaxFailures: after this many failed attempts on the SAME run, escalate
-  //     instead of parking it in `review`. >0 enables (default 3); 0 disables.
+  //   • runMaxFailures: >0 escalates a run on every failure (default 3 — the
+  //     number itself only shapes the reason text an operator sees, e.g. "2
+  //     failed attempts"; nothing here auto-retries, so there's no reason to
+  //     silently absorb the first N-1). 0 opts back into the old silent
+  //     `review` parking with no HITL, for operators who deliberately want it.
   //   • runStuckMs: a run actively `running` this long (ms) without finishing is
   //     escalated as "too long". 0 (default) disables — the runner already has a
   //     hard wall-clock cap (SKYNET_RUNNER_MAX_RUNTIME_MS); set this BELOW that to

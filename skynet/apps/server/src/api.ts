@@ -1007,6 +1007,21 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return fail(reply, err);
     }
   });
+  // S6 (optional): opt-in rigor before approving — spins a bounded, read-only
+  // agent run against a detached checkout of the base branch and appends its
+  // findings/touchpoints onto the brief (`SolutionBrief.exploration`).
+  // Never blocks approval; a failure is a real error response (fail()'s
+  // default 400 for a plain Error) and leaves the brief untouched — see
+  // Operations.exploreBrief.
+  app.post<{ Params: { id: string; bid: string } }>("/api/projects/:id/briefs/:bid/explore", async (req, reply) => {
+    try {
+      const brief = await ops.getBrief(ws(req), req.params.bid);
+      if (brief.projectId !== req.params.id) throw new NotFoundError("SolutionBrief");
+      return await ops.exploreBrief(ws(req), req.params.id, req.params.bid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
 
   // ── milestones (roadmap) ──────────────────────────────────────────────
   app.post<{ Params: { id: string } }>("/api/projects/:id/milestones", async (req, reply) => {
