@@ -937,6 +937,36 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   destructive brief operations off the agent surface the same way approval is). Naming note: this
   landed on `docs/`-less territory — no prior "Solutioning layer" section existed in this file before
   S4; this bullet is that section's first entry.
+  *Landed (S5): Crystallize — the "make it durable" moment.* `POST /api/projects/:id/briefs/crystallize`
+  takes the conversation transcript the caller already holds (the Steward dock's own chat state — there's
+  no server-side steward session to reference instead; the request body mirrors `/api/steward/chat`'s own
+  client-supplied-history contract exactly) and turns it into a real `SolutionBrief` in ONE LLM call
+  (`oneShotText`, the same Claude one-shot helper `steward/assistant.ts` already uses for plain chat —
+  crystallize isn't tied to a fleet run, so the run-scoped `RunnerProvider.consult` seam doesn't fit; this
+  does). Same discipline as the diff walkthrough / merge brief / auto-review verdict: the model emits a
+  zod-validated `DraftBrief` JSON object (`steward/crystallize.ts`), read as fields, never prose classified
+  by regex. Unlike those three (advisory — the caller proceeds regardless of a bad reply), crystallize's
+  entire job IS to produce a brief, so a reply that doesn't parse gets exactly ONE retry with the
+  validation error appended to the prompt (so the model can self-correct), and a second bad reply throws
+  `CrystallizeParseError` → 422 — never a half-parsed brief. The retry loop (`draftBriefFromConversation`)
+  takes its model-call function as a parameter, so it — and `Operations.crystallizeBrief`, via a new
+  `OperationsDeps.crystallizeAsk` test seam defaulting to the real `oneShotText` call — is fully testable
+  with a stubbed reply, no real LLM call or API key required. UI: a "Crystallize into a solution brief →"
+  button on the Steward dock, shown once a project is focused and the thread has at least one turn; since
+  no brief-viewing UI exists yet (S4), success is surfaced as a confirmation line in the thread itself
+  rather than a navigation with nowhere to go. **Deliberately skipped, exactly as the task allowed:** the
+  "steward suggestion chip" nudge and the Telegram reply-command variant — both explicitly marked
+  nice-to-have/skippable, and neither was trivial with the existing command routing. Verified for real: a
+  live (uncredentialed, so genuinely failing) Claude call in this sandbox proved the ACTUAL production
+  code path end-to-end — the button rendered, the request fired, the retry ran twice against the real
+  model, and it correctly threw + created NO brief (confirmed via a live snapshot fetch) rather than
+  silently succeeding on garbage; the successful-draft path (all fields landing correctly) is proven by
+  `tests/crystallize-brief.test.ts` / `-routes.test.ts` with a stubbed reply, since no real credential was
+  available here to prove that half live. *Aside, unrelated to this change, flagged in passing:* the
+  onboarding wizard's Fleet step silently blocks "Enter Skynet →" ("Select at least one provider to start
+  your fleet") even with a provider selected, whenever NO provider has a real credential — "Skip setup" on
+  step 1 is the only way through a fresh, keyless install today. Not touched here; noted for whoever picks
+  it up.
 - [x] **S6 — Deep-explore grounding (optional).** Before an operator approves a `SolutionBrief`, an
   opt-in `POST /api/projects/:id/briefs/:bid/explore` spins a bounded, READ-ONLY agent run that
   actually reads the codebase and annotates the draft — wrong assumptions, real touchpoints, blast

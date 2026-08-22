@@ -2580,6 +2580,8 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .steward-thread { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 2px; }
 .steward-dock .asst-input { padding: 10px 12px; border-top: 1px solid var(--line-soft); flex: none; }
 .steward-dock .asst-err { margin: 0 12px 8px; }
+/* S5: "make it durable" — turn the conversation into a draft SolutionBrief. */
+.asst-crystallize { display: flex; justify-content: flex-end; padding: 0 12px; flex: none; }
 
 /* While Steward is open, collapse the left nav to an icon rail to reclaim width. */
 :root.steward-open .op-side { width: 56px; }
