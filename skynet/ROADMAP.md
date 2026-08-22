@@ -800,6 +800,28 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     exactly the intended fallback). Not built: the Verifier gate (above) still only runs on the local
     merge-queue path, never for GitHub-PR-based runs — so a repo with no CI configured genuinely has no
     automated pass/fail signal yet, which the card now says outright instead of staying silent about it.*
+  - *Bug fixed: the "Autonomy"/"Deep review"/"Plan mode" toggle box (`.proj-autonomy`, shared by the
+    new-project form and the project page) had a fixed `height: 36px` sized for its original single-line
+    usage; once a two-line hint (`.proj-autonomy-hint`) was added under the label, the text overflowed past
+    the box's rounded border instead of the box growing to fit — reported live with a screenshot. Fixed by
+    switching to `min-height` + real vertical padding, so a single-line pill still lands at 36px (unchanged)
+    while a wrapped hint grows the box to fit. Verified live on all three affected toggles (new-project form,
+    project page).*
+  - *Bug fixed: the GitHub repo picker (project creation) and "Edit repository access" (Integrations) showed
+    "far from all repos I have access to," reported live. Two compounding causes: (1) `availableRepos()`
+    (`github/service.ts`) only re-listed LIVE for a PAT connection — an App/broker connection (the common
+    path) returned the connect-time snapshot FOREVER, silently missing every repo added to the org/account
+    (or newly granted to the installation) afterward; the PAT branch already had this live-refresh, App mode
+    just never got it. (2) "Edit repository access" was worse: it rendered `MOCK_REPOS`, hardcoded sample
+    data left over from before the real broker/device-flow connect path was built (`PlaceholderNote: "Sample
+    repositories — not fetched from GitHub yet"`) — for a real org it either showed 0 (no `MOCK_ACCOUNTS`
+    match) or entirely fictitious repos, with no way to ever discover or select a newly-visible repo. Fixed
+    both: `availableRepos()` now re-lists live for App/broker too (`listInstallationRepos`, already correctly
+    paginated), carrying each repo's PRIOR `selected` flag forward by id so this is a pure live refresh, not
+    a silent re-opt-in of repos the operator deliberately left unselected; "Edit repository access" now fetches
+    that same live list (instead of the mock stub) when editing an already-connected installation. Regression-
+    proofed: stashing the service fix makes the new `github-app-repos.test.ts` suite fail exactly as reported
+    (returns the stale 1-repo snapshot instead of the live 3).*
   - *Bug fixed: the Inbox's own HITL cards (`QueueCard`, `apps/web/src/views/queue.tsx`) never showed which
     project a card belonged to — only the agent name and the task title, reported live as a "Diff Review" card
     with no way to tell which project it was for at a glance. The ready-to-merge card (above) and the Home
@@ -949,6 +971,36 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   `tests/brief-threading.test.ts` — pure `resolveTaskBrief` resolution rules, the feedback-loop
   in-memory harness (`tests/fleet-proposals.test.ts`'s pattern), and the threading/status transitions
   against a real git repo (`tests/feature-brief-orchestrator.test.ts`'s pattern).)*
+  *Landed (S5): Crystallize — the "make it durable" moment.* `POST /api/projects/:id/briefs/crystallize`
+  takes the conversation transcript the caller already holds (the Steward dock's own chat state — there's
+  no server-side steward session to reference instead; the request body mirrors `/api/steward/chat`'s own
+  client-supplied-history contract exactly) and turns it into a real `SolutionBrief` in ONE LLM call
+  (`oneShotText`, the same Claude one-shot helper `steward/assistant.ts` already uses for plain chat —
+  crystallize isn't tied to a fleet run, so the run-scoped `RunnerProvider.consult` seam doesn't fit; this
+  does). Same discipline as the diff walkthrough / merge brief / auto-review verdict: the model emits a
+  zod-validated `DraftBrief` JSON object (`steward/crystallize.ts`), read as fields, never prose classified
+  by regex. Unlike those three (advisory — the caller proceeds regardless of a bad reply), crystallize's
+  entire job IS to produce a brief, so a reply that doesn't parse gets exactly ONE retry with the
+  validation error appended to the prompt (so the model can self-correct), and a second bad reply throws
+  `CrystallizeParseError` → 422 — never a half-parsed brief. The retry loop (`draftBriefFromConversation`)
+  takes its model-call function as a parameter, so it — and `Operations.crystallizeBrief`, via a new
+  `OperationsDeps.crystallizeAsk` test seam defaulting to the real `oneShotText` call — is fully testable
+  with a stubbed reply, no real LLM call or API key required. UI: a "Crystallize into a solution brief →"
+  button on the Steward dock, shown once a project is focused and the thread has at least one turn; since
+  no brief-viewing UI exists yet (S4), success is surfaced as a confirmation line in the thread itself
+  rather than a navigation with nowhere to go. **Deliberately skipped, exactly as the task allowed:** the
+  "steward suggestion chip" nudge and the Telegram reply-command variant — both explicitly marked
+  nice-to-have/skippable, and neither was trivial with the existing command routing. Verified for real: a
+  live (uncredentialed, so genuinely failing) Claude call in this sandbox proved the ACTUAL production
+  code path end-to-end — the button rendered, the request fired, the retry ran twice against the real
+  model, and it correctly threw + created NO brief (confirmed via a live snapshot fetch) rather than
+  silently succeeding on garbage; the successful-draft path (all fields landing correctly) is proven by
+  `tests/crystallize-brief.test.ts` / `-routes.test.ts` with a stubbed reply, since no real credential was
+  available here to prove that half live. *Aside, unrelated to this change, flagged in passing:* the
+  onboarding wizard's Fleet step silently blocks "Enter Skynet →" ("Select at least one provider to start
+  your fleet") even with a provider selected, whenever NO provider has a real credential — "Skip setup" on
+  step 1 is the only way through a fresh, keyless install today. Not touched here; noted for whoever picks
+  it up.
 - [x] **S6 — Deep-explore grounding (optional).** Before an operator approves a `SolutionBrief`, an
   opt-in `POST /api/projects/:id/briefs/:bid/explore` spins a bounded, READ-ONLY agent run that
   actually reads the codebase and annotates the draft — wrong assumptions, real touchpoints, blast
