@@ -915,6 +915,37 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   destructive brief operations off the agent surface the same way approval is). Naming note: this
   landed on `docs/`-less territory — no prior "Solutioning layer" section existed in this file before
   S4; this bullet is that section's first entry.
+- [x] **S6 — Deep-explore grounding (optional).** Before an operator approves a `SolutionBrief`, an
+  opt-in `POST /api/projects/:id/briefs/:bid/explore` spins a bounded, READ-ONLY agent run that
+  actually reads the codebase and annotates the draft — wrong assumptions, real touchpoints, blast
+  radius — instead of trusting the brief's prose alone. Built on the `deepReview` template
+  (`Orchestrator.runDeepReview`): a real bounded run behind a private, invisible-on-the-board
+  `RunnerEvents` adapter (no TaskRun, no fleet-runner row, every gate auto-resolves — there's no
+  human watching), `disallowedTools: ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"]` so it's
+  categorically incapable of mutating anything, and a `null`-on-ANY-failure contract (no repo, no
+  usable Claude credential, worktree prep failed, timeout, unreadable output). Two deliberate
+  differences from that template: (1) no live preview/browser — this reads code, it doesn't exercise
+  a running app, so it checks out a DETACHED worktree of the project's base branch via
+  `preview/worktree.ts`'s `prepareWorktree` (the same machinery the local preview and Fly deploy
+  engines already share — reused, not reimplemented); (2) there's no pre-picked reviewer `Agent` (a
+  brief predates any task/run), so the model/provider is a fixed Claude default rather than an
+  existing agent's own. `Orchestrator.exploreBrief` returns the structured verdict; the null-on-
+  failure gets turned into a real thrown `Error` one layer up (`Operations.exploreBrief`) so the
+  failure is VISIBLE at the API boundary (a 400 the caller actually sees) rather than a silent 200 —
+  the brief is written ONLY on a genuine success, `exploration` (new `SolutionBrief` field:
+  `{at, findings, touchpoints} | null`) never touches any operator-authored field or the `status`
+  gate. Test seam note: `config.worktreesDir` is read once at module-import time (not live), so unlike
+  `previewOverride`'s existing injected-manager pattern this needed its own constructor seam
+  (`exploreWorktreesDirOverride`) for a test to point at an isolated temp dir — otherwise every test
+  run would share one `.skynet-worktrees/explore-<id>` directory relative to wherever vitest happens
+  to run from. Verified: a stubbed provider's `StartSpec.disallowedTools` is asserted directly
+  (`tests/explore-brief.test.ts`), and re-running stash→confirm-fails→pop showed all 6 tests fail
+  with `ops.exploreBrief is not a function` before this landed. **Deliberately not built** (the
+  task's own Accept criteria is backend-only, and S4 itself ships with no web UI yet to attach one
+  to): the "status chip while running" mentioned in the task brief — no `SolutionBrief` view exists
+  in `apps/web` to add it to; the POST is synchronous (the client's own in-flight request IS the
+  "running" state) so no server-side polling/async job infra was needed either. **Depends on S4**
+  (`SolutionBrief`) — landed and merged.
 - [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** *Landed:* **amber
   untangled** — `--accent` (brand/primary) and `--warn` (caution/waiting status) were an accidental
   hex duplicate (`#FFB224` both, not just visually close); `--warn` is now a genuinely distinct
