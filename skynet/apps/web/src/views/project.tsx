@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta, ProviderId, ProviderInfo } from "@skynet/shared";
-import { computeDailySpend, committedUsd } from "@skynet/shared";
+import { computeDailySpend, committedUsd, resolveTaskBrief } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { Blocked, PrimaryButton } from "../components/empty";
@@ -257,6 +257,7 @@ function TaskCard({
     providers,
     features,
     milestones,
+    solutionBriefs,
     updateTask,
     deleteTask,
     forceTaskDone,
@@ -276,6 +277,10 @@ function TaskCard({
   const milestone = effectiveMilestoneId
     ? projMilestones.find((m) => m.id === effectiveMilestoneId)
     : undefined;
+  // S8: the Solution Brief this task is scoped under (same resolution rule
+  // the server threads into the agent's prompt — see resolveTaskBrief).
+  const projBriefs = solutionBriefs.filter((b) => b.projectId === task.projectId);
+  const brief = resolveTaskBrief(task, projBriefs);
   const [editing, setEditing] = useState(false);
   const [detail, setDetail] = useState(false); // full-detail modal for a card with no run
   const [draft, setDraft] = useState(task.text);
@@ -524,7 +529,7 @@ function TaskCard({
         </div>
       )}
 
-      {s !== "done" && (feature || milestone) && (
+      {s !== "done" && (feature || milestone || brief) && (
         <div className="kb-tags" onClick={stop}>
           {feature && (
             <span className="kb-feat-chip" title={`Feature — ${feature.description ?? feature.name}`}>
@@ -537,6 +542,11 @@ function TaskCard({
               title={milestone.targetAt ? `Milestone — target ${new Date(milestone.targetAt).toLocaleDateString()}` : "Milestone"}
             >
               ◉ {milestone.name}
+            </span>
+          )}
+          {brief && (
+            <span className="kb-brief-chip" title={`Solution Brief (${brief.status}) — ${brief.title}`}>
+              ▤ {brief.title}
             </span>
           )}
         </div>

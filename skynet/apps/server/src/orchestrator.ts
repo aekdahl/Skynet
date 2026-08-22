@@ -3,8 +3,8 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, DiffWalkthrough, PullRequest, PrChecksStatus, SolutionBrief } from "@skynet/shared";
-import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow } from "@skynet/shared";
+import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
+import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow, resolveTaskBrief } from "@skynet/shared";
 import {
   isCreditExhaustionError,
   type HitlRaise,
@@ -1671,6 +1671,33 @@ export class Orchestrator {
     await rm(scratchCwd, { recursive: true, force: true }).catch(() => undefined);
   }
 
+  /** The SolutionBrief a task is scoped under (direct `source.briefId`, else
+   *  the brief that rolls up into the task's Feature) — see
+   *  `resolveTaskBrief` (packages/shared) for the resolution rule itself;
+   *  this just supplies the workspace's brief list. undefined on a fetch
+   *  failure or when the task has neither a brief source nor a brief-linked
+   *  feature — callers already treat "no brief" as the common case (most
+   *  tasks aren't under one), so this never throws. */
+  private async findTaskBrief(task: Task, workspaceId: string): Promise<SolutionBrief | undefined> {
+    const briefs = await this.store.listSolutionBriefs(workspaceId).catch(() => [] as SolutionBrief[]);
+    return resolveTaskBrief(task, briefs);
+  }
+
+  /** The text threaded into `buildAgentContext`'s `=== SOLUTION BRIEF ===`
+   *  section: the chosen approach plus acceptance criteria — the "what to
+   *  build and how we'll know it's done" an agent actually needs turn-to-turn,
+   *  not the full planning doc (problem framing, options considered, risks,
+   *  open questions stay in the brief itself, not every prompt). Capped by
+   *  agent-context.ts's SOLUTION_BRIEF_CHAR_CAP, not here. */
+  private briefContextText(brief: SolutionBrief): string {
+    const approach = brief.approach.trim();
+    const criteria = brief.acceptanceCriteria.filter((c) => c.trim());
+    const parts: string[] = [];
+    if (approach) parts.push(approach);
+    if (criteria.length) parts.push(["Acceptance criteria:", ...criteria.map((c) => `- ${c}`)].join("\n"));
+    return parts.join("\n\n");
+  }
+
   /**
    * S3: a fresh-start sibling-awareness digest (see buildSiblingDigest) for
    * `project`, excluding `excludeTaskId` — wrapped in the single-element array
@@ -1790,6 +1817,19 @@ export class Orchestrator {
     await this.hub.upsertTask({ ...task, state: "ongoing", runId, assignment });
     await this.hub.upsertProject({ ...project, runIds: [...project.runIds, runId] });
 
+    // S8 status: the brief this task is scoped under moves approved→building
+    // the moment its FIRST child task leaves todo — a plan stops being "just
+    // approved" once real work is actually underway. Only fires on a genuine
+    // todo→ongoing transition (not a re-assign of an already-ongoing task, and
+    // not from any other originating state) and only from "approved" — a
+    // human's manual status edit (or a later completion) is never overridden.
+    if (task.state === "todo") {
+      const brief = await this.findTaskBrief(task, project.workspaceId);
+      if (brief && brief.status === "approved") {
+        await this.hub.upsertSolutionBrief({ ...brief, status: "building" });
+      }
+    }
+
     // Git backend for this project's repo (local repoPath, else global) — drives
     // the isolated worktree + which merge queue this agent integrates into.
     const git = this.gitContextFor(project);
@@ -1808,8 +1848,15 @@ export class Orchestrator {
       // description when one exists (the run's display name stays the short text).
       const taskBody = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
       const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
+      const solutionBrief = await this.findTaskBrief(task, project.workspaceId);
       const siblings = await this.siblingDigestFor(project, taskId);
-      const brief = buildAgentContext({ project, feature, siblings, body: taskBody });
+      const brief = buildAgentContext({
+        project,
+        feature,
+        brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
+        siblings,
+        body: taskBody,
+      });
       // Opt-in browser tooling is a per-workspace setting, off by default; the
       // runner decides how to expose it (Claude → a Playwright MCP server).
       const { browserTools } = await this.fleetPolicy(project.workspaceId);
@@ -1885,12 +1932,13 @@ export class Orchestrator {
       const apiKey = await secretService.resolve(parent.workspaceId, runner.credentialId ?? runner.provider);
       const parentTask = (await this.store.listTasks(parent.workspaceId)).find((t) => t.runId === parentId);
       const feature = parentTask?.featureId ? await this.store.getFeature(parentTask.featureId).catch(() => undefined) : undefined;
+      const solutionBrief = parentTask ? await this.findTaskBrief(parentTask, parent.workspaceId) : undefined;
       const siblings = project && parentTask ? await this.siblingDigestFor(project, parentTask.id) : undefined;
       const handle = await provider.start(
         {
           runId,
           projectId: parent.projectId,
-          task: buildAgentContext({ project, feature, siblings, body: parent.name }),
+          task: buildAgentContext({ project, feature, brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined, siblings, body: parent.name }),
           model: runner.model,
           branch: agent.branch,
           cwd,
@@ -2000,6 +2048,7 @@ export class Orchestrator {
     const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
     const task = taskId ? await this.store.getTask(taskId) : undefined;
     const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
+    const solutionBrief = task ? await this.findTaskBrief(task, run.workspaceId) : undefined;
 
     await this.hub.runProgress(runId, checkpoint.progress, checkpoint.plan);
     await this.hub.runStatus(runId, "running");
@@ -2014,7 +2063,7 @@ export class Orchestrator {
         {
           runId,
           projectId: run.projectId,
-          task: buildAgentContext({ project, feature, body: run.name }),
+          task: buildAgentContext({ project, feature, brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined, body: run.name }),
           model: runner.model,
           branch: run.branch,
           cwd,
@@ -2214,7 +2263,13 @@ export class Orchestrator {
     const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
     const task = taskId ? await this.store.getTask(taskId) : undefined;
     const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
-    const prompt = buildAgentContext({ project, feature, body: decisionResumePrompt(item, resolution, run.branch) });
+    const solutionBrief = task ? await this.findTaskBrief(task, run.workspaceId) : undefined;
+    const prompt = buildAgentContext({
+      project,
+      feature,
+      brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
+      body: decisionResumePrompt(item, resolution, run.branch),
+    });
     await this.hub.runStatus(runId, "running");
     if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
     await this.hub.runLog(runId, `re-acquired compute to deliver "${resolution.action}" — resuming in the run's worktree`);
@@ -2256,9 +2311,11 @@ export class Orchestrator {
     const project = await this.store.getProject(run.projectId);
     const task = review.taskId ? await this.store.getTask(review.taskId) : undefined;
     const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
+    const solutionBrief = task ? await this.findTaskBrief(task, run.workspaceId) : undefined;
     const revisePrompt = buildAgentContext({
       project,
       feature,
+      brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
       body:
         `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
         `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
@@ -2517,10 +2574,12 @@ export class Orchestrator {
     const project = await this.store.getProject(run.projectId);
     const task = ctx?.taskId ? await this.store.getTask(ctx.taskId) : undefined;
     const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
+    const solutionBrief = task ? await this.findTaskBrief(task, run.workspaceId) : undefined;
     const siblings = project && task ? await this.siblingDigestFor(project, task.id) : undefined;
     const prompt = buildAgentContext({
       project,
       feature,
+      brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
       siblings,
       body: reassign
         ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
@@ -2625,6 +2684,18 @@ export class Orchestrator {
     if (!feature || feature.pr?.state === "open") return;
     const siblings = (await this.store.listTasks(workspaceId)).filter((t) => t.featureId === featureId && !t.archived);
     if (siblings.length === 0 || siblings.some((t) => t.state !== "done")) return;
+
+    // S8 status: the feature just completed — if a SolutionBrief rolls up
+    // into it and is still "building", it's done too. Checked first and
+    // independent of the PR/merge machinery below (which can bail out for
+    // reasons unrelated to the brief, e.g. no git backend) — the brief's
+    // status reflects the WORK being done, not whether it got merged yet.
+    const briefs = await this.store.listSolutionBriefs(workspaceId).catch(() => [] as SolutionBrief[]);
+    const brief = briefs.find((b) => b.featureId === featureId);
+    if (brief && brief.status === "building") {
+      await this.hub.upsertSolutionBrief({ ...brief, status: "done" });
+    }
+
     const anchorRunId = siblings.map((t) => t.runId).find((r): r is string => !!r);
     if (!anchorRunId) return; // no run to anchor a log line / HITL to — nothing more we can safely do
 
@@ -4754,6 +4825,9 @@ export class Orchestrator {
     );
     let dailyCount = countFleetProposalsToday(projectTasks, now());
     const feature = sourceTask.featureId ? (await this.store.getFeature(sourceTask.featureId)) ?? null : null;
+    // S8 feedback: resolved once per source run (not per proposal) — every
+    // proposal from this run shares the same source task, so the same brief.
+    const brief = await this.findTaskBrief(sourceTask, ws);
     let siblingCount = feature
       ? projectTasks.filter((t) => t.featureId === feature.id && !t.archived).length
       : 0;
@@ -4779,7 +4853,7 @@ export class Orchestrator {
         underBudget,
       });
       if (placement.action === "skip-duplicate") continue;
-      const created = await this.createFleetTask(project, sourceTask, runId, proposal, placement, feature);
+      const created = await this.createFleetTask(project, sourceTask, runId, proposal, placement, feature, brief);
       dailyCount++;
       openTitles.add(normalizeProposalTitle(created.text));
       if (placement.action === "create-active") siblingCount++;
@@ -4800,6 +4874,7 @@ export class Orchestrator {
     proposal: ProposedTask,
     placement: ProposalPlacement,
     feature: Feature | null,
+    brief: SolutionBrief | undefined,
   ): Promise<Task> {
     const ws = project.workspaceId;
     const inProject = (await this.store.listTasks(ws)).filter((t) => t.projectId === project.id);
@@ -4844,7 +4919,14 @@ export class Orchestrator {
     }
     const degradeNote =
       placement.action === "create-parked" && placement.degradedReason ? ` — parked (${placement.degradedReason})` : " — parked for a human";
-    const task = await this.hub.upsertTask(base);
+    // S8 feedback loop: a discovery from a run whose task belongs to a
+    // Solution Brief's feature is attached to that SAME feature even when
+    // parked (unlike create-active's auto-promote above, which only fires
+    // when the placement gates all pass) — visible in the brief's scope for
+    // a human to judge in backlog/triage as today, not floating unscoped.
+    const briefFeatureId = feature?.id ?? brief?.featureId ?? null;
+    const parked = brief && briefFeatureId ? { ...base, featureId: briefFeatureId } : base;
+    const task = await this.hub.upsertTask(parked);
     await this.hub.runLog(runId, `⊕ fleet proposed a task${degradeNote}: "${proposal.title}"`, proposal.why).catch(() => undefined);
     return task;
   }
