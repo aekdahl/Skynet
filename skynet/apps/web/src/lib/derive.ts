@@ -365,6 +365,57 @@ export const KIND_META: Record<HitlKind, { label: string; color: string }> = {
   verifier: { label: "CHECKS FAILED", color: "var(--danger)" },
 };
 
+// ─── runs board row classification ──────────────────────────────────────────
+
+export type RunTag = "running" | "blocked" | "paused" | "done";
+
+// Classifies one run for the global Runs dashboard: which bucket it's in, what
+// its status cell says, and how to sort it. PURE — unit-tested.
+//
+// The `r.status !== "running" && stale` branch exists for a run whose OWN
+// status says it's no longer actively running (e.g. `review`) and whose
+// heartbeat has gone stale — with no open HITL to explain why (the branch
+// above would've caught it if there were one). That's a dead end: a run left
+// in `review` with nothing pending a decision (see orchestrator.ts's
+// fail()/gcWorktrees fix). Falling through to the generic "running" bucket
+// there is actively misleading — reported live as a run reading "starting…"
+// with a growing elapsed clock 20+ hours in. It isn't running and won't
+// finish on its own, so it's classified with the same urgency as an open HITL.
+export function classifyRun(
+  r: TaskRun,
+  hitl: HitlItem | undefined,
+  now: number,
+  staleAfterSec: number,
+): { tag: RunTag; statusLabel: string; timeLabel: string; sortKey: number } {
+  if (r.status === "done") {
+    return { tag: "done", statusLabel: "done", timeLabel: "—", sortKey: -r.lastHeartbeatAt };
+  }
+  if (hitl) {
+    const waited = waitedSecs(hitl, now);
+    return {
+      tag: "blocked",
+      statusLabel: KIND_META[hitl.kind].label.toLowerCase(),
+      timeLabel: `${fmtWait(waited)} waiting`,
+      sortKey: -waited, // longest-waiting first
+    };
+  }
+  if (r.status === "paused") {
+    const idle = heartbeatSecs(r, now);
+    return { tag: "paused", statusLabel: "paused", timeLabel: `${fmtWait(idle)} ago`, sortKey: idle };
+  }
+  if (r.status !== "running" && heartbeatSecs(r, now) > staleAfterSec) {
+    const stuckFor = heartbeatSecs(r, now);
+    return {
+      tag: "blocked",
+      statusLabel: `stuck in ${r.status} — no pending decision`,
+      timeLabel: `${fmtWait(stuckFor)} ago`,
+      sortKey: -stuckFor, // longest-stuck first, same ordering as an open HITL
+    };
+  }
+  const elapsed = (now - r.startedAt) / 1000;
+  return { tag: "running", statusLabel: curStep(r), timeLabel: `${fmtWait(elapsed)} elapsed`, sortKey: elapsed };
+}
+
 export const providerInfo = (
   providers: ProviderInfo[],
   id: ProviderId,

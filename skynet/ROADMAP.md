@@ -469,6 +469,31 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   runner left") only logged and set the run back to `"waiting"`, with no HITL left to click since the
   original one was already resolved. Now re-raises a fresh escalation the same way, so Resume/Reassign
   keep working even when there's genuinely no runner to hand the run to right now.*
+  *Root-cause fix: both bugs above were symptoms of a wider pattern — several code paths dumped a run
+  into `"review"` with NO HITL raised at all (not even one to fail resuming). `fail()`'s generic-failure
+  branch escalated only past `SKYNET_RUN_MAX_FAILURES` (default 3), silently parking every failure below
+  that with no retry loop ever consuming the count — so those "early" failures were exactly as terminal
+  as the 3rd, just invisible. `failStartup()` (no credential, worktree provisioning failed) never
+  escalated either. The result, reported directly: "a lot of tasks being stuck in REVIEW." Fixed two
+  ways — (1) `fail()` now escalates on every failure while the guard is enabled (the count still shapes
+  the reason text an operator sees; `SKYNET_RUN_MAX_FAILURES=0` still opts back into the old silent
+  parking, for operators who deliberately want it); (2) `gcWorktrees`'s existing "limbo" sweep (previously
+  a once-after-`worktreeTtlDays` LOG LINE nobody read) now immediately escalates any `review` run with no
+  open gate, on the very first sweep — a real backstop that also recovers already-stuck runs from before
+  this fix, and any future gap in the same spirit (e.g. `failStartup()`, left otherwise unchanged since
+  its worktree is genuinely empty). `escalate()` also gained a task-lookup fallback for when there's no
+  live handle to read `taskId` off (needed for the sweep to move the task back to `ongoing` on a
+  successful resume). Regression-proofed by stashing the fix and re-running the new tests against old
+  code — all 3 fail exactly as reported.*
+  *UI follow-up: the global Runs dashboard had its OWN version of this bug, reported live — a run
+  reading "starting…" with a growing elapsed clock 20+ hours in. Its per-row classifier only had 3
+  explicit buckets (done / has-an-open-HITL / paused) and dumped everything else — including a `review`
+  run with a frozen heartbeat and no HITL, exactly the dead end above — into the generic "running" bucket,
+  which just shows elapsed-since-start with no regard for whether anything is actually happening. Extracted
+  the classifier into a pure, unit-tested `classifyRun()` (`derive.ts`) and added a branch: a non-`running`
+  status with a stale heartbeat (the dashboard's existing 60s early-warning line) and no open HITL now
+  sorts and labels the same as an open HITL ("stuck in review — no pending decision"), instead of hiding
+  among genuinely active runs.*
 - [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
   Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
   credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself
@@ -920,6 +945,37 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   your fleet") even with a provider selected, whenever NO provider has a real credential — "Skip setup" on
   step 1 is the only way through a fresh, keyless install today. Not touched here; noted for whoever picks
   it up.
+- [x] **S6 — Deep-explore grounding (optional).** Before an operator approves a `SolutionBrief`, an
+  opt-in `POST /api/projects/:id/briefs/:bid/explore` spins a bounded, READ-ONLY agent run that
+  actually reads the codebase and annotates the draft — wrong assumptions, real touchpoints, blast
+  radius — instead of trusting the brief's prose alone. Built on the `deepReview` template
+  (`Orchestrator.runDeepReview`): a real bounded run behind a private, invisible-on-the-board
+  `RunnerEvents` adapter (no TaskRun, no fleet-runner row, every gate auto-resolves — there's no
+  human watching), `disallowedTools: ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"]` so it's
+  categorically incapable of mutating anything, and a `null`-on-ANY-failure contract (no repo, no
+  usable Claude credential, worktree prep failed, timeout, unreadable output). Two deliberate
+  differences from that template: (1) no live preview/browser — this reads code, it doesn't exercise
+  a running app, so it checks out a DETACHED worktree of the project's base branch via
+  `preview/worktree.ts`'s `prepareWorktree` (the same machinery the local preview and Fly deploy
+  engines already share — reused, not reimplemented); (2) there's no pre-picked reviewer `Agent` (a
+  brief predates any task/run), so the model/provider is a fixed Claude default rather than an
+  existing agent's own. `Orchestrator.exploreBrief` returns the structured verdict; the null-on-
+  failure gets turned into a real thrown `Error` one layer up (`Operations.exploreBrief`) so the
+  failure is VISIBLE at the API boundary (a 400 the caller actually sees) rather than a silent 200 —
+  the brief is written ONLY on a genuine success, `exploration` (new `SolutionBrief` field:
+  `{at, findings, touchpoints} | null`) never touches any operator-authored field or the `status`
+  gate. Test seam note: `config.worktreesDir` is read once at module-import time (not live), so unlike
+  `previewOverride`'s existing injected-manager pattern this needed its own constructor seam
+  (`exploreWorktreesDirOverride`) for a test to point at an isolated temp dir — otherwise every test
+  run would share one `.skynet-worktrees/explore-<id>` directory relative to wherever vitest happens
+  to run from. Verified: a stubbed provider's `StartSpec.disallowedTools` is asserted directly
+  (`tests/explore-brief.test.ts`), and re-running stash→confirm-fails→pop showed all 6 tests fail
+  with `ops.exploreBrief is not a function` before this landed. **Deliberately not built** (the
+  task's own Accept criteria is backend-only, and S4 itself ships with no web UI yet to attach one
+  to): the "status chip while running" mentioned in the task brief — no `SolutionBrief` view exists
+  in `apps/web` to add it to; the POST is synchronous (the client's own in-flight request IS the
+  "running" state) so no server-side polling/async job infra was needed either. **Depends on S4**
+  (`SolutionBrief`) — landed and merged.
 - [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** *Landed:* **amber
   untangled** — `--accent` (brand/primary) and `--warn` (caution/waiting status) were an accidental
   hex duplicate (`#FFB224` both, not just visually close); `--warn` is now a genuinely distinct
@@ -1286,6 +1342,24 @@ features below are white space.)
   feature actually reach the relaunch prompt at checkpoint-restore / review-revise / escalation-resume), and
   new cases in `tests/project-instructions.test.ts` (assignTask/forkAgent goal + feature threading, on top of
   the existing instructions-threading cases).)*
+  *(S3 — sibling-awareness digest: `buildSiblingDigest()` (`apps/server/src/sibling-digest.ts`) is a pure
+  derivation — no LLM — over the ongoing/review siblings, last-5 recently-merged runs (`mergedAt`, newest
+  first), and top-3 queued-up-next tasks (`order`) on the SAME project, plus a fixed steering line ("prefer
+  building on it over duplicating it; flag genuine conflicts via escalation"). Wired into S1's `siblings`
+  field at the genuine "an agent is starting FRESH" call sites only — `assignTask`, `fork`, and
+  `relaunchEscalated` (covers both reassign and escalation-relaunch via its own `reassign` flag) — via one
+  shared `siblingDigestFor` helper; deliberately NOT wired into continuation paths (checkpoint restore,
+  review-revise) where the agent already has full context of its own prior turns. Snapshot-at-start only,
+  never a live feed (the `inform` seam is the mid-run path — out of scope here). Hard-capped at ~1.2k chars,
+  dropping content in priority order (queued → merged → the ongoing/review tail) while the steering line
+  always survives. Also bumped S1's own per-sibling cap in `agent-context.ts` from 200→1200 chars, since this
+  produces ONE combined digest string rather than many independent one-liners (S1's own `agent-context.test.ts`
+  pins behavior, not the literal cap value — unaffected). `tests/sibling-digest.test.ts` (11 pure unit tests —
+  empty-project, excludes-own-task, cross-project isolation, merged-recency ordering, queued `order` ordering,
+  the ~1.2k cap and its drop priority) + `tests/sibling-digest-wiring.test.ts` (3 orchestrator tests — a busy
+  sibling reaches the real `StartSpec.task` at assign and fork time, and a solo project renders no
+  `=== IN FLIGHT ===` section at all). Regression-proofed (removed the implementation, confirmed all 14 new
+  tests fail, restored it).)*
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.* Also landed: the Roadmap tab's "reads ROADMAP.md" lookup used to dead-end when a repo kept its plan somewhere else — `Project.roadmapPath` now lets the operator (a picker on the tab's empty state) or Steward (`set_roadmap_path`, confirm-first, e.g. "the roadmap is at docs/PLAN.md") point it at any repo-relative file; `resolveRoadmapDoc` is the single place both the tab's API and Steward's own grounding resolve through, so they can't drift.
 - [~] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third

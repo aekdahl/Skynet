@@ -132,7 +132,42 @@ describe("worktree GC", () => {
     const again = (await store.getRun("r-limbo"))!.log.filter((l) => l.line.includes("parked in review"));
     expect(again).toHaveLength(1);
 
+    // Beyond the log line, it's now an actual actionable escalation — not just
+    // a warning nobody reads — Resume/Reassign/Stop on the table immediately.
+    expect(limbo!.status).toBe("waiting");
+    const queue = await store.listQueue(DEFAULT_WORKSPACE);
+    const esc = queue.find((q) => q.runId === "r-limbo" && q.kind === "escalation");
+    expect(esc).toBeDefined();
+    expect(esc!.resolvedAt).toBeNull();
+
     // The shared repo's own checkout was never touched.
     expect(git("branch", "--show-current")).toBe("main");
+  });
+
+  it("escalates a review-limbo run on the VERY FIRST sweep, without waiting for worktreeTtlDays", async () => {
+    const store = new MemoryStore({ seed: false });
+    const hub = new Hub(store, new NullBus());
+    const orch = new Orchestrator(store, hub);
+    await store.putProject({
+      id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [],
+      status: "active", repoPath: null, gitBacked: false,
+    } as Project);
+    // Freshly stuck — heartbeat just now, nowhere near worktreeTtlDays old. The
+    // disk-retention log line shouldn't fire yet, but the operator still needs
+    // an actionable card the moment nothing is asking for a decision.
+    await store.putRun(mkRun("r-fresh-limbo", "review", { lastHeartbeatAt: Date.now() }));
+
+    const stats = await orch.gcWorktrees();
+
+    expect(stats.limbo).toBe(0); // too fresh for the TTL-gated disk-retention note
+    const run = await store.getRun("r-fresh-limbo");
+    expect(run!.log.some((l) => l.line.includes("parked in review"))).toBe(false);
+    expect(run!.status).toBe("waiting"); // escalated anyway — no open gate is no open gate
+
+    const esc = (await store.listQueue(DEFAULT_WORKSPACE)).find(
+      (q) => q.runId === "r-fresh-limbo" && q.kind === "escalation",
+    );
+    expect(esc).toBeDefined();
+    expect(esc!.flags).toContain("stuck-review");
   });
 });
