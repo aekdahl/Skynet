@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ApprovalLevel, GithubOwner, Project } from "@skynet/shared";
+import type { ApprovalLevel, GithubOwner, Project, ProjectCharter } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import {
@@ -164,6 +164,7 @@ export function NewProjectCard({
       autonomy?: boolean;
       approvalLevel?: ApprovalLevel;
       importGithubIssues?: boolean;
+      charter?: ProjectCharter;
     },
   ) => void | Promise<void>;
 }) {
@@ -197,6 +198,12 @@ export function NewProjectCard({
   const [confirming, setConfirming] = useState(false); // new-repo confirm gate
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Charter-assisted creation (Gate G-1): operator's raw goal → LLM draft →
+  // operator edits/approves → stored on the project. All optional: if no key is
+  // set or the operator skips it, the project is created without a charter.
+  const [charter, setCharter] = useState<ProjectCharter | null>(null);
+  const [charterDrafting, setCharterDrafting] = useState(false);
+  const [charterError, setCharterError] = useState<string | null>(null);
 
   const repos = useConnectedRepos();
   const owners = useRepoOwners();
@@ -234,6 +241,24 @@ export function NewProjectCard({
     setAutonomy(projects.length > 0);
     setApprovalLevel(defaultApprovalLevel ?? "trusted");
     setApprovalTouched(false);
+    setCharter(null);
+    setCharterDrafting(false);
+    setCharterError(null);
+  };
+
+  const generateCharter = async () => {
+    const g = goal.trim() || name.trim();
+    if (!g) return;
+    setCharterDrafting(true);
+    setCharterError(null);
+    try {
+      const drafted = await api.draftCharter(g);
+      setCharter(drafted);
+    } catch (e) {
+      setCharterError(e instanceof Error ? e.message : "Couldn't draft the charter — check your API key in Integrations, or skip.");
+    } finally {
+      setCharterDrafting(false);
+    }
   };
 
   const submit = async (opts: {
@@ -245,7 +270,12 @@ export function NewProjectCard({
     setCreating(true);
     setError(null);
     try {
-      await onCreate(name.trim(), goal.trim() || "No goal set yet.", { ...opts, autonomy, approvalLevel });
+      await onCreate(name.trim(), goal.trim() || "No goal set yet.", {
+        ...opts,
+        autonomy,
+        approvalLevel,
+        charter: charter ?? undefined,
+      });
       reset();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't create the project.");
@@ -285,7 +315,7 @@ export function NewProjectCard({
         rows={2}
         placeholder="Goal — what does done look like?"
         value={goal}
-        onChange={(e) => setGoal(e.target.value)}
+        onChange={(e) => { setGoal(e.target.value); if (charter) setCharter(null); }}
       />
 
       <div className="np-modes" role="tablist" aria-label="Where work happens">
@@ -441,6 +471,59 @@ export function NewProjectCard({
         </label>
       </div>
 
+      {/* Charter-assisted creation (Gate G-1): one LLM call drafts goals,
+          non-goals, risks, constraints, and definition of done from the goal
+          text. The operator edits each field and approves before creation.
+          Skippable: charter stays null if the operator doesn't want it. */}
+      {!charter ? (
+        <div className="np-charter-row">
+          <button
+            type="button"
+            className="btn btn-ghost np-charter-btn"
+            disabled={charterDrafting || !name.trim()}
+            title={!name.trim() ? "Name your project first" : "Draft a Project Charter (goals, non-goals, risks, constraints, definition of done) using your stored API key — one cheap call, metered."}
+            onClick={() => void generateCharter()}
+          >
+            {charterDrafting ? "Drafting charter…" : charter ? "Regenerate charter" : "Draft charter"}
+          </button>
+          {charterError && <div className="np-charter-error">{charterError}</div>}
+        </div>
+      ) : (
+        <div className="np-charter">
+          <div className="np-charter-header">
+            <span className="np-charter-title">Project Charter</span>
+            <span className="np-charter-hint">Edit any field, then create the project.</span>
+            <button
+              type="button"
+              className="btn btn-ghost np-charter-clear"
+              onClick={() => { setCharter(null); setCharterError(null); }}
+              title="Remove charter"
+            >
+              ✕
+            </button>
+          </div>
+          {(
+            [
+              { key: "goals", label: "Goals" },
+              { key: "nonGoals", label: "Non-goals" },
+              { key: "risks", label: "Risks" },
+              { key: "constraints", label: "Constraints" },
+              { key: "definitionOfDone", label: "Definition of done" },
+            ] as { key: keyof ProjectCharter; label: string }[]
+          ).map(({ key, label }) => (
+            <div key={key} className="np-charter-field">
+              <label className="np-charter-label">{label}</label>
+              <textarea
+                className="qx-input np-charter-textarea"
+                rows={3}
+                value={charter[key]}
+                onChange={(e) => setCharter({ ...charter, [key]: e.target.value })}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
       {confirming && mode === "new" ? (
         <div className="np-confirm">
           <p className="np-confirm-text">
@@ -495,7 +578,7 @@ export function OverviewView({
 }: {
   now: number;
   onOpenProject: (id: string) => void;
-  onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
+  onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string; charter?: ProjectCharter }) => void;
 }) {
   const { projects, runs, queue } = useStore();
   const oq = openQueue(queue);

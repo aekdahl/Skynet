@@ -19,7 +19,9 @@ import type {
   CreateFeatureRequest,
   CreateMilestoneRequest,
   CreateProjectRequest,
+  CreateSolutionBriefRequest,
   CreateTaskRequest,
+  DraftCharterRequest,
   DryRunPolicyRequest,
   Feature,
   FlyDeployment,
@@ -31,6 +33,7 @@ import type {
   PolicyVersion,
   PrChecksStatus,
   Project,
+  ProjectCharter,
   ProviderInfo,
   ResolveRequest,
   Resolution,
@@ -38,16 +41,18 @@ import type {
   Agent,
   SignedComplianceReport,
   Snapshot,
+  SolutionBrief,
   Task,
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
   UpdateProjectRoadmapRequest,
   UpdateRunnerRequest,
+  UpdateSolutionBriefRequest,
   UpdateTaskRequest,
   UpdateWorkspaceSettingsRequest,
 } from "@skynet/shared";
-import { modelValidForProvider, WorkspaceSettings } from "@skynet/shared";
+import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
@@ -59,6 +64,7 @@ import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { projectPreview, type PreviewState, type PreviewSource } from "./preview/project-preview.js";
 import { git as gitExec } from "./preview/worktree.js";
+import { oneShotText } from "@skynet/runner-sdk/claude";
 import { flyDeploy, type FlyDeployState } from "./fly/deploy.js";
 import { githubService, parseRepoRef } from "./github/index.js";
 import { parseChecklist } from "./tasks/checklist.js";
@@ -274,6 +280,9 @@ export class Operations {
   listMilestones(ws: string): Promise<Milestone[]> {
     return this.store.listMilestones(ws);
   }
+  listBriefs(ws: string): Promise<SolutionBrief[]> {
+    return this.store.listSolutionBriefs(ws);
+  }
   listRuns(ws: string): Promise<TaskRun[]> {
     return this.store.listRuns(ws);
   }
@@ -335,6 +344,13 @@ export class Operations {
     const task = await this.store.getTask(taskId);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
     return task;
+  }
+
+  /** Fetch one solution brief scoped to the workspace, or throw NotFoundError (404). */
+  async getBrief(ws: string, briefId: string): Promise<SolutionBrief> {
+    const brief = await this.store.getSolutionBrief(briefId);
+    if (!brief || brief.workspaceId !== ws) throw new NotFoundError("SolutionBrief");
+    return brief;
   }
 
   /** Fetch one resolved HITL decision scoped to the workspace, or throw
@@ -727,6 +743,45 @@ export class Operations {
   }
 
   // ── projects ──────────────────────────────────────────────────────────────
+
+  /**
+   * Draft a Project Charter from the operator's raw goal description using the
+   * workspace's stored Claude key (one cheap Haiku call, metered). Returns a
+   * structured charter the operator edits/approves before creating the project.
+   * Falls back gracefully: if no key is set the response is a 402-friendly error
+   * propagated to the UI (which prompts the user to connect a provider).
+   */
+  async draftCharter(ws: string, input: DraftCharterRequest): Promise<ProjectCharter> {
+    const apiKey = (await secretService.resolve(ws, "claude")) ?? undefined;
+    const prompt =
+      `You are a project intake assistant. The operator has described a project they want to build. ` +
+      `Draft a concise Project Charter with exactly these five sections. ` +
+      `Be practical and specific — write 2-4 bullet points per section, no waffle.\n\n` +
+      `Operator's raw ask: "${input.goal}"\n\n` +
+      `Respond with ONLY a JSON object (no markdown fences) matching this exact shape:\n` +
+      `{\n` +
+      `  "goals": "<what success looks like — the core deliverable>",\n` +
+      `  "nonGoals": "<what is explicitly out of scope for this project>",\n` +
+      `  "risks": "<known unknowns, technical bets, or delivery risks>",\n` +
+      `  "constraints": "<stack, timeline, budget, or integration constraints>",\n` +
+      `  "definitionOfDone": "<observable, testable criteria that close this project>"\n` +
+      `}`;
+    const raw = await oneShotText({ prompt, model: "haiku", apiKey });
+    // Strip optional markdown fences if the model wraps anyway.
+    const json = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      throw new Error("Charter draft returned invalid JSON — try again or fill it in manually.");
+    }
+    const result = ProjectCharterSchema.safeParse(parsed);
+    if (!result.success) {
+      throw new Error("Charter draft had unexpected shape — try again or fill it in manually.");
+    }
+    return result.data;
+  }
+
   async createProject(ws: string, input: CreateProjectRequest): Promise<Project> {
     // "Create a new repo" binding: make the GitHub repo FIRST (outward-facing, so
     // it's gated behind an explicit confirm in the UI) and bind the project to it.
@@ -805,6 +860,9 @@ export class Operations {
       roadmapPath: null,
       // Verifier gate command is set later in project settings, else the global default.
       checkCmd: null,
+      // Operator-approved charter from the charter-assisted creation flow (Gate G-1).
+      // null when the project was created without charter assistance (today's fast-path).
+      charter: input.charter ?? null,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
@@ -1365,6 +1423,74 @@ export class Operations {
     const tasks = (await this.store.listTasks(ws)).filter((t) => t.milestoneId === mid);
     for (const t of tasks) await this.hub.upsertTask({ ...t, milestoneId: null });
     await this.hub.deleteMilestone(mid);
+  }
+
+  // ── solution briefs (pre-work planning docs) ───────────────────────────
+  // sourceConversation is a PROVENANCE breadcrumb, not a transcript — capped
+  // at write time (same "assessment" truncation convention as
+  // orchestrator.ts's auto-triage: `.slice(0, 500)`), never enforced in the
+  // schema itself (contracts.ts stays permissive; length policy is here).
+  private static readonly SOURCE_CONVERSATION_MAX = 500;
+
+  async createBrief(ws: string, projectId: string, input: CreateSolutionBriefRequest): Promise<SolutionBrief> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (input.featureId != null) {
+      const f = await this.store.getFeature(input.featureId);
+      if (!f || f.workspaceId !== ws || f.projectId !== projectId) throw new NotFoundError("Feature");
+    }
+    const at = now();
+    const brief: SolutionBrief = {
+      id: this.uid(`brief-${this.slug(project.name)}`),
+      workspaceId: ws,
+      projectId,
+      title: input.title,
+      problem: input.problem?.trim() ?? "",
+      approach: input.approach?.trim() ?? "",
+      optionsConsidered: input.optionsConsidered ?? [],
+      risks: input.risks ?? [],
+      acceptanceCriteria: input.acceptanceCriteria ?? [],
+      openQuestions: input.openQuestions ?? [],
+      status: "draft",
+      featureId: input.featureId ?? null,
+      createdAt: at,
+      updatedAt: at,
+      approvedAt: null,
+      approvedBy: null,
+      sourceConversation: input.sourceConversation?.trim().slice(0, Operations.SOURCE_CONVERSATION_MAX) || null,
+    };
+    return this.hub.upsertSolutionBrief(brief);
+  }
+
+  /** PATCH a brief. `operatorId` is stamped as `approvedBy` ONLY on the actual
+   *  draft/building/done → "approved" transition (never re-stamped on a later
+   *  edit while already approved, and never cleared by moving past it to
+   *  building/done — that history stays). Callers are responsible for
+   *  deciding whether `patch.status === "approved"` may even reach this
+   *  method — see api.ts's route and mcp/tools.ts's update_brief, both of
+   *  which refuse it for a scoped (agent) token before calling here; this
+   *  method itself has no notion of "who's calling", by design (Operations
+   *  stays transport-agnostic — see this file's header comment). */
+  async updateBrief(ws: string, briefId: string, patch: UpdateSolutionBriefRequest, operatorId: string): Promise<SolutionBrief> {
+    const brief = await this.store.getSolutionBrief(briefId);
+    if (!brief || brief.workspaceId !== ws) throw new NotFoundError("SolutionBrief");
+    if (patch.featureId != null) {
+      const f = await this.store.getFeature(patch.featureId);
+      if (!f || f.workspaceId !== ws || f.projectId !== brief.projectId) throw new NotFoundError("Feature");
+    }
+    const approving = patch.status === "approved" && brief.status !== "approved";
+    return this.hub.upsertSolutionBrief({
+      ...brief,
+      ...patch,
+      updatedAt: now(),
+      ...(approving ? { approvedAt: now(), approvedBy: operatorId } : {}),
+    });
+  }
+
+  async deleteBrief(ws: string, briefId: string): Promise<void> {
+    const brief = await this.store.getSolutionBrief(briefId);
+    if (!brief || brief.workspaceId !== ws) throw new NotFoundError("SolutionBrief");
+    await this.hub.deleteSolutionBrief(briefId);
   }
 
   // ── roadmap doc (ROADMAP.md read straight from the project's bound repo) ──

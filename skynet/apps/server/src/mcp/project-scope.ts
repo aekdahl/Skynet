@@ -22,7 +22,7 @@ import { allowsProject, type Principal } from "../auth.js";
 import type { Operations } from "../operations.js";
 
 /** Well-known id argument keys, in the priority we resolve a target project. */
-const PROJECT_ID_KEYS = ["projectId", "runId", "taskId", "featureId", "milestoneId", "hitlId"] as const;
+const PROJECT_ID_KEYS = ["projectId", "runId", "taskId", "featureId", "milestoneId", "briefId", "hitlId"] as const;
 
 export interface ProjectScope {
   /** True when this principal is confined to a project allowlist. */
@@ -77,6 +77,8 @@ export function projectScope(principal: Principal, operations: Operations, ws: s
         return (await operations.listFeatures(ws)).find((f) => f.id === id)?.projectId;
       case "milestoneId":
         return (await operations.listMilestones(ws)).find((m) => m.id === id)?.projectId;
+      case "briefId":
+        return (await operations.listBriefs(ws)).find((b) => b.id === id)?.projectId;
       case "hitlId": {
         const item = (await operations.listHitl(ws)).find((h) => h.id === id);
         return item ? (await runsById()).get(item.runId) : undefined;
@@ -151,6 +153,7 @@ export function projectScope(principal: Principal, operations: Operations, ws: s
         tasks: snap.tasks.filter((t) => allows(t.projectId)),
         features: snap.features.filter((f) => allows(f.projectId)),
         milestones: snap.milestones.filter((m) => allows(m.projectId)),
+        solutionBriefs: snap.solutionBriefs.filter((b) => allows(b.projectId)),
         queue: snap.queue.filter((h) => runAllowed(h.runId)),
       };
     },

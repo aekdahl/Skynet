@@ -3,7 +3,7 @@ import type { ProviderId, ProviderInfo, Agent, SecretMeta, TaskRun } from "@skyn
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { computeUsageRollup, fmtCost, fmtNum, providerInfo, providerReadiness, runnerIdleLabel, type UsageRollup } from "../lib/derive";
-import { Blocked, PrimaryButton } from "../components/empty";
+import { PrimaryButton } from "../components/empty";
 import { useConfirm } from "../components/confirm";
 import { toast } from "../components/toast";
 
@@ -437,11 +437,6 @@ function AgentCard({
         >
           Duplicate
         </button>
-        <Blocked disabled reason="Finish or reassign its task before retiring.">
-          <button className="btn btn-ghost btn-retire" disabled>
-            Retire
-          </button>
-        </Blocked>
       </div>
     </div>
   );
