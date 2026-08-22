@@ -2540,6 +2540,28 @@ export class Orchestrator {
       await this.hub.runLog(runId, "cannot resume — this run has no worktree to continue in");
       return;
     }
+    // The worktree may have been cleaned up while the run sat escalated (the
+    // reaper frees long-dead runs; restarts and disk hygiene prune their
+    // directories) — but `git worktree remove` never deletes the BRANCH, so the
+    // committed work survives in the shared repo. Re-attach a fresh worktree
+    // from that branch instead of spawning the agent into a nonexistent cwd,
+    // which dies instantly with a misleading low-level error (the SDK guesses
+    // "binary/libc mismatch" when spawn fails on a missing directory). Checked
+    // BEFORE acquiring a runner so a hopeless relaunch never burns capacity.
+    if (!git.worktrees.exists(runId)) {
+      try {
+        await git.worktrees.reattach(runId, run.branch);
+        await this.hub.runLog(runId, `worktree was cleaned up while this run waited — re-attached from branch ${run.branch} (committed work preserved)`);
+      } catch (err) {
+        await this.hub.runLog(runId, `cannot ${reassign ? "reassign" : "resume"} — worktree is gone and ${(err as Error).message}`);
+        await this.raiseEscalationCard(run, `${reassign ? "reassign" : "resume"} failed — worktree is gone and ${(err as Error).message}`, ctx?.source ?? "stalled", {
+          git,
+          baseRef: ctx?.baseRef,
+          taskId: ctx?.taskId ?? null,
+        }).catch(() => undefined);
+        return;
+      }
+    }
     let acq: { id: string; provider: TaskRun["provider"]; model: string };
     try {
       if (!reassign && live) {
