@@ -710,6 +710,15 @@ export const Task = z.object({
   // Where this task was imported from (GitHub issue / repo file / tracker), so a
   // status change can be written back to it. null → a native Skynet task.
   source: TaskSource.nullable().default(null),
+  // Other tasks (same project) this one can't start before — set by S7's brief
+  // decomposition so a generated plan's ordering survives past creation (the
+  // autonomy loop's auto-pick eligibility filter skips a task until every id
+  // here is `done`; a human "Start now" still bypasses it, same as autoPick
+  // does for other gates). Distinct from `TaskRun.dependsOn` (upstream RUN ids
+  // used for live conflict detection between concurrently executing agents,
+  // orchestrator/derive/conflicts.ts) — this is task-to-task ordering of
+  // not-yet-started work. Default [] = no dependency, today's behavior.
+  dependsOnTaskIds: z.array(z.string()).default([]),
   // Operator-saved provider/model preference for auto-pick — set via the Start
   // picker. Null (the default) leaves acquisition exactly as it's always been:
   // the first idle, usable runner in fleet order. When set, acquireAgent tries
