@@ -384,6 +384,25 @@ export const ApprovalRule = z.object({
 });
 export type ApprovalRule = z.infer<typeof ApprovalRule>;
 
+// ─── Project Charter ──────────────────────────────────────────────────────
+// LLM-drafted at project creation (Gate G-1). The operator corrects/approves
+// before the project is created. Source of truth the whole auto-dev team plans
+// against: the Architect reads its constraints, the CoS reports progress against
+// its milestones, the Spec Analyst checks briefs against its definition of done.
+
+export const ProjectCharter = z.object({
+  goals: z.string(),
+  nonGoals: z.string(),
+  risks: z.string(),
+  constraints: z.string(),
+  definitionOfDone: z.string(),
+});
+export type ProjectCharter = z.infer<typeof ProjectCharter>;
+
+// Request body for the draft-charter endpoint: the operator's raw ask.
+export const DraftCharterRequest = z.object({ goal: z.string().min(1) });
+export type DraftCharterRequest = z.infer<typeof DraftCharterRequest>;
+
 // ─── Project · Task ───────────────────────────────────────────────────────
 
 export const Project = z.object({
@@ -525,6 +544,11 @@ export const Project = z.object({
   // confirmed) via a "select a file" affordance when the default lookup comes
   // up empty. null = use the default candidates, unchanged behavior.
   roadmapPath: z.string().nullable().default(null),
+  // LLM-drafted and operator-approved at creation (Gate G-1). Optional: projects
+  // created before this field existed, or created without charter assistance,
+  // have null here. When present, this is the source of truth the auto-dev team
+  // plans against — goals, non-goals, risks, constraints, definition of done.
+  charter: ProjectCharter.nullable().default(null),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -1156,6 +1180,11 @@ export const ProviderRequirements = z.object({
   // One-line "how to install / set up" hint, and a docs link if we have one.
   installHint: z.string().nullable().default(null),
   docsUrl: z.string().nullable().default(null),
+  // Where to create / find your API key for this provider — shown in the
+  // onboarding Connect step so the user knows exactly where to go, without
+  // having to leave the app to find it. Null for providers that authenticate
+  // exclusively via CLI login (no key to create).
+  keyUrl: z.string().nullable().default(null),
   // Structured install: when set, the UI can offer a one-click "Install CLI"
   // button that runs this exact command server-side and streams the output.
   // Only set for providers whose install is scriptable (`npm i -g <pkg>`); brew,
@@ -1275,6 +1304,10 @@ export const CreateProjectRequest = z.object({
   // project. Defaults to on in the UI when a repo is bound; best-effort —
   // failure doesn't fail project creation. See docs/task-source-sync.md.
   importGithubIssues: z.boolean().optional(),
+  // Operator-approved Project Charter (LLM-drafted via POST /api/projects/draft-charter,
+  // then corrected in-UI before creation). Optional: omit to skip charter-assisted
+  // creation (today's fast-path — a charter can always be written later).
+  charter: ProjectCharter.optional(),
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 

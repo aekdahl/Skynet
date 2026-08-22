@@ -16,6 +16,15 @@ describe("providerRequirements", () => {
     expect(r.installHint).toBeTruthy();
   });
 
+  it("every fleet provider has a keyUrl so the onboarding can link directly to key creation", () => {
+    const PROVIDERS = ["claude", "codex", "gemini", "cursor", "copilot", "hermes", "opencode"] as const;
+    for (const id of PROVIDERS) {
+      const r = providerRequirements(id);
+      expect(r.keyUrl, `${id} is missing a keyUrl`).toBeTruthy();
+      expect(r.keyUrl, `${id} keyUrl must be https`).toMatch(/^https:\/\//);
+    }
+  });
+
   it("marks hermes as a CLI needing the hermes binary + a provider key", () => {
     const r = providerRequirements("hermes");
     expect(r.runtime).toBe("cli");

@@ -61,6 +61,22 @@ const DOCS_URL: Partial<Record<ProviderId, string>> = {
   opencode: "https://opencode.ai/docs/",
 };
 
+// Where to create or find the API key for each provider — linked directly from
+// the onboarding Connect step so users never need to hunt for it. Absent for
+// providers that use CLI login only (no API key to create, only copilot/cursor
+// which ALSO accept a key; those are still included since key-entry is the
+// in-app path). `null` would mean "no key, CLI login only" — none of the
+// current providers are exclusively CLI-login without a key option.
+const KEY_URL: Partial<Record<ProviderId, string>> = {
+  claude: "https://console.anthropic.com/settings/keys",
+  codex: "https://platform.openai.com/api-keys",
+  gemini: "https://aistudio.google.com/app/apikey",
+  cursor: "https://www.cursor.com/settings",
+  copilot: "https://github.com/settings/tokens/new?scopes=copilot",
+  hermes: "https://openrouter.ai/settings/keys",
+  opencode: "https://console.anthropic.com/settings/keys",
+};
+
 /** Is `bin` resolvable on the server's PATH? Cheap synchronous scan. */
 function binOnPath(bin: string): boolean {
   const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
@@ -77,6 +93,7 @@ export function providerRequirements(id: ProviderId): ProviderRequirements {
     cliLogin: CLI_LOGIN_PROVIDERS.has(id),
     installHint: INSTALL_HINT[id] ?? null,
     docsUrl: DOCS_URL[id] ?? null,
+    keyUrl: KEY_URL[id] ?? null,
     install: INSTALL_COMMAND[id] ?? null,
   };
 }
