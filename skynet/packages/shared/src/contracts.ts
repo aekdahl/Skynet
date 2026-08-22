@@ -384,6 +384,25 @@ export const ApprovalRule = z.object({
 });
 export type ApprovalRule = z.infer<typeof ApprovalRule>;
 
+// ─── Project Charter ──────────────────────────────────────────────────────
+// LLM-drafted at project creation (Gate G-1). The operator corrects/approves
+// before the project is created. Source of truth the whole auto-dev team plans
+// against: the Architect reads its constraints, the CoS reports progress against
+// its milestones, the Spec Analyst checks briefs against its definition of done.
+
+export const ProjectCharter = z.object({
+  goals: z.string(),
+  nonGoals: z.string(),
+  risks: z.string(),
+  constraints: z.string(),
+  definitionOfDone: z.string(),
+});
+export type ProjectCharter = z.infer<typeof ProjectCharter>;
+
+// Request body for the draft-charter endpoint: the operator's raw ask.
+export const DraftCharterRequest = z.object({ goal: z.string().min(1) });
+export type DraftCharterRequest = z.infer<typeof DraftCharterRequest>;
+
 // ─── Project · Task ───────────────────────────────────────────────────────
 
 export const Project = z.object({
@@ -525,6 +544,11 @@ export const Project = z.object({
   // confirmed) via a "select a file" affordance when the default lookup comes
   // up empty. null = use the default candidates, unchanged behavior.
   roadmapPath: z.string().nullable().default(null),
+  // LLM-drafted and operator-approved at creation (Gate G-1). Optional: projects
+  // created before this field existed, or created without charter assistance,
+  // have null here. When present, this is the source of truth the auto-dev team
+  // plans against — goals, non-goals, risks, constraints, definition of done.
+  charter: ProjectCharter.nullable().default(null),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -544,6 +568,10 @@ export const TaskSource = z.discriminatedUnion("kind", [
   // timestamp, not `order` (a priority rank, not a clock). See
   // review-verdict.ts's `ProposedTask` / orchestrator.ts's processFleetProposals.
   z.object({ kind: z.literal("fleet"), byRun: z.string(), reason: z.string().default(""), proposedAt: Timestamp }),
+  // A task spawned from an approved SolutionBrief (S7) — the reverse link a
+  // brief's own `featureId` doesn't give you: which tasks actually came FROM
+  // this plan, not just which feature it rolled up into.
+  z.object({ kind: z.literal("brief"), briefId: z.string() }),
 ]);
 export type TaskSource = z.infer<typeof TaskSource>;
 
@@ -766,6 +794,58 @@ export const Milestone = z.object({
   createdAt: Timestamp,
 });
 export type Milestone = z.infer<typeof Milestone>;
+
+// ─── SolutionBrief: the persistent pre-work planning doc ─────────────────
+// A human-authored (or human-approved) design doc for a chunk of work, BEFORE
+// any task/run exists for it — "what are we building and why, what did we
+// consider, what's risky, how will we know it's done." Distinct from
+// FeatureBrief above (a SYSTEM-composed merge-readiness summary for an
+// already-batched, already-built feature) — this is the plan that precedes
+// building, plain CRUD content, never LLM-drafted by this entity itself.
+// Per-project, same scoping as Feature/Milestone. `status` gates execution:
+// downstream tooling (S7) only spins up work off an "approved" brief.
+export const SolutionBriefStatus = z.enum(["draft", "approved", "building", "done"]);
+export type SolutionBriefStatus = z.infer<typeof SolutionBriefStatus>;
+
+// One option weighed while shaping the approach — kept even for options NOT
+// taken, so a reviewer (or a future reader) sees the reasoning, not just the
+// conclusion.
+export const SolutionBriefOption = z.object({
+  name: z.string(),
+  verdict: z.string(), // e.g. "chosen", "rejected — too slow", "deferred"
+  why: z.string(),
+});
+export type SolutionBriefOption = z.infer<typeof SolutionBriefOption>;
+
+export const SolutionBrief = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  projectId: z.string(),
+  title: z.string(),
+  problem: z.string(), // markdown — what's wrong / needed, and why now
+  approach: z.string(), // markdown — the chosen plan
+  optionsConsidered: z.array(SolutionBriefOption).default([]),
+  risks: z.array(z.string()).default([]),
+  acceptanceCriteria: z.array(z.string()).default([]),
+  openQuestions: z.array(z.string()).default([]),
+  status: SolutionBriefStatus.default("draft"),
+  // Roll-up into a Feature once work starts, same linkage Task uses. Optional:
+  // a brief can exist (and even be approved) before any feature is created.
+  featureId: z.string().nullable().default(null),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+  // Stamped SERVER-SIDE only, when status transitions to "approved" — never
+  // accepted from a client (see UpdateSolutionBriefRequest below, which
+  // deliberately has no approvedAt/approvedBy fields to send one through).
+  approvedAt: Timestamp.nullable().default(null),
+  approvedBy: z.string().nullable().default(null),
+  // Provenance: a capped excerpt of the conversation/context this brief was
+  // drafted from (e.g. a Steward thread), if any — a "why does this exist"
+  // breadcrumb, not a full transcript. Truncated at write time (operations.ts),
+  // not here — the schema stays permissive; length policy is a product choice.
+  sourceConversation: z.string().nullable().default(null),
+});
+export type SolutionBrief = z.infer<typeof SolutionBrief>;
 
 // ─── HITL item & resolution ───────────────────────────────────────────────
 
@@ -1085,6 +1165,11 @@ export const ProviderRequirements = z.object({
   // One-line "how to install / set up" hint, and a docs link if we have one.
   installHint: z.string().nullable().default(null),
   docsUrl: z.string().nullable().default(null),
+  // Where to create / find your API key for this provider — shown in the
+  // onboarding Connect step so the user knows exactly where to go, without
+  // having to leave the app to find it. Null for providers that authenticate
+  // exclusively via CLI login (no key to create).
+  keyUrl: z.string().nullable().default(null),
   // Structured install: when set, the UI can offer a one-click "Install CLI"
   // button that runs this exact command server-side and streams the output.
   // Only set for providers whose install is scriptable (`npm i -g <pkg>`); brew,
@@ -1204,6 +1289,10 @@ export const CreateProjectRequest = z.object({
   // project. Defaults to on in the UI when a repo is bound; best-effort —
   // failure doesn't fail project creation. See docs/task-source-sync.md.
   importGithubIssues: z.boolean().optional(),
+  // Operator-approved Project Charter (LLM-drafted via POST /api/projects/draft-charter,
+  // then corrected in-UI before creation). Optional: omit to skip charter-assisted
+  // creation (today's fast-path — a charter can always be written later).
+  charter: ProjectCharter.optional(),
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequest>;
 
@@ -1309,6 +1398,39 @@ export const UpdateMilestoneRequest = z.object({
   archived: z.boolean().optional(),
 });
 export type UpdateMilestoneRequest = z.infer<typeof UpdateMilestoneRequest>;
+
+// ─── SolutionBrief CRUD requests ────────────────────────────────────────
+export const CreateSolutionBriefRequest = z.object({
+  title: z.string().min(1),
+  problem: z.string().optional(),
+  approach: z.string().optional(),
+  optionsConsidered: z.array(SolutionBriefOption).optional(),
+  risks: z.array(z.string()).optional(),
+  acceptanceCriteria: z.array(z.string()).optional(),
+  openQuestions: z.array(z.string()).optional(),
+  featureId: z.string().nullable().optional(),
+  sourceConversation: z.string().nullable().optional(),
+});
+export type CreateSolutionBriefRequest = z.infer<typeof CreateSolutionBriefRequest>;
+
+// PATCH semantics (mind PR #482): omit a field to leave it untouched; a
+// nullable field sent as null explicitly clears it. Deliberately carries NO
+// approvedAt/approvedBy — those are server-stamped only (see SolutionBrief
+// above), so a client literally cannot supply one through this schema; unknown
+// keys in the raw request body are dropped by zod's default (non-strict)
+// parse, same protection every other Update*Request in this file relies on.
+export const UpdateSolutionBriefRequest = z.object({
+  title: z.string().min(1).optional(),
+  problem: z.string().optional(),
+  approach: z.string().optional(),
+  optionsConsidered: z.array(SolutionBriefOption).optional(),
+  risks: z.array(z.string()).optional(),
+  acceptanceCriteria: z.array(z.string()).optional(),
+  openQuestions: z.array(z.string()).optional(),
+  status: SolutionBriefStatus.optional(),
+  featureId: z.string().nullable().optional(),
+});
+export type UpdateSolutionBriefRequest = z.infer<typeof UpdateSolutionBriefRequest>;
 
 // ─── Roadmap doc requests ──────────────────────────────────────────────
 // Commit a Steward-drafted edit to a project's ROADMAP.md — only reachable

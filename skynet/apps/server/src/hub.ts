@@ -13,6 +13,7 @@ import type {
   Project,
   Resolution,
   Agent,
+  SolutionBrief,
   Task,
   Usage,
 } from "@skynet/shared";
@@ -317,6 +318,17 @@ export class Hub {
     const existing = await this.store.getMilestone(id);
     await this.store.deleteMilestone(id);
     if (existing) this.bus.publish(existing.workspaceId, { type: "milestone.deleted", id });
+  }
+
+  async upsertSolutionBrief(brief: SolutionBrief): Promise<SolutionBrief> {
+    await this.store.putSolutionBrief(brief);
+    this.bus.publish(brief.workspaceId, { type: "solutionBrief.upserted", brief });
+    return brief;
+  }
+  async deleteSolutionBrief(id: string): Promise<void> {
+    const existing = await this.store.getSolutionBrief(id);
+    await this.store.deleteSolutionBrief(id);
+    if (existing) this.bus.publish(existing.workspaceId, { type: "solutionBrief.deleted", id });
   }
 
   async upsertAgent(agent: Agent): Promise<Agent> {
