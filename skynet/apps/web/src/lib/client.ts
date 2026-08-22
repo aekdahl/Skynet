@@ -14,6 +14,7 @@ import {
   type SafetyPolicy,
   type SecretMeta,
   type Project,
+  type ProjectCharter,
   type WorkspaceSettings,
   type UpdateWorkspaceSettingsRequest,
   type VerifyCredentialResult,
@@ -571,6 +572,14 @@ export function browseFolder(path?: string) {
 }
 
 // Projects
+
+/** Draft a Project Charter from the operator's raw goal (Gate G-1). One cheap
+ *  LLM call on the workspace's own key; returns a structured charter the
+ *  operator edits/approves before the project is created. */
+export function draftCharter(goal: string) {
+  return req<ProjectCharter>("POST", "/api/projects/draft-charter", { goal });
+}
+
 export function createProject(body: {
   name: string;
   goal: string;
@@ -582,6 +591,7 @@ export function createProject(body: {
   instructions?: string;
   baseBranch?: string;
   importGithubIssues?: boolean;
+  charter?: ProjectCharter;
 }) {
   return req<Project>("POST", "/api/projects", body);
 }

@@ -18,6 +18,7 @@ import type {
   Module,
   ParallelismNudge,
   Project,
+  ProjectCharter,
   ProviderId,
   ProviderInfo,
   ResolveAction,
@@ -147,6 +148,7 @@ export interface Store extends StoreState {
       approvalLevel?: string;
       instructions?: string;
       importGithubIssues?: boolean;
+      charter?: ProjectCharter;
     },
   ) => Promise<Project>;
   updateProject: (
@@ -633,6 +635,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           approvalLevel: opts?.approvalLevel,
           instructions: opts?.instructions,
           importGithubIssues: opts?.importGithubIssues,
+          charter: opts?.charter,
         });
         // Optimistically land it in the store so navigating into it renders
         // immediately (the WS project.upserted reconciles the same row shortly).

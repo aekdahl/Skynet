@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { TaskRun, HitlItem } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { fmtWait, KIND_META, openQueue, waitedSecs } from "../lib/derive";
+import { fmtWait, KIND_META, openQueue, projectName, waitedSecs } from "../lib/derive";
 import { isTypingTarget } from "../lib/keys";
 import { RiskChip } from "../components/hitl-context";
 import { DiffView } from "../components/diff-view";
@@ -26,7 +26,7 @@ export function QueueCard({
   // the mount-time effect run never fires it.
   modifyTrigger?: number;
 }) {
-  const { resolveHitl, streamAgentMessage, readOnly } = useStore();
+  const { resolveHitl, streamAgentMessage, readOnly, projects } = useStore();
   const k = KIND_META[item.kind];
   const [mode, setMode] = useState<null | "modify" | "chat" | "remember">(null);
   const [draft, setDraft] = useState("");
@@ -82,6 +82,7 @@ export function QueueCard({
           {k.label}
         </span>
         <RiskChip risk={item.risk} />
+        {agent && <span className="qcard-project" title="Project">{projectName(agent.projectId, projects)}</span>}
         <button className="qcard-agent" onClick={onOpen}>
           {agentName}
         </button>

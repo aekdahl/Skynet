@@ -27,6 +27,7 @@ import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SY
 import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./merge-brief.js";
 import { composeFeatureBrief, parseFeatureNarrative, FEATURE_BRIEF_INSTRUCTION, FEATURE_BRIEF_SYSTEM } from "./feature-brief.js";
 import { decisionResumePrompt } from "./decision-resume.js";
+import { buildAgentContext, withInstructions } from "./agent-context.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import type { Hub } from "./hub.js";
@@ -211,17 +212,11 @@ const DEEP_REVIEW_TIMEOUT_MS = 6 * 60_000;
 const BREAKER_MAX_TURNS = 12;
 const BREAKER_TIMEOUT_MS = 4 * 60_000;
 
-/** Prepend the project's `instructions` (the "house rules" for this codebase)
- *  to any prompt an agent will see. When there are no instructions this is a
- *  no-op — the prompt is returned unchanged, so runs on projects that never
- *  set the field behave exactly as they did before. The banner is fenced with
- *  a clear label so an agent that reads a stack of prompts knows what's
- *  project-scoped guidance vs. task-scoped ask. Exported for tests + reuse. */
-export function withInstructions(instructions: string | null | undefined, body: string): string {
-  const trimmed = instructions?.trim();
-  if (!trimmed) return body;
-  return `=== PROJECT INSTRUCTIONS (apply to every task in this project) ===\n${trimmed}\n\n=== TASK ===\n${body}`;
-}
+// `withInstructions` now lives in agent-context.ts (alongside the fuller
+// buildAgentContext it's superseded by for every real call site below) —
+// re-exported here since tests/project-instructions.test.ts imports it from
+// this module.
+export { withInstructions };
 
 /** Feature-scoped branch batching, step 2: true when a MergeRequest's SOURCE
  *  is a feature branch merging UP into the project's default integration
@@ -1131,7 +1126,7 @@ export class Orchestrator {
     // merge risks") — run CONCURRENTLY so guided merge adds one consult's
     // worth of latency to the gate, not two back-to-back.
     const [walkthrough, mergeBrief] = await Promise.all([
-      this.draftDiffWalkthrough(agent, project?.instructions, stat.files, patch),
+      this.draftDiffWalkthrough(agent, project, stat.files, patch),
       this.draftMergeBrief(agent, project, stat.files, patch),
     ]);
     // Guided merge — the branch this approval integrates into by default. The
@@ -1233,7 +1228,7 @@ export class Orchestrator {
    */
   private async draftDiffWalkthrough(
     run: TaskRun,
-    projectInstructions: string | null | undefined,
+    project: Project | null | undefined,
     files: string[],
     patch: string,
   ): Promise<DiffWalkthrough | null> {
@@ -1244,7 +1239,7 @@ export class Orchestrator {
       const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
       const reply = await provider.consult(
         {
-          task: withInstructions(projectInstructions, run.name),
+          task: buildAgentContext({ project, body: run.name }),
           model: run.model,
           cwd: config.runnerCwd,
           apiKey,
@@ -1286,7 +1281,7 @@ export class Orchestrator {
       const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
       const reply = await provider.consult(
         {
-          task: withInstructions(project?.instructions, run.name),
+          task: buildAgentContext({ project, body: run.name }),
           model: run.model,
           cwd: config.runnerCwd,
           apiKey,
@@ -1757,7 +1752,8 @@ export class Orchestrator {
       // The agent gets the full brief: the short name plus the longer
       // description when one exists (the run's display name stays the short text).
       const taskBody = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
-      const brief = withInstructions(project.instructions, taskBody);
+      const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
+      const brief = buildAgentContext({ project, feature, body: taskBody });
       // Opt-in browser tooling is a per-workspace setting, off by default; the
       // runner decides how to expose it (Claude → a Playwright MCP server).
       const { browserTools } = await this.fleetPolicy(project.workspaceId);
@@ -1831,11 +1827,13 @@ export class Orchestrator {
       const { cwd, baseRef } = prov;
       scratchCwd = prov.scratchCwd;
       const apiKey = await secretService.resolve(parent.workspaceId, runner.credentialId ?? runner.provider);
+      const parentTask = (await this.store.listTasks(parent.workspaceId)).find((t) => t.runId === parentId);
+      const feature = parentTask?.featureId ? await this.store.getFeature(parentTask.featureId).catch(() => undefined) : undefined;
       const handle = await provider.start(
         {
           runId,
           projectId: parent.projectId,
-          task: withInstructions(project?.instructions, parent.name),
+          task: buildAgentContext({ project, feature, body: parent.name }),
           model: runner.model,
           branch: agent.branch,
           cwd,
@@ -1943,6 +1941,8 @@ export class Orchestrator {
     const apiKey = await secretService.resolve(run.workspaceId, runner.credentialId ?? runner.provider);
     const resumeSessionId = run.provider === "claude" ? checkpoint.claudeSessionId : null;
     const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
+    const task = taskId ? await this.store.getTask(taskId) : undefined;
+    const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
 
     await this.hub.runProgress(runId, checkpoint.progress, checkpoint.plan);
     await this.hub.runStatus(runId, "running");
@@ -1950,17 +1950,14 @@ export class Orchestrator {
       runId,
       `restored to checkpoint${checkpoint.label ? ` "${checkpoint.label}"` : ""} (${checkpoint.sha.slice(0, 7)}) — worktree rewound, ${resumeSessionId ? "conversation resumed" : "fresh turn started"}`,
     );
-    if (taskId) {
-      const task = await this.store.getTask(taskId);
-      if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
-    }
+    if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
 
     try {
       const handle = await provider.start(
         {
           runId,
           projectId: run.projectId,
-          task: withInstructions(project?.instructions, run.name),
+          task: buildAgentContext({ project, feature, body: run.name }),
           model: runner.model,
           branch: run.branch,
           cwd,
@@ -2157,13 +2154,12 @@ export class Orchestrator {
     const cwd = git.worktrees.pathFor(runId);
     const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
     const project = await this.store.getProject(run.projectId);
-    const prompt = withInstructions(project?.instructions, decisionResumePrompt(item, resolution, run.branch));
     const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
+    const task = taskId ? await this.store.getTask(taskId) : undefined;
+    const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
+    const prompt = buildAgentContext({ project, feature, body: decisionResumePrompt(item, resolution, run.branch) });
     await this.hub.runStatus(runId, "running");
-    if (taskId) {
-      const task = await this.store.getTask(taskId);
-      if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
-    }
+    if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
     await this.hub.runLog(runId, `re-acquired compute to deliver "${resolution.action}" — resuming in the run's worktree`);
     try {
       const handle = await provider.start(
@@ -2201,17 +2197,18 @@ export class Orchestrator {
     const cwd = review.git.worktrees.pathFor(runId);
     const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
     const project = await this.store.getProject(run.projectId);
-    const revisePrompt = withInstructions(
-      project?.instructions,
-      `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
-      `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
-      `only the changes needed to address the request, then stop.`,
-    );
+    const task = review.taskId ? await this.store.getTask(review.taskId) : undefined;
+    const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
+    const revisePrompt = buildAgentContext({
+      project,
+      feature,
+      body:
+        `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
+        `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
+        `only the changes needed to address the request, then stop.`,
+    });
     await this.hub.runStatus(runId, "running");
-    if (review.taskId) {
-      const task = await this.store.getTask(review.taskId);
-      if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
-    }
+    if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
     await this.hub.runLog(runId, "revising per review guidance");
     try {
       const handle = await provider.start(
@@ -2436,20 +2433,33 @@ export class Orchestrator {
         this.live.delete(runId);
       }
     } catch (err) {
+      // Same dead-end as the provider.start() failure below, one step earlier:
+      // no runner could be acquired at all (e.g. the assigned agent was removed
+      // — "reassign when the runner left" — or every eligible runner is busy).
+      // The HITL that got us here is already resolved (resolveHitl resolves it
+      // BEFORE this runs), so just logging + "waiting" left nothing on screen
+      // to click — re-raise a fresh escalation instead.
       await this.hub.runLog(runId, `cannot ${reassign ? "reassign" : "resume"} — ${(err as Error).message}`);
-      await this.hub.runStatus(runId, "waiting"); // stays escalated for another try
+      await this.raiseEscalationCard(run, `${reassign ? "reassign" : "resume"} failed — ${(err as Error).message}`, ctx?.source ?? "stalled", {
+        git,
+        baseRef: ctx?.baseRef,
+        taskId: ctx?.taskId ?? null,
+      }).catch(() => undefined);
       return;
     }
     const provider = await this.getProvider(acq.provider);
     const cwd = git.worktrees.pathFor(runId);
     const apiKey = await secretService.resolve(run.workspaceId, run.provider);
     const project = await this.store.getProject(run.projectId);
-    const prompt = withInstructions(
-      project?.instructions,
-      reassign
+    const task = ctx?.taskId ? await this.store.getTask(ctx.taskId) : undefined;
+    const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
+    const prompt = buildAgentContext({
+      project,
+      feature,
+      body: reassign
         ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
         : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
-    );
+    });
     // Reflect the (re)acquired runner on the persisted run: a reassign moves the
     // run to a DIFFERENT agent, and the board/subway attribute runs by agentId —
     // without this the run stays drawn under the agent it was escalated from
@@ -2457,10 +2467,7 @@ export class Orchestrator {
     const running = await this.store.getRun(runId);
     if (running) await this.hub.upsertRun({ ...running, status: "running", agentId: acq.id });
     else await this.hub.runStatus(runId, "running");
-    if (ctx?.taskId) {
-      const task = await this.store.getTask(ctx.taskId);
-      if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
-    }
+    if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
     await this.hub.runLog(runId, reassign ? "reassigned to another runner after escalation" : "resuming after escalation with operator guidance");
     try {
       const handle = await provider.start(
@@ -3977,8 +3984,9 @@ export class Orchestrator {
       // prior and returns estimates 10–30× too high, so we spell it out AND
       // give concrete agent-wall-clock anchors for S/M/L.
       const taskBody = task.description ? `${task.text}\n\n${task.description}` : task.text;
+      const feature = task.featureId ? features.find((f) => f.id === task.featureId) : undefined;
       const reply = await provider.consult(
-        { task: withInstructions(project?.instructions, taskBody), model: agent.model, cwd: config.runnerCwd, apiKey },
+        { task: buildAgentContext({ project, feature, body: taskBody }), model: agent.model, cwd: config.runnerCwd, apiKey },
         [
           "You are triaging a backlog item for a coding project.",
           "In ONE short line: summarize the ask (is it clear, what's the gist). Be terse — the effort size and any risks go in the JSON tag below, not this line.",
@@ -4409,8 +4417,9 @@ export class Orchestrator {
         if (provider.consult && run) {
           const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
           const context = run.log.slice(-30).map((l) => l.line).join("\n").slice(-3000);
+          const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
           const reply = await provider.consult(
-            { task: withInstructions(project?.instructions, task.text), model: agent.model, cwd: config.runnerCwd, apiKey, context },
+            { task: buildAgentContext({ project, feature, body: task.text }), model: agent.model, cwd: config.runnerCwd, apiKey, context },
             `Review whether this run satisfies the task "${task.text}". ${REVIEW_OUTPUT_INSTRUCTION}`,
           );
           // The verdict is the MODEL's, read from a structured field — we never
