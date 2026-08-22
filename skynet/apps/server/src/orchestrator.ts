@@ -2489,8 +2489,18 @@ export class Orchestrator {
         this.live.delete(runId);
       }
     } catch (err) {
+      // Same dead-end as the provider.start() failure below, one step earlier:
+      // no runner could be acquired at all (e.g. the assigned agent was removed
+      // — "reassign when the runner left" — or every eligible runner is busy).
+      // The HITL that got us here is already resolved (resolveHitl resolves it
+      // BEFORE this runs), so just logging + "waiting" left nothing on screen
+      // to click — re-raise a fresh escalation instead.
       await this.hub.runLog(runId, `cannot ${reassign ? "reassign" : "resume"} — ${(err as Error).message}`);
-      await this.hub.runStatus(runId, "waiting"); // stays escalated for another try
+      await this.raiseEscalationCard(run, `${reassign ? "reassign" : "resume"} failed — ${(err as Error).message}`, ctx?.source ?? "stalled", {
+        git,
+        baseRef: ctx?.baseRef,
+        taskId: ctx?.taskId ?? null,
+      }).catch(() => undefined);
       return;
     }
     const provider = await this.getProvider(acq.provider);

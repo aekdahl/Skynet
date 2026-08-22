@@ -448,18 +448,34 @@ function TaskCard({
             <button className="kb-tool kb-tool-del" title="Delete task" aria-label="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
           </span>
         )}
+        {s === "done" && (
+          // Done cards collapse to a single row (see the suppressed blocks
+          // below) — the escape hatches that would otherwise live in the
+          // bottom kb-actions row move up here as inline icons instead.
+          <span className="kb-card-tools" onClick={stop}>
+            {run && run.status !== "done" && (
+              <button
+                className="kb-tool"
+                title={`Task is Done but the run's status is "${run.status}" — click to resync.`}
+                aria-label="Sync run to done"
+                onClick={() => forceTaskDone(pid, task.id)}
+              >
+                ⚡
+              </button>
+            )}
+            <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" aria-label="Archive task" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
+          </span>
+        )}
       </div>
 
       {task.description && !run && <p className="kb-desc">{task.description}</p>}
 
-      {run && (
+      {run && s !== "done" && (
         <>
           <Bar value={run.progress} status={run.status} />
           <div className="pa-step">
             {q ? (
               <span className="wait-tag">⏸ {q.title}</span>
-            ) : s === "done" ? (
-              <span className="done-tag">✓ merged · {run.branch}</span>
             ) : (
               <span className="step-tag">
                 <span style={{ color: STATUS_META[run.status].color }}>{STATUS_META[run.status].label}</span> · → {curStep(run)}
@@ -500,7 +516,7 @@ function TaskCard({
         )
       )}
 
-      {(task.estimatedDurationMs != null || task.plannedStartAt != null) && (
+      {s !== "done" && (task.estimatedDurationMs != null || task.plannedStartAt != null) && (
         <div className="kb-sched" onClick={stop}>
           {task.estimatedDurationMs != null && (
             <span className="kb-sched-chip" title="Estimated duration">⏱ {fmtDurMs(task.estimatedDurationMs)}</span>
@@ -513,7 +529,7 @@ function TaskCard({
         </div>
       )}
 
-      {(feature || milestone || brief) && (
+      {s !== "done" && (feature || milestone || brief) && (
         <div className="kb-tags" onClick={stop}>
           {feature && (
             <span className="kb-feat-chip" title={`Feature — ${feature.description ?? feature.name}`}>
@@ -536,7 +552,7 @@ function TaskCard({
         </div>
       )}
 
-      {(s === "backlog" || s === "triage" || s === "todo") ? (
+      {s === "done" ? null : (s === "backlog" || s === "triage" || s === "todo") ? (
         <AgentEligibility
           task={task}
           fleet={fleet}
@@ -548,7 +564,7 @@ function TaskCard({
           {workedBy ? (
             <span
               className="kb-elig-chip kb-elig-agent mono"
-              title={s === "done" ? "Completed by this agent" : "Agent working on this task"}
+              title="Agent working on this task"
             >
               <span className="kb-elig-glyph" style={workedByPinfo ? { color: workedByPinfo.color } : undefined}>
                 {workedByPinfo?.glyph ?? "◆"}
@@ -567,10 +583,11 @@ function TaskCard({
           front). Named "Start", not "Assign" — it doesn't just hand the task to
           an agent, it kicks the run off immediately. Other stage changes still
           happen by dragging the card to another lane (review→done approves,
-          backlog drags reorder). The escape hatches (Force done / Sync),
-          Auto-pick, and Archive can't be expressed as a lane move, so they stay
-          as buttons. */}
-      {(s === "backlog" || s === "todo" || s === "ongoing" || s === "review" || s === "done") && (
+          backlog drags reorder). The escape hatches (Force done / Sync) and
+          Auto-pick can't be expressed as a lane move, so they stay as buttons.
+          Done's own escape hatches (Sync / Archive) move up into the
+          top-row tools instead, since a done card is collapsed to one row. */}
+      {(s === "backlog" || s === "todo" || s === "ongoing" || s === "review") && (
         <div className="kb-actions" onClick={stop}>
           {(s === "backlog" || s === "todo") && (
             <AgentPreference
@@ -647,20 +664,6 @@ function TaskCard({
             >
               ⚡ Force done
             </button>
-          )}
-          {s === "done" && (
-            <>
-              {run && run.status !== "done" && (
-                <button
-                  className="kb-move kb-move-force"
-                  title={`Task is Done but the run's status is "${run.status}" — click to resync.`}
-                  onClick={() => forceTaskDone(pid, task.id)}
-                >
-                  ⚡ Sync run → done
-                </button>
-              )}
-              <button className="kb-archive" title="Archive — hide from the board (kept in the store, still read by Steward)" onClick={() => archiveTask(pid, task.id, true)}>⤓ Archive</button>
-            </>
           )}
         </div>
       )}

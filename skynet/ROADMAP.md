@@ -464,6 +464,11 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   (worktree untouched, Resume/Reassign/Stop back on the table) — see `raiseEscalationCard()` in
   `orchestrator.ts`, factored out of `escalate()` so both the original raise and the retry path share
   it. Regression-proofed with a real-git test using a provider whose `start()` fails once on demand.*
+  *Follow-up fix: the same dead end also hit ONE step earlier — `acquireOrProvisionRunner` itself
+  throwing (no idle runner within the fleet cap, or the assigned runner removed — "reassign when the
+  runner left") only logged and set the run back to `"waiting"`, with no HITL left to click since the
+  original one was already resolved. Now re-raises a fresh escalation the same way, so Resume/Reassign
+  keep working even when there's genuinely no runner to hand the run to right now.*
 - [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
   Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
   credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself
@@ -770,6 +775,15 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     exactly the intended fallback). Not built: the Verifier gate (above) still only runs on the local
     merge-queue path, never for GitHub-PR-based runs — so a repo with no CI configured genuinely has no
     automated pass/fail signal yet, which the card now says outright instead of staying silent about it.*
+  - *Bug fixed: the Inbox's own HITL cards (`QueueCard`, `apps/web/src/views/queue.tsx`) never showed which
+    project a card belonged to — only the agent name and the task title, reported live as a "Diff Review" card
+    with no way to tell which project it was for at a glance. The ready-to-merge card (above) and the Home
+    dashboard's "NEEDS YOU" strip already resolve and show this (`projectName()` in `derive.ts`); the Inbox was
+    the one surface that didn't. Added the same `qcard-project` chip (project name resolved from the run's
+    `projectId`) between the risk chip and the agent name, matching the existing pattern exactly. Verified live:
+    seeded a project, added a fleet agent with no working credential, and started a task — the resulting "Run
+    keeps failing" escalation card (itself surfaced by the `fail()`-always-escalates fix above) now reads
+    "NEEDS HELP · MEDIUM RISK · Acme Rocket · <task title>" in the Inbox.*
   - *Bug fixed: a "write one line into the roadmap" PR reported 900+ files changed, HIGH RISK, sensitive-area
     hits on files it never touched — the exact evidence the entry above just made visible was itself wrong.
     Root cause: `openPrForRun`/`openPrForFeature` (`orchestrator.ts`) computed the diff stat/patch/PR-body
