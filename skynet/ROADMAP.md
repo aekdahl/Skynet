@@ -469,6 +469,31 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   runner left") only logged and set the run back to `"waiting"`, with no HITL left to click since the
   original one was already resolved. Now re-raises a fresh escalation the same way, so Resume/Reassign
   keep working even when there's genuinely no runner to hand the run to right now.*
+  *Root-cause fix: both bugs above were symptoms of a wider pattern — several code paths dumped a run
+  into `"review"` with NO HITL raised at all (not even one to fail resuming). `fail()`'s generic-failure
+  branch escalated only past `SKYNET_RUN_MAX_FAILURES` (default 3), silently parking every failure below
+  that with no retry loop ever consuming the count — so those "early" failures were exactly as terminal
+  as the 3rd, just invisible. `failStartup()` (no credential, worktree provisioning failed) never
+  escalated either. The result, reported directly: "a lot of tasks being stuck in REVIEW." Fixed two
+  ways — (1) `fail()` now escalates on every failure while the guard is enabled (the count still shapes
+  the reason text an operator sees; `SKYNET_RUN_MAX_FAILURES=0` still opts back into the old silent
+  parking, for operators who deliberately want it); (2) `gcWorktrees`'s existing "limbo" sweep (previously
+  a once-after-`worktreeTtlDays` LOG LINE nobody read) now immediately escalates any `review` run with no
+  open gate, on the very first sweep — a real backstop that also recovers already-stuck runs from before
+  this fix, and any future gap in the same spirit (e.g. `failStartup()`, left otherwise unchanged since
+  its worktree is genuinely empty). `escalate()` also gained a task-lookup fallback for when there's no
+  live handle to read `taskId` off (needed for the sweep to move the task back to `ongoing` on a
+  successful resume). Regression-proofed by stashing the fix and re-running the new tests against old
+  code — all 3 fail exactly as reported.*
+  *UI follow-up: the global Runs dashboard had its OWN version of this bug, reported live — a run
+  reading "starting…" with a growing elapsed clock 20+ hours in. Its per-row classifier only had 3
+  explicit buckets (done / has-an-open-HITL / paused) and dumped everything else — including a `review`
+  run with a frozen heartbeat and no HITL, exactly the dead end above — into the generic "running" bucket,
+  which just shows elapsed-since-start with no regard for whether anything is actually happening. Extracted
+  the classifier into a pure, unit-tested `classifyRun()` (`derive.ts`) and added a branch: a non-`running`
+  status with a stale heartbeat (the dashboard's existing 60s early-warning line) and no open HITL now
+  sorts and labels the same as an open HITL ("stuck in review — no pending decision"), instead of hiding
+  among genuinely active runs.*
 - [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
   Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
   credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself

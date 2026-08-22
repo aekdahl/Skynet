@@ -488,7 +488,7 @@ export function computeFeatureMergeBriefing(input: {
 /** Why a run got halted and handed to a human — see `escalate()`/`raiseEscalationCard()`.
  *  "agent" is agent-driven (the run itself called AskUserQuestion with header
  *  "ESCALATE") and is set directly in `raise()`, never via `escalate()`. */
-type EscalationSource = "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing" | "agent";
+type EscalationSource = "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing" | "agent" | "stuck-review";
 
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
@@ -1037,10 +1037,22 @@ export class Orchestrator {
     if (priorCount === 0) {
       await this.noteProjectRunFailure(runId, live?.taskId ?? null, reason).catch(() => undefined);
     }
-    if (config.runMaxFailures > 0 && count >= config.runMaxFailures) {
-      await this.escalate(runId, `${count} failed attempts — latest: ${reason}`, "failures");
+    // Escalate on EVERY generic failure while the guard is enabled — not just
+    // once the count crosses config.runMaxFailures. Below-threshold used to
+    // fall through to a plain "review" parking with no HITL, but nothing here
+    // ever retries the run on its own (there is no retry loop consuming the
+    // count — each fail() call already fully terminates the run), so that
+    // branch was just as terminal as escalating, minus the actionable
+    // Resume/Reassign/Stop card. The result was runs quietly dead-ending in
+    // review with nothing to click — exactly the "a lot of tasks stuck in
+    // review" symptom this fixes. `count` still varies (a run resumed after an
+    // earlier escalation can fail again, incrementing it) — it just no longer
+    // gates WHETHER the operator is told, only what the reason text says.
+    if (config.runMaxFailures > 0) {
+      await this.escalate(runId, `${count} failed attempt(s) — latest: ${reason}`, "failures");
       return;
     }
+    // Explicit opt-out (SKYNET_RUN_MAX_FAILURES=0): park silently, as before.
     await this.freeRunner(live?.agentId ?? null);
     await this.hub.runLog(runId, `runner failed — ${reason}. Not completed; needs attention.`);
     await this.hub.runStatus(runId, "review"); // visible needs-attention, NOT "done"
@@ -2240,7 +2252,12 @@ export class Orchestrator {
     if (live) await live.handle.stop().catch(() => undefined);
     await this.freeRunner(live?.agentId ?? null);
     this.live.delete(runId);
-    await this.raiseEscalationCard(run, reason, source, { git, baseRef: live?.baseRef, taskId: live?.taskId ?? null });
+    // live.taskId covers the common (in-flight) case; a caller with no live
+    // handle (e.g. reapStuckReviews, sweeping an already-parked run) still
+    // needs the task looked up by its runId pointer, or a successful
+    // resume/reassign could never move the task back to "ongoing".
+    const taskId = live?.taskId ?? (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === run.id)?.id ?? null;
+    await this.raiseEscalationCard(run, reason, source, { git, baseRef: live?.baseRef, taskId });
   }
 
   /** Build + raise the actual escalation HITL — factored out of `escalate()` so
@@ -2272,7 +2289,9 @@ export class Orchestrator {
                 ? "Runner went silent — resume to continue"
                 : source === "billing"
                   ? "Provider key out of credits — top up to resume"
-                  : "Run keeps failing — needs a human",
+                  : source === "stuck-review"
+                    ? "Parked in review with no pending decision"
+                    : "Run keeps failing — needs a human",
       why: reason,
       risk: "medium",
       rationale: null,
@@ -3494,8 +3513,11 @@ export class Orchestrator {
    *     branch, once no live run uses them — integrated refs are pure clutter
    *     (and a branch held by a stale worktree blocks checkouts elsewhere).
    *  3. SURFACE (never delete) limbo: a run parked in `review` with no open gate
-   *     and a heartbeat older than worktreeTtlDays — its worktree may hold the
-   *     only copy of unmerged work, so reclaiming it is a human decision.
+   *     gets escalated immediately (actionable, not just logged) — nothing else
+   *     is asking the operator to decide, and its worktree may hold the only
+   *     copy of unmerged work. Once it's ALSO old enough (heartbeat past
+   *     worktreeTtlDays), a one-time log line additionally flags it for disk
+   *     retention, separate from the escalation.
    */
   async gcWorktrees(): Promise<{ worktreesRemoved: number; branchesDeleted: number; limbo: number }> {
     const stats = { worktreesRemoved: 0, branchesDeleted: 0, limbo: 0 };
@@ -3554,13 +3576,28 @@ export class Orchestrator {
     }
 
     // 3. Limbo surfacing — parked reviews with nothing asking for a decision.
+    // Two distinct signals sharing one query:
+    //  a) IMMEDIATELY escalate any review with no open gate, regardless of age.
+    //     A run only reaches `review` with nothing waiting on it via a code path
+    //     that failed to raise a proper decision (a startup failure that retired
+    //     the worktree, a legacy run from before failures started escalating —
+    //     see `fail()` — or any future gap in the same spirit): the operator has
+    //     no way to know it's there short of stumbling on the card. Reusing
+    //     `escalate()` (idempotent per run) means one card, Resume/Reassign/Stop,
+    //     not a repeat every sweep.
+    //  b) The existing worktreeTtlDays-gated log line below, once the run is ALSO
+    //     old enough — a separate, disk-retention-focused note, not a decision.
     const cutoff = now() - config.worktreeTtlDays * 24 * 60 * 60 * 1000;
     for (const r of runs) {
-      if (r.status !== "review" || r.archived || r.lastHeartbeatAt > cutoff) continue;
+      if (r.status !== "review" || r.archived) continue;
       const open = (await this.store.listQueue(r.workspaceId).catch(() => [] as HitlItem[])).some(
         (q) => q.runId === r.id && q.resolvedAt == null,
       );
       if (open) continue; // a gate is waiting — the operator already has a handle
+      await this.escalate(r.id, "sitting in review with nothing waiting for a decision — needs attention", "stuck-review").catch(
+        () => undefined,
+      );
+      if (r.lastHeartbeatAt > cutoff) continue;
       stats.limbo++;
       if (this.limboWarned.has(r.id)) continue;
       this.limboWarned.add(r.id);
