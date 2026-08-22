@@ -21,6 +21,7 @@ import type {
   CreateProjectRequest,
   CreateSolutionBriefRequest,
   CreateTaskRequest,
+  DraftCharterRequest,
   DryRunPolicyRequest,
   Feature,
   FlyDeployment,
@@ -32,6 +33,7 @@ import type {
   PolicyVersion,
   PrChecksStatus,
   Project,
+  ProjectCharter,
   ProviderInfo,
   ResolveRequest,
   Resolution,
@@ -50,7 +52,7 @@ import type {
   UpdateTaskRequest,
   UpdateWorkspaceSettingsRequest,
 } from "@skynet/shared";
-import { modelValidForProvider, WorkspaceSettings } from "@skynet/shared";
+import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
@@ -62,12 +64,12 @@ import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { projectPreview, type PreviewState, type PreviewSource } from "./preview/project-preview.js";
 import { git as gitExec } from "./preview/worktree.js";
+import { oneShotText } from "@skynet/runner-sdk/claude";
 import { flyDeploy, type FlyDeployState } from "./fly/deploy.js";
 import { githubService, parseRepoRef } from "./github/index.js";
 import { parseChecklist } from "./tasks/checklist.js";
 import { lintTask } from "./task-linter.js";
 import { buildDecomposePrompt, parseDecomposition } from "./decompose.js";
-import { oneShotText } from "@skynet/runner-sdk/claude";
 import {
   answerProjectQuestion,
   type AssistantAction,
@@ -751,6 +753,45 @@ export class Operations {
   }
 
   // ── projects ──────────────────────────────────────────────────────────────
+
+  /**
+   * Draft a Project Charter from the operator's raw goal description using the
+   * workspace's stored Claude key (one cheap Haiku call, metered). Returns a
+   * structured charter the operator edits/approves before creating the project.
+   * Falls back gracefully: if no key is set the response is a 402-friendly error
+   * propagated to the UI (which prompts the user to connect a provider).
+   */
+  async draftCharter(ws: string, input: DraftCharterRequest): Promise<ProjectCharter> {
+    const apiKey = (await secretService.resolve(ws, "claude")) ?? undefined;
+    const prompt =
+      `You are a project intake assistant. The operator has described a project they want to build. ` +
+      `Draft a concise Project Charter with exactly these five sections. ` +
+      `Be practical and specific — write 2-4 bullet points per section, no waffle.\n\n` +
+      `Operator's raw ask: "${input.goal}"\n\n` +
+      `Respond with ONLY a JSON object (no markdown fences) matching this exact shape:\n` +
+      `{\n` +
+      `  "goals": "<what success looks like — the core deliverable>",\n` +
+      `  "nonGoals": "<what is explicitly out of scope for this project>",\n` +
+      `  "risks": "<known unknowns, technical bets, or delivery risks>",\n` +
+      `  "constraints": "<stack, timeline, budget, or integration constraints>",\n` +
+      `  "definitionOfDone": "<observable, testable criteria that close this project>"\n` +
+      `}`;
+    const raw = await oneShotText({ prompt, model: "haiku", apiKey });
+    // Strip optional markdown fences if the model wraps anyway.
+    const json = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      throw new Error("Charter draft returned invalid JSON — try again or fill it in manually.");
+    }
+    const result = ProjectCharterSchema.safeParse(parsed);
+    if (!result.success) {
+      throw new Error("Charter draft had unexpected shape — try again or fill it in manually.");
+    }
+    return result.data;
+  }
+
   async createProject(ws: string, input: CreateProjectRequest): Promise<Project> {
     // "Create a new repo" binding: make the GitHub repo FIRST (outward-facing, so
     // it's gated behind an explicit confirm in the UI) and bind the project to it.
@@ -829,6 +870,9 @@ export class Operations {
       roadmapPath: null,
       // Verifier gate command is set later in project settings, else the global default.
       checkCmd: null,
+      // Operator-approved charter from the charter-assisted creation flow (Gate G-1).
+      // null when the project was created without charter assistance (today's fast-path).
+      charter: input.charter ?? null,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
