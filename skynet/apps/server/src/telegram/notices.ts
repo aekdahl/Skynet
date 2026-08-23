@@ -73,6 +73,7 @@ const GATE_HEAD: Partial<Record<HitlItem["kind"], string>> = {
   plan: "Review the plan",
   escalation: "A run stopped and needs help",
   verifier: "Checks failed",
+  notice: "Heads up (no action needed)",
 };
 
 /** The gate heads-up body. `control` toggles the tappable-buttons hint vs the
@@ -147,6 +148,11 @@ export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, l
  * Pure so it's unit-testable (no client/network).
  */
 export function gateKeyboard(it: HitlItem): InlineKeyboardMarkup {
+  // A `notice` (e.g. a model mismatch) is informational only — nothing to
+  // approve/reject/request-changes on, just acknowledge it.
+  if (it.kind === "notice") {
+    return { inline_keyboard: [[{ text: "✅ Dismiss", callback_data: `hitl:approve:${it.id}` }]] };
+  }
   // A decision (AskUserQuestion) is a SELECTION, not an approve/reject gate — give
   // it one tappable button PER option (numbered to match the message body) so it's
   // obviously "pick one". Free-text answer + refuse still available below.

@@ -67,7 +67,7 @@ const repoPathOf = (p: unknown) => (p as { repoPath?: string | null } | undefine
 async function ensureCapacity(name: string): Promise<void> {
   const s = await api.fetchSnapshot();
   if (!s.fleet.some((r) => r.status === "idle")) {
-    await api.createAgent({ provider: "claude", model: "opus-4.8", name });
+    await api.createAgent({ provider: "claude", model: "opus-5", name });
   }
 }
 
@@ -86,7 +86,7 @@ export const JOURNEYS: Journey[] = [
       steps.push(step("project created (persists on the board)", !!p, p?.id));
       if (!p) return steps;
       steps.push(step("bound to a local folder (worktree-per-agent mode)", repoPathOf(p)?.startsWith("/tmp/skynet-sim/") === true, repoPathOf(p) ?? "null"));
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-runner-${tag}` });
+      await api.createAgent({ provider: "claude", model: "opus-5", name: `sim-runner-${tag}` });
       await api.createTask(p.id, "Sim: wire up the /health endpoint");
       await api.createTask(p.id, "Sim: add structured request logging");
       s = await settle(
@@ -111,7 +111,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-runner-${tag}` });
+      await api.createAgent({ provider: "claude", model: "opus-5", name: `sim-runner-${tag}` });
       await api.createTask(p.id, "Sim: implement the feature");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id);
@@ -191,8 +191,8 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-fleet-${tag}-a` });
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-fleet-${tag}-b` });
+      await api.createAgent({ provider: "claude", model: "opus-5", name: `sim-fleet-${tag}-a` });
+      await api.createAgent({ provider: "claude", model: "opus-5", name: `sim-fleet-${tag}-b` });
       await api.createTask(p.id, "Sim: parallel task A");
       await api.createTask(p.id, "Sim: parallel task B");
       s = await settle((sn) => sn.tasks.filter((t) => t.projectId === p.id).length >= 2);
@@ -226,8 +226,8 @@ export const JOURNEYS: Journey[] = [
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
       // Two runners: one for the agent, one free so the fork has capacity.
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-steer-${tag}-a` });
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-steer-${tag}-b` });
+      await api.createAgent({ provider: "claude", model: "opus-5", name: `sim-steer-${tag}-a` });
+      await api.createAgent({ provider: "claude", model: "opus-5", name: `sim-steer-${tag}-b` });
       await api.createTask(p.id, "Sim: long-running task");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
@@ -328,7 +328,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-stop-${tag}` });
+      await api.createAgent({ provider: "claude", model: "opus-5", name: `sim-stop-${tag}` });
       await api.createTask(p.id, "Sim: task to stop");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id)!;
@@ -804,7 +804,7 @@ export const JOURNEYS: Journey[] = [
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
-      await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-ret-${tag}` });
+      await api.createAgent({ provider: "claude", model: "opus-5", name: `sim-ret-${tag}` });
       // A shell command gates → the run parks in `waiting`, keeping its runner
       // reliably busy while we test the retire guard (no race with a fast finish).
       await api.createTask(p.id, "Run the shell command `echo skynet-hold-$(date +%s)` and report the exact line — you must actually run it.");
@@ -1061,7 +1061,7 @@ export const JOURNEYS: Journey[] = [
       // A dedicated pool so the whole wave runs at once. This journey is ABOUT
       // parallelism, so provision explicitly (like fleet-at-scale).
       for (let i = 0; i < N; i++) {
-        await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-burst-${tag}-${i}` });
+        await api.createAgent({ provider: "claude", model: "opus-5", name: `sim-burst-${tag}-${i}` });
       }
       for (let i = 0; i < N; i++) {
         await api.createTask(p.id, `Sim: parallel unit ${i + 1} — write a one-line note to burst-${tag}-${i + 1}.txt`);
@@ -1101,7 +1101,7 @@ export const JOURNEYS: Journey[] = [
       // Root + a runner per fork so the family runs in parallel (fork also
       // provisions on demand, but pre-seeding keeps them concurrent).
       for (let i = 0; i < K + 1; i++) {
-        await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-fanout-${tag}-${i}` });
+        await api.createAgent({ provider: "claude", model: "opus-5", name: `sim-fanout-${tag}-${i}` });
       }
       await api.createTask(p.id, `Sim: root task — explore approaches for fanout-${tag}`);
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
@@ -1139,7 +1139,7 @@ export const JOURNEYS: Journey[] = [
       const p = s.projects.find((x) => x.name === pname);
       if (!p) return [step("project created", false)];
       for (let i = 0; i < N; i++) {
-        await api.createAgent({ provider: "claude", model: "opus-4.8", name: `sim-backlog-${tag}-${i}` });
+        await api.createAgent({ provider: "claude", model: "opus-5", name: `sim-backlog-${tag}-${i}` });
       }
       for (let i = 0; i < M; i++) await api.createTask(p.id, `Sim: backlog item ${i + 1} of ${M}`);
       s = await settle((sn) => sn.tasks.filter((t) => t.projectId === p.id).length >= M);

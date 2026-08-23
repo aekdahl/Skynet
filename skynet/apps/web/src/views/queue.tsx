@@ -132,7 +132,20 @@ export function QueueCard({
         </label>
       )}
 
-      {item.kind === "escalation" ? (
+      {item.kind === "notice" ? (
+        // Informational only — the run was never paused for this (see
+        // orchestrator.ts's deliver(), which treats any action as a plain
+        // dismiss). No reject/modify/chat: there's no decision to make, just
+        // something to acknowledge.
+        <div className="qcard-actions">
+          <button className="btn btn-primary" disabled={readOnly} onClick={() => resolveHitl(item.id, "approve")}>
+            Dismiss
+          </button>
+          <button className="btn btn-ghost" onClick={onOpen}>
+            Open agent
+          </button>
+        </div>
+      ) : item.kind === "escalation" ? (
         <div className="qcard-actions">
           <button
             className={"btn btn-primary" + (mode === "modify" ? " btn-lit" : "")}

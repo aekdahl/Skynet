@@ -166,6 +166,50 @@ const mapModel = (m: string): string | undefined =>
     : m.startsWith("haiku") ? "haiku"
     : m.trim() || undefined;
 
+// ─── Model mismatch detection ──────────────────────────────────────────────
+// mapModel() above collapses a versioned Fleet catalog slug ("sonnet-5") to
+// the SDK's bare CLI alias ("sonnet") and trusts the bundled CLI to resolve
+// that alias to the CURRENT model in its family. That trust broke once
+// already: a stale bundled CLI (@anthropic-ai/claude-agent-sdk@0.3.179)
+// silently resolved "sonnet" to Sonnet 4.6 instead of Sonnet 5, and nothing
+// surfaced it — the Fleet picker kept showing "sonnet-5" while an older model
+// actually ran every turn. The system/init message the CLI emits at session
+// start reports what it ACTUALLY resolved to (`model`); comparing that
+// against the operator's own catalog selection catches this class of drift
+// the moment a session starts, instead of it going unnoticed again.
+
+/** Extract {family, version} from a catalog slug ("sonnet-5", "opus-4.8") or
+ *  a resolved model id ("claude-sonnet-4-6", "claude-haiku-4-5-20251001").
+ *  The version is normalized to dash-separated digits so "4.8" and "4-8"
+ *  compare equal; a resolved id's trailing dated suffix (a bare 8-digit
+ *  YYYYMMDD segment) is stripped first since a catalog slug never carries
+ *  one. Null when the string doesn't look like a versioned family/version
+ *  pair at all (a custom/passthrough id) — nothing to compare in that case. */
+export function parseModelVersion(id: string): { family: string; version: string } | null {
+  const stripped = id.trim().replace(/^claude-/, "");
+  const m = /^(opus|sonnet|haiku|fable)-(.+)$/.exec(stripped);
+  const family = m?.[1];
+  const rawVersion = m?.[2];
+  if (!family || !rawVersion) return null;
+  const version = rawVersion.replace(/\./g, "-").replace(/-\d{8}$/, "");
+  return { family, version };
+}
+
+/** Does `resolvedModelId` (what the SDK/CLI actually ran) match the family +
+ *  version of `requestedSlug` (the Fleet catalog value the operator picked)?
+ *  Returns a human-readable warning when they diverge, else null. Never fires
+ *  for a custom/passthrough model on either side (parseModelVersion returns
+ *  null) — there's no catalog promise to check it against then. PURE, unit-
+ *  tested — see runner-model-validation.test.ts. */
+export function modelMismatchWarning(requestedSlug: string, resolvedModelId: string): string | null {
+  const requested = parseModelVersion(requestedSlug);
+  if (!requested) return null;
+  const resolved = parseModelVersion(resolvedModelId);
+  if (!resolved) return null;
+  if (requested.family === resolved.family && requested.version === resolved.version) return null;
+  return `requested "${requestedSlug}" but this session is actually running "${resolvedModelId}" — the CLI's model alias may be out of date.`;
+}
+
 // Build the env handed to the TaskRun SDK subprocess. `Options.env` REPLACES the
 // subprocess environment, so we spread the ambient env (PATH/HOME/…) and then
 // drop the markers that would route a nested Claude Code child to host-managed
@@ -679,6 +723,25 @@ function buildHookRaise(hooks: HookCommandRef[]): HitlRaise {
   };
 }
 
+// Turn a detected model mismatch into a `notice` HITL — informational only:
+// the run is NOT paused (see the drain() call site, which fires this without
+// registering a gate), it just gives the operator something to see and
+// dismiss in the Inbox alongside the run's own log line.
+function buildModelMismatchRaise(warning: string, requestedSlug: string, resolvedModelId: string): HitlRaise {
+  return {
+    kind: "notice",
+    title: "Model mismatch — this run isn't using the model you picked",
+    why: warning,
+    risk: "low",
+    rationale: null,
+    command: `requested: ${requestedSlug}\nactually running: ${resolvedModelId}`,
+    options: null,
+    recommended: null,
+    steps: null,
+    diff: null,
+  };
+}
+
 // Short human label of the chosen answer, for the activity log.
 function describeAnswer(q: ParsedQuestion, decision?: Resolution): string {
   if (decision?.action === "option" && decision.optionIndex != null) {
@@ -820,6 +883,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
   private gateTool: string | null = null; // name of the tool awaiting approval
   private gateQuestion: ParsedQuestion | null = null; // set when the gate is an AskUserQuestion
   private lastRationale = ""; // the agent's most recent prose (its stated reasoning)
+  private modelChecked = false; // guards modelMismatchWarning() to fire at most once per run
   // Flips true once the operator approves this run's ExitPlanMode gate (see
   // StartSpec.planModeGate). Irrelevant — and stays false — for a run that
   // didn't opt into plan mode.
@@ -1237,6 +1301,17 @@ class ClaudeRunnerHandle implements RunnerHandle {
         if (msg.type === "system" && "session_id" in msg && typeof msg.session_id === "string") {
           this.sessionId = msg.session_id; // captured for resume-on-retry
           this.onSession(this.runId, msg.session_id);
+          // Once per run: does the model the CLI actually resolved to match what
+          // was requested? Fired here (not gated in canUseTool) so it's purely
+          // informational — nothing awaits this, the run keeps going regardless.
+          if (!this.modelChecked && "model" in msg && typeof msg.model === "string") {
+            this.modelChecked = true;
+            const warning = modelMismatchWarning(this.spec.model, msg.model);
+            if (warning) {
+              this.events.onLog(this.runId, `⚠ model mismatch: ${warning}`);
+              this.events.onHitl(this.runId, buildModelMismatchRaise(warning, this.spec.model, msg.model));
+            }
+          }
         } else if (msg.type === "stream_event") {
           // Live "typing" only — never persisted itself. The complete text still
           // lands exactly once via the `assistant` branch below (onLog/onChatReply),

@@ -70,7 +70,7 @@ export const SCENARIOS: Scenario[] = [
     run: async () => {
       const steps: Step[] = [];
       const before = new Set((await api.fetchSnapshot()).fleet.map((r) => r.id));
-      await api.createAgent({ provider: "claude", model: "opus-4.8" });
+      await api.createAgent({ provider: "claude", model: "opus-5" });
       const s = await settle((sn) => sn.fleet.some((r) => !before.has(r.id)));
       const added = s.fleet.find((r) => !before.has(r.id));
       steps.push(step("runner added to fleet", !!added, added?.id));
@@ -93,7 +93,7 @@ export const SCENARIOS: Scenario[] = [
       await api.createProject({ name: pname, goal: "acceptance" });
       let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
       const p = s.projects.find((x) => x.name === pname)!;
-      await api.createAgent({ provider: "claude", model: "opus-4.8" }); // ensure capacity
+      await api.createAgent({ provider: "claude", model: "opus-5" }); // ensure capacity
       await api.createTask(p.id, "acceptance: say hello");
       s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
       const task = s.tasks.find((t) => t.projectId === p.id);
