@@ -33,6 +33,7 @@ import {
   ReorderTaskRequest,
   MergePrRequest,
   ReworkPrRequest,
+  ExecuteStewardActionRequest,
 } from "@skynet/shared";
 import { installProviderCli } from "./provider-install.js";
 import { installCommandFor } from "./provider-requirements.js";
@@ -848,6 +849,23 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/assign", async (req, reply) => {
     try {
       return await ops.assignTask(ws(req), req.params.id, req.params.tid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Execution intents (S10): the ONE endpoint for start_task/queue_tasks/
+  // start_feature/process_backlog — see Operations.executeStewardAction.
+  // Every other Steward-proposed action kind keeps its own existing route
+  // (steward-dock.tsx's runAction); these four are the only ones a client
+  // calls through here.
+  app.post<{ Params: { id: string } }>("/api/projects/:id/steward/actions", async (req, reply) => {
+    const body = ExecuteStewardActionRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.executeStewardAction(ws(req), req.params.id, body.data.action, req.principal!.operatorId, {
+        dryRun: body.data.dryRun,
+      });
     } catch (err) {
       return fail(reply, err);
     }

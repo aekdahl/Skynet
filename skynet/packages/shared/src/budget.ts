@@ -5,7 +5,7 @@
 // gate acted on, never a second re-derivation. Pure (no I/O, no Date.now())
 // so both sides can call it with an already-fetched run list.
 
-import type { Task, TaskRun } from "./contracts.js";
+import type { Project, Task, TaskRun } from "./contracts.js";
 
 export interface DailySpend {
   /** Sum of `usage.costUsd` for the project's runs started in the window —
@@ -47,6 +47,45 @@ export function computeDailySpend(runs: TaskRun[], projectId: string, at: number
     else unknownCostRuns++;
   }
   return { spentUsd, unknownCostRuns, windowStart: start, windowEnd: end };
+}
+
+/** Default pacing window (8h) — mirrors config.ts's SKYNET_BUDGET_PACING_WINDOW_MS
+ *  default, duplicated here (not imported) so this module has no dependency on
+ *  server config and stays usable from a pure/test context. A caller that reads
+ *  the real env override (the server) should pass it explicitly. */
+export const DEFAULT_BUDGET_PACING_WINDOW_MS = 8 * 60 * 60 * 1000;
+
+/**
+ * Budget-as-allocation, pacing half: how much of the daily budget is
+ * "available to commit right now"? With `budgetPacing` off (default), the
+ * whole remaining budget is available immediately. With it on, availability
+ * grows linearly from $0 at local midnight to the full budget at
+ * `pacingWindowMs` later, so a $20 budget doesn't get committed to the very
+ * first task seen. Never exceeds the true remaining headroom (spend already
+ * made today) — pacing can only make a caller MORE conservative, never let it
+ * overspend a budget that's already tight. Returns Infinity for an unset
+ * budget (no ceiling — callers checking against it will just always fit).
+ *
+ * The single source of truth for this calculation — used by both the
+ * autonomy tick's picker (orchestrator.ts) and the execution-intents
+ * feasibility resolver (steward/execution.ts), so a dry-run preview's
+ * "N over budget" split is never a different number than what the tick
+ * actually does moments later.
+ */
+export function pacedAvailableUsd(
+  project: Project,
+  spentUsd: number,
+  atMs: number,
+  pacingWindowMs: number = DEFAULT_BUDGET_PACING_WINDOW_MS,
+): number {
+  if (project.dailyBudgetUsd == null) return Infinity;
+  const headroom = Math.max(0, project.dailyBudgetUsd - spentUsd);
+  if (!project.budgetPacing) return headroom;
+  const { start } = dayWindow(atMs);
+  const elapsed = Math.min(1, Math.max(0, (atMs - start) / pacingWindowMs));
+  const pacedCeiling = project.dailyBudgetUsd * elapsed;
+  const pacedHeadroom = Math.max(0, pacedCeiling - spentUsd);
+  return Math.min(headroom, pacedHeadroom);
 }
 
 // ─── Cost-aware picking: rough $ bands from triage's existing effort call ───

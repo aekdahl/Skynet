@@ -227,3 +227,57 @@ describe("splitProposedAction — reply / multi-action split", () => {
     expect(r.reply).toBe(raw);
   });
 });
+
+// S10 — execution intents. Validated the same way as every other kind (id
+// resolution against ctx, refuse-don't-guess on an unknown id), but note these
+// are deliberately NOT in SYSTEM's prompt text yet — see ProjectActionKind's
+// doc comment in assistant.ts for why (the dock can't execute them until S11).
+describe("validateProjectAction — execution intents (S10)", () => {
+  it("start_task resolves a real taskId", () => {
+    expect(validateProjectAction({ kind: "start_task", taskId: "t-2" }, ctx)).toMatchObject({ kind: "start_task", taskId: "t-2" });
+    expect(validateProjectAction({ kind: "start_task", taskId: "nope" }, ctx)).toBeNull();
+  });
+
+  it("queue_tasks requires every id to resolve — refuses (doesn't drop) an unknown one", () => {
+    expect(validateProjectAction({ kind: "queue_tasks", taskIds: ["t-1", "t-2"] }, ctx)).toMatchObject({
+      kind: "queue_tasks",
+      taskIds: ["t-1", "t-2"],
+    });
+    expect(validateProjectAction({ kind: "queue_tasks", taskIds: ["t-1", "unknown"] }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "queue_tasks", taskIds: [] }, ctx)).toBeNull();
+  });
+
+  it("queue_tasks de-dupes repeated ids", () => {
+    const r = validateProjectAction({ kind: "queue_tasks", taskIds: ["t-1", "t-1"] }, ctx);
+    expect(r?.taskIds).toEqual(["t-1"]);
+  });
+
+  it("start_feature resolves a real featureId + a valid execMode, defaults feasibleOnly to true", () => {
+    const r = validateProjectAction({ kind: "start_feature", featureId: "f-1", execMode: "queue" }, ctx);
+    expect(r).toMatchObject({ kind: "start_feature", featureId: "f-1", execMode: "queue", feasibleOnly: true });
+    expect(validateProjectAction({ kind: "start_feature", featureId: "nope", execMode: "queue" }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "start_feature", featureId: "f-1", execMode: "sideways" }, ctx)).toBeNull();
+  });
+
+  it("start_feature honors an explicit feasibleOnly: false", () => {
+    const r = validateProjectAction({ kind: "start_feature", featureId: "f-1", execMode: "start_now", feasibleOnly: false }, ctx);
+    expect(r?.feasibleOnly).toBe(false);
+  });
+
+  it("start_feature(queue)'s summary notes the autonomy-off side effect; start_now's doesn't (nothing gets queued by start_now's assign step)", () => {
+    const off = { ...ctx, autonomy: false };
+    const on = { ...ctx, autonomy: true };
+    expect(validateProjectAction({ kind: "start_feature", featureId: "f-1", execMode: "queue" }, off)?.summary).toMatch(/autonomy is off/);
+    expect(validateProjectAction({ kind: "start_feature", featureId: "f-1", execMode: "queue" }, on)?.summary).not.toMatch(/autonomy/);
+  });
+
+  it("process_backlog defaults feasibleOnly to true and needs no other field", () => {
+    expect(validateProjectAction({ kind: "process_backlog" }, ctx)).toMatchObject({ kind: "process_backlog", feasibleOnly: true });
+    expect(validateProjectAction({ kind: "process_backlog", feasibleOnly: false }, ctx)).toMatchObject({ feasibleOnly: false });
+  });
+
+  it("process_backlog's summary notes the autonomy-off side effect", () => {
+    const r = validateProjectAction({ kind: "process_backlog" }, { ...ctx, autonomy: false });
+    expect(r?.summary).toMatch(/autonomy is off/);
+  });
+});

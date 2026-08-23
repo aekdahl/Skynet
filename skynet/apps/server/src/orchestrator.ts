@@ -4,7 +4,7 @@
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
 import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
-import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow, resolveTaskBrief } from "@skynet/shared";
+import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow, pacedAvailableUsd, resolveTaskBrief } from "@skynet/shared";
 import {
   isCreditExhaustionError,
   type HitlRaise,
@@ -3900,29 +3900,6 @@ export class Orchestrator {
   }
 
   /**
-   * Budget-as-allocation, pacing half: how much of the daily budget is
-   * "available to commit right now"? With `budgetPacing` off (default), the
-   * whole remaining budget is available immediately — unchanged from before
-   * this existed. With it on, availability grows linearly from $0 at local
-   * midnight to the full budget at `config.budgetPacingWindowMs` later, so a
-   * $20 budget doesn't get committed to the very first task the tick sees.
-   * Never exceeds the true remaining headroom (spend already made today) —
-   * pacing can only make the picker MORE conservative, never let it overspend
-   * a budget that's already tight. Returns Infinity for an unset budget (no
-   * ceiling at all — callers checking against it will just always fit).
-   */
-  private pacedAvailableUsd(project: Project, spentUsd: number, atMs: number): number {
-    if (project.dailyBudgetUsd == null) return Infinity;
-    const headroom = Math.max(0, project.dailyBudgetUsd - spentUsd);
-    if (!project.budgetPacing) return headroom;
-    const { start } = dayWindow(atMs);
-    const elapsed = Math.min(1, Math.max(0, (atMs - start) / config.budgetPacingWindowMs));
-    const pacedCeiling = project.dailyBudgetUsd * elapsed;
-    const pacedHeadroom = Math.max(0, pacedCeiling - spentUsd);
-    return Math.min(headroom, pacedHeadroom);
-  }
-
-  /**
    * Budget-as-allocation, selection half: from `pickable` (already priority-
    * sorted), greedily choose which tasks actually fit the budget available
    * right now — walking in the SAME order, so priority always wins among
@@ -3937,7 +3914,7 @@ export class Orchestrator {
   private async selectAffordable(project: Project, runs: TaskRun[], pickable: Task[]): Promise<Task[]> {
     if (project.dailyBudgetUsd == null || pickable.length === 0) return pickable;
     const spend = computeDailySpend(runs, project.id, now());
-    let available = this.pacedAvailableUsd(project, spend.spentUsd, now());
+    let available = pacedAvailableUsd(project, spend.spentUsd, now(), config.budgetPacingWindowMs);
     const selected: Task[] = [];
     const skipped: Task[] = [];
     for (const t of pickable) {
