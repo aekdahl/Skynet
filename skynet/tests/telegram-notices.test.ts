@@ -4,7 +4,7 @@
 // pin-the-node-docker-image-to-a-d-1 needs attention").
 import { describe, it, expect } from "vitest";
 import type { HitlItem } from "@skynet/shared";
-import { gateNotice, decisionCardHtml, reviewNotice, completedNotice, runLink, desktopRunLink } from "../apps/server/src/telegram/notices.js";
+import { gateNotice, decisionCardHtml, gateHead, reviewNotice, completedNotice, runLink, desktopRunLink } from "../apps/server/src/telegram/notices.js";
 
 const UGLY_RUN_ID = "pin-the-node-docker-image-to-a-d-1";
 const UGLY_GATE_ID = "q-diff-pin-the-node-docker-image-to-a-d-1-20";
@@ -63,6 +63,46 @@ describe("gateNotice", () => {
     const msg = gateNotice(item({ kind: "question", diff: null, options: ["Ship it", "Hold"], title: "Ready?" }), NAMES, true);
     expect(msg).toContain("1. Ship it");
     expect(msg).toContain("2. Hold");
+  });
+});
+
+describe("stuck-review escalation — done, awaiting review, not an alarm", () => {
+  // A stuck-review escalation (orchestrator.ts's reapStuckReviews) fires when a
+  // run already finished and reached review with no open gate pointing at it —
+  // nothing failed. It should read as "done, awaiting your review", not the
+  // generic "a run stopped and needs help" alarm every other escalation source
+  // (timeout/failures/conflict/turns/stalled/billing) uses.
+  const stuckReview = (o: Partial<HitlItem> = {}) =>
+    item({
+      kind: "escalation",
+      diff: null,
+      flags: ["stuck-review"],
+      title: "Done — awaiting your review",
+      why: "the run finished and reached review, but no decision was raised for it — nothing failed, it's just waiting for your review",
+      risk: "low",
+      ...o,
+    });
+
+  it("gateNotice heads with the calm phrasing, not 'stopped and needs help'", () => {
+    const msg = gateNotice(stuckReview(), NAMES, true);
+    expect(msg).toContain("Done — awaiting your review");
+    expect(msg).not.toContain("stopped and needs help");
+  });
+
+  it("decisionCardHtml heads with the calm phrasing too", () => {
+    const card = decisionCardHtml(stuckReview(), NAMES, true);
+    expect(card).toContain("Done — awaiting your review");
+    expect(card).not.toContain("stopped and needs help");
+  });
+
+  it("gateHead reflects the stuck-review flag, not the generic escalation head", () => {
+    expect(gateHead(stuckReview())).toBe("Done — awaiting your review");
+  });
+
+  it("a regular (non-stuck-review) escalation keeps the generic alarm head", () => {
+    const timedOut = item({ kind: "escalation", diff: null, flags: ["timeout"], title: "x" });
+    expect(gateHead(timedOut)).toBe("A run stopped and needs help");
+    expect(gateNotice(timedOut, NAMES, true)).toContain("A run stopped and needs help");
   });
 });
 

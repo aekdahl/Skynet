@@ -180,6 +180,7 @@ kbd {
 .conflict-pip { color: var(--danger); font-size: 11px; }
 .agent-row-sub { font-family: var(--font-mono); font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wait-tag { color: var(--warn); }
+.wait-tag-ok { color: var(--ok); }
 .done-tag { color: var(--muted); }
 .step-tag { color: var(--muted); }
 .bar { height: 3px; border-radius: 2px; background: var(--line-soft); overflow: hidden; }

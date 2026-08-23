@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { TaskRun, HitlItem } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { fmtWait, KIND_META, openQueue, projectName, waitedSecs } from "../lib/derive";
+import { fmtWait, hitlHeadline, KIND_META, openQueue, projectName, waitedSecs } from "../lib/derive";
 import { isTypingTarget } from "../lib/keys";
 import { RiskChip } from "../components/hitl-context";
 import { DiffView } from "../components/diff-view";
@@ -27,7 +27,7 @@ export function QueueCard({
   modifyTrigger?: number;
 }) {
   const { resolveHitl, streamAgentMessage, readOnly, projects } = useStore();
-  const k = KIND_META[item.kind];
+  const k = hitlHeadline(item);
   const [mode, setMode] = useState<null | "modify" | "chat" | "remember">(null);
   const [draft, setDraft] = useState("");
   // Separate from `draft` (guidance TO the agent) — a memory note is a durable

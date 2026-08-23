@@ -2392,10 +2392,14 @@ export class Orchestrator {
                 : source === "billing"
                   ? "Provider key out of credits — top up to resume"
                   : source === "stuck-review"
-                    ? "Parked in review with no pending decision"
+                    ? "Done — awaiting your review"
                     : "Run keeps failing — needs a human",
       why: reason,
-      risk: "medium",
+      // Every other source means something actually went wrong (timeout,
+      // failures, a conflict, ran dry). stuck-review means the opposite: the
+      // run finished, nothing is broken — the operator's review is the only
+      // thing pending, so it doesn't carry the same risk.
+      risk: source === "stuck-review" ? "low" : "medium",
       rationale: null,
       raisedAt: now(),
       expiresAt: null,
@@ -3734,7 +3738,11 @@ export class Orchestrator {
         (q) => q.runId === r.id && q.resolvedAt == null,
       );
       if (open) continue; // a gate is waiting — the operator already has a handle
-      await this.escalate(r.id, "sitting in review with nothing waiting for a decision — needs attention", "stuck-review").catch(
+      // Framed as "done, awaiting review" rather than a generic alarm — nothing
+      // is broken here (contrast timeout/failures/conflict below): the run
+      // already reached `review`, it just has no open gate pointing at it, so
+      // the operator's own review is the only thing missing.
+      await this.escalate(r.id, "the run finished and reached review, but no decision was raised for it — nothing failed, it's just waiting for your review", "stuck-review").catch(
         () => undefined,
       );
       if (r.lastHeartbeatAt > cutoff) continue;
