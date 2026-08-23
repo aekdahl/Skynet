@@ -29,6 +29,17 @@ export function desktopRunLink(runId: string): string {
   return `skynet://agent/${runId}`;
 }
 
+/** A feature has no detail page of its own yet — link to its project instead
+ *  (`#/project/<id>`, routing.ts), same fallback-to-project shape as `runLink`. */
+export function projectLink(baseUrl: string, projectId: string): string | undefined {
+  return baseUrl ? `${baseUrl}/#/project/${projectId}` : undefined;
+}
+
+/** Desktop counterpart to `projectLink` — see `desktopRunLink`'s doc comment. */
+export function desktopProjectLink(projectId: string): string {
+  return `skynet://project/${projectId}`;
+}
+
 /** Escape text for Telegram HTML parse_mode (only &, <, > matter). */
 export function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -201,6 +212,26 @@ export function completedNotice(names: Names, link?: string): string {
  *  so the card you decided on becomes the result, in place. */
 export function shippedCardHtml(names: Names): string {
   return `✅ <b>Shipped</b>${names.project ? ` · ${esc(names.project)}` : ""}\n${esc(names.run)}`;
+}
+
+export type FeatureNames = { project: string; feature: string };
+
+/**
+ * S12 follow-through: a whole FEATURE's batch of tasks just finished (every
+ * sibling task merged/shipped), not just one run — distinct wording from
+ * `completedNotice` (a single run) so "4 of 5 done, 1 needs you" is
+ * inferable at a glance: an escalation mid-batch already sent its own
+ * `gateNotice`/`reviewNotice` per-run, so seeing BOTH a review ping and a
+ * feature-shipped ping for the same feature tells you the batch finished
+ * with one holdout, without opening the app. `taskCount` names how many
+ * tasks the batch covered — the reader doesn't have to go count them.
+ */
+export function featureShippedNotice(names: FeatureNames, taskCount: number, link?: string): string {
+  const head = [
+    `🚀 Feature shipped${names.project ? ` · ${names.project}` : ""}`,
+    `${names.feature} — ${taskCount} task${taskCount === 1 ? "" : "s"} done`,
+  ].join("\n");
+  return link ? `${head}\nView → ${link}` : head;
 }
 
 /**

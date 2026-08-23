@@ -52,12 +52,16 @@ import {
   shippedCardHtml,
   reviewNotice,
   completedNotice,
+  featureShippedNotice,
   inQuietHours,
   parseQuietHours,
   runLink,
   desktopRunLink,
+  projectLink,
+  desktopProjectLink,
   esc,
   type Names,
+  type FeatureNames,
 } from "./notices.js";
 import {
   buildContext,
@@ -1270,6 +1274,17 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
   const linkFor = (runId: string): string | undefined =>
     config.desktop ? desktopRunLink(runId) : runLink(config.publicUrl, runId);
 
+  // S12 follow-through: naming for a feature-shipped notice. A feature has no
+  // detail page of its own yet, so the link goes to its project (see
+  // notices.ts's projectLink doc comment).
+  const nameOfFeature = async (featureId: string, projectId: string): Promise<FeatureNames> => {
+    const feature = (await operations.listFeatures(ws).catch(() => [])).find((f) => f.id === featureId);
+    const project = await operations.getProject(ws, projectId).catch(() => null);
+    return { feature: feature?.name || featureId, project: project?.name ?? "" };
+  };
+  const linkForFeature = (projectId: string): string | undefined =>
+    config.desktop ? desktopProjectLink(projectId) : projectLink(config.publicUrl, projectId);
+
   // De-dupe run notices: only push when a run's status actually CHANGES, so a run
   // that re-emits "review" doesn't send the same line three times (the reported
   // spam). A gate raise also records "review" so we never double-notify a review.
@@ -1344,6 +1359,18 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
         // quiet hours (the /inbox digest still reflects it whenever you look).
         if (inQuietHours(new Date(), quiet)) return;
         await notify(completedNotice(names, linkFor(event.runId)));
+      })();
+    } else if (event.type === "feature.shipped") {
+      // S12 follow-through: a kicked-off batch just finished, not one run —
+      // "4 of 5 done, 1 needs you" is inferable at a glance if a review ping
+      // for the holdout already went out. No live card to fold into (the
+      // batch spans several runs, no single decision card represents it), so
+      // this is always a fresh line — same low-value/quiet-hours treatment
+      // as a plain run completion.
+      void (async () => {
+        if (inQuietHours(new Date(), quiet)) return;
+        const names = await nameOfFeature(event.featureId, event.projectId);
+        await notify(featureShippedNotice(names, event.taskCount, linkForFeature(event.projectId)));
       })();
     }
   };
