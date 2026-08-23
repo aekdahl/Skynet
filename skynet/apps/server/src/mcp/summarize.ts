@@ -14,7 +14,45 @@
 // full record for the ONE the caller cared about. This module holds the
 // projections + the pagination helper shared across tools.ts.
 
-import type { AuditRecord, Task, TaskRun } from "@skynet/shared";
+import type { AuditRecord, HitlItem, SolutionBrief, Task, TaskRun } from "@skynet/shared";
+
+// ── text clipping ────────────────────────────────────────────────────────
+// One marker format everywhere, chosen to tell the READING AGENT two things
+// at once: that text is missing, and exactly how much — so it can decide
+// whether to drill in rather than assuming it saw everything.
+export function clip(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)} …[+${s.length - max} chars]` : s;
+}
+
+// ── patch clipping ───────────────────────────────────────────────────────
+// run_diff / get_audit return a real unified patch — the ONE payload whose
+// size is genuinely unbounded (a big refactor's diff can alone exceed a
+// model's context). Default keeps the head (diffs read front-to-back, and the
+// first files are usually the point); the caller can raise the cap up to a
+// hard ceiling, and `patchTruncated`/`patchChars` make the cut explicit.
+export const DEFAULT_PATCH_CHARS = 30_000;
+export const MAX_PATCH_CHARS = 200_000;
+
+export function clipPatch(
+  patch: string,
+  maxChars: number | undefined,
+): { patch: string; patchChars: number; patchTruncated: boolean } {
+  const cap = Math.min(Math.max(1, maxChars ?? DEFAULT_PATCH_CHARS), MAX_PATCH_CHARS);
+  if (patch.length <= cap) return { patch, patchChars: patch.length, patchTruncated: false };
+  return {
+    patch: `${patch.slice(0, cap)}\n…[patch truncated: showing ${cap} of ${patch.length} chars — re-call with a larger maxPatchChars (ceiling ${MAX_PATCH_CHARS}) for more]`,
+    patchChars: patch.length,
+    patchTruncated: true,
+  };
+}
+
+// get_agent log entries: each LogLine.detail carries a tool call's full
+// input/output (the runner already caps a single entry at ~6000 chars, but
+// 100 entries × 6000 is still worst-case ~600k chars for ONE call). Default
+// to a per-entry clip that keeps the shape of what happened; logDetailChars
+// raises it (to the runner's own per-entry cap) or 0 drops details entirely.
+export const DEFAULT_LOG_DETAIL_CHARS = 600;
+export const MAX_LOG_DETAIL_CHARS = 6_000;
 
 // ── pagination ───────────────────────────────────────────────────────────
 // Small default (cheap by default), a hard ceiling (a caller can't request
@@ -152,6 +190,104 @@ export interface AuditSummary {
   diffFiles: number;
   diffAdd: number;
   diffDel: number;
+}
+
+// ── HITL summary ─────────────────────────────────────────────────────────
+// A HitlItem embeds everything the web UI renders on a decision card: the
+// full command/preview text, a verifier gate's captured check output, and a
+// diff gate's LLM-drafted walkthrough + merge brief — multiplied across the
+// queue on every list_hitl / get_snapshot call. The summary keeps what's
+// needed to TRIAGE (what kind, how risky, what options) and swaps the prose
+// for presence/size signals; get_hitl returns the one full item to act on.
+export interface HitlSummary {
+  id: string;
+  runId: string;
+  kind: HitlItem["kind"];
+  title: string;
+  why: string;
+  risk: HitlItem["risk"];
+  raisedAt: number;
+  expiresAt: number | null;
+  resolvedAt: number | null;
+  options: string[] | null;
+  recommended: number | null;
+  flags: string[];
+  command: string | null; // clipped — get_hitl for the full text
+  outputChars: number; // verifier output present? how big? (never inlined here)
+  stepCount: number;
+  diff: { add: number; del: number; fileCount: number; defaultTargetBranch: string | null } | null;
+  hasWalkthrough: boolean;
+  hasMergeBrief: boolean;
+}
+
+const HITL_COMMAND_CLIP = 240;
+
+export function summarizeHitl(h: HitlItem): HitlSummary {
+  return {
+    id: h.id,
+    runId: h.runId,
+    kind: h.kind,
+    title: h.title,
+    why: h.why,
+    risk: h.risk,
+    raisedAt: h.raisedAt,
+    expiresAt: h.expiresAt ?? null,
+    resolvedAt: h.resolvedAt ?? null,
+    options: h.options ?? null,
+    recommended: h.recommended ?? null,
+    flags: h.flags ?? [],
+    command: h.command ? clip(h.command, HITL_COMMAND_CLIP) : null,
+    outputChars: h.output?.length ?? 0,
+    stepCount: h.steps?.length ?? 0,
+    diff: h.diff
+      ? { add: h.diff.add, del: h.diff.del, fileCount: h.diff.files?.length ?? 0, defaultTargetBranch: h.diff.defaultTargetBranch ?? null }
+      : null,
+    hasWalkthrough: !!h.diff?.walkthrough,
+    hasMergeBrief: !!h.diff?.mergeBrief,
+  };
+}
+
+// ── solution-brief summary ───────────────────────────────────────────────
+// A brief is a long-form markdown planning doc (problem + approach + options
+// + risks + criteria); listing a workspace's briefs shipped every doc in
+// full. The summary keeps identity/status plus a problem teaser and counts;
+// get_brief returns the one full doc.
+export interface BriefSummary {
+  id: string;
+  projectId: string;
+  title: string;
+  status: SolutionBrief["status"];
+  featureId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  approvedAt: number | null;
+  problem: string; // clipped teaser — get_brief for the full doc
+  optionCount: number;
+  riskCount: number;
+  acceptanceCriteriaCount: number;
+  openQuestionCount: number;
+  hasExploration: boolean;
+}
+
+const BRIEF_PROBLEM_CLIP = 200;
+
+export function summarizeBrief(b: SolutionBrief): BriefSummary {
+  return {
+    id: b.id,
+    projectId: b.projectId,
+    title: b.title,
+    status: b.status,
+    featureId: b.featureId ?? null,
+    createdAt: b.createdAt,
+    updatedAt: b.updatedAt,
+    approvedAt: b.approvedAt ?? null,
+    problem: clip(b.problem, BRIEF_PROBLEM_CLIP),
+    optionCount: b.optionsConsidered?.length ?? 0,
+    riskCount: b.risks?.length ?? 0,
+    acceptanceCriteriaCount: b.acceptanceCriteria?.length ?? 0,
+    openQuestionCount: b.openQuestions?.length ?? 0,
+    hasExploration: !!b.exploration,
+  };
 }
 
 export function summarizeAudit(a: AuditRecord): AuditSummary {

@@ -573,8 +573,15 @@ describe("MCP response shaping (summary/detail + pagination)", () => {
 
     const full = json(await client.callTool({ name: "get_agent", arguments: { runId: "r1" } }));
     expect(full.log).toHaveLength(2);
-    expect(full.log[1].detail).toHaveLength(5000);
+    // Per-entry detail is clipped by default (600 chars + an explicit marker);
+    // logDetailChars raises it back to the runner's own per-entry cap.
+    expect(full.log[1].detail).toMatch(/^a{600} …\[\+4400 chars\]$/);
     expect(full.plan).toHaveLength(3);
+    const raised = json(await client.callTool({ name: "get_agent", arguments: { runId: "r1", logDetailChars: 6000 } }));
+    expect(raised.log[1].detail).toHaveLength(5000);
+    const linesOnly = json(await client.callTool({ name: "get_agent", arguments: { runId: "r1", logDetailChars: 0 } }));
+    expect(linesOnly.log[1]).not.toHaveProperty("detail");
+    expect(linesOnly.log[1].line).toBe("▸ Bash: pnpm test");
   });
 
   it("list_agents filters by status, paginates, and excludes archived by default", async () => {
@@ -687,5 +694,170 @@ describe("MCP response shaping (summary/detail + pagination)", () => {
     expect(snap.tasks[0]).not.toHaveProperty("description");
     expect(snap.runsTotal).toBe(1);
     expect(snap.tasksTotal).toBe(1);
+  });
+});
+
+describe("MCP token diet (second pass: hitl/briefs summaries, patch caps, compact JSON)", () => {
+  const fullRun = (id: string): TaskRun =>
+    ({
+      id, workspaceId: DEFAULT_WORKSPACE, projectId: "P", name: `Run ${id}`,
+      status: "running", agentId: "r1", provider: "claude", model: "sonnet-5",
+      progress: 0.5, plan: [], startedAt: 1000, lastHeartbeatAt: 2000, branch: `agent/${id}`,
+      log: [{ at: 1000, line: "picked up" }, { at: 1500, line: "▸ Bash: pnpm test", detail: "x".repeat(4000) }],
+      usage: null, modifiedFiles: [], modules: [], visual: false, previewUrl: null,
+      dependsOn: [], parentId: null, branchFromStep: null, archived: false, pr: null, mergedAt: null,
+      credentialId: null,
+    } as unknown as TaskRun);
+
+  const fullHitl = (id: string, runId: string): HitlItem =>
+    ({
+      id, workspaceId: DEFAULT_WORKSPACE, runId, kind: "diff",
+      title: "Review the changes", why: "the agent finished", risk: "medium",
+      raisedAt: 100, expiresAt: null, resolvedAt: null, resolution: null,
+      rationale: "I refactored the parser", command: "c".repeat(2000),
+      options: null, recommended: null, steps: ["step one", "step two"],
+      output: "FAIL src/x.test.ts\n".repeat(200),
+      diff: {
+        add: 10, del: 2, modules: [], files: ["src/a.ts", "src/b.ts"],
+        walkthrough: { summary: "w".repeat(3000), comments: [{ file: "src/a.ts", line: 1, note: "n".repeat(500) }] },
+        mergeBrief: { summary: "m".repeat(3000), filesTouched: ["src/a.ts"], risks: ["r1"], mitigations: ["m1"] },
+        defaultTargetBranch: "skynet/integration/P",
+      },
+      flags: [], sourceBranchOverride: null,
+    } as unknown as HitlItem);
+
+  it("list_hitl and get_snapshot's queue return summaries (no walkthrough/mergeBrief/output, clipped command); get_hitl returns the full record", async () => {
+    const { client, store } = await connect(author);
+    await store.putProject(Project.parse({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" }));
+    await store.putRun(fullRun("r1"));
+    await store.putHitl(fullHitl("h1", "r1"));
+
+    const list = json(await client.callTool({ name: "list_hitl", arguments: {} }));
+    expect(list).toHaveLength(1);
+    const s = list[0];
+    expect(s).not.toHaveProperty("output");
+    expect(s.command).toMatch(/…\[\+1760 chars\]$/);
+    expect(s).toMatchObject({
+      id: "h1", runId: "r1", kind: "diff", risk: "medium",
+      outputChars: 19 * 200, stepCount: 2,
+      diff: { add: 10, del: 2, fileCount: 2, defaultTargetBranch: "skynet/integration/P" },
+      hasWalkthrough: true, hasMergeBrief: true,
+    });
+    expect(JSON.stringify(s)).not.toContain("wwww"); // no walkthrough prose leaked
+    const snap = json(await client.callTool({ name: "get_snapshot", arguments: {} }));
+    expect(snap.queue[0]).toMatchObject({ id: "h1", hasWalkthrough: true });
+    expect(snap.queue[0]).not.toHaveProperty("output");
+
+    const full = json(await client.callTool({ name: "get_hitl", arguments: { hitlId: "h1" } }));
+    expect(full.command).toHaveLength(2000);
+    expect(full.output).toContain("FAIL src/x.test.ts");
+    expect(full.diff.walkthrough.summary).toHaveLength(3000);
+    expect(full.diff.mergeBrief.summary).toHaveLength(3000);
+  });
+
+  it("get_hitl 404s outside the workspace", async () => {
+    const { client } = await connect(author);
+    const res = await client.callTool({ name: "get_hitl", arguments: { hitlId: "nope" } });
+    expect(res.isError).toBe(true);
+  });
+
+  it("list_briefs and get_snapshot's briefs return summaries (title + teaser + counts); get_brief returns the full doc", async () => {
+    const { client, operations } = await connect(author);
+    const project = json(await client.callTool({ name: "create_project", arguments: { name: "P", goal: "g" } }));
+    const brief = await operations.createBrief(DEFAULT_WORKSPACE, project.id, {
+      title: "Big plan",
+      problem: "p".repeat(5000),
+      approach: "a".repeat(5000),
+      optionsConsidered: [{ name: "opt A", verdict: "chosen", why: "simplest" }],
+      risks: ["r1", "r2"],
+      acceptanceCriteria: ["ac1"],
+      openQuestions: [],
+    });
+
+    const list = json(await client.callTool({ name: "list_briefs", arguments: {} }));
+    expect(list).toHaveLength(1);
+    expect(list[0]).not.toHaveProperty("approach");
+    expect(list[0].problem).toMatch(/…\[\+4800 chars\]$/);
+    expect(list[0]).toMatchObject({ id: brief.id, title: "Big plan", status: "draft", optionCount: 1, riskCount: 2, acceptanceCriteriaCount: 1, openQuestionCount: 0, hasExploration: false });
+
+    const snap = json(await client.callTool({ name: "get_snapshot", arguments: {} }));
+    expect(snap.solutionBriefs[0]).not.toHaveProperty("approach");
+
+    const full = json(await client.callTool({ name: "get_brief", arguments: { briefId: brief.id } }));
+    expect(full.approach).toHaveLength(5000);
+    expect(full.problem).toHaveLength(5000);
+  });
+
+  it("the skynet://snapshot resource returns the SAME summarized view as get_snapshot — never raw runs with logs", async () => {
+    const { client, store } = await connect(author);
+    await store.putProject(Project.parse({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" }));
+    await store.putRun(fullRun("r1"));
+    await store.putHitl(fullHitl("h1", "r1"));
+
+    const read = await client.readResource({ uri: "skynet://snapshot" });
+    const text = (read.contents[0] as { text: string }).text;
+    const snap = JSON.parse(text);
+    expect(snap.runs[0]).not.toHaveProperty("log");
+    expect(snap.runsTotal).toBe(1);
+    expect(snap.queue[0]).not.toHaveProperty("output");
+    expect(text).not.toContain("xxxx"); // no log detail leaked anywhere in the payload
+    expect(text).not.toContain('{\n  "'); // compact JSON, not pretty-printed
+  });
+
+  it("wait_for_agent returns a run SUMMARY, not the full record with its log", async () => {
+    const { client, store } = await connect(author);
+    await store.putProject(Project.parse({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" }));
+    await store.putRun(fullRun("done-1"));
+    await store.putRun({ ...fullRun("done-1"), status: "done" } as TaskRun);
+
+    const res = json(await client.callTool({ name: "wait_for_agent", arguments: { runId: "done-1" } }));
+    expect(res.waited).toBe(false);
+    expect(res.agent).not.toHaveProperty("log");
+    expect(res.agent).toMatchObject({ id: "done-1", status: "done" });
+  });
+
+  it("run_diff clips the patch at maxPatchChars with an explicit marker and true totals", async () => {
+    const { client, operations } = await connect(author);
+    const bigPatch = "+line\n".repeat(10_000); // 60k chars
+    const orch = (operations as unknown as { orchestrator: { runDiff: (id: string) => Promise<unknown> } }).orchestrator;
+    orch.runDiff = async () => ({ patch: bigPatch, add: 10_000, del: 0, files: ["a.ts"] });
+    const getRun = operations.getRun.bind(operations);
+    operations.getRun = async () => ({ id: "r1" } as unknown as Awaited<ReturnType<typeof getRun>>);
+
+    const clipped = json(await client.callTool({ name: "run_diff", arguments: { runId: "r1" } }));
+    expect(clipped.patchTruncated).toBe(true);
+    expect(clipped.patchChars).toBe(bigPatch.length);
+    expect(clipped.patch.length).toBeLessThan(31_000);
+    expect(clipped.patch).toContain("…[patch truncated: showing 30000 of 60000 chars");
+
+    const full = json(await client.callTool({ name: "run_diff", arguments: { runId: "r1", maxPatchChars: 100_000 } }));
+    expect(full.patchTruncated).toBe(false);
+    expect(full.patch).toHaveLength(bigPatch.length);
+  });
+
+  it("get_audit clips an embedded captured patch the same way", async () => {
+    const { client, store } = await connect(author);
+    await store.putProject(Project.parse({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" }));
+    await store.putRun(fullRun("r1"));
+    const bigPatch = "+line\n".repeat(10_000);
+    await store.recordAudit({
+      workspaceId: DEFAULT_WORKSPACE, hitlId: "h1", runId: "r1", action: "approve", operatorId: "op", at: 1,
+      payload: { kind: "diff", rationale: "ok", patch: bigPatch },
+    });
+
+    const clipped = json(await client.callTool({ name: "get_audit", arguments: { hitlId: "h1" } }));
+    expect(clipped.payload.patchTruncated).toBe(true);
+    expect(clipped.payload.patchChars).toBe(bigPatch.length);
+    expect(clipped.payload.rationale).toBe("ok"); // rest of the payload intact
+
+    const full = json(await client.callTool({ name: "get_audit", arguments: { hitlId: "h1", maxPatchChars: 100_000 } }));
+    expect(full.payload.patch).toHaveLength(bigPatch.length);
+  });
+
+  it("tool results are compact JSON, not pretty-printed", async () => {
+    const { client } = await connect(author);
+    const res = await client.callTool({ name: "list_projects", arguments: {} });
+    const raw = (res.content as { text: string }[])[0].text;
+    expect(raw).not.toContain("\n");
   });
 });
