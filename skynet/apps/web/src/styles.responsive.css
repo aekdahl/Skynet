@@ -60,9 +60,9 @@
 
 @media (max-width: 520px) {
   :root { --card-pad: 14px; --sp: 12px; }
-  .op-title { font-size: 12px; }
+  .op-title { font-size: var(--fz-12); }
   /* Status bar gets dense on small phones — keep the essentials legible. */
-  .op-statusbar { gap: 8px; font-size: 10px; }
+  .op-statusbar { gap: 8px; font-size: var(--fz-10); }
   .op-sb-r { display: none; }
 }
 
