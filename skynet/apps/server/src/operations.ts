@@ -311,6 +311,14 @@ export class Operations {
   listHitl(ws: string): Promise<HitlItem[]> {
     return this.store.listQueue(ws);
   }
+  /** Fetch ONE HITL item scoped to the workspace, or throw NotFoundError (404)
+   *  — the full-record counterpart to a summarized queue listing (the MCP
+   *  list_hitl → get_hitl drill-in). */
+  async getHitl(ws: string, hitlId: string): Promise<HitlItem> {
+    const item = await this.store.getHitl(hitlId);
+    if (!item || item.workspaceId !== ws) throw new NotFoundError("HITL item");
+    return item;
+  }
   listAudit(ws: string): Promise<AuditRecord[]> {
     return this.store.listAudit(ws);
   }

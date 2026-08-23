@@ -18,6 +18,7 @@ import {
   type Settings,
   type SettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
+import { existsSync } from "node:fs";
 import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
 import type {
@@ -848,6 +849,11 @@ class ClaudeRunnerHandle implements RunnerHandle {
   private apiRetries = 0; // transient retries spent (budget MAX_API_RETRIES)
   private turnContinues = 0; // turn-budget continues spent (budget MAX_TURN_CONTINUES)
   private lastApiError = ""; // most recent overload/error text seen, for classification
+  // Rolling tail of the CLI's stderr. The SDK swallows the child's stderr by
+  // default, so a startup crash surfaces only as its generic guess ("binary
+  // failed to launch — libc mismatch?") with the real cause invisible. Kept
+  // small; appended to the failure reason so the run log tells the truth.
+  private stderrTail: string[] = [];
 
   constructor(
     private spec: StartSpec,
@@ -858,6 +864,19 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.runId = spec.runId;
     this.events.onStatus(this.runId, "running");
     this.events.onLog(this.runId, `picked up "${spec.task}" on ${spec.branch}`);
+    // Spawning the SDK's CLI into a nonexistent cwd fails at the process level,
+    // and the SDK misreports that as a binary/libc mismatch ("exists but failed
+    // to launch") — which sent a real debugging session chasing glibc-vs-musl
+    // ghosts. Catch it here with the truthful reason instead. The orchestrator's
+    // relaunch path re-attaches a cleaned-up worktree before it ever gets here;
+    // this guard is the honest error for any path that doesn't.
+    if (spec.cwd && !existsSync(spec.cwd)) {
+      this.fail(
+        `working directory ${spec.cwd} does not exist — its worktree was likely cleaned up. ` +
+          `Reassign the task so a fresh worktree is provisioned from branch ${spec.branch}.`,
+      );
+      return;
+    }
     this.initialPrompt =
       `You are a Skynet coding agent on branch ${spec.branch} in this repository. ` +
       `Task: ${spec.task}. ` +
@@ -995,6 +1014,15 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // Opt-in real browser (Playwright/Chrome MCP). Omitted unless the workspace
       // enabled it; its tools gate through canUseTool like any other non-read tool.
       ...(spec.browser ? { mcpServers: browserMcpServers(true) } : {}),
+      // Capture the CLI's stderr (see stderrTail) — without this a startup crash
+      // is reported blind, as the SDK's generic launch-failure guess.
+      stderr: (d: string) => {
+        for (const line of String(d).split("\n")) {
+          const s = line.trim();
+          if (s) this.stderrTail.push(s);
+        }
+        if (this.stderrTail.length > 20) this.stderrTail.splice(0, this.stderrTail.length - 20);
+      },
     };
     this.baseOptions = baseOptions;
     if (spec.browser) this.events.onLog(this.runId, "browser tools enabled (Playwright MCP) — browser actions gate for approval");
@@ -1321,6 +1349,12 @@ class ClaudeRunnerHandle implements RunnerHandle {
   /** Could-not-run path: mark needs-attention, never onCompleted. */
   private fail(reason: string) {
     if (this.finished) return;
+    // A process-level death (spawn failure, instant exit, killed) carries no
+    // detail in the SDK's own message — attach the CLI's last stderr lines so
+    // the run log shows the real cause, not just the SDK's guess.
+    if (/failed to launch|exited with code|terminated by signal/i.test(reason) && this.stderrTail.length) {
+      reason += ` — CLI stderr: ${this.stderrTail.slice(-3).join(" | ")}`;
+    }
     this.finished = true;
     if (this.hb) clearInterval(this.hb);
     if (this.cap) clearTimeout(this.cap);
