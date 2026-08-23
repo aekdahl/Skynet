@@ -19,7 +19,7 @@ import {
   tasksInState,
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
-import { useConfirm } from "../components/confirm";
+import { useChoice, useConfirm } from "../components/confirm";
 import { ProjectDelivery, visualLeadOf } from "../components/preview";
 import { Markdown } from "../components/markdown";
 import { SwDiagram } from "../components/subway-diagram";
@@ -268,6 +268,7 @@ function TaskCard({
     dismissTaskLint,
   } = useStore();
   const confirm = useConfirm();
+  const choice = useChoice();
   // Features + milestones available to this task (same project, not archived).
   const projFeatures = features.filter((f) => f.projectId === task.projectId && !f.archived);
   const projMilestones = milestones.filter((m) => m.projectId === task.projectId && !m.archived);
@@ -640,17 +641,27 @@ function TaskCard({
             // there's no human control for those.
             <button
               className="kb-move"
-              title="Stop the agent working on this and send the task back to To-do. Its in-progress (uncommitted) work is discarded."
+              title="Stop the agent working on this and send the task back to To-do — choose whether to keep its in-progress work."
               onClick={async () => {
-                if (
-                  await confirm({
-                    title: "Send back to To-do?",
-                    body: `“${task.text}” stops the agent working on it — its in-progress (uncommitted) work is discarded.`,
-                    confirmLabel: "Send to To-do",
-                    danger: true,
-                  })
-                )
-                  void transitionTask(pid, task.id, "todo");
+                const picked = await choice({
+                  title: "Send back to To-do?",
+                  body: `Stops the agent working on “${task.text}”.`,
+                  options: [
+                    {
+                      value: "keep",
+                      label: "Keep the work, pause it",
+                      hint: "Its branch and uncommitted work are preserved — clicking Start → later resumes right where it left off.",
+                      primary: true,
+                    },
+                    {
+                      value: "reset",
+                      label: "Start clean",
+                      hint: "Discards its in-progress (uncommitted) work — a later Start begins from scratch.",
+                      danger: true,
+                    },
+                  ],
+                });
+                if (picked) void transitionTask(pid, task.id, "todo", picked === "keep");
               }}
             >
               ↩ Send to To-do

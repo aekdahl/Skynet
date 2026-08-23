@@ -494,6 +494,21 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   status with a stale heartbeat (the dashboard's existing 60s early-warning line) and no open HITL now
   sorts and labels the same as an open HITL ("stuck in review — no pending decision"), instead of hiding
   among genuinely active runs.*
+  *Feature added: "Send to Todo" and escalation "Reassign" each used to have exactly ONE hardcoded
+  behavior — the former always discarded the run's in-progress work, the latter always continued in the
+  same worktree — with no way to ask for the other, reported live as a real gap ("work shouldn't be lost
+  when returning to todo due to task is stall or hung — a confirm modal where the user can decide to
+  reset or continue"). Both now offer a real choice via a new `useChoice()` dialog (`confirm.tsx`, a
+  multi-option sibling to the existing yes/no `useConfirm()`): **keep the work, pause it** (the run halts
+  with its worktree + committed work intact, exactly like an escalation — a later "Start →" on the same
+  task, or `assignTask`'s new resume-a-paused-run branch, relaunches it in place) or **start clean**
+  (discards the worktree, same as Stop; Reassign's reset variant then immediately re-assigns a genuinely
+  fresh run for the same task). New `Orchestrator.pauseRun()` mirrors `escalate()` (worktree preserved,
+  no HITL raised — nothing needs the operator's attention, they just chose to come back later) and
+  `Resolution.resetWork` (only meaningful alongside `reassign`) drives the reset path in
+  `deliverEscalation`. Regression-proofed with 4 new real-git tests (`escalation.test.ts`) covering both
+  choices on both flows, and verified live end-to-end (pause → Start → resumes the SAME run id; reset →
+  a brand-new run with its own fresh worktree).*
 - [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
   Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
   credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself

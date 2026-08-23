@@ -566,6 +566,8 @@ export class Operations {
       targetBranch: input.action === "approve" ? (input.targetBranch?.trim() || null) : null,
       // Approve-with-memory — only meaningful alongside an actual approval.
       memoryNote: input.action === "approve" ? (input.memoryNote?.trim() || null) : null,
+      // See Resolution.resetWork — only meaningful alongside a real reassign.
+      resetWork: input.action === "reassign" ? !!input.resetWork : false,
       by: operatorId,
       at: now(),
     };
@@ -1293,9 +1295,19 @@ export class Operations {
    * Human-driven kanban move, validated against HUMAN_TRANSITIONS. Handles the
    * gated edges: review→done approves an open diff HITL (merges → done) when one
    * exists; abandoning `ongoing`/`review` or demoting a `done` task stops+archives
-   * its run and detaches it so the task returns clean.
+   * its run and detaches it so the task returns clean — UNLESS `opts.preserve` is
+   * set on an ongoing/review→todo move, which pauses the run instead (worktree +
+   * committed work kept; a later Start on the same task resumes it in place, see
+   * Orchestrator.pauseRun). Preserve only applies to that one edge — a done task
+   * demoted back to triage/backlog always discards (a different, rarer flow).
    */
-  async transitionTask(ws: string, tid: string, to: Task["state"], operatorId: string): Promise<Task> {
+  async transitionTask(
+    ws: string,
+    tid: string,
+    to: Task["state"],
+    operatorId: string,
+    opts: { preserve?: boolean } = {},
+  ): Promise<Task> {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
     if (task.state === to) return task; // no-op
@@ -1329,7 +1341,14 @@ export class Operations {
       !!task.runId &&
       ((task.state === "ongoing" || task.state === "review") && to === "todo" ||
         (task.state === "done" && (to === "triage" || to === "backlog")));
-    if (abandonsRun && task.runId) {
+    // Preserve only applies to the ongoing/review→todo edge (a "stalled or
+    // hung, come back later" move) — never the done-demotion case above, which
+    // always starts clean.
+    const preserveWork =
+      !!opts.preserve && !!task.runId && (task.state === "ongoing" || task.state === "review") && to === "todo";
+    if (preserveWork && task.runId) {
+      await this.orchestrator.pauseRun(task.runId).catch(() => undefined);
+    } else if (abandonsRun && task.runId) {
       await this.orchestrator.stopAgent(task.runId, "task moved off the run by an operator").catch(() => undefined);
       await this.hub.setRunArchived(task.runId, true).catch(() => undefined);
     }
@@ -1337,7 +1356,9 @@ export class Operations {
     const updated = await this.hub.upsertTask({
       ...task,
       state: to,
-      ...(abandonsRun ? { runId: null } : {}),
+      // A preserved run stays linked (its runId is how a later Start finds and
+      // resumes it) — only a truly abandoned run gets detached.
+      ...(abandonsRun && !preserveWork ? { runId: null } : {}),
       reviewVerdict: null,
     });
 

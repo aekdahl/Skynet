@@ -858,7 +858,9 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     const body = MoveTaskRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
-      return await ops.transitionTask(ws(req), req.params.tid, body.data.to, req.principal!.operatorId);
+      return await ops.transitionTask(ws(req), req.params.tid, body.data.to, req.principal!.operatorId, {
+        preserve: body.data.preserve,
+      });
     } catch (err) {
       return fail(reply, err);
     }

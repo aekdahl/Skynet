@@ -500,7 +500,7 @@ export function computeFeatureMergeBriefing(input: {
 /** Why a run got halted and handed to a human — see `escalate()`/`raiseEscalationCard()`.
  *  "agent" is agent-driven (the run itself called AskUserQuestion with header
  *  "ESCALATE") and is set directly in `raise()`, never via `escalate()`. */
-type EscalationSource = "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing" | "agent" | "stuck-review";
+type EscalationSource = "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing" | "agent" | "stuck-review" | "paused";
 
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
@@ -869,7 +869,7 @@ export class Orchestrator {
         policy,
       });
       if (auto) {
-        const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: auto.by, at: now() };
+        const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: auto.by, at: now() };
         await this.hub.runLog(runId, `auto-approved (${auto.by}): ${item.command ?? item.title}`);
         await this.hub.raiseAndAutoResolveHitl(item, resolution);
         await this.deliver(item, resolution);
@@ -903,6 +903,7 @@ export class Orchestrator {
       guidance: null,
       targetBranch: null,
       memoryNote: null,
+      resetWork: false,
       by: "system:timeout",
       at: now(),
     };
@@ -1216,7 +1217,7 @@ export class Orchestrator {
     // resetting. Flagged, not silently missing — narrowing the breaker to
     // exactly the two mechanisms its spec named, rather than expanding scope.
     if (project?.approvalLevel === "full" && project.autonomy && risk !== "high") {
-      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "policy:full-autonomy", at: now() };
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "policy:full-autonomy", at: now() };
       await this.hub.runLog(runId, `auto-merged (policy:full-autonomy): ${item.title}`);
       await this.hub.raiseAndAutoResolveHitl(item, resolution);
       await this.deliver(item, resolution);
@@ -1751,6 +1752,16 @@ export class Orchestrator {
     // (re)assigned.
     if (task.runId) {
       const existing = await this.store.getRun(task.runId);
+      // A run this orchestrator itself paused (see pauseRun — "Send to Todo,
+      // keep the work") sits at `waiting` with its worktree intact and an
+      // escalations-map record, same shape as an escalated-and-not-yet-resumed
+      // run. A plain "Start →" click on the now-Todo task should actually
+      // relaunch it in place, not return the inert record — this is the only
+      // way `waiting` shows up on a non-`ongoing` task, so it's unambiguous.
+      if (existing && existing.status === "waiting" && this.escalations.has(existing.id)) {
+        await this.relaunchEscalated(existing.id, "", false);
+        return (await this.store.getRun(existing.id)) ?? existing;
+      }
       if (existing && existing.status !== "done") return existing;
     }
 
@@ -2362,6 +2373,26 @@ export class Orchestrator {
     await this.raiseEscalationCard(run, reason, source, { git, baseRef: live?.baseRef, taskId });
   }
 
+  /** Operator-driven pause (task sent back to Todo with "keep the work"): halts
+   *  the run and preserves its worktree exactly like `escalate()`, but raises NO
+   *  HITL card — nothing needs the operator's attention right now, they just
+   *  chose to come back to it later. Resuming happens the ordinary way: clicking
+   *  "Start →" on the task again calls `assignTask`, which detects a `waiting`
+   *  run still on record and relaunches it in place (see the DEF-003 guard). */
+  async pauseRun(runId: string): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (!run) return;
+    const live = this.live.get(runId);
+    const git = live?.git ?? (await this.gitContextForAgent(runId).catch(() => undefined));
+    if (live) await live.handle.stop().catch(() => undefined);
+    await this.freeRunner(live?.agentId ?? null);
+    this.live.delete(runId);
+    const taskId = live?.taskId ?? (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === run.id)?.id ?? null;
+    this.escalations.set(runId, { git, baseRef: live?.baseRef, taskId, source: "paused" });
+    await this.hub.runStatus(runId, "waiting");
+    await this.hub.runLog(runId, "sent back to Todo — work preserved, resume anytime");
+  }
+
   /** Build + raise the actual escalation HITL — factored out of `escalate()` so
    *  `relaunchEscalated`'s failure path (below) can re-raise a fresh, actionable
    *  card after a failed resume/reassign attempt, without `escalate()`'s
@@ -2393,7 +2424,9 @@ export class Orchestrator {
                   ? "Provider key out of credits — top up to resume"
                   : source === "stuck-review"
                     ? "Parked in review with no pending decision"
-                    : "Run keeps failing — needs a human",
+                    : source === "paused"
+                      ? "Resume failed — needs a human"
+                      : "Run keeps failing — needs a human",
       why: reason,
       risk: "medium",
       rationale: null,
@@ -2514,6 +2547,26 @@ export class Orchestrator {
       this.escalations.delete(runId);
       this.failCounts.delete(runId);
       await this.hub.runLog(runId, "escalation resolved — resuming the agent with your guidance");
+      return;
+    }
+    // Reassign + reset: the operator explicitly wants a CLEAN slate on the new
+    // runner, not a continuation — same effect as Stop, then a fresh assignTask
+    // for the same task (new run id, new branch, new worktree). Only meaningful
+    // alongside a real reassign; a bare "reset" isn't itself an action.
+    if (resolution.action === "reassign" && resolution.resetWork) {
+      const run = await this.store.getRun(runId);
+      const taskId = this.escalations.get(runId)?.taskId ?? live?.taskId ?? null;
+      if (live) await live.handle.stop().catch(() => undefined);
+      await this.freeRunner(live?.agentId ?? null);
+      this.live.delete(runId);
+      const git = this.escalations.get(runId)?.git ?? live?.git;
+      if (git) await git.worktrees.retire(runId).catch(() => undefined);
+      await this.releaseScratchCwd(live?.scratchCwd);
+      this.escalations.delete(runId);
+      this.failCounts.delete(runId);
+      await this.hub.runStatus(runId, "done");
+      await this.hub.runLog(runId, "escalation resolved — operator reassigned with a clean slate (previous work discarded)");
+      if (run && taskId) await this.assignTask(run.projectId, taskId).catch(() => undefined);
       return;
     }
     // Reassign, or help a run whose handle was already torn down → relaunch a
@@ -4324,13 +4377,14 @@ export class Orchestrator {
               if (!handle) return;
               const resolution: Resolution =
                 raise.kind === "approval"
-                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "deep-review-harness", at: now() }
+                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "deep-review-harness", at: now() }
                   : {
                       action: "reject",
                       optionIndex: null,
                       guidance: "Don't ask questions or make a plan — just use the browser to check the change, then reply with only the required JSON verdict.",
                       targetBranch: null,
                       memoryNote: null,
+                      resetWork: false,
                       by: "deep-review-harness",
                       at: now(),
                     };
@@ -4491,20 +4545,21 @@ export class Orchestrator {
               if (raise.kind === "approval" && isBash) {
                 const auto = decideAutoApproval({ command: raise.command, level: project.approvalLevel, rules: project.approvalRules, policy });
                 resolution = auto
-                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: auto.by, at: now() }
+                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: auto.by, at: now() }
                   : {
                       action: "reject",
                       optionIndex: null,
                       guidance: "That command isn't auto-approved under this project's policy (no human is available to review it here). Try a different way to exercise the change against the live preview, or report what you've already found.",
                       targetBranch: null,
                       memoryNote: null,
+                      resetWork: false,
                       by: "breaker-harness",
                       at: now(),
                     };
               } else if (raise.kind === "approval") {
                 // Browser actions against the preview are the sanctioned
                 // mechanism — same unattended auto-approve as the reviewer.
-                resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "breaker-harness", at: now() };
+                resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "breaker-harness", at: now() };
               } else {
                 resolution = {
                   action: "reject",
@@ -4512,6 +4567,7 @@ export class Orchestrator {
                   guidance: "Don't ask questions or make a plan — just try to break the change against the live preview, then reply with only the required JSON verdict.",
                   targetBranch: null,
                   memoryNote: null,
+                  resetWork: false,
                   by: "breaker-harness",
                   at: now(),
                 };
@@ -4630,13 +4686,14 @@ export class Orchestrator {
               if (!handle) return;
               const resolution: Resolution =
                 raise.kind === "approval"
-                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "explore-harness", at: now() }
+                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "explore-harness", at: now() }
                   : {
                       action: "reject",
                       optionIndex: null,
                       guidance: "Don't ask questions — just read the code, then reply with only the required JSON.",
                       targetBranch: null,
                       memoryNote: null,
+                      resetWork: false,
                       by: "explore-harness",
                       at: now(),
                     };
@@ -4810,7 +4867,7 @@ export class Orchestrator {
       }
     }
     if (decision === "approve" && canResolve) {
-      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "autonomy", at };
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "autonomy", at };
       const resolved = await this.hub.resolveHitl(hitl.id, resolution);
       if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(hitl, resolution);
       // Once an agent has approved a review-state task, move it to `done` and

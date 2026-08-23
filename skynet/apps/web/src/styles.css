@@ -1620,6 +1620,17 @@ button.kb-done:hover { opacity: 1; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 .btn.confirm-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn.confirm-danger:hover { filter: brightness(1.08); border-color: var(--danger); }
+/* useChoice() — a 3+-way decision (e.g. reset vs. keep the work) instead of a
+   plain yes/no; each option is its own full-width card so its consequence
+   (the hint line) reads clearly rather than being crammed into a button label. */
+.confirm-choices { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.confirm-choice { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 10px 12px; background: var(--raised); border: 1px solid var(--line); border-radius: 9px; color: var(--text); cursor: pointer; transition: border-color var(--motion-fast), background var(--motion-fast); }
+.confirm-choice:hover { border-color: var(--accent); background: color-mix(in oklch, var(--accent), transparent 92%); }
+.confirm-choice-label { font-weight: 600; font-size: var(--fs); }
+.confirm-choice-hint { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.confirm-choice-primary { border-color: var(--accent); }
+.confirm-choice-danger:hover { border-color: var(--danger); background: color-mix(in oklch, var(--danger), transparent 92%); }
+.confirm-choice-danger .confirm-choice-label { color: var(--danger); }
 @keyframes confirm-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes confirm-pop { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .confirm-overlay, .confirm-card { animation: none; } }
