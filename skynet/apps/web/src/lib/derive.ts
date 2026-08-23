@@ -363,6 +363,7 @@ export const KIND_META: Record<HitlKind, { label: string; color: string }> = {
   merge: { label: "MERGE CONFLICT", color: "var(--danger)" },
   escalation: { label: "NEEDS HELP", color: "var(--danger)" },
   verifier: { label: "CHECKS FAILED", color: "var(--danger)" },
+  notice: { label: "NOTICE", color: "var(--info)" },
 };
 
 // ─── runs board row classification ──────────────────────────────────────────

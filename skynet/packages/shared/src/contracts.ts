@@ -43,7 +43,7 @@ export type PlanStepState = z.infer<typeof PlanStepState>;
 // already approved and the merge itself succeeded — the merge commit is undone
 // (MergeEngine.process's bounce) pending this decision: approve retries the
 // merge+check, reject/modify bounces the agent to revise with the check output.
-export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "verifier"]);
+export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "verifier", "notice"]);
 export type HitlKind = z.infer<typeof HitlKind>;
 
 /** Default single-tenant workspace until real provisioning lands. */

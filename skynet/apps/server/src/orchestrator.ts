@@ -220,7 +220,7 @@ const BREAKER_TIMEOUT_MS = 4 * 60_000;
 // yet at this point in a brief's life (it's pre-work, before any run/task), so
 // there's no per-agent model to inherit — hardcoded to Claude's default model
 // (matches DEFAULT_PROVIDERS' first "claude" entry in packages/shared/src/providers.ts).
-const EXPLORE_MODEL = "opus-4.8";
+const EXPLORE_MODEL = "opus-5";
 const EXPLORE_MAX_TURNS = 14;
 const EXPLORE_TIMEOUT_MS = 4 * 60_000;
 
@@ -2100,6 +2100,12 @@ export class Orchestrator {
     // modify) just dismisses the notice; the real "resume" lever is the
     // project's own autonomy toggle, not a run-lifecycle action.
     if (item.kind === "escalation" && item.flags.includes("autonomy-paused")) return;
+
+    // A `notice` (e.g. a model-mismatch warning) was never gating anything in
+    // the runner — it was raised without a matching canUseTool Promise, so
+    // there's nothing to resume. resolveHitl already marked it resolved before
+    // reaching here; any action just dismisses it from the Inbox.
+    if (item.kind === "notice") return;
 
     // Escalation has its own resolution semantics (help & resume / reassign / stop).
     if (item.kind === "escalation") {

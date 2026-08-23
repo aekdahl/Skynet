@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type { ProviderId, ProviderInfo, Agent, SecretMeta, TaskRun } from "@skynet/shared";
+import type { ProviderId, ProviderInfo, Agent, HitlItem, SecretMeta, TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
-import { computeUsageRollup, fmtCost, fmtNum, providerInfo, providerReadiness, runnerIdleLabel, type UsageRollup } from "../lib/derive";
+import { computeUsageRollup, fmtCost, fmtNum, openQueue, providerInfo, providerReadiness, runnerIdleLabel, type UsageRollup } from "../lib/derive";
 import { PrimaryButton } from "../components/empty";
 import { useConfirm } from "../components/confirm";
 import { toast } from "../components/toast";
@@ -359,6 +359,7 @@ function AgentCard({
   informMode,
   informSelected,
   onToggleInform,
+  notice,
 }: {
   r: Agent;
   busy: TaskRun;
@@ -375,6 +376,11 @@ function AgentCard({
   informMode?: boolean;
   informSelected?: boolean;
   onToggleInform?: () => void;
+  // An open `notice`-kind HITL for this agent's live run (e.g. a model
+  // mismatch) — informational, never blocks the run. Undefined = nothing to
+  // flag. Only threaded for the busy card: a notice tied to a run that's
+  // since gone idle is still visible in the Inbox, just not badged here.
+  notice?: HitlItem;
 }) {
   const cost = costOf(costRoll);
   return (
@@ -394,6 +400,11 @@ function AgentCard({
             <span className="dot dot-running" />
             busy
           </span>
+          {notice && (
+            <span className="fleet-notice-badge" title={notice.why}>
+              ⚠ {notice.title}
+            </span>
+          )}
           <span className="fleet-caret" aria-hidden="true">›</span>
         </div>
         <div className="fleet-meta">
@@ -511,8 +522,11 @@ export function FleetView({
   onOpenTask: (id: string) => void;
   onOpenAgent: (id: string) => void;
 }) {
-  const { fleet, runs, providers, createAgent, updateAgent, deleteAgent, informRuns } =
+  const { fleet, runs, providers, queue, createAgent, updateAgent, deleteAgent, informRuns } =
     useStore();
+  // Open `notice`-kind gates (e.g. a model mismatch), keyed by runId, for the
+  // busy card's badge — see AgentCard's `notice` prop.
+  const noticeByRun = new Map(openQueue(queue).filter((q) => q.kind === "notice").map((q) => [q.runId, q]));
   const confirm = useConfirm();
   // Mass inform (roadmap "Mass inform"): pick a set of BUSY agents (only a
   // live run has a next turn to ride a note on) and attach a note that rides
@@ -701,6 +715,7 @@ export function FleetView({
                           count={taskCountOf(r)}
                           costRoll={usageByAgent[r.id]}
                           actions={actions}
+                          notice={noticeByRun.get(busyOf(r)!.id)}
                           informMode={informMode}
                           informSelected={informSelected.has(r.id)}
                           onToggleInform={() =>

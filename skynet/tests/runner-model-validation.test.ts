@@ -12,7 +12,7 @@ import { MemoryStore } from "../apps/server/src/store/memory.js";
 describe("provider/model validation — advisory", () => {
   it("accepts any non-empty model for a known provider, including unlisted/new ones", async () => {
     const catalog = await new MemoryStore().listProviders();
-    expect(modelValidForProvider(catalog, "claude", "opus-4.8")).toBeUndefined(); // listed
+    expect(modelValidForProvider(catalog, "claude", "opus-5")).toBeUndefined(); // listed
     expect(modelValidForProvider(catalog, "claude", "claude-opus-4-9-20260601")).toBeUndefined(); // new, unlisted
     expect(modelValidForProvider(catalog, "gemini", "gemini-4-ultra")).toBeUndefined(); // new, unlisted
   });
@@ -32,10 +32,10 @@ describe("provider/model validation — advisory", () => {
 describe("isKnownModel — UI 'verified' signal (never a gate)", () => {
   it("true only for a provider's curated suggestions", async () => {
     const catalog = await new MemoryStore().listProviders();
-    expect(isKnownModel(catalog, "claude", "opus-4.8")).toBe(true);
-    expect(isKnownModel(catalog, "claude", " opus-4.8 ")).toBe(true); // trims
+    expect(isKnownModel(catalog, "claude", "opus-5")).toBe(true);
+    expect(isKnownModel(catalog, "claude", " opus-5 ")).toBe(true); // trims
     expect(isKnownModel(catalog, "claude", "claude-opus-4-9")).toBe(false); // custom/new
-    expect(isKnownModel(catalog, "gemini", "opus-4.8")).toBe(false); // wrong provider
+    expect(isKnownModel(catalog, "gemini", "opus-5")).toBe(false); // wrong provider
     expect(isKnownModel(catalog, "nope", "anything")).toBe(false); // unknown provider
   });
 });
