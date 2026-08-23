@@ -118,7 +118,16 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     // Telegram and require it (or a recovery code) at /api/auth/mfa. The code
     // never leaves the server except via Telegram, so a stolen password alone
     // can't complete the login.
-    const { challengeId, code } = createChallenge(principal);
+    //
+    // `reused` means an earlier attempt (retried form submit, a double click,
+    // a script hitting this endpoint more than once) already has a live,
+    // unexpired code out for this exact operator — reuse it silently rather
+    // than minting + Telegram-sending another. Without this, a handful of
+    // repeated login attempts in a short window used to flood Telegram with
+    // one fresh code apiece, all racing each other before any single one got
+    // used.
+    const { challengeId, code, reused } = createChallenge(principal);
+    if (reused) return { mfaRequired: true, challengeId };
     if (config.telegramBotToken && config.telegramOwnerChatId) {
       try {
         await new TelegramClient(config.telegramBotToken).sendMessage(
