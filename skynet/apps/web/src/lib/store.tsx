@@ -151,6 +151,7 @@ export interface Store extends StoreState {
       instructions?: string;
       importGithubIssues?: boolean;
       charter?: ProjectCharter;
+      githubCredentialId?: string;
     },
   ) => Promise<Project>;
   updateProject: (
@@ -644,6 +645,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           instructions: opts?.instructions,
           importGithubIssues: opts?.importGithubIssues,
           charter: opts?.charter,
+          githubCredentialId: opts?.githubCredentialId,
         });
         // Optimistically land it in the store so navigating into it renders
         // immediately (the WS project.upserted reconciles the same row shortly).

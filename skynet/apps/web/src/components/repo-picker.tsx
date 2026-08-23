@@ -10,19 +10,29 @@ import * as api from "../lib/client";
 
 /** The repos the connection can bind to. `null` while loading. Fetched LIVE (not
  *  from the connect-time snapshot) so a connection made before the repo list was
- *  paginated — or before newer repos existed — still shows every current repo. */
-export function useConnectedRepos(): GithubRepo[] | null {
+ *  paginated — or before newer repos existed — still shows every current repo.
+ *  Pass a GitHub credential id to list THAT account's repos instead of the
+ *  workspace default connection (a second PAT added in Integrations); the list
+ *  refetches (and resets to loading) whenever the credential changes. */
+export function useConnectedRepos(credentialId?: string): GithubRepo[] | null {
   const [repos, setRepos] = useState<GithubRepo[] | null>(null);
   useEffect(() => {
     let cancelled = false;
+    setRepos(null); // switching accounts → back to loading, not the old account's list
     api
-      .fetchGithubRepos()
+      .fetchGithubRepos(credentialId)
       .then((rs) => {
         if (!cancelled) setRepos(rs.filter((r) => r.selected));
       })
-      .catch(() =>
+      .catch(() => {
         // Live fetch failed (offline / transient GitHub error / token gone) — fall
-        // back to the stored snapshot so the picker isn't needlessly empty.
+        // back to the stored snapshot so the picker isn't needlessly empty. The
+        // snapshot only describes the DEFAULT connection, so a specific
+        // credential's failure degrades to empty rather than the wrong account.
+        if (credentialId) {
+          if (!cancelled) setRepos([]);
+          return;
+        }
         api
           .fetchGithub()
           .then(({ connection }) => {
@@ -30,12 +40,12 @@ export function useConnectedRepos(): GithubRepo[] | null {
           })
           .catch(() => {
             if (!cancelled) setRepos([]);
-          }),
-      );
+          });
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [credentialId]);
   return repos;
 }
 

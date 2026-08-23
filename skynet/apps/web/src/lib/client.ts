@@ -592,6 +592,9 @@ export function createProject(body: {
   baseBranch?: string;
   importGithubIssues?: boolean;
   charter?: ProjectCharter;
+  // Pin the project to a specific GitHub account (a credential added in
+  // Integrations); omit → the workspace default connection.
+  githubCredentialId?: string;
 }) {
   return req<Project>("POST", "/api/projects", body);
 }

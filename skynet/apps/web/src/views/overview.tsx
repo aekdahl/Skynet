@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ApprovalLevel, GithubOwner, Project, ProjectCharter } from "@skynet/shared";
+import type { ApprovalLevel, GithubOwner, Project, ProjectCharter, SecretMeta } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import {
@@ -165,6 +165,7 @@ export function NewProjectCard({
       approvalLevel?: ApprovalLevel;
       importGithubIssues?: boolean;
       charter?: ProjectCharter;
+      githubCredentialId?: string;
     },
   ) => void | Promise<void>;
 }) {
@@ -186,6 +187,15 @@ export function NewProjectCard({
   const [approvalTouched, setApprovalTouched] = useState(false);
   const [repo, setRepo] = useState("");
   const [repoPath, setRepoPath] = useState("");
+  // Which GitHub account's repos the "Existing repo" picker lists — and which
+  // account the created project is pinned to (Project.githubCredentialId).
+  // "" = the workspace default connection. Hidden until a second account
+  // exists (added in Integrations), same pattern as ProjectGithubAccount.
+  const [githubCredId, setGithubCredId] = useState("");
+  const [githubAccounts, setGithubAccounts] = useState<SecretMeta[]>([]);
+  useEffect(() => {
+    api.fetchSecrets().then(({ secrets }) => setGithubAccounts(secrets.filter((s) => s.provider === "github"))).catch(() => setGithubAccounts([]));
+  }, []);
   // Seed the backlog from the repo's open GitHub issues on creation, and turn on
   // ongoing write-back — only meaningful for an EXISTING repo (a brand-new one
   // Skynet just created has no issues yet). Defaults on: it's the common case
@@ -205,7 +215,7 @@ export function NewProjectCard({
   const [charterDrafting, setCharterDrafting] = useState(false);
   const [charterError, setCharterError] = useState<string | null>(null);
 
-  const repos = useConnectedRepos();
+  const repos = useConnectedRepos(githubCredId || undefined);
   const owners = useRepoOwners();
   const hasRepos = (repos?.length ?? 0) > 0;
   const canCreate = (owners?.length ?? 0) > 0;
@@ -236,6 +246,7 @@ export function NewProjectCard({
     setRepo("");
     setRepoPath("");
     setImportIssues(true);
+    setGithubCredId("");
     setNewRepoName("");
     setNewRepoNameTouched(false);
     setAutonomy(projects.length > 0);
@@ -266,6 +277,7 @@ export function NewProjectCard({
     repoPath?: string;
     createRepo?: { name: string; private: boolean; owner?: string };
     importGithubIssues?: boolean;
+    githubCredentialId?: string;
   }) => {
     setCreating(true);
     setError(null);
@@ -376,6 +388,21 @@ export function NewProjectCard({
       )}
       {mode === "existing" && (
         <>
+          {githubAccounts.length > 0 && (
+            <label className="proj-approval" title="Which GitHub account to list repos from — the project clones, pushes, and opens PRs as this account. Manage accounts in Integrations.">
+              <span className="proj-approval-label mono">Account</span>
+              <select
+                className="proj-approval-select"
+                value={githubCredId}
+                onChange={(e) => { setGithubCredId(e.target.value); setRepo(""); }}
+              >
+                <option value="">Default connection</option>
+                {githubAccounts.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name || "account"} · ····{a.last4}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <RepoPicker repos={repos} value={repo} onChange={setRepo} />
           <label
             className="np-private"
@@ -556,6 +583,7 @@ export function NewProjectCard({
                   repo: mode === "existing" ? repo || undefined : undefined,
                   repoPath: mode === "folder" ? repoPath || undefined : undefined,
                   importGithubIssues: mode === "existing" ? importIssues : undefined,
+                  githubCredentialId: mode === "existing" && githubCredId ? githubCredId : undefined,
                 });
               }}
             >
