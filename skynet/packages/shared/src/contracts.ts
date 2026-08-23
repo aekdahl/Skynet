@@ -1527,6 +1527,21 @@ export const SecretMeta = z.object({
 });
 export type SecretMeta = z.infer<typeof SecretMeta>;
 
+/** One credential lifecycle event (created/rotated/removed) — kept past the
+ *  credential's own deletion so "why did this provider disconnect" has an
+ *  answer: who removed it and when. Never carries the key itself. */
+export const SecretAuditEntry = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  credentialId: z.string(),
+  provider: CredentialProvider,
+  label: z.string(), // display name at the time of the event ("" = default)
+  action: z.enum(["created", "rotated", "removed"]),
+  operatorId: z.string(),
+  at: Timestamp,
+});
+export type SecretAuditEntry = z.infer<typeof SecretAuditEntry>;
+
 /** Body for setting/rotating a credential's key. */
 export const SetSecretRequest = z.object({
   apiKey: z.string().min(1),

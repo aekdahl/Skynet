@@ -48,6 +48,13 @@ export const config = {
   // same "just a file on disk, no native deps" trust model as STORE=file
   // itself. The private key never leaves this file / this host.
   complianceKeyPath: process.env.SKYNET_COMPLIANCE_KEY_PATH || undefined,
+  // Where provider credentials (Fly.io tokens, per-project LLM keys, any
+  // Settings-added key) persist for STORE=file — see secrets/file.ts. Sealed
+  // ciphertext only, same ".../data-dir/*.json, no native deps" trust model
+  // as dbPath itself. Defaults next to the data file. Unset with STORE=memory
+  // (there's nothing to persist) or STORE=postgres (PostgresSecretStore is
+  // used instead, unaffected by this).
+  secretsPath: process.env.SKYNET_SECRETS_PATH || undefined,
   // No silent default: pick the fan-out backbone explicitly (BUS=memory for
   // single-process dev/tests; BUS=redis to fan out across replicas).
   bus: (process.env.BUS || undefined) as "memory" | "redis" | undefined,

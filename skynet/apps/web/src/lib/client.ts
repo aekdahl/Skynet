@@ -13,6 +13,7 @@ import {
   type ResolveAction,
   type SafetyPolicy,
   type SecretMeta,
+  type SecretAuditEntry,
   type Project,
   type ProjectCharter,
   type WorkspaceSettings,
@@ -518,6 +519,11 @@ export function createCredential(provider: string, name: string, apiKey: string)
 // save that already happened; this is UI feedback only.
 export function verifyCredential(id: string) {
   return req<VerifyCredentialResult>("POST", `/api/credentials/${id}/verify`);
+}
+// Credential lifecycle log (created/rotated/removed, who + when — never the
+// key) — answers "why did this provider suddenly show not connected".
+export function fetchSecretAudit() {
+  return req<{ audit: SecretAuditEntry[] }>("GET", "/api/secrets/audit");
 }
 
 // ─── Service tokens (MCP / programmatic access) ────────────────────────────

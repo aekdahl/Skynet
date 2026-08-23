@@ -7,10 +7,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   SAFETY_DEFAULTS,
+  type CredentialProvider,
   type GithubConnection,
   type GithubInstallation,
   type GithubRepo,
   type SafetyPolicy,
+  type SecretAuditEntry,
   type SecretMeta,
 } from "@skynet/shared";
 import * as api from "../lib/client";
@@ -619,6 +621,43 @@ function IntegrationSection({
   );
 }
 
+// Recent credential activity for one provider — answers "why did this
+// suddenly show not connected" by naming who removed (or added/rotated) a
+// key and when. Survives past the credential's own deletion (unlike the
+// account list above, which only shows what's currently stored).
+function CredentialActivity({ provider }: { provider: CredentialProvider }) {
+  const [entries, setEntries] = useState<SecretAuditEntry[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .fetchSecretAudit()
+      .then(({ audit }) => { if (!cancelled) setEntries(audit.filter((e) => e.provider === provider)); })
+      .catch(() => { if (!cancelled) setEntries([]); });
+    return () => { cancelled = true; };
+  }, [provider]);
+
+  if (!entries || entries.length === 0) return null;
+  return (
+    <details className="gh-acct-activity">
+      <summary>Recent activity ({entries.length})</summary>
+      <div className="settings-list gh-acct-list">
+        {entries.slice(0, 10).map((e) => (
+          <div className="mcp-tok-row" key={e.id}>
+            <div className="mcp-tok-main">
+              <div className="mcp-tok-top">
+                <span className="settings-name">
+                  {e.label || "account"} {e.action}
+                </span>
+              </div>
+              <div className="mcp-tok-meta mono">{e.operatorId} · {new Date(e.at).toLocaleString()}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 // Secondary GitHub ACCOUNTS — extra PATs beyond the default connection, so a
 // project can push to / store in a specific account (e.g. work on the business
 // account it pays for, personal on your own). Stored as `github` credentials in
@@ -681,6 +720,7 @@ function GithubAccounts() {
           ))}
         </div>
       )}
+      <CredentialActivity provider="github" />
       <div className="gh-acct-add">
         <input
           className="settings-input gh-acct-name"
@@ -776,6 +816,7 @@ function FlyAccounts() {
           ))}
         </div>
       )}
+      <CredentialActivity provider="fly" />
       <div className="gh-acct-add">
         <input
           className="settings-input gh-acct-name"

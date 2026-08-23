@@ -43,6 +43,11 @@ const ALLOW = new Set<string>([
   // store (master key), so no offline journey; the route is guarded server-side
   // and the set/delete-by-id paths it shares ARE journey-covered.
   "createCredential",
+  // credential lifecycle log (created/rotated/removed) — a read-only Settings/
+  // Integrations panel with no state-changing journey step; the underlying
+  // record/list behavior is covered server-side by secrets-audit.test.ts and
+  // secrets-file-store.test.ts (durability across a restart).
+  "fetchSecretAudit",
   // live-verify a credential against its real vendor API (Anthropic/OpenAI/
   // Google/Cursor/GitHub/OpenRouter) — needs a real key AND makes a genuine
   // outbound call, so it can't run in an offline journey; covered server-side

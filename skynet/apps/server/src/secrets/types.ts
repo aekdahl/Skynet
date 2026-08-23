@@ -6,7 +6,11 @@
 // id). The DEFAULT credential for a provider has `id === provider` — that's the
 // historical single key, so existing rows need no migration.
 
-import type { CredentialProvider } from "@skynet/shared";
+import type { CredentialProvider, SecretAuditEntry } from "@skynet/shared";
+
+// Re-exported so the rest of secrets/* can import it from this local module,
+// same convention as CredentialProvider above.
+export type { SecretAuditEntry };
 
 export interface SecretRecord {
   /** Credential id an agent references. Equals the provider for the provider's
@@ -30,4 +34,7 @@ export interface SecretStore {
   get(workspaceId: string, id: string): Promise<SecretRecord | undefined>;
   list(workspaceId: string): Promise<SecretRecord[]>;
   delete(workspaceId: string, id: string): Promise<void>;
+  recordAudit(entry: SecretAuditEntry): Promise<void>;
+  /** Newest first. */
+  listAudit(workspaceId: string): Promise<SecretAuditEntry[]>;
 }
