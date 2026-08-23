@@ -35,12 +35,19 @@ import type { Bus } from "../bus.js";
 import type { Operations } from "../operations.js";
 import { projectScope } from "./project-scope.js";
 import {
+  clip,
+  clipPatch,
+  DEFAULT_LOG_DETAIL_CHARS,
   DEFAULT_LOG_LIMIT,
   MAX_LIST_LIMIT,
+  MAX_LOG_DETAIL_CHARS,
   MAX_LOG_LIMIT,
+  MAX_PATCH_CHARS,
   paginate,
   SNAPSHOT_CAP,
   summarizeAudit,
+  summarizeBrief,
+  summarizeHitl,
   summarizeRun,
   summarizeTask,
 } from "./summarize.js";
@@ -59,7 +66,7 @@ const INSTRUCTIONS = `Skynet orchestrates a fleet of coding runs across projects
 5. wait_for_agent to block until an agent finishes or needs review.
 6. Move work across the board with transition_task (triage→todo, review→done, ongoing→todo to abandon); prioritize with move_task / reorder_task; group with features + milestones.
 Risky actions (approving diffs, pushing to GitHub) are gated behind HITL. A token without the "approver" scope can observe and drive runs but cannot resolve gates — a human must.
-list_agents / list_tasks / list_audit / get_snapshot return COMPACT SUMMARIES, not full records — no activity logs, descriptions, or captured diff patches, so listing a busy workspace stays cheap. Once you've found the ONE run/task/decision you care about, drill in with get_agent / get_task / get_audit for its full detail. get_agent's log defaults to the most recent entries (see logTotal/logTruncated) rather than a run's entire history.
+Every list_* tool, get_snapshot, wait_for_agent, and the skynet://snapshot resource return COMPACT SUMMARIES, not full records — no activity logs, long docs, decision prose, or captured diff patches, so reading a busy workspace stays cheap. Once you've found the ONE record you care about, drill in: get_agent (run + log), get_task, get_hitl (a decision's full command/output/walkthrough), get_brief, get_audit. Clipped text ends with an explicit "…[+N chars]" marker; large payloads have raise-the-cap params (get_agent's logDetailChars, run_diff/get_audit's maxPatchChars) — never assume an unmarked field was truncated.
 Every update_* tool (update_task, update_feature, update_milestone, update_project, update_runner, update_workspace_settings) is a true PATCH: send ONLY the field(s) you actually want to change. Omitting a field leaves it untouched; explicitly passing a nullable field as null CLEARS it (e.g. update_task's featureId: null removes the task from its feature). Sending null for a field you don't intend to change WILL wipe it out — never fill in every schema property just because it's listed as a parameter.`;
 
 type Shape = z.ZodRawShape;
@@ -165,8 +172,11 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     await priorClose();
   };
 
+  // Compact JSON, deliberately NOT pretty-printed: MCP results are read by a
+  // model, not a human, and 2-space indentation on deeply nested records adds
+  // a double-digit percentage of pure whitespace tokens to every single call.
   const ok = (data: unknown): CallToolResult => ({
-    content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }],
+    content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data) }],
   });
   const err = (message: string): CallToolResult => ({ content: [{ type: "text", text: message }], isError: true });
 
@@ -236,27 +246,35 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     limit: z.number().int().positive().max(MAX_LIST_LIMIT).optional(),
     offset: z.number().int().nonnegative().optional(),
   };
+  // The summarized workspace overview, shared verbatim by the get_snapshot
+  // tool AND the skynet://snapshot resource — the resource previously returned
+  // the RAW snapshot (every run's full activity log, every brief's full doc),
+  // silently bypassing the summarization the tool already had.
+  const snapshotView = async () => {
+    // filterSnapshot (not opts.filter): opts.filter only runs for
+    // project-restricted tokens (see tool()'s gate/filter branch below), which
+    // would skip summarization entirely for the common unrestricted case
+    // (human sessions, workspace-wide tokens) — exactly the callers this fix
+    // targets. filterSnapshot is a no-op when unrestricted, so this stays
+    // correct either way.
+    const snap = await projectAccess.filterSnapshot((await operations.snapshot(ws)) as Snapshot);
+    const runs = snap.runs.slice().sort((x, y) => y.lastHeartbeatAt - x.lastHeartbeatAt);
+    return {
+      ...snap,
+      runs: runs.slice(0, SNAPSHOT_CAP).map(summarizeRun),
+      runsTotal: runs.length,
+      tasks: snap.tasks.slice(0, SNAPSHOT_CAP).map(summarizeTask),
+      tasksTotal: snap.tasks.length,
+      queue: snap.queue.map(summarizeHitl),
+      solutionBriefs: snap.solutionBriefs.map(summarizeBrief),
+    };
+  };
   tool(
     "get_snapshot",
     "observe",
-    "Workspace overview: projects, fleet runners, HITL queue, providers, plus runs/tasks as compact summaries (same shape as list_agents/list_tasks — no activity logs or long text). Capped at 200 runs/tasks each (most recently active first); beyond that use list_agents/list_tasks with pagination, or get_agent/get_task for one record's full detail.",
+    "Workspace overview: projects, fleet runners, providers, plus runs/tasks/HITL queue/briefs as compact summaries (same shapes as list_agents/list_tasks/list_hitl/list_briefs — no activity logs, decision prose, or long docs). Capped at 200 runs/tasks each (most recently active first); beyond that use the list_* tools with pagination, or get_agent/get_task/get_hitl/get_brief for one record's full detail.",
     {},
-    async () => {
-      // selfGuarded (not opts.filter): opts.filter only runs for project-restricted
-      // tokens (see tool()'s gate/filter branch below), which would skip
-      // summarization entirely for the common unrestricted case (human sessions,
-      // workspace-wide tokens) — exactly the callers this fix targets.
-      // filterSnapshot is a no-op when unrestricted, so this stays correct either way.
-      const snap = await projectAccess.filterSnapshot((await operations.snapshot(ws)) as Snapshot);
-      const runs = snap.runs.slice().sort((x, y) => y.lastHeartbeatAt - x.lastHeartbeatAt);
-      return {
-        ...snap,
-        runs: runs.slice(0, SNAPSHOT_CAP).map(summarizeRun),
-        runsTotal: runs.length,
-        tasks: snap.tasks.slice(0, SNAPSHOT_CAP).map(summarizeTask),
-        tasksTotal: snap.tasks.length,
-      };
-    },
+    snapshotView,
     { readOnly: true, selfGuarded: true },
   );
   tool("list_projects", "observe", "List the workspace's projects.", {}, () => operations.listProjects(ws), {
@@ -281,11 +299,12 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   tool(
     "get_agent",
     "observe",
-    "Get one agent's full detail: status, plan, usage, and its activity log (tool calls + outputs). The log defaults to the most recent 100 entries (see `logTotal`/`logTruncated`); page further back with `logLimit`/`logOffset`.",
+    "Get one agent's full detail: status, plan, usage, and its activity log (tool calls + outputs). The log defaults to the most recent 100 entries (see `logTotal`/`logTruncated`); page further back with `logLimit`/`logOffset`. Each entry's expandable `detail` (a tool call's full input/output) is clipped to 600 chars by default — a clipped one ends with an `…[+N chars]` marker; re-call with `logDetailChars` (up to 6000) for more, or 0 to drop details and read just the lines.",
     {
       runId: z.string(),
       logLimit: z.number().int().positive().max(MAX_LOG_LIMIT).optional(),
       logOffset: z.number().int().nonnegative().optional(),
+      logDetailChars: z.number().int().nonnegative().max(MAX_LOG_DETAIL_CHARS).optional(),
     },
     async (a) => {
       const run = await operations.getRun(ws, a.runId);
@@ -294,12 +313,30 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
       // most useful default view is "what's happening now", not "what happened
       // first". An explicit logOffset always wins.
       const logOffset = a.logOffset ?? Math.max(0, run.log.length - logLimit);
-      const log = run.log.slice(logOffset, logOffset + logLimit);
+      const detailChars = a.logDetailChars ?? DEFAULT_LOG_DETAIL_CHARS;
+      const log = run.log.slice(logOffset, logOffset + logLimit).map((l) => {
+        if (l.detail == null) return l;
+        if (detailChars === 0) {
+          const { detail: _detail, ...rest } = l;
+          return rest;
+        }
+        return { ...l, detail: clip(l.detail, detailChars) };
+      });
       return { ...run, log, logTotal: run.log.length, logTruncated: log.length < run.log.length };
     },
     { readOnly: true },
   );
-  tool("run_diff", "observe", "Get a run's working diff: the unified patch plus added/deleted line counts and changed files. Read this to see what a run actually changed before resolving its review gate.", { runId: z.string() }, (a) => operations.runDiff(ws, a.runId), { readOnly: true });
+  tool(
+    "run_diff",
+    "observe",
+    "Get a run's working diff: the unified patch plus added/deleted line counts and changed files. Read this to see what a run actually changed before resolving its review gate. The patch is clipped to 30k chars by default (`patchTruncated`/`patchChars` report the cut); re-call with `maxPatchChars` (up to 200k) for more.",
+    { runId: z.string(), maxPatchChars: z.number().int().positive().max(MAX_PATCH_CHARS).optional() },
+    async (a) => {
+      const d = await operations.runDiff(ws, a.runId);
+      return { ...d, ...clipPatch(d.patch, a.maxPatchChars) };
+    },
+    { readOnly: true },
+  );
   tool(
     "list_tasks",
     "observe",
@@ -323,15 +360,31 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     readOnly: true,
     filter: (r) => projectAccess.filterByProjectId(r as { projectId: string }[]),
   });
-  tool("list_briefs", "observe", "List the workspace's solution briefs (pre-work planning docs — problem/approach/options/risks/acceptance criteria, ahead of any task or run). Scoped tokens see only their projects'.", {}, () => operations.listBriefs(ws), {
-    readOnly: true,
-    filter: (r) => projectAccess.filterByProjectId(r as { projectId: string }[]),
-  });
+  tool(
+    "list_briefs",
+    "observe",
+    "List the workspace's solution briefs as compact summaries (id, title, status, a clipped problem teaser, and section counts) — NOT the full docs; a brief's problem/approach/options/risks/criteria are long-form markdown. Use get_brief for one brief's full detail. Scoped tokens see only their projects'.",
+    {},
+    async () => (await projectAccess.filterByProjectId(await operations.listBriefs(ws))).map(summarizeBrief),
+    { readOnly: true, selfGuarded: true },
+  );
   tool("get_brief", "observe", "Get one solution brief's full detail.", { briefId: z.string() }, (a) => operations.getBrief(ws, a.briefId), { readOnly: true });
-  tool("list_hitl", "observe", "List the open human-in-the-loop queue (decisions awaiting an operator).", {}, () => operations.listHitl(ws), {
-    readOnly: true,
-    filter: (r) => projectAccess.filterByRun(r as { runId: string }[]),
-  });
+  tool(
+    "list_hitl",
+    "observe",
+    "List the open human-in-the-loop queue (decisions awaiting an operator) as compact summaries: kind, risk, title/why, options, diff stats, plus a clipped command and presence signals (outputChars, hasWalkthrough/hasMergeBrief) instead of the full decision prose. Use get_hitl for the ONE item you're about to act on.",
+    {},
+    async () => (await projectAccess.filterByRun(await operations.listHitl(ws))).map(summarizeHitl),
+    { readOnly: true, selfGuarded: true },
+  );
+  tool(
+    "get_hitl",
+    "observe",
+    "Get one HITL item's full record: the complete command/preview text, a verifier gate's captured check output, plan steps, and a diff gate's walkthrough + merge brief — everything list_hitl summarizes away. Read this (plus run_diff for a diff gate) before resolve_hitl.",
+    { hitlId: z.string() },
+    (a) => operations.getHitl(ws, a.hitlId),
+    { readOnly: true },
+  );
   tool(
     "list_audit",
     "observe",
@@ -346,7 +399,22 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     },
     { readOnly: true, selfGuarded: true },
   );
-  tool("get_audit", "observe", "Get one resolved HITL decision's full record: rationale, guidance, options, and — for a diff/merge decision — the captured unified diff patch. The full record list_audit summarizes away.", { hitlId: z.string() }, (a) => operations.getAuditRecord(ws, a.hitlId), { readOnly: true });
+  tool(
+    "get_audit",
+    "observe",
+    "Get one resolved HITL decision's full record: rationale, guidance, options, and — for a diff/merge decision — the captured unified diff patch. The full record list_audit summarizes away. The captured patch is clipped to 30k chars by default (`patchTruncated`/`patchChars` on the payload report the cut); re-call with `maxPatchChars` (up to 200k) for more.",
+    { hitlId: z.string(), maxPatchChars: z.number().int().positive().max(MAX_PATCH_CHARS).optional() },
+    async (a) => {
+      const record = await operations.getAuditRecord(ws, a.hitlId);
+      // payload is z.unknown() — only touch it when it carries a string patch.
+      const p = record.payload;
+      if (p && typeof p === "object" && typeof (p as { patch?: unknown }).patch === "string") {
+        return { ...record, payload: { ...(p as object), ...clipPatch((p as { patch: string }).patch, a.maxPatchChars) } };
+      }
+      return record;
+    },
+    { readOnly: true },
+  );
   tool(
     "get_settings",
     "observe",
@@ -518,13 +586,16 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   tool(
     "wait_for_agent",
     "observe",
-    "Block until an agent reaches a target status (default: any terminal state — 'done' or 'review'), or until timeoutMs elapses.",
+    "Block until an agent reaches a target status (default: any terminal state — 'done' or 'review'), or until timeoutMs elapses. Returns the run as a compact summary (same shape as list_agents) — drill into the transcript with get_agent, or the change with run_diff.",
     { runId: z.string(), status: TaskRunStatus.optional(), timeoutMs: z.number().int().positive().optional() },
     async (a) => {
       const isTerminal = (s: z.infer<typeof TaskRunStatus>) => s === "done" || s === "review";
       const satisfied = (s: z.infer<typeof TaskRunStatus>) => (a.status ? s === a.status : isTerminal(s));
+      // Summarized, not the full record: the full run embeds its ENTIRE
+      // activity log, and "the agent finished" is a triage moment — the caller
+      // decides what to read next (get_agent / run_diff), not receives it all.
       const agent = await operations.getRun(ws, a.runId); // 404 unless in this workspace
-      if (satisfied(agent.status)) return { agent, waited: false };
+      if (satisfied(agent.status)) return { agent: summarizeRun(agent), waited: false };
       const event = await waitForEvent(
         bus,
         ws,
@@ -533,7 +604,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
           (e.type === "run.completed" && e.runId === a.runId),
         clampWait(a.timeoutMs),
       );
-      const current = await operations.getRun(ws, a.runId);
+      const current = summarizeRun(await operations.getRun(ws, a.runId));
       return event ? { agent: current, waited: true } : { timedOut: true, agent: current };
     },
     { readOnly: true },
@@ -548,10 +619,10 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     { title: "Workspace snapshot", description: "Live projects, runs, fleet runners, HITL queue, and providers.", mimeType: "application/json" },
     async (uri) => {
       if (!hasScope(principal, "observe")) throw new Error(`Forbidden: reading ${uri.href} requires the "observe" scope.`);
-      // Same confinement as get_snapshot — a project-scoped token reads only its
-      // own projects' slice of the workspace.
-      const snapshot = await projectAccess.filterSnapshot(await operations.snapshot(ws));
-      return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(snapshot, null, 2) }] };
+      // Same confinement AND the same summarized shape as get_snapshot — the raw
+      // snapshot (full activity logs, full brief docs, decision prose) is
+      // exactly what summarize.ts exists to keep off the MCP wire.
+      return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(await snapshotView()) }] };
     },
   );
 
