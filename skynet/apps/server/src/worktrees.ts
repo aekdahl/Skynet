@@ -199,6 +199,30 @@ export class WorktreeProvisioner {
   }
 
   /**
+   * Re-create a run's worktree from its EXISTING branch — the recovery path for
+   * a resume/reassign whose worktree was cleaned up (reaper, restart, disk
+   * hygiene) while the branch, and thus all committed work, survived in the
+   * shared repo. Unlike {@link provision} this never deletes or re-cuts the
+   * branch: it checks the branch out into a fresh worktree exactly as it stands.
+   * Throws with a plain-language reason when the branch is gone too — the caller
+   * surfaces that instead of spawning an agent into a nonexistent directory
+   * (which fails with a misleading low-level error).
+   */
+  async reattach(runId: string, branch: string): Promise<{ cwd: string }> {
+    if (!(await this.refExists(`refs/heads/${branch}`))) {
+      throw new Error(`branch ${branch} no longer exists in the repo — its work is unrecoverable here`);
+    }
+    await mkdir(this.root, { recursive: true }).catch(() => undefined);
+    const path = this.pathFor(runId);
+    await this.removePath(path); // clear any stale/partial dir at this path
+    // A pruned worktree can leave stale metadata claiming the branch is still
+    // checked out, which would make `worktree add` refuse — clear it first.
+    await this.git(this.repo, "worktree", "prune").catch(() => undefined);
+    await this.git(this.repo, "worktree", "add", path, branch);
+    return { cwd: path };
+  }
+
+  /**
    * Commit everything in the agent's worktree onto its branch — so the branch
    * carries the agent's diff regardless of whether the runner committed itself.
    * Returns committed:false when the worktree is clean (nothing to integrate).
