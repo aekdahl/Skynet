@@ -26,10 +26,11 @@ const ACTION_META: Record<ResolveAction, { label: string; color: string }> = {
   modify: { label: "MODIFIED", color: "var(--info)" },
   option: { label: "PICKED OPTION", color: "var(--violet)" },
   reassign: { label: "REASSIGNED", color: "var(--violet)" },
+  dismiss: { label: "DISMISSED", color: "var(--muted)" },
 };
 
 const isResolveAction = (a: string): a is ResolveAction =>
-  a === "approve" || a === "reject" || a === "modify" || a === "option";
+  a === "approve" || a === "reject" || a === "modify" || a === "option" || a === "reassign" || a === "dismiss";
 
 // hub.resolveHitl snapshots the gate into payload so the audit is
 // self-contained (the live queue item is gone once resolved). Narrow defensively.

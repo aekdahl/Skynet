@@ -2488,10 +2488,24 @@ export class Orchestrator {
     this.autonomyStreaks.delete(projectId);
   }
 
-  /** Resolve an `escalation`: help & resume (modify), reassign, or stop (reject). */
+  /** Resolve an `escalation`: help & resume (modify), reassign, stop (reject), or
+   *  dismiss (clear the card, no operation on the run — see `dismiss` below). */
   private async deliverEscalation(item: HitlItem, resolution: Resolution): Promise<void> {
     const runId = item.runId;
     const live = this.live.get(runId);
+    if (resolution.action === "dismiss") {
+      // Genuinely a no-op: the card is already resolved (hub does that before
+      // calling deliver()) — don't stop/resume/reassign anything, and leave the
+      // escalation's saved git context in `this.escalations` alone, so Help &
+      // resume / Reassign are still available later (from the task page) even
+      // though this card is gone. A stuck-review escalation is the one case
+      // where the run's OWN status ("waiting", forced by raiseEscalationCard so
+      // the card would surface) doesn't match reality — it's still genuinely at
+      // "review", so put it back rather than leaving it misreported as blocked.
+      if (item.flags?.includes("stuck-review")) await this.hub.runStatus(runId, "review");
+      await this.hub.runLog(runId, "escalation dismissed — no action taken");
+      return;
+    }
     if (resolution.action === "reject") {
       // Stop: abandon the run cleanly and reclaim its worktree.
       if (live) await live.handle.stop().catch(() => undefined);
