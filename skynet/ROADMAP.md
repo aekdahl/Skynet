@@ -1136,6 +1136,61 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   dock UI wiring + richer confirm-chip rendering (S11); the MCP tools + their `dryRun` param (S12);
   Telegram's own action vocabulary (`telegram/intent.ts`) still doesn't call this executor — a
   fourth parallel action path, not touched here, matching "don't churn existing kinds."
+- [x] **S11 — Steward surfaces: propose → dry-run preview → confirm → execute.** Wires S10's four
+  execution-intent kinds into both conversational surfaces, closing exactly the gap S10 deliberately
+  left open. `SYSTEM` (`steward/assistant.ts`) gains the four action shapes + guidance: `start_task`
+  for one EXPLICIT named task; a bulk request ("build feature X", "process the backlog", "run what's
+  feasible") gets exactly ONE `start_feature`/`process_backlog` — never decomposed into N
+  `start_task`s; `execMode` reads "start now"/"kick off" vs. "queue"/"line up" from the operator's own
+  phrasing (default `"queue"`); `feasibleOnly` defaults true, false only for an explicit "the entire
+  backlog" / "even the unclear ones". Also added: a one-line pointer in Steward's reply ("watch the
+  project line, or ask me how it's going any time") so the operator knows there's nothing further to
+  watch for once confirmed — status questions already work via grounding, no new code needed there.
+  **The dock** (`steward-dock.tsx`): `ProposedAction` gains three states beyond pending/done/dismissed
+  — `previewing`/`previewed`/`error` — and a `useEffect` fires the S10 dry-run the INSTANT a
+  composite chip renders (never a bare "Confirm" the operator has to trust blind); the chip then
+  shows the real feasibility breakdown ("2 queued · ~$4.00", excluded-reason counts, an "also turns
+  autonomy on" note when relevant) before Confirm becomes clickable. `start_task` skips straight to
+  the plain confirm-first path every other kind uses — nothing composite to preview. `runAction`'s
+  `const unhandled: never` exhaustiveness guard forced every new kind to be handled (queue_tasks/
+  start_feature/process_backlog explicitly THROW if ever reached through the plain path — they're
+  only reachable via the new preview→confirm flow, a real bug if that gating ever breaks). A confirmed
+  outcome renders `started`/`queued`/`excluded` counts in the thread, not just a checkmark.
+  **Telegram** (`telegram/intent.ts` + `index.ts`): the four kinds join the existing `Action`
+  whitelist/`INTENT_SYSTEM_PROMPT`/`validateAction` (mirroring the dock's guidance verbatim); `toPending`
+  — previously synchronous — is now `async` so a composite's dry-run runs BEFORE the confirm message is
+  even sent: the pending text itself IS the preview ("Queue 2 task(s) — would 2 queued · ~$4.00. Go
+  ahead?"), fitting the existing single-pending-action confirm machine with no new state at all.
+  **S10 gained one thing along the way**: `StewardActionOutcome.estimatedCostUsd` (`costBandFor`
+  summed over whatever started/queued, excluded tasks never counted) — the "~$ band total" a preview
+  needs, computed with the SAME per-task band the budget resolver/tick already use, never a second
+  estimation call; `pacedAvailableUsd`/`costBandFor` needed no changes, just one more consumer.
+  Verified: 46 new tests across five files — `tests/execution-intents.test.ts` (+2, `estimatedCostUsd`
+  summed correctly, dry-run/real agree), `tests/project-assistant.test.ts` (+8 `validateProjectAction`
+  cases), `tests/telegram-project-actions.test.ts` (+4 `validateAction` cases +4 confirm-machine
+  cases — the accept criterion's `start_feature` pending-action drive: asserts the dry-run call
+  happens BEFORE the confirm message sends, the message text carries the real numbers, confirming
+  fires a SECOND call with no `dryRun`, and a "no" reply never fires that second call at all), and a
+  new `tests/steward-execution-flow.test.ts` (4 tests) proving the full loop end to end with NO live
+  LLM: a hand-built raw model reply for "complete build for feature X" parses to exactly ONE
+  `start_feature` action (contrasted, in the same file, with what an N-`start_task`-per-task reply
+  from a non-compliant model would ALSO validate as — proving SYSTEM's instruction, not the
+  validator, is what prevents that shape); a dry-run against a real store renders an `"unclear"`
+  excluded reason for a still-in-triage sibling task; confirming queues the ready one and folds
+  autonomy on, asserted against real `Task`/`Project` records, not a mock; re-confirming is a genuine
+  no-op. Live-verified for real, not just against fixtures: booted real dev servers, created a project
+  + feature + two todo tasks via the actual API, asked the real Steward dock "Please build the Auth
+  feature now" against a live Claude call — it replied with the "watch the project line" guidance and
+  proposed exactly one `start_feature` chip that had ALREADY dry-run itself ("would 2 queued —
+  ~$4.00", correctly queue-only since no fleet agent existed to start_now into); confirming flipped it
+  to "✓ 2 queued · ~$4.00" and a live snapshot fetch confirmed both tasks really were `todo`+`autoPick`
+  in the actual store. **Deliberately out of scope, per the task's own sizing:** S12's MCP tools (the
+  same `Operations.executeStewardAction` + `dryRun` param S10 already built for them); a literal
+  "steward-simulation" web QA journey (no offline journey can drive Steward chat at all today — it
+  needs a live LLM call, the same reason `stewardChat` itself was already allowlisted in
+  `client-coverage.test.ts` before this task; `executeStewardAction` joins it there, with the accurate
+  reason — the call itself needs no LLM, but the ONLY path to it from the web client is gated behind
+  one).
 - [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** *Landed:* **amber
   untangled** — `--accent` (brand/primary) and `--warn` (caution/waiting status) were an accidental
   hex duplicate (`#FFB224` both, not just visually close); `--warn` is now a genuinely distinct

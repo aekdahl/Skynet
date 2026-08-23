@@ -83,6 +83,14 @@ export interface Action {
     | "set_feature_milestone"
     | "set_task_milestone"
     | "mark_milestone_shipped"
+    // Execution intents (S10/S11) — start/queue composites, mirroring the
+    // in-app Steward action set. Unlike every kind above, these route through
+    // a dry-run PREVIEW before the pending message is even sent (see
+    // telegram/index.ts's toPending) — the confirm text IS the preview.
+    | "start_task"
+    | "queue_tasks"
+    | "start_feature"
+    | "process_backlog"
     | "none";
   gateId?: string;
   taskText?: string;
@@ -113,6 +121,13 @@ export interface Action {
   milestoneName?: string;
   milestoneDescription?: string;
   targetAt?: number | null;
+  // Execution intents. `taskIds` (queue_tasks) is distinct from the single
+  // `taskId` above. `execMode` picks start_feature's strategy — a separate
+  // value domain from `state` (move_task's kanban lane). `feasibleOnly`
+  // defaults to true when omitted (see validateAction).
+  taskIds?: string[];
+  execMode?: "queue" | "start_now";
+  feasibleOnly?: boolean;
 }
 
 /** Task lanes + project statuses a phone action may target (server still enforces
@@ -139,7 +154,8 @@ export const INTENT_SYSTEM_PROMPT = [
   "You may ALSO perform ONE action, but ONLY when the owner is clearly asking to do it.",
   "Allowed actions: approve | reject | add_task | assign | add_agent | create_project | remove_task |",
   "  move_task | rename_task | set_task_desc | rename_project | set_goal | set_autonomy | set_status | preview | status |",
-  "  create_feature | set_task_feature | archive_feature | create_milestone | set_feature_milestone | set_task_milestone | mark_milestone_shipped.",
+  "  create_feature | set_task_feature | archive_feature | create_milestone | set_feature_milestone | set_task_milestone | mark_milestone_shipped |",
+  "  start_task | queue_tasks | start_feature | process_backlog.",
   "Action object shapes (used as the `action` field below):",
   '  approve/reject: {"action":"approve","gateId":"<gate id from context>"}',
   '  add_task:       {"action":"add_task","projectId":"<project id>","taskText":"<the task>"}',
@@ -163,6 +179,20 @@ export const INTENT_SYSTEM_PROMPT = [
   '  set_feature_milestone:{"action":"set_feature_milestone","featureId":"<id>","milestoneId":"<id or null>"}',
   '  set_task_milestone:{"action":"set_task_milestone","taskId":"<id>","milestoneId":"<id or null>"}',
   '  mark_milestone_shipped:{"action":"mark_milestone_shipped","milestoneId":"<id>"}',
+  '  start_task:     {"action":"start_task","taskId":"<id>"}',
+  '  queue_tasks:    {"action":"queue_tasks","taskIds":["<id>", …]}',
+  '  start_feature:  {"action":"start_feature","featureId":"<id>","execMode":"queue|start_now","feasibleOnly":true|false}',
+  '  process_backlog:{"action":"process_backlog","projectId":"<project id>","feasibleOnly":true|false}',
+  "start_task/queue_tasks/start_feature/process_backlog START or QUEUE work — you'll see an exact dry-run",
+  "breakdown (how many start/queue/get skipped, and why) in the confirm message before anything runs, so",
+  "propose confidently rather than asking for a count yourself. start_task is for one EXPLICIT named task",
+  '("start the login fix now"). For a BULK request ("build feature X", "process the backlog", "run what\'s',
+  'ready"), propose exactly ONE start_feature or process_backlog — NEVER one start_task per task; the',
+  'composite itself resolves which tasks qualify. execMode: "start_now" when the owner wants work beginning',
+  'immediately ("kick off", "go"); "queue" when they just want it lined up ("queue it", "line it up") —',
+  'default "queue" when unclear. feasibleOnly defaults true (skip tasks not yet triaged clear) for "what\'s',
+  'feasible"/"what\'s ready"/a plain request; set it false only when they explicitly say the WHOLE thing',
+  '("the entire backlog", "even the unclear ones").',
   "remove_task archives a task (a reversible soft-hide, recoverable in the app) — it is",
   "never a hard delete; use it when the owner asks to remove/delete/undo a task.",
   "preview spins up a live preview of the project's web app and sends the URL back here",
@@ -579,6 +609,44 @@ export function validateAction(obj: unknown, ctx: IntentContext): Action | null 
       const milestone = ctx.milestones.find((m) => m.id === milestoneId);
       if (!milestone) return none(`unknown milestone "${milestoneId}"`);
       return { kind: "mark_milestone_shipped", milestoneId, projectId: milestone.projectId };
+    }
+
+    // ── Execution intents (S10/S11) ──────────────────────────────────────
+    case "start_task": {
+      const taskId = isStr(o.taskId) ? o.taskId : "";
+      const task = ctx.tasks.find((t) => t.id === taskId);
+      if (!task) return none(`unknown task "${taskId}"`);
+      return { kind: "start_task", taskId, projectId: task.projectId };
+    }
+
+    case "queue_tasks": {
+      const raw = Array.isArray(o.taskIds) ? o.taskIds.filter((x): x is string => typeof x === "string") : [];
+      const taskIds = [...new Set(raw)];
+      if (taskIds.length === 0) return none("no task ids given");
+      const tasks = taskIds.map((id) => ctx.tasks.find((t) => t.id === id));
+      const unknown = taskIds.find((id, i) => !tasks[i]);
+      if (unknown) return none(`unknown task "${unknown}"`);
+      // Action carries ONE projectId (like every other kind here) — refuse
+      // rather than guess which project a cross-project batch would target.
+      const projectId = tasks[0]!.projectId;
+      if (tasks.some((t) => t!.projectId !== projectId)) return none("queue_tasks can't span more than one project");
+      return { kind: "queue_tasks", taskIds, projectId };
+    }
+
+    case "start_feature": {
+      const featureId = isStr(o.featureId) ? o.featureId : "";
+      const feature = ctx.features.find((f) => f.id === featureId);
+      if (!feature) return none(`unknown feature "${featureId}"`);
+      const execMode = o.execMode === "queue" || o.execMode === "start_now" ? o.execMode : null;
+      if (!execMode) return none(`unknown execMode "${String(o.execMode)}"`);
+      return { kind: "start_feature", featureId, projectId: feature.projectId, execMode, feasibleOnly: o.feasibleOnly !== false };
+    }
+
+    case "process_backlog": {
+      const projectId = isStr(o.projectId) ? o.projectId : "";
+      const project = ctx.projects.find((p) => p.id === projectId);
+      if (!project) return none(`unknown project "${projectId}"`);
+      return { kind: "process_backlog", projectId, feasibleOnly: o.feasibleOnly !== false };
     }
 
     case "none":

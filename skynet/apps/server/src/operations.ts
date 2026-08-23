@@ -54,7 +54,7 @@ import type {
   UpdateTaskRequest,
   UpdateWorkspaceSettingsRequest,
 } from "@skynet/shared";
-import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
+import { costBandFor, modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
@@ -1414,6 +1414,11 @@ export class Operations {
       if (!dryRun) await this.hub.upsertProject({ ...project, autonomy: true });
       return true;
     };
+    // The rough $ this call commits — the SAME per-task band the budget
+    // resolver/tick already use (never a second estimation call), summed over
+    // whatever actually starts or queues (excluded tasks spend nothing). Lets
+    // a dry-run confirm chip show "~$9 total" before the operator commits.
+    const costOf = (tasks: Task[]): number => tasks.reduce((sum, t) => sum + costBandFor(t.assessmentEffort), 0);
 
     switch (action.kind) {
       case "start_task": {
@@ -1421,9 +1426,11 @@ export class Operations {
         if (!task || task.workspaceId !== ws || task.projectId !== projectId) throw new NotFoundError("Task");
         const runs = await this.store.listRuns(ws);
         const { eligible, excluded } = resolveExecutable(project, [task], runs, { atMs: now() });
-        if (eligible.length === 0) return { started: [], queued: [], excluded, autonomyEnabled: false, dryRun };
+        if (eligible.length === 0) {
+          return { started: [], queued: [], excluded, autonomyEnabled: false, estimatedCostUsd: 0, dryRun };
+        }
         if (!dryRun) await this.assignTask(ws, projectId, task.id);
-        return { started: [task.id], queued: [], excluded, autonomyEnabled: false, dryRun };
+        return { started: [task.id], queued: [], excluded, autonomyEnabled: false, estimatedCostUsd: costOf(eligible), dryRun };
       }
 
       case "queue_tasks": {
@@ -1440,7 +1447,10 @@ export class Operations {
         const allExcluded = [...excluded, ...unknown.map((taskId) => ({ taskId, reason: "not-in-scope" as const }))];
         const autonomyEnabled = await enableAutonomyIfNeeded(eligible.length > 0);
         await queue(eligible);
-        return { started: [], queued: eligible.map((t) => t.id), excluded: allExcluded, autonomyEnabled, dryRun };
+        return {
+          started: [], queued: eligible.map((t) => t.id), excluded: allExcluded, autonomyEnabled,
+          estimatedCostUsd: costOf(eligible), dryRun,
+        };
       }
 
       case "start_feature": {
@@ -1457,7 +1467,10 @@ export class Operations {
         if (action.execMode === "queue") {
           const autonomyEnabled = await enableAutonomyIfNeeded(eligible.length > 0);
           await queue(eligible);
-          return { started: [], queued: eligible.map((t) => t.id), excluded, autonomyEnabled, dryRun };
+          return {
+            started: [], queued: eligible.map((t) => t.id), excluded, autonomyEnabled,
+            estimatedCostUsd: costOf(eligible), dryRun,
+          };
         }
 
         // start_now: assign as many as idle capacity allows (priority
@@ -1468,7 +1481,10 @@ export class Operations {
         // the real run may start some of them immediately instead.
         if (dryRun) {
           const autonomyEnabled = eligible.length > 0 && !project.autonomy;
-          return { started: [], queued: eligible.map((t) => t.id), excluded, autonomyEnabled, dryRun };
+          return {
+            started: [], queued: eligible.map((t) => t.id), excluded, autonomyEnabled,
+            estimatedCostUsd: costOf(eligible), dryRun,
+          };
         }
         const started: string[] = [];
         const toQueue: Task[] = [];
@@ -1495,7 +1511,11 @@ export class Operations {
         }
         const autonomyEnabled = await enableAutonomyIfNeeded(toQueue.length > 0);
         await queue(toQueue);
-        return { started, queued: toQueue.map((t) => t.id), excluded, autonomyEnabled, dryRun };
+        // Cost only over what actually started/queued — a task dropped by the
+        // TaskAlreadyAssignedError race above (finished between resolve and
+        // now) never ran, so it costs nothing here either.
+        const ran = eligible.filter((t) => started.includes(t.id) || toQueue.includes(t));
+        return { started, queued: toQueue.map((t) => t.id), excluded, autonomyEnabled, estimatedCostUsd: costOf(ran), dryRun };
       }
 
       case "process_backlog": {
@@ -1510,7 +1530,10 @@ export class Operations {
         });
         const autonomyEnabled = await enableAutonomyIfNeeded(eligible.length > 0);
         await queue(eligible);
-        return { started: [], queued: eligible.map((t) => t.id), excluded, autonomyEnabled, dryRun };
+        return {
+          started: [], queued: eligible.map((t) => t.id), excluded, autonomyEnabled,
+          estimatedCostUsd: costOf(eligible), dryRun,
+        };
       }
     }
   }

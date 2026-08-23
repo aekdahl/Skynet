@@ -228,11 +228,10 @@ describe("splitProposedAction — reply / multi-action split", () => {
   });
 });
 
-// S10 — execution intents. Validated the same way as every other kind (id
-// resolution against ctx, refuse-don't-guess on an unknown id), but note these
-// are deliberately NOT in SYSTEM's prompt text yet — see ProjectActionKind's
-// doc comment in assistant.ts for why (the dock can't execute them until S11).
-describe("validateProjectAction — execution intents (S10)", () => {
+// S10/S11 — execution intents. Validated the same way as every other kind (id
+// resolution against ctx, refuse-don't-guess on an unknown id); as of S11
+// these ARE in SYSTEM's prompt text (see the dock's dry-run-preview flow).
+describe("validateProjectAction — execution intents (S10/S11)", () => {
   it("start_task resolves a real taskId", () => {
     expect(validateProjectAction({ kind: "start_task", taskId: "t-2" }, ctx)).toMatchObject({ kind: "start_task", taskId: "t-2" });
     expect(validateProjectAction({ kind: "start_task", taskId: "nope" }, ctx)).toBeNull();

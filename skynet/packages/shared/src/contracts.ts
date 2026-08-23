@@ -1532,6 +1532,12 @@ export const StewardActionOutcome = z.object({
   // True when this call turned the project's autonomy on as a necessary
   // corollary of queuing work — see executeStewardAction's doc comment.
   autonomyEnabled: z.boolean().default(false),
+  // The rough $ committed by what started/queued (costBandFor summed over
+  // those tasks — the same per-task band the budget resolver/tick already
+  // use, never a second estimation call). Excluded tasks spend nothing, so
+  // they're never counted. On a dry-run this is the "~$ band total" a
+  // confirm chip shows before the operator commits.
+  estimatedCostUsd: z.number().nonnegative().default(0),
   dryRun: z.boolean().default(false),
 });
 export type StewardActionOutcome = z.infer<typeof StewardActionOutcome>;

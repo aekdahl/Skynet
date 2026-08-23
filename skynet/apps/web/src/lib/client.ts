@@ -757,7 +757,14 @@ export interface AssistantAction {
     | "set_task_feature"
     | "set_feature_milestone"
     | "edit_roadmap"
-    | "set_roadmap_path";
+    | "set_roadmap_path"
+    // Execution intents (S10/S11) — see executeStewardAction below. These
+    // don't apply their own effect: confirming one triggers a dry-run
+    // preview, then a separate execute call.
+    | "start_task"
+    | "queue_tasks"
+    | "start_feature"
+    | "process_backlog";
   summary: string;
   taskId?: string;
   text?: string;
@@ -788,7 +795,43 @@ export interface AssistantAction {
   del?: number;
   baselineHash?: string;
   baselineSha?: string;
+  // Execution intents (S10/S11). `taskIds` (queue_tasks) is distinct from the
+  // single `taskId` above. `execMode` picks start_feature's strategy — a
+  // separate field from `mode` (set_assignment's WHO-may-take-it eligibility,
+  // a different value domain entirely). `feasibleOnly` defaults to true.
+  taskIds?: string[];
+  execMode?: "queue" | "start_now";
+  feasibleOnly?: boolean;
 }
+
+// The strict request/outcome shapes for the S10 execute endpoint — narrower
+// than AssistantAction (which carries every kind's fields loosely): only the
+// four execution-intent kinds' own fields, matching
+// packages/shared/src/contracts.ts's StewardExecutionAction/StewardActionOutcome.
+export type StewardExecutionAction =
+  | { kind: "start_task"; taskId: string }
+  | { kind: "queue_tasks"; taskIds: string[] }
+  | { kind: "start_feature"; featureId: string; execMode: "queue" | "start_now"; feasibleOnly: boolean }
+  | { kind: "process_backlog"; feasibleOnly: boolean };
+
+export interface StewardActionOutcome {
+  started: string[];
+  queued: string[];
+  excluded: { taskId: string; reason: "unclear" | "already-running" | "done" | "over-budget" | "not-in-scope" }[];
+  autonomyEnabled: boolean;
+  // The rough $ committed by what started/queued (never counts excluded
+  // tasks) — a dry-run's preview shows this as the "~$ band total".
+  estimatedCostUsd: number;
+  dryRun: boolean;
+}
+
+/** Resolve feasibility (dryRun: true — no side effects) or actually run one of
+ *  the four execution-intent kinds (see AssistantAction's doc comment on why
+ *  they're a separate call from the rest of the confirm-chip actions). */
+export function executeStewardAction(projectId: string, action: StewardExecutionAction, dryRun?: boolean) {
+  return req<StewardActionOutcome>("POST", `/api/projects/${projectId}/steward/actions`, { action, dryRun });
+}
+
 // Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
 // (full project assistant + actions); omit it for a workspace-wide answer. The
 // response echoes which project the action (if any) targets.
