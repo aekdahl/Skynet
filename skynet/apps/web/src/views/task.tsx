@@ -219,9 +219,16 @@ export function TaskDetail({
   // resumes the same agent: a typed answer is delivered as guidance (modify); a
   // selected option is delivered as that choice. Otherwise it's a chat message —
   // relayed live to a running agent, or answered from the log for a finished one.
+  // A "modify" (Send & resume) on an unrecoverable escalation would just
+  // route into the same relaunch attempt Reassign already can't complete —
+  // its worktree AND branch are both gone, so there's no session left to
+  // resume into. Never let the composer offer it.
+  const unrecoverable = q?.kind === "escalation" && q.flags?.includes("unrecoverable");
+
   const send = async () => {
     const text = draft.trim();
     if (q) {
+      if (unrecoverable) return;
       // Typed text wins (a custom answer / changes); else the picked option.
       if (text) {
         resolveHitl(q.id, "modify", { guidance: text });
@@ -563,14 +570,19 @@ export function TaskDetail({
                       // There's nothing to "approve": the operator either hands it
                       // to a fresh runner, stops it, or types guidance below and
                       // resumes (the composer's "Send & resume" = the modify action).
+                      // Unrecoverable (worktree AND branch both gone): neither
+                      // Reassign nor Send & resume could ever succeed — hide the
+                      // one, guard the other (see `unrecoverable` above).
                       <>
-                        <button
-                          className="btn btn-sm"
-                          title="Hand this run to a different runner to retry fresh (with your guidance below, if any)"
-                          onClick={() => resolveHitl(q.id, "reassign", { guidance: draft.trim() })}
-                        >
-                          Reassign
-                        </button>
+                        {!unrecoverable && (
+                          <button
+                            className="btn btn-sm"
+                            title="Hand this run to a different runner to retry fresh (with your guidance below, if any)"
+                            onClick={() => resolveHitl(q.id, "reassign", { guidance: draft.trim() })}
+                          >
+                            Reassign
+                          </button>
+                        )}
                         <button className="btn btn-sm btn-danger" onClick={() => resolveHitl(q.id, "reject")}>
                           Stop run
                         </button>
@@ -612,22 +624,25 @@ export function TaskDetail({
                 <input
                   className="qx-input qx-line"
                   placeholder={
-                    q
-                      ? q.options
-                        ? "Pick an option above, or type a different answer…"
-                        : "Reply and resume — e.g. “yes, commit and open a PR”…"
-                      : agent.status === "done"
-                        ? "Ask about what shipped…"
-                        : "Message the agent — it keeps working…"
+                    unrecoverable
+                      ? "Not resumable — worktree and branch are both gone. Stop this run above."
+                      : q
+                        ? q.options
+                          ? "Pick an option above, or type a different answer…"
+                          : "Reply and resume — e.g. “yes, commit and open a PR”…"
+                        : agent.status === "done"
+                          ? "Ask about what shipped…"
+                          : "Message the agent — it keeps working…"
                   }
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && send()}
+                  disabled={unrecoverable}
                 />
                 <button
                   className={"btn" + (q ? " btn-primary" : "")}
                   onClick={send}
-                  disabled={q ? !draft.trim() && !(q.options && picked != null) : !draft.trim()}
+                  disabled={unrecoverable || (q ? !draft.trim() && !(q.options && picked != null) : !draft.trim())}
                 >
                   {q ? "Send & resume" : "Send"}
                 </button>

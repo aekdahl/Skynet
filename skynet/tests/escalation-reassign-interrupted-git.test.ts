@@ -158,4 +158,44 @@ describe("reassign after escalation — a worktree interrupted mid-merge is sani
     const finalRun = await store.getRun(run.id);
     expect(finalRun?.log.some((l) => l.line.includes("interrupted git merge"))).toBe(true);
   });
+
+  it("a run whose worktree AND branch are both gone is flagged unrecoverable — never re-escalates as a plain retry invite", async () => {
+    const store = new MemoryStore({ seed: false });
+    const bus = new RecordingBus();
+    const hub = new Hub(store, bus);
+    const provider = new ControllableProvider();
+    const orchestrator = new Orchestrator(store, hub, provider);
+    const ops = new Operations({ store, hub, orchestrator });
+
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P2", goal: "" });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "another thing" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    const events = provider.events.get(run.id)!;
+
+    events.onHitl(run.id, {
+      kind: "escalation", title: "Stuck", why: "cannot proceed", risk: "medium", rationale: null,
+      command: null, options: null, recommended: null, steps: null, diff: null,
+    });
+    await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+    const esc = bus.raised().find((i) => i.kind === "escalation")!;
+
+    // Simulate the worst case the doc comment on the "limbo" sweep describes:
+    // not just the worktree directory gone (routine — reattach handles that
+    // fine) but the BRANCH gone too, e.g. a startup failure or disk-hygiene
+    // sweep that cleaned up more than expected. git worktree remove alone
+    // would never do this — deleting the ref directly is how we get there.
+    git(repo, "worktree", "remove", "--force", join(worktreesDir, run.id.replace(/[^a-zA-Z0-9._-]/g, "_")));
+    git(repo, "branch", "-D", run.branch);
+
+    await ops.resolveHitl(DEFAULT_WORKSPACE, esc.id, { action: "reassign" }, "op-1");
+    await waitFor(async () => bus.raised().filter((i) => i.kind === "escalation").length === 2);
+    const reEsc = bus.raised().filter((i) => i.kind === "escalation")[1]!;
+
+    expect(reEsc.flags).toContain("unrecoverable");
+    expect(reEsc.why).toMatch(/reassign failed/i);
+    expect(reEsc.why).toMatch(/branch .* no longer exists/i);
+    // No new agent was ever started — nothing to hand a fresh session to.
+    expect(provider.starts).toHaveLength(1);
+  });
 });

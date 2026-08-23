@@ -2372,7 +2372,7 @@ export class Orchestrator {
     run: TaskRun,
     reason: string,
     source: EscalationSource,
-    ctx: { git?: GitContext; baseRef?: string; taskId?: string | null },
+    ctx: { git?: GitContext; baseRef?: string; taskId?: string | null; unrecoverable?: boolean },
   ): Promise<void> {
     this.escalations.set(run.id, { git: ctx.git, baseRef: ctx.baseRef, taskId: ctx.taskId ?? null, source });
     const item: HitlItem = {
@@ -2407,7 +2407,12 @@ export class Orchestrator {
       steps: null,
       diff: null,
       output: null,
-      flags: [source],
+      // "unrecoverable" tells the UI to stop offering Help & resume / Reassign
+      // — both would just fail again the exact same way (there's no worktree
+      // AND no branch left to relaunch into), producing a fresh escalation +
+      // Telegram ping every time an operator naturally tries again. Only Stop
+      // makes sense once this flag is set.
+      flags: ctx.unrecoverable ? [source, "unrecoverable"] : [source],
       sourceBranchOverride: null,
     };
     await this.hub.runStatus(run.id, "waiting");
@@ -2554,10 +2559,18 @@ export class Orchestrator {
         await this.hub.runLog(runId, `worktree was cleaned up while this run waited — re-attached from branch ${run.branch} (committed work preserved)`);
       } catch (err) {
         await this.hub.runLog(runId, `cannot ${reassign ? "reassign" : "resume"} — worktree is gone and ${(err as Error).message}`);
+        // reattach only throws when the BRANCH is gone too (not just the
+        // worktree directory) — git worktree remove never deletes a branch,
+        // so if there's no branch either, this run's work is genuinely,
+        // permanently unrecoverable. Every future Reassign/Resume attempt
+        // would hit this exact same throw — mark it so the UI stops
+        // inviting another one (each retry would otherwise re-escalate and
+        // re-notify Telegram for no reason).
         await this.raiseEscalationCard(run, `${reassign ? "reassign" : "resume"} failed — worktree is gone and ${(err as Error).message}`, ctx?.source ?? "stalled", {
           git,
           baseRef: ctx?.baseRef,
           taskId: ctx?.taskId ?? null,
+          unrecoverable: true,
         }).catch(() => undefined);
         return;
       }
