@@ -1849,29 +1849,39 @@ export function ProjectView({
 }
 
 // ─── Live preview modal (Phase-1 v0) ────────────────────────────────────────
-// Runs the PROJECT's web app (server-side, sandboxed) and iframes it here — the
-// integration branch, refreshing as the fleet merges. It shows MERGED work only:
-// an in-flight run's changes appear once that run is approved and merged (there's
-// no per-run pre-merge preview — project level is the single, unambiguous view).
-// Polls status while open; the app runs on its own localhost origin so its code
-// can't reach the console. See docs/live-preview.md.
+// Runs a web app (server-side, sandboxed) and iframes it here. Two scopes,
+// one shell (see docs/live-preview.md): `project` (default) tracks the
+// integration branch — main/merged/latest, refreshing as the fleet merges —
+// and shows MERGED work only. `run` is the per-run "Preview this change"
+// gate: pinned to that ONE run's own branch (no source switcher, no
+// refresh-on-merge — reload/restart pick up new commits the run makes),
+// letting an operator see a change before approving its merge.
+// Polls status while open; the app runs on its own localhost origin so its
+// code can't reach the console.
 const DEVICES: Record<string, number | null> = { Desktop: null, Tablet: 768, Mobile: 390 };
 
 export function LivePreviewModal({
   id,
   title,
+  scope = "project",
   onClose,
 }: {
   id: string;
   title: string;
+  scope?: "project" | "run";
   onClose: () => void;
 }) {
   // Which slice to preview: main (base branch) · merged (integration branch) ·
-  // latest (merged + review-ready changes combined). Drives start().
+  // latest (merged + review-ready changes combined). Drives start(). Only
+  // meaningful for the project scope — a run preview is always pinned to its
+  // own branch.
   const [source, setSource] = useState<api.PreviewSource>("merged");
   const sourceRef = useRef(source);
   sourceRef.current = source;
-  const ctl = { status: () => api.previewStatus(id), start: () => api.previewStart(id, sourceRef.current), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
+  const ctl =
+    scope === "run"
+      ? { status: () => api.previewRunStatus(id), start: () => api.previewRunStart(id), stop: () => api.previewRunStop(id), restart: () => api.previewRunRestart(id) }
+      : { status: () => api.previewStatus(id), start: () => api.previewStart(id, sourceRef.current), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
   const ctlRef = useRef(ctl);
   ctlRef.current = ctl;
 
@@ -1960,14 +1970,16 @@ export function LivePreviewModal({
       <div className={"lp-modal lp-mode-" + mode} onClick={(e) => e.stopPropagation()}>
         <div className="lp-bar">
           <span className="lp-title">{title}</span>
-          <div className="lp-source" role="group" aria-label="Preview source">
-            {(["main", "merged", "latest"] as const).map((s) => (
-              <button key={s} className={"lp-src" + (source === s ? " on" : "")} title={SRC_HINT[s]} onClick={() => switchSource(s)}>
-                {SRC_LABEL[s]}
-              </button>
-            ))}
-          </div>
-          {source === "latest" && st?.combined && (
+          {scope === "project" && (
+            <div className="lp-source" role="group" aria-label="Preview source">
+              {(["main", "merged", "latest"] as const).map((s) => (
+                <button key={s} className={"lp-src" + (source === s ? " on" : "")} title={SRC_HINT[s]} onClick={() => switchSource(s)}>
+                  {SRC_LABEL[s]}
+                </button>
+              ))}
+            </div>
+          )}
+          {scope === "project" && source === "latest" && st?.combined && (
             <span className="lp-combined mono" title="Review-ready changes folded into this preview">
               {st.combined.included}/{st.combined.total} combined{st.combined.skipped > 0 ? ` · ${st.combined.skipped} skipped` : ""}
             </span>

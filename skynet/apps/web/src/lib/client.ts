@@ -886,6 +886,20 @@ export function previewRefresh(projectId: string) {
   return req<PreviewState>("POST", `/api/projects/${projectId}/preview/refresh`);
 }
 
+// Per-run "Preview this change" — the run's own branch, pinned, pre-merge.
+export function previewRunStatus(runId: string) {
+  return req<PreviewState>("GET", `/api/runs/${runId}/preview`);
+}
+export function previewRunStart(runId: string) {
+  return req<PreviewState>("POST", `/api/runs/${runId}/preview/start`);
+}
+export function previewRunStop(runId: string) {
+  return req<PreviewState>("POST", `/api/runs/${runId}/preview/stop`);
+}
+export function previewRunRestart(runId: string) {
+  return req<PreviewState>("POST", `/api/runs/${runId}/preview/restart`);
+}
+
 // ─── Deploy to Fly.io (persistent, human-triggered) ─────────────────────────
 // A REAL, shareable URL that survives independent of the local Skynet process
 // — distinct from the ephemeral local preview above. Explicit operator action
