@@ -2746,7 +2746,19 @@ export class Orchestrator {
   private async completeFeatureMerged(req: MergeRequest): Promise<void> {
     const featureId = req.agentBranch.slice(FEATURE_BRANCH_PREFIX.length);
     const feature = await this.store.getFeature(featureId);
-    if (feature) await this.hub.upsertFeature({ ...feature, status: "shipped" });
+    if (feature) {
+      // Guards against notifying twice for the same completion — a feature
+      // whose last sibling task's merge lands via two racing checkFeatureCompletion
+      // calls (both see "every sibling done" before either write commits) would
+      // otherwise re-run this whole function a second time. The upsert itself is
+      // idempotent (still "shipped"); this only gates the ONE-TIME notice.
+      const alreadyShipped = feature.status === "shipped";
+      await this.hub.upsertFeature({ ...feature, status: "shipped" });
+      if (!alreadyShipped) {
+        const taskCount = (await this.store.listTasks(feature.workspaceId)).filter((t) => t.featureId === featureId && !t.archived).length;
+        await this.hub.featureShipped(feature.workspaceId, featureId, req.projectId, taskCount).catch(() => undefined);
+      }
+    }
     await this.hub.runLog(req.runId, `"${feature?.name ?? featureId}" — feature branch merged into the integration branch. Shipped.`).catch(() => undefined);
     void projectPreview.refresh(req.projectId).catch(() => undefined);
   }
@@ -3222,6 +3234,8 @@ export class Orchestrator {
       return { merged: false, ...blocked };
     }
     await this.hub.upsertFeature({ ...feature, status: "shipped", pr: { ...feature.pr, state: "merged" } });
+    const taskCount = (await this.store.listTasks(workspaceId)).filter((t) => t.featureId === featureId && !t.archived).length;
+    await this.hub.featureShipped(workspaceId, featureId, feature.projectId, taskCount).catch(() => undefined);
     void projectPreview.refresh(feature.projectId).catch(() => undefined);
     return res;
   }

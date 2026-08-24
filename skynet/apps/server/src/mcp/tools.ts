@@ -511,6 +511,64 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
       return operations.updateBrief(ws, briefId, patch, principal.operatorId);
     },
   );
+  // ── execution intents (S10/S12) ─────────────────────────────────────────
+  // All three route through the SAME server executor (Operations.executeStewardAction)
+  // the dock's confirm chip and Telegram use — no separate MCP-only logic, so
+  // feasibility/budget/governance can never disagree by caller. There's no
+  // conversational confirm step over MCP (no chip, no back-and-forth): call
+  // with dryRun:true first to see the outcome report (started/queued/excluded)
+  // before calling again for real — the non-dry-run call returns the identical
+  // report shape, just with the mutation actually applied. Every run this
+  // starts or queues still gates through the project's own approvalLevel /
+  // daily budget / breaker-review policy regardless of who queued it — these
+  // tools only decide WHAT gets queued, never bypass how it's allowed to run.
+  tool(
+    "start_task",
+    "author",
+    "Start ONE task right now — assigns it to an idle runner immediately, same as \"Start now\" in the UI. No conversational confirm exists over MCP: call with dryRun:true first to preview (started/queued/excluded) before calling again for real. The run itself still gates through the project's approvalLevel/budget/breaker policy.",
+    { taskId: z.string(), dryRun: z.boolean().optional() },
+    async (a) => {
+      const task = await operations.getTask(ws, a.taskId);
+      return operations.executeStewardAction(
+        ws,
+        task.projectId,
+        { kind: "start_task", taskId: a.taskId },
+        principal.operatorId,
+        { dryRun: a.dryRun },
+      );
+    },
+  );
+  tool(
+    "start_feature",
+    "author",
+    'Start or queue every eligible task under a feature. execMode "queue" (the default if omitted) marks eligible tasks todo+autoPick for the autonomy loop to pick up; "start_now" additionally assigns as many as idle fleet capacity allows right away, queuing the rest. feasibleOnly (default true) drops tasks still stuck in triage (never came out clear) from consideration. No conversational confirm exists over MCP: call with dryRun:true first to preview (started/queued/excluded) before calling again for real — a dry-run start_now never actually acquires a runner (real-time capacity can\'t be previewed without racing it), so it conservatively reports every eligible task as "would queue". The runs themselves still gate through the project\'s approvalLevel/budget/breaker policy.',
+    { featureId: z.string(), execMode: z.enum(["queue", "start_now"]).optional(), feasibleOnly: z.boolean().optional(), dryRun: z.boolean().optional() },
+    async (a) => {
+      const feature = (await operations.listFeatures(ws)).find((f) => f.id === a.featureId);
+      if (!feature) throw new Error(`Feature "${a.featureId}" not found.`);
+      return operations.executeStewardAction(
+        ws,
+        feature.projectId,
+        { kind: "start_feature", featureId: a.featureId, execMode: a.execMode ?? "queue", feasibleOnly: a.feasibleOnly ?? true },
+        principal.operatorId,
+        { dryRun: a.dryRun },
+      );
+    },
+  );
+  tool(
+    "process_backlog",
+    "author",
+    "Queue every eligible not-yet-started task in a project's backlog (backlog+triage+todo) for the autonomy loop to pick up — no start_now variant for the whole backlog (there's no single scope-defined \"now\" the way a feature's start_now has). feasibleOnly (default true) drops tasks still stuck in triage. No conversational confirm exists over MCP: call with dryRun:true first to preview (queued/excluded) before calling again for real. The runs themselves still gate through the project's approvalLevel/budget/breaker policy.",
+    { projectId: z.string(), feasibleOnly: z.boolean().optional(), dryRun: z.boolean().optional() },
+    (a) =>
+      operations.executeStewardAction(
+        ws,
+        a.projectId,
+        { kind: "process_backlog", feasibleOnly: a.feasibleOnly ?? true },
+        principal.operatorId,
+        { dryRun: a.dryRun },
+      ),
+  );
   tool("assign_task", "author", "Assign a task to a fresh agent on an idle runner. Idempotent: re-assigning an already-assigned task returns the existing agent.", { projectId: z.string(), taskId: z.string() }, (a) => operations.assignTask(ws, a.projectId, a.taskId));
   tool("message_agent", "author", "Send a chat message to an agent and get its reply.", { runId: z.string(), ...ChatRequest.shape }, async (a) => ({ reply: await operations.chatAgent(ws, a.runId, a.text) }));
   tool("fork_agent", "author", "Fork an agent to explore an alternative from its current step.", { runId: z.string() }, (a) => operations.forkAgent(ws, a.runId));

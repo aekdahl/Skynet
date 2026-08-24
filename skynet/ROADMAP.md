@@ -1191,6 +1191,64 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   `client-coverage.test.ts` before this task; `executeStewardAction` joins it there, with the accurate
   reason — the call itself needs no LLM, but the ONLY path to it from the web client is gated behind
   one).
+- [x] **S12 — MCP parity + follow-through notices.** The other two S10 callers: the same directives
+  over MCP for external agents, and proactive completion/stall reporting so a kicked-off batch isn't
+  fire-and-forget. **Three new tools** (`mcp/tools.ts`, `author` scope, grouped between roadmap and
+  agents&fleet): `start_task {taskId, dryRun?}`, `start_feature {featureId, execMode?, feasibleOnly?,
+  dryRun?}` (`execMode` defaults to `"queue"` when omitted — the safer of the two, never immediately
+  acquiring a runner unless asked), `process_backlog {projectId, feasibleOnly?, dryRun?}` — all three
+  call straight into `Operations.executeStewardAction` (S10), so MCP can never drift from what the
+  dock/Telegram do. No conversational confirm loop exists over MCP (no chip, no back-and-forth), so
+  every description explicitly steers the caller to pass `dryRun: true` first and read the outcome
+  report before calling again for real — the real call returns the IDENTICAL `{started, queued,
+  excluded, autonomyEnabled, dryRun}` shape, just with the mutation actually applied. `start_task`/
+  `start_feature` resolve their own `projectId` server-side (from `taskId`/`featureId`, same
+  `operations.getTask`/`listFeatures().find()` pattern `project-scope.ts`'s own gate already uses) —
+  matching the task's own minimal `{taskId}`/`{featureId, ...}` signatures rather than making the
+  caller pass a redundant `projectId` — while still getting scope-gated for free (`taskId`/`featureId`
+  are already in `project-scope.ts`'s `PROJECT_ID_KEYS`); `process_backlog` has no other id to resolve
+  from, so it takes `projectId` directly, same as `assign_task`. Deliberately no new scope (see S10's
+  own decision note) — the runs themselves still gate through the project's approvalLevel/budget/
+  breaker-review policy regardless of who queued them; these tools only decide WHAT gets queued.
+  **Follow-through:** a new `feature.shipped` `ServerEvent` (`{featureId, projectId, taskCount}`,
+  `packages/shared/src/events.ts`) — a precise ONE-TIME transition signal, not inferred from the
+  generic `feature.upserted` (which fires on every edit, including a manual status change a human is
+  already looking at). Published via a new `Hub.featureShipped` (notify-only, mirroring
+  `Hub.runCompleted`) from BOTH real "shipped" sites — `Orchestrator.completeFeatureMerged` (local
+  merge lands) and `mergeReadyFeaturePr` (GitHub aggregate-PR merge lands) — NOT from
+  `checkFeatureCompletion` itself, which only ever kicks off the PR-open/merge-enqueue for the local
+  path; the actual status flip (and thus the honest moment to notify) happens later, once that merge
+  genuinely completes. Guarded against double-firing if the underlying completion path ever
+  re-processes an already-shipped feature (a plausible pre-existing race — two sibling tasks'
+  merges landing close enough together that both see "every sibling done" before either write
+  commits): `completeFeatureMerged` checks the freshly-fetched feature's status BEFORE its own
+  overwrite and skips the notify (not the upsert, which is a harmless idempotent no-op) when it's
+  already `"shipped"`; `mergeReadyFeaturePr` is structurally safe already (a second call finds
+  `pr.state !== "open"` and throws before ever reaching the upsert). Telegram's bridge
+  (`telegram/index.ts`) subscribes to `feature.shipped` and renders a distinct `🚀 Feature shipped`
+  line (`featureShippedNotice`, `telegram/notices.ts` — separate wording + emoji from
+  `completedNotice`'s single-run `✅ Shipped`, so a phone notification never conflates "one run
+  finished" with "the whole batch finished" — the task's own "4 of 5 done, 1 needs you" framing: a
+  review ping for the holdout plus this notice together tell the whole story without opening the
+  app), naming the project AND the feature and stating the task count, deep-linked to the project
+  (`projectLink`/`desktopProjectLink`, new — a feature has no detail page of its own yet, so it falls
+  back to the project view same shape as `runLink`/`desktopRunLink`), and — same low-value treatment
+  as a plain run completion, reusing the EXACT existing `inQuietHours`/`parseQuietHours` helpers,
+  unmodified — held during quiet hours (the `/inbox` digest still reflects it whenever the operator
+  looks). Verified: MCP-level tests (`tests/mcp.test.ts`) — all three tools registered under `author`
+  and refused for an observe-only token; project-scoped-token cross-project denial by `projectId` AND
+  by a resolved `taskId`/`featureId`; `dryRun` mutates nothing (task/agent/project records all
+  asserted untouched) while the real call does; the outcome-report shape round-trips through the MCP
+  JSON boundary intact. A real-git orchestrator test (`tests/feature-shipped-notice.test.ts`, same
+  harness as `brief-threading.test.ts`'s section 3) drives two sibling tasks to `done` for real and
+  confirms `feature.shipped` fires EXACTLY once with the correct `featureId`/`projectId`/`taskCount`,
+  and a second test pre-seeds an already-`"shipped"` feature and confirms running its (only) task to
+  done does NOT re-fire the notice. Pure notice-text tests (`tests/telegram-notices.test.ts`) for
+  `featureShippedNotice`'s wording/singularization/link-omission and the new deep-link helpers. Docs:
+  `docs/mcp.md`'s "What's exposed" section gains the new *execution intents* tool group. **Out of
+  scope, matching S10's own boundary:** the dock UI / richer confirm-chip rendering (S11, independent
+  of this task); Telegram's own conversational action vocabulary (`telegram/intent.ts`) still doesn't
+  call `executeStewardAction` — unchanged, not this task's job either.
 - [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** *Landed:* **amber
   untangled** — `--accent` (brand/primary) and `--warn` (caution/waiting status) were an accidental
   hex duplicate (`#FFB224` both, not just visually close); `--warn` is now a genuinely distinct

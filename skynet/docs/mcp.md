@@ -117,6 +117,7 @@ short page is never mistaken for the whole list.
 - *author — workspace & projects* — `update_settings`, `create_project`, `update_project`
 - *author — backlog & board* — `create_task`, `update_task`, `transition_task` (move through the kanban), `force_task_done`, `move_task`, `reorder_task`, `archive_task`, `delete_task`, `import_github_issues`, `import_repo_file`
 - *author — roadmap* — `create_feature`, `update_feature`, `delete_feature`, `create_milestone`, `update_milestone`, `delete_milestone`
+- *author — execution intents (S10/S12)* — `start_task`, `start_feature`, `process_backlog`: the same server executor (`Operations.executeStewardAction`) the dock's confirm chip and Telegram use, so feasibility/budget/governance can never disagree by caller. There's no conversational confirm step over MCP — pass `dryRun: true` first to preview the outcome report (`started`/`queued`/`excluded`) before calling again for real; the run(s) themselves still gate through the project's own `approvalLevel`/daily budget/breaker-review policy regardless of who queued them.
 - *author — agents & fleet* — `assign_task`, `message_agent`, `fork_agent`, `stop_agent`, `pause_agent`, `resume_agent`, `archive_agent`, `configure_runner`, `update_runner`, `retire_runner`
 - *approver* — `resolve_hitl`
 
