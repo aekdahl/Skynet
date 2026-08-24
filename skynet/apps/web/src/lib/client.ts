@@ -639,7 +639,7 @@ export function updateProject(
     breakerReview?: boolean;
   },
 ) {
-  return req<unknown>("PATCH", `/api/projects/${id}`, body);
+  return req<Project>("PATCH", `/api/projects/${id}`, body);
 }
 /** Revoke one standing "approve always" rule from a project's approval policy. */
 export function removeApprovalRule(projectId: string, ruleId: string) {
