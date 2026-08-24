@@ -1483,6 +1483,59 @@ export type MoveTaskRequest = z.infer<typeof MoveTaskRequest>;
 export const ReorderTaskRequest = z.object({ beforeId: z.string().nullable() });
 export type ReorderTaskRequest = z.infer<typeof ReorderTaskRequest>;
 
+// ─── Execution intents (S10): start/queue composites ───────────────────────
+// The strict request contract for POST /api/projects/:id/steward/actions —
+// distinct from (and narrower than) Steward's own free-form AssistantAction
+// (apps/server/src/steward/assistant.ts), which is never zod-validated since
+// the LLM proposes it. These four kinds are the only ones a client calls this
+// endpoint with; every other ProjectActionKind keeps its existing per-kind
+// REST route (see steward-dock.tsx's runAction), unchanged.
+export const StewardExecutionAction = z.discriminatedUnion("kind", [
+  // Direct single-task start — "Start now" on an explicit task.
+  z.object({ kind: z.literal("start_task"), taskId: z.string() }),
+  // Queue explicit tasks for autonomous pickup (state→todo, autoPick: true).
+  z.object({ kind: z.literal("queue_tasks"), taskIds: z.array(z.string()).min(1) }),
+  // Composite over one feature's tasks. `execMode: "queue"` queues every
+  // eligible task; `"start_now"` assigns as many as idle capacity allows and
+  // queues the rest. `feasibleOnly` (default true) drops tasks still parked
+  // in triage (never came out clear) from both.
+  z.object({
+    kind: z.literal("start_feature"),
+    featureId: z.string(),
+    execMode: z.enum(["queue", "start_now"]),
+    feasibleOnly: z.boolean().default(true),
+  }),
+  // Composite over the project's whole unstarted backlog (backlog+triage+todo)
+  // — always queues (no direct-start variant; there's no single scope-defined
+  // "now" for the whole backlog the way a feature's own start_now has).
+  z.object({ kind: z.literal("process_backlog"), feasibleOnly: z.boolean().default(true) }),
+]);
+export type StewardExecutionAction = z.infer<typeof StewardExecutionAction>;
+
+export const ExecuteStewardActionRequest = z.object({
+  action: StewardExecutionAction,
+  // Resolve feasibility and report what WOULD happen — never mutates
+  // anything. What S11's confirm chip and S12's MCP `dryRun` param render.
+  dryRun: z.boolean().optional(),
+});
+export type ExecuteStewardActionRequest = z.infer<typeof ExecuteStewardActionRequest>;
+
+export const ExecutableExcludeReason = z.enum(["unclear", "already-running", "done", "over-budget", "not-in-scope"]);
+export type ExecutableExcludeReason = z.infer<typeof ExecutableExcludeReason>;
+
+export const StewardActionOutcome = z.object({
+  // taskIds directly assigned (todo/whatever → ongoing, right now).
+  started: z.array(z.string()),
+  // taskIds queued for the autonomy tick to pick up (state→todo, autoPick).
+  queued: z.array(z.string()),
+  excluded: z.array(z.object({ taskId: z.string(), reason: ExecutableExcludeReason })),
+  // True when this call turned the project's autonomy on as a necessary
+  // corollary of queuing work — see executeStewardAction's doc comment.
+  autonomyEnabled: z.boolean().default(false),
+  dryRun: z.boolean().default(false),
+});
+export type StewardActionOutcome = z.infer<typeof StewardActionOutcome>;
+
 export const ConfigureRunnerRequest = z.object({
   provider: ProviderId,
   model: z.string().min(1),

@@ -1071,6 +1071,71 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   in `apps/web` to add it to; the POST is synchronous (the client's own in-flight request IS the
   "running" state) so no server-side polling/async job infra was needed either. **Depends on S4**
   (`SolutionBrief`) — landed and merged.
+- [x] **S10 — Execution intents: feasibility resolver + composite actions + ONE server executor.**
+  The server-side seam everything else (S11's confirm chip, S12's MCP surface, Telegram) calls into
+  to actually start/queue work — not three separate reimplementations of "which of these tasks can
+  run right now." Two pieces. **`resolveExecutable(project, tasks, runs, opts)`** (new
+  `steward/execution.ts`, PURE) decides, from a caller-scoped candidate list (a feature's tasks, or
+  the project's backlog+triage+todo), which are executable and why not for the rest —
+  `{eligible, excluded: {taskId, reason}[]}`, `reason` one of `unclear | already-running | done |
+  over-budget | not-in-scope`. `done`/`ongoing`/`review` are always excluded (idempotency —
+  re-issuing the same directive never double-starts a task with a live or just-finished run);
+  archived is `not-in-scope`; `unclear` (a task still parked in `triage` — there's no separate
+  boolean, that IS the observable "never came out clear" signal, since the autonomy tick's own
+  triage step auto-promotes triage→todo the moment its clarity read comes back clear) fires only
+  under `opts.feasibleOnly`. The budget half walks the remaining candidates in PRIORITY order
+  (`task.order`, tie-broken by id — the identical sort `tickAutonomy`'s auto-pick already uses)
+  accumulating `costBandFor`, marking the remainder `over-budget` once `pacedAvailableUsd` runs out
+  — never dropped, still reported, since an over-budget task is still queueable (the tick picks it
+  up once budget frees). `pacedAvailableUsd` moved from a private `Orchestrator` method to a pure
+  export on `packages/shared/src/budget.ts` (alongside `computeDailySpend`/`costBandFor`, which were
+  already there) so the resolver and the tick call the EXACT same calculation — a dry-run's "N over
+  budget" can never be a different number than what the tick does moments later.
+  **`Operations.executeStewardAction(ws, projectId, action, operatorId, opts)`** is the one executor,
+  dispatching on 4 new kinds (`StewardExecutionAction`, a strict zod discriminated union,
+  `packages/shared/src/contracts.ts`): `start_task` (direct, single-task `assignTask`, still run
+  through the resolver for the SAME feasibility check every kind gets — not a bypass);
+  `queue_tasks {taskIds}` (explicit ids, `feasibleOnly` never applied — the caller already decided);
+  `start_feature {featureId, execMode: "queue"|"start_now", feasibleOnly}` and `process_backlog
+  {feasibleOnly}` (composite — resolve the scope, then either queue every eligible task or, for
+  `start_now`, assign up to idle capacity — catching `NoCapacityError`/`RunnerNotConfiguredError`
+  specifically to know when to stop assigning and start queuing the rest instead — then queue the
+  remainder). Queuing a task (state→`todo` when backlog/triage, `autoPick: true`, and an
+  `unassigned` eligibility fixed to `any`) writes directly via `hub.upsertTask`, deliberately
+  bypassing `Operations.transitionTask`/`HUMAN_TRANSITIONS` (which has no backlog→todo edge at all —
+  that gate is for a HUMAN kanban drag; this is the identical SYSTEM-initiated write the autonomy
+  tick's own triage step already makes the same way). **Autonomy fold-in:** queuing is pointless
+  with the project's autonomy toggle off — nothing would ever pick the work up — so executing any
+  call that queues at least one task turns autonomy on as part of the SAME operation (reported via
+  `autonomyEnabled`) rather than making the operator separately confirm a `set_autonomy` action for
+  what is conceptually one intent ("start this feature"); chose this over teaching the model to
+  propose the two actions together, since it's deterministic and doesn't depend on LLM behavior.
+  **Dry-run** (`opts.dryRun`) resolves the identical decision and returns it without calling
+  `hub.upsertTask`/`upsertProject`/`assignTask` — `start_now`'s dry-run specifically never acquires a
+  runner (real-time fleet capacity can't be previewed without racing it), so it reports every
+  eligible task as "would queue," the conservative honest answer. New route: `POST
+  /api/projects/:id/steward/actions` (default "author" scope, no auth-guard change needed). The 4
+  kinds are also added to `ProjectActionKind`/`AssistantAction`/`validateProjectAction`
+  (`steward/assistant.ts`) — same id-resolution + confirm-chip-summary treatment every other kind
+  gets — but **deliberately NOT yet in the `SYSTEM` prompt text**: the web dock's `runAction`
+  (`steward-dock.tsx`) has a `const unhandled: never = a.kind` exhaustiveness guard and doesn't
+  execute these four (they run only through the new endpoint), so teaching Steward's LLM to propose
+  one today would let an operator confirm a chip the dock then can't do anything with. Wiring the
+  dock to the endpoint (and only then adding these to `SYSTEM`) is S11's job. Verified: 21 tests
+  (`tests/execution-intents.test.ts`) — the resolver's exclusion reasons individually (including
+  `eligible.length + excluded.length === tasks.length` always holding) and priority-order — plus the
+  executor through a REAL `Operations` + `Orchestrator` + `MemoryStore` + stub provider: `queue_tasks`
+  makes a backlog task pickable and the NEXT `tickAutonomy` genuinely starts it; `start_feature` on a
+  done+ongoing+two-todo feature touches only the two; `start_now` with one idle runner assigns one
+  and queues the rest while folding autonomy on; dry-run mutates nothing (asserted on the task AND
+  the project record); re-issuing the same composite twice is a no-op the second time (already-running
+  / already-queued). Plus 8 new `validateProjectAction` cases (`tests/project-assistant.test.ts`) and
+  confirmed the existing `budget-allocation.test.ts`/`daily-budget.test.ts` suites are unaffected by
+  the `pacedAvailableUsd` extraction. **Deliberately out of scope, per the task's own sizing:** S7's
+  `dependsOnTaskIds` dependency check (the resolver leaves room for it, doesn't implement it); the
+  dock UI wiring + richer confirm-chip rendering (S11); the MCP tools + their `dryRun` param (S12);
+  Telegram's own action vocabulary (`telegram/intent.ts`) still doesn't call this executor — a
+  fourth parallel action path, not touched here, matching "don't churn existing kinds."
 - [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** *Landed:* **amber
   untangled** — `--accent` (brand/primary) and `--warn` (caution/waiting status) were an accidental
   hex duplicate (`#FFB224` both, not just visually close); `--warn` is now a genuinely distinct
