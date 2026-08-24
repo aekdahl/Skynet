@@ -47,7 +47,7 @@ afterEach(() => {
 function harness(checkCmd?: string) {
   const calls = {
     merged: [] as { req: MergeRequest; branch: string }[],
-    conflict: [] as { req: MergeRequest; files: string[] }[],
+    conflict: [] as { req: MergeRequest; files: string[]; conflictDiff: string }[],
     checksFailed: [] as { req: MergeRequest; out: string }[],
     mergeFailed: [] as { req: MergeRequest; reason: string }[],
     logs: [] as string[],
@@ -55,7 +55,7 @@ function harness(checkCmd?: string) {
   let settle: (() => void) | null = null;
   const cb: MergeCallbacks = {
     onMerged: async (req, branch) => { calls.merged.push({ req, branch }); settle?.(); },
-    onConflict: async (req, files) => { calls.conflict.push({ req, files }); settle?.(); },
+    onConflict: async (req, files, conflictDiff) => { calls.conflict.push({ req, files, conflictDiff }); settle?.(); },
     onChecksFailed: async (req, out) => { calls.checksFailed.push({ req, out }); settle?.(); },
     onMergeFailed: async (req, reason) => { calls.mergeFailed.push({ req, reason }); settle?.(); },
     onLog: (_id, line) => { calls.logs.push(line); },
@@ -115,6 +115,13 @@ describe("MergeEngine", () => {
     expect(calls.merged).toHaveLength(1);
     expect(calls.conflict).toHaveLength(1);
     expect(calls.conflict[0]!.files).toContain("shared.txt");
+    // The actual conflict markers, captured before `merge --abort` discards
+    // them — this is what lets an agent be handed the real conflict instead
+    // of just a list of contested filenames.
+    expect(calls.conflict[0]!.conflictDiff).toContain("<<<<<<<");
+    expect(calls.conflict[0]!.conflictDiff).toContain("version A");
+    expect(calls.conflict[0]!.conflictDiff).toContain("version B");
+    expect(calls.conflict[0]!.conflictDiff).toContain(">>>>>>>");
     // After an aborted merge the working tree is clean (merge --abort ran).
     expect(git("status", "--porcelain").trim()).toBe("");
   });

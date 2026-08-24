@@ -332,6 +332,12 @@ kbd {
 .readout-label { font-size: var(--fz-11); line-height: 1.35; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
 
 .queue-list { display: flex; flex-direction: column; gap: var(--sp); }
+.queue-section {
+  margin: 4px 0 -4px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted);
+}
+.queue-section:first-child { margin-top: 0; }
 .qcard {
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   padding: var(--card-pad); display: flex; flex-direction: column; gap: 12px;
