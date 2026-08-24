@@ -1203,6 +1203,23 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   CSS-token fix, and belongs in its own PR. A full sweep of the ~90 other `--faint` usages beyond
   the 4 named examples wasn't attempted either — that's the still-separately-tracked v0.5
   "Legibility floor" item (#4 above).
+- [x] **Project header decluttered — Governance popover.** Reported live: the project header's toolbar
+  had grown to ~15 same-weight pills (Approvals, Autonomy, Daily budget, Pace spend, Plan mode, Deep
+  review, Breaker review, GitHub/Fly account, Keys, Tools, Preview app, Deploy to Fly.io, Inform,
+  the gear, Delete) with no hierarchy between primary actions and rarely-touched settings. Seven of
+  those — Approvals, Autonomy, Daily budget (+ Pace spend), Plan mode, and Deep review (+ Breaker
+  review) — are now bundled behind one `ProjectGovernance` popover (`project.tsx`), reusing the exact
+  details/summary idiom the Keys/Tools popovers already established rather than inventing a new
+  pattern. The collapsed summary still surfaces the two facts worth seeing without opening it — the
+  approval level, and an "Autonomy off" flag — and Full autonomy's existing red "danger" treatment
+  stays visible on the collapsed pill itself (`.proj-governance-danger`), not just inside the menu.
+  Preview app / Deploy to Fly.io lead the row as the primary actions; Inform active agents / the gear /
+  Delete are pushed to a `margin-left: auto` cluster at the row's trailing edge (`.projview-head-admin`)
+  so administrative controls read as visually distinct from day-to-day ones, wrapping as one unit on
+  narrow widths instead of interleaving. Net: ~15 top-level controls down to about 7. Verified live —
+  every toggle's real persistence (including the Full-autonomy confirm dialog and the danger styling),
+  the Pace-spend/Breaker-review conditional reveals, and the admin cluster's wrap behavior at mobile
+  width — not just reviewed in source.
 - [ ] 🏢 Auth: **SSO/OIDC**.
 - [x] 🏢 **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
   everything (projects, runs, HITL, audit) but mutate nothing (no assign / resolve / transition /
