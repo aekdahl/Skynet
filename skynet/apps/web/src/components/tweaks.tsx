@@ -89,6 +89,7 @@ export function TweaksPanel({ children }: { children: ReactNode }) {
             <b>Tweaks</b>
             <button
               onClick={() => setOpen(false)}
+              aria-label="Close Tweaks panel"
               style={{
                 background: "none",
                 border: "none",

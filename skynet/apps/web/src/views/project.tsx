@@ -284,6 +284,27 @@ function TaskCard({
   const brief = resolveTaskBrief(task, projBriefs);
   const [editing, setEditing] = useState(false);
   const [detail, setDetail] = useState(false); // full-detail modal for a card with no run
+  const cardRef = useRef<HTMLDivElement>(null);
+  const detailCloseRef = useRef<HTMLButtonElement>(null);
+  // Keyboard a11y for the detail modal: focus its close button on open (Escape
+  // dismisses same as the overlay/× click), and return focus to the card that
+  // opened it on close — otherwise a keyboard user's focus silently drops to
+  // <body> once the modal unmounts.
+  useEffect(() => {
+    if (!detail) return;
+    detailCloseRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDetail(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      cardRef.current?.focus();
+    };
+  }, [detail]);
   const [draft, setDraft] = useState(task.text);
   const [descDraft, setDescDraft] = useState(task.description ?? "");
   const pid = task.projectId;
@@ -356,6 +377,7 @@ function TaskCard({
     <>
     {dnd?.dropBeforeId === task.id && <div className="kb-drop-line" aria-hidden="true" />}
     <div
+      ref={cardRef}
       className={"kb-card kb-card-" + s + (dragging ? " kb-card-dragging" : "") + (locked ? " kb-card-locked" : "")}
       role="button"
       tabIndex={0}
@@ -684,7 +706,12 @@ function TaskCard({
           <div className="kb-detail" role="dialog" aria-modal="true" onClick={stop}>
             <div className="kb-detail-head">
               <span className="kb-detail-state mono">{s}</span>
-              <button className="kb-detail-close" onClick={() => setDetail(false)} aria-label="Close">
+              <button
+                ref={detailCloseRef}
+                className="kb-detail-close"
+                onClick={() => setDetail(false)}
+                aria-label="Close"
+              >
                 ×
               </button>
             </div>
