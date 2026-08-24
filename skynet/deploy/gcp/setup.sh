@@ -45,15 +45,17 @@ if [ ! -f terraform.tfvars ]; then
   read -r -p "  Your Google account email (IAP access + web login) [alex@zubi.ai]: " EMAIL_IN; EMAIL_IN=${EMAIL_IN:-alex@zubi.ai}
   [ -n "$EMAIL_IN" ] || { echo "  email is required"; exit 1; }
   echo "  Machine type:"
-  echo "    1) e2-small      — 2 vCPU · 2 GB   (light; orchestration only)"
-  echo "    2) e2-medium     — 2 vCPU · 4 GB   (recommended — headroom for agent builds)"
-  echo "    3) e2-standard-2 — 2 vCPU · 8 GB   (heavy / parallel agents)"
-  read -r -p "  Choose 1-3, or type any machine type [2]: " MT_IN; MT_IN=${MT_IN:-2}
+  echo "    1) e2-small      — 2 vCPU · 2 GB    (light; orchestration only)"
+  echo "    2) e2-medium     — 2 vCPU · 4 GB    (single agent at a time)"
+  echo "    3) e2-standard-2 — 2 vCPU · 8 GB    (light concurrent use)"
+  echo "    4) e2-standard-4 — 4 vCPU · 16 GB   (recommended — several concurrent agents + live-preview builds without choking)"
+  read -r -p "  Choose 1-4, or type any machine type [4]: " MT_IN; MT_IN=${MT_IN:-4}
   case "$MT_IN" in
     1) MT="e2-small" ;;
     2) MT="e2-medium" ;;
     3) MT="e2-standard-2" ;;
-    *) MT="$MT_IN" ;; # a custom machine type typed verbatim (e.g. e2-standard-4)
+    4) MT="e2-standard-4" ;;
+    *) MT="$MT_IN" ;; # a custom machine type typed verbatim (e.g. e2-standard-8)
   esac
   read -r -p "  Allow control (approve/create/etc.) over Telegram? [Y/n]: " TC_IN
   TC=true; [[ "${TC_IN:-y}" =~ ^[Nn] ]] && TC=false

@@ -17,8 +17,8 @@ variable "zone" {
 
 variable "machine_type" {
   type        = string
-  default     = "e2-standard-2"
-  description = "VM size. e2-standard-2 (2 DEDICATED vCPUs / 8GB) handles agents + live-preview builds without the shared-core throttling that makes a busy e2-small drop connections (~$50/mo). Cheaper options for lighter use: e2-medium (2 shared vCPU / 4GB, ~$25/mo) or e2-small (2GB, ~$13/mo) for pure orchestration."
+  default     = "e2-standard-4"
+  description = "VM size. e2-standard-4 (4 DEDICATED vCPUs / 16GB, ~$100/mo) gives enough headroom to run several agents + live-preview builds concurrently without the box choking — a fleet of just 3-4 concurrent runners can otherwise saturate a smaller box's CPU/memory caps and make the whole site slow or briefly unreachable (see the workspace's `maxRunners` setting, which is NOT sized to the VM by default). Cheaper options for lighter, mostly-sequential use: e2-standard-2 (2 DEDICATED vCPUs / 8GB, ~$50/mo) or e2-medium (2 shared vCPU / 4GB, ~$25/mo) for pure orchestration."
 }
 
 variable "app_port" {
