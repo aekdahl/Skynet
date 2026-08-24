@@ -1307,7 +1307,15 @@ class ClaudeRunnerHandle implements RunnerHandle {
             const name = pending?.name || "tool";
             if (id) this.pendingTools.delete(id);
             const out = toolResultText(b.content);
-            this.events.onLog(this.runId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)");
+            // AskUserQuestion is always DENIED to deliver the operator's answer
+            // (see resume()) — that denial always echoes back here as an
+            // is_error tool_result, which would otherwise read as "↳
+            // AskUserQuestion failed" right under the correct "↳ answered
+            // ..." line resume() already logged. Not a real failure — skip the
+            // redundant, misleading duplicate rather than mislabel it.
+            if (name !== "AskUserQuestion") {
+              this.events.onLog(this.runId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)");
+            }
             if (pending && !b.is_error) {
               const src = untrustedReadSource(pending.name, pending.input);
               if (src) this.trackUntrustedRead(src, out);
