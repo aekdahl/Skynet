@@ -266,7 +266,7 @@ export async function fetchComplianceReport(scope: {
 // HITL
 export function resolveHitl(
   id: string,
-  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string },
+  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
 ) {
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
 }
@@ -954,8 +954,10 @@ export async function streamInstallProvider(
 }
 
 // Guarded kanban move (backlog→triage, triage→todo, review→done, demote, …).
-export function transitionTask(projectId: string, taskId: string, to: string) {
-  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/state`, { to });
+// `preserve` (ongoing/review→todo only) pauses the run instead of discarding
+// it — see Orchestrator.pauseRun.
+export function transitionTask(projectId: string, taskId: string, to: string, preserve?: boolean) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/state`, { to, preserve });
 }
 // Escape hatch — force a task to `done` bypassing HUMAN_TRANSITIONS, and always
 // sync the linked run's status. For when the normal review → done path fails.

@@ -399,3 +399,131 @@ describe("escalation — a failed resume attempt re-raises instead of dead-endin
     await waitFor(async () => (await store.getRun(run.id))?.status === "running");
   });
 });
+
+// "Send to Todo" and "Reassign" both used to have exactly one hardcoded
+// behavior — the former always discarded, the latter always continued —
+// with no way to ask for the other. Both now offer a real choice: keep the
+// worktree (pause, resumable) or reset (discard, start clean). Real git repo
+// so worktree survival/removal is a genuine on-disk assertion, not mocked.
+describe("reset vs. continue — operator choice on 'Send to Todo' and 'Reassign'", () => {
+  let store: MemoryStore;
+  let bus: RecordingBus;
+  let hub: Hub;
+  let ops: Operations;
+  let orchestrator: Orchestrator;
+  let repo: string;
+  let provider: ControllableProvider;
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), "esc-reset-repo-"));
+    execFileSync("git", ["init", "-q", "-b", "main", repo]);
+    execFileSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+    execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
+    writeFileSync(join(repo, "README.md"), "base\n");
+    execFileSync("git", ["-C", repo, "add", "-A"]);
+    execFileSync("git", ["-C", repo, "commit", "-q", "-m", "base"]);
+
+    store = new MemoryStore({ seed: false });
+    bus = new RecordingBus();
+    hub = new Hub(store, bus);
+    provider = new ControllableProvider();
+    orchestrator = new Orchestrator(store, hub, provider);
+    ops = new Operations({ store, hub, orchestrator });
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("Send to Todo, preserve:true — pauses the run (worktree kept) instead of discarding it, and a later Start resumes it in place", async () => {
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repoPath: repo });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "do the thing" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    const worktrees = new WorktreeProvisioner(repo, "main");
+    expect(worktrees.exists(run.id)).toBe(true);
+
+    await ops.transitionTask(DEFAULT_WORKSPACE, task.id, "todo", "op-1", { preserve: true });
+
+    const paused = await store.getTask(task.id);
+    expect(paused?.state).toBe("todo");
+    expect(paused?.runId).toBe(run.id); // still linked — that's how a later Start finds it
+    expect((await store.getRun(run.id))?.status).toBe("waiting");
+    expect(worktrees.exists(run.id)).toBe(true); // work preserved, not discarded
+    expect((await store.getAgent("r1"))?.status).toBe("idle"); // runner freed either way
+
+    // A follow-up "Start" on the same (still-Todo) task resumes the SAME run.
+    const resumed = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    expect(resumed.id).toBe(run.id); // same run id — not a fresh one
+    expect((await store.getRun(run.id))?.status).toBe("running");
+    expect((await store.getTask(task.id))?.state).toBe("ongoing");
+    expect(provider.events.has(run.id)).toBe(true); // the resume actually started a session
+  });
+
+  it("Send to Todo, preserve:false (the default) — discards the run and its worktree exactly as before", async () => {
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repoPath: repo });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "do the thing" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    const worktrees = new WorktreeProvisioner(repo, "main");
+    expect(worktrees.exists(run.id)).toBe(true);
+
+    await ops.transitionTask(DEFAULT_WORKSPACE, task.id, "todo", "op-1");
+
+    const reset = await store.getTask(task.id);
+    expect(reset?.state).toBe("todo");
+    expect(reset?.runId).toBeNull(); // detached — nothing to resume
+    expect(worktrees.exists(run.id)).toBe(false); // discarded, as it always did
+  });
+
+  it("Reassign, resetWork:true — discards the old worktree and starts a brand-new run for the same task", async () => {
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    await store.putAgent({ id: "r2", workspaceId: DEFAULT_WORKSPACE, name: "r2", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repoPath: repo });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "do the thing" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    const worktrees = new WorktreeProvisioner(repo, "main");
+    expect(worktrees.exists(run.id)).toBe(true);
+
+    const cur = (await store.getRun(run.id))!;
+    await store.putRun({ ...cur, status: "running", lastHeartbeatAt: 0 });
+    await orchestrator.reapStaleAgents();
+    await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+    const esc = bus.raised().find((i) => i.kind === "escalation")!;
+
+    await ops.resolveHitl(DEFAULT_WORKSPACE, esc.id, { action: "reassign", resetWork: true }, "op-1");
+
+    // The OLD run is done and its worktree is gone — a clean slate, as asked.
+    expect((await store.getRun(run.id))?.status).toBe("done");
+    expect(worktrees.exists(run.id)).toBe(false);
+
+    // The task now points at a DIFFERENT, freshly-provisioned run.
+    const freshTask = await store.getTask(task.id);
+    expect(freshTask?.runId).not.toBe(run.id);
+    expect(freshTask?.state).toBe("ongoing");
+    const newRun = await store.getRun(freshTask!.runId!);
+    expect(newRun?.status).toBe("running");
+    expect(worktrees.exists(newRun!.id)).toBe(true); // the new run got its own fresh worktree
+  });
+
+  it("Reassign, resetWork:false (the default) — continues in the SAME worktree exactly as before", async () => {
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    await store.putAgent({ id: "r2", workspaceId: DEFAULT_WORKSPACE, name: "r2", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repoPath: repo });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "do the thing" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    const worktrees = new WorktreeProvisioner(repo, "main");
+
+    const cur = (await store.getRun(run.id))!;
+    await store.putRun({ ...cur, status: "running", lastHeartbeatAt: 0 });
+    await orchestrator.reapStaleAgents();
+    await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+    const esc = bus.raised().find((i) => i.kind === "escalation")!;
+
+    await ops.resolveHitl(DEFAULT_WORKSPACE, esc.id, { action: "reassign" }, "op-1");
+
+    expect((await store.getRun(run.id))?.status).toBe("running"); // same run id, relaunched
+    expect((await store.getTask(task.id))?.runId).toBe(run.id);
+    expect(worktrees.exists(run.id)).toBe(true);
+  });
+});

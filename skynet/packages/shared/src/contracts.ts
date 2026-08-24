@@ -951,6 +951,12 @@ export const Resolution = z.object({
   // persisted on the resolution + audit trail so the intent isn't lost, but
   // nothing reads it back or injects it into a runner yet.
   memoryNote: z.string().nullable().default(null),
+  // A `reassign` on an escalation defaults to CONTINUING in the same worktree
+  // (the new runner picks up the branch's committed work) — resetWork:true
+  // instead retires that worktree and starts the task completely fresh on a
+  // new run/branch, same as "Stop" followed by a plain re-assign. Ignored for
+  // every other action.
+  resetWork: z.boolean().default(false),
   by: z.string(), // operator id — audit trail
   at: Timestamp,
 });
@@ -1247,6 +1253,8 @@ export const ResolveRequest = z.object({
   targetBranch: z.string().optional(),
   // Approve-with-memory — see Resolution.memoryNote. Only honored on `approve`.
   memoryNote: z.string().optional(),
+  // See Resolution.resetWork. Only honored on `reassign`.
+  resetWork: z.boolean().optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
 
@@ -1475,7 +1483,15 @@ export type UpdateProjectRoadmapRequest = z.infer<typeof UpdateProjectRoadmapReq
 
 // A human-initiated kanban move; the server validates it against the allowed
 // (human) transition map before applying.
-export const MoveTaskRequest = z.object({ to: TaskState });
+export const MoveTaskRequest = z.object({
+  to: TaskState,
+  // ongoing/review → todo abandons the in-flight run. preserve:true instead
+  // PAUSES it (worktree + committed work kept, runner freed) rather than
+  // discarding it — a later Start on the same task resumes it in place. See
+  // Orchestrator.pauseRun / assignTask's resume-a-paused-run branch. Ignored
+  // for every other transition.
+  preserve: z.boolean().optional(),
+});
 export type MoveTaskRequest = z.infer<typeof MoveTaskRequest>;
 
 // Drag-reorder within a lane (the backlog): place the task before `beforeId`, or

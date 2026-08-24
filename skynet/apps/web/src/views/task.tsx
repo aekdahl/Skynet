@@ -17,7 +17,7 @@ import {
 } from "../lib/derive";
 import { StatusDot } from "../components/common";
 import { Blocked } from "../components/empty";
-import { useConfirm } from "../components/confirm";
+import { useChoice, useConfirm } from "../components/confirm";
 import { Markdown } from "../components/markdown";
 import { HitlContext, RiskChip } from "../components/hitl-context";
 
@@ -109,6 +109,7 @@ export function TaskDetail({
     logDeltas,
   } = useStore();
   const confirm = useConfirm();
+  const choice = useChoice();
   const q = openQueue(queue).find((it) => it.runId === agent.id);
   // The backing task carries the operator's brief AND the autonomous triage
   // metadata (assessment note + duration estimate) — surface both here so
@@ -566,8 +567,28 @@ export function TaskDetail({
                       <>
                         <button
                           className="btn btn-sm"
-                          title="Hand this run to a different runner to retry fresh (with your guidance below, if any)"
-                          onClick={() => resolveHitl(q.id, "reassign", { guidance: draft.trim() })}
+                          title="Hand this run to a different runner — choose whether to keep its work or start clean"
+                          onClick={async () => {
+                            const picked = await choice({
+                              title: "Reassign to a different runner",
+                              body: "How should the new runner pick this up?",
+                              options: [
+                                {
+                                  value: "continue",
+                                  label: "Continue in this worktree",
+                                  hint: "The new runner picks up the branch's committed work where the last one left off.",
+                                  primary: true,
+                                },
+                                {
+                                  value: "reset",
+                                  label: "Start clean",
+                                  hint: "Discards this worktree's work — the new runner starts the task fresh on a new branch.",
+                                  danger: true,
+                                },
+                              ],
+                            });
+                            if (picked) resolveHitl(q.id, "reassign", { guidance: draft.trim(), resetWork: picked === "reset" });
+                          }}
                         >
                           Reassign
                         </button>

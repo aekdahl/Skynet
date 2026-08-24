@@ -108,7 +108,7 @@ export interface Store extends StoreState {
   resolveHitl: (
     id: string,
     action: ResolveAction,
-    extra?: { optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string },
+    extra?: { optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
   ) => Promise<void>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
@@ -236,7 +236,7 @@ export interface Store extends StoreState {
   archiveTask: (projectId: string, taskId: string, archived: boolean) => Promise<void>;
   moveTask: (projectId: string, taskId: string, direction: "up" | "down") => Promise<void>;
   reorderTask: (projectId: string, taskId: string, beforeId: string | null) => Promise<void>;
-  transitionTask: (projectId: string, taskId: string, to: string) => Promise<void>;
+  transitionTask: (projectId: string, taskId: string, to: string, preserve?: boolean) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
@@ -676,9 +676,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       reorderTask: async (projectId, taskId, beforeId) => {
         await api.reorderTask(projectId, taskId, beforeId);
       },
-      transitionTask: async (projectId, taskId, to) => {
+      transitionTask: async (projectId, taskId, to, preserve) => {
         try {
-          await api.transitionTask(projectId, taskId, to);
+          await api.transitionTask(projectId, taskId, to, preserve);
         } catch (e) {
           if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't move the task."));
         }
