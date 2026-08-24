@@ -443,6 +443,31 @@ export class Operations {
     return projectPreview.refresh(projectId);
   }
 
+  // ── per-run live preview — "Preview this change" (the run's own branch, ────
+  // pinned, pre-merge — see docs/live-preview.md). Same manager, same
+  // sandboxed `/p/<token>/` proxy as the project preview above; keyed
+  // `run:<runId>` so it never collides with (and is stopped independently of)
+  // a project-level preview of the same repo.
+  previewRunState(ws: string, runId: string): Promise<PreviewState> {
+    return this.getRun(ws, runId).then((r) => projectPreview.state(`run:${r.id}`));
+  }
+  async previewRunStart(ws: string, runId: string): Promise<PreviewState> {
+    const run = await this.getRun(ws, runId);
+    const project = await this.getProject(ws, run.projectId);
+    if (!project.repoPath) throw new Error("This project has no local folder to preview.");
+    return projectPreview.startRun(run.id, { repoPath: project.repoPath, projectId: project.id, branch: run.branch, workspaceId: ws });
+  }
+  async previewRunRestart(ws: string, runId: string): Promise<PreviewState> {
+    const run = await this.getRun(ws, runId);
+    const project = await this.getProject(ws, run.projectId);
+    if (!project.repoPath) throw new Error("This project has no local folder to preview.");
+    return projectPreview.restartRun(run.id, { repoPath: project.repoPath, projectId: project.id, branch: run.branch, workspaceId: ws });
+  }
+  async previewRunStop(ws: string, runId: string): Promise<PreviewState> {
+    await this.getRun(ws, runId);
+    return projectPreview.stop(`run:${runId}`);
+  }
+
   // ── Fly.io deploy (persistent, human-triggered — see docs/live-preview.md) ─
   // Explicit operator action ONLY: never called from the autonomy loop, the
   // merge queue, or any automatic trigger. Two targets, same engine: a

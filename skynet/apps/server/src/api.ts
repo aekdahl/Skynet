@@ -733,6 +733,12 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string } }>("/api/projects/:id/preview/restart", previewAction((w, i) => ops.previewRestart(w, i)));
   app.post<{ Params: { id: string } }>("/api/projects/:id/preview/refresh", previewAction((w, i) => ops.previewRefresh(w, i)));
 
+  // Per-run "Preview this change" — the run's own branch, pinned, pre-merge.
+  app.get<{ Params: { id: string } }>("/api/runs/:id/preview", previewAction((w, i) => ops.previewRunState(w, i)));
+  app.post<{ Params: { id: string } }>("/api/runs/:id/preview/start", previewAction((w, i) => ops.previewRunStart(w, i)));
+  app.post<{ Params: { id: string } }>("/api/runs/:id/preview/stop", previewAction((w, i) => ops.previewRunStop(w, i)));
+  app.post<{ Params: { id: string } }>("/api/runs/:id/preview/restart", previewAction((w, i) => ops.previewRunRestart(w, i)));
+
   // ── Deploy to Fly.io (persistent, human-triggered) — a REAL, shareable URL
   // that survives independent of the local Skynet process. Explicit operator
   // action only: there is deliberately no automatic trigger anywhere in this

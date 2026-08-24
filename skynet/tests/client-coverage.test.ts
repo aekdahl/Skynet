@@ -63,6 +63,13 @@ const ALLOW = new Set<string>([
   // live preview (Phase-1 v0) — spawns a real dev server + iframes it; a
   // stateful UI control surface with no offline journey (needs a repo + toolchain).
   "previewStatus", "previewStart", "previewStop", "previewRestart", "previewRefresh",
+  // per-run "Preview this change" (docs/live-preview.md) — same stateful,
+  // real-dev-server control surface as the project preview above, just keyed
+  // to a run's own branch; no offline journey exercises it either. The
+  // Operations wrapper is covered by preview-run-ops.test.ts; the underlying
+  // manager's startRun/restartRun/stop by deep-review.test.ts and
+  // breaker-review.test.ts.
+  "previewRunStatus", "previewRunStart", "previewRunStop", "previewRunRestart",
   // Deploy to Fly.io — a REAL, persistent deployment (docs/live-preview.md);
   // needs a real Fly.io account, network, and the flyctl binary, so no offline
   // journey can exercise it. The descriptor/app-naming/collision-retry logic is
