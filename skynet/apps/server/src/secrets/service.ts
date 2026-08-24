@@ -4,13 +4,15 @@
 // set/list/delete but never read a key back — list returns metadata only.
 
 import { randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
 import { ProviderId, type CredentialProvider, type SecretMeta } from "@skynet/shared";
 import { config } from "../config.js";
 import { PROVIDER_ENV_VAR, providerEnvCredential } from "../provider-env.js";
 import { fingerprint, masterKey, open, seal } from "./crypto.js";
 import { MemorySecretStore } from "./memory.js";
+import { FileSecretStore } from "./file.js";
 import { PostgresSecretStore } from "./postgres.js";
-import type { SecretRecord, SecretStore } from "./types.js";
+import type { SecretAuditEntry, SecretRecord, SecretStore } from "./types.js";
 import { verifyProviderCredential, type VerifyCredentialResult } from "./verify.js";
 
 // Re-exported for existing consumers (secrets/index.js).
@@ -75,6 +77,25 @@ export class SecretService {
     };
   }
 
+  private async audit(
+    record: Pick<SecretRecord, "workspaceId" | "id" | "provider" | "name">,
+    action: SecretAuditEntry["action"],
+    operatorId: string,
+    at: number,
+  ): Promise<void> {
+    const entry: SecretAuditEntry = {
+      id: randomUUID(),
+      workspaceId: record.workspaceId,
+      credentialId: record.id,
+      provider: record.provider,
+      label: record.name,
+      action,
+      operatorId,
+      at,
+    };
+    await this.store.recordAudit(entry);
+  }
+
   /** Store/rotate the key for a credential by id. Works for a provider's default
    *  credential (id === provider) and for named credentials (id preserves the
    *  existing provider + name). Returns safe metadata only. */
@@ -93,6 +114,7 @@ export class SecretService {
     const provider = existing?.provider ?? (parsed.data as ProviderId);
     const record = this.sealRecord(workspaceId, id, existing?.name ?? "", provider, apiKey, operatorId, at);
     await this.store.put(record);
+    await this.audit(record, existing ? "rotated" : "created", operatorId, at);
     return toMeta(record);
   }
 
@@ -108,6 +130,7 @@ export class SecretService {
     const id = `cred-${provider}-${randomUUID().slice(0, 8)}`;
     const record = this.sealRecord(workspaceId, id, name.trim(), provider, apiKey, operatorId, at);
     await this.store.put(record);
+    await this.audit(record, "created", operatorId, at);
     return toMeta(record);
   }
 
@@ -116,9 +139,17 @@ export class SecretService {
     return (await this.store.list(workspaceId)).map(toMeta);
   }
 
+  /** Lifecycle events (created/rotated/removed) for every credential in the
+   *  workspace, newest first — survives past a credential's own deletion. */
+  async listAudit(workspaceId: string): Promise<SecretAuditEntry[]> {
+    return this.store.listAudit(workspaceId);
+  }
+
   /** Delete a credential by id (default id === provider). */
-  async delete(workspaceId: string, id: string): Promise<void> {
+  async delete(workspaceId: string, id: string, operatorId: string, at: number): Promise<void> {
+    const existing = await this.store.get(workspaceId, id);
     await this.store.delete(workspaceId, id);
+    if (existing) await this.audit(existing, "removed", operatorId, at);
   }
 
   /**
@@ -168,9 +199,16 @@ export class SecretService {
 }
 
 function makeStore(): SecretStore {
-  return config.store === "postgres" && config.databaseUrl
-    ? new PostgresSecretStore(config.databaseUrl)
-    : new MemorySecretStore();
+  if (config.store === "postgres" && config.databaseUrl) return new PostgresSecretStore(config.databaseUrl);
+  // STORE=file: persist credentials durably too, same as everything else the
+  // desktop app manages — not just the in-memory (restart-wipes-it) default.
+  // Defaults next to the main data file, same convention as
+  // complianceKeyPath / the MFA recovery-code file.
+  if (config.store === "file") {
+    const path = config.secretsPath || join(dirname(config.dbPath), "skynet-secrets.json");
+    return FileSecretStore.create(path);
+  }
+  return new MemorySecretStore();
 }
 
 /** Process-wide singleton, configured from the environment. */

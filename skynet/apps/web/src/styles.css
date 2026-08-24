@@ -1406,6 +1406,10 @@ button.kb-done:hover { opacity: 1; }
 .gh-acct-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
 .gh-acct-add .settings-input { flex: 1; min-width: 160px; }
 .gh-acct-name { max-width: 220px; flex: 0 1 220px; }
+.gh-acct-activity { margin: 8px 0; }
+.gh-acct-activity summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.gh-acct-activity summary:hover { color: var(--text); }
+.gh-acct-activity .gh-acct-list { margin-top: 8px; }
 .cfg-cred-select { appearance: auto; }
 .settings-input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; color: var(--text); font-family: var(--font-mono); font-size: 12px; }
 .settings-input:focus { outline: none; border-color: var(--accent); }
