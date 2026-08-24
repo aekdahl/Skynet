@@ -224,7 +224,7 @@ export function splitEstMinutesTag(raw: string): TriageTag {
 // wandering into unrequested adjacent work — is the #1 way a run burns its turn
 // budget and stalls. Keep the agent inside the requested scope so it finishes.
 const SCOPE_NOTE =
-  "\n\n---\nScope discipline: do exactly what's asked above, then stop. Don't expand into adjacent or unrequested work — extra features, UI, refactors, or speculative follow-ups. When the requested change is complete, report and finish rather than inventing more scope. If you're genuinely blocked, or the task is too big for one focused session, escalate (AskUserQuestion with header \"ESCALATE\") instead of grinding through your turn budget.";
+  "\n\n---\nScope discipline: do exactly what's asked above, then stop. Don't expand into adjacent or unrequested work — extra features, UI, refactors, or speculative follow-ups. When the requested change is complete, report and finish rather than inventing more scope. If you're genuinely blocked, or the task is too big for one focused session, escalate (AskUserQuestion with header \"ESCALATE\") instead of grinding through your turn budget.\n\nIf you spawned a subagent for research or exploration, wait for its result before concluding your own work — never finish a turn (including a no-changes-needed completion) while a subagent you launched is still running; its findings may change what \"done\" means here. If you decide to stop waiting on one, say why. And before reporting no changes are needed, check that against each concrete thing this task asked for — a plausible-looking comment or test elsewhere is a clue to verify, not proof by itself.";
 
 // A deep-review reviewer (see Project.deepReview / runDeepReview) is a real but
 // deliberately SHORT-LIVED agent run — read the brief, browse the live preview,
@@ -1024,6 +1024,28 @@ export class Orchestrator {
       await this.hub.runLog(runId, "concluded without an answer to its question — needs attention (no change made)");
       this.live.delete(runId);
       return;
+    }
+
+    // A zero-diff completion against a task with explicit acceptance criteria (a
+    // linked SolutionBrief's `acceptanceCriteria`) is exactly the shape of a
+    // premature "nothing to do here" self-report — the agent decided the task
+    // was already satisfied without producing any change to check that claim
+    // against. Route to review instead of trusting it blindly; a genuinely
+    // correct "already done" completion just costs one confirming look.
+    if (live?.taskId) {
+      const task = await this.store.getTask(live.taskId).catch(() => undefined);
+      const brief = task ? await this.findTaskBrief(task, task.workspaceId) : undefined;
+      if (brief && brief.acceptanceCriteria.some((c) => c.trim())) {
+        await this.freeRunner(live.agentId);
+        await this.hub.runStatus(runId, "review");
+        await this.moveTaskToReview(live.taskId);
+        await this.hub.runLog(
+          runId,
+          `concluded with no changes against ${brief.acceptanceCriteria.length} acceptance criterion/criteria — needs confirmation before closing`,
+        );
+        this.live.delete(runId);
+        return;
+      }
     }
 
     // Phase 0 / no-diff completion: free the runner, finish the task & agent.
