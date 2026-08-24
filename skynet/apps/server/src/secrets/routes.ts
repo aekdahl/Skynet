@@ -24,6 +24,13 @@ export async function registerSecretsRoutes(app: FastifyInstance): Promise<void>
     return { secrets: await secretService.list(workspaceId), env: envBackedProviders() };
   });
 
+  // Credential lifecycle log (created/rotated/removed, who + when — never the
+  // key) — answers "why did this provider suddenly show not connected".
+  app.get("/api/secrets/audit", async (req: FastifyRequest) => {
+    const { workspaceId } = req.principal!;
+    return { audit: await secretService.listAudit(workspaceId) };
+  });
+
   // Create a NAMED credential (a "duplicate" of a provider) with its own key.
   app.post("/api/credentials", async (req: FastifyRequest, reply: FastifyReply) => {
     const body = CreateCredentialRequest.safeParse(req.body);
@@ -68,7 +75,8 @@ export async function registerSecretsRoutes(app: FastifyInstance): Promise<void>
   app.delete<{ Params: { id: string } }>(
     "/api/secrets/:id",
     async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-      await secretService.delete(req.principal!.workspaceId, req.params.id);
+      const { workspaceId, operatorId } = req.principal!;
+      await secretService.delete(workspaceId, req.params.id, operatorId, now());
       return reply.code(204).send();
     },
   );

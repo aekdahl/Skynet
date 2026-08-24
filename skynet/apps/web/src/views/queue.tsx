@@ -3,6 +3,7 @@ import type { TaskRun, HitlItem } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { fmtWait, hitlHeadline, KIND_META, openQueue, projectName, waitedSecs } from "../lib/derive";
 import { isTypingTarget } from "../lib/keys";
+import { useChoice } from "../components/confirm";
 import { RiskChip } from "../components/hitl-context";
 import { DiffView } from "../components/diff-view";
 
@@ -27,6 +28,7 @@ export function QueueCard({
   modifyTrigger?: number;
 }) {
   const { resolveHitl, streamAgentMessage, readOnly, projects } = useStore();
+  const choice = useChoice();
   const k = hitlHeadline(item);
   const [mode, setMode] = useState<null | "modify" | "chat" | "remember">(null);
   const [draft, setDraft] = useState("");
@@ -142,9 +144,29 @@ export function QueueCard({
           </button>
           <button
             className="btn"
-            title="Hand this run to a different runner to retry fresh"
+            title="Hand this run to a different runner — choose whether to keep its work or start clean"
             disabled={readOnly}
-            onClick={() => resolveHitl(item.id, "reassign", { guidance: draft.trim() })}
+            onClick={async () => {
+              const picked = await choice({
+                title: "Reassign to a different runner",
+                body: "How should the new runner pick this up?",
+                options: [
+                  {
+                    value: "continue",
+                    label: "Continue in this worktree",
+                    hint: "The new runner picks up the branch's committed work where the last one left off.",
+                    primary: true,
+                  },
+                  {
+                    value: "reset",
+                    label: "Start clean",
+                    hint: "Discards this worktree's work — the new runner starts the task fresh on a new branch.",
+                    danger: true,
+                  },
+                ],
+              });
+              if (picked) resolveHitl(item.id, "reassign", { guidance: draft.trim(), resetWork: picked === "reset" });
+            }}
           >
             Reassign
           </button>
@@ -159,6 +181,14 @@ export function QueueCard({
           </button>
           <button className="btn btn-ghost" onClick={onOpen}>
             Open agent
+          </button>
+          <button
+            className="btn btn-ghost"
+            title="Clear this card — no operation on the run (doesn't stop, resume, or reassign)"
+            disabled={readOnly}
+            onClick={() => resolveHitl(item.id, "dismiss")}
+          >
+            Dismiss
           </button>
         </div>
       ) : item.options ? (

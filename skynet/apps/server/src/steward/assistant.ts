@@ -132,7 +132,20 @@ export type ProjectActionKind =
   | "set_task_feature"
   | "set_feature_milestone"
   | "edit_roadmap"
-  | "set_roadmap_path";
+  | "set_roadmap_path"
+  // Execution intents (S10): validated here (so a future proposer — MCP, an
+  // operator-typed command — gets the same id-resolution + confirm-chip
+  // summary every other kind gets), but DELIBERATELY not yet in `SYSTEM`
+  // below: the web dock's `runAction` (steward-dock.tsx) doesn't execute
+  // these four — they run only through Operations.executeStewardAction /
+  // POST .../steward/actions (see steward/execution.ts). Teaching Steward's
+  // LLM to propose one here would let the operator confirm a chip the dock
+  // then can't do anything with. Wiring the dock to that endpoint (and only
+  // then adding these to SYSTEM) is S11's job.
+  | "start_task"
+  | "queue_tasks"
+  | "start_feature"
+  | "process_backlog";
 
 export interface AssistantAction {
   kind: ProjectActionKind;
@@ -172,6 +185,14 @@ export interface AssistantAction {
   del?: number;
   baselineHash?: string;
   baselineSha?: string;
+  // Execution intents (S10). `taskIds` (queue_tasks) is distinct from the
+  // single `taskId` above. `execMode` picks a start_feature composite's
+  // strategy — a separate field from `mode` (set_assignment's WHO-may-take-it
+  // eligibility, a completely different value domain). `feasibleOnly` (default
+  // true when omitted) drops still-in-triage tasks from a scope composite.
+  taskIds?: string[];
+  execMode?: "queue" | "start_now";
+  feasibleOnly?: boolean;
 }
 
 /** The grounding the action validator resolves ids against (this project only).
@@ -179,6 +200,13 @@ export interface AssistantAction {
  *  misparse can't invent an agent (mirrors the server's fleet check). */
 export interface ProjectActionContext {
   project: { id: string; name: string };
+  // Whether the project's autonomy toggle is currently on — start_feature /
+  // process_backlog's summary needs this to honestly say "queuing alone
+  // won't run anything" when it's off (see validateProjectAction). Optional
+  // only so a caller that never proposes an execution-intent kind (none
+  // exist yet — see the ProjectActionKind doc comment) isn't forced to
+  // thread it through.
+  autonomy?: boolean;
   tasks: { id: string; text: string; state: Task["state"] }[];
   agents?: { id: string; name: string }[];
   // The project's features + milestones, so the roadmap actions resolve their
@@ -431,6 +459,47 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
       const path = str(o.path);
       return path ? { kind, path, summary: `Point the Roadmap tab at ${path}` } : null;
     }
+    // ── Execution intents (S10) ──────────────────────────────────────────
+    // These only build a coarse confirm-chip summary here (no store/budget
+    // access at validation time — see the file-level PURE contract). The
+    // real feasibility numbers ("5 tasks, ~$9; 2 excluded") come from a
+    // dry-run call to Operations.executeStewardAction, which the caller
+    // (S11's confirm chip) makes separately.
+    case "start_task": {
+      const t = task(o.taskId);
+      return t ? { kind, taskId: t.id, summary: `Start now: “${clip(t.text)}”` } : null;
+    }
+    case "queue_tasks": {
+      const raw = Array.isArray(o.taskIds) ? o.taskIds.filter((x): x is string => typeof x === "string") : [];
+      const ids = [...new Set(raw)];
+      // Every id must resolve — refuse rather than silently drop an unknown
+      // one (same "refuse, don't guess" rule as set_assignment's agentIds).
+      if (ids.length === 0 || !ids.every((id) => task(id))) return null;
+      return { kind, taskIds: ids, summary: `Queue ${ids.length} task${ids.length === 1 ? "" : "s"} to auto-pick` };
+    }
+    case "start_feature": {
+      const f = (ctx.features ?? []).find((x) => x.id === o.featureId);
+      const execMode = o.execMode === "queue" || o.execMode === "start_now" ? o.execMode : null;
+      if (!f || !execMode) return null;
+      const feasibleOnly = o.feasibleOnly !== false; // default true
+      const autonomyNote = execMode === "queue" && ctx.autonomy === false ? " — autonomy is off, so this also turns it on" : "";
+      return {
+        kind,
+        featureId: f.id,
+        execMode,
+        feasibleOnly,
+        summary: `Start feature “${clip(f.name)}” (${execMode === "start_now" ? "start now + queue the rest" : "queue"})${autonomyNote}`,
+      };
+    }
+    case "process_backlog": {
+      const feasibleOnly = o.feasibleOnly !== false; // default true
+      const autonomyNote = ctx.autonomy === false ? " — autonomy is off, so this also turns it on" : "";
+      return {
+        kind,
+        feasibleOnly,
+        summary: `Queue the project's backlog${feasibleOnly ? " (feasible tasks only)" : ""}${autonomyNote}`,
+      };
+    }
     default:
       return null;
   }
@@ -664,6 +733,7 @@ export async function prepareStewardCall(
   const roadmapDoc = await resolveRoadmapDoc(workspaceId, project).catch(() => null);
   const actionCtx: ProjectActionContext = {
     project: { id: project.id, name: project.name },
+    autonomy: project.autonomy,
     tasks: projectTasks.map((t) => ({ id: t.id, text: t.text, state: t.state })),
     // Fleet is workspace-wide (agents aren't project-scoped) — it's the pool
     // set_assignment validates agentIds against.

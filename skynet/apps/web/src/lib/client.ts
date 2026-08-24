@@ -13,6 +13,7 @@ import {
   type ResolveAction,
   type SafetyPolicy,
   type SecretMeta,
+  type SecretAuditEntry,
   type Project,
   type ProjectCharter,
   type WorkspaceSettings,
@@ -266,7 +267,7 @@ export async function fetchComplianceReport(scope: {
 // HITL
 export function resolveHitl(
   id: string,
-  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string },
+  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
 ) {
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
 }
@@ -519,6 +520,11 @@ export function createCredential(provider: string, name: string, apiKey: string)
 export function verifyCredential(id: string) {
   return req<VerifyCredentialResult>("POST", `/api/credentials/${id}/verify`);
 }
+// Credential lifecycle log (created/rotated/removed, who + when — never the
+// key) — answers "why did this provider suddenly show not connected".
+export function fetchSecretAudit() {
+  return req<{ audit: SecretAuditEntry[] }>("GET", "/api/secrets/audit");
+}
 
 // ─── Service tokens (MCP / programmatic access) ────────────────────────────
 // Scoped API tokens for runs driving Skynet over MCP. The raw token is
@@ -592,6 +598,9 @@ export function createProject(body: {
   baseBranch?: string;
   importGithubIssues?: boolean;
   charter?: ProjectCharter;
+  // Pin the project to a specific GitHub account (a credential added in
+  // Integrations); omit → the workspace default connection.
+  githubCredentialId?: string;
 }) {
   return req<Project>("POST", "/api/projects", body);
 }
@@ -886,6 +895,20 @@ export function previewRefresh(projectId: string) {
   return req<PreviewState>("POST", `/api/projects/${projectId}/preview/refresh`);
 }
 
+// Per-run "Preview this change" — the run's own branch, pinned, pre-merge.
+export function previewRunStatus(runId: string) {
+  return req<PreviewState>("GET", `/api/runs/${runId}/preview`);
+}
+export function previewRunStart(runId: string) {
+  return req<PreviewState>("POST", `/api/runs/${runId}/preview/start`);
+}
+export function previewRunStop(runId: string) {
+  return req<PreviewState>("POST", `/api/runs/${runId}/preview/stop`);
+}
+export function previewRunRestart(runId: string) {
+  return req<PreviewState>("POST", `/api/runs/${runId}/preview/restart`);
+}
+
 // ─── Deploy to Fly.io (persistent, human-triggered) ─────────────────────────
 // A REAL, shareable URL that survives independent of the local Skynet process
 // — distinct from the ephemeral local preview above. Explicit operator action
@@ -954,8 +977,10 @@ export async function streamInstallProvider(
 }
 
 // Guarded kanban move (backlog→triage, triage→todo, review→done, demote, …).
-export function transitionTask(projectId: string, taskId: string, to: string) {
-  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/state`, { to });
+// `preserve` (ongoing/review→todo only) pauses the run instead of discarding
+// it — see Orchestrator.pauseRun.
+export function transitionTask(projectId: string, taskId: string, to: string, preserve?: boolean) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/state`, { to, preserve });
 }
 // Escape hatch — force a task to `done` bypassing HUMAN_TRANSITIONS, and always
 // sync the linked run's status. For when the normal review → done path fails.

@@ -930,7 +930,10 @@ export const DiffSummary = z.object({
 export type DiffSummary = z.infer<typeof DiffSummary>;
 
 // "reassign" resolves an escalation by handing the run to a different runner.
-export const ResolveAction = z.enum(["approve", "reject", "modify", "option", "reassign"]);
+// "dismiss" clears an escalation card with NO operation on the run — no stop,
+// resume, or reassign (orchestrator.ts's deliverEscalation). Only meaningful
+// for `escalation` gates; other kinds don't offer it.
+export const ResolveAction = z.enum(["approve", "reject", "modify", "option", "reassign", "dismiss"]);
 export type ResolveAction = z.infer<typeof ResolveAction>;
 
 export const Resolution = z.object({
@@ -951,6 +954,12 @@ export const Resolution = z.object({
   // persisted on the resolution + audit trail so the intent isn't lost, but
   // nothing reads it back or injects it into a runner yet.
   memoryNote: z.string().nullable().default(null),
+  // A `reassign` on an escalation defaults to CONTINUING in the same worktree
+  // (the new runner picks up the branch's committed work) — resetWork:true
+  // instead retires that worktree and starts the task completely fresh on a
+  // new run/branch, same as "Stop" followed by a plain re-assign. Ignored for
+  // every other action.
+  resetWork: z.boolean().default(false),
   by: z.string(), // operator id — audit trail
   at: Timestamp,
 });
@@ -1247,6 +1256,8 @@ export const ResolveRequest = z.object({
   targetBranch: z.string().optional(),
   // Approve-with-memory — see Resolution.memoryNote. Only honored on `approve`.
   memoryNote: z.string().optional(),
+  // See Resolution.resetWork. Only honored on `reassign`.
+  resetWork: z.boolean().optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
 
@@ -1475,13 +1486,74 @@ export type UpdateProjectRoadmapRequest = z.infer<typeof UpdateProjectRoadmapReq
 
 // A human-initiated kanban move; the server validates it against the allowed
 // (human) transition map before applying.
-export const MoveTaskRequest = z.object({ to: TaskState });
+export const MoveTaskRequest = z.object({
+  to: TaskState,
+  // ongoing/review → todo abandons the in-flight run. preserve:true instead
+  // PAUSES it (worktree + committed work kept, runner freed) rather than
+  // discarding it — a later Start on the same task resumes it in place. See
+  // Orchestrator.pauseRun / assignTask's resume-a-paused-run branch. Ignored
+  // for every other transition.
+  preserve: z.boolean().optional(),
+});
 export type MoveTaskRequest = z.infer<typeof MoveTaskRequest>;
 
 // Drag-reorder within a lane (the backlog): place the task before `beforeId`, or
 // at the end when null. Distinct from the up/down MoveTaskRequest step.
 export const ReorderTaskRequest = z.object({ beforeId: z.string().nullable() });
 export type ReorderTaskRequest = z.infer<typeof ReorderTaskRequest>;
+
+// ─── Execution intents (S10): start/queue composites ───────────────────────
+// The strict request contract for POST /api/projects/:id/steward/actions —
+// distinct from (and narrower than) Steward's own free-form AssistantAction
+// (apps/server/src/steward/assistant.ts), which is never zod-validated since
+// the LLM proposes it. These four kinds are the only ones a client calls this
+// endpoint with; every other ProjectActionKind keeps its existing per-kind
+// REST route (see steward-dock.tsx's runAction), unchanged.
+export const StewardExecutionAction = z.discriminatedUnion("kind", [
+  // Direct single-task start — "Start now" on an explicit task.
+  z.object({ kind: z.literal("start_task"), taskId: z.string() }),
+  // Queue explicit tasks for autonomous pickup (state→todo, autoPick: true).
+  z.object({ kind: z.literal("queue_tasks"), taskIds: z.array(z.string()).min(1) }),
+  // Composite over one feature's tasks. `execMode: "queue"` queues every
+  // eligible task; `"start_now"` assigns as many as idle capacity allows and
+  // queues the rest. `feasibleOnly` (default true) drops tasks still parked
+  // in triage (never came out clear) from both.
+  z.object({
+    kind: z.literal("start_feature"),
+    featureId: z.string(),
+    execMode: z.enum(["queue", "start_now"]),
+    feasibleOnly: z.boolean().default(true),
+  }),
+  // Composite over the project's whole unstarted backlog (backlog+triage+todo)
+  // — always queues (no direct-start variant; there's no single scope-defined
+  // "now" for the whole backlog the way a feature's own start_now has).
+  z.object({ kind: z.literal("process_backlog"), feasibleOnly: z.boolean().default(true) }),
+]);
+export type StewardExecutionAction = z.infer<typeof StewardExecutionAction>;
+
+export const ExecuteStewardActionRequest = z.object({
+  action: StewardExecutionAction,
+  // Resolve feasibility and report what WOULD happen — never mutates
+  // anything. What S11's confirm chip and S12's MCP `dryRun` param render.
+  dryRun: z.boolean().optional(),
+});
+export type ExecuteStewardActionRequest = z.infer<typeof ExecuteStewardActionRequest>;
+
+export const ExecutableExcludeReason = z.enum(["unclear", "already-running", "done", "over-budget", "not-in-scope"]);
+export type ExecutableExcludeReason = z.infer<typeof ExecutableExcludeReason>;
+
+export const StewardActionOutcome = z.object({
+  // taskIds directly assigned (todo/whatever → ongoing, right now).
+  started: z.array(z.string()),
+  // taskIds queued for the autonomy tick to pick up (state→todo, autoPick).
+  queued: z.array(z.string()),
+  excluded: z.array(z.object({ taskId: z.string(), reason: ExecutableExcludeReason })),
+  // True when this call turned the project's autonomy on as a necessary
+  // corollary of queuing work — see executeStewardAction's doc comment.
+  autonomyEnabled: z.boolean().default(false),
+  dryRun: z.boolean().default(false),
+});
+export type StewardActionOutcome = z.infer<typeof StewardActionOutcome>;
 
 export const ConfigureRunnerRequest = z.object({
   provider: ProviderId,
@@ -1526,6 +1598,21 @@ export const SecretMeta = z.object({
   updatedBy: z.string(), // operator id — audit trail
 });
 export type SecretMeta = z.infer<typeof SecretMeta>;
+
+/** One credential lifecycle event (created/rotated/removed) — kept past the
+ *  credential's own deletion so "why did this provider disconnect" has an
+ *  answer: who removed it and when. Never carries the key itself. */
+export const SecretAuditEntry = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  credentialId: z.string(),
+  provider: CredentialProvider,
+  label: z.string(), // display name at the time of the event ("" = default)
+  action: z.enum(["created", "rotated", "removed"]),
+  operatorId: z.string(),
+  at: Timestamp,
+});
+export type SecretAuditEntry = z.infer<typeof SecretAuditEntry>;
 
 /** Body for setting/rotating a credential's key. */
 export const SetSecretRequest = z.object({

@@ -42,6 +42,8 @@ import type {
   SignedComplianceReport,
   Snapshot,
   SolutionBrief,
+  StewardActionOutcome,
+  StewardExecutionAction,
   Task,
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
@@ -81,7 +83,8 @@ import { draftBriefFromConversation, summarizeConversation } from "./steward/cry
 import { commitLocalRepoFile } from "./local-repo-write.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
 import type { CapturedDiff, Hub } from "./hub.js";
-import { type Orchestrator } from "./orchestrator.js";
+import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
+import { resolveExecutable } from "./steward/execution.js";
 import { secretService, withSecretAvailability } from "./secrets/index.js";
 import type { Store } from "./store/store.js";
 
@@ -440,6 +443,31 @@ export class Operations {
     return projectPreview.refresh(projectId);
   }
 
+  // ── per-run live preview — "Preview this change" (the run's own branch, ────
+  // pinned, pre-merge — see docs/live-preview.md). Same manager, same
+  // sandboxed `/p/<token>/` proxy as the project preview above; keyed
+  // `run:<runId>` so it never collides with (and is stopped independently of)
+  // a project-level preview of the same repo.
+  previewRunState(ws: string, runId: string): Promise<PreviewState> {
+    return this.getRun(ws, runId).then((r) => projectPreview.state(`run:${r.id}`));
+  }
+  async previewRunStart(ws: string, runId: string): Promise<PreviewState> {
+    const run = await this.getRun(ws, runId);
+    const project = await this.getProject(ws, run.projectId);
+    if (!project.repoPath) throw new Error("This project has no local folder to preview.");
+    return projectPreview.startRun(run.id, { repoPath: project.repoPath, projectId: project.id, branch: run.branch, workspaceId: ws });
+  }
+  async previewRunRestart(ws: string, runId: string): Promise<PreviewState> {
+    const run = await this.getRun(ws, runId);
+    const project = await this.getProject(ws, run.projectId);
+    if (!project.repoPath) throw new Error("This project has no local folder to preview.");
+    return projectPreview.restartRun(run.id, { repoPath: project.repoPath, projectId: project.id, branch: run.branch, workspaceId: ws });
+  }
+  async previewRunStop(ws: string, runId: string): Promise<PreviewState> {
+    await this.getRun(ws, runId);
+    return projectPreview.stop(`run:${runId}`);
+  }
+
   // ── Fly.io deploy (persistent, human-triggered — see docs/live-preview.md) ─
   // Explicit operator action ONLY: never called from the autonomy loop, the
   // merge queue, or any automatic trigger. Two targets, same engine: a
@@ -566,6 +594,8 @@ export class Operations {
       targetBranch: input.action === "approve" ? (input.targetBranch?.trim() || null) : null,
       // Approve-with-memory — only meaningful alongside an actual approval.
       memoryNote: input.action === "approve" ? (input.memoryNote?.trim() || null) : null,
+      // See Resolution.resetWork — only meaningful alongside a real reassign.
+      resetWork: input.action === "reassign" ? !!input.resetWork : false,
       by: operatorId,
       at: now(),
     };
@@ -1293,9 +1323,19 @@ export class Operations {
    * Human-driven kanban move, validated against HUMAN_TRANSITIONS. Handles the
    * gated edges: review→done approves an open diff HITL (merges → done) when one
    * exists; abandoning `ongoing`/`review` or demoting a `done` task stops+archives
-   * its run and detaches it so the task returns clean.
+   * its run and detaches it so the task returns clean — UNLESS `opts.preserve` is
+   * set on an ongoing/review→todo move, which pauses the run instead (worktree +
+   * committed work kept; a later Start on the same task resumes it in place, see
+   * Orchestrator.pauseRun). Preserve only applies to that one edge — a done task
+   * demoted back to triage/backlog always discards (a different, rarer flow).
    */
-  async transitionTask(ws: string, tid: string, to: Task["state"], operatorId: string): Promise<Task> {
+  async transitionTask(
+    ws: string,
+    tid: string,
+    to: Task["state"],
+    operatorId: string,
+    opts: { preserve?: boolean } = {},
+  ): Promise<Task> {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
     if (task.state === to) return task; // no-op
@@ -1329,7 +1369,14 @@ export class Operations {
       !!task.runId &&
       ((task.state === "ongoing" || task.state === "review") && to === "todo" ||
         (task.state === "done" && (to === "triage" || to === "backlog")));
-    if (abandonsRun && task.runId) {
+    // Preserve only applies to the ongoing/review→todo edge (a "stalled or
+    // hung, come back later" move) — never the done-demotion case above, which
+    // always starts clean.
+    const preserveWork =
+      !!opts.preserve && !!task.runId && (task.state === "ongoing" || task.state === "review") && to === "todo";
+    if (preserveWork && task.runId) {
+      await this.orchestrator.pauseRun(task.runId).catch(() => undefined);
+    } else if (abandonsRun && task.runId) {
       await this.orchestrator.stopAgent(task.runId, "task moved off the run by an operator").catch(() => undefined);
       await this.hub.setRunArchived(task.runId, true).catch(() => undefined);
     }
@@ -1337,7 +1384,9 @@ export class Operations {
     const updated = await this.hub.upsertTask({
       ...task,
       state: to,
-      ...(abandonsRun ? { runId: null } : {}),
+      // A preserved run stays linked (its runId is how a later Start finds and
+      // resumes it) — only a truly abandoned run gets detached.
+      ...(abandonsRun && !preserveWork ? { runId: null } : {}),
       reviewVerdict: null,
     });
 
@@ -1350,6 +1399,166 @@ export class Operations {
       await this.hub.runStatus(updated.runId, "done").catch(() => undefined);
     }
     return updated;
+  }
+
+  /**
+   * Execution intents (S10): the ONE server executor for the four
+   * start/queue action kinds — direct (start_task) and composite
+   * (queue_tasks, start_feature, process_backlog). Every one resolves
+   * feasibility through the SAME pure resolver (steward/execution.ts's
+   * resolveExecutable) whether this is a real run or `opts.dryRun` — a
+   * confirm chip's preview and its later confirmed execution can never
+   * disagree about what's eligible. Dry-run computes the identical decision
+   * and returns it WITHOUT calling hub.upsertTask/upsertProject or
+   * assignTask — zero mutation. Called by the dock (POST
+   * .../steward/actions) today; Telegram + MCP reuse this same method rather
+   * than growing their own copies (see steward/assistant.ts's ProjectActionKind
+   * doc comment for why these four aren't yet reachable from Steward chat).
+   *
+   * Autonomy fold-in: queuing a task (autoPick: true) does nothing if the
+   * project's autonomy toggle is off — nothing would ever pick it up. Rather
+   * than making the operator separately confirm a set_autonomy action for
+   * what is conceptually the SAME intent ("start this feature"), this turns
+   * autonomy on as part of executing any call that queues at least one task,
+   * and reports it via `autonomyEnabled` — including on a dry-run, so the
+   * confirm chip is honest about the side effect before it happens.
+   */
+  async executeStewardAction(
+    ws: string,
+    projectId: string,
+    action: StewardExecutionAction,
+    operatorId: string,
+    opts: { dryRun?: boolean } = {},
+  ): Promise<StewardActionOutcome> {
+    const project = await this.getProject(ws, projectId); // throws NotFoundError
+    const dryRun = opts.dryRun ?? false;
+    // `operatorId` isn't consumed yet — each started/queued task's own
+    // record (its run, or its state change) is today's audit trail; kept in
+    // the signature since S11/S12 (Telegram/MCP callers) already have one
+    // to hand and a dedicated audit record is the natural next step.
+
+    // Move a batch of already-resolved-ELIGIBLE tasks to todo + autoPick, and
+    // fix an `unassigned` eligibility to `any` (queue_task spec). Bypasses
+    // Operations.transitionTask/HUMAN_TRANSITIONS deliberately: this is a
+    // SYSTEM-initiated queue, the exact same kind of write the autonomy
+    // tick's own triage step already makes directly via hub.upsertTask
+    // (orchestrator.ts) — not a human kanban drag, which is what
+    // HUMAN_TRANSITIONS' stricter gate (no direct backlog→todo) exists for.
+    const queue = async (tasks: Task[]): Promise<void> => {
+      if (dryRun) return;
+      for (const t of tasks) {
+        await this.hub.upsertTask({
+          ...t,
+          state: "todo",
+          autoPick: true,
+          assignment: t.assignment.mode === "unassigned" ? { mode: "any", agentIds: [] } : t.assignment,
+        });
+      }
+    };
+    const enableAutonomyIfNeeded = async (willQueueAny: boolean): Promise<boolean> => {
+      if (!willQueueAny || project.autonomy) return false;
+      if (!dryRun) await this.hub.upsertProject({ ...project, autonomy: true });
+      return true;
+    };
+
+    switch (action.kind) {
+      case "start_task": {
+        const task = await this.store.getTask(action.taskId);
+        if (!task || task.workspaceId !== ws || task.projectId !== projectId) throw new NotFoundError("Task");
+        const runs = await this.store.listRuns(ws);
+        const { eligible, excluded } = resolveExecutable(project, [task], runs, { atMs: now() });
+        if (eligible.length === 0) return { started: [], queued: [], excluded, autonomyEnabled: false, dryRun };
+        if (!dryRun) await this.assignTask(ws, projectId, task.id);
+        return { started: [task.id], queued: [], excluded, autonomyEnabled: false, dryRun };
+      }
+
+      case "queue_tasks": {
+        const all = await this.store.listTasks(ws);
+        const found = action.taskIds
+          .map((id) => all.find((t) => t.id === id && t.projectId === projectId))
+          .filter((t): t is Task => !!t);
+        // An id that doesn't resolve (wrong project, or doesn't exist) never
+        // silently drops — reported the same way an in-scope but unstartable
+        // task is, so the caller's count always adds up.
+        const unknown = action.taskIds.filter((id) => !found.some((t) => t.id === id));
+        const runs = await this.store.listRuns(ws);
+        const { eligible, excluded } = resolveExecutable(project, found, runs, { atMs: now() });
+        const allExcluded = [...excluded, ...unknown.map((taskId) => ({ taskId, reason: "not-in-scope" as const }))];
+        const autonomyEnabled = await enableAutonomyIfNeeded(eligible.length > 0);
+        await queue(eligible);
+        return { started: [], queued: eligible.map((t) => t.id), excluded: allExcluded, autonomyEnabled, dryRun };
+      }
+
+      case "start_feature": {
+        const feature = await this.store.getFeature(action.featureId);
+        if (!feature || feature.workspaceId !== ws || feature.projectId !== projectId) throw new NotFoundError("Feature");
+        const all = await this.store.listTasks(ws);
+        const tasks = all.filter((t) => t.featureId === feature.id);
+        const runs = await this.store.listRuns(ws);
+        const { eligible, excluded } = resolveExecutable(project, tasks, runs, {
+          feasibleOnly: action.feasibleOnly,
+          atMs: now(),
+        });
+
+        if (action.execMode === "queue") {
+          const autonomyEnabled = await enableAutonomyIfNeeded(eligible.length > 0);
+          await queue(eligible);
+          return { started: [], queued: eligible.map((t) => t.id), excluded, autonomyEnabled, dryRun };
+        }
+
+        // start_now: assign as many as idle capacity allows (priority
+        // order), queue the rest for the tick to pick up once capacity/budget
+        // frees. A dry-run never actually acquires a runner — real-time fleet
+        // capacity can't be previewed without racing it — so it reports every
+        // eligible task as "would queue", the conservative honest answer;
+        // the real run may start some of them immediately instead.
+        if (dryRun) {
+          const autonomyEnabled = eligible.length > 0 && !project.autonomy;
+          return { started: [], queued: eligible.map((t) => t.id), excluded, autonomyEnabled, dryRun };
+        }
+        const started: string[] = [];
+        const toQueue: Task[] = [];
+        let outOfCapacity = false;
+        for (const t of eligible) {
+          if (outOfCapacity) {
+            toQueue.push(t);
+            continue;
+          }
+          try {
+            await this.assignTask(ws, projectId, t.id);
+            started.push(t.id);
+          } catch (err) {
+            if (err instanceof NoCapacityError || err instanceof RunnerNotConfiguredError) {
+              outOfCapacity = true;
+              toQueue.push(t);
+            } else if (err instanceof TaskAlreadyAssignedError) {
+              // Finished between resolve and now — same race any other
+              // caller of assignTask can hit; nothing to start OR queue.
+            } else {
+              throw err;
+            }
+          }
+        }
+        const autonomyEnabled = await enableAutonomyIfNeeded(toQueue.length > 0);
+        await queue(toQueue);
+        return { started, queued: toQueue.map((t) => t.id), excluded, autonomyEnabled, dryRun };
+      }
+
+      case "process_backlog": {
+        const all = await this.store.listTasks(ws);
+        const tasks = all.filter(
+          (t) => t.projectId === projectId && (t.state === "backlog" || t.state === "triage" || t.state === "todo"),
+        );
+        const runs = await this.store.listRuns(ws);
+        const { eligible, excluded } = resolveExecutable(project, tasks, runs, {
+          feasibleOnly: action.feasibleOnly,
+          atMs: now(),
+        });
+        const autonomyEnabled = await enableAutonomyIfNeeded(eligible.length > 0);
+        await queue(eligible);
+        return { started: [], queued: eligible.map((t) => t.id), excluded, autonomyEnabled, dryRun };
+      }
+    }
   }
 
   /**

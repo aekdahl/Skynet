@@ -20,7 +20,7 @@ import {
   tasksInState,
 } from "../lib/derive";
 import { Bar, StatusDot } from "../components/common";
-import { useConfirm } from "../components/confirm";
+import { useChoice, useConfirm } from "../components/confirm";
 import { ProjectDelivery, visualLeadOf } from "../components/preview";
 import { Markdown } from "../components/markdown";
 import { SwDiagram } from "../components/subway-diagram";
@@ -269,6 +269,7 @@ function TaskCard({
     dismissTaskLint,
   } = useStore();
   const confirm = useConfirm();
+  const choice = useChoice();
   // Features + milestones available to this task (same project, not archived).
   const projFeatures = features.filter((f) => f.projectId === task.projectId && !f.archived);
   const projMilestones = milestones.filter((m) => m.projectId === task.projectId && !m.archived);
@@ -284,6 +285,27 @@ function TaskCard({
   const brief = resolveTaskBrief(task, projBriefs);
   const [editing, setEditing] = useState(false);
   const [detail, setDetail] = useState(false); // full-detail modal for a card with no run
+  const cardRef = useRef<HTMLDivElement>(null);
+  const detailCloseRef = useRef<HTMLButtonElement>(null);
+  // Keyboard a11y for the detail modal: focus its close button on open (Escape
+  // dismisses same as the overlay/× click), and return focus to the card that
+  // opened it on close — otherwise a keyboard user's focus silently drops to
+  // <body> once the modal unmounts.
+  useEffect(() => {
+    if (!detail) return;
+    detailCloseRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDetail(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      cardRef.current?.focus();
+    };
+  }, [detail]);
   const [draft, setDraft] = useState(task.text);
   const [descDraft, setDescDraft] = useState(task.description ?? "");
   const pid = task.projectId;
@@ -356,6 +378,7 @@ function TaskCard({
     <>
     {dnd?.dropBeforeId === task.id && <div className="kb-drop-line" aria-hidden="true" />}
     <div
+      ref={cardRef}
       className={"kb-card kb-card-" + s + (dragging ? " kb-card-dragging" : "") + (locked ? " kb-card-locked" : "")}
       role="button"
       tabIndex={0}
@@ -645,17 +668,27 @@ function TaskCard({
             // there's no human control for those.
             <button
               className="kb-move"
-              title="Stop the agent working on this and send the task back to To-do. Its in-progress (uncommitted) work is discarded."
+              title="Stop the agent working on this and send the task back to To-do — choose whether to keep its in-progress work."
               onClick={async () => {
-                if (
-                  await confirm({
-                    title: "Send back to To-do?",
-                    body: `“${task.text}” stops the agent working on it — its in-progress (uncommitted) work is discarded.`,
-                    confirmLabel: "Send to To-do",
-                    danger: true,
-                  })
-                )
-                  void transitionTask(pid, task.id, "todo");
+                const picked = await choice({
+                  title: "Send back to To-do?",
+                  body: `Stops the agent working on “${task.text}”.`,
+                  options: [
+                    {
+                      value: "keep",
+                      label: "Keep the work, pause it",
+                      hint: "Its branch and uncommitted work are preserved — clicking Start → later resumes right where it left off.",
+                      primary: true,
+                    },
+                    {
+                      value: "reset",
+                      label: "Start clean",
+                      hint: "Discards its in-progress (uncommitted) work — a later Start begins from scratch.",
+                      danger: true,
+                    },
+                  ],
+                });
+                if (picked) void transitionTask(pid, task.id, "todo", picked === "keep");
               }}
             >
               ↩ Send to To-do
@@ -678,7 +711,12 @@ function TaskCard({
           <div className="kb-detail" role="dialog" aria-modal="true" onClick={stop}>
             <div className="kb-detail-head">
               <span className="kb-detail-state mono">{s}</span>
-              <button className="kb-detail-close" onClick={() => setDetail(false)} aria-label="Close">
+              <button
+                ref={detailCloseRef}
+                className="kb-detail-close"
+                onClick={() => setDetail(false)}
+                aria-label="Close"
+              >
                 ×
               </button>
             </div>
@@ -1854,29 +1892,39 @@ export function ProjectView({
 }
 
 // ─── Live preview modal (Phase-1 v0) ────────────────────────────────────────
-// Runs the PROJECT's web app (server-side, sandboxed) and iframes it here — the
-// integration branch, refreshing as the fleet merges. It shows MERGED work only:
-// an in-flight run's changes appear once that run is approved and merged (there's
-// no per-run pre-merge preview — project level is the single, unambiguous view).
-// Polls status while open; the app runs on its own localhost origin so its code
-// can't reach the console. See docs/live-preview.md.
+// Runs a web app (server-side, sandboxed) and iframes it here. Two scopes,
+// one shell (see docs/live-preview.md): `project` (default) tracks the
+// integration branch — main/merged/latest, refreshing as the fleet merges —
+// and shows MERGED work only. `run` is the per-run "Preview this change"
+// gate: pinned to that ONE run's own branch (no source switcher, no
+// refresh-on-merge — reload/restart pick up new commits the run makes),
+// letting an operator see a change before approving its merge.
+// Polls status while open; the app runs on its own localhost origin so its
+// code can't reach the console.
 const DEVICES: Record<string, number | null> = { Desktop: null, Tablet: 768, Mobile: 390 };
 
 export function LivePreviewModal({
   id,
   title,
+  scope = "project",
   onClose,
 }: {
   id: string;
   title: string;
+  scope?: "project" | "run";
   onClose: () => void;
 }) {
   // Which slice to preview: main (base branch) · merged (integration branch) ·
-  // latest (merged + review-ready changes combined). Drives start().
+  // latest (merged + review-ready changes combined). Drives start(). Only
+  // meaningful for the project scope — a run preview is always pinned to its
+  // own branch.
   const [source, setSource] = useState<api.PreviewSource>("merged");
   const sourceRef = useRef(source);
   sourceRef.current = source;
-  const ctl = { status: () => api.previewStatus(id), start: () => api.previewStart(id, sourceRef.current), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
+  const ctl =
+    scope === "run"
+      ? { status: () => api.previewRunStatus(id), start: () => api.previewRunStart(id), stop: () => api.previewRunStop(id), restart: () => api.previewRunRestart(id) }
+      : { status: () => api.previewStatus(id), start: () => api.previewStart(id, sourceRef.current), stop: () => api.previewStop(id), restart: () => api.previewRestart(id) };
   const ctlRef = useRef(ctl);
   ctlRef.current = ctl;
 
@@ -1965,14 +2013,16 @@ export function LivePreviewModal({
       <div className={"lp-modal lp-mode-" + mode} onClick={(e) => e.stopPropagation()}>
         <div className="lp-bar">
           <span className="lp-title">{title}</span>
-          <div className="lp-source" role="group" aria-label="Preview source">
-            {(["main", "merged", "latest"] as const).map((s) => (
-              <button key={s} className={"lp-src" + (source === s ? " on" : "")} title={SRC_HINT[s]} onClick={() => switchSource(s)}>
-                {SRC_LABEL[s]}
-              </button>
-            ))}
-          </div>
-          {source === "latest" && st?.combined && (
+          {scope === "project" && (
+            <div className="lp-source" role="group" aria-label="Preview source">
+              {(["main", "merged", "latest"] as const).map((s) => (
+                <button key={s} className={"lp-src" + (source === s ? " on" : "")} title={SRC_HINT[s]} onClick={() => switchSource(s)}>
+                  {SRC_LABEL[s]}
+                </button>
+              ))}
+            </div>
+          )}
+          {scope === "project" && source === "latest" && st?.combined && (
             <span className="lp-combined mono" title="Review-ready changes folded into this preview">
               {st.combined.included}/{st.combined.total} combined{st.combined.skipped > 0 ? ` · ${st.combined.skipped} skipped` : ""}
             </span>

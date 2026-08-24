@@ -4,7 +4,7 @@
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
 import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
-import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow, resolveTaskBrief } from "@skynet/shared";
+import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow, pacedAvailableUsd, resolveTaskBrief } from "@skynet/shared";
 import {
   isCreditExhaustionError,
   type HitlRaise,
@@ -500,7 +500,7 @@ export function computeFeatureMergeBriefing(input: {
 /** Why a run got halted and handed to a human — see `escalate()`/`raiseEscalationCard()`.
  *  "agent" is agent-driven (the run itself called AskUserQuestion with header
  *  "ESCALATE") and is set directly in `raise()`, never via `escalate()`. */
-type EscalationSource = "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing" | "agent" | "stuck-review";
+type EscalationSource = "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing" | "agent" | "stuck-review" | "paused";
 
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
@@ -869,7 +869,7 @@ export class Orchestrator {
         policy,
       });
       if (auto) {
-        const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: auto.by, at: now() };
+        const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: auto.by, at: now() };
         await this.hub.runLog(runId, `auto-approved (${auto.by}): ${item.command ?? item.title}`);
         await this.hub.raiseAndAutoResolveHitl(item, resolution);
         await this.deliver(item, resolution);
@@ -903,6 +903,7 @@ export class Orchestrator {
       guidance: null,
       targetBranch: null,
       memoryNote: null,
+      resetWork: false,
       by: "system:timeout",
       at: now(),
     };
@@ -1216,7 +1217,7 @@ export class Orchestrator {
     // resetting. Flagged, not silently missing — narrowing the breaker to
     // exactly the two mechanisms its spec named, rather than expanding scope.
     if (project?.approvalLevel === "full" && project.autonomy && risk !== "high") {
-      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "policy:full-autonomy", at: now() };
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "policy:full-autonomy", at: now() };
       await this.hub.runLog(runId, `auto-merged (policy:full-autonomy): ${item.title}`);
       await this.hub.raiseAndAutoResolveHitl(item, resolution);
       await this.deliver(item, resolution);
@@ -1751,6 +1752,16 @@ export class Orchestrator {
     // (re)assigned.
     if (task.runId) {
       const existing = await this.store.getRun(task.runId);
+      // A run this orchestrator itself paused (see pauseRun — "Send to Todo,
+      // keep the work") sits at `waiting` with its worktree intact and an
+      // escalations-map record, same shape as an escalated-and-not-yet-resumed
+      // run. A plain "Start →" click on the now-Todo task should actually
+      // relaunch it in place, not return the inert record — this is the only
+      // way `waiting` shows up on a non-`ongoing` task, so it's unambiguous.
+      if (existing && existing.status === "waiting" && this.escalations.has(existing.id)) {
+        await this.relaunchEscalated(existing.id, "", false);
+        return (await this.store.getRun(existing.id)) ?? existing;
+      }
       if (existing && existing.status !== "done") return existing;
     }
 
@@ -2362,6 +2373,26 @@ export class Orchestrator {
     await this.raiseEscalationCard(run, reason, source, { git, baseRef: live?.baseRef, taskId });
   }
 
+  /** Operator-driven pause (task sent back to Todo with "keep the work"): halts
+   *  the run and preserves its worktree exactly like `escalate()`, but raises NO
+   *  HITL card — nothing needs the operator's attention right now, they just
+   *  chose to come back to it later. Resuming happens the ordinary way: clicking
+   *  "Start →" on the task again calls `assignTask`, which detects a `waiting`
+   *  run still on record and relaunches it in place (see the DEF-003 guard). */
+  async pauseRun(runId: string): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (!run) return;
+    const live = this.live.get(runId);
+    const git = live?.git ?? (await this.gitContextForAgent(runId).catch(() => undefined));
+    if (live) await live.handle.stop().catch(() => undefined);
+    await this.freeRunner(live?.agentId ?? null);
+    this.live.delete(runId);
+    const taskId = live?.taskId ?? (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === run.id)?.id ?? null;
+    this.escalations.set(runId, { git, baseRef: live?.baseRef, taskId, source: "paused" });
+    await this.hub.runStatus(runId, "waiting");
+    await this.hub.runLog(runId, "sent back to Todo — work preserved, resume anytime");
+  }
+
   /** Build + raise the actual escalation HITL — factored out of `escalate()` so
    *  `relaunchEscalated`'s failure path (below) can re-raise a fresh, actionable
    *  card after a failed resume/reassign attempt, without `escalate()`'s
@@ -2393,7 +2424,9 @@ export class Orchestrator {
                   ? "Provider key out of credits — top up to resume"
                   : source === "stuck-review"
                     ? "Done — awaiting your review"
-                    : "Run keeps failing — needs a human",
+                    : source === "paused"
+                      ? "Resume failed — needs a human"
+                      : "Run keeps failing — needs a human",
       why: reason,
       // Every other source means something actually went wrong (timeout,
       // failures, a conflict, ran dry). stuck-review means the opposite: the
@@ -2492,10 +2525,24 @@ export class Orchestrator {
     this.autonomyStreaks.delete(projectId);
   }
 
-  /** Resolve an `escalation`: help & resume (modify), reassign, or stop (reject). */
+  /** Resolve an `escalation`: help & resume (modify), reassign, stop (reject), or
+   *  dismiss (clear the card, no operation on the run — see `dismiss` below). */
   private async deliverEscalation(item: HitlItem, resolution: Resolution): Promise<void> {
     const runId = item.runId;
     const live = this.live.get(runId);
+    if (resolution.action === "dismiss") {
+      // Genuinely a no-op: the card is already resolved (hub does that before
+      // calling deliver()) — don't stop/resume/reassign anything, and leave the
+      // escalation's saved git context in `this.escalations` alone, so Help &
+      // resume / Reassign are still available later (from the task page) even
+      // though this card is gone. A stuck-review escalation is the one case
+      // where the run's OWN status ("waiting", forced by raiseEscalationCard so
+      // the card would surface) doesn't match reality — it's still genuinely at
+      // "review", so put it back rather than leaving it misreported as blocked.
+      if (item.flags?.includes("stuck-review")) await this.hub.runStatus(runId, "review");
+      await this.hub.runLog(runId, "escalation dismissed — no action taken");
+      return;
+    }
     if (resolution.action === "reject") {
       // Stop: abandon the run cleanly and reclaim its worktree.
       if (live) await live.handle.stop().catch(() => undefined);
@@ -2518,6 +2565,26 @@ export class Orchestrator {
       this.escalations.delete(runId);
       this.failCounts.delete(runId);
       await this.hub.runLog(runId, "escalation resolved — resuming the agent with your guidance");
+      return;
+    }
+    // Reassign + reset: the operator explicitly wants a CLEAN slate on the new
+    // runner, not a continuation — same effect as Stop, then a fresh assignTask
+    // for the same task (new run id, new branch, new worktree). Only meaningful
+    // alongside a real reassign; a bare "reset" isn't itself an action.
+    if (resolution.action === "reassign" && resolution.resetWork) {
+      const run = await this.store.getRun(runId);
+      const taskId = this.escalations.get(runId)?.taskId ?? live?.taskId ?? null;
+      if (live) await live.handle.stop().catch(() => undefined);
+      await this.freeRunner(live?.agentId ?? null);
+      this.live.delete(runId);
+      const git = this.escalations.get(runId)?.git ?? live?.git;
+      if (git) await git.worktrees.retire(runId).catch(() => undefined);
+      await this.releaseScratchCwd(live?.scratchCwd);
+      this.escalations.delete(runId);
+      this.failCounts.delete(runId);
+      await this.hub.runStatus(runId, "done");
+      await this.hub.runLog(runId, "escalation resolved — operator reassigned with a clean slate (previous work discarded)");
+      if (run && taskId) await this.assignTask(run.projectId, taskId).catch(() => undefined);
       return;
     }
     // Reassign, or help a run whose handle was already torn down → relaunch a
@@ -2594,6 +2661,23 @@ export class Orchestrator {
       }).catch(() => undefined);
       return;
     }
+    // The previous agent is now confirmed stopped (both branches above call
+    // live.handle.stop() before reaching here). If it was killed mid-`git
+    // merge`/`git rebase` — plausibly WHY it got stuck in the first place, if
+    // it hit a conflict it didn't know how to resolve — the new agent would
+    // otherwise inherit that half-finished operation with no idea it's there,
+    // and has to reverse-engineer it via ad-hoc `git log`/`status`/`fsck`
+    // archaeology before it can even start (observed in the wild: exactly
+    // that sequence, ending in a second stuck-escalation). Abort is always
+    // safe — only the interrupted merge/rebase itself is undone, never any
+    // committed or uncommitted file changes.
+    const cleanedGitState = await git.worktrees.sanitizeInterrupted(runId).catch(() => []);
+    if (cleanedGitState.length > 0) {
+      await this.hub.runLog(
+        runId,
+        `found an interrupted git ${cleanedGitState.join("/")} left by the previous agent — aborted it (no file changes touched) before handing off`,
+      );
+    }
     const provider = await this.getProvider(acq.provider);
     const cwd = git.worktrees.pathFor(runId);
     const apiKey = await secretService.resolve(run.workspaceId, run.provider);
@@ -2602,14 +2686,18 @@ export class Orchestrator {
     const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
     const solutionBrief = task ? await this.findTaskBrief(task, run.workspaceId) : undefined;
     const siblings = project && task ? await this.siblingDigestFor(project, task.id) : undefined;
+    const gitStateNote =
+      cleanedGitState.length > 0
+        ? `\n\nNote: the previous agent was interrupted mid-\`git ${cleanedGitState.join("/")}\` — it's been aborted for you (no file changes were touched), so the working directory reflects only real committed/uncommitted work, not a half-finished merge. No need to investigate this further.`
+        : "";
     const prompt = buildAgentContext({
       project,
       feature,
       brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
       siblings,
       body: reassign
-        ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
-        : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
+        ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+        : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}).${gitStateNote} Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
     });
     // Reflect the (re)acquired runner on the persisted run: a reassign moves the
     // run to a DIFFERENT agent, and the board/subway attribute runs by agentId —
@@ -3908,29 +3996,6 @@ export class Orchestrator {
   }
 
   /**
-   * Budget-as-allocation, pacing half: how much of the daily budget is
-   * "available to commit right now"? With `budgetPacing` off (default), the
-   * whole remaining budget is available immediately — unchanged from before
-   * this existed. With it on, availability grows linearly from $0 at local
-   * midnight to the full budget at `config.budgetPacingWindowMs` later, so a
-   * $20 budget doesn't get committed to the very first task the tick sees.
-   * Never exceeds the true remaining headroom (spend already made today) —
-   * pacing can only make the picker MORE conservative, never let it overspend
-   * a budget that's already tight. Returns Infinity for an unset budget (no
-   * ceiling at all — callers checking against it will just always fit).
-   */
-  private pacedAvailableUsd(project: Project, spentUsd: number, atMs: number): number {
-    if (project.dailyBudgetUsd == null) return Infinity;
-    const headroom = Math.max(0, project.dailyBudgetUsd - spentUsd);
-    if (!project.budgetPacing) return headroom;
-    const { start } = dayWindow(atMs);
-    const elapsed = Math.min(1, Math.max(0, (atMs - start) / config.budgetPacingWindowMs));
-    const pacedCeiling = project.dailyBudgetUsd * elapsed;
-    const pacedHeadroom = Math.max(0, pacedCeiling - spentUsd);
-    return Math.min(headroom, pacedHeadroom);
-  }
-
-  /**
    * Budget-as-allocation, selection half: from `pickable` (already priority-
    * sorted), greedily choose which tasks actually fit the budget available
    * right now — walking in the SAME order, so priority always wins among
@@ -3945,7 +4010,7 @@ export class Orchestrator {
   private async selectAffordable(project: Project, runs: TaskRun[], pickable: Task[]): Promise<Task[]> {
     if (project.dailyBudgetUsd == null || pickable.length === 0) return pickable;
     const spend = computeDailySpend(runs, project.id, now());
-    let available = this.pacedAvailableUsd(project, spend.spentUsd, now());
+    let available = pacedAvailableUsd(project, spend.spentUsd, now(), config.budgetPacingWindowMs);
     const selected: Task[] = [];
     const skipped: Task[] = [];
     for (const t of pickable) {
@@ -4332,13 +4397,14 @@ export class Orchestrator {
               if (!handle) return;
               const resolution: Resolution =
                 raise.kind === "approval"
-                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "deep-review-harness", at: now() }
+                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "deep-review-harness", at: now() }
                   : {
                       action: "reject",
                       optionIndex: null,
                       guidance: "Don't ask questions or make a plan — just use the browser to check the change, then reply with only the required JSON verdict.",
                       targetBranch: null,
                       memoryNote: null,
+                      resetWork: false,
                       by: "deep-review-harness",
                       at: now(),
                     };
@@ -4499,20 +4565,21 @@ export class Orchestrator {
               if (raise.kind === "approval" && isBash) {
                 const auto = decideAutoApproval({ command: raise.command, level: project.approvalLevel, rules: project.approvalRules, policy });
                 resolution = auto
-                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: auto.by, at: now() }
+                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: auto.by, at: now() }
                   : {
                       action: "reject",
                       optionIndex: null,
                       guidance: "That command isn't auto-approved under this project's policy (no human is available to review it here). Try a different way to exercise the change against the live preview, or report what you've already found.",
                       targetBranch: null,
                       memoryNote: null,
+                      resetWork: false,
                       by: "breaker-harness",
                       at: now(),
                     };
               } else if (raise.kind === "approval") {
                 // Browser actions against the preview are the sanctioned
                 // mechanism — same unattended auto-approve as the reviewer.
-                resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "breaker-harness", at: now() };
+                resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "breaker-harness", at: now() };
               } else {
                 resolution = {
                   action: "reject",
@@ -4520,6 +4587,7 @@ export class Orchestrator {
                   guidance: "Don't ask questions or make a plan — just try to break the change against the live preview, then reply with only the required JSON verdict.",
                   targetBranch: null,
                   memoryNote: null,
+                  resetWork: false,
                   by: "breaker-harness",
                   at: now(),
                 };
@@ -4638,13 +4706,14 @@ export class Orchestrator {
               if (!handle) return;
               const resolution: Resolution =
                 raise.kind === "approval"
-                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "explore-harness", at: now() }
+                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "explore-harness", at: now() }
                   : {
                       action: "reject",
                       optionIndex: null,
                       guidance: "Don't ask questions — just read the code, then reply with only the required JSON.",
                       targetBranch: null,
                       memoryNote: null,
+                      resetWork: false,
                       by: "explore-harness",
                       at: now(),
                     };
@@ -4818,7 +4887,7 @@ export class Orchestrator {
       }
     }
     if (decision === "approve" && canResolve) {
-      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, by: "autonomy", at };
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "autonomy", at };
       const resolved = await this.hub.resolveHitl(hitl.id, resolution);
       if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(hitl, resolution);
       // Once an agent has approved a review-state task, move it to `done` and

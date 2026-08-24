@@ -33,6 +33,7 @@ import {
   ReorderTaskRequest,
   MergePrRequest,
   ReworkPrRequest,
+  ExecuteStewardActionRequest,
 } from "@skynet/shared";
 import { installProviderCli } from "./provider-install.js";
 import { installCommandFor } from "./provider-requirements.js";
@@ -732,6 +733,12 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string } }>("/api/projects/:id/preview/restart", previewAction((w, i) => ops.previewRestart(w, i)));
   app.post<{ Params: { id: string } }>("/api/projects/:id/preview/refresh", previewAction((w, i) => ops.previewRefresh(w, i)));
 
+  // Per-run "Preview this change" — the run's own branch, pinned, pre-merge.
+  app.get<{ Params: { id: string } }>("/api/runs/:id/preview", previewAction((w, i) => ops.previewRunState(w, i)));
+  app.post<{ Params: { id: string } }>("/api/runs/:id/preview/start", previewAction((w, i) => ops.previewRunStart(w, i)));
+  app.post<{ Params: { id: string } }>("/api/runs/:id/preview/stop", previewAction((w, i) => ops.previewRunStop(w, i)));
+  app.post<{ Params: { id: string } }>("/api/runs/:id/preview/restart", previewAction((w, i) => ops.previewRunRestart(w, i)));
+
   // ── Deploy to Fly.io (persistent, human-triggered) — a REAL, shareable URL
   // that survives independent of the local Skynet process. Explicit operator
   // action only: there is deliberately no automatic trigger anywhere in this
@@ -853,12 +860,31 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Execution intents (S10): the ONE endpoint for start_task/queue_tasks/
+  // start_feature/process_backlog — see Operations.executeStewardAction.
+  // Every other Steward-proposed action kind keeps its own existing route
+  // (steward-dock.tsx's runAction); these four are the only ones a client
+  // calls through here.
+  app.post<{ Params: { id: string } }>("/api/projects/:id/steward/actions", async (req, reply) => {
+    const body = ExecuteStewardActionRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.executeStewardAction(ws(req), req.params.id, body.data.action, req.principal!.operatorId, {
+        dryRun: body.data.dryRun,
+      });
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // Human kanban move (validated against the allowed-transition map).
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/state", async (req, reply) => {
     const body = MoveTaskRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
-      return await ops.transitionTask(ws(req), req.params.tid, body.data.to, req.principal!.operatorId);
+      return await ops.transitionTask(ws(req), req.params.tid, body.data.to, req.principal!.operatorId, {
+        preserve: body.data.preserve,
+      });
     } catch (err) {
       return fail(reply, err);
     }

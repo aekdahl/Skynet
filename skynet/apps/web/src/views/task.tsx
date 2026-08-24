@@ -17,9 +17,10 @@ import {
 } from "../lib/derive";
 import { StatusDot } from "../components/common";
 import { Blocked } from "../components/empty";
-import { useConfirm } from "../components/confirm";
+import { useChoice, useConfirm } from "../components/confirm";
 import { Markdown } from "../components/markdown";
 import { HitlContext, RiskChip } from "../components/hitl-context";
+import { LivePreviewModal } from "./project";
 
 // Cheap guard: does this text actually contain markdown worth rendering (bold,
 // inline code, a bullet/number/heading line, or a link)? Agent prose does; plain
@@ -97,6 +98,7 @@ export function TaskDetail({
     tasks,
     fleet,
     modules,
+    projects,
     resolveHitl,
     forkAgent,
     createCheckpoint,
@@ -109,6 +111,7 @@ export function TaskDetail({
     logDeltas,
   } = useStore();
   const confirm = useConfirm();
+  const choice = useChoice();
   const q = openQueue(queue).find((it) => it.runId === agent.id);
   // The backing task carries the operator's brief AND the autonomous triage
   // metadata (assessment note + duration estimate) — surface both here so
@@ -120,6 +123,13 @@ export function TaskDetail({
   const [draft, setDraft] = useState("");
   const [showDiff, setShowDiff] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [runPreviewOpen, setRunPreviewOpen] = useState(false);
+  // "Preview this change" (docs/live-preview.md) — a live, sandboxed preview
+  // of THIS run's own branch, so an operator can see the change before
+  // approving its merge. Only offered when there's an actual diff to review
+  // and the project has a local checkout to preview against.
+  const project = projects.find((p) => p.id === agent.projectId);
+  const canPreviewRun = !!q?.diff && !!project?.repoPath;
   // Selected option for a decision (AskUserQuestion) — click to select, then
   // "Send & resume" to submit. Reset when a new/different decision arrives so a
   // stale pick can't carry over. (Immediate-resolve-on-click was confusing next
@@ -566,8 +576,28 @@ export function TaskDetail({
                       <>
                         <button
                           className="btn btn-sm"
-                          title="Hand this run to a different runner to retry fresh (with your guidance below, if any)"
-                          onClick={() => resolveHitl(q.id, "reassign", { guidance: draft.trim() })}
+                          title="Hand this run to a different runner — choose whether to keep its work or start clean"
+                          onClick={async () => {
+                            const picked = await choice({
+                              title: "Reassign to a different runner",
+                              body: "How should the new runner pick this up?",
+                              options: [
+                                {
+                                  value: "continue",
+                                  label: "Continue in this worktree",
+                                  hint: "The new runner picks up the branch's committed work where the last one left off.",
+                                  primary: true,
+                                },
+                                {
+                                  value: "reset",
+                                  label: "Start clean",
+                                  hint: "Discards this worktree's work — the new runner starts the task fresh on a new branch.",
+                                  danger: true,
+                                },
+                              ],
+                            });
+                            if (picked) resolveHitl(q.id, "reassign", { guidance: draft.trim(), resetWork: picked === "reset" });
+                          }}
                         >
                           Reassign
                         </button>
@@ -604,6 +634,15 @@ export function TaskDetail({
                     <button className="btn btn-sm btn-ghost" onClick={() => setShowDiff((v) => !v)}>
                       {showDiff ? "Hide details" : "Details"}
                     </button>
+                    {canPreviewRun && (
+                      <button
+                        className="btn btn-sm btn-ghost"
+                        title="Run this change live, sandboxed, before approving its merge — the run's own branch, not the merged project."
+                        onClick={() => setRunPreviewOpen(true)}
+                      >
+                        ▶ Preview this change
+                      </button>
+                    )}
                   </span>
                 </div>
               )}
@@ -636,6 +675,14 @@ export function TaskDetail({
           </div>
         </div>
       </div>
+      {runPreviewOpen && (
+        <LivePreviewModal
+          id={agent.id}
+          scope="run"
+          title={"Preview this change · " + agent.name}
+          onClose={() => setRunPreviewOpen(false)}
+        />
+      )}
     </section>
   );
 }

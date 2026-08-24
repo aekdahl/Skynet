@@ -50,13 +50,38 @@ interface Challenge {
 
 const challenges = new Map<string, Challenge>();
 
+/**
+ * An already-live, unexpired challenge for this exact operator, if one
+ * exists — so a repeated login attempt (a retried form submit, a double
+ * click, a script hitting /api/auth/login more than once) reuses the SAME
+ * code instead of minting and Telegram-sending a fresh one every time. Never
+ * weakens security: it's still the same one-time code, same TTL, same
+ * attempt cap — just not re-issued needlessly. Matched on workspaceId +
+ * operatorId (the stable identity), not the whole Principal object (whose
+ * `scopes`/`projectIds` can legitimately vary run to run).
+ */
+function activeChallengeFor(principal: Principal): { challengeId: string; code: string } | undefined {
+  const nowMs = now();
+  for (const [challengeId, ch] of challenges) {
+    if (ch.expiresAt <= nowMs) continue; // expired — createChallenge will replace it
+    if (ch.principal.workspaceId === principal.workspaceId && ch.principal.operatorId === principal.operatorId) {
+      return { challengeId, code: ch.code };
+    }
+  }
+  return undefined;
+}
+
 /** Issue a login challenge (after a correct password). Returns the id + the OTP
- *  to deliver out-of-band (Telegram). The code never leaves the server otherwise. */
-export function createChallenge(principal: Principal): { challengeId: string; code: string } {
+ *  to deliver out-of-band (Telegram). The code never leaves the server otherwise.
+ *  Reuses an already-active challenge for the same operator instead of piling up
+ *  a new one on every repeated login attempt — see {@link activeChallengeFor}. */
+export function createChallenge(principal: Principal): { challengeId: string; code: string; reused: boolean } {
+  const active = activeChallengeFor(principal);
+  if (active) return { ...active, reused: true };
   const challengeId = randomBytes(18).toString("base64url");
   const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
   challenges.set(challengeId, { principal, code, expiresAt: now() + CODE_TTL_MS, attempts: 0 });
-  return { challengeId, code };
+  return { challengeId, code, reused: false };
 }
 
 /** Verify an OTP or a recovery code for a challenge; returns the Principal on

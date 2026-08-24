@@ -223,6 +223,39 @@ export class WorktreeProvisioner {
   }
 
   /**
+   * Best-effort cleanup for a worktree whose PREVIOUS occupant was killed
+   * mid-turn (an escalated run's agent, forcibly `stop()`-ed so the run can be
+   * resumed/reassigned into the SAME worktree) rather than exiting normally.
+   * A normal exit never leaves git mid-operation; a hard interrupt can, if the
+   * killed process was itself in the middle of a `git merge`/`git rebase` (e.g.
+   * an agent that got "stuck" BECAUSE a merge/rebase hit a conflict it didn't
+   * know how to resolve — exactly the state a reassigned agent then inherits
+   * with no idea it's there, and has to reverse-engineer via ad-hoc `git log`/
+   * `git status`/`git fsck` archaeology before it can even start, sometimes
+   * getting stuck the same way itself). Aborting is always safe here: any real
+   * edits the agent made are plain working-tree changes, untouched by
+   * `merge --abort`/`rebase --abort` — only the interrupted merge/rebase
+   * ITSELF (which was never going to complete on its own) is undone. Never
+   * touches uncommitted file changes. Returns which operation(s) were found
+   * and aborted, for the caller to log/surface to the next agent.
+   */
+  async sanitizeInterrupted(runId: string): Promise<string[]> {
+    const path = this.pathFor(runId);
+    const cleaned: string[] = [];
+    // Both fail harmlessly ("no merge/rebase in progress") when there's
+    // nothing to abort — the .catch is the actual check, not error handling.
+    await this.git(path, "merge", "--abort").then(
+      () => cleaned.push("merge"),
+      () => undefined,
+    );
+    await this.git(path, "rebase", "--abort").then(
+      () => cleaned.push("rebase"),
+      () => undefined,
+    );
+    return cleaned;
+  }
+
+  /**
    * Commit everything in the agent's worktree onto its branch — so the branch
    * carries the agent's diff regardless of whether the runner committed itself.
    * Returns committed:false when the worktree is clean (nothing to integrate).

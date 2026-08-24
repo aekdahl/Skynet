@@ -11,7 +11,7 @@
 
 import { Pool } from "pg";
 import type { ProviderId } from "@skynet/shared";
-import type { SecretRecord, SecretStore } from "./types.js";
+import type { SecretAuditEntry, SecretRecord, SecretStore } from "./types.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS workspace_secrets (
@@ -31,6 +31,21 @@ ALTER TABLE workspace_secrets ALTER COLUMN id SET NOT NULL;
 -- Re-key on (workspace_id, id). Drop whatever PK exists first (idempotent).
 ALTER TABLE workspace_secrets DROP CONSTRAINT IF EXISTS workspace_secrets_pkey;
 ALTER TABLE workspace_secrets ADD CONSTRAINT workspace_secrets_pkey PRIMARY KEY (workspace_id, id);
+
+-- Credential lifecycle events. Kept independently of workspace_secrets so a
+-- deleted credential's history survives the delete (the "why did this
+-- disconnect" question a removed row can no longer answer).
+CREATE TABLE IF NOT EXISTS workspace_secret_audit (
+  id            text PRIMARY KEY,
+  workspace_id  text NOT NULL,
+  credential_id text NOT NULL,
+  provider      text NOT NULL,
+  label         text NOT NULL,
+  action        text NOT NULL,
+  operator_id   text NOT NULL,
+  at            bigint NOT NULL
+);
+CREATE INDEX IF NOT EXISTS workspace_secret_audit_ws_idx ON workspace_secret_audit(workspace_id, at DESC);
 `;
 
 interface Row {
@@ -108,5 +123,38 @@ export class PostgresSecretStore implements SecretStore {
       workspaceId,
       id,
     ]);
+  }
+
+  async recordAudit(entry: SecretAuditEntry): Promise<void> {
+    const pool = await this.db();
+    await pool.query(
+      `INSERT INTO workspace_secret_audit(id,workspace_id,credential_id,provider,label,action,operator_id,at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [entry.id, entry.workspaceId, entry.credentialId, entry.provider, entry.label, entry.action, entry.operatorId, entry.at],
+    );
+  }
+
+  async listAudit(workspaceId: string): Promise<SecretAuditEntry[]> {
+    const pool = await this.db();
+    const { rows } = await pool.query<{
+      id: string;
+      workspace_id: string;
+      credential_id: string;
+      provider: string;
+      label: string;
+      action: string;
+      operator_id: string;
+      at: string;
+    }>("SELECT * FROM workspace_secret_audit WHERE workspace_id=$1 ORDER BY at DESC", [workspaceId]);
+    return rows.map((r) => ({
+      id: r.id,
+      workspaceId: r.workspace_id,
+      credentialId: r.credential_id,
+      provider: r.provider as ProviderId,
+      label: r.label,
+      action: r.action as SecretAuditEntry["action"],
+      operatorId: r.operator_id,
+      at: Number(r.at),
+    }));
   }
 }

@@ -494,6 +494,21 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   status with a stale heartbeat (the dashboard's existing 60s early-warning line) and no open HITL now
   sorts and labels the same as an open HITL ("stuck in review — no pending decision"), instead of hiding
   among genuinely active runs.*
+  *Feature added: "Send to Todo" and escalation "Reassign" each used to have exactly ONE hardcoded
+  behavior — the former always discarded the run's in-progress work, the latter always continued in the
+  same worktree — with no way to ask for the other, reported live as a real gap ("work shouldn't be lost
+  when returning to todo due to task is stall or hung — a confirm modal where the user can decide to
+  reset or continue"). Both now offer a real choice via a new `useChoice()` dialog (`confirm.tsx`, a
+  multi-option sibling to the existing yes/no `useConfirm()`): **keep the work, pause it** (the run halts
+  with its worktree + committed work intact, exactly like an escalation — a later "Start →" on the same
+  task, or `assignTask`'s new resume-a-paused-run branch, relaunches it in place) or **start clean**
+  (discards the worktree, same as Stop; Reassign's reset variant then immediately re-assigns a genuinely
+  fresh run for the same task). New `Orchestrator.pauseRun()` mirrors `escalate()` (worktree preserved,
+  no HITL raised — nothing needs the operator's attention, they just chose to come back later) and
+  `Resolution.resetWork` (only meaningful alongside `reassign`) drives the reset path in
+  `deliverEscalation`. Regression-proofed with 4 new real-git tests (`escalation.test.ts`) covering both
+  choices on both flows, and verified live end-to-end (pause → Start → resumes the SAME run id; reset →
+  a brand-new run with its own fresh worktree).*
 - [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
   Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
   credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself
@@ -1071,6 +1086,71 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   in `apps/web` to add it to; the POST is synchronous (the client's own in-flight request IS the
   "running" state) so no server-side polling/async job infra was needed either. **Depends on S4**
   (`SolutionBrief`) — landed and merged.
+- [x] **S10 — Execution intents: feasibility resolver + composite actions + ONE server executor.**
+  The server-side seam everything else (S11's confirm chip, S12's MCP surface, Telegram) calls into
+  to actually start/queue work — not three separate reimplementations of "which of these tasks can
+  run right now." Two pieces. **`resolveExecutable(project, tasks, runs, opts)`** (new
+  `steward/execution.ts`, PURE) decides, from a caller-scoped candidate list (a feature's tasks, or
+  the project's backlog+triage+todo), which are executable and why not for the rest —
+  `{eligible, excluded: {taskId, reason}[]}`, `reason` one of `unclear | already-running | done |
+  over-budget | not-in-scope`. `done`/`ongoing`/`review` are always excluded (idempotency —
+  re-issuing the same directive never double-starts a task with a live or just-finished run);
+  archived is `not-in-scope`; `unclear` (a task still parked in `triage` — there's no separate
+  boolean, that IS the observable "never came out clear" signal, since the autonomy tick's own
+  triage step auto-promotes triage→todo the moment its clarity read comes back clear) fires only
+  under `opts.feasibleOnly`. The budget half walks the remaining candidates in PRIORITY order
+  (`task.order`, tie-broken by id — the identical sort `tickAutonomy`'s auto-pick already uses)
+  accumulating `costBandFor`, marking the remainder `over-budget` once `pacedAvailableUsd` runs out
+  — never dropped, still reported, since an over-budget task is still queueable (the tick picks it
+  up once budget frees). `pacedAvailableUsd` moved from a private `Orchestrator` method to a pure
+  export on `packages/shared/src/budget.ts` (alongside `computeDailySpend`/`costBandFor`, which were
+  already there) so the resolver and the tick call the EXACT same calculation — a dry-run's "N over
+  budget" can never be a different number than what the tick does moments later.
+  **`Operations.executeStewardAction(ws, projectId, action, operatorId, opts)`** is the one executor,
+  dispatching on 4 new kinds (`StewardExecutionAction`, a strict zod discriminated union,
+  `packages/shared/src/contracts.ts`): `start_task` (direct, single-task `assignTask`, still run
+  through the resolver for the SAME feasibility check every kind gets — not a bypass);
+  `queue_tasks {taskIds}` (explicit ids, `feasibleOnly` never applied — the caller already decided);
+  `start_feature {featureId, execMode: "queue"|"start_now", feasibleOnly}` and `process_backlog
+  {feasibleOnly}` (composite — resolve the scope, then either queue every eligible task or, for
+  `start_now`, assign up to idle capacity — catching `NoCapacityError`/`RunnerNotConfiguredError`
+  specifically to know when to stop assigning and start queuing the rest instead — then queue the
+  remainder). Queuing a task (state→`todo` when backlog/triage, `autoPick: true`, and an
+  `unassigned` eligibility fixed to `any`) writes directly via `hub.upsertTask`, deliberately
+  bypassing `Operations.transitionTask`/`HUMAN_TRANSITIONS` (which has no backlog→todo edge at all —
+  that gate is for a HUMAN kanban drag; this is the identical SYSTEM-initiated write the autonomy
+  tick's own triage step already makes the same way). **Autonomy fold-in:** queuing is pointless
+  with the project's autonomy toggle off — nothing would ever pick the work up — so executing any
+  call that queues at least one task turns autonomy on as part of the SAME operation (reported via
+  `autonomyEnabled`) rather than making the operator separately confirm a `set_autonomy` action for
+  what is conceptually one intent ("start this feature"); chose this over teaching the model to
+  propose the two actions together, since it's deterministic and doesn't depend on LLM behavior.
+  **Dry-run** (`opts.dryRun`) resolves the identical decision and returns it without calling
+  `hub.upsertTask`/`upsertProject`/`assignTask` — `start_now`'s dry-run specifically never acquires a
+  runner (real-time fleet capacity can't be previewed without racing it), so it reports every
+  eligible task as "would queue," the conservative honest answer. New route: `POST
+  /api/projects/:id/steward/actions` (default "author" scope, no auth-guard change needed). The 4
+  kinds are also added to `ProjectActionKind`/`AssistantAction`/`validateProjectAction`
+  (`steward/assistant.ts`) — same id-resolution + confirm-chip-summary treatment every other kind
+  gets — but **deliberately NOT yet in the `SYSTEM` prompt text**: the web dock's `runAction`
+  (`steward-dock.tsx`) has a `const unhandled: never = a.kind` exhaustiveness guard and doesn't
+  execute these four (they run only through the new endpoint), so teaching Steward's LLM to propose
+  one today would let an operator confirm a chip the dock then can't do anything with. Wiring the
+  dock to the endpoint (and only then adding these to `SYSTEM`) is S11's job. Verified: 21 tests
+  (`tests/execution-intents.test.ts`) — the resolver's exclusion reasons individually (including
+  `eligible.length + excluded.length === tasks.length` always holding) and priority-order — plus the
+  executor through a REAL `Operations` + `Orchestrator` + `MemoryStore` + stub provider: `queue_tasks`
+  makes a backlog task pickable and the NEXT `tickAutonomy` genuinely starts it; `start_feature` on a
+  done+ongoing+two-todo feature touches only the two; `start_now` with one idle runner assigns one
+  and queues the rest while folding autonomy on; dry-run mutates nothing (asserted on the task AND
+  the project record); re-issuing the same composite twice is a no-op the second time (already-running
+  / already-queued). Plus 8 new `validateProjectAction` cases (`tests/project-assistant.test.ts`) and
+  confirmed the existing `budget-allocation.test.ts`/`daily-budget.test.ts` suites are unaffected by
+  the `pacedAvailableUsd` extraction. **Deliberately out of scope, per the task's own sizing:** S7's
+  `dependsOnTaskIds` dependency check (the resolver leaves room for it, doesn't implement it); the
+  dock UI wiring + richer confirm-chip rendering (S11); the MCP tools + their `dryRun` param (S12);
+  Telegram's own action vocabulary (`telegram/intent.ts`) still doesn't call this executor — a
+  fourth parallel action path, not touched here, matching "don't churn existing kinds."
 - [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** *Landed:* **amber
   untangled** — `--accent` (brand/primary) and `--warn` (caution/waiting status) were an accidental
   hex duplicate (`#FFB224` both, not just visually close); `--warn` is now a genuinely distinct
@@ -1376,6 +1456,12 @@ features below are white space.)
   markup — no run can exist in this sandbox without a live provider credential, confirmed via a real
   `assignTask` 409 "No credential for any available agent" before any `TaskRun` record is even created).)*
 - [ ] **Design tokens published** (type scale, 8px rhythm, motion behind `prefers-reduced-motion`, one focus ring, semantic palette kept separate from the accent); **a11y pass** (icon-button labels, visible focus, keyboard walkthrough of assign→decide→merge); explicit **Inbox-first mobile/PWA shell**.
+  *(Partially landed — investigated each clause independently rather than assuming the bundle was all-or-nothing. **Semantic palette** was already separate from the accent (`--ok`/`--warn`/`--danger`/`--info`/`--violet` are distinct hues from `--accent`, per the comment already in `styles.css`) — no action needed. **Inbox-first mobile/PWA shell** was already fully shipped by an earlier, differently-scoped PR (`20b6e91`): standalone/installed launches open straight to the Inbox queue (`pwa/launch.ts`'s `initialView`), the manifest's shortcuts lead with Inbox, and `styles.responsive.css` already restructures the shell for narrow/touch screens with safe-area insets — verified by reading, not re-done.
+    **Type scale, published**: `styles.css` had accrued 25 distinct `font-size` values (a deliberate half-pixel ladder for secondary/tertiary text density — e.g. 11.5/12.5/13.5px are the dominant convention, not drift) with zero naming — every occurrence was a bare px literal. Added a `--fz-*` token per distinct value actually in use and mechanically replaced every literal with its token (byte-identical rendering — a lossless catalog, not a renumbering) across `styles.css` and `styles.responsive.css`. New code now has a discoverable set to draw from instead of inventing another one-off size.
+    **One focus ring**: audited every `outline`/`:focus`/`:focus-visible` rule against the existing baseline ring (`button:focus-visible` et al.) and the button/state tokens. Found and fixed one real a11y gap (`.cmdk-input:focus` suppressed the outline with no replacement indicator at all — the command palette's search box had no visible focus cue). Consolidated four near-identical, drifted text-input focus treatments (`.qx-input`, `.settings-input`, `.rp-select`, `.adv-input` — one had silently drifted to a translucent accent border, one dropped the outline for a solid one) onto a single new `--input-focus-border` token, and switched them to `:focus-visible` (a plain `:focus` was re-styling on mouse clicks too, not just keyboard). Removed three redundant per-component `outline`/`outline-offset` overrides (`.md-fold-summary`, `.tg-setup-head`, `.prd-phase-summary`) that only repeated the baseline ring under a different name — they now fall back to the shared rule and keep only their own `border-radius` addition.
+    **Motion behind `prefers-reduced-motion`**: three looping "still alive" keyframe animations (`rb-flip`, `rb-stale-pulse`, `sk-shimmer`) predated the convention already established for their siblings (`pulse`, `pvpulse`, `pipe-pulse`, …) and weren't guarded — wrapped their `@keyframes` in `@media (prefers-reduced-motion: no-preference)` per that same existing pattern. Left the width-fill progress-bar transitions (`.bar-fill`, `.fleet-task-fill`, `.pf-progress-fill`) and toggle-switch knob slides alone on purpose — `styles.css`'s own top-of-file comment already carves those out deliberately as informational/discrete-action motion, not ambient decoration, and past owners chose not to suppress them; no reason found to override that call.
+    **a11y pass**: icon-button labels were already ~99% done by an earlier "9 icon buttons" pass — found and fixed the one remaining gap (`tweaks.tsx`'s dev-panel `✕` close button, now `aria-label="Close Tweaks panel"`). Keyboard-walked assign → HITL decide → merge end to end: assign (`project.tsx`), the Inbox decide flow (`queue.tsx`/`task.tsx`, including the `j`/`k`/`a`/`r`/`m` shortcut layer), and merge (`merges.tsx`) were all already fully keyboard-operable. Found and fixed two real dead ends on the task-card detail path: (1) `.kb-card-tools`' Edit/Archive/Delete/Move buttons only revealed on `:hover`, so tabbing onto one showed nothing — added a `:focus-within` fallback alongside the existing `:hover` one; (2) the read-only task-detail modal (`project.tsx`, no-run cards) didn't manage focus at all — added focus-on-open (the close button), Escape-to-close, and focus-return to the originating card on close, matching the pattern already used by `confirm.tsx`/`command-palette.tsx` elsewhere in this app. Also deleted `.kb-archive`, dead CSS with no matching `className` anywhere in the app, found while working the same hover-reveal selectors.
+    **Not done — 8px spacing rhythm**: deliberately scoped out. Unlike font-size, `padding`/`margin`/`gap` values in `styles.css` are not a latent, already-consistent ladder — the file has ~700+ declarations spanning single-digit odd pixel values up to full-panel widths (400px, 288px, …), many clearly fine-tuned per component (icon/text baseline alignment, badge padding) rather than page-rhythm spacing. A faithful "rhythm" pass means actual design consolidation (choosing canonical steps and remapping every declaration onto them), not just token-naming the existing values — and that carries real visual-regression risk across every screen in the app that a single pass can't safely verify: this sandbox has no working browser (Playwright's Chromium is missing system shared libraries — `libglib-2.0.so.0` — and `apt-get update` is blocked here, so no live visual QA was possible this round; verified instead via a full `pnpm -r typecheck` pass and manual diff review). Left as future, deliberately-scoped work rather than guessed at blind.)*
 
 **Easier to use than anyone else:**
 - [x] **Repo-optional / chat-only mode** — a runner with **no worktree and no merge**; try Skynet in 30s,
