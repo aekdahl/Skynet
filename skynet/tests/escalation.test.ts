@@ -142,6 +142,51 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     expect((await store.getRun(run.id))?.status).toBe("running");
   });
 
+  it("Dismiss an agent escalation → clears the card, but stops/resumes NOTHING and leaves status alone", async () => {
+    const { run, events, handle } = await assignRun();
+    events.onHitl(run.id, {
+      kind: "escalation", title: "Need a decision", why: "which auth flow?", risk: "medium", rationale: null,
+      command: null, options: null, recommended: null, steps: null, diff: null,
+    });
+    await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+    const esc = bus.raised().find((i) => i.kind === "escalation")!;
+    expect((await store.getRun(run.id))?.status).toBe("waiting");
+
+    const resolved = await ops.resolveHitl(DEFAULT_WORKSPACE, esc.id, { action: "dismiss" }, "op-1");
+    expect(resolved.resolvedAt).not.toBeNull();
+    // No side effect on the run at all — not stopped, not resumed, status untouched.
+    expect(handle.stopCalls).toBe(0);
+    expect(handle.resumeCalls.length).toBe(0);
+    expect((await store.getRun(run.id))?.status).toBe("waiting");
+    expect((await store.getAgent("r1"))?.status).toBe("busy"); // runner never freed
+  });
+
+  it("Dismiss a stuck-review escalation → restores status to 'review' (what it actually still is)", async () => {
+    const store2 = new MemoryStore({ seed: false });
+    const bus2 = new RecordingBus();
+    const hub2 = new Hub(store2, bus2);
+    const orch2 = new Orchestrator(store2, hub2);
+    const ops2 = new Operations({ store: store2, hub: hub2, orchestrator: orch2 });
+    await store2.putProject({
+      id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [],
+      status: "active", repoPath: null, gitBacked: false,
+    } as never);
+    await store2.putRun({
+      id: "r-done-review", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "r", status: "review",
+      agentId: null, provider: "claude", model: "opus-4.8", branch: "agent/r", modules: [],
+      progress: 1, plan: [], usage: null, modifiedFiles: [], log: [], startedAt: 0, lastHeartbeatAt: Date.now(),
+      visual: false, previewUrl: null, dependsOn: [], parentId: null, branchFromStep: null, archived: false,
+    } as never);
+
+    await orch2.gcWorktrees();
+    const esc = (await store2.listQueue(DEFAULT_WORKSPACE)).find((q) => q.kind === "escalation")!;
+    expect(esc.flags).toContain("stuck-review");
+    expect((await store2.getRun("r-done-review"))?.status).toBe("waiting"); // forced so the card surfaces
+
+    await ops2.resolveHitl(DEFAULT_WORKSPACE, esc.id, { action: "dismiss" }, "op-1");
+    expect((await store2.getRun("r-done-review"))?.status).toBe("review"); // restored — it never stopped being true
+  });
+
   it("every generic failure auto-escalates immediately (not a silent 'review' spin)", async () => {
     const { run, events } = await assignRun();
     // A single failure must escalate right away — nothing retries a run on its

@@ -930,7 +930,10 @@ export const DiffSummary = z.object({
 export type DiffSummary = z.infer<typeof DiffSummary>;
 
 // "reassign" resolves an escalation by handing the run to a different runner.
-export const ResolveAction = z.enum(["approve", "reject", "modify", "option", "reassign"]);
+// "dismiss" clears an escalation card with NO operation on the run — no stop,
+// resume, or reassign (orchestrator.ts's deliverEscalation). Only meaningful
+// for `escalation` gates; other kinds don't offer it.
+export const ResolveAction = z.enum(["approve", "reject", "modify", "option", "reassign", "dismiss"]);
 export type ResolveAction = z.infer<typeof ResolveAction>;
 
 export const Resolution = z.object({

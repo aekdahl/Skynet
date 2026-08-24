@@ -182,6 +182,14 @@ export function QueueCard({
           <button className="btn btn-ghost" onClick={onOpen}>
             Open agent
           </button>
+          <button
+            className="btn btn-ghost"
+            title="Clear this card — no operation on the run (doesn't stop, resume, or reassign)"
+            disabled={readOnly}
+            onClick={() => resolveHitl(item.id, "dismiss")}
+          >
+            Dismiss
+          </button>
         </div>
       ) : item.options ? (
         <div className="qcard-actions">
