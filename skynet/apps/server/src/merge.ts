@@ -63,8 +63,13 @@ export interface MergeRequest {
 export interface MergeCallbacks {
   /** Merge committed onto the integration branch. */
   onMerged(req: MergeRequest, integrationBranch: string): Promise<void>;
-  /** Textual conflict — raise a `merge` HITL with the contested files. */
-  onConflict(req: MergeRequest, conflictedFiles: string[]): Promise<void>;
+  /** Textual conflict — raise a `merge` HITL with the contested files.
+   *  `conflictDiff` is `git diff`'s conflict-marker output (`<<<<<<<`/`=======`/
+   *  `>>>>>>>` hunks), captured in the scratch worktree BEFORE `merge --abort`
+   *  discards it — the only place this state exists, since the merge is
+   *  always aborted rather than left dangling. Best-effort: "" on any git
+   *  failure reading it, never blocks raising the gate. */
+  onConflict(req: MergeRequest, conflictedFiles: string[], conflictDiff: string): Promise<void>;
   /** Project checks failed after merge — bounce back to the agent to revise. */
   onChecksFailed(req: MergeRequest, output: string): Promise<void>;
   /**
@@ -232,10 +237,14 @@ export class MergeEngine {
         } catch {
           /* ignore */
         }
+        // Capture the actual conflict markers BEFORE aborting — merge --abort
+        // is the only path out of a conflicted state, and once it runs this
+        // information is gone for good.
+        const conflictDiff = conflicted.length > 0 ? await this.git(scratch, "diff").catch(() => "") : "";
         await this.git(scratch, "merge", "--abort").catch(() => undefined);
         if (conflicted.length > 0) {
           this.cb.onLog(req.runId, `merge conflict in ${conflicted.length} file(s) — escalating`);
-          await this.cb.onConflict(req, conflicted);
+          await this.cb.onConflict(req, conflicted, conflictDiff);
         } else {
           const reason = gitReason(err);
           this.cb.onLog(req.runId, `merge failed (not a conflict): ${reason}`);

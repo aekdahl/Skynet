@@ -167,6 +167,23 @@ export const hitlFor = (queue: HitlItem[], runId: string) =>
 export const openQueue = (queue: HitlItem[]) =>
   queue.filter((q) => q.resolvedAt == null);
 
+/** Inbox ordering: approvals (a live gate is blocking a run's own progress —
+ *  approve/reject/modify unblocks it right now) before escalations (the
+ *  agent already handed back its compute — see orchestrator.ts's escalate()
+ *  — so nothing is actively held up, including a stuck-review card that's
+ *  already "done, awaiting review"), each sorted longest-waiting-first
+ *  within its group. A single flat array, not two separately-indexed lists —
+ *  QueueView's keyboard nav (j/k/a/r/m) and `selectedIdx` index straight into
+ *  it; callers detect the group boundary from `item.kind` themselves to
+ *  render section headers. */
+export function sortForInbox(items: HitlItem[], now: number): HitlItem[] {
+  return items.slice().sort((a, b) => {
+    const ag = a.kind === "escalation" ? 1 : 0;
+    const bg = b.kind === "escalation" ? 1 : 0;
+    return ag !== bg ? ag - bg : waitedSecs(b, now) - waitedSecs(a, now);
+  });
+}
+
 // Runs whose PR is open and awaiting a human merge decision (not set aside) —
 // the ready-to-merge list. Newest PR first.
 export const readyMerges = (runs: TaskRun[]) =>
