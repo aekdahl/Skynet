@@ -42,6 +42,12 @@ describe("classifyRun", () => {
     expect(r.statusLabel).toBe("needs help"); // KIND_META["escalation"].label.toLowerCase()
   });
 
+  it("a stuck-review escalation reads as 'awaiting review', not 'needs help' — nothing actually failed", () => {
+    const r = classifyRun(run({ status: "waiting" }), hitl({ kind: "escalation", flags: ["stuck-review"] }), NOW, STALE_AFTER);
+    expect(r.tag).toBe("blocked");
+    expect(r.statusLabel).toBe("awaiting review");
+  });
+
   it("paused with no HITL → 'paused'", () => {
     const r = classifyRun(run({ status: "paused", lastHeartbeatAt: NOW - 5_000 }), undefined, NOW, STALE_AFTER);
     expect(r.tag).toBe("paused");

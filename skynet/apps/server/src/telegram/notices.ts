@@ -75,10 +75,21 @@ const GATE_HEAD: Partial<Record<HitlItem["kind"], string>> = {
   verifier: "Checks failed",
 };
 
+// A `stuck-review` escalation (orchestrator.ts's reapStuckReviews) is the one
+// `escalation` case where nothing actually broke — the run already finished
+// and reached review, it just has no open gate pointing at it. It gets its
+// own calm head instead of the generic "stopped and needs help" alarm.
+function isStuckReview(it: HitlItem): boolean {
+  return it.kind === "escalation" && (it.flags ?? []).includes("stuck-review");
+}
+function headFor(it: HitlItem): string {
+  return isStuckReview(it) ? "Done — awaiting your review" : (GATE_HEAD[it.kind] ?? "Needs your review");
+}
+
 /** The gate heads-up body. `control` toggles the tappable-buttons hint vs the
  *  slash-command fallback. Never includes the internal gate/run id in the prose. */
 export function gateNotice(it: HitlItem, names: Names, control: boolean, link?: string): string {
-  const head = GATE_HEAD[it.kind] ?? "Needs your review";
+  const head = headFor(it);
   const lines = [`🔔 ${head}${names.project ? ` · ${names.project}` : ""}`, names.run];
   if (it.kind === "diff" && it.diff) {
     const n = it.diff.files?.length ?? 0;
@@ -101,7 +112,7 @@ export function gateNotice(it: HitlItem, names: Names, control: boolean, link?: 
  * tappable-buttons hint vs. the slash-command fallback line.
  */
 export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, link?: string): string {
-  const head = GATE_HEAD[it.kind] ?? "Needs your review";
+  const head = headFor(it);
   const lines: string[] = [];
   lines.push(`🔔 <b>${esc(head)}</b>${names.project ? ` · ${esc(names.project)}` : ""}`);
   lines.push(esc(names.run));
@@ -223,9 +234,11 @@ export function digestText(d: {
   return `${head}\n\n${rows.join("\n")}`;
 }
 
-/** The head phrase for a gate kind (shared by the card + the digest). */
-export function gateHead(kind: HitlItem["kind"]): string {
-  return GATE_HEAD[kind] ?? "Needs your review";
+/** The head phrase for a gate (shared by the card + the digest). Takes the
+ *  whole item, not just its kind, so a stuck-review escalation gets its own
+ *  calm head rather than the generic per-kind one. */
+export function gateHead(it: HitlItem): string {
+  return headFor(it);
 }
 
 /**

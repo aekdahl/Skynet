@@ -365,6 +365,19 @@ export const KIND_META: Record<HitlKind, { label: string; color: string }> = {
   verifier: { label: "CHECKS FAILED", color: "var(--danger)" },
 };
 
+/** A `stuck-review` escalation (orchestrator.ts's reapStuckReviews) means the
+ *  run already finished and reached review — nothing failed, there's just no
+ *  open gate pointing at it. It's the one `escalation` case that means "done,
+ *  awaiting your review", not "something's wrong" — so it gets its own calm
+ *  label instead of KIND_META's alarm-red "NEEDS HELP". */
+export function isStuckReview(item: HitlItem): boolean {
+  return item.kind === "escalation" && (item.flags ?? []).includes("stuck-review");
+}
+
+export function hitlHeadline(item: HitlItem): { label: string; color: string } {
+  return isStuckReview(item) ? { label: "AWAITING REVIEW", color: "var(--ok)" } : KIND_META[item.kind];
+}
+
 // ─── runs board row classification ──────────────────────────────────────────
 
 export type RunTag = "running" | "blocked" | "paused" | "done";
@@ -394,7 +407,7 @@ export function classifyRun(
     const waited = waitedSecs(hitl, now);
     return {
       tag: "blocked",
-      statusLabel: KIND_META[hitl.kind].label.toLowerCase(),
+      statusLabel: hitlHeadline(hitl).label.toLowerCase(),
       timeLabel: `${fmtWait(waited)} waiting`,
       sortKey: -waited, // longest-waiting first
     };

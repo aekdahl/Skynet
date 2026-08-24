@@ -12,6 +12,7 @@ import {
   fmtDurMs,
   fmtNum,
   fmtWait,
+  isStuckReview,
   openQueue,
   STATUS_META,
   TASK_STATES,
@@ -498,7 +499,11 @@ function TaskCard({
           <Bar value={run.progress} status={run.status} />
           <div className="pa-step">
             {q ? (
-              <span className="wait-tag">⏸ {q.title}</span>
+              isStuckReview(q) ? (
+                <span className="wait-tag wait-tag-ok" title={q.why}>✅ {q.title}</span>
+              ) : (
+                <span className="wait-tag">⏸ {q.title}</span>
+              )
             ) : (
               <span className="step-tag">
                 <span style={{ color: STATUS_META[run.status].color }}>{STATUS_META[run.status].label}</span> · → {curStep(run)}

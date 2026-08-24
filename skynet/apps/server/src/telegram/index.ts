@@ -332,7 +332,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     const runName = new Map(runs.map((r) => [r.id, r.name || r.id]));
     return {
       text: digestText({
-        gates: gates.map((g) => ({ head: gateHead(g.kind), run: runName.get(g.runId) ?? g.title })),
+        gates: gates.map((g) => ({ head: gateHead(g), run: runName.get(g.runId) ?? g.title })),
         running: runs.filter((r) => r.status === "running" || r.status === "waiting").length,
         done: runs.filter((r) => r.status === "done").length,
       }),
