@@ -470,7 +470,24 @@ function TaskCard({
             )}
             <button className="kb-tool" title="Edit task" aria-label="Edit task" onClick={() => setEditing(true)}>✎</button>
             <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" aria-label="Archive task" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
-            <button className="kb-tool kb-tool-del" title="Delete task" aria-label="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
+            <button
+              className="kb-tool kb-tool-del"
+              title="Delete task"
+              aria-label="Delete task"
+              onClick={async () => {
+                if (
+                  await confirm({
+                    title: "Delete task?",
+                    body: `Delete “${task.text}”? This can't be undone — use Archive instead to hide it but keep it recoverable.`,
+                    confirmLabel: "Delete",
+                    danger: true,
+                  })
+                )
+                  deleteTask(pid, task.id);
+              }}
+            >
+              ×
+            </button>
           </span>
         )}
         {s === "done" && (
