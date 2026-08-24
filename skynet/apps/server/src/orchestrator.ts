@@ -2206,15 +2206,19 @@ export class Orchestrator {
       }
     }
 
-    // Review feedback loop: a `modify` on a finished run's diff/merge review, or
-    // a `modify`/`reject` on a failed verifier gate (a check failure's own
-    // output IS actionable guidance — reject needs no typed text to still bounce
-    // the agent). Compute was freed for the review, so there's no live handle —
-    // re-acquire one and resume the run in its worktree with the guidance
+    // Review feedback loop: a `modify` OR `reject` on a finished run's
+    // diff/merge/verifier review bounces the agent back to revise rather than
+    // abandoning the run — reject needs no typed text to still bounce the agent
+    // (a verifier's check failure, or a merge conflict's captured markers, is
+    // already actionable guidance on its own). This mirrors the verifier gate's
+    // existing reject semantics: "reject" here means "send it back for another
+    // pass", not "kill the run" — that stronger action is what Stop is for.
+    // Compute was freed for the review, so there's no live handle — re-acquire
+    // one and resume the run in its worktree with the guidance
     // (reviseAfterReview), rather than silently dropping it.
     if (
-      (((item.kind === "diff" || item.kind === "merge") && resolution.action === "modify") ||
-        (item.kind === "verifier" && (resolution.action === "modify" || resolution.action === "reject"))) &&
+      (item.kind === "diff" || item.kind === "merge" || item.kind === "verifier") &&
+      (resolution.action === "modify" || resolution.action === "reject") &&
       !this.live.has(runId)
     ) {
       const typed = resolution.guidance?.trim() || "";
