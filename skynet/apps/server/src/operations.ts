@@ -858,7 +858,13 @@ export class Operations {
       repoPath = null;
     }
     if (input.createRepo) {
-      const created = await githubService.createRepo(ws, input.createRepo, { description: input.goal });
+      // Create AS the pinned account when one was chosen — the owner list the
+      // operator picked from was that account's, so creating with the default
+      // connection's token would either fail or land under the wrong identity.
+      const created = await githubService.createRepo(ws, input.createRepo, {
+        description: input.goal,
+        githubCredentialId: input.githubCredentialId,
+      });
       repo = created.name; // "owner/repo"
       repoPath = null;
     }

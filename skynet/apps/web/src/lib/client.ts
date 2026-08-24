@@ -1027,8 +1027,11 @@ export function startGithubDevice() {
 export function pollGithubDevice(deviceCode: string) {
   return req<{ authorized: boolean }>("POST", "/api/github/device/poll", { device_code: deviceCode });
 }
-export async function fetchGithubOwners(): Promise<GithubOwner[]> {
-  const raw = await req<{ owners: GithubOwner[] }>("GET", "/api/github/owners");
+// `credentialId` lists THAT pinned GitHub account's owners (business/personal —
+// same selector as fetchGithubRepos); omit for the workspace default connection.
+export async function fetchGithubOwners(credentialId?: string): Promise<GithubOwner[]> {
+  const q = credentialId ? `?credentialId=${encodeURIComponent(credentialId)}` : "";
+  const raw = await req<{ owners: GithubOwner[] }>("GET", `/api/github/owners${q}`);
   return raw.owners;
 }
 export async function fetchGithubInstallations(): Promise<GithubInstallation[]> {

@@ -837,6 +837,21 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     that same live list (instead of the mock stub) when editing an already-connected installation. Regression-
     proofed: stashing the service fix makes the new `github-app-repos.test.ts` suite fail exactly as reported
     (returns the stale 1-repo snapshot instead of the live 3).*
+  - *Bug fixed (follow-up, "New repo" this time): "the Algorithma-se org is not visible at all, despite adding
+    a new pat for it" — reported live against the New-repo owner picker in project creation. PR #525 had wired
+    the account selector for the "Existing repo" half only; the "New repo" half still ran entirely on the
+    DEFAULT connection: `useRepoOwners()`/`fetchGithubOwners()`/`listRepoOwners()` took no credential,
+    `createRepo` always used the default connection's token, and `githubCredentialId` was only sent for
+    existing-repo creations. Compounding it, `listRepoOwners` silently swallowed `/user/orgs` failures — and
+    a fine-grained PAT typically CAN'T call that endpoint (it needs an org "Members: read" permission tokens
+    usually aren't minted with), so even the deliberately-added org PAT would have shown only the personal
+    login. Fixed end to end: the account picker now shows for BOTH repo modes and threads `credentialId`
+    through owners + repos + creation (`createRepo` creates AS the pinned account, and the project is pinned
+    to it); and when org-listing yields nothing, owners are DERIVED from the repos the token can actually see
+    (any owner prefix ≠ the user is an org it works with) — so the org appears whenever the token can reach
+    any of its repos, org-membership permission or not. Regression-proofed (`github-owners.test.ts`): stashing
+    the service fix fails 5 of 6 tests exactly as reported (org invisible, repo created under the wrong
+    identity).*
   - *Bug fixed: the Inbox's own HITL cards (`QueueCard`, `apps/web/src/views/queue.tsx`) never showed which
     project a card belonged to — only the agent name and the task title, reported live as a "Diff Review" card
     with no way to tell which project it was for at a glance. The ready-to-merge card (above) and the Home
