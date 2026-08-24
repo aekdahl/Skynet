@@ -10,6 +10,8 @@ import * as api from "../lib/client";
 // Steward's own grounding. The raw list is source material, not what agents
 // read directly.
 
+const fmt = (n: number): string => n.toLocaleString();
+
 function timeAgo(ms: number): string {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
   if (s < 60) return "just now";
@@ -104,6 +106,11 @@ export function ProjectContextView({ project }: { project: Project }) {
       <div className="prj-ctx-summary">
         <div className="prj-ctx-summary-head">
           <span className="prj-ctx-summary-title">Condensed context</span>
+          {project.contextSummary && (
+            <span className="prj-ctx-summary-chars mono" title="How much of every agent's (and Steward's) prompt this primer takes up">
+              {fmt(project.contextSummary.length)} chars
+            </span>
+          )}
           {project.contextSummaryUpdatedAt && (
             <span className="prj-ctx-summary-updated mono">updated {timeAgo(project.contextSummaryUpdatedAt)}</span>
           )}
@@ -129,14 +136,17 @@ export function ProjectContextView({ project }: { project: Project }) {
           disabled={busy}
           onChange={(e) => setLabel(e.target.value)}
         />
-        <textarea
-          className="qx-input prj-ctx-textarea"
-          placeholder="Paste meeting notes, an email, anything that shapes what this project is aiming at…"
-          rows={4}
-          value={content}
-          disabled={busy}
-          onChange={(e) => setContent(e.target.value)}
-        />
+        <div className="prj-ctx-textarea-wrap">
+          <textarea
+            className="qx-input prj-ctx-textarea"
+            placeholder="Paste meeting notes, an email, anything that shapes what this project is aiming at…"
+            rows={4}
+            value={content}
+            disabled={busy}
+            onChange={(e) => setContent(e.target.value)}
+          />
+          {content.length > 0 && <span className="prj-ctx-char-count mono">{fmt(content.length)} chars</span>}
+        </div>
         <div className="prj-ctx-add-actions">
           <button className="btn btn-primary btn-sm" disabled={!content.trim() || busy} onClick={paste}>
             Add note
@@ -166,21 +176,27 @@ export function ProjectContextView({ project }: { project: Project }) {
       ) : entries.length === 0 ? (
         <div className="kb-empty">Nothing added yet.</div>
       ) : (
-        <div className="prj-ctx-list">
-          {entries.map((e) => (
-            <div key={e.id} className="prj-ctx-entry">
-              <div className="prj-ctx-entry-head">
-                <span className={"prj-ctx-badge prj-ctx-badge-" + e.source}>{e.source === "upload" ? "upload" : "paste"}</span>
-                <span className="prj-ctx-entry-label">{e.label}</span>
-                <span className="prj-ctx-entry-date mono">{timeAgo(e.createdAt)}</span>
-                <button className="btn btn-ghost btn-sm" onClick={() => remove(e.id)}>
-                  Delete
-                </button>
+        <>
+          <div className="prj-ctx-list-total mono">
+            {entries.length} {entries.length === 1 ? "entry" : "entries"} · {fmt(entries.reduce((n, e) => n + e.content.length, 0))} raw chars
+          </div>
+          <div className="prj-ctx-list">
+            {entries.map((e) => (
+              <div key={e.id} className="prj-ctx-entry">
+                <div className="prj-ctx-entry-head">
+                  <span className={"prj-ctx-badge prj-ctx-badge-" + e.source}>{e.source === "upload" ? "upload" : "paste"}</span>
+                  <span className="prj-ctx-entry-label">{e.label}</span>
+                  <span className="prj-ctx-entry-chars mono">{fmt(e.content.length)} chars</span>
+                  <span className="prj-ctx-entry-date mono">{timeAgo(e.createdAt)}</span>
+                  <button className="btn btn-ghost btn-sm" onClick={() => remove(e.id)}>
+                    Delete
+                  </button>
+                </div>
+                <div className="prj-ctx-entry-body">{e.content}</div>
               </div>
-              <div className="prj-ctx-entry-body">{e.content}</div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
