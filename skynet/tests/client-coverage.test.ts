@@ -90,6 +90,16 @@ const ALLOW = new Set<string>([
   // creation) — a real LLM call on the workspace's own key, same "needs a live
   // provider" shape as stewardChat above; no offline journey drafts one.
   "draftCharter",
+  // S10/S11 execution intents (start_task/queue_tasks/start_feature/
+  // process_backlog dry-run + confirm). Unlike the others here, this call
+  // itself needs no LLM — but the ONLY way the web client reaches it is
+  // through the dock's confirm chip, which requires a live-LLM-proposed
+  // action to exist first (see stewardChat above), so no offline journey can
+  // drive it either. Covered server-side (real Operations+Orchestrator+
+  // MemoryStore, no mocks) by tests/execution-intents.test.ts,
+  // tests/steward-execution-flow.test.ts, and the Telegram parity in
+  // tests/telegram-project-actions.test.ts.
+  "executeStewardAction",
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",

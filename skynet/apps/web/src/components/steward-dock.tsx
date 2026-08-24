@@ -13,7 +13,22 @@ import { DiffView } from "./diff-view";
 // One confirm-first action Steward proposed, with its own accept/dismiss state —
 // a single message can carry several (Steward's "action budget"), each resolved
 // independently or all at once.
-type ProposedAction = { action: api.AssistantAction; state: "pending" | "done" | "dismissed" };
+//
+// Execution-intent kinds (queue_tasks/start_feature/process_backlog — see
+// PREVIEW_KINDS below) route through three EXTRA states before "done": a
+// dry-run fires automatically the moment the chip renders ("previewing"),
+// resolves to a feasibility summary the operator reviews BEFORE confirming
+// ("previewed", carrying `preview`), and only THEN does Confirm actually
+// execute (recorded as `outcome`). `start_task` — the direct single-task
+// kind — skips straight from "pending" to "done" like every non-execution-
+// intent kind, since there's nothing composite to preview.
+type ProposedAction = {
+  action: api.AssistantAction;
+  state: "pending" | "previewing" | "previewed" | "done" | "dismissed" | "error";
+  preview?: api.StewardActionOutcome;
+  outcome?: api.StewardActionOutcome;
+  error?: string;
+};
 type Msg = {
   role: "user" | "assistant";
   content: string;
@@ -31,6 +46,58 @@ const SUGGESTIONS = [
   "Any approvals waiting on me?",
   "Which projects need attention?",
 ];
+
+// The three composite kinds that always preview before they run. `start_task`
+// (a direct, explicit single-task start) is NOT here — it executes straight
+// through, same as every other confirm-first action.
+const PREVIEW_KINDS = new Set<api.AssistantAction["kind"]>(["queue_tasks", "start_feature", "process_backlog"]);
+
+/** Narrow an `AssistantAction` down to the strict shape the S10 execute
+ *  endpoint accepts — only called for the four execution-intent kinds
+ *  (guarded by the caller), so the `!`s below mirror the server's own
+ *  already-validated `AssistantAction` fields, not a fresh assumption. */
+function toExecutionAction(a: api.AssistantAction): api.StewardExecutionAction {
+  switch (a.kind) {
+    case "start_task":
+      return { kind: "start_task", taskId: a.taskId! };
+    case "queue_tasks":
+      return { kind: "queue_tasks", taskIds: a.taskIds ?? [] };
+    case "start_feature":
+      return { kind: "start_feature", featureId: a.featureId!, execMode: a.execMode ?? "queue", feasibleOnly: a.feasibleOnly ?? true };
+    case "process_backlog":
+      return { kind: "process_backlog", feasibleOnly: a.feasibleOnly ?? true };
+    default:
+      throw new Error(`${a.kind} isn't an execution intent`);
+  }
+}
+
+const EXCLUDE_REASON_LABEL: Record<string, string> = {
+  unclear: "not yet triaged clear",
+  "already-running": "already running",
+  done: "already done",
+  "over-budget": "over today's budget",
+  "not-in-scope": "not in scope",
+};
+
+// A dry-run's preview line AND a confirmed outcome's summary line share this —
+// "3 starting, 2 queued, 1 excluded · ~$4.50" either way; the only difference
+// is tense, handled by the caller (a leading "would " word).
+function summarizeOutcome(o: api.StewardActionOutcome): string {
+  const parts: string[] = [];
+  if (o.started.length) parts.push(`${o.started.length} starting`);
+  if (o.queued.length) parts.push(`${o.queued.length} queued`);
+  if (o.excluded.length) parts.push(`${o.excluded.length} excluded`);
+  if (!parts.length) parts.push("nothing to do");
+  if (o.estimatedCostUsd > 0) parts.push(`~$${o.estimatedCostUsd.toFixed(2)}`);
+  return parts.join(" · ");
+}
+
+// One line per distinct exclusion reason, e.g. "2 already running · 1 over today's budget".
+function excludedBreakdown(o: api.StewardActionOutcome): string {
+  const counts = new Map<string, number>();
+  for (const e of o.excluded) counts.set(e.reason, (counts.get(e.reason) ?? 0) + 1);
+  return [...counts.entries()].map(([reason, n]) => `${n} ${EXCLUDE_REASON_LABEL[reason] ?? reason}`).join(" · ");
+}
 
 export function StewardDock({
   focusProjectId,
@@ -127,6 +194,19 @@ export function StewardDock({
         return updateProject(projectId, { roadmapPath: a.path ?? null }).then(() => {
           window.dispatchEvent(new CustomEvent("skynet:roadmap-updated", { detail: { projectId } }));
         });
+      // Execution intents (S10/S11). `start_task` is direct — no preview, same
+      // as every kind above. The other three are composites that ALWAYS
+      // preview first (see PREVIEW_KINDS + the dry-run effect below) — the
+      // chip's own Confirm never calls runAction for them; only
+      // confirmPreviewed does, once a dry-run is in hand. Reaching one of
+      // those three here would mean that gating broke, so it throws loudly
+      // rather than silently running an unreviewed composite.
+      case "start_task":
+        return api.executeStewardAction(projectId, toExecutionAction(a), false).then(() => undefined);
+      case "queue_tasks":
+      case "start_feature":
+      case "process_backlog":
+        throw new Error(`${a.kind} requires a dry-run preview first — not reachable via a plain Confirm`);
       default: {
         // Exhaustiveness guard: every ProjectActionKind Steward can propose MUST
         // have a case here. Without it a confirmed action silently no-ops (the
@@ -138,37 +218,88 @@ export function StewardDock({
     }
   };
 
-  const setActionState = (mi: number, ai: number, state: ProposedAction["state"]) =>
-    setMsgs((x) => x.map((mm, i) => (i === mi ? { ...mm, actions: mm.actions?.map((pa, j) => (j === ai ? { ...pa, state } : pa)) } : mm)));
+  // `guardState`, when given, only applies `patch` if the action is STILL in
+  // that state — protects an in-flight dry-run/execute callback from
+  // clobbering a chip the operator already dismissed while it was loading.
+  const updateAction = (mi: number, ai: number, patch: Partial<ProposedAction>, guardState?: ProposedAction["state"]) =>
+    setMsgs((x) =>
+      x.map((mm, i) =>
+        i === mi
+          ? { ...mm, actions: mm.actions?.map((pa, j) => (j === ai && (!guardState || pa.state === guardState) ? { ...pa, ...patch } : pa)) }
+          : mm,
+      ),
+    );
 
-  // Resolve ONE proposed action within a message.
+  // Resolve ONE proposed action within a message — the plain confirm-first
+  // path every non-execution-intent kind uses (and start_task, which never
+  // reaches "previewing"/"previewed"). A PREVIEW_KINDS action's own Confirm
+  // button calls confirmPreviewed instead, never this.
   const resolveAction = async (mi: number, ai: number, accept: boolean) => {
     const m = msgs[mi];
     const pa = m?.actions?.[ai];
     if (!pa || pa.state !== "pending") return;
-    if (!accept) { setActionState(mi, ai, "dismissed"); return; }
+    if (!accept) { updateAction(mi, ai, { state: "dismissed" }); return; }
     const projectId = m.actionProjectId ?? effFocusId;
     if (!projectId) { setErr("Tell me which project, then I can apply this."); return; }
     try {
       await runAction(pa.action, projectId);
-      setActionState(mi, ai, "done");
+      updateAction(mi, ai, { state: "done" });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't apply that — try again.");
     }
   };
 
-  // Confirm every pending action in a message, in order (they may build on each
-  // other), stopping at the first failure so the operator can see what broke.
+  // Shared by confirmPreviewed and confirmAll: actually execute a
+  // dry-run-reviewed composite (or start_task, which skips straight here from
+  // "pending"), recording the real outcome (not just a checkmark) so the
+  // thread shows what happened. Returns whether it succeeded, so confirmAll
+  // knows to stop the batch on a failure the same way the plain path does.
+  const runExecutionIntent = async (mi: number, ai: number, projectId: string, action: api.AssistantAction): Promise<boolean> => {
+    try {
+      const outcome = await api.executeStewardAction(projectId, toExecutionAction(action), false);
+      updateAction(mi, ai, { state: "done", outcome });
+      return true;
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't run that — try again.");
+      return false;
+    }
+  };
+
+  // Confirm ONE previewed composite — the dry-run summary is already in hand
+  // (`pa.preview`); this is the actual execute call.
+  const confirmPreviewed = async (mi: number, ai: number) => {
+    const m = msgs[mi];
+    const pa = m?.actions?.[ai];
+    if (!pa || pa.state !== "previewed") return;
+    const projectId = m.actionProjectId ?? effFocusId;
+    if (!projectId) { setErr("Tell me which project, then I can apply this."); return; }
+    await runExecutionIntent(mi, ai, projectId, pa.action);
+  };
+
+  const dismissAction = (mi: number, ai: number) => updateAction(mi, ai, { state: "dismissed" });
+
+  // Confirm every pending/previewed action in a message, in order (they may
+  // build on each other), stopping at the first failure so the operator can
+  // see what broke. A composite still mid-preview (or one whose preview
+  // failed) is left for the operator to confirm/retry individually once it
+  // resolves — in practice this never matters, since the preview effect below
+  // fires the instant the chip renders and finishes well before a human
+  // reads the message and clicks "Confirm all".
   const confirmAll = async (mi: number) => {
     const m = msgs[mi];
     if (!m?.actions) return;
     const projectId = m.actionProjectId ?? effFocusId;
     if (!projectId) { setErr("Tell me which project, then I can apply this."); return; }
     for (let ai = 0; ai < m.actions.length; ai++) {
-      if (m.actions[ai]!.state !== "pending") continue;
+      const pa = m.actions[ai]!;
+      if (pa.state === "previewed") {
+        if (!(await runExecutionIntent(mi, ai, projectId, pa.action))) return;
+        continue;
+      }
+      if (pa.state !== "pending" || PREVIEW_KINDS.has(pa.action.kind)) continue;
       try {
-        await runAction(m.actions[ai]!.action, projectId);
-        setActionState(mi, ai, "done");
+        await runAction(pa.action, projectId);
+        updateAction(mi, ai, { state: "done" });
       } catch (e) {
         setErr(e instanceof Error ? e.message : "Couldn't apply that — try again.");
         return;
@@ -177,7 +308,42 @@ export function StewardDock({
   };
 
   const dismissAll = (mi: number) =>
-    setMsgs((x) => x.map((mm, i) => (i === mi ? { ...mm, actions: mm.actions?.map((pa) => (pa.state === "pending" ? { ...pa, state: "dismissed" } : pa)) } : mm)));
+    setMsgs((x) =>
+      x.map((mm, i) =>
+        i === mi
+          ? { ...mm, actions: mm.actions?.map((pa) => (pa.state === "done" || pa.state === "dismissed" ? pa : { ...pa, state: "dismissed" as const })) }
+          : mm,
+      ),
+    );
+
+  // Dry-run preview, fired automatically the instant a PREVIEW_KINDS chip
+  // renders — the operator never sees a bare "Confirm" for one of these
+  // without first seeing what it would actually do. Scans `msgs` rather than
+  // keying off one action so a message with several composites (rare, but
+  // Steward can propose a batch) previews all of them independently. Each
+  // matched action flips OUT of "pending" synchronously in the same pass, so
+  // re-running this effect (it depends on `msgs`, which its own updates
+  // change) never re-fires the same chip twice.
+  useEffect(() => {
+    msgs.forEach((m, mi) => {
+      m.actions?.forEach((pa, ai) => {
+        if (pa.state !== "pending" || !PREVIEW_KINDS.has(pa.action.kind)) return;
+        const projectId = m.actionProjectId ?? effFocusId;
+        if (!projectId) {
+          updateAction(mi, ai, { state: "error", error: "Tell me which project, then I can preview this." });
+          return;
+        }
+        updateAction(mi, ai, { state: "previewing" });
+        void api
+          .executeStewardAction(projectId, toExecutionAction(pa.action), true)
+          .then((preview) => updateAction(mi, ai, { state: "previewed", preview }, "previewing"))
+          .catch((e) =>
+            updateAction(mi, ai, { state: "error", error: e instanceof Error ? e.message : "Couldn't preview this — try again." }, "previewing"),
+          );
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- scans msgs itself each run; effFocusId is read at trigger time only, not a reactive dep (a focus change mid-preview shouldn't re-fire one already in flight/resolved)
+  }, [msgs]);
 
   const ask = async (q: string) => {
     const question = q.trim();
@@ -283,7 +449,7 @@ export function StewardDock({
             )}
             {m.actions && m.actions.length > 0 && (
               <div className="asst-propose-group">
-                {m.actions.length > 1 && m.actions.some((pa) => pa.state === "pending") && (
+                {m.actions.length > 1 && m.actions.some((pa) => pa.state === "pending" || pa.state === "previewed") && (
                   <div className="asst-propose-all">
                     <span className="asst-propose-all-label">{m.actions.length} changes</span>
                     <span className="asst-propose-actions">
@@ -295,9 +461,39 @@ export function StewardDock({
                 {m.actions.map((pa, ai) => (
                   <div className="asst-propose" key={ai}>
                     {pa.state === "done" ? (
-                      <span className="asst-propose-done">✓ {pa.action.summary}</span>
+                      <span className="asst-propose-done">✓ {pa.outcome ? summarizeOutcome(pa.outcome) : pa.action.summary}</span>
                     ) : pa.state === "dismissed" ? (
                       <span className="asst-propose-done muted">Dismissed: {pa.action.summary}</span>
+                    ) : pa.state === "error" ? (
+                      <>
+                        <span className="asst-propose-label">{pa.action.summary}</span>
+                        <span className="asst-preview-error">{pa.error}</span>
+                        <span className="asst-propose-actions">
+                          <button className="btn btn-ghost btn-sm" onClick={() => updateAction(i, ai, { state: "pending", error: undefined })}>Retry</button>
+                          <button className="btn btn-ghost btn-sm" onClick={() => dismissAction(i, ai)}>Dismiss</button>
+                        </span>
+                      </>
+                    ) : pa.state === "previewing" || (pa.state === "pending" && PREVIEW_KINDS.has(pa.action.kind)) ? (
+                      <>
+                        <span className="asst-propose-label">{pa.action.summary}</span>
+                        <span className="asst-preview-loading">Checking what's feasible…</span>
+                        <span className="asst-propose-actions">
+                          <button className="btn btn-ghost btn-sm" onClick={() => dismissAction(i, ai)}>Dismiss</button>
+                        </span>
+                      </>
+                    ) : pa.state === "previewed" ? (
+                      <>
+                        <span className="asst-propose-label">{pa.action.summary}</span>
+                        <div className="asst-preview">
+                          <div className="asst-preview-summary">would {summarizeOutcome(pa.preview!)}</div>
+                          {pa.preview!.excluded.length > 0 && <div className="asst-preview-excluded">{excludedBreakdown(pa.preview!)}</div>}
+                          {pa.preview!.autonomyEnabled && <div className="asst-preview-note">This also turns autonomy on — nothing would ever pick the work up otherwise.</div>}
+                        </div>
+                        <span className="asst-propose-actions">
+                          <button className="btn btn-primary btn-sm" onClick={() => void confirmPreviewed(i, ai)}>Confirm</button>
+                          <button className="btn btn-ghost btn-sm" onClick={() => dismissAction(i, ai)}>Dismiss</button>
+                        </span>
+                      </>
                     ) : (
                       <>
                         <span className="asst-propose-label">{pa.action.summary}</span>

@@ -31,6 +31,8 @@ import type {
   CreateProjectRequest,
   CreateTaskRequest,
   ResolveRequest,
+  StewardActionOutcome,
+  StewardExecutionAction,
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
@@ -170,6 +172,15 @@ export interface ControlOps {
   /** Spin up (or restart) the project's live preview; resolves when it's live or
    *  failed, with the URL in the returned state. */
   previewStart(ws: string, projectId: string): Promise<PreviewState>;
+  // Execution intents (S10/S11) — the same one executor the dock's confirm
+  // chip calls, reused here rather than growing a Telegram-only copy.
+  executeStewardAction(
+    ws: string,
+    projectId: string,
+    action: StewardExecutionAction,
+    operatorId: string,
+    opts?: { dryRun?: boolean },
+  ): Promise<StewardActionOutcome>;
 }
 
 /** The Orchestrator methods the control handler needs. */
@@ -230,6 +241,62 @@ interface Pending {
   /** id of the notify message that carries the Confirm/Cancel buttons — we edit
    *  it after resolution to strip the buttons. 0 if the send didn't return one. */
   messageId: number;
+}
+
+// ── Execution intents (S10/S11) — shared with the dock, reused here ────────
+
+/** Narrow a validated `Action` down to the strict shape the S10 execute
+ *  endpoint accepts. Only called for the four execution-intent kinds (guarded
+ *  by the caller), so the `!`s mirror validateAction's already-checked fields. */
+function toExecutionAction(action: Action): StewardExecutionAction {
+  switch (action.kind) {
+    case "start_task":
+      return { kind: "start_task", taskId: action.taskId! };
+    case "queue_tasks":
+      return { kind: "queue_tasks", taskIds: action.taskIds ?? [] };
+    case "start_feature":
+      return { kind: "start_feature", featureId: action.featureId!, execMode: action.execMode ?? "queue", feasibleOnly: action.feasibleOnly ?? true };
+    case "process_backlog":
+      return { kind: "process_backlog", feasibleOnly: action.feasibleOnly ?? true };
+    default:
+      throw new Error(`${action.kind} isn't an execution intent`);
+  }
+}
+
+const EXCLUDE_REASON_LABEL: Record<string, string> = {
+  unclear: "not yet triaged clear",
+  "already-running": "already running",
+  done: "already done",
+  "over-budget": "over today's budget",
+  "not-in-scope": "not in scope",
+};
+
+/** "3 starting, 2 queued, 1 excluded, ~$4.50" — shared by the dry-run preview
+ *  (the confirm message) and the real outcome (the run() success line). */
+function summarizeOutcome(o: StewardActionOutcome): string {
+  const parts: string[] = [];
+  if (o.started.length) parts.push(`${o.started.length} starting`);
+  if (o.queued.length) parts.push(`${o.queued.length} queued`);
+  if (o.excluded.length) parts.push(`${o.excluded.length} excluded`);
+  if (!parts.length) parts.push("nothing to do");
+  if (o.estimatedCostUsd > 0) parts.push(`~$${o.estimatedCostUsd.toFixed(2)}`);
+  return parts.join(", ");
+}
+
+/** "2 already running, 1 over today's budget" — the "why" behind the excluded count. */
+function excludedBreakdown(o: StewardActionOutcome): string {
+  const counts = new Map<string, number>();
+  for (const e of o.excluded) counts.set(e.reason, (counts.get(e.reason) ?? 0) + 1);
+  return [...counts.entries()].map(([reason, n]) => `${n} ${EXCLUDE_REASON_LABEL[reason] ?? reason}`).join(", ");
+}
+
+/** The full dry-run preview clause a composite's confirm message shows —
+ *  "3 starting, 2 queued — 1 excluded (already running) — this also turns
+ *  autonomy on". Shared by queue_tasks/start_feature/process_backlog. */
+function previewDetail(o: StewardActionOutcome): string {
+  return [summarizeOutcome(o), o.excluded.length ? `— ${excludedBreakdown(o)}` : "", o.autonomyEnabled ? "— this also turns autonomy on" : ""]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /**
@@ -347,7 +414,12 @@ export function createOwnerControl(deps: OwnerControlDeps): {
    *  (run on confirm). Never executes here — only describes. The `id` and
    *  `messageId` are stamped at the call site where we mint the nonce and know
    *  the message id after `notify` returns. */
-  const toPending = (action: Action, ctx: IntentContext): Omit<Pending, "id" | "messageId"> | null => {
+  // ASYNC (unlike every other branch, which is pure/synchronous) because the
+  // three execution-intent COMPOSITES need a dry-run BEFORE the confirm
+  // message is even built — the pending text IS the feasibility preview, not
+  // a generic "sure?" the operator has to trust blind. start_task doesn't
+  // dry-run (nothing composite to preview), matching the dock.
+  const toPending = async (action: Action, ctx: IntentContext): Promise<Omit<Pending, "id" | "messageId"> | null> => {
     switch (action.kind) {
       case "approve":
       case "reject": {
@@ -673,6 +745,56 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           },
         };
       }
+      // ── Execution intents (S10/S11) ────────────────────────────────────
+      case "start_task": {
+        // No dry-run — a direct, explicit single-task start, same as the dock.
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        return {
+          kind: action.kind,
+          summary: `Start task ${action.taskId} — "${task?.text ?? "?"}" now?`,
+          run: async () => {
+            const outcome = await operations.executeStewardAction(ws, action.projectId!, toExecutionAction(action), operatorId);
+            return outcome.started.length
+              ? `▶️ Started task ${action.taskId}.`
+              : `Task ${action.taskId} wasn't startable — ${excludedBreakdown(outcome) || "no eligible task"}.`;
+          },
+        };
+      }
+      case "queue_tasks": {
+        const preview = await operations.executeStewardAction(ws, action.projectId!, toExecutionAction(action), operatorId, { dryRun: true });
+        return {
+          kind: action.kind,
+          summary: `Queue ${action.taskIds!.length} task(s) — would ${previewDetail(preview)}. Go ahead?`,
+          run: async () => {
+            const outcome = await operations.executeStewardAction(ws, action.projectId!, toExecutionAction(action), operatorId);
+            return `✅ ${summarizeOutcome(outcome)}.`;
+          },
+        };
+      }
+      case "start_feature": {
+        const feature = ctx.features.find((f) => f.id === action.featureId);
+        const preview = await operations.executeStewardAction(ws, action.projectId!, toExecutionAction(action), operatorId, { dryRun: true });
+        return {
+          kind: action.kind,
+          summary: `${action.execMode === "start_now" ? "Start now" : "Queue"} feature "${feature?.name ?? action.featureId}" — would ${previewDetail(preview)}. Go ahead?`,
+          run: async () => {
+            const outcome = await operations.executeStewardAction(ws, action.projectId!, toExecutionAction(action), operatorId);
+            return `✅ ${summarizeOutcome(outcome)}.`;
+          },
+        };
+      }
+      case "process_backlog": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const preview = await operations.executeStewardAction(ws, action.projectId!, toExecutionAction(action), operatorId, { dryRun: true });
+        return {
+          kind: action.kind,
+          summary: `Queue ${project?.name ?? action.projectId}'s backlog — would ${previewDetail(preview)}. Go ahead?`,
+          run: async () => {
+            const outcome = await operations.executeStewardAction(ws, action.projectId!, toExecutionAction(action), operatorId);
+            return `✅ ${summarizeOutcome(outcome)}.`;
+          },
+        };
+      }
       // status / none are handled before this point.
       default:
         return null;
@@ -757,7 +879,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
     // on the ✓ Confirm / ✕ Cancel buttons, or a typed "yes/no". The reply rides
     // along so the owner always gets context before confirming.
     if (action && action.kind !== "none") {
-      const draft = toPending(action, ctx);
+      const draft = await toPending(action, ctx);
       if (draft) {
         const id = `p-${++pendingSeq}`;
         log(`awaiting confirmation for action: ${draft.kind}`);

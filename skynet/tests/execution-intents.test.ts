@@ -260,6 +260,29 @@ describe("Operations.executeStewardAction", () => {
     expect(excludedIds).toEqual(["tr"]); // og/dn were never even in the candidate scope
   });
 
+  it("estimatedCostUsd sums costBandFor over what actually queues — never over excluded tasks", async () => {
+    const { store, ops } = setup();
+    await store.putProject(mkProject());
+    await store.putTask(mkTask({ id: "small1", state: "backlog", order: 0, assessmentEffort: "small" })); // $0.5
+    await store.putTask(mkTask({ id: "large1", state: "todo", order: 1, assessmentEffort: "large", assignment: { mode: "any", agentIds: [] } })); // $8
+    await store.putTask(mkTask({ id: "dn", state: "done" })); // excluded — never counted
+
+    const outcome = await ops.executeStewardAction(DEFAULT_WORKSPACE, "p1", { kind: "process_backlog", feasibleOnly: true }, "op1");
+    expect(outcome.queued.sort()).toEqual(["large1", "small1"]);
+    expect(outcome.estimatedCostUsd).toBeCloseTo(8.5, 5);
+  });
+
+  it("estimatedCostUsd reflects a dry-run's preview identically to the real run — no mutation either way", async () => {
+    const { store, ops } = setup();
+    await store.putProject(mkProject());
+    await store.putTask(mkTask({ id: "t1", state: "backlog", assessmentEffort: "large" }));
+
+    const preview = await ops.executeStewardAction(DEFAULT_WORKSPACE, "p1", { kind: "queue_tasks", taskIds: ["t1"] }, "op1", { dryRun: true });
+    expect(preview.estimatedCostUsd).toBe(8);
+    const real = await ops.executeStewardAction(DEFAULT_WORKSPACE, "p1", { kind: "queue_tasks", taskIds: ["t1"] }, "op1");
+    expect(real.estimatedCostUsd).toBe(8);
+  });
+
   it("start_task starts one task directly, without touching the rest of the board", async () => {
     const { store, ops } = setup();
     await store.putProject(mkProject());

@@ -2544,6 +2544,14 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .asst-propose-actions { display: flex; gap: 6px; }
 .asst-propose-done { font-size: 12.5px; color: var(--ok); }
 .asst-propose-done.muted { color: var(--muted); }
+/* Execution-intent dry-run preview (queue_tasks/start_feature/process_backlog)
+   — a full-width block within the propose chip's flex-wrap row. */
+.asst-preview { flex: 0 0 100%; display: flex; flex-direction: column; gap: 3px; }
+.asst-preview-summary { font-size: 12.5px; color: var(--ink); }
+.asst-preview-excluded { font-size: 11.5px; color: var(--muted); }
+.asst-preview-note { font-size: 11.5px; color: var(--warn); }
+.asst-preview-loading { font-size: 12.5px; color: var(--muted); font-style: italic; }
+.asst-preview-error { flex: 0 0 100%; font-size: 12.5px; color: var(--danger); }
 .asst-input { display: flex; gap: 8px; align-items: flex-end; }
 .asst-input .qx-input { flex: 1; }
 /* Auto-grow textarea: starts as a one-row input, expands into a text block as

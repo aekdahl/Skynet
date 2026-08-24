@@ -68,6 +68,17 @@ const SYSTEM =
   '  {"kind":"set_feature_milestone","featureId":"<feature id>","milestoneId":"<milestone id, or null to detach>"}\n' +
   '  {"kind":"edit_roadmap","path":"<the ROADMAP.md path shown in REPO CONTENT>","content":"<the ENTIRE new file>"}\n' +
   '  {"kind":"set_roadmap_path","path":"<repo-relative path to the real roadmap doc>"}\n' +
+  '  {"kind":"start_task","taskId":"<id>"}\n' +
+  '  {"kind":"queue_tasks","taskIds":["<id>", …]}\n' +
+  '  {"kind":"start_feature","featureId":"<id>","execMode":"queue|start_now","feasibleOnly":true|false}\n' +
+  '  {"kind":"process_backlog","feasibleOnly":true|false}\n' +
+  "Notes on start_task/queue_tasks/start_feature/process_backlog: these START or QUEUE work — the operator sees a dry-run preview (how many would start/queue/get excluded, and why) before anything runs, so propose confidently rather than asking for the count yourself. " +
+  "`start_task` is for an EXPLICIT single named task (\"start the login fix now\") — resolve it from PROJECT STATUS like any other taskId. " +
+  "For a BULK request (\"build feature X\", \"process the backlog\", \"run everything that's ready\", \"start the rest of Y\"), propose exactly ONE composite action — `start_feature` (a named feature) or `process_backlog` (the whole project) — NEVER decompose it into one start_task per task; the composite itself resolves which tasks qualify. " +
+  "`execMode` on start_feature: \"start_now\" when the operator wants work beginning immediately (\"kick off\", \"start now\", \"go\"); \"queue\" when they just want it lined up for the fleet to pick up on its own (\"queue it\", \"get it ready\", \"line up\") — default to \"queue\" when the phrasing doesn't clearly say which. " +
+  "`feasibleOnly` reads the operator's own scoping language: default true (skip tasks still awaiting a clear triage read) for \"what's feasible\"/\"what's ready\"/a plain \"build feature X\"; set it false only when they explicitly say the WHOLE thing — \"the entire backlog\", \"everything, ready or not\", \"even the unclear ones\". " +
+  "Use the feature id from the FEATURES list in PROJECT STATUS for start_feature; if the operator names one that isn't listed, ask instead of guessing (do not add_feature first unless they're clearly asking to create one). " +
+  "When you propose one of these four, your reply text (the part before the JSON) doesn't need to restate a count — the operator sees an exact dry-run breakdown before anything runs — so keep it to a short confirmation-style question and, once, a one-line pointer to how they can check in later (e.g. \"watch the project line, or just ask me how it's going any time\") — you don't need to repeat that pointer in every reply, only when proposing one of these.\n" +
   "Notes on edit_roadmap: only propose this when the operator explicitly asks to change the roadmap DOC (ROADMAP.md) — NOT for add_feature/add_milestone, which are unrelated task-grouping records, not the file. " +
   "`content` MUST be the complete file: reproduce every unchanged line verbatim, and change only what the operator asked for — no reformatting, no fixing unrelated typos — so the diff the operator reviews shows exactly the intended edit and nothing else. " +
   "`path` must be exactly the ROADMAP.md path shown under REPO CONTENT; if no roadmap doc was shown there, say so instead of guessing a path or inventing content.\n" +
@@ -133,15 +144,12 @@ export type ProjectActionKind =
   | "set_feature_milestone"
   | "edit_roadmap"
   | "set_roadmap_path"
-  // Execution intents (S10): validated here (so a future proposer — MCP, an
-  // operator-typed command — gets the same id-resolution + confirm-chip
-  // summary every other kind gets), but DELIBERATELY not yet in `SYSTEM`
-  // below: the web dock's `runAction` (steward-dock.tsx) doesn't execute
-  // these four — they run only through Operations.executeStewardAction /
-  // POST .../steward/actions (see steward/execution.ts). Teaching Steward's
-  // LLM to propose one here would let the operator confirm a chip the dock
-  // then can't do anything with. Wiring the dock to that endpoint (and only
-  // then adding these to SYSTEM) is S11's job.
+  // Execution intents (S10/S11): start/queue composites. Unlike every other
+  // kind above, these don't apply their own effect directly — confirming one
+  // triggers a dry-run preview, then a SEPARATE call to
+  // Operations.executeStewardAction / POST .../steward/actions (see
+  // steward/execution.ts and steward-dock.tsx's DryRunPreview). The `summary`
+  // built here is only the coarse pre-preview chip label.
   | "start_task"
   | "queue_tasks"
   | "start_feature"
