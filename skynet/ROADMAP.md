@@ -1580,6 +1580,34 @@ features below are white space.)
   sibling reaches the real `StartSpec.task` at assign and fork time, and a solo project renders no
   `=== IN FLIGHT ===` section at all). Regression-proofed (removed the implementation, confirmed all 14 new
   tests fail, restored it).)*
+- [x] **Project Context — meeting notes/emails/docs, condensed into the S2 primer** — the operator can paste or
+  upload raw context (meeting notes, an email, a doc) on a project's new **Context** tab; Skynet reads it verbatim
+  (`ProjectContextEntry` — never edited by the model, source + date kept, delete + re-add if wrong) and runs one
+  LLM pass (`apps/server/src/steward/context.ts`'s `condenseProjectContext`, mirroring S5 crystallize's
+  stub-injected-`ask` pure-function shape) to distill the accumulated set into `Project.contextSummary` — the
+  short primer `agent-context.ts`'s `buildAgentContext` was already reserved for as "S2" (see S1 above) but never
+  had a data source. Every call site picks it up with **zero extra plumbing**: `buildAgentContext` now falls back
+  to `project.contextSummary` whenever a caller doesn't pass an explicit `primer`, and Steward's own grounding
+  (`steward/assistant.ts`) reads the identical field, so an agent's task prompt and "ask about this project" both
+  ground on the same digest. Upload extracts text server-side by extension (`steward/extract.ts`: `.txt`/`.md`
+  verbatim, `.pdf` via `pdf-parse`, `.docx` via `mammoth` — a first file-upload capability for the app, gated by a
+  new `@fastify/multipart` registration capped at 15MB/1 file) — an unrecognized type throws a clear, user-facing
+  error rather than storing garble. Add/upload/delete all re-condense automatically (deleting the last entry
+  clears the summary back to null, never leaving a stale one); a manual "Regenerate" re-runs it on demand. A real
+  gap found live-testing this against a dev box with no usable provider key: `oneShotText`'s one-shot consult
+  DEGRADES an auth/network failure into yielding its own error text rather than throwing (`streamQueryText`'s
+  by-design "never leave the caller with nothing" contract, shared by `stewardChat`/`crystallizeBrief`) — with no
+  guard, that error text would land in `contextSummary` looking like a real (if useless) summary. Fixed by
+  checking whether a usable key resolves at all BEFORE calling condense (`Operations.refreshProjectContext`) — a
+  structural, non-content check, not the keyword/shape classification of free text the auto-review APPROVE/FLAG
+  bug already burned this codebase on once; skipped only for the real default ask, never an injected test stub.
+  Verified live end-to-end in the browser (paste → raw entry lists correctly; the no-key case leaves the summary
+  cleanly empty instead of showing the degraded text; Regenerate/Delete both clean) and via a real multipart
+  `curl` upload against the running dev server (both a `.txt` success and an unsupported-type rejection).
+  `tests/project-context.test.ts` (15 tests: the pure condensation contract, extraction, and the full
+  Operations-layer add/upload/delete/refresh path against a real store+hub with a stubbed model reply) +
+  `tests/contracts.test.ts` (wire round-trip) + new cases in `tests/agent-context.test.ts` (the S2 fallback:
+  explicit `primer` still wins, omitted falls back to `contextSummary`, both-unset omits the section).
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.* Also landed: the Roadmap tab's "reads ROADMAP.md" lookup used to dead-end when a repo kept its plan somewhere else — `Project.roadmapPath` now lets the operator (a picker on the tab's empty state) or Steward (`set_roadmap_path`, confirm-first, e.g. "the roadmap is at docs/PLAN.md") point it at any repo-relative file; `resolveRoadmapDoc` is the single place both the tab's API and Steward's own grounding resolve through, so they can't drift.
 - [~] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third

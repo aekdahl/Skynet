@@ -623,6 +623,17 @@ export function statusContext(
       "---",
     );
   }
+  // Condensed digest of pasted/uploaded context (meeting notes, emails, docs —
+  // see steward/context.ts). Same field every agent's own task prompt carries
+  // (agent-context.ts's primer fallback) — Steward sees the identical grounding.
+  if (project.contextSummary?.trim()) {
+    lines.push(
+      "CONTEXT (condensed from the operator's notes/docs — what the project is aiming at):",
+      "---",
+      project.contextSummary.trim(),
+      "---",
+    );
+  }
   lines.push("BOARD (tasks by stage — `→` shows current agent eligibility):");
   for (const s of STAGES) {
     // Archived tasks are OFF the board — excluded from the stage grouping, listed

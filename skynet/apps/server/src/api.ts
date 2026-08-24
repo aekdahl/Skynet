@@ -11,6 +11,7 @@ import {
   ConfigureRunnerRequest,
   CreateFeatureRequest,
   CreateMilestoneRequest,
+  CreateProjectContextEntryRequest,
   CreateProjectRequest,
   CreateSolutionBriefRequest,
   CreateTaskRequest,
@@ -883,6 +884,59 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return await ops.executeStewardAction(ws(req), req.params.id, body.data.action, req.principal!.operatorId, {
         dryRun: body.data.dryRun,
       });
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Project context (meeting notes, emails, pasted/uploaded docs — see
+  // steward/context.ts). List + paste are plain JSON; upload is multipart
+  // (the file itself is the payload, plus an optional `label` field).
+  app.get<{ Params: { id: string } }>("/api/projects/:id/context", async (req, reply) => {
+    try {
+      return await ops.listContextEntries(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/projects/:id/context", async (req, reply) => {
+    const body = CreateProjectContextEntryRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.addContextEntry(ws(req), req.params.id, req.principal!.operatorId, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/projects/:id/context/upload", async (req, reply) => {
+    const data = await req.file();
+    if (!data) return reply.code(400).send({ error: "no file uploaded" });
+    try {
+      const buffer = await data.toBuffer();
+      return await ops.uploadContextEntry(ws(req), req.params.id, req.principal!.operatorId, {
+        filename: data.filename,
+        mimeType: data.mimetype,
+        buffer,
+      });
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  app.delete<{ Params: { id: string; eid: string } }>("/api/projects/:id/context/:eid", async (req, reply) => {
+    try {
+      await ops.deleteContextEntry(ws(req), req.params.id, req.params.eid);
+      return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/projects/:id/context/refresh", async (req, reply) => {
+    try {
+      return await ops.refreshProjectContext(ws(req), req.params.id);
     } catch (err) {
       return fail(reply, err);
     }

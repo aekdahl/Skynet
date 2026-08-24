@@ -11,6 +11,7 @@ import type {
   Milestone,
   PlanStep,
   Project,
+  ProjectContextEntry,
   Resolution,
   Agent,
   SolutionBrief,
@@ -307,6 +308,17 @@ export class Hub {
     const existing = await this.store.getFeature(id);
     await this.store.deleteFeature(id);
     if (existing) this.bus.publish(existing.workspaceId, { type: "feature.deleted", id });
+  }
+
+  async upsertContextEntry(entry: ProjectContextEntry): Promise<ProjectContextEntry> {
+    await this.store.putContextEntry(entry);
+    this.bus.publish(entry.workspaceId, { type: "contextEntry.upserted", entry });
+    return entry;
+  }
+  async deleteContextEntry(id: string): Promise<void> {
+    const existing = await this.store.getContextEntry(id);
+    await this.store.deleteContextEntry(id);
+    if (existing) this.bus.publish(existing.workspaceId, { type: "contextEntry.deleted", id });
   }
 
   async upsertMilestone(milestone: Milestone): Promise<Milestone> {

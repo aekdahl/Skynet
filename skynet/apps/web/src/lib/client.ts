@@ -16,6 +16,8 @@ import {
   type SecretAuditEntry,
   type Project,
   type ProjectCharter,
+  type ProjectContextEntry,
+  type CreateProjectContextEntryRequest,
   type WorkspaceSettings,
   type UpdateWorkspaceSettingsRequest,
   type VerifyCredentialResult,
@@ -865,6 +867,51 @@ export function crystallizeBrief(
   history: { role: "user" | "assistant"; content: string }[],
 ) {
   return req<SolutionBrief>("POST", `/api/projects/${projectId}/briefs/crystallize`, { history });
+}
+
+// ─── Project context (meeting notes, emails, pasted/uploaded docs) ──────────
+// Raw entries the operator feeds in — see the "Context" tab. `Project.
+// contextSummary` (already on the snapshot's Project record) is the condensed
+// digest actually used for grounding; these are the source material behind it.
+
+export function listContextEntries(projectId: string) {
+  return req<ProjectContextEntry[]>("GET", `/api/projects/${projectId}/context`);
+}
+
+export function addContextEntry(projectId: string, body: CreateProjectContextEntryRequest) {
+  return req<ProjectContextEntry>("POST", `/api/projects/${projectId}/context`, body);
+}
+
+/** Multipart upload — bypasses the JSON `req()` helper (the file itself is the
+ *  payload; the browser sets its own multipart boundary, so no content-type
+ *  header here). */
+export async function uploadContextEntry(projectId: string, file: File): Promise<ProjectContextEntry> {
+  if (readOnly) {
+    toast("You're signed in as a viewer — read-only.");
+    throw new ApiError(403, "Viewer sessions are read-only.");
+  }
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const res = await fetch(`/api/projects/${projectId}/context/upload`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token()}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(res.status, text || res.statusText);
+  }
+  return (await res.json()) as ProjectContextEntry;
+}
+
+export function deleteContextEntry(projectId: string, entryId: string) {
+  return req<{ ok: true }>("DELETE", `/api/projects/${projectId}/context/${entryId}`);
+}
+
+/** Manually re-run condensation (e.g. the operator wants a fresh read without
+ *  adding/removing anything) — returns the updated Project. */
+export function refreshProjectContext(projectId: string) {
+  return req<Project>("POST", `/api/projects/${projectId}/context/refresh`);
 }
 
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
