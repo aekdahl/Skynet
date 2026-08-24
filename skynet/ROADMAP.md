@@ -138,6 +138,13 @@ is the bucket to pull from.
   hosted release turns on public sign-in; today's local desktop path is unchanged.*
 - ***Data-disk snapshot before each VM apply** in `setup.sh` — the deploy machinery snapshots persistent
   state pre-mutation so hosted rollouts are recoverable.*
+- ***Durable login sessions on the GCP VM** (`durable_sessions`, default on) — a Redis sidecar container
+  with AOF persistence on `/data/redis`, sessions via `SESSIONS=redis`. Fixes a real reported pain ("I get
+  logged out all the time"): the app container's restarts are its DESIGNED recovery path (memory cap →
+  OOM-kill → `--restart=always`), and with `SESSIONS=memory` every such restart invalidated every login.
+  Sessions now survive container restarts and VM reboots alike; no extra cloud resources (a sidecar on the
+  same VM, capped at 96 MB, never published to the host, accounted for in the app container's memory
+  reservation). Template renders verified both ways + `bash -n` clean + `terraform validate` passing.*
 - ***Project-scoped MCP service tokens** — tokens can now be pinned to specific projects (not just
   workspaces), so an MCP token issued to an external agent is naturally sandboxed to the project it should
   see. Necessary groundwork for shared/hosted MCP access.*

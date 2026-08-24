@@ -14,6 +14,7 @@ persistent disk (`STORE=file`); secrets live in **Secret Manager**.
 
 ## What it provisions
 - A **GCE VM** (`e2-small` default) running the app in Docker, `--restart=always`.
+- A **Redis sidecar** on the same VM for **durable login sessions** (`durable_sessions`, default on): AOF-persisted on `/data/redis`, never published to the host. The app container's restarts are its *designed* recovery path (memory cap → OOM-kill → `--restart=always`), and with in-memory sessions every one of those logged everyone out. Set `durable_sessions=false` for the old `SESSIONS=memory` behavior. No extra cloud resources or cost either way.
 - A **persistent disk** at `/data` — `STORE=file` + the encryption master key. **Snapshot it for backups.**
 - **Secret Manager** secrets (containers only in Terraform; you add the values): Anthropic key, Telegram bot token + owner chat id, admin password, master key, optional GitHub token.
 - A **dedicated VPC** with **default-deny ingress** — the only allowed inbound is Google's **IAP range** (`35.235.240.0/20`) to SSH + the app port.
