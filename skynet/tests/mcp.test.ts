@@ -7,7 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { LoggingMessageNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { HitlItem, ProviderId, ServerEvent } from "@skynet/shared";
-import { DEFAULT_WORKSPACE, Project, Task, TaskRun } from "@skynet/shared";
+import { DEFAULT_WORKSPACE, Feature, Project, Task, TaskRun } from "@skynet/shared";
 import type { Principal } from "../apps/server/src/auth.js";
 import { InProcessBus } from "../apps/server/src/bus.js";
 import { Hub } from "../apps/server/src/hub.js";
@@ -358,6 +358,33 @@ describe("MCP project scoping", () => {
     expect((await store.getTask("tb"))?.text).toBe("tb"); // untouched
   });
 
+  it("gates the execution-intent tools too (S12) — by projectId, or by a resolved taskId/featureId", async () => {
+    const { client, store } = await connect(scoped);
+    await seedTwoProjects(store);
+    await store.putFeature(Feature.parse({ id: "fa", workspaceId: DEFAULT_WORKSPACE, projectId: "A", name: "fa", createdAt: 0 }));
+    await store.putFeature(Feature.parse({ id: "fb", workspaceId: DEFAULT_WORKSPACE, projectId: "B", name: "fb", createdAt: 0 }));
+
+    // process_backlog: gated directly on the projectId arg.
+    const deniedBacklog = await client.callTool({ name: "process_backlog", arguments: { projectId: "B" } });
+    expect(deniedBacklog.isError).toBe(true);
+    expect(text(deniedBacklog)).toMatch(/scoped to project "B"/);
+
+    // start_task: gated via the taskId it resolves to project B server-side.
+    const deniedTask = await client.callTool({ name: "start_task", arguments: { taskId: "tb" } });
+    expect(deniedTask.isError).toBe(true);
+    expect(text(deniedTask)).toMatch(/scoped to project "B"/);
+    expect((await store.getTask("tb"))?.state).toBe("todo"); // untouched
+
+    // start_feature: gated via the featureId it resolves to project B server-side.
+    const deniedFeature = await client.callTool({ name: "start_feature", arguments: { featureId: "fb", execMode: "queue" } });
+    expect(deniedFeature.isError).toBe(true);
+    expect(text(deniedFeature)).toMatch(/scoped to project "B"/);
+
+    // Project A (allowed) → goes through.
+    const ok = json(await client.callTool({ name: "process_backlog", arguments: { projectId: "A", dryRun: true } }));
+    expect(ok.dryRun).toBe(true);
+  });
+
   it("refuses workspace-level actions a project-scoped token can't attribute", async () => {
     const { client, store } = await connect(scoped);
     await seedTwoProjects(store);
@@ -400,6 +427,85 @@ describe("MCP project scoping", () => {
     // And it can create a project (workspace-level) — the scoped token could not.
     const created = json(await client.callTool({ name: "create_project", arguments: { name: "C", goal: "" } }));
     expect(created.id).toBeTruthy();
+  });
+});
+
+// S12: start_task / start_feature / process_backlog all route through the
+// SAME server executor (Operations.executeStewardAction, S10) the dock's
+// confirm chip uses — so these tests exercise the outcome-report contract and
+// the MCP-specific bits (registration, scope, dryRun as the stand-in for a
+// conversational confirm), not the executor's own feasibility logic (that's
+// execution-intents.test.ts's job).
+describe("MCP execution intents", () => {
+  it("registers all three under the author scope, and an observe-only token is refused", async () => {
+    const { client } = await connect(author);
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["start_task", "start_feature", "process_backlog"]));
+
+    const observer: Principal = { workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:observer", scopes: ["observe"] };
+    const { client: obs } = await connect(observer);
+    const denied = await obs.callTool({ name: "process_backlog", arguments: { projectId: "whatever" } });
+    expect(denied.isError).toBe(true);
+    expect(text(denied)).toMatch(/author/);
+  });
+
+  it("start_task: dryRun mutates nothing; the real call assigns it and returns the same outcome shape", async () => {
+    const { client, store } = await connect(author);
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = json(await client.callTool({ name: "create_project", arguments: { name: "P", goal: "g" } }));
+    const task = json(await client.callTool({ name: "create_task", arguments: { projectId: project.id, text: "t" } }));
+    expect(task.state).toBe("backlog"); // a fresh task is already a valid start_task candidate
+
+    const preview = json(await client.callTool({ name: "start_task", arguments: { taskId: task.id, dryRun: true } }));
+    expect(preview.dryRun).toBe(true);
+    expect(preview.started).toEqual([task.id]);
+    expect((await store.getTask(task.id))?.state).toBe("backlog"); // untouched
+    expect((await store.getAgent("r1"))?.status).toBe("idle"); // untouched
+
+    const real = json(await client.callTool({ name: "start_task", arguments: { taskId: task.id } }));
+    expect(real.dryRun).toBe(false);
+    expect(real.started).toEqual([task.id]);
+    expect((await store.getTask(task.id))?.state).toBe("ongoing");
+    expect((await store.getAgent("r1"))?.status).toBe("busy");
+  });
+
+  it("start_feature: queue mode marks eligible tasks todo+autoPick without assigning; dryRun mutates nothing", async () => {
+    const { client, store } = await connect(author);
+    const project = json(await client.callTool({ name: "create_project", arguments: { name: "P", goal: "g", autonomy: false } }));
+    const feature = json(await client.callTool({ name: "create_feature", arguments: { projectId: project.id, name: "F" } }));
+    const task = json(await client.callTool({ name: "create_task", arguments: { projectId: project.id, text: "t" } }));
+    await client.callTool({ name: "update_task", arguments: { taskId: task.id, featureId: feature.id, assignment: { mode: "any", agentIds: [] } } });
+
+    const preview = json(await client.callTool({ name: "start_feature", arguments: { featureId: feature.id, execMode: "queue", dryRun: true } }));
+    expect(preview.dryRun).toBe(true);
+    expect(preview.queued).toEqual([task.id]);
+    expect(preview.autonomyEnabled).toBe(true); // reported honestly — project.autonomy is off
+    expect((await store.getTask(task.id))?.state).toBe("backlog"); // untouched
+    expect((await store.getProject(project.id))?.autonomy).toBe(false); // untouched
+
+    const real = json(await client.callTool({ name: "start_feature", arguments: { featureId: feature.id, execMode: "queue" } }));
+    expect(real.queued).toEqual([task.id]);
+    expect(real.autonomyEnabled).toBe(true);
+    const updated = await store.getTask(task.id);
+    expect(updated?.state).toBe("todo");
+    expect(updated?.autoPick).toBe(true);
+    expect((await store.getProject(project.id))?.autonomy).toBe(true); // folded on for real this time
+  });
+
+  it("process_backlog: queues every eligible backlog+todo task in the project, returns the outcome report", async () => {
+    const { client, store } = await connect(author);
+    const project = json(await client.callTool({ name: "create_project", arguments: { name: "P", goal: "g" } }));
+    const t1 = json(await client.callTool({ name: "create_task", arguments: { projectId: project.id, text: "one" } }));
+    const t2 = json(await client.callTool({ name: "create_task", arguments: { projectId: project.id, text: "two" } }));
+    await client.callTool({ name: "update_task", arguments: { taskId: t1.id, assignment: { mode: "any", agentIds: [] } } });
+    await client.callTool({ name: "update_task", arguments: { taskId: t2.id, assignment: { mode: "any", agentIds: [] } } });
+
+    const outcome = json(await client.callTool({ name: "process_backlog", arguments: { projectId: project.id } }));
+    expect(outcome.queued.sort()).toEqual([t1.id, t2.id].sort());
+    expect(outcome.started).toEqual([]);
+    expect(outcome.dryRun).toBe(false);
+    expect((await store.getTask(t1.id))?.autoPick).toBe(true);
+    expect((await store.getTask(t2.id))?.autoPick).toBe(true);
   });
 });
 

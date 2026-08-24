@@ -83,6 +83,13 @@ export const ServerEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.usage"), runId: z.string(), usage: Usage }),
   z.object({ type: z.literal("run.status"), runId: z.string(), status: TaskRunStatus }),
   z.object({ type: z.literal("run.completed"), runId: z.string(), branch: z.string() }),
+  // A whole FEATURE's batch just finished (every sibling task merged/shipped)
+  // — a precise transition signal (S12), not inferred from `feature.upserted`
+  // (which fires on every edit, including a manual status change). Published
+  // ONLY at the actual "status → shipped" write, not from checkFeatureCompletion
+  // itself (which only kicks off the PR-open/merge-enqueue — the local-merge
+  // path's status flip lands later, once the merge actually completes).
+  z.object({ type: z.literal("feature.shipped"), featureId: z.string(), projectId: z.string(), taskCount: z.number().int() }),
   z.object({ type: z.literal("run.archived"), runId: z.string(), archived: z.boolean() }),
   // A whole-run replace — used when a field with no dedicated event changes (e.g.
   // `pr`, the ready-to-merge record). The client upserts the full run.

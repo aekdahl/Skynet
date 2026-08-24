@@ -130,6 +130,13 @@ export class Hub {
     if (ws) this.bus.publish(ws, { type: "run.completed", runId, branch });
   }
 
+  /** S12 follow-through: a whole feature's batch just finished. Notify-only —
+   *  the actual `status: "shipped"` write happens via a separate `upsertFeature`
+   *  call at the same site; call this right after that write succeeds. */
+  async featureShipped(workspaceId: string, featureId: string, projectId: string, taskCount: number): Promise<void> {
+    this.bus.publish(workspaceId, { type: "feature.shipped", featureId, projectId, taskCount });
+  }
+
   /** Persist a full run and broadcast a whole-run replace. For fields without a
    *  dedicated event (e.g. `pr`, the ready-to-merge record). */
   async upsertRun(run: TaskRun): Promise<TaskRun> {
