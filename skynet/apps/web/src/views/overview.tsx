@@ -126,19 +126,23 @@ function ProjectCard({
 type BindMode = "folder" | "existing" | "new" | "chat";
 
 /** Accounts a new repo can be created under. null = loading; [] = GitHub not
- *  connected (the "New repo" mode is hidden in that case). */
-function useRepoOwners(): GithubOwner[] | null {
+ *  connected (the "New repo" mode is hidden in that case). `credentialId`
+ *  lists a pinned GitHub account's owners (its user + its orgs) instead of the
+ *  default connection's — refetches (through a loading state, so a stale
+ *  list can't be picked from) whenever the account selection changes. */
+function useRepoOwners(credentialId?: string): GithubOwner[] | null {
   const [owners, setOwners] = useState<GithubOwner[] | null>(null);
   useEffect(() => {
     let cancelled = false;
+    setOwners(null);
     api
-      .fetchGithubOwners()
+      .fetchGithubOwners(credentialId)
       .then((o) => !cancelled && setOwners(o))
       .catch(() => !cancelled && setOwners([]));
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [credentialId]);
   return owners;
 }
 
@@ -216,7 +220,7 @@ export function NewProjectCard({
   const [charterError, setCharterError] = useState<string | null>(null);
 
   const repos = useConnectedRepos(githubCredId || undefined);
-  const owners = useRepoOwners();
+  const owners = useRepoOwners(githubCredId || undefined);
   const hasRepos = (repos?.length ?? 0) > 0;
   const canCreate = (owners?.length ?? 0) > 0;
 
@@ -224,6 +228,12 @@ export function NewProjectCard({
   useEffect(() => {
     if (owners && owners.length && !newRepoOwner) setNewRepoOwner(owners[0]!.login);
   }, [owners, newRepoOwner]);
+  // Switching account swaps the whole owner universe — clear the selection so
+  // the effect above re-defaults to the NEW account's first entry, instead of
+  // silently keeping an owner the new token may not be able to create under.
+  useEffect(() => {
+    setNewRepoOwner("");
+  }, [githubCredId]);
 
   // Adopt the server default approval level once it lands, unless the operator
   // has already chosen one this session.
@@ -386,23 +396,27 @@ export function NewProjectCard({
           settings to unlock the full review-and-merge workflow.
         </div>
       )}
+      {/* Which GitHub account the repo pickers below look through — and which
+          account the created project is pinned to. Shown for BOTH repo modes:
+          "Existing repo" lists that account's repos, "New repo" lists that
+          account's owners (its user + orgs) and creates the repo AS it. */}
+      {(mode === "existing" || mode === "new") && githubAccounts.length > 0 && (
+        <label className="proj-approval" title="Which GitHub account to use — repos are listed from it, a new repo is created under it, and the project clones, pushes, and opens PRs as this account. Manage accounts in Integrations.">
+          <span className="proj-approval-label mono">Account</span>
+          <select
+            className="proj-approval-select"
+            value={githubCredId}
+            onChange={(e) => { setGithubCredId(e.target.value); setRepo(""); }}
+          >
+            <option value="">Default connection</option>
+            {githubAccounts.map((a) => (
+              <option key={a.id} value={a.id}>{a.name || "account"} · ····{a.last4}</option>
+            ))}
+          </select>
+        </label>
+      )}
       {mode === "existing" && (
         <>
-          {githubAccounts.length > 0 && (
-            <label className="proj-approval" title="Which GitHub account to list repos from — the project clones, pushes, and opens PRs as this account. Manage accounts in Integrations.">
-              <span className="proj-approval-label mono">Account</span>
-              <select
-                className="proj-approval-select"
-                value={githubCredId}
-                onChange={(e) => { setGithubCredId(e.target.value); setRepo(""); }}
-              >
-                <option value="">Default connection</option>
-                {githubAccounts.map((a) => (
-                  <option key={a.id} value={a.id}>{a.name || "account"} · ····{a.last4}</option>
-                ))}
-              </select>
-            </label>
-          )}
           <RepoPicker repos={repos} value={repo} onChange={setRepo} />
           <label
             className="np-private"
@@ -561,7 +575,14 @@ export function NewProjectCard({
           <div className="qx-row">
             <PrimaryButton
               disabled={creating}
-              onClick={() => void submit({ createRepo: { name: effectiveRepoName, private: newRepoPrivate, owner: newRepoOwner } })}
+              onClick={() =>
+                void submit({
+                  createRepo: { name: effectiveRepoName, private: newRepoPrivate, owner: newRepoOwner },
+                  // Create the repo AS the chosen account and pin the project to
+                  // it — the owner list shown above was that account's.
+                  githubCredentialId: githubCredId || undefined,
+                })
+              }
             >
               {creating ? "Creating…" : "Create repo & project"}
             </PrimaryButton>
