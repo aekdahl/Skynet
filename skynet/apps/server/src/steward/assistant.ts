@@ -56,6 +56,7 @@ const SYSTEM =
   '  {"kind":"remove_task","taskId":"<id>"}\n' +
   '  {"kind":"archive_task","taskId":"<id>"}\n' +
   '  {"kind":"reorder_task","taskId":"<id>","direction":"up|down"}\n' +
+  '  {"kind":"request_review","taskId":"<id>"}\n' +
   '  {"kind":"rename_project","name":"<new name>"}\n' +
   '  {"kind":"set_goal","goal":"<goal>"}\n' +
   '  {"kind":"set_autonomy","autonomy":true|false}\n' +
@@ -84,7 +85,8 @@ const SYSTEM =
   "in PROJECT STATUS — map the operator's wording (name or id) to those ids, and if they name an agent that isn't listed, ask instead of guessing.\n" +
   "Notes on archive_task vs remove_task: PREFER archive_task when the operator says 'archive', 'hide', 'shelve', 'set aside', " +
   "or wants the task out of the way but recoverable (soft-hide — stays in the store, hidden from the board). " +
-  "Only use remove_task for an unambiguous 'delete' / 'remove for good' — that's a hard delete.";
+  "Only use remove_task for an unambiguous 'delete' / 'remove for good' — that's a hard delete.\n" +
+  "Notes on request_review: only propose this for a task whose state is 'review' — it forces a fresh review pass by another agent right now, instead of waiting for one to become free on its own. It can fail with an honest reason (already reviewed, or no other agent free to review right now) rather than always succeeding.";
 
 /**
  * Prefetch a bounded snapshot of a project's repo — the top-level file list plus
@@ -121,6 +123,7 @@ export type ProjectActionKind =
   | "remove_task"
   | "archive_task"
   | "reorder_task"
+  | "request_review"
   | "rename_project"
   | "set_goal"
   | "set_autonomy"
@@ -277,6 +280,14 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
       // reference the task to unarchive it; unarchive stays a UI-only action.
       const t = task(o.taskId);
       return t ? { kind, taskId: t.id, summary: `Archive task “${clip(t.text)}” (hide, recoverable)` } : null;
+    }
+    case "request_review": {
+      // Force a review pass now (Operations.requestReview) — best-effort at
+      // confirm time: whether an eligible reviewer is actually free right now
+      // is only known when it runs, so a confirmed chip can still fail with
+      // an honest reason (already reviewed / no open gate / no reviewer free).
+      const t = task(o.taskId);
+      return t ? { kind, taskId: t.id, summary: `Request a review on “${clip(t.text)}”` } : null;
     }
     case "reorder_task": {
       const t = task(o.taskId);

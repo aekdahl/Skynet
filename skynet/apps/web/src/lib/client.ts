@@ -755,6 +755,7 @@ export interface AssistantAction {
     | "remove_task"
     | "archive_task"
     | "reorder_task"
+    | "request_review"
     | "rename_project"
     | "set_goal"
     | "set_autonomy"
