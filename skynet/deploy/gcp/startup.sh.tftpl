@@ -91,12 +91,21 @@ umask 077
 cat >"$${ENVF}" <<EOF
 NODE_ENV=production
 AUTH_REQUIRED=true
-# Single-node self-host: durable data on the /data disk (STORE=file); the bus and
-# session store are in-process (no Redis/Postgres here). NB: SESSIONS=memory means
-# a restart logs you out (re-login) — data itself stays on /data.
+# Single-node self-host: durable data on the /data disk (STORE=file); the bus
+# stays in-process (no multi-replica fan-out on one VM).
 STORE=file
 BUS=memory
+%{ if durable_sessions ~}
+# Sessions live in the Redis sidecar (AOF-persisted on /data/redis) so the app
+# container's restarts — its DESIGNED recovery path (memory cap → OOM-kill →
+# --restart=always) — no longer log everyone out. See the sidecar run below.
+SESSIONS=redis
+REDIS_URL=redis://skynet-redis:6379
+%{ else ~}
+# NB: SESSIONS=memory means a restart logs you out (re-login) — data itself
+# stays on /data. Set durable_sessions=true for the Redis sidecar instead.
 SESSIONS=memory
+%{ endif ~}
 SKYNET_DB_PATH=/data/skynet-data.json
 # Keep agent worktrees, cloned repos, and preview node_modules + npm cache on the
 # DATA disk — NOT the container's writable layer on the small boot disk, where
@@ -147,12 +156,36 @@ docker rm -f skynet >/dev/null 2>&1 || true
 # bind /tmp → /data/tmp (cleared each boot for fresh-/tmp semantics) + npm cache
 # on /data (env file). This is what keeps root from filling under agent load.
 mkdir -p /data/tmp /data/.npm && rm -rf /data/tmp/* 2>/dev/null || true
-# Memory cap: reserve ~512MB for the OS + dockerd + Caddy so an app/agent memory
-# blowup OOM-kills the CONTAINER — which --restart=always recovers, so the site
-# self-heals — instead of the HOST, which goes unreachable and no restart policy
-# can bring back. --memory-swap lets it burst into the swapfile before the kill.
+%{ if durable_sessions ~}
+# ── 5a. Redis sidecar: durable login sessions ────────────────────────────────
+# Sessions only — tiny writes, AOF-persisted on the data disk so they survive
+# app-container restarts AND VM reboots. A user-defined network gives the app
+# name-based DNS to reach it (the default bridge has none); the port is never
+# published to the host. `noeviction` + a small cap: a session must never be
+# silently dropped under memory pressure, and the cap keeps any runaway inside
+# the host reserve accounted for below.
+docker network create skynet-net >/dev/null 2>&1 || true
+mkdir -p /data/redis
+docker rm -f skynet-redis >/dev/null 2>&1 || true
+docker run -d --restart=always --name skynet-redis \
+  --network skynet-net \
+  -v /data/redis:/data \
+  --memory=96m \
+  --log-driver json-file --log-opt max-size=5m --log-opt max-file=2 \
+  redis:7-alpine redis-server --appendonly yes --maxmemory 64mb --maxmemory-policy noeviction
+%{ endif ~}
+# Memory cap: reserve headroom for the OS + dockerd + Caddy (+ the Redis
+# sidecar's own 96m cap when enabled) so an app/agent memory blowup OOM-kills
+# the CONTAINER — which --restart=always recovers, so the site self-heals —
+# instead of the HOST, which goes unreachable and no restart policy can bring
+# back. --memory-swap lets it burst into the swapfile before the kill.
+%{ if durable_sessions ~}
+HOST_RESERVE_MB=608
+%{ else ~}
+HOST_RESERVE_MB=512
+%{ endif ~}
 MEM_TOTAL_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
-MEM_LIMIT_MB=$(( MEM_TOTAL_MB > 1024 ? MEM_TOTAL_MB - 512 : 512 ))
+MEM_LIMIT_MB=$(( MEM_TOTAL_MB > 1024 ? MEM_TOTAL_MB - HOST_RESERVE_MB : 512 ))
 MEM_SWAP_MB=$(( MEM_LIMIT_MB + 2048 ))
 # CPU cap: reserve half a core for the OS + dockerd + Caddy so an agent/build
 # pegging the CPU can't starve the host into unresponsiveness (on a shared-core
@@ -162,6 +195,9 @@ CPU_LIMIT=$(nproc | awk '{c=$1-0.5; print (c<0.5?0.5:c)}')
 # Log rotation: default json-file logs grow UNBOUNDED and fill the boot disk (a
 # top cause of a wedged VM). Cap them.
 docker run -d --restart=always --name skynet \
+%{ if durable_sessions ~}
+  --network skynet-net \
+%{ endif ~}
   -p ${app_port}:${app_port} \
   --env-file "$${ENVF}" \
   -v /data:/data \

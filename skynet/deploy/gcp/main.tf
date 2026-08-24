@@ -249,6 +249,7 @@ resource "google_compute_instance" "vm" {
       admin_email      = var.admin_email
       admin_workspace  = var.admin_workspace
       telegram_control = var.telegram_control ? "true" : "false"
+      durable_sessions = var.durable_sessions
       # Caddy runs in either mode (caddy_enabled). The bootstrap /mcp token is
       # only for the narrow enable_mcp_https door — public_ui uses a Settings
       # service token, so no deploy-time token is injected there.
