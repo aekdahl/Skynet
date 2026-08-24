@@ -70,7 +70,7 @@ describe("MCP tool core", () => {
     // The actions that were previously missing from the MCP surface.
     expect(names).toEqual(
       expect.arrayContaining([
-        "transition_task", "force_task_done", "move_task", "reorder_task", "archive_task", "delete_task",
+        "transition_task", "force_task_done", "request_review", "move_task", "reorder_task", "archive_task", "delete_task",
         "update_milestone", "delete_milestone", "delete_feature",
         "pause_agent", "resume_agent", "run_diff",
         "import_github_issues", "import_repo_file",
@@ -96,6 +96,18 @@ describe("MCP tool core", () => {
     const bad = await client.callTool({ name: "transition_task", arguments: { taskId: task.id, to: "done" } });
     expect(bad.isError).toBe(true);
     expect(text(bad)).toMatch(/can't move a task/i);
+  });
+
+  it("request_review delegates to Operations and surfaces its honest failure reason on error", async () => {
+    const { client } = await connect(author);
+    const project = json(await client.callTool({ name: "create_project", arguments: { name: "Proj", goal: "ship" } }));
+    const task = json(await client.callTool({ name: "create_task", arguments: { projectId: project.id, text: "not in review yet" } }));
+
+    // Not in `review` — same NoOpenReviewGateError the web/Steward surfaces,
+    // relayed verbatim (no bespoke MCP error mapping, unlike the HTTP route).
+    const result = await client.callTool({ name: "request_review", arguments: { taskId: task.id } });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/no open review gate/i);
   });
 
   it("enforces scopes: an author token cannot resolve_hitl, an approver can", async () => {

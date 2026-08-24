@@ -755,6 +755,7 @@ export interface AssistantAction {
     | "remove_task"
     | "archive_task"
     | "reorder_task"
+    | "request_review"
     | "rename_project"
     | "set_goal"
     | "set_autonomy"
@@ -986,6 +987,13 @@ export function transitionTask(projectId: string, taskId: string, to: string, pr
 // sync the linked run's status. For when the normal review → done path fails.
 export function forceTaskDone(projectId: string, taskId: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/force-done`);
+}
+// Manual "Request review" — force a review pass now instead of waiting for a
+// periodic tick to find an idle reviewer on its own. Throws (ApiError 409)
+// with an honest, specific reason — already reviewed / no open gate / no
+// reviewer free right now — for the caller to surface.
+export function requestReview(projectId: string, taskId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/request-review`);
 }
 export function moveTask(projectId: string, taskId: string, direction: "up" | "down") {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/move`, { direction });

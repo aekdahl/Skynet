@@ -50,7 +50,15 @@ import {
   InvalidEnvValueError,
 } from "./settings/env-settings.js";
 import { CommandDeniedError } from "./command-safety.js";
-import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
+import {
+  NoCapacityError,
+  RunnerNotConfiguredError,
+  TaskAlreadyAssignedError,
+  NoOpenReviewGateError,
+  AlreadyReviewedError,
+  NoReviewerAvailableError,
+  type Orchestrator,
+} from "./orchestrator.js";
 import { NotFoundError, type Operations, RoadmapConflictError, RunnerBusyError } from "./operations.js";
 import { CrystallizeParseError } from "./steward/crystallize.js";
 import type { ChatTurn } from "./project-assistant.js";
@@ -84,7 +92,10 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
     err instanceof TaskAlreadyAssignedError ||
     err instanceof RunnerNotConfiguredError ||
     err instanceof RunnerBusyError ||
-    err instanceof RoadmapConflictError
+    err instanceof RoadmapConflictError ||
+    err instanceof NoOpenReviewGateError ||
+    err instanceof AlreadyReviewedError ||
+    err instanceof NoReviewerAvailableError
   ) {
     return reply.code(409).send({ error: (err as Error).message });
   }
@@ -898,6 +909,20 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/force-done", async (req, reply) => {
     try {
       return await ops.forceTaskDone(ws(req), req.params.tid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Manual "Request review" — force a review pass now rather than waiting for
+  // a periodic tick to happen to find an idle reviewer on its own. 409s with
+  // a specific, honest reason (already reviewed / no open gate / no reviewer
+  // free right now) rather than a generic failure — see requestReview's own
+  // doc comment for why a single-agent project can never satisfy this.
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/request-review", async (req, reply) => {
+    try {
+      await ops.requestReview(ws(req), req.params.tid);
+      return reply.code(204).send();
     } catch (err) {
       return fail(reply, err);
     }

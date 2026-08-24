@@ -1591,6 +1591,19 @@ export class Operations {
     return updated;
   }
 
+  /**
+   * Manual "Request review" — force a review pass on a review-stage task now,
+   * instead of waiting for a periodic tick to find an idle reviewer on its
+   * own. Throws NoOpenReviewGateError / AlreadyReviewedError /
+   * NoReviewerAvailableError (orchestrator.ts) for the honest failure modes —
+   * the route maps each to a specific status so the operator sees why, not a
+   * generic 500.
+   */
+  async requestReview(ws: string, tid: string): Promise<void> {
+    const task = await this.getTask(ws, tid);
+    await this.orchestrator.requestReview(ws, task.id);
+  }
+
   // ── features (task grouping) ───────────────────────────────────────────
   async createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature> {
     const project = await this.store.getProject(projectId);

@@ -126,6 +126,12 @@ const ALLOW = new Set<string>([
   // No happy-path journey exercises it because the normal review → done path
   // is the intended path; this is only reached when that path is stuck.
   "forceTaskDone",
+  // manual "Request review" — needs a genuinely idle, review-eligible SECOND
+  // agent to exist at the moment it's called; no offline journey shape
+  // reproduces that fleet state. Full success/failure-mode coverage (already
+  // reviewed / no open gate / no reviewer free) is server-side in
+  // request-review.test.ts, driving the real Orchestrator/Operations.
+  "requestReview",
   // Feature + milestone CRUD (task grouping + roadmap) — exercised by the
   // features-and-roadmap tests (features-roadmap.test.ts) which drive the
   // full Operations path with real store + hub. No fleet journey shape uses

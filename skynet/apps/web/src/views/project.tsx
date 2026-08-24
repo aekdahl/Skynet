@@ -262,6 +262,7 @@ function TaskCard({
     updateTask,
     deleteTask,
     forceTaskDone,
+    requestReview,
     archiveTask,
     assignTask,
     transitionTask,
@@ -536,11 +537,24 @@ function TaskCard({
             </button>
           </div>
         )}
-      {s === "review" && task.reviewVerdict && (
-        task.reviewVerdict.decision === "flag" ? (
-          <div className="kb-flag">⚠ flagged for you — {task.reviewVerdict.reason}</div>
+      {s === "review" && (
+        task.reviewVerdict ? (
+          task.reviewVerdict.decision === "flag" ? (
+            <div className="kb-flag">⚠ flagged for you — {task.reviewVerdict.reason}</div>
+          ) : (
+            <div className="kb-review-ok">✓ reviewer approved — awaiting you</div>
+          )
         ) : (
-          <div className="kb-review-ok">✓ reviewer approved — awaiting you</div>
+          <div className="kb-unreviewed" onClick={stop}>
+            <span>Not yet reviewed by another agent</span>
+            <button
+              className="kb-unreviewed-btn"
+              title="Have an idle agent look at this before you decide — fails honestly if none is free right now"
+              onClick={() => void requestReview(pid, task.id)}
+            >
+              Request review
+            </button>
+          </div>
         )
       )}
 
@@ -1391,6 +1405,19 @@ export function ProjectView({
       if (d.from === "backlog") void reorderTask(project.id, d.taskId, beforeIdAt(e.currentTarget as HTMLElement, e.clientY, d.taskId));
     } else if (d.from === "todo" && to === "ongoing") {
       void assignTask(project.id, d.taskId); // "Start" on an idle agent
+    } else if (d.from === "review" && to === "done" && !tasks.find((t) => t.id === d.taskId)?.reviewVerdict) {
+      // Merging with no reviewVerdict recorded — no other agent has looked at
+      // this yet. Friction, not a hard block: some projects (a single-agent
+      // fleet) can never get a second opinion, so refusing outright would
+      // just strand the task in review forever.
+      void confirm({
+        title: "Merge without a review?",
+        body: "No other agent has reviewed this yet — you'd be the first (and only) look at it before it merges.",
+        confirmLabel: "Merge anyway",
+        danger: true,
+      }).then((ok) => {
+        if (ok) void transitionTask(project.id, d.taskId, to);
+      });
     } else {
       void transitionTask(project.id, d.taskId, to);
     }

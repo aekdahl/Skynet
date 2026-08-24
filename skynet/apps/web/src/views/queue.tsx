@@ -1,9 +1,9 @@
 import { Fragment, useEffect, useState } from "react";
 import type { TaskRun, HitlItem } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { fmtWait, hitlHeadline, KIND_META, openQueue, projectName, sortForInbox, waitedSecs } from "../lib/derive";
+import { fmtWait, hitlHeadline, KIND_META, needsReviewConfirm, openQueue, projectName, sortForInbox, waitedSecs } from "../lib/derive";
 import { isTypingTarget } from "../lib/keys";
-import { useChoice } from "../components/confirm";
+import { useChoice, useConfirm } from "../components/confirm";
 import { RiskChip } from "../components/hitl-context";
 import { DiffView } from "../components/diff-view";
 
@@ -27,8 +27,9 @@ export function QueueCard({
   // the mount-time effect run never fires it.
   modifyTrigger?: number;
 }) {
-  const { resolveHitl, streamAgentMessage, readOnly, projects } = useStore();
+  const { resolveHitl, streamAgentMessage, readOnly, projects, tasks } = useStore();
   const choice = useChoice();
+  const confirm = useConfirm();
   const k = hitlHeadline(item);
   const [mode, setMode] = useState<null | "modify" | "chat" | "remember">(null);
   const [draft, setDraft] = useState("");
@@ -228,7 +229,22 @@ export function QueueCard({
           <button
             className="btn btn-primary"
             disabled={readOnly}
-            onClick={() => resolveHitl(item.id, "approve", approveExtra)}
+            onClick={async () => {
+              // No other agent has reviewed this yet — friction, not a block
+              // (some projects can never get a second opinion; see
+              // needsReviewConfirm's own doc comment).
+              if (
+                needsReviewConfirm(item, tasks) &&
+                !(await confirm({
+                  title: "Merge without a review?",
+                  body: "No other agent has reviewed this yet — you'd be the first (and only) look at it before it merges.",
+                  confirmLabel: "Merge anyway",
+                  danger: true,
+                }))
+              )
+                return;
+              resolveHitl(item.id, "approve", approveExtra);
+            }}
           >
             Approve
           </button>
@@ -403,7 +419,8 @@ export function QueueView({
   onOpen: (id: string) => void;
   now: number;
 }) {
-  const { queue, runs, resolveHitl } = useStore();
+  const { queue, runs, tasks, resolveHitl } = useStore();
+  const confirm = useConfirm();
   // A single flat, index-ordered array (not two separately-indexed lists) so
   // j/k/a/r/m keyboard nav and `selectedIdx` keep working unchanged — the
   // Approvals/Other grouping (see sortForInbox) is purely a render-time
@@ -466,8 +483,23 @@ export function QueueView({
           e.preventDefault();
           // Options-kind cards have no bare "approve" button — the closest
           // equivalent is the recommended (or first) option's own button.
-          if (it.options) resolveHitl(it.id, "option", { optionIndex: it.recommended ?? 0 });
-          else resolveHitl(it.id, "approve");
+          if (it.options) {
+            resolveHitl(it.id, "option", { optionIndex: it.recommended ?? 0 });
+          } else if (needsReviewConfirm(it, tasks)) {
+            // Same "merge without a review?" friction as the card's own
+            // Approve button — the keyboard shortcut shouldn't be a silent
+            // bypass of it.
+            void confirm({
+              title: "Merge without a review?",
+              body: "No other agent has reviewed this yet — you'd be the first (and only) look at it before it merges.",
+              confirmLabel: "Merge anyway",
+              danger: true,
+            }).then((ok) => {
+              if (ok) resolveHitl(it.id, "approve");
+            });
+          } else {
+            resolveHitl(it.id, "approve");
+          }
           break;
         case "r":
           // Options-kind cards have no reject button (the operator picks an
@@ -485,7 +517,7 @@ export function QueueView({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, selectedIdx, onSelectIdx, onOpen, resolveHitl]);
+  }, [open, selectedIdx, onSelectIdx, onOpen, resolveHitl, tasks, confirm]);
 
   const rejectAll = async () => {
     setClearing(true);
