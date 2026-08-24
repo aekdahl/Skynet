@@ -134,20 +134,28 @@ export function QueueCard({
 
       {item.kind === "escalation" ? (
         <div className="qcard-actions">
-          <button
-            className={"btn btn-primary" + (mode === "modify" ? " btn-lit" : "")}
-            onClick={() => setMode(mode === "modify" ? null : "modify")}
-          >
-            Help &amp; resume
-          </button>
-          <button
-            className="btn"
-            title="Hand this run to a different runner to retry fresh"
-            disabled={readOnly}
-            onClick={() => resolveHitl(item.id, "reassign", { guidance: draft.trim() })}
-          >
-            Reassign
-          </button>
+          {item.flags?.includes("unrecoverable") ? (
+            <span className="qcard-unrecoverable-note" title="This run's worktree and its branch are both gone — there's nothing left to resume or reassign into. Stop is the only real option.">
+              Not resumable — its worktree and branch are both gone
+            </span>
+          ) : (
+            <>
+              <button
+                className={"btn btn-primary" + (mode === "modify" ? " btn-lit" : "")}
+                onClick={() => setMode(mode === "modify" ? null : "modify")}
+              >
+                Help &amp; resume
+              </button>
+              <button
+                className="btn"
+                title="Hand this run to a different runner to retry fresh"
+                disabled={readOnly}
+                onClick={() => resolveHitl(item.id, "reassign", { guidance: draft.trim() })}
+              >
+                Reassign
+              </button>
+            </>
+          )}
           <button className="btn btn-danger" disabled={readOnly} onClick={() => resolveHitl(item.id, "reject")}>
             Stop run
           </button>
