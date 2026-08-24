@@ -1195,6 +1195,12 @@ button.kb-done:hover { opacity: 1; }
 .triage-risks li { margin: 0; }
 .kb-flag { font-size: var(--fz-11); color: var(--warn); line-height: 1.4; }
 .kb-review-ok { font-size: var(--fz-11); color: var(--ok, var(--muted)); line-height: 1.4; }
+.kb-unreviewed { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: var(--fz-11); color: var(--muted); line-height: 1.4; }
+.kb-unreviewed-btn {
+  flex: none; font-size: var(--fz-11); color: var(--accent); background: none; border: none;
+  cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 2px;
+}
+.kb-unreviewed-btn:hover { color: var(--text); }
 .kb-verdict-flag { color: var(--warn); }
 .kb-verdict-approve { color: var(--ok, var(--muted)); }
 /* Task linter v0 (assistive) — a dismissible hint, never a blocker. */

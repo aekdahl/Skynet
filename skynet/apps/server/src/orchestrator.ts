@@ -102,6 +102,33 @@ export class TaskAlreadyAssignedError extends Error {
 }
 
 /**
+ * requestReview()'s failure modes — each an honest, actionable reason a manual
+ * "Request review" couldn't run, rather than a silent no-op or a fake success.
+ * The single-agent-fleet case (no OTHER eligible agent can ever exist, since a
+ * run can't review itself) is exactly why this can't be a hard block on
+ * merging unreviewed work elsewhere — some projects genuinely have no way to
+ * satisfy it.
+ */
+export class NoOpenReviewGateError extends Error {
+  constructor() {
+    super("This run has no open review gate right now — nothing for a review to attach to.");
+    this.name = "NoOpenReviewGateError";
+  }
+}
+export class AlreadyReviewedError extends Error {
+  constructor(by: string, decision: string, reason: string) {
+    super(`Already reviewed by ${by} — ${decision}: ${reason}`);
+    this.name = "AlreadyReviewedError";
+  }
+}
+export class NoReviewerAvailableError extends Error {
+  constructor() {
+    super("No other agent is free to review this right now — try again once one is idle, or review it yourself.");
+    this.name = "NoReviewerAvailableError";
+  }
+}
+
+/**
  * PURE: extract a trailing `{"estMinutes": N, "clarity": "clear"|"unclear"}`
  * JSON tag off the triage LLM's reply. Returns the body (with the tag stripped)
  * plus each parsed field. Tolerates a code fence around the tag; ignores
@@ -4908,6 +4935,37 @@ export class Orchestrator {
     // decision === "flag" OR (approve without autonomy) → verdict is recorded
     // (`withVerdict`), HITL stays open for the human. Nothing else to do here.
     void withVerdict;
+  }
+
+  /**
+   * Manual "Request review" — an operator forcing a review pass on demand,
+   * instead of waiting for a periodic tick to happen to find an idle
+   * reviewer (the periodic path in tick() above only reviews opportunistically
+   * when one already exists). Reuses `autoReview` — same deepReview/
+   * breakerReview opt-ins, same verdict-writing, same audit trail — this is
+   * just an eager entry point for the SAME reviewer-selection the tick does.
+   * Throws an honest, specific error rather than silently doing nothing: a
+   * task already reviewed, a run with no open gate to review, or no eligible
+   * reviewer free right now (a single-agent project can never satisfy this —
+   * a run can't review itself).
+   */
+  async requestReview(ws: string, taskId: string): Promise<void> {
+    const task = await this.store.getTask(taskId);
+    if (!task || task.workspaceId !== ws || task.state !== "review" || !task.runId) {
+      throw new NoOpenReviewGateError();
+    }
+    if (task.reviewVerdict) {
+      throw new AlreadyReviewedError(task.reviewVerdict.by, task.reviewVerdict.decision, task.reviewVerdict.reason);
+    }
+    const hitl = (await this.store.listQueue(ws)).find(
+      (h) => h.runId === task.runId && !h.resolvedAt && (h.kind === "diff" || h.kind === "merge" || h.kind === "verifier"),
+    );
+    if (!hitl) throw new NoOpenReviewGateError();
+    const doerId = (await this.store.getRun(task.runId))?.agentId;
+    const reviewer = (await this.store.listAgents(ws)).find((a) => a.status === "idle" && a.id !== doerId && a.canReview !== false);
+    if (!reviewer) throw new NoReviewerAvailableError();
+    const project = await this.store.getProject(task.projectId);
+    await this.autoReview(ws, reviewer, task, hitl, project?.autonomy ?? false);
   }
 
   /**

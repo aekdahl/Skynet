@@ -164,6 +164,17 @@ export function projectQueue(tasks: Task[], projectId: string): ProjectQueue {
 export const hitlFor = (queue: HitlItem[], runId: string) =>
   queue.find((q) => q.runId === runId && q.resolvedAt == null);
 
+/** Approving a `diff`/`merge` gate merges the run's work — this is true when
+ *  no OTHER agent has recorded a review verdict on it yet, so Approve is
+ *  worth a confirm ("merge without a review?") rather than silent one-click
+ *  merging of completely unreviewed work. `verifier`/`approval`/`question`/
+ *  `plan` gates don't represent a merge decision, so they're never flagged. */
+export function needsReviewConfirm(item: HitlItem, tasks: Task[]): boolean {
+  if (item.kind !== "diff" && item.kind !== "merge") return false;
+  const task = tasks.find((t) => t.runId === item.runId);
+  return !task?.reviewVerdict;
+}
+
 export const openQueue = (queue: HitlItem[]) =>
   queue.filter((q) => q.resolvedAt == null);
 
