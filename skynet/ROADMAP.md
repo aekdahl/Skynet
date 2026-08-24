@@ -138,6 +138,13 @@ is the bucket to pull from.
   hosted release turns on public sign-in; today's local desktop path is unchanged.*
 - ***Data-disk snapshot before each VM apply** in `setup.sh` — the deploy machinery snapshots persistent
   state pre-mutation so hosted rollouts are recoverable.*
+- ***Durable login sessions on the GCP VM** (`durable_sessions`, default on) — a Redis sidecar container
+  with AOF persistence on `/data/redis`, sessions via `SESSIONS=redis`. Fixes a real reported pain ("I get
+  logged out all the time"): the app container's restarts are its DESIGNED recovery path (memory cap →
+  OOM-kill → `--restart=always`), and with `SESSIONS=memory` every such restart invalidated every login.
+  Sessions now survive container restarts and VM reboots alike; no extra cloud resources (a sidecar on the
+  same VM, capped at 96 MB, never published to the host, accounted for in the app container's memory
+  reservation). Template renders verified both ways + `bash -n` clean + `terraform validate` passing.*
 - ***Project-scoped MCP service tokens** — tokens can now be pinned to specific projects (not just
   workspaces), so an MCP token issued to an external agent is naturally sandboxed to the project it should
   see. Necessary groundwork for shared/hosted MCP access.*
@@ -837,6 +844,21 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     that same live list (instead of the mock stub) when editing an already-connected installation. Regression-
     proofed: stashing the service fix makes the new `github-app-repos.test.ts` suite fail exactly as reported
     (returns the stale 1-repo snapshot instead of the live 3).*
+  - *Bug fixed (follow-up, "New repo" this time): "the Algorithma-se org is not visible at all, despite adding
+    a new pat for it" — reported live against the New-repo owner picker in project creation. PR #525 had wired
+    the account selector for the "Existing repo" half only; the "New repo" half still ran entirely on the
+    DEFAULT connection: `useRepoOwners()`/`fetchGithubOwners()`/`listRepoOwners()` took no credential,
+    `createRepo` always used the default connection's token, and `githubCredentialId` was only sent for
+    existing-repo creations. Compounding it, `listRepoOwners` silently swallowed `/user/orgs` failures — and
+    a fine-grained PAT typically CAN'T call that endpoint (it needs an org "Members: read" permission tokens
+    usually aren't minted with), so even the deliberately-added org PAT would have shown only the personal
+    login. Fixed end to end: the account picker now shows for BOTH repo modes and threads `credentialId`
+    through owners + repos + creation (`createRepo` creates AS the pinned account, and the project is pinned
+    to it); and when org-listing yields nothing, owners are DERIVED from the repos the token can actually see
+    (any owner prefix ≠ the user is an org it works with) — so the org appears whenever the token can reach
+    any of its repos, org-membership permission or not. Regression-proofed (`github-owners.test.ts`): stashing
+    the service fix fails 5 of 6 tests exactly as reported (org invisible, repo created under the wrong
+    identity).*
   - *Bug fixed: the Inbox's own HITL cards (`QueueCard`, `apps/web/src/views/queue.tsx`) never showed which
     project a card belonged to — only the agent name and the task title, reported live as a "Diff Review" card
     with no way to tell which project it was for at a glance. The ready-to-merge card (above) and the Home
@@ -1188,6 +1210,23 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   CSS-token fix, and belongs in its own PR. A full sweep of the ~90 other `--faint` usages beyond
   the 4 named examples wasn't attempted either — that's the still-separately-tracked v0.5
   "Legibility floor" item (#4 above).
+- [x] **Project header decluttered — Governance popover.** Reported live: the project header's toolbar
+  had grown to ~15 same-weight pills (Approvals, Autonomy, Daily budget, Pace spend, Plan mode, Deep
+  review, Breaker review, GitHub/Fly account, Keys, Tools, Preview app, Deploy to Fly.io, Inform,
+  the gear, Delete) with no hierarchy between primary actions and rarely-touched settings. Seven of
+  those — Approvals, Autonomy, Daily budget (+ Pace spend), Plan mode, and Deep review (+ Breaker
+  review) — are now bundled behind one `ProjectGovernance` popover (`project.tsx`), reusing the exact
+  details/summary idiom the Keys/Tools popovers already established rather than inventing a new
+  pattern. The collapsed summary still surfaces the two facts worth seeing without opening it — the
+  approval level, and an "Autonomy off" flag — and Full autonomy's existing red "danger" treatment
+  stays visible on the collapsed pill itself (`.proj-governance-danger`), not just inside the menu.
+  Preview app / Deploy to Fly.io lead the row as the primary actions; Inform active agents / the gear /
+  Delete are pushed to a `margin-left: auto` cluster at the row's trailing edge (`.projview-head-admin`)
+  so administrative controls read as visually distinct from day-to-day ones, wrapping as one unit on
+  narrow widths instead of interleaving. Net: ~15 top-level controls down to about 7. Verified live —
+  every toggle's real persistence (including the Full-autonomy confirm dialog and the danger styling),
+  the Pace-spend/Breaker-review conditional reveals, and the admin cluster's wrap behavior at mobile
+  width — not just reviewed in source.
 - [ ] 🏢 Auth: **SSO/OIDC**.
 - [x] 🏢 **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
   everything (projects, runs, HITL, audit) but mutate nothing (no assign / resolve / transition /

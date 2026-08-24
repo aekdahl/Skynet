@@ -654,7 +654,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return created;
       },
       updateProject: async (id, patch) => {
-        await api.updateProject(id, patch);
+        // Apply the server's response DIRECTLY instead of waiting for the WS
+        // echo, and surface failures. Before this, a project-settings save
+        // (Daily budget, Autonomy, Plan mode, …) had no feedback path at all:
+        // no local apply (the field only changed when the `project.upserted`
+        // echo arrived — a dropped/reconnecting socket made a SUCCESSFUL save
+        // look like nothing happened, with the input snapping back on blur)
+        // and no catch (a server rejection was a silent unhandled rejection).
+        // Reported live as "budget cannot be set anymore — nothing happens
+        // when I write in an amount."
+        try {
+          const updated = await api.updateProject(id, patch);
+          setState((s) => ({ ...s, projects: upsert(s.projects, updated) }));
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't save the project settings."));
+          else throw e;
+        }
       },
       removeApprovalRule: async (projectId, ruleId) => {
         await api.removeApprovalRule(projectId, ruleId);

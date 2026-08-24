@@ -270,37 +270,80 @@ export class GithubService {
   }
 
   /** Accounts a new repo can be created under: the authenticated user, plus any
-   *  orgs they belong to. Orgs are best-effort (an App installation token can't
-   *  list a user's orgs — that path just returns the user). */
-  async listRepoOwners(workspaceId: string): Promise<GithubOwner[]> {
-    const conn = await this.store.get(workspaceId);
-    const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
-    if (!conn || !ready) return [];
-    const token = await this.resolveToken(conn);
+   *  orgs the token can see. `githubCredentialId` lists THAT account's owners
+   *  (a pinned business/personal PAT — same selector the repo picker takes);
+   *  omitted → the workspace default connection. Orgs come from `/user/orgs`
+   *  when the token can call it, but that's best-effort twice over: an App
+   *  installation token can't list a user's orgs at all, and a FINE-GRAINED PAT
+   *  typically can't either (it needs an explicit org "Members: read"
+   *  permission most tokens aren't minted with). Silently swallowing that made
+   *  a deliberately-added org PAT look broken — the org never appeared as an
+   *  owner option ("the Algorithma-se org is not visible at all, despite adding
+   *  a new pat for it"). So when org listing yields nothing, DERIVE org owners
+   *  from the repos the token can actually see: any owner prefix in the repo
+   *  list that isn't the user themself is an org the token works with. */
+  async listRepoOwners(workspaceId: string, githubCredentialId?: string | null): Promise<GithubOwner[]> {
+    let token: string;
+    if (githubCredentialId) {
+      const pat = await secretService.resolve(workspaceId, githubCredentialId);
+      if (!pat) return [];
+      token = pat;
+    } else {
+      const conn = await this.store.get(workspaceId);
+      const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
+      if (!conn || !ready) return [];
+      token = await this.resolveToken(conn);
+    }
     const me = await this.provider.viewer(token);
     const owners: GithubOwner[] = [{ login: me.login, type: "user" }];
+    let orgs: string[] = [];
     try {
-      for (const org of await this.provider.listOrgs(token)) owners.push({ login: org, type: "org" });
+      orgs = await this.provider.listOrgs(token);
     } catch {
-      /* orgs are best-effort */
+      /* fall through to the repo-derived fallback below */
     }
+    if (orgs.length === 0) {
+      // The org-membership endpoint failed or returned nothing — infer from
+      // what the token can reach instead. Best-effort: a listRepos failure
+      // just leaves the user as the only owner, same as before.
+      try {
+        const seen = new Set<string>();
+        for (const r of await this.provider.listRepos(token)) {
+          const owner = r.name.split("/")[0];
+          if (owner && owner !== me.login) seen.add(owner);
+        }
+        orgs = [...seen];
+      } catch {
+        /* owners stay user-only */
+      }
+    }
+    for (const org of orgs) owners.push({ login: org, type: "org" });
     return owners;
   }
 
   /** Create a new GitHub repo for this workspace and register it on the
    *  connection (selected) so it shows up in pickers. `owner` is the user's login
    *  (→ /user/repos) or an org login (→ /orgs/:org/repos). The repo is
-   *  auto-initialized so a project bound to it can clone immediately. */
+   *  auto-initialized so a project bound to it can clone immediately.
+   *  `githubCredentialId` creates it AS that pinned account (matching the
+   *  owner list that account's picker showed); omitted → default connection. */
   async createRepo(
     workspaceId: string,
     spec: { name: string; private: boolean; owner?: string },
-    opts: { description?: string } = {},
+    opts: { description?: string; githubCredentialId?: string | null } = {},
   ): Promise<GithubRepo> {
+    let token: string;
     const conn = await this.store.get(workspaceId);
-    const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
-    if (!conn || !ready) throw new Error("GitHub is not connected for this workspace");
-    if (conn.auth === "app" && !this.appHasCreds) throw new Error("GitHub App is not configured on the server");
-    const token = await this.resolveToken(conn);
+    if (opts.githubCredentialId) {
+      const pat = await secretService.resolve(workspaceId, opts.githubCredentialId);
+      if (!pat) throw new Error("The selected GitHub account has no stored token — reconnect it in Integrations.");
+      token = pat;
+    } else {
+      const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
+      if (!conn || !ready) throw new Error("GitHub is not connected for this workspace");
+      if (conn.auth === "app" && !this.appHasCreds) throw new Error("GitHub App is not configured on the server");
+      token = await this.resolveToken(conn);
+    }
     const me = await this.provider.viewer(token);
     const org = spec.owner && spec.owner !== me.login ? spec.owner : undefined;
     const repo = await this.provider.createRepo(token, {
@@ -309,7 +352,10 @@ export class GithubService {
       description: opts.description,
       org,
     });
-    if (!conn.repos.some((r) => r.name === repo.name)) {
+    // Register on the default connection's snapshot so it shows in pickers —
+    // only meaningful when that connection exists (a credential-created repo
+    // is reachable through its own account's live listing regardless).
+    if (conn?.connected && !conn.repos.some((r) => r.name === repo.name)) {
       await this.store.put({ ...conn, repos: [{ ...repo, selected: true }, ...conn.repos] });
     }
     return repo;

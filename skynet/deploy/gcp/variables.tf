@@ -67,6 +67,12 @@ variable "telegram_control" {
   description = "Enable conversational + approve/create control over Telegram (SKYNET_TELEGRAM_CONTROL). Off = notifications + status + kill switch only."
 }
 
+variable "durable_sessions" {
+  type        = bool
+  default     = true
+  description = "Run a small Redis sidecar (AOF-persisted on /data) for login sessions, so the app container's restarts — its DESIGNED OOM-recovery path — no longer log everyone out. Off = SESSIONS=memory (every restart requires re-login). No extra cloud resources either way."
+}
+
 variable "image" {
   type        = string
   default     = ""
