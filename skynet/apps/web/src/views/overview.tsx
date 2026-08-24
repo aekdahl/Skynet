@@ -221,8 +221,14 @@ export function NewProjectCard({
 
   const repos = useConnectedRepos(githubCredId || undefined);
   const owners = useRepoOwners(githubCredId || undefined);
-  const hasRepos = (repos?.length ?? 0) > 0;
-  const canCreate = (owners?.length ?? 0) > 0;
+  // The repo-mode TABS must not be gated on the DEFAULT connection's data alone
+  // — the account switcher lives INSIDE the tab, so hiding the tab whenever the
+  // default connection has no repos/owners locked secondary accounts out
+  // entirely (chicken-and-egg: you could never reach the picker that would have
+  // shown their repos). Any pinned account existing is reason enough to offer
+  // the tab; its own lists load once it's selected.
+  const hasRepos = (repos?.length ?? 0) > 0 || githubAccounts.length > 0;
+  const canCreate = (owners?.length ?? 0) > 0 || githubAccounts.length > 0;
 
   // Default the owner to the authenticated user (first entry) once loaded.
   useEffect(() => {
@@ -417,7 +423,7 @@ export function NewProjectCard({
       )}
       {mode === "existing" && (
         <>
-          <RepoPicker repos={repos} value={repo} onChange={setRepo} />
+          <RepoPicker repos={repos} value={repo} onChange={setRepo} pinnedAccount={!!githubCredId} />
           <label
             className="np-private"
             title="Import the repo's open issues as backlog tasks, and keep them in sync as tasks move (comment/close/reopen the issue)."
