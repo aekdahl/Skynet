@@ -2907,6 +2907,32 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .prd-phase-frac { flex: none; font-size: var(--fz-11); color: var(--muted); }
 .prd-phase-body { padding: 0 4px 20px 46px; }
 
+/* ── Project Context tab: pasted/uploaded notes + the condensed summary ──── */
+.prj-ctx { display: flex; flex-direction: column; gap: 20px; }
+.prj-ctx-summary { border: 1px solid var(--line-soft); border-radius: 10px; padding: 14px 16px; background: color-mix(in oklch, var(--accent), transparent 96%); }
+.prj-ctx-summary-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.prj-ctx-summary-title { font-size: var(--fz-11); font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--accent); }
+.prj-ctx-summary-updated { font-size: var(--fz-10-5); color: var(--muted); }
+.prj-ctx-summary-head .btn { margin-left: auto; }
+.prj-ctx-summary-body { font-size: var(--fz-13); line-height: 1.55; white-space: pre-wrap; margin: 0; }
+
+.prj-ctx-add { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line-soft); border-radius: 10px; padding: 12px; }
+.prj-ctx-textarea { resize: vertical; min-height: 80px; font: inherit; }
+.prj-ctx-add-actions { display: flex; align-items: center; gap: 10px; }
+.prj-ctx-upload-label { position: relative; cursor: pointer; }
+.prj-ctx-upload-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+.prj-ctx-hint { font-size: var(--fz-10-5); color: var(--faint); margin-left: auto; }
+
+.prj-ctx-list { display: flex; flex-direction: column; gap: 10px; }
+.prj-ctx-entry { border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px 12px; }
+.prj-ctx-entry-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.prj-ctx-badge { font-family: var(--font-mono); font-size: var(--fz-9-5); letter-spacing: 0.06em; text-transform: uppercase; border-radius: 999px; padding: 2px 8px; flex: none; }
+.prj-ctx-badge-paste { color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent), transparent 55%); background: color-mix(in oklch, var(--accent), transparent 88%); }
+.prj-ctx-badge-upload { color: var(--ok, var(--muted)); border: 1px solid color-mix(in oklch, var(--ok, var(--muted)), transparent 55%); background: color-mix(in oklch, var(--ok, var(--muted)), transparent 88%); }
+.prj-ctx-entry-label { font-weight: 600; font-size: var(--fz-13); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prj-ctx-entry-date { font-size: var(--fz-10-5); color: var(--muted); flex: none; }
+.prj-ctx-entry-body { font-size: var(--fz-12-5); color: var(--muted); line-height: 1.5; max-height: 4.5em; overflow: hidden; white-space: pre-wrap; }
+
 /* ── Roadmap: milestone columns on a time track ──────────────────────────── */
 .rm-track { display: flex; gap: 14px; overflow-x: auto; padding: 8px 2px 12px; align-items: stretch; }
 .rm-today { flex: none; width: 2px; background: var(--accent); border-radius: 2px; position: relative; margin: 8px 6px; }

@@ -17,6 +17,7 @@ import type {
   Module,
   PolicyVersion,
   Project,
+  ProjectContextEntry,
   ProviderInfo,
   Agent,
   Snapshot,
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS projects   (id text PRIMARY KEY, workspace_id text NO
 CREATE TABLE IF NOT EXISTS tasks      (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS features   (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS milestones (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS context_entries (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS solution_briefs (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS agents    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS modules    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
@@ -65,6 +67,7 @@ CREATE INDEX IF NOT EXISTS projects_ws ON projects(workspace_id);
 CREATE INDEX IF NOT EXISTS tasks_ws    ON tasks(workspace_id);
 CREATE INDEX IF NOT EXISTS features_ws   ON features(workspace_id);
 CREATE INDEX IF NOT EXISTS milestones_ws ON milestones(workspace_id);
+CREATE INDEX IF NOT EXISTS context_entries_ws ON context_entries(workspace_id);
 CREATE INDEX IF NOT EXISTS solution_briefs_ws ON solution_briefs(workspace_id);
 CREATE INDEX IF NOT EXISTS agents_ws  ON agents(workspace_id);
 CREATE INDEX IF NOT EXISTS log_run   ON run_log(run_id);
@@ -197,6 +200,11 @@ export class PostgresStore implements Store {
   getMilestone(id: string) { return this.get<Milestone>("milestones", id); }
   async putMilestone(m: Milestone) { await this.put("milestones", m.id, m.workspaceId, m); return m; }
   deleteMilestone(id: string) { return this.del("milestones", id); }
+
+  listContextEntries(ws: string) { return this.list<ProjectContextEntry>("context_entries", ws); }
+  getContextEntry(id: string) { return this.get<ProjectContextEntry>("context_entries", id); }
+  async putContextEntry(e: ProjectContextEntry) { await this.put("context_entries", e.id, e.workspaceId, e); return e; }
+  deleteContextEntry(id: string) { return this.del("context_entries", id); }
 
   listSolutionBriefs(ws: string) { return this.list<SolutionBrief>("solution_briefs", ws); }
   getSolutionBrief(id: string) { return this.get<SolutionBrief>("solution_briefs", id); }

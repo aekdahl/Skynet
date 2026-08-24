@@ -10,12 +10,13 @@ import { describe, it, expect } from "vitest";
 import type { Feature, Project } from "@skynet/shared";
 import { buildAgentContext } from "../apps/server/src/agent-context.js";
 
-type ContextProject = Pick<Project, "name" | "goal" | "instructions">;
+type ContextProject = Pick<Project, "name" | "goal" | "instructions" | "contextSummary">;
 
 const project = (over: Partial<ContextProject> = {}): ContextProject => ({
   name: "Acme",
   goal: "",
   instructions: null,
+  contextSummary: null,
   ...over,
 });
 
@@ -126,6 +127,39 @@ describe("buildAgentContext — section presence + order", () => {
     const indices = order.map((marker) => out.indexOf(marker));
     expect(indices.every((i) => i >= 0)).toBe(true);
     for (let i = 1; i < indices.length; i++) expect(indices[i]).toBeGreaterThan(indices[i - 1]!);
+  });
+});
+
+describe("buildAgentContext — S2 primer defaults from Project.contextSummary", () => {
+  it("falls back to project.contextSummary as the primer when opts.primer is omitted", () => {
+    const out = buildAgentContext({
+      project: project({ contextSummary: "Condensed from pasted meeting notes." }),
+      body: "task",
+    });
+    expect(out).toContain("=== PRIMER ===");
+    expect(out).toContain("Condensed from pasted meeting notes.");
+  });
+
+  it("an explicit opts.primer still wins over project.contextSummary", () => {
+    const out = buildAgentContext({
+      project: project({ contextSummary: "from context summary" }),
+      primer: "explicit override",
+      body: "task",
+    });
+    expect(out).toContain("explicit override");
+    expect(out).not.toContain("from context summary");
+  });
+
+  it("omits === PRIMER === when both opts.primer and project.contextSummary are unset", () => {
+    const out = buildAgentContext({ project: project(), body: "task" });
+    expect(out).not.toContain("=== PRIMER ===");
+  });
+
+  it("a project with no goal/instructions but a contextSummary still renders the primer section", () => {
+    const out = buildAgentContext({ project: project({ contextSummary: "just context" }), body: "task" });
+    expect(out).not.toContain("=== PROJECT ===");
+    expect(out).not.toContain("=== PROJECT INSTRUCTIONS");
+    expect(out).toContain("=== PRIMER ===\njust context");
   });
 });
 

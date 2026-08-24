@@ -15,6 +15,8 @@ import {
   WsMessage,
   DEFAULT_PROVIDERS,
   DEFAULT_WORKSPACE,
+  ProjectContextEntry,
+  CreateProjectContextEntryRequest,
 } from "@skynet/shared";
 
 const agent: TaskRun = {
@@ -121,6 +123,28 @@ describe("contracts round-trip", () => {
       id: "x", workspaceId: "w", name: "n", provider: "claude", model: "m", status: "idle",
     };
     expect(Agent.parse(minimal).role).toBe("worker");
+  });
+
+  it("ProjectContextEntry survives JSON serialize → parse unchanged", () => {
+    const entry: ProjectContextEntry = {
+      id: "ctx-1",
+      workspaceId: DEFAULT_WORKSPACE,
+      projectId: "payments",
+      source: "upload",
+      label: "Kickoff notes.pdf",
+      content: "the project is a billing dashboard for finance",
+      filename: "Kickoff notes.pdf",
+      mimeType: "application/pdf",
+      createdAt: 1_000,
+      createdBy: "op-1",
+    };
+    expect(ProjectContextEntry.parse(wire(entry))).toEqual(entry);
+  });
+
+  it("CreateProjectContextEntryRequest trims label/content and treats a blank label as absent", () => {
+    const parsed = CreateProjectContextEntryRequest.parse({ label: "  Kickoff  ", content: "  notes  " });
+    expect(parsed).toEqual({ label: "Kickoff", content: "notes" });
+    expect(() => CreateProjectContextEntryRequest.parse({ content: "" })).toThrow(); // min(1) after trim
   });
 
   it("rejects an unknown Agent role", () => {

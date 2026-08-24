@@ -15,6 +15,7 @@ import type {
   Module,
   PolicyVersion,
   Project,
+  ProjectContextEntry,
   ProviderInfo,
   Agent,
   Snapshot,
@@ -73,6 +74,12 @@ export interface Store {
   getMilestone(id: string): Promise<Milestone | undefined>;
   putMilestone(milestone: Milestone): Promise<Milestone>;
   deleteMilestone(id: string): Promise<void>;
+
+  // project context entries (pasted/uploaded notes — see steward/context.ts)
+  listContextEntries(workspaceId: string): Promise<ProjectContextEntry[]>;
+  getContextEntry(id: string): Promise<ProjectContextEntry | undefined>;
+  putContextEntry(entry: ProjectContextEntry): Promise<ProjectContextEntry>;
+  deleteContextEntry(id: string): Promise<void>;
 
   // solution briefs (pre-work planning docs)
   listSolutionBriefs(workspaceId: string): Promise<SolutionBrief[]>;

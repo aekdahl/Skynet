@@ -14,6 +14,7 @@ import type {
   Module,
   PolicyVersion,
   Project,
+  ProjectContextEntry,
   ProviderInfo,
   Agent,
   Snapshot,
@@ -37,6 +38,7 @@ export class MemoryStore implements Store {
   protected tasks = new Map<string, Task>();
   protected features = new Map<string, Feature>();
   protected milestones = new Map<string, Milestone>();
+  protected contextEntries = new Map<string, ProjectContextEntry>();
   protected solutionBriefs = new Map<string, SolutionBrief>();
   protected fleet = new Map<string, Agent>();
   protected modules: Module[] = [];
@@ -112,6 +114,11 @@ export class MemoryStore implements Store {
   async getMilestone(id: string) { return this.milestones.get(id); }
   async putMilestone(m: Milestone) { this.milestones.set(m.id, m); this.persist(); return m; }
   async deleteMilestone(id: string) { this.milestones.delete(id); this.persist(); }
+
+  async listContextEntries(ws: string) { return [...this.contextEntries.values()].filter((e) => e.workspaceId === ws); }
+  async getContextEntry(id: string) { return this.contextEntries.get(id); }
+  async putContextEntry(e: ProjectContextEntry) { this.contextEntries.set(e.id, e); this.persist(); return e; }
+  async deleteContextEntry(id: string) { this.contextEntries.delete(id); this.persist(); }
 
   async listSolutionBriefs(ws: string) { return [...this.solutionBriefs.values()].filter((b) => b.workspaceId === ws); }
   async getSolutionBrief(id: string) { return this.solutionBriefs.get(id); }

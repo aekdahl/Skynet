@@ -204,6 +204,17 @@ const ALLOW = new Set<string>([
   // inform.test.ts; the delivery mechanics (Claude's shouldQuery:false, the
   // CLI buffer+prepend) in claude-inform.test.ts / cli-inform.test.ts.
   "informRuns",
+  // Project context (meeting notes/emails/pasted or uploaded docs): every
+  // mutating call (add/upload/delete) triggers a real LLM condensation pass
+  // server-side (steward/context.ts) on the workspace's own provider key —
+  // same "needs a live key" shape as stewardChat/crystallizeBrief above, so no
+  // offline journey exercises them. listContextEntries is a plain read with no
+  // LLM dependency, allowlisted alongside its mutating siblings since a
+  // journey has nothing to list without them. The full Operations path (raw
+  // entries kept verbatim, condense-on-add/upload/delete, clears to null when
+  // the last entry is removed) is exercised with a stubbed model reply in
+  // project-context.test.ts; extraction (.txt/.md/unsupported-type) likewise.
+  "listContextEntries", "addContextEntry", "uploadContextEntry", "deleteContextEntry", "refreshProjectContext",
 ]);
 
 describe("client API coverage", () => {
