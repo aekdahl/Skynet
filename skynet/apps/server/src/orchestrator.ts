@@ -2590,6 +2590,23 @@ export class Orchestrator {
       }).catch(() => undefined);
       return;
     }
+    // The previous agent is now confirmed stopped (both branches above call
+    // live.handle.stop() before reaching here). If it was killed mid-`git
+    // merge`/`git rebase` — plausibly WHY it got stuck in the first place, if
+    // it hit a conflict it didn't know how to resolve — the new agent would
+    // otherwise inherit that half-finished operation with no idea it's there,
+    // and has to reverse-engineer it via ad-hoc `git log`/`status`/`fsck`
+    // archaeology before it can even start (observed in the wild: exactly
+    // that sequence, ending in a second stuck-escalation). Abort is always
+    // safe — only the interrupted merge/rebase itself is undone, never any
+    // committed or uncommitted file changes.
+    const cleanedGitState = await git.worktrees.sanitizeInterrupted(runId).catch(() => []);
+    if (cleanedGitState.length > 0) {
+      await this.hub.runLog(
+        runId,
+        `found an interrupted git ${cleanedGitState.join("/")} left by the previous agent — aborted it (no file changes touched) before handing off`,
+      );
+    }
     const provider = await this.getProvider(acq.provider);
     const cwd = git.worktrees.pathFor(runId);
     const apiKey = await secretService.resolve(run.workspaceId, run.provider);
@@ -2598,14 +2615,18 @@ export class Orchestrator {
     const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
     const solutionBrief = task ? await this.findTaskBrief(task, run.workspaceId) : undefined;
     const siblings = project && task ? await this.siblingDigestFor(project, task.id) : undefined;
+    const gitStateNote =
+      cleanedGitState.length > 0
+        ? `\n\nNote: the previous agent was interrupted mid-\`git ${cleanedGitState.join("/")}\` — it's been aborted for you (no file changes were touched), so the working directory reflects only real committed/uncommitted work, not a half-finished merge. No need to investigate this further.`
+        : "";
     const prompt = buildAgentContext({
       project,
       feature,
       brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
       siblings,
       body: reassign
-        ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
-        : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}). Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
+        ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+        : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}).${gitStateNote} Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
     });
     // Reflect the (re)acquired runner on the persisted run: a reassign moves the
     // run to a DIFFERENT agent, and the board/subway attribute runs by agentId —
