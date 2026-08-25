@@ -2609,6 +2609,7 @@ export class Orchestrator {
     }
     if (resolution.action === "reject") {
       // Stop: abandon the run cleanly and reclaim its worktree.
+      const taskId = this.escalations.get(runId)?.taskId ?? live?.taskId ?? null;
       if (live) await live.handle.stop().catch(() => undefined);
       await this.freeRunner(live?.agentId ?? null);
       this.live.delete(runId);
@@ -2619,6 +2620,21 @@ export class Orchestrator {
       this.failCounts.delete(runId);
       await this.hub.runStatus(runId, "done");
       await this.hub.runLog(runId, "escalation resolved — operator stopped the run");
+      // Same invariant haltAgent upholds for a plain (non-escalated) Stop: a
+      // stopped run integrates no change, so its task must not be left
+      // stranded "ongoing"/"review" with no live run behind it — that reads as
+      // in-progress while nothing is working it. Without this, EVERY
+      // escalation stopped via this path (a reap, a stalled runner, an agent
+      // escalation the operator declines) orphans its task in the kanban
+      // forever — found live, 10 of 11 "ongoing" tasks on a real deployment
+      // had already-done runs behind them, none reachable by drag (ongoing's
+      // only legal human move is → todo, and nothing was making that move).
+      if (taskId) {
+        const task = await this.store.getTask(taskId).catch(() => undefined);
+        if (task && (task.state === "ongoing" || task.state === "review")) {
+          await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null }).catch(() => undefined);
+        }
+      }
       return;
     }
     // Agent-driven escalation still holds a live gate → resume it in place with
