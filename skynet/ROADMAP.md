@@ -535,13 +535,21 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   Reconciling against the provider console proved the meter itself was the problem: console said
   **515.2M input / 3.45M output** for August, Skynet had recorded **189.1M / 1.22M** — **63% of all token
   spend was invisible**. Three independent causes, all fixed here:
-  *(1) Usage OVERWROTE instead of accumulating.* `Hub.runUsage` did `putRun({ ...a, usage })`, but one run
-  launches several SDK queries — the runner relaunches on turn-budget exhaustion (up to `MAX_TURN_CONTINUES`
-  = 3, so up to 4 × 60 = 240 turns) and again on transient API failures, each a fresh `query()` emitting its
-  own `result` meter. Every relaunch clobbered the prior segment, so a run that burned its full budget
-  recorded only the last ≤60-turn slice — a 4x undercount on exactly the longest (most expensive) runs.
-  Now sums; `costUsd`/`durationMs` stay null only while EVERY segment was unpriced, so one null can't wipe
-  what's known.
+  *(1) The runner read the WRONG field, and dropped every prior query segment.* Two compounding errors, both
+  settled against the SDK's own field docs rather than guessed at. First, it read `result.usage`, documented
+  as **"MAIN AGENT LOOP ONLY — excludes Task subagent, sidechain, and auxiliary model calls"** — and Skynet's
+  agents spawn subagents routinely (an Explore/research subagent is a normal move), so all of that work was
+  billed and none of it recorded. `modelUsage` — "the correct field for token/cost accounting", covering
+  "main loop, Task subagents, sidechains, and internal calls such as compaction" — is now the source, summed
+  across its per-model entries. Second, a run spans SEVERAL `query()` calls (turn-budget continues up to
+  `MAX_TURN_CONTINUES` = 3, plus transient relaunches) and only the current one was ever reported. The
+  subtlety that makes this easy to "fix" into a much worse bug: these readings are **cumulative within a
+  query** ("each result carries the running total so far, so read the latest result rather than summing
+  across results") but **reset on resume** ("resumed sessions start fresh"). So the runner now keeps
+  `priorSegments` + the live segment's latest total and emits their sum, and `Hub.runUsage` deliberately
+  stays a REPLACE — accumulating there on top of an already-cumulative reading would multiply a long run's
+  recorded cost by roughly its turn count. (An earlier pass of this fix did exactly that; the corrected
+  design is pinned by tests that fail in BOTH directions.)
   *(2) Every non-run LLM call was unmetered.* `streamQueryText` hit `msg.type === "result"` and `break`—
   discarding `total_cost_usd` — which covered Steward chat (both surfaces, sync + streaming), triage,
   auto-review, deep/breaker review, merge briefs, diff walkthroughs, the task linter, crystallize, brief
@@ -557,10 +565,13 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   error — which immediately surfaced **9** such call sites (grep had found 5). All now pass a new shared
   `ASSISTANT_MODEL` ("sonnet"); measured blended rates on this very deployment put Opus at $1.04/Mtok vs
   Sonnet at $0.50/Mtok, so ~2.1x cheaper in practice on the affected paths.
-  Regression-proofed both ways in `tests/usage-accounting.test.ts` (10 tests): stashed the Hub fix and
-  confirmed 4 accumulation tests genuinely fail; re-injected a `?? "opus"` fallback + an optional `model?`
-  and confirmed the two source-level guards catch it (same source-scanning style as `client-coverage.test.ts`,
-  so the fallback can't quietly return).
+  Regression-proofed in every direction: `tests/usage-accounting.test.ts` (12 pure tests — subagent/sidechain
+  capture, cache-tier folding, the cost fallbacks, `addUsage` across segments, and Hub staying a replace) plus
+  3 new end-to-end cases in `tests/claude-runner-retry.test.ts` driving the real runner through both relaunch
+  paths (turn-exhaustion and a 529 storm, whose pre-retry spend must still count). Verified by injection:
+  making `readUsage` ignore `modelUsage` fails 8 tests; dropping the cross-relaunch carry-forward fails 2;
+  re-adding a `?? "opus"` fallback or an optional `model?` trips the source-level guards (same scanning style
+  as `client-coverage.test.ts`, so neither can quietly return).
 - [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
   Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
   credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself

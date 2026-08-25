@@ -235,24 +235,72 @@ export interface RunnerUsage {
 }
 
 /**
- * PURE: read the meter off an SDK `result` message. `inputTokens` folds in the
- * cache tiers — a cache READ is ~10x cheaper than a fresh input token but is
- * still billed, so omitting them would under-report real spend (and `costUsd`
- * below, which the SDK prices itself, already accounts for the discount).
- * Shared by the live-run path (emitUsage) and every one-shot helper, so the two
- * can't drift into reporting different things.
+ * PURE: read the meter off an SDK `result` message, as a RUNNING TOTAL for the
+ * query() call that produced it — not a per-turn delta. Two things the SDK's
+ * own field docs make explicit, both of which this got wrong at first:
+ *
+ *  • Read `modelUsage`, NOT `usage`. `usage` is documented "MAIN AGENT LOOP
+ *    ONLY — excludes Task subagent, sidechain, and auxiliary model calls".
+ *    Skynet's agents spawn subagents routinely (an Explore/research subagent
+ *    is a normal move), so reading `usage` silently billed none of that work.
+ *    `modelUsage` covers "main loop, Task subagents, sidechains, and internal
+ *    calls such as compaction" and is called out as "the correct field for
+ *    token/cost accounting". It's keyed by model, so sum its entries.
+ *  • These are CUMULATIVE across turns within one streaming-input query — each
+ *    result "carries the running total so far, so read the latest result
+ *    rather than summing across results". Summing every result would multiply
+ *    a long run's true cost. Callers therefore REPLACE within a segment; only
+ *    across a relaunch (where "resumed sessions start fresh") do totals add —
+ *    see ClaudeRunnerHandle's `priorSegments`.
+ *
+ * `inputTokens` folds in the cache tiers: a cache read is ~10x cheaper but is
+ * still billed, so omitting it under-reports real token volume (`costUsd`,
+ * which the SDK prices itself, already reflects the discount).
  */
 export function readUsage(result: Record<string, unknown>): RunnerUsage {
-  const u = (result.usage ?? {}) as Record<string, unknown>;
   const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const models = (result.modelUsage ?? {}) as Record<string, Record<string, unknown>>;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let modelCost = 0;
+  let sawModelUsage = false;
+  for (const m of Object.values(models)) {
+    if (!m || typeof m !== "object") continue;
+    sawModelUsage = true;
+    inputTokens += n(m.inputTokens) + n(m.cacheReadInputTokens) + n(m.cacheCreationInputTokens);
+    outputTokens += n(m.outputTokens);
+    modelCost += n(m.costUSD);
+  }
+  // Fall back to the main-loop-only `usage` when an older/edge result carries
+  // no modelUsage at all — under-counted, but better than reporting zero.
+  if (!sawModelUsage) {
+    const u = (result.usage ?? {}) as Record<string, unknown>;
+    inputTokens = n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens);
+    outputTokens = n(u.output_tokens);
+  }
+  const total = typeof result.total_cost_usd === "number" ? result.total_cost_usd : null;
   return {
-    inputTokens: n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens),
-    outputTokens: n(u.output_tokens),
-    costUsd: typeof result.total_cost_usd === "number" ? result.total_cost_usd : null,
+    inputTokens,
+    outputTokens,
+    costUsd: total ?? (sawModelUsage ? modelCost : null),
     turns: n(result.num_turns),
     durationMs: typeof result.duration_ms === "number" ? result.duration_ms : null,
   };
 }
+
+/** Add two meter readings — used to carry COMPLETED query segments forward
+ *  across a relaunch (a resumed session restarts its own counters at zero). */
+export function addUsage(a: RunnerUsage, b: RunnerUsage): RunnerUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    costUsd: a.costUsd == null && b.costUsd == null ? null : (a.costUsd ?? 0) + (b.costUsd ?? 0),
+    turns: a.turns + b.turns,
+    durationMs: a.durationMs == null && b.durationMs == null ? null : (a.durationMs ?? 0) + (b.durationMs ?? 0),
+  };
+}
+
+const ZERO_USAGE: RunnerUsage = { inputTokens: 0, outputTokens: 0, costUsd: null, turns: 0, durationMs: null };
 
 /**
  * Yield an SDK query's answer as text deltas. With `includePartialMessages` the
@@ -923,6 +971,11 @@ class ClaudeRunnerHandle implements RunnerHandle {
   private initialPrompt = ""; // the kickoff message, re-sent if we retry pre-session
   private apiRetries = 0; // transient retries spent (budget MAX_API_RETRIES)
   private turnContinues = 0; // turn-budget continues spent (budget MAX_TURN_CONTINUES)
+  // Cost accounting across relaunches — see emitUsage/sealSegment. `priorSegments`
+  // is what finished query() calls spent; `segmentUsage` is the latest running
+  // total for the query currently in flight.
+  private priorSegments: RunnerUsage = ZERO_USAGE;
+  private segmentUsage: RunnerUsage = ZERO_USAGE;
   private lastApiError = ""; // most recent overload/error text seen, for classification
   // Rolling tail of the CLI's stderr. The SDK swallows the child's stderr by
   // default, so a startup crash surfaces only as its generic guess ("binary
@@ -1260,12 +1313,27 @@ class ClaudeRunnerHandle implements RunnerHandle {
   }
 
   /** Read exact token/cost totals off the SDK `result` message and report them. */
-  /** Report THIS query segment's meter. A run launches several queries (turn-
-   *  budget continues, transient relaunches), each with its own `result` — the
-   *  consumer accumulates them (see Hub.runUsage), so this reports the segment,
-   *  never a running total. */
+  /**
+   * Report the run's TRUE running total.
+   *
+   * Each `result` carries the running total for its own query() call, so
+   * within a segment we take the latest (never sum — that would multiply a
+   * long run's cost). But a run spans SEVERAL query() calls: the runner
+   * relaunches on turn-budget exhaustion (up to MAX_TURN_CONTINUES) and on
+   * transient failures, and a resumed session restarts its counters at zero.
+   * So the total is `everything finished segments spent` + `this segment so
+   * far`, which is what the consumer stores verbatim.
+   */
   private emitUsage(result: Record<string, unknown>) {
-    this.events.onUsage?.(this.runId, readUsage(result));
+    this.segmentUsage = readUsage(result);
+    this.events.onUsage?.(this.runId, addUsage(this.priorSegments, this.segmentUsage));
+  }
+
+  /** Fold the segment that just ended into the carried-forward total. Called
+   *  immediately before a relaunch, since the next query starts from zero. */
+  private sealSegment() {
+    this.priorSegments = addUsage(this.priorSegments, this.segmentUsage);
+    this.segmentUsage = ZERO_USAGE;
   }
 
   private async consume() {
@@ -1291,6 +1359,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
         );
         await this.q?.interrupt().catch(() => undefined); // release the exhausted session
         if (this.finished) return;
+        this.sealSegment(); // the next query() restarts its own counters at zero
         this.relaunch();
         continue;
       }
@@ -1308,6 +1377,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
         await this.q?.interrupt().catch(() => undefined); // release the dead session
         await sleep(wait);
         if (this.finished) return;
+        this.sealSegment(); // the next query() restarts its own counters at zero
         this.relaunch();
         continue;
       }
