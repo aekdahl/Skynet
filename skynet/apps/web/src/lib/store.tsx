@@ -242,6 +242,7 @@ export interface Store extends StoreState {
   requestReview: (projectId: string, taskId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
+  answerClarification: (projectId: string, taskId: string, answer: string) => Promise<void>;
   createAgent: (provider: string, model: string, name?: string, credentialId?: string, label?: string | null) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string; canReview?: boolean; label?: string | null }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
@@ -760,6 +761,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       dismissTaskLint: async (projectId, taskId) => {
         await api.dismissTaskLint(projectId, taskId);
+      },
+      // The updated task rides back on the `task.upserted` WS echo, same as
+      // every other task mutation here — nothing to apply locally.
+      answerClarification: async (projectId, taskId, answer) => {
+        await api.answerClarification(projectId, taskId, answer);
       },
       createAgent: async (provider, model, name, credentialId, label) => {
         await api.createAgent({ provider, model, name, credentialId, label });

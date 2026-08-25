@@ -187,6 +187,80 @@ function TriageCard({ task }: { task: Task }) {
   );
 }
 
+/**
+ * Triage asked for something before this task can be worked. Steward has
+ * drafted a proposed answer; the operator sends it, edits it, or writes their
+ * own. Answering appends their words to the task description and sends it back
+ * for re-triage — see Operations.answerClarification.
+ *
+ * Sits on the task card rather than in the Inbox on purpose: the question is
+ * ABOUT this task, and the context needed to answer it (title, description,
+ * triage read) is already right here.
+ */
+function ClarificationCard({ pid, task }: { pid: string; task: Task }) {
+  const { answerClarification, readOnly } = useStore();
+  const c = task.clarification;
+  const [answer, setAnswer] = useState(c?.draft ?? "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  // A re-triage can replace the questions (and the draft) while the card is
+  // mounted — follow the newer draft unless the operator has started typing.
+  const draftRef = useRef(c?.draft ?? "");
+  useEffect(() => {
+    const next = c?.draft ?? "";
+    if (draftRef.current !== next) {
+      draftRef.current = next;
+      setAnswer((cur) => (cur === "" || cur === draftRef.current ? next : cur));
+    }
+  }, [c?.draft]);
+  if (!c) return null;
+
+  const send = async () => {
+    if (!answer.trim() || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await answerClarification(pid, task.id, answer.trim());
+    } catch (e) {
+      setErr((e as Error)?.message || "Couldn't save that answer.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="clarify" onClick={(e) => e.stopPropagation()}>
+      <div className="clarify-head">
+        <span className="clarify-title">Needs a decision before it can start</span>
+      </div>
+      <ul className="clarify-qs">
+        {c.questions.map((q, i) => (
+          <li key={i}>{q}</li>
+        ))}
+      </ul>
+      <textarea
+        className="qx-input clarify-answer"
+        rows={3}
+        value={answer}
+        disabled={busy || readOnly}
+        placeholder="Your answer — this becomes part of the task brief"
+        onChange={(e) => setAnswer(e.target.value)}
+      />
+      <div className="clarify-actions">
+        <button className="btn btn-primary btn-sm" disabled={!answer.trim() || busy || readOnly} onClick={() => void send()}>
+          {busy ? "Sending…" : "Send answer"}
+        </button>
+        {c.draft && answer !== c.draft && (
+          <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setAnswer(c.draft!)}>
+            Reset to draft
+          </button>
+        )}
+        {c.draft && <span className="clarify-hint">Draft suggested — edit before sending if it's off.</span>}
+      </div>
+      {err && <div className="prd-path-err">{err}</div>}
+    </div>
+  );
+}
+
 // Saved provider/model preference for auto-pick — a SOFT hint the server tries
 // first, not a hard requirement (see Orchestrator.acquireAgent): unlike
 // AgentEligibility (who's even ALLOWED to take it), this never blocks Start,
@@ -555,6 +629,9 @@ function TaskCard({
             </button>
           </div>
         )}
+      {/* Triage needs something before this can start — ask right on the card. */}
+      {task.clarification && <ClarificationCard pid={pid} task={task} />}
+
       {s === "review" && (
         task.reviewVerdict ? (
           task.reviewVerdict.decision === "flag" ? (

@@ -652,6 +652,28 @@ export const BreakerVerdict = z.object({
 });
 export type BreakerVerdict = z.infer<typeof BreakerVerdict>;
 
+// ─── Triage clarifying questions ────────────────────────────────────────────
+// Triage could already decide a task was `unclear` — but it had nowhere to say
+// WHAT was unclear, and no way to get it resolved. The task just parked in
+// `triage` forever, and the expensive failure mode followed: an agent later
+// picked it up, burned its whole turn budget rediscovering the same ambiguity,
+// and escalated with "no acceptance criteria to aim at". Asking costs one
+// cheap consult; discovering it at agent prices costs orders of magnitude more.
+//
+// `draft` is Steward's PROPOSED answer, grounded in the project + repo — the
+// operator sends it as-is, edits it, or replaces it. It is never applied on its
+// own: an unanswered question is a question, and a model guessing at the
+// operator's intent is exactly what produced the ambiguity in the first place.
+export const TaskClarification = z.object({
+  /** What triage needs to know. Specific and answerable, not "please clarify". */
+  questions: z.array(z.string()).default([]),
+  /** Steward's proposed answer for the operator to accept/edit. null = none
+   *  drafted (no usable credential, or the draft came back empty). */
+  draft: z.string().nullable().default(null),
+  askedAt: Timestamp,
+});
+export type TaskClarification = z.infer<typeof TaskClarification>;
+
 export const Task = z.object({
   id: z.string(),
   workspaceId: z.string(),
@@ -682,6 +704,11 @@ export const Task = z.object({
   // keyword-classify free text) — see `splitEstMinutesTag` in orchestrator.ts.
   assessmentEffort: z.enum(["small", "medium", "large"]).nullable().default(null),
   assessmentRisks: z.array(z.string()).default([]),
+  // Triage asked for something it needs before this task can be worked (see
+  // TaskClarification). Set when triage self-reports `clarity: "unclear"` AND
+  // names what's missing; cleared when the operator answers. Additive and
+  // nullable, so every task predating this parses unchanged.
+  clarification: TaskClarification.nullable().default(null),
   // Task linter v0 (assistive) — cheap quality hints computed in the
   // background right after the task is created or its text/description is
   // edited (see apps/server/src/task-linter.ts). NEVER blocks creation or
@@ -1427,6 +1454,15 @@ export type CreateTaskRequest = z.infer<typeof CreateTaskRequest>;
 
 // Editing a task edits its text / auto-pick flag only. State changes go through
 // the guarded move endpoint (MoveTaskRequest) so illegal transitions are rejected.
+// The operator's answer to triage's clarifying questions (see TaskClarification).
+// Appended to the task's description and the task returned to `backlog` so the
+// next triage pass reads it — deliberately a re-triage rather than a direct
+// promotion to `todo`, since the answer may change the effort/risk read too.
+export const AnswerClarificationRequest = z.object({
+  answer: z.string().trim().min(1).max(10_000),
+});
+export type AnswerClarificationRequest = z.infer<typeof AnswerClarificationRequest>;
+
 export const UpdateTaskRequest = z.object({
   text: z.string().min(1).optional(),
   description: z.string().nullable().optional(),

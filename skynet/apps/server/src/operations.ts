@@ -1069,6 +1069,8 @@ export class Operations {
       assessment: null,
       assessmentEffort: null,
       assessmentRisks: [],
+      // Triage asks for what it needs; nothing to ask before it has run.
+      clarification: null,
       reviewVerdict: null,
       assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,
@@ -1127,6 +1129,39 @@ export class Operations {
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
     if (!task.lint) return task;
     return this.hub.upsertTask({ ...task, lint: { ...task.lint, dismissed: true } });
+  }
+
+  /**
+   * Answer triage's clarifying questions (see TaskClarification). The answer is
+   * APPENDED to the task's description — never replacing it, and never rewritten
+   * by a model — so the operator's own words are what the next triage pass and
+   * any eventual agent actually read.
+   *
+   * The task returns to `backlog` for a genuine RE-TRIAGE rather than being
+   * promoted straight to `todo`: the answer may well change the effort, risk or
+   * grouping read, and the whole point of this loop is that the clarity call is
+   * made with the missing information in hand. Clearing `clarification` is what
+   * makes the ask disappear from the board.
+   */
+  async answerClarification(ws: string, tid: string, answer: string): Promise<Task> {
+    const task = await this.store.getTask(tid);
+    if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
+    if (!task.clarification) throw new Error("This task has no open clarifying questions.");
+    const asked = task.clarification.questions;
+    const block = [
+      "",
+      "---",
+      "**Clarifications** (asked at triage, answered by the operator):",
+      ...asked.map((q) => `- _${q}_`),
+      "",
+      answer.trim(),
+    ].join("\n");
+    return this.hub.upsertTask({
+      ...task,
+      description: `${task.description?.trim() ?? ""}${block}`.trim(),
+      clarification: null,
+      state: "backlog",
+    });
   }
 
   /** Import a GitHub-connected project's OPEN issues as backlog tasks, each linked
@@ -1970,6 +2005,7 @@ export class Operations {
         assessment: null,
         assessmentEffort: t.effort,
         assessmentRisks: [],
+        clarification: null,
         reviewVerdict: null,
         assignment: { mode: "unassigned", agentIds: [] },
         order: inProject.length + i,
