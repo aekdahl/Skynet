@@ -40,6 +40,17 @@ import {
   runToCompletion as sharedRunToCompletion,
 } from "./worktree.js";
 
+// Credential-shaped env vars the control-plane process may hold (provider API
+// keys, the secrets master key, admin/viewer passwords, bot + webhook tokens).
+// A preview runs the OPERATOR'S OWN untrusted branch, so these must never
+// reach its child process — see docs/live-preview.md's sandboxing note.
+const PREVIEW_ENV_DENYLIST = [
+  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "CURSOR_API_KEY", "OPENROUTER_API_KEY",
+  "GITHUB_TOKEN", "GITHUB_APP_PRIVATE_KEY", "GITHUB_WEBHOOK_SECRET",
+  "SKYNET_MASTER_KEY", "SKYNET_ADMIN_PASSWORD", "SKYNET_VIEWER_PASSWORD",
+  "SKYNET_BOOTSTRAP_TOKEN", "SKYNET_TELEGRAM_BOT_TOKEN",
+];
+
 /**
  * Environment for preview subprocesses (dependency install + the dev server).
  * A live preview is a DEV run, so force `NODE_ENV=development`: otherwise a
@@ -48,11 +59,15 @@ import {
  * (concurrently, vite, …) is never installed and `npm run dev` fails with
  * "<tool>: not found". Also clear npm's production-omit signals in case they were
  * inherited. Overrides here apply only to the child — the server keeps its own env.
+ *
+ * Also strips prod credentials (see PREVIEW_ENV_DENYLIST): the child runs the
+ * branch under review, which — pre-merge — is not yet trusted code.
  */
 export function previewEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "development", ...extra };
   delete env.npm_config_production; // legacy "--production" signal
   delete env.npm_config_omit; // "--omit=dev"
+  for (const key of PREVIEW_ENV_DENYLIST) delete env[key];
   return env;
 }
 
