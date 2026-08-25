@@ -529,6 +529,38 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Fix: Skynet's cost meter under-reported real spend by ~3x, and side-calls silently ran Opus.**
+  Reported live as "we burnt through $100 in 8h" — Skynet's own numbers said its busiest day EVER was $25
+  and that whole month was $119, so the first (wrong) conclusion drawn from them was "it isn't us."
+  Reconciling against the provider console proved the meter itself was the problem: console said
+  **515.2M input / 3.45M output** for August, Skynet had recorded **189.1M / 1.22M** — **63% of all token
+  spend was invisible**. Three independent causes, all fixed here:
+  *(1) Usage OVERWROTE instead of accumulating.* `Hub.runUsage` did `putRun({ ...a, usage })`, but one run
+  launches several SDK queries — the runner relaunches on turn-budget exhaustion (up to `MAX_TURN_CONTINUES`
+  = 3, so up to 4 × 60 = 240 turns) and again on transient API failures, each a fresh `query()` emitting its
+  own `result` meter. Every relaunch clobbered the prior segment, so a run that burned its full budget
+  recorded only the last ≤60-turn slice — a 4x undercount on exactly the longest (most expensive) runs.
+  Now sums; `costUsd`/`durationMs` stay null only while EVERY segment was unpriced, so one null can't wipe
+  what's known.
+  *(2) Every non-run LLM call was unmetered.* `streamQueryText` hit `msg.type === "result"` and `break`—
+  discarding `total_cost_usd` — which covered Steward chat (both surfaces, sync + streaming), triage,
+  auto-review, deep/breaker review, merge briefs, diff walkthroughs, the task linter, crystallize, brief
+  decomposition, and project-context condensation. Added a `UsageSink` threaded through every one-shot
+  helper, plus one shared `readUsage()` the live-run path and the one-shots both read through so they can't
+  drift (it folds `cache_read`/`cache_creation` into `inputTokens` — a cache read is ~10x cheaper but still
+  billed, and omitting it under-reports).
+  *(3) Those same unmetered calls DEFAULTED TO OPUS.* Both `oneShotText`/`oneShotTextStream` and
+  `oneShotRepoAssistant(Stream)` did `?? "opus"` — so on a workspace whose entire fleet is Sonnet, every
+  caller that didn't think about a model got the priciest one in the catalog, unmetered. Worst offender:
+  repo-grounded Steward chat runs up to **14 tool-using turns with the full `claude_code` preset**, per
+  question. `model` is now REQUIRED on all four helpers, turning "what does this cost me?" into a compile
+  error — which immediately surfaced **9** such call sites (grep had found 5). All now pass a new shared
+  `ASSISTANT_MODEL` ("sonnet"); measured blended rates on this very deployment put Opus at $1.04/Mtok vs
+  Sonnet at $0.50/Mtok, so ~2.1x cheaper in practice on the affected paths.
+  Regression-proofed both ways in `tests/usage-accounting.test.ts` (10 tests): stashed the Hub fix and
+  confirmed 4 accumulation tests genuinely fail; re-injected a `?? "opus"` fallback + an optional `model?`
+  and confirmed the two source-level guards catch it (same source-scanning style as `client-coverage.test.ts`,
+  so the fallback can't quietly return).
 - [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
   Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
   credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself

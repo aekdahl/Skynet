@@ -93,11 +93,41 @@ export class Hub {
     this.bus.publish(a.workspaceId, { type: "run.progress", runId, progress, plan });
   }
 
+  /**
+   * ACCUMULATE a run's usage — never replace it. Each `usage` here is ONE
+   * segment's meter reading: the SDK emits a `result` (with that query's own
+   * `total_cost_usd`) per `query()` invocation, and a single run launches
+   * several — the runner relaunches on turn-budget exhaustion (up to
+   * MAX_TURN_CONTINUES) and on transient API failures, each time as a fresh
+   * query with its own result.
+   *
+   * This used to `putRun({ ...a, usage })`, so every relaunch CLOBBERED the
+   * previous segment and a run that burned its full turn budget recorded only
+   * the last ≤60-turn slice. Reconciling against the provider's own console
+   * showed Skynet accounting for barely a third of real token spend; this was
+   * one of the three causes. Summing is correct because each segment's numbers
+   * cover only that segment (a resumed session re-reports from zero, it does
+   * not carry the prior query's totals forward).
+   *
+   * `costUsd` stays null only while EVERY segment reported null — one priced
+   * segment makes the total real, rather than a null wiping what we know.
+   */
   async runUsage(runId: string, usage: Usage): Promise<void> {
     const a = await this.store.getRun(runId);
     if (!a) return;
-    await this.store.putRun({ ...a, usage });
-    this.bus.publish(a.workspaceId, { type: "run.usage", runId, usage });
+    const prev = a.usage;
+    const total: Usage = prev
+      ? {
+          inputTokens: prev.inputTokens + usage.inputTokens,
+          outputTokens: prev.outputTokens + usage.outputTokens,
+          costUsd: prev.costUsd == null && usage.costUsd == null ? null : (prev.costUsd ?? 0) + (usage.costUsd ?? 0),
+          turns: prev.turns + usage.turns,
+          durationMs:
+            prev.durationMs == null && usage.durationMs == null ? null : (prev.durationMs ?? 0) + (usage.durationMs ?? 0),
+        }
+      : usage;
+    await this.store.putRun({ ...a, usage: total });
+    this.bus.publish(a.workspaceId, { type: "run.usage", runId, usage: total });
   }
 
   /** Persist the files a finished run actually changed (surfaced to the UI as
