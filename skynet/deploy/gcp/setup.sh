@@ -4,7 +4,8 @@
 # straight into Secret Manager (nothing secret is stored in this repo or in
 # Terraform state), builds + pushes the image, provisions the VM, and prints the
 # tunnel command. Re-running is safe: existing config + already-set secrets are
-# kept (it only asks for what's missing).
+# kept (it only asks for what's missing) — with one exception: an undersized
+# machine_type (e2-small/e2-medium) is auto-bumped to e2-standard-4 every run.
 #
 # The only hard prereqs are gcloud + terraform installed. The one thing NOT
 # automated is the final `terraform apply` confirmation — you review the plan and
@@ -86,6 +87,23 @@ acme_email       = "${ACME_IN}"
 TFV
   fi
   echo "  ✓ wrote terraform.tfvars (edit it anytime; re-run to reuse)"
+fi
+
+# ── 1b. Auto-upgrade an undersized machine_type on an EXISTING tfvars ────────
+# The wizard above only runs on a FIRST deploy — an existing terraform.tfvars
+# (from before e2-standard-4 became the recommendation) never sees it again,
+# so a plain re-run alone wouldn't pick up the bump. A live incident showed
+# e2-small/e2-medium genuinely can't handle a few concurrent agents (memory
+# pressure severe enough to make the whole VM briefly unresponsive, not just
+# the app container) — so those two specifically are auto-upgraded on every
+# run, not just offered. Anything else (including a deliberately-larger custom
+# type) is left alone. Self-limiting: once bumped, the grep below no longer
+# matches, so this is a no-op on every subsequent run.
+if [ -f terraform.tfvars ] && grep -qE '^machine_type[[:space:]]*=[[:space:]]*"(e2-small|e2-medium)"' terraform.tfvars; then
+  OLD_MT=$(grep -E '^machine_type[[:space:]]*=' terraform.tfvars | sed -E 's/^machine_type[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+  say "▸ Bumping machine_type: ${OLD_MT} → e2-standard-4 (too small for concurrent agents — see deploy/gcp/README.md)"
+  awk '/^machine_type[[:space:]]*=/{print "machine_type     = \"e2-standard-4\""; next} {print}' terraform.tfvars >terraform.tfvars.new
+  mv terraform.tfvars.new terraform.tfvars
 fi
 
 say "▸ terraform init"
