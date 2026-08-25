@@ -3227,6 +3227,15 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .cmdk-foot span { display: flex; align-items: center; gap: 5px; }
 .cmdk-foot kbd { margin-right: -2px; }
 
+/* ── Triage clarifying questions on a task card ──────────────────────────── */
+.clarify { border: 1px solid color-mix(in oklch, var(--warn), transparent 55%); background: color-mix(in oklch, var(--warn), transparent 93%); border-radius: 8px; padding: 9px 10px; display: flex; flex-direction: column; gap: 7px; }
+.clarify-head { display: flex; align-items: center; gap: 6px; }
+.clarify-title { font-size: var(--fz-11); font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--warn); }
+.clarify-qs { margin: 0; padding-left: 16px; font-size: var(--fz-12); line-height: 1.45; }
+.clarify-qs li { margin: 0 0 2px; }
+.clarify-answer { resize: vertical; min-height: 52px; font: inherit; width: 100%; }
+.clarify-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.clarify-hint { font-size: var(--fz-10-5); color: var(--faint); }
 /* ── Spend efficiency (Home): how much of the fleet's cost actually ships ─── */
 .spend-eff { display: flex; flex-direction: column; gap: 12px; }
 .spend-eff-head { display: flex; align-items: baseline; gap: 12px; }

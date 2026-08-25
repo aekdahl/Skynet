@@ -529,6 +529,30 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Triage asks — clarifying questions with a Steward-drafted answer.** Triage could already decide a
+  task was `unclear`, but had nowhere to say WHAT was unclear and no way to get it resolved: the task parked
+  in `triage` indefinitely with nobody told what was missing. The expensive consequence showed up live —
+  agents later picked those tasks up, burned their whole turn budget rediscovering the same ambiguity, and
+  escalated verbatim with *"no acceptance criteria to aim at"* / *"the project has no goal set"*. Asking
+  costs one cheap consult; discovering it at agent prices costs orders of magnitude more.
+  Now: when triage reports `clarity: "unclear"` it must also name 1-3 SHORT, SPECIFIC, ANSWERABLE things it
+  needs (the prompt rejects a generic "please clarify" — a vague question wastes the exchange), parsed with
+  the same defensive per-field discipline as every other triage signal (`splitEstMinutesTag`: missing stays
+  missing, a malformed `questions` never drops the other fields, capped 5 × 200 chars). Steward then drafts
+  a PROPOSED answer grounded in the project's goal/instructions + the task — cheap and tool-less, and
+  degrading to `null` (ask without a draft) rather than failing the tick when no credential resolves.
+  Surfaced on the task card itself, not the Inbox: the question is about THIS task and the context needed to
+  answer it is already right there. The operator sends the draft, edits it, or writes their own —
+  `Operations.answerClarification` APPENDS their words verbatim (never model-rewritten, never replacing the
+  original brief) along with the questions they answer, clears the clarification, and returns the task to
+  `backlog` for a genuine RE-triage rather than promoting straight to `todo`, since the answer may change
+  the effort/risk/grouping read too. The draft is never applied on its own: a model guessing at operator
+  intent is precisely what produced the ambiguity being asked about.
+  `tests/triage-clarification.test.ts` (11 tests) covers the tag parsing (incl. caps, malformed values, and
+  missing-vs-empty) and the full Operations path (append-not-replace, no-prior-description, re-triage state,
+  refusal when nothing is open, 404, and the published delta). Verified live end-to-end in the browser: a
+  seeded unclear task rendered its questions + draft, and sending an edited answer appended it to the brief
+  and moved the task back to backlog.
 - [x] **Spend efficiency on Home — how much of what the fleet costs actually ships.** Reconciling a month of
   real provider spend surfaced the number that mattered most and appeared NOWHERE in the UI: only ~19% of it
   reached a merge; the rest went to runs that stalled, were stopped, or finished without landing. A ratio

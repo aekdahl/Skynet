@@ -27,6 +27,7 @@ import {
   type PrChecksStatus,
   SignedComplianceReport,
   type SolutionBrief,
+  type Task,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -703,6 +704,12 @@ export function archiveTask(projectId: string, taskId: string, archived = true) 
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
 }
+/** Answer triage's clarifying questions — appends the operator's own words to
+ *  the task description and returns it to backlog for re-triage. */
+export function answerClarification(projectId: string, taskId: string, answer: string) {
+  return req<Task>("POST", `/api/projects/${projectId}/tasks/${taskId}/clarify`, { answer });
+}
+
 export function dismissTaskLint(projectId: string, taskId: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/lint/dismiss`);
 }

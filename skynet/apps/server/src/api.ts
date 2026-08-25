@@ -15,6 +15,7 @@ import {
   CreateProjectRequest,
   CreateSolutionBriefRequest,
   CreateTaskRequest,
+  AnswerClarificationRequest,
   DraftCharterRequest,
   DryRunPolicyRequest,
   ProviderId,
@@ -988,6 +989,19 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (direction !== "up" && direction !== "down") return reply.code(400).send({ error: "direction must be 'up' or 'down'" });
     try {
       return await ops.moveTask(ws(req), req.params.tid, direction);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Answer triage's clarifying questions — appends the operator's own words to
+  // the task description and sends it back for re-triage (see
+  // Operations.answerClarification).
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/clarify", async (req, reply) => {
+    const body = AnswerClarificationRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.answerClarification(ws(req), req.params.tid, body.data.answer);
     } catch (err) {
       return fail(reply, err);
     }

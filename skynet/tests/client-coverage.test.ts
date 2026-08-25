@@ -215,6 +215,13 @@ const ALLOW = new Set<string>([
   // the last entry is removed) is exercised with a stubbed model reply in
   // project-context.test.ts; extraction (.txt/.md/unsupported-type) likewise.
   "listContextEntries", "addContextEntry", "uploadContextEntry", "deleteContextEntry", "refreshProjectContext",
+  // Triage clarifying questions — answering one needs a task that TRIAGE parked
+  // as unclear WITH questions, which only a real LLM triage pass produces; no
+  // offline journey can synthesize that state. The full Operations path (append
+  // the operator's words without replacing the brief, clear the ask, re-triage,
+  // and the refusal when nothing is open) is covered server-side in
+  // triage-clarification.test.ts, and the round trip was verified live.
+  "answerClarification",
 ]);
 
 describe("client API coverage", () => {

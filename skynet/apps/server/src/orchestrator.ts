@@ -13,6 +13,11 @@ import {
   type RunnerProvider,
   type UntrustedRead,
 } from "@skynet/runner-sdk";
+// Cheap, tool-less one-shot for the clarification draft. Explicit mid-tier
+// model: this is a short, high-frequency assistant call where the top tier
+// buys nothing and costs several times more.
+import { oneShotText } from "@skynet/runner-sdk/claude";
+const CLARIFY_DRAFT_MODEL = "sonnet";
 import { basename, join, resolve } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -154,6 +159,9 @@ export interface TriageTag {
   // "missing signal stays missing" rule as every other field here.
   effort: "small" | "medium" | "large" | null;
   risks: string[] | null;
+  // What triage needs to know before this task is workable — only meaningful
+  // alongside `clarity: "unclear"`. Same "missing signal stays missing" rule.
+  questions: string[] | null;
 }
 
 export function splitEstMinutesTag(raw: string): TriageTag {
@@ -165,6 +173,7 @@ export function splitEstMinutesTag(raw: string): TriageTag {
     milestoneId: null,
     effort: null,
     risks: null,
+    questions: null,
   };
   const trimmed = (raw ?? "").trim();
   const noFence = trimmed.replace(/\n?```\s*$/, "").trimEnd();
@@ -190,6 +199,7 @@ export function splitEstMinutesTag(raw: string): TriageTag {
       milestoneId?: unknown;
       effort?: unknown;
       risks?: unknown;
+      questions?: unknown;
     };
     // Parse each field independently — a malformed one shouldn't drop the tag.
     const estMinutes =
@@ -208,11 +218,19 @@ export function splitEstMinutesTag(raw: string): TriageTag {
     const risks = Array.isArray(obj.risks)
       ? obj.risks.filter((r): r is string => typeof r === "string" && r.trim().length > 0).map((r) => r.trim().slice(0, 140)).slice(0, 5)
       : null;
+    // Same cap/shape discipline as `risks` — a clarifying question is one
+    // short line, and an unbounded list would bloat the task record.
+    const questions = Array.isArray(obj.questions)
+      ? obj.questions.filter((q): q is string => typeof q === "string" && q.trim().length > 0).map((q) => q.trim().slice(0, 200)).slice(0, 5)
+      : null;
     // Only strip the tag from the body if AT LEAST ONE field parsed — if
     // none did the "JSON object" was probably a false positive in prose.
-    if (estMinutes != null || clarity != null || featureId != null || milestoneId != null || effort != null || (risks != null && risks.length > 0)) {
+    if (
+      estMinutes != null || clarity != null || featureId != null || milestoneId != null ||
+      effort != null || (risks != null && risks.length > 0) || (questions != null && questions.length > 0)
+    ) {
       const body = noFence.slice(0, start).replace(/```[a-zA-Z]*\s*$/, "").trim();
-      return { body, estMinutes, clarity, featureId, milestoneId, effort, risks };
+      return { body, estMinutes, clarity, featureId, milestoneId, effort, risks, questions };
     }
   } catch {
     /* not a JSON tail — whole reply is the body */
@@ -4164,7 +4182,7 @@ export class Orchestrator {
               (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") !== "unassigned",
             );
             if (backlog) {
-              const { assessment, assessmentEffort, assessmentRisks, estimatedDurationMs, clarity, featureId, milestoneId } =
+              const { assessment, assessmentEffort, assessmentRisks, estimatedDurationMs, clarity, featureId, milestoneId, questions } =
                 await this.assessTask(ws, idle[0]!, backlog);
               // Only OVERWRITE an existing estimate when triage produced a new
               // one — leaves an operator-set estimate intact if triage failed
@@ -4181,12 +4199,27 @@ export class Orchestrator {
               // Auto-promote to todo when the LLM said "clear" — the eligibility
               // check above already guarantees the task can leave backlog.
               const nextState: Task["state"] = clarity === "clear" ? "todo" : "triage";
+              // Unclear WITH specific questions → ask, and have Steward draft an
+              // answer the operator can accept or edit. Without this the task
+              // just parked in triage with nobody told what was missing, and an
+              // agent later rediscovered the same ambiguity at agent prices.
+              // A clear task never carries a clarification; re-triage clears a
+              // stale one rather than leaving an answered question on the card.
+              const clarification =
+                questions.length > 0
+                  ? {
+                      questions,
+                      draft: await this.draftClarificationAnswer(ws, backlog, questions).catch(() => null),
+                      askedAt: now(),
+                    }
+                  : null;
               await this.hub.upsertTask({
                 ...backlog,
                 state: nextState,
                 assessment,
                 assessmentEffort,
                 assessmentRisks,
+                clarification,
                 estimatedDurationMs: nextEst,
                 featureId: nextFeatureId,
                 milestoneId: nextMilestoneId,
@@ -4290,6 +4323,7 @@ export class Orchestrator {
     clarity: "clear" | "unclear" | null;
     featureId: string | null;
     milestoneId: string | null;
+    questions: string[];
   }> {
     try {
       const provider = await this.getProvider(agent.provider);
@@ -4302,6 +4336,7 @@ export class Orchestrator {
           clarity: null,
           featureId: null,
           milestoneId: null,
+          questions: [],
         };
       }
       const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
@@ -4343,6 +4378,7 @@ export class Orchestrator {
           "Anchors (agent wall-clock): small ≈ 5m (rename, config tweak, single small edit), medium ≈ 20m (a real feature — new endpoint, migration, small refactor), large ≈ 60m (multi-file change, cross-module work). Cap at 240m even for very large asks. `effort` should agree with `estMinutes`.",
           "clarity = \"clear\" ONLY if the ask is well-scoped and actionable AS WRITTEN (an agent could start without more info).",
           '"unclear" if it needs clarification, is missing acceptance criteria, or the scope is ambiguous. When in doubt, choose "unclear".',
+          'When (and ONLY when) clarity is "unclear", add "questions": 1-3 SHORT, SPECIFIC, ANSWERABLE things you need from the operator before an agent could start — name the actual missing decision or fact ("which auth flow should this use?", "what counts as done here?"), never a generic "please clarify". These get asked directly, so a vague question wastes the exchange.',
           '"risks" = 0-3 short, CONCRETE risks specific to this task (e.g. "touches auth — check session handling", "no tests in this area yet") — omit the field entirely (not an empty array) if you see none worth flagging; never pad with generic filler like "could have bugs".',
           "Omit any field you can't confidently supply; a missing signal is honest, a fabricated one is not." + groupingInstr,
         ].join("\n"),
@@ -4368,6 +4404,10 @@ export class Orchestrator {
         clarity: parsed.clarity,
         featureId,
         milestoneId,
+        // Only meaningful alongside "unclear" — a model that answers "clear"
+        // and still lists questions is contradicting itself, and promoting a
+        // task while claiming to need input would be the worse reading.
+        questions: parsed.clarity === "unclear" ? parsed.questions ?? [] : [],
       };
     } catch (err) {
       return {
@@ -4378,8 +4418,47 @@ export class Orchestrator {
         clarity: null,
         featureId: null,
         milestoneId: null,
+        questions: [],
       };
     }
+  }
+
+  /**
+   * Draft a PROPOSED answer to triage's clarifying questions, grounded in the
+   * project's own goal/instructions and the task itself — so the operator's job
+   * becomes "confirm or correct" rather than "write from scratch".
+   *
+   * Deliberately advisory, never applied on its own. A model guessing at the
+   * operator's intent is exactly what produced the ambiguity being asked about;
+   * the draft is a starting point the operator sends, edits, or discards.
+   * Cheap by construction: a mid-tier model, no repo tools, one short reply.
+   * Any failure (no credential, unreadable reply) degrades to `null` — the
+   * questions are still asked, just without a suggested answer.
+   */
+  private async draftClarificationAnswer(ws: string, task: Task, questions: string[]): Promise<string | null> {
+    const apiKey = (await secretService.resolve(ws, "claude").catch(() => undefined)) ?? undefined;
+    if (!apiKey) return null; // no usable key — ask without a draft rather than fail the tick
+    const project = await this.store.getProject(task.projectId).catch(() => null);
+    const prompt = [
+      "You are Steward, helping an operator answer questions their triage step raised about a task.",
+      "Draft the answer the OPERATOR would most likely give, grounded strictly in the context below.",
+      "Be concrete and short — a few sentences or bullets, no preamble, no restating the questions.",
+      "Where the context genuinely doesn't settle something, say plainly what you'd assume and flag it as an assumption; never invent a decision as though it were established fact.",
+      "",
+      `PROJECT: ${project?.name ?? "(unknown)"}`,
+      `GOAL: ${project?.goal?.trim() || "(none set)"}`,
+      project?.instructions?.trim() ? `PROJECT INSTRUCTIONS:\n${project.instructions.trim()}` : "",
+      "",
+      `TASK: ${task.text}`,
+      task.description?.trim() ? `TASK DETAIL:\n${task.description.trim()}` : "",
+      "",
+      "QUESTIONS:",
+      ...questions.map((q, i) => `${i + 1}. ${q}`),
+    ]
+      .filter((l) => l !== "")
+      .join("\n");
+    const reply = (await oneShotText({ prompt, model: CLARIFY_DRAFT_MODEL, apiKey })).trim();
+    return reply || null;
   }
 
   /**
@@ -5117,6 +5196,7 @@ export class Orchestrator {
       assessment: null,
       assessmentEffort: null,
       assessmentRisks: [],
+      clarification: null,
       reviewVerdict: null,
       assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,
