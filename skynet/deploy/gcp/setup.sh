@@ -5,7 +5,7 @@
 # Terraform state), builds + pushes the image, provisions the VM, and prints the
 # tunnel command. Re-running is safe: existing config + already-set secrets are
 # kept (it only asks for what's missing) — with one exception: an undersized
-# machine_type (e2-small/e2-medium) is auto-bumped to e2-standard-4 every run.
+# machine_type (e2-small/e2-medium) is auto-raised to e2-standard-2 every run.
 #
 # The only hard prereqs are gcloud + terraform installed. The one thing NOT
 # automated is the final `terraform apply` confirmation — you review the plan and
@@ -48,9 +48,11 @@ if [ ! -f terraform.tfvars ]; then
   echo "  Machine type:"
   echo "    1) e2-small      — 2 vCPU · 2 GB    (light; orchestration only)"
   echo "    2) e2-medium     — 2 vCPU · 4 GB    (single agent at a time)"
-  echo "    3) e2-standard-2 — 2 vCPU · 8 GB    (light concurrent use)"
-  echo "    4) e2-standard-4 — 4 vCPU · 16 GB   (recommended — several concurrent agents + live-preview builds without choking)"
-  read -r -p "  Choose 1-4, or type any machine type [4]: " MT_IN; MT_IN=${MT_IN:-4}
+  echo "    3) e2-standard-2 — 2 vCPU · 8 GB    (recommended — a few agents + a live-preview build)"
+  echo "    4) e2-standard-4 — 4 vCPU · 16 GB   (only if you genuinely run many agents at once)"
+  echo "       NB: if the box struggles, cap the workspace's maxRunners (3-4 here) BEFORE sizing up —"
+  echo "       overload is nearly always concurrency, not machine size."
+  read -r -p "  Choose 1-4, or type any machine type [3]: " MT_IN; MT_IN=${MT_IN:-3}
   case "$MT_IN" in
     1) MT="e2-small" ;;
     2) MT="e2-medium" ;;
@@ -89,20 +91,24 @@ TFV
   echo "  ✓ wrote terraform.tfvars (edit it anytime; re-run to reuse)"
 fi
 
-# ── 1b. Auto-upgrade an undersized machine_type on an EXISTING tfvars ────────
+# ── 1b. Auto-upgrade an UNDERSIZED machine_type on an EXISTING tfvars ────────
 # The wizard above only runs on a FIRST deploy — an existing terraform.tfvars
-# (from before e2-standard-4 became the recommendation) never sees it again,
-# so a plain re-run alone wouldn't pick up the bump. A live incident showed
-# e2-small/e2-medium genuinely can't handle a few concurrent agents (memory
-# pressure severe enough to make the whole VM briefly unresponsive, not just
-# the app container) — so those two specifically are auto-upgraded on every
-# run, not just offered. Anything else (including a deliberately-larger custom
-# type) is left alone. Self-limiting: once bumped, the grep below no longer
-# matches, so this is a no-op on every subsequent run.
+# never sees it again, so a plain re-run wouldn't pick up a new floor. A live
+# incident showed e2-small/e2-medium genuinely can't handle a few concurrent
+# agents (memory pressure severe enough to make the whole VM unresponsive, not
+# just the app container), so those two are raised to the recommended size on
+# every run rather than merely offered. Self-limiting: once raised, the grep
+# no longer matches, so this is a no-op afterwards.
+#
+# Only ever raises. A machine_type at or above the recommendation — including
+# a deliberately larger one — is left alone: silently SHRINKING someone's box
+# on a routine re-run would be a genuinely destructive surprise (it forces a
+# stop/resize/start, and they may have sized up on purpose). Downsizing stays
+# a deliberate edit to terraform.tfvars.
 if [ -f terraform.tfvars ] && grep -qE '^machine_type[[:space:]]*=[[:space:]]*"(e2-small|e2-medium)"' terraform.tfvars; then
   OLD_MT=$(grep -E '^machine_type[[:space:]]*=' terraform.tfvars | sed -E 's/^machine_type[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
-  say "▸ Bumping machine_type: ${OLD_MT} → e2-standard-4 (too small for concurrent agents — see deploy/gcp/README.md)"
-  awk '/^machine_type[[:space:]]*=/{print "machine_type     = \"e2-standard-4\""; next} {print}' terraform.tfvars >terraform.tfvars.new
+  say "▸ Bumping machine_type: ${OLD_MT} → e2-standard-2 (too small for concurrent agents — see deploy/gcp/README.md)"
+  awk '/^machine_type[[:space:]]*=/{print "machine_type     = \"e2-standard-2\""; next} {print}' terraform.tfvars >terraform.tfvars.new
   mv terraform.tfvars.new terraform.tfvars
 fi
 
