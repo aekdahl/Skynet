@@ -529,6 +529,21 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Spend efficiency on Home — how much of what the fleet costs actually ships.** Reconciling a month of
+  real provider spend surfaced the number that mattered most and appeared NOWHERE in the UI: only ~19% of it
+  reached a merge; the rest went to runs that stalled, were stopped, or finished without landing. A ratio
+  that decides whether the fleet is worth its bill shouldn't need an ad-hoc query over the store to see.
+  `spendEfficiency()` / `spendOutcomeOf()` (`apps/web/src/lib/derive.ts`) are a PURE derivation over runs
+  already in the snapshot — no new endpoint, no new storage: a merge (`mergedAt`) is the only evidence of
+  delivery; `running`/`waiting`/`review` AND not archived is in-flight (a reaped run keeps a live-looking
+  status while being archived, so checking status alone would hide real waste as "still working");
+  everything else was paid for and didn't land. Rendered on Home as a proportional bar + per-outcome
+  run/dollar breakdown. Deliberately honest about its own limits: a run the provider never priced
+  contributes $0, so `pricedShare` is tracked and, below 99%, the card says outright that the totals are a
+  floor rather than rendering a confidently wrong number. `tests/spend-efficiency.test.ts` (11 tests) covers
+  the outcome rules (including archived-vs-status and merged-stays-delivered), unpriced-run accounting, and
+  the empty / all-unpriced no-NaN edges. Verified live against a seeded store mirroring the real
+  deployment's shape — rendered "19% of $141.67 delivered" against its actual 18.8%.
 - [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
   Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
   credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself

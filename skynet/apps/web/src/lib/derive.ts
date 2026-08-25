@@ -504,3 +504,78 @@ export function providerReadiness(p: ProviderInfo, credentialOverride?: boolean)
   }
   return { ready: missing.length === 0, missing, credentialSet };
 }
+
+// ─── Spend efficiency: how much of what we paid for actually shipped ────────
+// Reconciling a month of real spend surfaced the number that matters most and
+// wasn't anywhere in the UI: only a fraction of tokens paid for end up as
+// merged work. The rest is runs that stalled, were stopped, or finished
+// without ever landing. That ratio is the single best signal for whether the
+// fleet is worth what it costs — and it's invisible unless it's shown.
+//
+// PURE derivation over runs already in the snapshot: no new API, no new
+// storage. `costUsd` is null for runs whose provider didn't price them (and,
+// before the accounting fix, for runs that never reported at all) — those
+// contribute 0 to the totals but still count in `runs`, so a low
+// `pricedShare` is the honest signal that these numbers are under-reported
+// rather than a silently confident wrong answer.
+
+export type SpendOutcome = "delivered" | "in-flight" | "abandoned";
+
+export interface SpendBucket {
+  outcome: SpendOutcome;
+  runs: number;
+  costUsd: number;
+  /** Share of total attributed spend, 0..1. */
+  share: number;
+}
+
+export interface SpendEfficiency {
+  buckets: SpendBucket[];
+  totalUsd: number;
+  /** Share of spend that reached a merge, 0..1 — the headline number. */
+  deliveredShare: number;
+  /** How much of the spend we can actually see a price for, 0..1. Below ~1
+   *  the other figures are a floor, not a total. */
+  pricedShare: number;
+  runs: number;
+}
+
+/** Which bucket a run falls in. A merge is the only evidence of delivery;
+ *  anything still moving is in-flight; everything else was paid for and
+ *  didn't land (stalled, reaped, stopped, or finished without merging). */
+export function spendOutcomeOf(run: TaskRun): SpendOutcome {
+  if (run.mergedAt) return "delivered";
+  if (!run.archived && (run.status === "running" || run.status === "waiting" || run.status === "review")) {
+    return "in-flight";
+  }
+  return "abandoned";
+}
+
+export function spendEfficiency(runs: TaskRun[]): SpendEfficiency {
+  const order: SpendOutcome[] = ["delivered", "in-flight", "abandoned"];
+  const tally = new Map<SpendOutcome, { runs: number; costUsd: number }>(
+    order.map((o) => [o, { runs: 0, costUsd: 0 }]),
+  );
+  let priced = 0;
+  for (const r of runs) {
+    const b = tally.get(spendOutcomeOf(r))!;
+    b.runs++;
+    const c = r.usage?.costUsd;
+    if (typeof c === "number") {
+      b.costUsd += c;
+      priced++;
+    }
+  }
+  const totalUsd = order.reduce((n, o) => n + tally.get(o)!.costUsd, 0);
+  const buckets = order.map((outcome) => {
+    const t = tally.get(outcome)!;
+    return { outcome, runs: t.runs, costUsd: t.costUsd, share: totalUsd > 0 ? t.costUsd / totalUsd : 0 };
+  });
+  return {
+    buckets,
+    totalUsd,
+    deliveredShare: totalUsd > 0 ? tally.get("delivered")!.costUsd / totalUsd : 0,
+    pricedShare: runs.length > 0 ? priced / runs.length : 1,
+    runs: runs.length,
+  };
+}

@@ -15,6 +15,7 @@ import {
   providerInfo,
   providerReadiness,
   runnerName,
+  spendEfficiency,
   type RunTag,
   waitedSecs,
 } from "../lib/derive";
@@ -380,7 +381,74 @@ export function HomeView({
         onAssign={onAssign}
         onConfigureFleet={onConfigureFleet}
       />
+      <SpendEfficiencyCard />
     </div>
+  );
+}
+
+const OUTCOME_META: Record<string, { label: string; hint: string; cls: string }> = {
+  delivered: { label: "Delivered", hint: "reached a merge", cls: "spend-delivered" },
+  "in-flight": { label: "In flight", hint: "still working", cls: "spend-inflight" },
+  abandoned: { label: "Didn't land", hint: "stalled, stopped, or finished without merging", cls: "spend-abandoned" },
+};
+
+/**
+ * How much of what the fleet costs actually ships. Surfaced because it's the
+ * one number that tells you whether the spend is working, and it was invisible
+ * — a month of real spend turned out to be mostly runs that never merged.
+ * Everything here derives from runs already in the snapshot (see
+ * spendEfficiency); nothing new is fetched or stored.
+ */
+function SpendEfficiencyCard() {
+  const { runs } = useStore();
+  const eff = spendEfficiency(runs);
+  if (eff.runs === 0) return null;
+  const usd = (n: number) => "$" + n.toFixed(2);
+  const pct = (n: number) => Math.round(n * 100) + "%";
+
+  return (
+    <section className="vw spend-eff">
+      <div className="spend-eff-head">
+        <h2 className="vw-h">Spend efficiency</h2>
+        <span className="spend-eff-headline mono">
+          {eff.totalUsd > 0 ? `${pct(eff.deliveredShare)} of ${usd(eff.totalUsd)} delivered` : "no priced runs yet"}
+        </span>
+      </div>
+      {eff.totalUsd > 0 && (
+        <div className="spend-bar" role="img" aria-label={`${pct(eff.deliveredShare)} of spend delivered`}>
+          {eff.buckets
+            .filter((b) => b.share > 0)
+            .map((b) => (
+              <div
+                key={b.outcome}
+                className={"spend-bar-seg " + OUTCOME_META[b.outcome]!.cls}
+                style={{ width: `${b.share * 100}%` }}
+                title={`${OUTCOME_META[b.outcome]!.label}: ${usd(b.costUsd)} (${pct(b.share)})`}
+              />
+            ))}
+        </div>
+      )}
+      <div className="spend-legend">
+        {eff.buckets.map((b) => (
+          <div key={b.outcome} className="spend-legend-row">
+            <span className={"spend-dot " + OUTCOME_META[b.outcome]!.cls} aria-hidden="true" />
+            <span className="spend-legend-label">{OUTCOME_META[b.outcome]!.label}</span>
+            <span className="spend-legend-hint">{OUTCOME_META[b.outcome]!.hint}</span>
+            <span className="spend-legend-num mono">
+              {b.runs} run{b.runs === 1 ? "" : "s"} · {usd(b.costUsd)}
+            </span>
+          </div>
+        ))}
+      </div>
+      {/* Honesty line: a provider that didn't price a run contributes $0 above,
+          so a low priced-share means these are a FLOOR, not a total. Better to
+          say so than to render a confident wrong number. */}
+      {eff.pricedShare < 0.99 && (
+        <div className="spend-eff-caveat">
+          Based on the {pct(eff.pricedShare)} of runs with a reported cost — the real totals are higher.
+        </div>
+      )}
+    </section>
   );
 }
 
