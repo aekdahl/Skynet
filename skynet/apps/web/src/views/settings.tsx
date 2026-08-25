@@ -586,16 +586,27 @@ function FleetAutomationSection() {
   const [settings, setSettings] = useState<WorkspaceSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // A save here is silent by nature (no navigation, no dialog), so without an
+  // explicit acknowledgement a successful write is indistinguishable from one
+  // that never fired — which is exactly how the blur-only commit below read as
+  // "nothing happens when entering it". Flashes briefly after each save.
+  const [savedAt, setSavedAt] = useState(0);
 
   useEffect(() => {
     api.fetchWorkspaceSettings().then(setSettings).catch(() => setErr("Couldn't load fleet settings."));
   }, []);
+  useEffect(() => {
+    if (!savedAt) return;
+    const t = setTimeout(() => setSavedAt(0), 2000);
+    return () => clearTimeout(t);
+  }, [savedAt]);
 
   const save = async (patch: UpdateWorkspaceSettingsRequest) => {
     setBusy(true);
     setErr(null);
     try {
       setSettings(await api.updateWorkspaceSettings(patch));
+      setSavedAt(Date.now());
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -603,6 +614,15 @@ function FleetAutomationSection() {
     }
   };
   const clampMax = (v: string) => Math.max(0, Math.floor(Number(v) || 0));
+  // These commit on blur. Enter is what an operator actually reaches for after
+  // typing a number, and without this it silently did nothing — blurring here
+  // routes Enter through the SAME onBlur save rather than duplicating it.
+  const commitOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.currentTarget.blur();
+    }
+  };
 
   return (
     <div className="settings-setup">
@@ -615,6 +635,7 @@ function FleetAutomationSection() {
           they’ve sat idle past the timeout below — operator-added runners are never touched.
         </div>
         {err && <div className="settings-warn">{err}</div>}
+        {!err && savedAt > 0 && <div className="settings-saved">Saved</div>}
         {settings && (
           <div className="fleet-auto">
             <label className="proj-autonomy" title="When a task needs a runner and none is idle, auto-provision one (up to the max).">
@@ -638,6 +659,7 @@ function FleetAutomationSection() {
                 disabled={busy}
                 onChange={(e) => setSettings({ ...settings, maxRunners: clampMax(e.target.value) })}
                 onBlur={(e) => void save({ maxRunners: clampMax(e.target.value) })}
+                onKeyDown={commitOnEnter}
               />
               <span className="fleet-auto-max-hint mono">0 = no cap</span>
             </label>
@@ -651,6 +673,7 @@ function FleetAutomationSection() {
                 disabled={busy}
                 onChange={(e) => setSettings({ ...settings, retireIdleRunnersAfterMinutes: clampMax(e.target.value) })}
                 onBlur={(e) => void save({ retireIdleRunnersAfterMinutes: clampMax(e.target.value) })}
+                onKeyDown={commitOnEnter}
               />
               <span className="fleet-auto-max-hint mono">min · 0 = never</span>
             </label>

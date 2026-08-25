@@ -3226,3 +3226,4 @@ button.firstrun-step:hover { border-color: var(--accent); }
 }
 .cmdk-foot span { display: flex; align-items: center; gap: 5px; }
 .cmdk-foot kbd { margin-right: -2px; }
+.settings-saved { font-size: var(--fz-11); color: var(--ok, var(--accent)); margin-top: 6px; }
