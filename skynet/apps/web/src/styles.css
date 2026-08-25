@@ -3226,4 +3226,21 @@ button.firstrun-step:hover { border-color: var(--accent); }
 }
 .cmdk-foot span { display: flex; align-items: center; gap: 5px; }
 .cmdk-foot kbd { margin-right: -2px; }
+
+/* ── Spend efficiency (Home): how much of the fleet's cost actually ships ─── */
+.spend-eff { display: flex; flex-direction: column; gap: 12px; }
+.spend-eff-head { display: flex; align-items: baseline; gap: 12px; }
+.spend-eff-headline { font-size: var(--fz-12); color: var(--muted); margin-left: auto; }
+.spend-bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--line-soft); }
+.spend-bar-seg { height: 100%; }
+.spend-delivered { background: var(--ok, #2E9E5B); }
+.spend-inflight { background: var(--accent); }
+.spend-abandoned { background: var(--line); }
+.spend-legend { display: flex; flex-direction: column; gap: 6px; }
+.spend-legend-row { display: flex; align-items: center; gap: 8px; font-size: var(--fz-12); }
+.spend-dot { width: 8px; height: 8px; border-radius: 999px; flex: none; }
+.spend-legend-label { font-weight: 600; }
+.spend-legend-hint { color: var(--faint); font-size: var(--fz-11); }
+.spend-legend-num { margin-left: auto; color: var(--muted); font-size: var(--fz-11); }
+.spend-eff-caveat { font-size: var(--fz-11); color: var(--faint); border-left: 2px solid var(--line); padding-left: 8px; }
 .settings-saved { font-size: var(--fz-11); color: var(--ok, var(--accent)); margin-top: 6px; }
