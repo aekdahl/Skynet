@@ -68,7 +68,7 @@ import { generateAgentName } from "./fleet-names.js";
 import { isGitRepo } from "./fs-browse.js";
 import { projectPreview, type PreviewState, type PreviewSource } from "./preview/project-preview.js";
 import { git as gitExec } from "./preview/worktree.js";
-import { oneShotText } from "@skynet/runner-sdk/claude";
+import { ASSISTANT_MODEL, oneShotText } from "@skynet/runner-sdk/claude";
 import { flyDeploy, type FlyDeployState } from "./fly/deploy.js";
 import { githubService, parseRepoRef } from "./github/index.js";
 import { parseChecklist } from "./tasks/checklist.js";
@@ -1814,7 +1814,7 @@ export class Operations {
       this.crystallizeAsk ??
       (async (prompt: string) => {
         const apiKey = (await secretService.resolve(ws, "claude")) ?? undefined;
-        return oneShotText({ prompt, apiKey });
+        return oneShotText({ prompt, model: ASSISTANT_MODEL, apiKey });
       });
     const draft = await draftBriefFromConversation(ask, project.name, history);
     return this.createBrief(ws, projectId, { ...draft, sourceConversation: summarizeConversation(history) });
@@ -1840,7 +1840,7 @@ export class Operations {
       this.contextAsk ??
       (async (prompt: string) => {
         const apiKey = (await secretService.resolve(ws, "claude")) ?? undefined;
-        return oneShotText({ prompt, apiKey });
+        return oneShotText({ prompt, model: ASSISTANT_MODEL, apiKey });
       })
     );
   }

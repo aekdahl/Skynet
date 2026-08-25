@@ -18,6 +18,7 @@
 import type { Agent, Feature, HitlItem, Milestone, Project, Task, TaskAssignment, TaskRun } from "@skynet/shared";
 import { ProjectStatus, TaskState } from "@skynet/shared";
 import {
+  ASSISTANT_MODEL,
   oneShotRepoAssistant,
   oneShotRepoAssistantStream,
   oneShotText,
@@ -800,8 +801,8 @@ export async function askSteward(
 ): Promise<{ reply: string; actions: AssistantAction[] }> {
   const c = await prepareStewardCall(store, opts);
   const answer = c.repo
-    ? await oneShotRepoAssistant({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey })
-    : await oneShotText({ prompt: c.prompt, apiKey: c.apiKey });
+    ? await oneShotRepoAssistant({ prompt: c.prompt, cwd: c.cwd!, model: ASSISTANT_MODEL, apiKey: c.apiKey })
+    : await oneShotText({ prompt: c.prompt, model: ASSISTANT_MODEL, apiKey: c.apiKey });
   return splitProposedAction(answer, c.actionCtx);
 }
 
@@ -920,7 +921,7 @@ export async function askStewardWorkspace(
   opts: { workspaceId: string; question: string; history?: ChatTurn[] },
 ): Promise<{ reply: string; actions: AssistantAction[] }> {
   const { prompt, apiKey } = await buildWorkspaceCall(store, opts);
-  const reply = await oneShotText({ prompt, apiKey });
+  const reply = await oneShotText({ prompt, model: ASSISTANT_MODEL, apiKey });
   return { reply, actions: [] };
 }
 
@@ -932,7 +933,7 @@ export async function* askStewardWorkspaceStream(
 ): AsyncGenerator<string, { reply: string; actions: AssistantAction[] }> {
   const { prompt, apiKey } = await buildWorkspaceCall(store, opts);
   let full = "";
-  for await (const delta of oneShotTextStream({ prompt, apiKey })) {
+  for await (const delta of oneShotTextStream({ prompt, model: ASSISTANT_MODEL, apiKey })) {
     full += delta;
     yield delta;
   }
@@ -950,8 +951,8 @@ export async function* askStewardStream(
   const c = await prepareStewardCall(store, opts);
   let full = "";
   const gen = c.repo
-    ? oneShotRepoAssistantStream({ prompt: c.prompt, cwd: c.cwd!, apiKey: c.apiKey })
-    : oneShotTextStream({ prompt: c.prompt, apiKey: c.apiKey });
+    ? oneShotRepoAssistantStream({ prompt: c.prompt, cwd: c.cwd!, model: ASSISTANT_MODEL, apiKey: c.apiKey })
+    : oneShotTextStream({ prompt: c.prompt, model: ASSISTANT_MODEL, apiKey: c.apiKey });
   for await (const delta of gen) {
     full += delta;
     yield delta;

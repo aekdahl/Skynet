@@ -28,7 +28,7 @@ import { get as httpGet } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { wrapForSandbox } from "@skynet/runner-sdk/sandbox";
-import { oneShotRepoAssistant } from "@skynet/runner-sdk/claude";
+import { ASSISTANT_MODEL, oneShotRepoAssistant } from "@skynet/runner-sdk/claude";
 import { secretService } from "../secrets/index.js";
 import { publicOrigin } from "./public-origin.js";
 import {
@@ -564,7 +564,7 @@ export class ProjectPreviewManager {
       'If you cannot determine one, reply {"cmd": null}.';
     let text = "";
     try {
-      text = await oneShotRepoAssistant({ prompt, cwd: dir, apiKey });
+      text = await oneShotRepoAssistant({ prompt, cwd: dir, model: ASSISTANT_MODEL, apiKey });
     } catch {
       return null;
     }

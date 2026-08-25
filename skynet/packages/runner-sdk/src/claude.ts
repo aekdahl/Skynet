@@ -213,6 +213,96 @@ function textDeltaOf(msg: SDKMessage): string | null {
 }
 
 /**
+ * The model for ordinary, non-run assistant work — Steward chat, crystallize,
+ * brief decomposition, project-context condensation. These are short,
+ * well-scoped, high-frequency calls where the top-tier model buys little and
+ * costs several times more, so they get a mid-tier default rather than
+ * inheriting whatever a fleet runner happens to be on. Callers that genuinely
+ * need more (a judge, a deep reviewer) pass their own model explicitly.
+ */
+export const ASSISTANT_MODEL = "sonnet";
+
+/** Notified with one call's metered usage, read off its `result` message. */
+export type UsageSink = (usage: RunnerUsage) => void;
+
+/** What one SDK `result` message reports about what it cost. */
+export interface RunnerUsage {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number | null;
+  turns: number;
+  durationMs: number | null;
+}
+
+/**
+ * PURE: read the meter off an SDK `result` message, as a RUNNING TOTAL for the
+ * query() call that produced it — not a per-turn delta. Two things the SDK's
+ * own field docs make explicit, both of which this got wrong at first:
+ *
+ *  • Read `modelUsage`, NOT `usage`. `usage` is documented "MAIN AGENT LOOP
+ *    ONLY — excludes Task subagent, sidechain, and auxiliary model calls".
+ *    Skynet's agents spawn subagents routinely (an Explore/research subagent
+ *    is a normal move), so reading `usage` silently billed none of that work.
+ *    `modelUsage` covers "main loop, Task subagents, sidechains, and internal
+ *    calls such as compaction" and is called out as "the correct field for
+ *    token/cost accounting". It's keyed by model, so sum its entries.
+ *  • These are CUMULATIVE across turns within one streaming-input query — each
+ *    result "carries the running total so far, so read the latest result
+ *    rather than summing across results". Summing every result would multiply
+ *    a long run's true cost. Callers therefore REPLACE within a segment; only
+ *    across a relaunch (where "resumed sessions start fresh") do totals add —
+ *    see ClaudeRunnerHandle's `priorSegments`.
+ *
+ * `inputTokens` folds in the cache tiers: a cache read is ~10x cheaper but is
+ * still billed, so omitting it under-reports real token volume (`costUsd`,
+ * which the SDK prices itself, already reflects the discount).
+ */
+export function readUsage(result: Record<string, unknown>): RunnerUsage {
+  const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const models = (result.modelUsage ?? {}) as Record<string, Record<string, unknown>>;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let modelCost = 0;
+  let sawModelUsage = false;
+  for (const m of Object.values(models)) {
+    if (!m || typeof m !== "object") continue;
+    sawModelUsage = true;
+    inputTokens += n(m.inputTokens) + n(m.cacheReadInputTokens) + n(m.cacheCreationInputTokens);
+    outputTokens += n(m.outputTokens);
+    modelCost += n(m.costUSD);
+  }
+  // Fall back to the main-loop-only `usage` when an older/edge result carries
+  // no modelUsage at all — under-counted, but better than reporting zero.
+  if (!sawModelUsage) {
+    const u = (result.usage ?? {}) as Record<string, unknown>;
+    inputTokens = n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens);
+    outputTokens = n(u.output_tokens);
+  }
+  const total = typeof result.total_cost_usd === "number" ? result.total_cost_usd : null;
+  return {
+    inputTokens,
+    outputTokens,
+    costUsd: total ?? (sawModelUsage ? modelCost : null),
+    turns: n(result.num_turns),
+    durationMs: typeof result.duration_ms === "number" ? result.duration_ms : null,
+  };
+}
+
+/** Add two meter readings — used to carry COMPLETED query segments forward
+ *  across a relaunch (a resumed session restarts its own counters at zero). */
+export function addUsage(a: RunnerUsage, b: RunnerUsage): RunnerUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    costUsd: a.costUsd == null && b.costUsd == null ? null : (a.costUsd ?? 0) + (b.costUsd ?? 0),
+    turns: a.turns + b.turns,
+    durationMs: a.durationMs == null && b.durationMs == null ? null : (a.durationMs ?? 0) + (b.durationMs ?? 0),
+  };
+}
+
+const ZERO_USAGE: RunnerUsage = { inputTokens: 0, outputTokens: 0, costUsd: null, turns: 0, durationMs: null };
+
+/**
  * Yield an SDK query's answer as text deltas. With `includePartialMessages` the
  * SDK emits `stream_event`s carrying token-level `text_delta`s — we yield those
  * live. The final `assistant` message is a safety net: if partials didn't arrive
@@ -220,7 +310,7 @@ function textDeltaOf(msg: SDKMessage): string | null {
  * yields one apologetic chunk, but only if nothing was emitted yet. Shared by
  * every one-shot streaming helper below.
  */
-async function* streamQueryText(q: AsyncIterable<SDKMessage>): AsyncGenerator<string> {
+async function* streamQueryText(q: AsyncIterable<SDKMessage>, onUsage?: UsageSink): AsyncGenerator<string> {
   let emitted = "";
   try {
     for await (const msg of q) {
@@ -242,6 +332,12 @@ async function* streamQueryText(q: AsyncIterable<SDKMessage>): AsyncGenerator<st
           yield text;
         }
       } else if (msg.type === "result") {
+        // The result carries this call's own meter (`usage` + `total_cost_usd`).
+        // It used to be dropped on the floor here, which is why EVERY one-shot
+        // call in the system — Steward chat, triage, auto-review, deep review,
+        // merge briefs, the task linter, crystallize, decompose — cost real
+        // money while reporting nothing. Report it before breaking.
+        if (onUsage) onUsage(readUsage(msg as Record<string, unknown>));
         break;
       }
     }
@@ -256,6 +352,7 @@ async function* oneShotConsultStream(opts: {
   cwd: string;
   model: string;
   env: Record<string, string>;
+  onUsage?: UsageSink;
 }): AsyncGenerator<string> {
   const q = query({
     prompt: opts.prompt,
@@ -272,7 +369,7 @@ async function* oneShotConsultStream(opts: {
       settingSources: NO_FS_SETTINGS,
     },
   });
-  yield* streamQueryText(q as AsyncIterable<SDKMessage>);
+  yield* streamQueryText(q as AsyncIterable<SDKMessage>, opts.onUsage);
 }
 
 /** Accumulating (non-streaming) consult — the whole answer, or `fallback` if
@@ -283,17 +380,34 @@ async function oneShotConsult(opts: {
   model: string;
   env: Record<string, string>;
   fallback: string;
+  onUsage?: UsageSink;
 }): Promise<string> {
   let answer = "";
   for await (const delta of oneShotConsultStream(opts)) answer += delta;
   return answer.trim() || opts.fallback;
 }
 
-/** A one-shot, tool-less text query authenticated exactly like a live runner
- *  (via {@link buildRunnerEnv} — so it works standalone AND nested inside a
- *  Claude Code session, where a raw `fetch` to the API has no egress). Used by
- *  out-of-band callers such as the eval judge. Returns the model's text. */
-export async function oneShotText(opts: { prompt: string; model?: string; cwd?: string; apiKey?: string }): Promise<string> {
+/**
+ * A one-shot, tool-less text query authenticated exactly like a live runner
+ * (via {@link buildRunnerEnv} — so it works standalone AND nested inside a
+ * Claude Code session, where a raw `fetch` to the API has no egress). Returns
+ * the model's text.
+ *
+ * `model` is REQUIRED on purpose. It used to default to `"opus"`, which meant
+ * every caller that didn't think about it — Steward chat (both project and
+ * workspace), crystallize, brief decomposition, project-context condensation —
+ * silently ran the most expensive model in the catalog, on a workspace whose
+ * whole fleet was Sonnet, while reporting no usage at all. Making it required
+ * turns "which model does this cost me?" into a compile error instead of a
+ * billing surprise; pass {@link ASSISTANT_MODEL} for ordinary assistant work.
+ */
+export async function oneShotText(opts: {
+  prompt: string;
+  model: string;
+  cwd?: string;
+  apiKey?: string;
+  onUsage?: UsageSink;
+}): Promise<string> {
   let out = "";
   for await (const delta of oneShotTextStream(opts)) out += delta;
   return out;
@@ -302,17 +416,19 @@ export async function oneShotText(opts: { prompt: string; model?: string; cwd?: 
 /** Streaming variant of {@link oneShotText} — yields the answer as text deltas. */
 export function oneShotTextStream(opts: {
   prompt: string;
-  model?: string;
+  model: string;
   cwd?: string;
   apiKey?: string;
+  onUsage?: UsageSink;
 }): AsyncIterable<string> {
   const env = buildRunnerEnv();
   if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
   return oneShotConsultStream({
     prompt: opts.prompt,
     cwd: opts.cwd ?? process.cwd(),
-    model: opts.model ?? "opus",
+    model: opts.model,
     env,
+    onUsage: opts.onUsage,
   });
 }
 
@@ -329,8 +445,9 @@ const ASSISTANT_READ_TOOLS = new Set(["Read", "LS", "Glob", "Grep", "NotebookRea
 export async function oneShotRepoAssistant(opts: {
   prompt: string;
   cwd: string;
-  model?: string;
+  model: string;
   apiKey?: string;
+  onUsage?: UsageSink;
 }): Promise<string> {
   let answer = "";
   for await (const delta of oneShotRepoAssistantStream(opts)) answer += delta;
@@ -339,12 +456,18 @@ export async function oneShotRepoAssistant(opts: {
 
 /** Streaming variant of {@link oneShotRepoAssistant} — yields the answer as text
  *  deltas. Read-only tool turns (Read/Grep/…) interleave; only the model's text
- *  is yielded, so the reply appears as it's written after any file lookups. */
+ *  is yielded, so the reply appears as it's written after any file lookups.
+ *
+ *  `model` is required for the same reason as {@link oneShotText} — and it
+ *  mattered most HERE: this path runs up to 14 tool-using turns with the full
+ *  `claude_code` preset loaded, so an unnoticed Opus default made every
+ *  repo-grounded Steward question one of the priciest calls in the system. */
 export function oneShotRepoAssistantStream(opts: {
   prompt: string;
   cwd: string;
-  model?: string;
+  model: string;
   apiKey?: string;
+  onUsage?: UsageSink;
 }): AsyncIterable<string> {
   const env = buildRunnerEnv();
   if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
@@ -352,7 +475,7 @@ export function oneShotRepoAssistantStream(opts: {
     prompt: opts.prompt,
     options: {
       cwd: opts.cwd,
-      model: mapModel(opts.model ?? "opus"),
+      model: mapModel(opts.model),
       permissionMode: "default",
       // The preset loads the full tool suite (so Read/Grep/Glob exist); the
       // gate narrows it to read-only.
@@ -372,7 +495,7 @@ export function oneShotRepoAssistantStream(opts: {
       settingSources: NO_FS_SETTINGS,
     },
   });
-  return streamQueryText(q as AsyncIterable<SDKMessage>);
+  return streamQueryText(q as AsyncIterable<SDKMessage>, opts.onUsage);
 }
 
 // A tool call the assistant requested: its name, input args, and id (to pair
@@ -848,6 +971,11 @@ class ClaudeRunnerHandle implements RunnerHandle {
   private initialPrompt = ""; // the kickoff message, re-sent if we retry pre-session
   private apiRetries = 0; // transient retries spent (budget MAX_API_RETRIES)
   private turnContinues = 0; // turn-budget continues spent (budget MAX_TURN_CONTINUES)
+  // Cost accounting across relaunches — see emitUsage/sealSegment. `priorSegments`
+  // is what finished query() calls spent; `segmentUsage` is the latest running
+  // total for the query currently in flight.
+  private priorSegments: RunnerUsage = ZERO_USAGE;
+  private segmentUsage: RunnerUsage = ZERO_USAGE;
   private lastApiError = ""; // most recent overload/error text seen, for classification
   // Rolling tail of the CLI's stderr. The SDK swallows the child's stderr by
   // default, so a startup crash surfaces only as its generic guess ("binary
@@ -1185,20 +1313,27 @@ class ClaudeRunnerHandle implements RunnerHandle {
   }
 
   /** Read exact token/cost totals off the SDK `result` message and report them. */
+  /**
+   * Report the run's TRUE running total.
+   *
+   * Each `result` carries the running total for its own query() call, so
+   * within a segment we take the latest (never sum — that would multiply a
+   * long run's cost). But a run spans SEVERAL query() calls: the runner
+   * relaunches on turn-budget exhaustion (up to MAX_TURN_CONTINUES) and on
+   * transient failures, and a resumed session restarts its counters at zero.
+   * So the total is `everything finished segments spent` + `this segment so
+   * far`, which is what the consumer stores verbatim.
+   */
   private emitUsage(result: Record<string, unknown>) {
-    const u = (result.usage ?? {}) as Record<string, unknown>;
-    const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
-    const input =
-      n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens);
-    const cost = typeof result.total_cost_usd === "number" ? result.total_cost_usd : null;
-    const durationMs = typeof result.duration_ms === "number" ? result.duration_ms : null;
-    this.events.onUsage?.(this.runId, {
-      inputTokens: input,
-      outputTokens: n(u.output_tokens),
-      costUsd: cost,
-      turns: n(result.num_turns),
-      durationMs,
-    });
+    this.segmentUsage = readUsage(result);
+    this.events.onUsage?.(this.runId, addUsage(this.priorSegments, this.segmentUsage));
+  }
+
+  /** Fold the segment that just ended into the carried-forward total. Called
+   *  immediately before a relaunch, since the next query starts from zero. */
+  private sealSegment() {
+    this.priorSegments = addUsage(this.priorSegments, this.segmentUsage);
+    this.segmentUsage = ZERO_USAGE;
   }
 
   private async consume() {
@@ -1224,6 +1359,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
         );
         await this.q?.interrupt().catch(() => undefined); // release the exhausted session
         if (this.finished) return;
+        this.sealSegment(); // the next query() restarts its own counters at zero
         this.relaunch();
         continue;
       }
@@ -1241,6 +1377,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
         await this.q?.interrupt().catch(() => undefined); // release the dead session
         await sleep(wait);
         if (this.finished) return;
+        this.sealSegment(); // the next query() restarts its own counters at zero
         this.relaunch();
         continue;
       }
