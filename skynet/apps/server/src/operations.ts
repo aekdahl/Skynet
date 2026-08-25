@@ -780,6 +780,16 @@ export class Operations {
     await this.getRun(ws, runId);
     const updated = await this.hub.setRunArchived(runId, archived);
     if (!updated) throw new NotFoundError("TaskRun");
+    // Archiving a run that's still mid-flight (review/running/waiting/paused)
+    // must SETTLE it, not just hide it: otherwise it keeps its status, its
+    // runner and its live controls forever, and the stuck-review sweep skips
+    // archived runs so nothing can ever finish it off. The worktree is kept —
+    // archive is a reversible soft-hide, not a delete. See
+    // Orchestrator.settleArchivedRun.
+    if (archived) {
+      await this.orchestrator.settleArchivedRun(runId).catch(() => undefined);
+      return (await this.store.getRun(runId)) ?? updated;
+    }
     return updated;
   }
   /** Pause a running/waiting task run — halts its agent, keeps the session. */

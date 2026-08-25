@@ -5356,6 +5356,73 @@ export class Orchestrator {
     return this.store.getRun(runId);
   }
 
+  /**
+   * Settle a run that has been ARCHIVED while still in a non-terminal state.
+   *
+   * Archiving used to be cosmetic — `setRunArchived` flipped a boolean and
+   * nothing else — so a run archived from `review` kept that status, kept its
+   * `agentId`, and kept offering live controls (Fork/Pause/Stop) forever. And
+   * because gcWorktrees' stuck-review sweep deliberately SKIPS archived runs,
+   * nothing could ever settle it: found live with 14 such zombies, the oldest
+   * idle for days.
+   *
+   * Archiving IS the operator saying "I'm done with this", so settle it: stop
+   * any live handle, hand the runner back, mark the run terminal, and release
+   * the owning task rather than leaving it stranded pointing at a hidden run
+   * (the same invariant haltAgent upholds — see the escalation-reject fix).
+   *
+   * Deliberately does NOT retire the worktree, unlike haltAgent/stopAgent.
+   * Archive is documented as a REVERSIBLE soft-hide that "never deletes", so
+   * the branch and its work must survive: this settles the run's bookkeeping,
+   * it doesn't throw away what the run produced.
+   */
+  async settleArchivedRun(runId: string): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (!run || run.status === "done") return; // already terminal — nothing to settle
+    const live = this.live.get(runId);
+    if (live) await live.handle.stop().catch(() => undefined);
+    await this.freeRunner(live?.agentId ?? run.agentId ?? null);
+    await this.releaseScratchCwd(live?.scratchCwd);
+    this.live.delete(runId);
+    this.escalations.delete(runId);
+    this.failCounts.delete(runId);
+    // Any gate still pointing at this run is now unanswerable — the run is
+    // hidden and settled, so leaving the card would strand it in the Inbox.
+    const open = (await this.store.listQueue(run.workspaceId).catch(() => [] as HitlItem[])).filter(
+      (q) => q.runId === runId && q.resolvedAt == null,
+    );
+    for (const q of open) {
+      await this.hub
+        .resolveHitl(q.id, {
+          action: "dismiss",
+          by: "system",
+          at: now(),
+          optionIndex: null,
+          guidance: null,
+          targetBranch: null,
+          memoryNote: null,
+          resetWork: false,
+        })
+        .catch(() => undefined);
+    }
+    await this.hub.runStatus(runId, "done");
+    await this.hub.runLog(runId, "archived — run settled, runner freed (its branch is kept)");
+    const task = (await this.store.listTasks(run.workspaceId).catch(() => [] as Task[])).find((t) => t.runId === runId);
+    if (task && (task.state === "ongoing" || task.state === "review")) {
+      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
+    }
+  }
+
+  /** Self-heal: settle any run that is already archived but stuck in a
+   *  non-terminal state. Runs on the periodic sweep so the zombies created
+   *  before archiving settled anything are cleaned up without a migration. */
+  async settleArchivedRuns(): Promise<number> {
+    const runs = await this.store.listAllRuns().catch(() => [] as TaskRun[]);
+    const stuck = runs.filter((r) => r.archived && r.status !== "done");
+    for (const r of stuck) await this.settleArchivedRun(r.id).catch(() => undefined);
+    return stuck.length;
+  }
+
   isBusy(agentId: string): boolean {
     for (const l of this.live.values()) if (l.agentId === agentId) return true;
     return false;
