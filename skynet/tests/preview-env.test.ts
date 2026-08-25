@@ -43,4 +43,23 @@ describe("previewEnv (preview subprocess env)", () => {
     expect(env.PORT).toBe("1234");
     expect(env.SOME_PREVIEW_MARKER).toBe("keep");
   });
+
+  // Sandbox isolation (docs/live-preview.md): a preview runs the branch under
+  // review, which is untrusted pre-merge — the server's own provider keys and
+  // secrets must not leak into that child process's env.
+  const CREDENTIAL_KEYS = [
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "CURSOR_API_KEY", "OPENROUTER_API_KEY",
+    "GITHUB_TOKEN", "GITHUB_APP_PRIVATE_KEY", "GITHUB_WEBHOOK_SECRET",
+    "SKYNET_MASTER_KEY", "SKYNET_ADMIN_PASSWORD", "SKYNET_VIEWER_PASSWORD",
+    "SKYNET_BOOTSTRAP_TOKEN", "SKYNET_TELEGRAM_BOT_TOKEN",
+  ];
+  afterEach(() => {
+    for (const key of CREDENTIAL_KEYS) delete process.env[key];
+  });
+
+  it("strips prod credentials from the child env", () => {
+    for (const key of CREDENTIAL_KEYS) process.env[key] = "super-secret";
+    const env = previewEnv();
+    for (const key of CREDENTIAL_KEYS) expect(env[key]).toBeUndefined();
+  });
 });
