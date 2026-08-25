@@ -183,6 +183,11 @@ export class GithubService {
   async getIssueLabels(workspaceId: string, repo: string, number: number, githubCredentialId?: string | null): Promise<string[]> {
     return this.provider.getIssueLabels(await this.projectToken(workspaceId, githubCredentialId), repo, number);
   }
+  /** An issue's current open/closed state + labels — manual re-sync's reconcile
+   *  pass needs this for a CLOSED issue too, which listIssues never returns. */
+  async getIssue(workspaceId: string, repo: string, number: number, githubCredentialId?: string | null): Promise<{ state: "open" | "closed"; labels: string[] }> {
+    return this.provider.getIssue(await this.projectToken(workspaceId, githubCredentialId), repo, number);
+  }
   /** Replace an issue's entire label set (write-back — kanban-stage mirror). */
   async setIssueLabels(workspaceId: string, repo: string, number: number, labels: string[], githubCredentialId?: string | null): Promise<void> {
     await this.provider.setIssueLabels(await this.projectToken(workspaceId, githubCredentialId), repo, number, labels);

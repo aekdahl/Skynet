@@ -468,6 +468,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   });
   tool("import_github_issues", "author", "Import a project's connected-repo open GitHub issues as tasks (deduped; sets each task's source so status changes can sync back). Needs the project bound to a GitHub repo.", { projectId: z.string() }, (a) => operations.importGithubIssues(ws, a.projectId));
   tool("import_repo_file", "author", "Import a repo file's `- [ ]` checklist items as tasks (anchored by label; completing one later checks its box). Needs the project bound to a GitHub repo.", { projectId: z.string(), path: z.string() }, (a) => operations.importRepoFile(ws, a.projectId, a.path));
+  tool("resync_source", "author", "Catch up GitHub sync both ways for a project in one call: pull new/edited issues and repo-file checklist items into tasks, and push any task status change that never made it back (e.g. from before syncSourceStatus was on, or a failed write-back). Needs the project bound to a GitHub repo. Returns {imported, updated, pushed}.", { projectId: z.string() }, (a) => operations.resyncProjectSource(ws, a.projectId));
   tool("create_feature", "author", "Create a feature (a task grouping) in a project. Optionally roll it up into a milestone via `milestoneId`.", { projectId: z.string(), ...CreateFeatureRequest.shape }, (a) => {
     const { projectId, ...body } = a;
     return operations.createFeature(ws, projectId, body);

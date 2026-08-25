@@ -832,6 +832,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Manual re-sync: pull new/drifted GitHub issues + repo-file checklist items,
+  // and push any Skynet-side state change that never made it back. See
+  // Operations.resyncProjectSource's own doc comment for the exact passes.
+  app.post<{ Params: { id: string } }>("/api/projects/:id/resync-source", async (req, reply) => {
+    try {
+      return await ops.resyncProjectSource(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.patch<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid", async (req, reply) => {
     const body = UpdateTaskRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });

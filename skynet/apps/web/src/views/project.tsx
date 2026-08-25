@@ -1452,6 +1452,7 @@ export function ProjectView({
     assignTask,
     reorderTask,
     informRuns,
+    resyncProjectSource,
   } = useStore();
   const confirm = useConfirm();
   const noFleet = fleet.length === 0;
@@ -1599,6 +1600,7 @@ export function ProjectView({
   // Write task status back to the source (e.g. close/comment the linked GitHub
   // issue on done). Lives in this settings panel now; only meaningful with a repo.
   const [syncToSource, setSyncToSource] = useState(project.syncSourceStatus);
+  const [resyncing, setResyncing] = useState(false);
   const hasRepo = !!(project.gitBacked || project.repo);
 
   useEffect(() => {
@@ -1668,6 +1670,21 @@ export function ProjectView({
                 <span className="proj-autonomy-switch" aria-hidden="true" />
                 <span className="proj-autonomy-label">{syncToSource ? "On — status flows back to GitHub" : "Off"}</span>
               </label>
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={resyncing}
+                title="Pull new/edited GitHub issues and checklist items now, and push any task status change that never made it back (e.g. from before Sync to source was on)."
+                onClick={async () => {
+                  setResyncing(true);
+                  try {
+                    await resyncProjectSource(project.id);
+                  } finally {
+                    setResyncing(false);
+                  }
+                }}
+              >
+                {resyncing ? "Re-syncing…" : "Re-sync now"}
+              </button>
             </div>
           )}
           <div className="qx-row">
