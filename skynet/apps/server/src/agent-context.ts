@@ -18,15 +18,17 @@ import type { Feature, Project } from "@skynet/shared";
 // Only the fields this module actually reads — decouples it from the full
 // Project shape (and lets `withInstructions` below build a throwaway stand-in
 // without dragging in every required Project field).
-type ContextProject = Pick<Project, "name" | "goal" | "instructions">;
+type ContextProject = Pick<Project, "name" | "goal" | "instructions" | "contextSummary">;
 
 export interface AgentContextOptions {
   project: ContextProject | null | undefined;
   // The Feature a task belongs to, when it belongs to one. Undefined/null both
   // mean "no feature" — callers that haven't resolved one yet can pass either.
   feature?: Feature | null;
-  // S2 (not yet built): a per-project "primer" doc. Optional so this call
-  // never has to be re-plumbed once S2 lands — it just starts passing data.
+  // S2: an explicit override for the primer section. Rarely needed — when
+  // omitted, buildAgentContext falls back to the project's own condensed
+  // context (Project.contextSummary, steward/context.ts) automatically, so
+  // callers don't have to individually thread it through.
   primer?: string | null;
   // S8: the SolutionBrief a task is scoped under (its approach + acceptance
   // criteria, not the full planning doc) — see Orchestrator.findTaskBrief.
@@ -102,7 +104,11 @@ export function withInstructions(instructions: string | null | undefined, body: 
 export function buildAgentContext(opts: AgentContextOptions): string {
   const { project, body } = opts;
   const feature = opts.feature ?? null;
-  let primer = opts.primer?.trim() || null;
+  // S2: the operator's condensed project context (steward/context.ts,
+  // Project.contextSummary) IS the primer doc this slot was reserved for —
+  // every call site gets it automatically without individually threading it
+  // through. An explicit `opts.primer` (none exist yet) would still win.
+  let primer = opts.primer?.trim() || project?.contextSummary?.trim() || null;
   let siblings = (opts.siblings ?? [])
     .map((s) => s.trim())
     .filter(Boolean)

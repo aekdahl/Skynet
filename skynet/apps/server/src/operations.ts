@@ -18,6 +18,7 @@ import type {
   ConfigureRunnerRequest,
   CreateFeatureRequest,
   CreateMilestoneRequest,
+  CreateProjectContextEntryRequest,
   CreateProjectRequest,
   CreateSolutionBriefRequest,
   CreateTaskRequest,
@@ -34,6 +35,7 @@ import type {
   PrChecksStatus,
   Project,
   ProjectCharter,
+  ProjectContextEntry,
   ProviderInfo,
   ResolveRequest,
   Resolution,
@@ -80,6 +82,8 @@ import {
 import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
 import { contentHash, readProjectDoc, resolveRoadmapDoc } from "./steward/docs.js";
 import { draftBriefFromConversation, summarizeConversation } from "./steward/crystallize.js";
+import { condenseProjectContext } from "./steward/context.js";
+import { extractText } from "./steward/extract.js";
 import { commitLocalRepoFile } from "./local-repo-write.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
 import type { CapturedDiff, Hub } from "./hub.js";
@@ -166,6 +170,9 @@ export interface OperationsDeps {
    *  inject a stub here so the retry contract is verifiable without a real
    *  LLM call or a configured API key. */
   crystallizeAsk?: (prompt: string) => Promise<string>;
+  /** Test seam: override the model call refreshProjectContext makes (see
+   *  condenseProjectContext's `ask` param). Same rationale as crystallizeAsk. */
+  contextAsk?: (prompt: string) => Promise<string>;
 }
 
 export class Operations {
@@ -175,6 +182,7 @@ export class Operations {
   private readonly orchestrator: Orchestrator;
   private readonly decomposeConsult: (opts: { prompt: string; model: string; apiKey?: string | null }) => Promise<string>;
   private readonly crystallizeAsk?: (prompt: string) => Promise<string>;
+  private readonly contextAsk?: (prompt: string) => Promise<string>;
 
   constructor(deps: OperationsDeps) {
     this.store = deps.store;
@@ -182,6 +190,7 @@ export class Operations {
     this.orchestrator = deps.orchestrator;
     this.decomposeConsult = deps.decomposeConsult ?? ((opts) => oneShotText({ ...opts, apiKey: opts.apiKey ?? undefined }));
     this.crystallizeAsk = deps.crystallizeAsk;
+    this.contextAsk = deps.contextAsk;
   }
 
   private uid(prefix: string): string {
@@ -858,7 +867,13 @@ export class Operations {
       repoPath = null;
     }
     if (input.createRepo) {
-      const created = await githubService.createRepo(ws, input.createRepo, { description: input.goal });
+      // Create AS the pinned account when one was chosen — the owner list the
+      // operator picked from was that account's, so creating with the default
+      // connection's token would either fail or land under the wrong identity.
+      const created = await githubService.createRepo(ws, input.createRepo, {
+        description: input.goal,
+        githubCredentialId: input.githubCredentialId,
+      });
       repo = created.name; // "owner/repo"
       repoPath = null;
     }
@@ -920,6 +935,10 @@ export class Operations {
       // Operator-approved charter from the charter-assisted creation flow (Gate G-1).
       // null when the project was created without charter assistance (today's fast-path).
       charter: input.charter ?? null,
+      // No context entries yet at creation — set by refreshProjectContext once
+      // the operator pastes/uploads something.
+      contextSummary: null,
+      contextSummaryUpdatedAt: null,
     };
     const created = await this.hub.upsertProject(project);
     this.maybeAutoClone(ws, created);
@@ -1585,6 +1604,19 @@ export class Operations {
     return updated;
   }
 
+  /**
+   * Manual "Request review" — force a review pass on a review-stage task now,
+   * instead of waiting for a periodic tick to find an idle reviewer on its
+   * own. Throws NoOpenReviewGateError / AlreadyReviewedError /
+   * NoReviewerAvailableError (orchestrator.ts) for the honest failure modes —
+   * the route maps each to a specific status so the operator sees why, not a
+   * generic 500.
+   */
+  async requestReview(ws: string, tid: string): Promise<void> {
+    const task = await this.getTask(ws, tid);
+    await this.orchestrator.requestReview(ws, task.id);
+  }
+
   // ── features (task grouping) ───────────────────────────────────────────
   async createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature> {
     const project = await this.store.getProject(projectId);
@@ -1751,6 +1783,106 @@ export class Operations {
       });
     const draft = await draftBriefFromConversation(ask, project.name, history);
     return this.createBrief(ws, projectId, { ...draft, sourceConversation: summarizeConversation(history) });
+  }
+
+  // ─── Project context (meeting notes, emails, pasted/uploaded docs) ────────
+  // Raw entries are the source of truth (kept verbatim); refreshProjectContext
+  // condenses the accumulated set into Project.contextSummary — the primer
+  // every agent's task prompt and Steward's grounding both read (see
+  // agent-context.ts / steward/assistant.ts). Add/upload/delete all trigger a
+  // re-condense so the summary never drifts stale behind the raw entries.
+
+  async listContextEntries(ws: string, projectId: string): Promise<ProjectContextEntry[]> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return (await this.store.listContextEntries(ws))
+      .filter((e) => e.projectId === projectId)
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  private contextAskFn(ws: string): (prompt: string) => Promise<string> {
+    return (
+      this.contextAsk ??
+      (async (prompt: string) => {
+        const apiKey = (await secretService.resolve(ws, "claude")) ?? undefined;
+        return oneShotText({ prompt, apiKey });
+      })
+    );
+  }
+
+  /** Re-condense a project's accumulated context entries into
+   *  Project.contextSummary — called automatically after add/upload/delete,
+   *  and exposed as its own operation for a manual "Regenerate" action. A
+   *  project with zero entries clears the summary back to null rather than
+   *  leaving a stale one from since-deleted entries. */
+  async refreshProjectContext(ws: string, projectId: string): Promise<Project> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const entries = await this.listContextEntries(ws, projectId);
+    // Skip the (doomed) call when we already know no key resolves — see
+    // condenseProjectContext's doc comment for why this structural check (not
+    // reply-content sniffing) is the right place to guard against a degraded
+    // reply landing as a fake summary. Only for the real default ask — never
+    // for an injected test stub.
+    if (!this.contextAsk && !(await secretService.resolve(ws, "claude"))) return project;
+    const summary = await condenseProjectContext(this.contextAskFn(ws), project.name, entries);
+    return this.hub.upsertProject({ ...project, contextSummary: summary, contextSummaryUpdatedAt: now() });
+  }
+
+  async addContextEntry(ws: string, projectId: string, operatorId: string, input: CreateProjectContextEntryRequest): Promise<ProjectContextEntry> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const entry: ProjectContextEntry = {
+      id: this.uid(`ctx-${this.slug(project.name)}`),
+      workspaceId: ws,
+      projectId,
+      source: "paste",
+      label: input.label?.trim() || `Note — ${new Date(now()).toLocaleDateString()}`,
+      content: input.content.trim(),
+      filename: null,
+      mimeType: null,
+      createdAt: now(),
+      createdBy: operatorId,
+    };
+    await this.hub.upsertContextEntry(entry);
+    await this.refreshProjectContext(ws, projectId);
+    return entry;
+  }
+
+  /** `UnsupportedFileTypeError` (bad extension) and any extraction failure
+   *  propagate to the caller — see api.ts's fail() mapping — rather than
+   *  silently storing an empty/garbled entry. */
+  async uploadContextEntry(
+    ws: string,
+    projectId: string,
+    operatorId: string,
+    file: { filename: string; mimeType: string; buffer: Buffer },
+  ): Promise<ProjectContextEntry> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const content = await extractText(file.filename, file.mimeType, file.buffer);
+    const entry: ProjectContextEntry = {
+      id: this.uid(`ctx-${this.slug(project.name)}`),
+      workspaceId: ws,
+      projectId,
+      source: "upload",
+      label: file.filename,
+      content,
+      filename: file.filename,
+      mimeType: file.mimeType || null,
+      createdAt: now(),
+      createdBy: operatorId,
+    };
+    await this.hub.upsertContextEntry(entry);
+    await this.refreshProjectContext(ws, projectId);
+    return entry;
+  }
+
+  async deleteContextEntry(ws: string, projectId: string, entryId: string): Promise<void> {
+    const entry = await this.store.getContextEntry(entryId);
+    if (!entry || entry.workspaceId !== ws || entry.projectId !== projectId) throw new NotFoundError("Context entry");
+    await this.hub.deleteContextEntry(entryId);
+    await this.refreshProjectContext(ws, projectId);
   }
 
   /**

@@ -138,6 +138,13 @@ is the bucket to pull from.
   hosted release turns on public sign-in; today's local desktop path is unchanged.*
 - ***Data-disk snapshot before each VM apply** in `setup.sh` — the deploy machinery snapshots persistent
   state pre-mutation so hosted rollouts are recoverable.*
+- ***Durable login sessions on the GCP VM** (`durable_sessions`, default on) — a Redis sidecar container
+  with AOF persistence on `/data/redis`, sessions via `SESSIONS=redis`. Fixes a real reported pain ("I get
+  logged out all the time"): the app container's restarts are its DESIGNED recovery path (memory cap →
+  OOM-kill → `--restart=always`), and with `SESSIONS=memory` every such restart invalidated every login.
+  Sessions now survive container restarts and VM reboots alike; no extra cloud resources (a sidecar on the
+  same VM, capped at 96 MB, never published to the host, accounted for in the app container's memory
+  reservation). Template renders verified both ways + `bash -n` clean + `terraform validate` passing.*
 - ***Project-scoped MCP service tokens** — tokens can now be pinned to specific projects (not just
   workspaces), so an MCP token issued to an external agent is naturally sandboxed to the project it should
   see. Necessary groundwork for shared/hosted MCP access.*
@@ -837,6 +844,21 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     that same live list (instead of the mock stub) when editing an already-connected installation. Regression-
     proofed: stashing the service fix makes the new `github-app-repos.test.ts` suite fail exactly as reported
     (returns the stale 1-repo snapshot instead of the live 3).*
+  - *Bug fixed (follow-up, "New repo" this time): "the Algorithma-se org is not visible at all, despite adding
+    a new pat for it" — reported live against the New-repo owner picker in project creation. PR #525 had wired
+    the account selector for the "Existing repo" half only; the "New repo" half still ran entirely on the
+    DEFAULT connection: `useRepoOwners()`/`fetchGithubOwners()`/`listRepoOwners()` took no credential,
+    `createRepo` always used the default connection's token, and `githubCredentialId` was only sent for
+    existing-repo creations. Compounding it, `listRepoOwners` silently swallowed `/user/orgs` failures — and
+    a fine-grained PAT typically CAN'T call that endpoint (it needs an org "Members: read" permission tokens
+    usually aren't minted with), so even the deliberately-added org PAT would have shown only the personal
+    login. Fixed end to end: the account picker now shows for BOTH repo modes and threads `credentialId`
+    through owners + repos + creation (`createRepo` creates AS the pinned account, and the project is pinned
+    to it); and when org-listing yields nothing, owners are DERIVED from the repos the token can actually see
+    (any owner prefix ≠ the user is an org it works with) — so the org appears whenever the token can reach
+    any of its repos, org-membership permission or not. Regression-proofed (`github-owners.test.ts`): stashing
+    the service fix fails 5 of 6 tests exactly as reported (org invisible, repo created under the wrong
+    identity).*
   - *Bug fixed: the Inbox's own HITL cards (`QueueCard`, `apps/web/src/views/queue.tsx`) never showed which
     project a card belonged to — only the agent name and the task title, reported live as a "Diff Review" card
     with no way to tell which project it was for at a glance. The ready-to-merge card (above) and the Home
@@ -1188,6 +1210,23 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   CSS-token fix, and belongs in its own PR. A full sweep of the ~90 other `--faint` usages beyond
   the 4 named examples wasn't attempted either — that's the still-separately-tracked v0.5
   "Legibility floor" item (#4 above).
+- [x] **Project header decluttered — Governance popover.** Reported live: the project header's toolbar
+  had grown to ~15 same-weight pills (Approvals, Autonomy, Daily budget, Pace spend, Plan mode, Deep
+  review, Breaker review, GitHub/Fly account, Keys, Tools, Preview app, Deploy to Fly.io, Inform,
+  the gear, Delete) with no hierarchy between primary actions and rarely-touched settings. Seven of
+  those — Approvals, Autonomy, Daily budget (+ Pace spend), Plan mode, and Deep review (+ Breaker
+  review) — are now bundled behind one `ProjectGovernance` popover (`project.tsx`), reusing the exact
+  details/summary idiom the Keys/Tools popovers already established rather than inventing a new
+  pattern. The collapsed summary still surfaces the two facts worth seeing without opening it — the
+  approval level, and an "Autonomy off" flag — and Full autonomy's existing red "danger" treatment
+  stays visible on the collapsed pill itself (`.proj-governance-danger`), not just inside the menu.
+  Preview app / Deploy to Fly.io lead the row as the primary actions; Inform active agents / the gear /
+  Delete are pushed to a `margin-left: auto` cluster at the row's trailing edge (`.projview-head-admin`)
+  so administrative controls read as visually distinct from day-to-day ones, wrapping as one unit on
+  narrow widths instead of interleaving. Net: ~15 top-level controls down to about 7. Verified live —
+  every toggle's real persistence (including the Full-autonomy confirm dialog and the danger styling),
+  the Pace-spend/Breaker-review conditional reveals, and the admin cluster's wrap behavior at mobile
+  width — not just reviewed in source.
 - [ ] 🏢 Auth: **SSO/OIDC**.
 - [x] 🏢 **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
   everything (projects, runs, HITL, audit) but mutate nothing (no assign / resolve / transition /
@@ -1541,6 +1580,34 @@ features below are white space.)
   sibling reaches the real `StartSpec.task` at assign and fork time, and a solo project renders no
   `=== IN FLIGHT ===` section at all). Regression-proofed (removed the implementation, confirmed all 14 new
   tests fail, restored it).)*
+- [x] **Project Context — meeting notes/emails/docs, condensed into the S2 primer** — the operator can paste or
+  upload raw context (meeting notes, an email, a doc) on a project's new **Context** tab; Skynet reads it verbatim
+  (`ProjectContextEntry` — never edited by the model, source + date kept, delete + re-add if wrong) and runs one
+  LLM pass (`apps/server/src/steward/context.ts`'s `condenseProjectContext`, mirroring S5 crystallize's
+  stub-injected-`ask` pure-function shape) to distill the accumulated set into `Project.contextSummary` — the
+  short primer `agent-context.ts`'s `buildAgentContext` was already reserved for as "S2" (see S1 above) but never
+  had a data source. Every call site picks it up with **zero extra plumbing**: `buildAgentContext` now falls back
+  to `project.contextSummary` whenever a caller doesn't pass an explicit `primer`, and Steward's own grounding
+  (`steward/assistant.ts`) reads the identical field, so an agent's task prompt and "ask about this project" both
+  ground on the same digest. Upload extracts text server-side by extension (`steward/extract.ts`: `.txt`/`.md`
+  verbatim, `.pdf` via `pdf-parse`, `.docx` via `mammoth` — a first file-upload capability for the app, gated by a
+  new `@fastify/multipart` registration capped at 15MB/1 file) — an unrecognized type throws a clear, user-facing
+  error rather than storing garble. Add/upload/delete all re-condense automatically (deleting the last entry
+  clears the summary back to null, never leaving a stale one); a manual "Regenerate" re-runs it on demand. A real
+  gap found live-testing this against a dev box with no usable provider key: `oneShotText`'s one-shot consult
+  DEGRADES an auth/network failure into yielding its own error text rather than throwing (`streamQueryText`'s
+  by-design "never leave the caller with nothing" contract, shared by `stewardChat`/`crystallizeBrief`) — with no
+  guard, that error text would land in `contextSummary` looking like a real (if useless) summary. Fixed by
+  checking whether a usable key resolves at all BEFORE calling condense (`Operations.refreshProjectContext`) — a
+  structural, non-content check, not the keyword/shape classification of free text the auto-review APPROVE/FLAG
+  bug already burned this codebase on once; skipped only for the real default ask, never an injected test stub.
+  Verified live end-to-end in the browser (paste → raw entry lists correctly; the no-key case leaves the summary
+  cleanly empty instead of showing the degraded text; Regenerate/Delete both clean) and via a real multipart
+  `curl` upload against the running dev server (both a `.txt` success and an unsupported-type rejection).
+  `tests/project-context.test.ts` (15 tests: the pure condensation contract, extraction, and the full
+  Operations-layer add/upload/delete/refresh path against a real store+hub with a stubbed model reply) +
+  `tests/contracts.test.ts` (wire round-trip) + new cases in `tests/agent-context.test.ts` (the S2 fallback:
+  explicit `primer` still wins, omitted falls back to `contextSummary`, both-unset omits the section).
 - [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.* Also landed: the Roadmap tab's "reads ROADMAP.md" lookup used to dead-end when a repo kept its plan somewhere else — `Project.roadmapPath` now lets the operator (a picker on the tab's empty state) or Steward (`set_roadmap_path`, confirm-first, e.g. "the roadmap is at docs/PLAN.md") point it at any repo-relative file; `resolveRoadmapDoc` is the single place both the tab's API and Steward's own grounding resolve through, so they can't drift.
 - [~] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third

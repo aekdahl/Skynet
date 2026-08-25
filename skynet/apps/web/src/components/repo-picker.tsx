@@ -53,14 +53,27 @@ export function RepoPicker({
   repos,
   value,
   onChange,
+  pinnedAccount = false,
 }: {
   repos: GithubRepo[] | null;
   value: string;
   onChange: (repo: string) => void;
+  /** True when a specific (non-default) GitHub account is selected — its empty
+   *  state means THAT token sees no repos, not that GitHub isn't connected. */
+  pinnedAccount?: boolean;
 }) {
   if (repos === null) return <div className="rp-note">Loading repositories…</div>;
   if (repos.length === 0)
-    return (
+    return pinnedAccount ? (
+      <div className="rp-note">
+        This account's token can't see any repositories — check the PAT's repository access (its
+        resource owner and repo selection) in GitHub, or rotate it in{" "}
+        <a className="rp-link" href="#/integrations">
+          Integrations
+        </a>
+        .
+      </div>
+    ) : (
       <div className="rp-note">
         Connect GitHub in{" "}
         <a className="rp-link" href="#/integrations">

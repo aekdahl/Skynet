@@ -4,6 +4,7 @@
 
 import { loadedEnvFrom } from "./load-env.js"; // MUST be first — loads .env before config reads process.env
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { config } from "./config.js";
@@ -180,6 +181,10 @@ async function main() {
           cb(null, isCorsOriginAllowed(origin, { devMode: config.devMode, allowlist: config.corsOrigins })),
   });
   await app.register(websocket);
+  // Context-entry uploads (meeting notes/docs — see steward/context.ts). A
+  // single small field: one file per request, capped well above any real
+  // notes doc but far below "someone uploaded a video by mistake".
+  await app.register(multipart, { limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
   // Rate limiting runs before auth so a flood is shed early. Guards /api + /mcp
   // (login hardest); exempts loopback in dev. See rate-limit.ts.
   registerRateLimit(app);

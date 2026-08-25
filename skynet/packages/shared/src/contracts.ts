@@ -549,8 +549,56 @@ export const Project = z.object({
   // have null here. When present, this is the source of truth the auto-dev team
   // plans against — goals, non-goals, risks, constraints, definition of done.
   charter: ProjectCharter.nullable().default(null),
+  // A per-project running digest of external context the operator has fed in
+  // (see ProjectContextEntry) — pasted meeting notes, uploaded docs, emails —
+  // condensed by one LLM pass into a short primer any agent's prompt can carry
+  // (buildAgentContext's `primer` param — the "S2" slot agent-context.ts
+  // already reserved for it). null = no context entries yet, or none
+  // condensed. Regenerated whenever an entry is added/removed, or on a manual
+  // refresh — see Operations.refreshProjectContext. System-owned: never set
+  // directly via UpdateProjectRequest.
+  contextSummary: z.string().nullable().default(null),
+  contextSummaryUpdatedAt: Timestamp.nullable().default(null),
 });
 export type Project = z.infer<typeof Project>;
+
+// ─── Project context entries (meeting notes, emails, pasted/uploaded docs) ──
+// Raw source material the operator feeds in to build up "what we're aiming
+// at" — kept verbatim (never edited by the model) so the operator can always
+// see exactly what was fed in; a separate LLM pass condenses the accumulated
+// set into `Project.contextSummary` (see steward/context.ts), which is what
+// actually rides agent prompts. Append-only from the UI's perspective (no
+// edit — delete + re-add if wrong); each entry keeps its own source + date.
+export const ProjectContextSource = z.enum(["paste", "upload"]);
+export type ProjectContextSource = z.infer<typeof ProjectContextSource>;
+
+export const ProjectContextEntry = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  projectId: z.string(),
+  source: ProjectContextSource,
+  // Operator-given label ("Kickoff call notes", "Client email 8/12"), or the
+  // uploaded filename when none was given.
+  label: z.string(),
+  // Extracted plain text (uploads are converted at ingest time — see
+  // steward/extract.ts — never stored as raw binary).
+  content: z.string(),
+  // Upload provenance — null for a paste entry.
+  filename: z.string().nullable().default(null),
+  mimeType: z.string().nullable().default(null),
+  createdAt: Timestamp,
+  createdBy: z.string(),
+});
+export type ProjectContextEntry = z.infer<typeof ProjectContextEntry>;
+
+// Paste path (POST /api/projects/:id/context — JSON body). Upload is a
+// separate multipart route (POST .../context/upload) with no zod body — the
+// file itself is the payload.
+export const CreateProjectContextEntryRequest = z.object({
+  label: z.string().trim().min(1).max(200).optional(),
+  content: z.string().trim().min(1).max(200_000),
+});
+export type CreateProjectContextEntryRequest = z.infer<typeof CreateProjectContextEntryRequest>;
 
 // Provenance for a task imported from an external source of truth, so Skynet can
 // write status changes BACK to it (see docs/task-source-sync.md). Set at import;

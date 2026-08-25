@@ -164,8 +164,36 @@ export function projectQueue(tasks: Task[], projectId: string): ProjectQueue {
 export const hitlFor = (queue: HitlItem[], runId: string) =>
   queue.find((q) => q.runId === runId && q.resolvedAt == null);
 
+/** Approving a `diff`/`merge` gate merges the run's work — this is true when
+ *  no OTHER agent has recorded a review verdict on it yet, so Approve is
+ *  worth a confirm ("merge without a review?") rather than silent one-click
+ *  merging of completely unreviewed work. `verifier`/`approval`/`question`/
+ *  `plan` gates don't represent a merge decision, so they're never flagged. */
+export function needsReviewConfirm(item: HitlItem, tasks: Task[]): boolean {
+  if (item.kind !== "diff" && item.kind !== "merge") return false;
+  const task = tasks.find((t) => t.runId === item.runId);
+  return !task?.reviewVerdict;
+}
+
 export const openQueue = (queue: HitlItem[]) =>
   queue.filter((q) => q.resolvedAt == null);
+
+/** Inbox ordering: approvals (a live gate is blocking a run's own progress —
+ *  approve/reject/modify unblocks it right now) before escalations (the
+ *  agent already handed back its compute — see orchestrator.ts's escalate()
+ *  — so nothing is actively held up, including a stuck-review card that's
+ *  already "done, awaiting review"), each sorted longest-waiting-first
+ *  within its group. A single flat array, not two separately-indexed lists —
+ *  QueueView's keyboard nav (j/k/a/r/m) and `selectedIdx` index straight into
+ *  it; callers detect the group boundary from `item.kind` themselves to
+ *  render section headers. */
+export function sortForInbox(items: HitlItem[], now: number): HitlItem[] {
+  return items.slice().sort((a, b) => {
+    const ag = a.kind === "escalation" ? 1 : 0;
+    const bg = b.kind === "escalation" ? 1 : 0;
+    return ag !== bg ? ag - bg : waitedSecs(b, now) - waitedSecs(a, now);
+  });
+}
 
 // Runs whose PR is open and awaiting a human merge decision (not set aside) —
 // the ready-to-merge list. Newest PR first.

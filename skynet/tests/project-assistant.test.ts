@@ -77,6 +77,14 @@ describe("validateProjectAction — whitelist + project-scoped id resolution", (
     expect(validateProjectAction({ kind: "archive_task", taskId: "ghost" }, ctx)).toBeNull();
   });
 
+  it("request_review resolves the id — forces a fresh review pass, not the same as archive/remove", () => {
+    const a = validateProjectAction({ kind: "request_review", taskId: "t-1" }, ctx);
+    expect(a).toMatchObject({ kind: "request_review", taskId: "t-1" });
+    expect(a?.summary).toMatch(/review/i);
+    expect(a?.summary).toContain("fix login redirect");
+    expect(validateProjectAction({ kind: "request_review", taskId: "ghost" }, ctx)).toBeNull();
+  });
+
   it("project edits validate their fields", () => {
     expect(validateProjectAction({ kind: "rename_project", name: "Liftoff" }, ctx)).toMatchObject({ kind: "rename_project", name: "Liftoff" });
     expect(validateProjectAction({ kind: "set_goal", goal: "ship v1" }, ctx)).toMatchObject({ kind: "set_goal", goal: "ship v1" });

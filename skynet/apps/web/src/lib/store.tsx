@@ -239,6 +239,7 @@ export interface Store extends StoreState {
   reorderTask: (projectId: string, taskId: string, beforeId: string | null) => Promise<void>;
   transitionTask: (projectId: string, taskId: string, to: string, preserve?: boolean) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
+  requestReview: (projectId: string, taskId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
   createAgent: (provider: string, model: string, name?: string, credentialId?: string, label?: string | null) => Promise<void>;
@@ -653,7 +654,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return created;
       },
       updateProject: async (id, patch) => {
-        await api.updateProject(id, patch);
+        // Apply the server's response DIRECTLY instead of waiting for the WS
+        // echo, and surface failures. Before this, a project-settings save
+        // (Daily budget, Autonomy, Plan mode, …) had no feedback path at all:
+        // no local apply (the field only changed when the `project.upserted`
+        // echo arrived — a dropped/reconnecting socket made a SUCCESSFUL save
+        // look like nothing happened, with the input snapping back on blur)
+        // and no catch (a server rejection was a silent unhandled rejection).
+        // Reported live as "budget cannot be set anymore — nothing happens
+        // when I write in an amount."
+        try {
+          const updated = await api.updateProject(id, patch);
+          setState((s) => ({ ...s, projects: upsert(s.projects, updated) }));
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't save the project settings."));
+          else throw e;
+        }
       },
       removeApprovalRule: async (projectId, ruleId) => {
         await api.removeApprovalRule(projectId, ruleId);
@@ -690,6 +706,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await api.forceTaskDone(projectId, taskId);
         } catch (e) {
           if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't force the task done."));
+        }
+      },
+      requestReview: async (projectId, taskId) => {
+        try {
+          await api.requestReview(projectId, taskId);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't request a review."));
         }
       },
       deleteTask: async (projectId, taskId) => {

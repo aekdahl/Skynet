@@ -11,6 +11,7 @@ import {
   ConfigureRunnerRequest,
   CreateFeatureRequest,
   CreateMilestoneRequest,
+  CreateProjectContextEntryRequest,
   CreateProjectRequest,
   CreateSolutionBriefRequest,
   CreateTaskRequest,
@@ -50,7 +51,15 @@ import {
   InvalidEnvValueError,
 } from "./settings/env-settings.js";
 import { CommandDeniedError } from "./command-safety.js";
-import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
+import {
+  NoCapacityError,
+  RunnerNotConfiguredError,
+  TaskAlreadyAssignedError,
+  NoOpenReviewGateError,
+  AlreadyReviewedError,
+  NoReviewerAvailableError,
+  type Orchestrator,
+} from "./orchestrator.js";
 import { NotFoundError, type Operations, RoadmapConflictError, RunnerBusyError } from "./operations.js";
 import { CrystallizeParseError } from "./steward/crystallize.js";
 import type { ChatTurn } from "./project-assistant.js";
@@ -84,7 +93,10 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
     err instanceof TaskAlreadyAssignedError ||
     err instanceof RunnerNotConfiguredError ||
     err instanceof RunnerBusyError ||
-    err instanceof RoadmapConflictError
+    err instanceof RoadmapConflictError ||
+    err instanceof NoOpenReviewGateError ||
+    err instanceof AlreadyReviewedError ||
+    err instanceof NoReviewerAvailableError
   ) {
     return reply.code(409).send({ error: (err as Error).message });
   }
@@ -877,6 +889,59 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Project context (meeting notes, emails, pasted/uploaded docs — see
+  // steward/context.ts). List + paste are plain JSON; upload is multipart
+  // (the file itself is the payload, plus an optional `label` field).
+  app.get<{ Params: { id: string } }>("/api/projects/:id/context", async (req, reply) => {
+    try {
+      return await ops.listContextEntries(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/projects/:id/context", async (req, reply) => {
+    const body = CreateProjectContextEntryRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.addContextEntry(ws(req), req.params.id, req.principal!.operatorId, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/projects/:id/context/upload", async (req, reply) => {
+    const data = await req.file();
+    if (!data) return reply.code(400).send({ error: "no file uploaded" });
+    try {
+      const buffer = await data.toBuffer();
+      return await ops.uploadContextEntry(ws(req), req.params.id, req.principal!.operatorId, {
+        filename: data.filename,
+        mimeType: data.mimetype,
+        buffer,
+      });
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  app.delete<{ Params: { id: string; eid: string } }>("/api/projects/:id/context/:eid", async (req, reply) => {
+    try {
+      await ops.deleteContextEntry(ws(req), req.params.id, req.params.eid);
+      return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/projects/:id/context/refresh", async (req, reply) => {
+    try {
+      return await ops.refreshProjectContext(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // Human kanban move (validated against the allowed-transition map).
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/state", async (req, reply) => {
     const body = MoveTaskRequest.safeParse(req.body);
@@ -898,6 +963,20 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/force-done", async (req, reply) => {
     try {
       return await ops.forceTaskDone(ws(req), req.params.tid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Manual "Request review" — force a review pass now rather than waiting for
+  // a periodic tick to happen to find an idle reviewer on its own. 409s with
+  // a specific, honest reason (already reviewed / no open gate / no reviewer
+  // free right now) rather than a generic failure — see requestReview's own
+  // doc comment for why a single-agent project can never satisfy this.
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/request-review", async (req, reply) => {
+    try {
+      await ops.requestReview(ws(req), req.params.tid);
+      return reply.code(204).send();
     } catch (err) {
       return fail(reply, err);
     }

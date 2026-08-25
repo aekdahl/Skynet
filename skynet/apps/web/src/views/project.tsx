@@ -27,6 +27,7 @@ import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
 import { RoadmapDocView } from "./project-roadmap";
+import { ProjectContextView } from "./project-context";
 import { InformComposer, toastInformResult } from "./fleet";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -262,6 +263,7 @@ function TaskCard({
     updateTask,
     deleteTask,
     forceTaskDone,
+    requestReview,
     archiveTask,
     assignTask,
     transitionTask,
@@ -469,7 +471,24 @@ function TaskCard({
             )}
             <button className="kb-tool" title="Edit task" aria-label="Edit task" onClick={() => setEditing(true)}>✎</button>
             <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" aria-label="Archive task" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
-            <button className="kb-tool kb-tool-del" title="Delete task" aria-label="Delete task" onClick={() => deleteTask(pid, task.id)}>×</button>
+            <button
+              className="kb-tool kb-tool-del"
+              title="Delete task"
+              aria-label="Delete task"
+              onClick={async () => {
+                if (
+                  await confirm({
+                    title: "Delete task?",
+                    body: `Delete “${task.text}”? This can't be undone — use Archive instead to hide it but keep it recoverable.`,
+                    confirmLabel: "Delete",
+                    danger: true,
+                  })
+                )
+                  deleteTask(pid, task.id);
+              }}
+            >
+              ×
+            </button>
           </span>
         )}
         {s === "done" && (
@@ -536,11 +555,24 @@ function TaskCard({
             </button>
           </div>
         )}
-      {s === "review" && task.reviewVerdict && (
-        task.reviewVerdict.decision === "flag" ? (
-          <div className="kb-flag">⚠ flagged for you — {task.reviewVerdict.reason}</div>
+      {s === "review" && (
+        task.reviewVerdict ? (
+          task.reviewVerdict.decision === "flag" ? (
+            <div className="kb-flag">⚠ flagged for you — {task.reviewVerdict.reason}</div>
+          ) : (
+            <div className="kb-review-ok">✓ reviewer approved — awaiting you</div>
+          )
         ) : (
-          <div className="kb-review-ok">✓ reviewer approved — awaiting you</div>
+          <div className="kb-unreviewed" onClick={stop}>
+            <span>Not yet reviewed by another agent</span>
+            <button
+              className="kb-unreviewed-btn"
+              title="Have an idle agent look at this before you decide — fails honestly if none is free right now"
+              onClick={() => void requestReview(pid, task.id)}
+            >
+              Request review
+            </button>
+          </div>
         )
       )}
 
@@ -1085,6 +1117,119 @@ function ProjectFlyAccount({ project, onChange }: { project: Project; onChange: 
   );
 }
 
+// Governance settings, bundled behind one popover instead of seven separate
+// pills — Approvals, Autonomy, Daily budget (+ Pace spend once a budget is
+// set), Plan mode, and Deep review (+ Breaker review once deep review is
+// on). Same details/summary idiom as Keys/Tools below; the collapsed summary
+// still surfaces the approval level and an "Autonomy off" flag — the two
+// facts worth seeing without opening the menu — and keeps the existing
+// red "danger" treatment for Full autonomy visible at a glance.
+function ProjectGovernance({
+  project,
+  onApprovalLevelChange,
+  onChange,
+}: {
+  project: Project;
+  onApprovalLevelChange: (level: string) => void;
+  onChange: (patch: Partial<Project>) => void;
+}) {
+  const LEVEL_LABEL: Record<string, string> = { manual: "Manual", assisted: "Assisted", trusted: "Trusted", full: "Full autonomy" };
+  const level = project.approvalLevel ?? "trusted";
+  const danger = level === "full";
+  const summary = project.autonomy ? LEVEL_LABEL[level] : `${LEVEL_LABEL[level]} · Autonomy off`;
+  return (
+    <details className={"proj-keys" + (danger ? " proj-governance-danger" : "")}>
+      <summary
+        className="proj-keys-summary"
+        title="How agents run unattended on this project: how much of their own commands auto-approve, whether the board triages/reviews on its own, spend limits, and review rigor."
+      >
+        {danger && <span aria-hidden="true">⚠ </span>}
+        <span className="proj-approval-label mono">Governance</span>
+        <span className="proj-keys-value">{summary}</span>
+      </summary>
+      <div className="proj-keys-menu proj-governance-menu">
+        <label
+          className={"proj-approval" + (danger ? " proj-approval-danger" : "")}
+          title="How much an agent may run commands without asking. Diff review needs a human unless Autonomy lets another fleet agent LLM-review and merge it — Full autonomy skips even that: every run's own diff merges immediately, no second opinion."
+        >
+          <span className="proj-approval-label mono">Approvals</span>
+          <select className="proj-approval-select" value={level} onChange={(e) => onApprovalLevelChange(e.target.value)}>
+            <option value="manual">Manual · ask for everything</option>
+            <option value="assisted">Assisted · auto-approve low-risk commands</option>
+            <option value="trusted">Trusted · auto-approve low + medium-risk commands</option>
+            <option value="full">⚠ Full autonomy · merges to main unattended</option>
+          </select>
+        </label>
+        <label
+          className="proj-autonomy"
+          title="Whether work starts and gets reviewed on its own: picks up backlog tasks flagged auto-pick, and lets another agent review + resolve a finished diff. Approvals (above) is a different axis — how much of an already-running agent's OWN commands get auto-approved."
+        >
+          <input type="checkbox" className="proj-autonomy-cb" checked={project.autonomy} onChange={(e) => onChange({ autonomy: e.target.checked })} />
+          <span className="proj-autonomy-switch" aria-hidden="true" />
+          <span className="proj-autonomy-text">
+            <span className="proj-autonomy-label">Autonomy</span>
+            <span className="proj-autonomy-hint">Agents triage, auto-pick, and review tasks on their own — off, the board is fully human-driven.</span>
+          </span>
+        </label>
+        <ProjectDailyBudget project={project} onChange={(v) => onChange({ dailyBudgetUsd: v })} />
+        {project.dailyBudgetUsd != null && (
+          <label
+            className="proj-autonomy"
+            title="Spread today's budget across a working window instead of committing it all to the first tasks the tick sees — early in the day only a fraction is available to new work, growing toward the full budget as the window elapses. Off by default: with it off, the whole remaining budget is available immediately."
+          >
+            <input type="checkbox" className="proj-autonomy-cb" checked={project.budgetPacing} onChange={(e) => onChange({ budgetPacing: e.target.checked })} />
+            <span className="proj-autonomy-switch" aria-hidden="true" />
+            <span className="proj-autonomy-text">
+              <span className="proj-autonomy-label">Pace spend</span>
+              <span className="proj-autonomy-hint">Spread the daily budget across the day instead of the first tasks picked.</span>
+            </span>
+          </label>
+        )}
+        <label
+          className="proj-autonomy"
+          title="Every run proposes a plan first and pauses for your approval before making any changes. Off by default; Claude runners only for now."
+        >
+          <input type="checkbox" className="proj-autonomy-cb" checked={project.planModeGate} onChange={(e) => onChange({ planModeGate: e.target.checked })} />
+          <span className="proj-autonomy-switch" aria-hidden="true" />
+          <span className="proj-autonomy-text">
+            <span className="proj-autonomy-label">Plan mode</span>
+            <span className="proj-autonomy-hint">Agents propose a plan and pause for approval before writing any changes.</span>
+          </span>
+        </label>
+        <label
+          className="proj-autonomy"
+          title="At review time, a second bounded Claude agent opens a live preview of the changed branch and actually clicks through the behavior before writing its verdict — instead of a stateless one-shot text consult. Off by default (a real agent run, not a cheap call); falls back to the plain consult if the preview can't start or the reviewer times out."
+        >
+          <input
+            type="checkbox"
+            className="proj-autonomy-cb"
+            checked={project.deepReview}
+            onChange={(e) => onChange(e.target.checked ? { deepReview: true } : { deepReview: false, breakerReview: false })}
+          />
+          <span className="proj-autonomy-switch" aria-hidden="true" />
+          <span className="proj-autonomy-text">
+            <span className="proj-autonomy-label">Deep review</span>
+            <span className="proj-autonomy-hint">A second agent actually runs the change in a live preview before approving — not just reading the diff.</span>
+          </span>
+        </label>
+        {project.deepReview && (
+          <label
+            className="proj-autonomy"
+            title="After the deep reviewer approves, a third agent tries to BREAK the change — malformed input, edge cases, auth boundaries, concurrent actions. Any reproduced medium+ severity finding flips the verdict to flag. Requires deep review on. Off by default."
+          >
+            <input type="checkbox" className="proj-autonomy-cb" checked={project.breakerReview} onChange={(e) => onChange({ breakerReview: e.target.checked })} />
+            <span className="proj-autonomy-switch" aria-hidden="true" />
+            <span className="proj-autonomy-text">
+              <span className="proj-autonomy-label">Breaker review</span>
+              <span className="proj-autonomy-hint">After the verifier approves, an adversarial agent tries to reproduce failures before it passes.</span>
+            </span>
+          </label>
+        )}
+      </div>
+    </details>
+  );
+}
+
 // Which provider keys this project may run agents on. Empty = any workspace key
 // (the default). Narrowing it confines BOTH what the fleet assigns here and what
 // a project-scoped MCP token may spin up. Hidden until there's a real choice
@@ -1278,6 +1423,19 @@ export function ProjectView({
       if (d.from === "backlog") void reorderTask(project.id, d.taskId, beforeIdAt(e.currentTarget as HTMLElement, e.clientY, d.taskId));
     } else if (d.from === "todo" && to === "ongoing") {
       void assignTask(project.id, d.taskId); // "Start" on an idle agent
+    } else if (d.from === "review" && to === "done" && !tasks.find((t) => t.id === d.taskId)?.reviewVerdict) {
+      // Merging with no reviewVerdict recorded — no other agent has looked at
+      // this yet. Friction, not a hard block: some projects (a single-agent
+      // fleet) can never get a second opinion, so refusing outright would
+      // just strand the task in review forever.
+      void confirm({
+        title: "Merge without a review?",
+        body: "No other agent has reviewed this yet — you'd be the first (and only) look at it before it merges.",
+        confirmLabel: "Merge anyway",
+        danger: true,
+      }).then((ok) => {
+        if (ok) void transitionTask(project.id, d.taskId, to);
+      });
     } else {
       void transitionTask(project.id, d.taskId, to);
     }
@@ -1287,10 +1445,10 @@ export function ProjectView({
   // Per-project lens (Kanban is the default; Archived shows soft-hidden tasks +
   // restore; Roadmap renders ROADMAP.md from the repo). Persisted per-project in
   // sessionStorage so switching back restores the last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "roadmap" | "archived">(() => {
+  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "archived">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "roadmap" || v === "archived" ? v : "kanban";
+    return v === "roadmap" || v === "context" || v === "archived" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -1539,114 +1697,6 @@ export function ProjectView({
             )}
           </div>
           <div className="projview-head-tools">
-            <label
-              className={"proj-approval" + (project.approvalLevel === "full" ? " proj-approval-danger" : "")}
-              title="How much an agent may run commands without asking. Diff review needs a human unless Autonomy lets another fleet agent LLM-review and merge it — Full autonomy skips even that: every run's own diff merges immediately, no second opinion."
-            >
-              <span className="proj-approval-label mono">
-                {project.approvalLevel === "full" && <span aria-hidden="true">⚠ </span>}
-                Approvals
-              </span>
-              <select
-                className="proj-approval-select"
-                value={project.approvalLevel ?? "trusted"}
-                onChange={(e) => void onApprovalLevelChange(e.target.value)}
-              >
-                <option value="manual">Manual · ask for everything</option>
-                <option value="assisted">Assisted · auto-approve low-risk commands</option>
-                <option value="trusted">Trusted · auto-approve low + medium-risk commands</option>
-                <option value="full">⚠ Full autonomy · merges to main unattended</option>
-              </select>
-            </label>
-            <label
-              className="proj-autonomy"
-              title="Whether work starts and gets reviewed on its own: picks up backlog tasks flagged auto-pick, and lets another agent review + resolve a finished diff. Approvals (left) is a different axis — how much of an already-running agent's OWN commands get auto-approved."
-            >
-              <input
-                type="checkbox"
-                className="proj-autonomy-cb"
-                checked={project.autonomy}
-                onChange={(e) => updateProject(project.id, { autonomy: e.target.checked })}
-              />
-              <span className="proj-autonomy-switch" aria-hidden="true" />
-              <span className="proj-autonomy-text">
-                <span className="proj-autonomy-label">Autonomy</span>
-                <span className="proj-autonomy-hint">Agents triage, auto-pick, and review tasks on their own — off, the board is fully human-driven.</span>
-              </span>
-            </label>
-            <ProjectDailyBudget project={project} onChange={(v) => updateProject(project.id, { dailyBudgetUsd: v })} />
-            {project.dailyBudgetUsd != null && (
-              <label
-                className="proj-autonomy"
-                title="Spread today's budget across a working window instead of committing it all to the first tasks the tick sees — early in the day only a fraction is available to new work, growing toward the full budget as the window elapses. Off by default: with it off, the whole remaining budget is available immediately."
-              >
-                <input
-                  type="checkbox"
-                  className="proj-autonomy-cb"
-                  checked={project.budgetPacing}
-                  onChange={(e) => updateProject(project.id, { budgetPacing: e.target.checked })}
-                />
-                <span className="proj-autonomy-switch" aria-hidden="true" />
-                <span className="proj-autonomy-text">
-                  <span className="proj-autonomy-label">Pace spend</span>
-                  <span className="proj-autonomy-hint">Spread the daily budget across the day instead of the first tasks picked.</span>
-                </span>
-              </label>
-            )}
-            <label
-              className="proj-autonomy"
-              title="Every run proposes a plan first and pauses for your approval before making any changes. Off by default; Claude runners only for now."
-            >
-              <input
-                type="checkbox"
-                className="proj-autonomy-cb"
-                checked={project.planModeGate}
-                onChange={(e) => updateProject(project.id, { planModeGate: e.target.checked })}
-              />
-              <span className="proj-autonomy-switch" aria-hidden="true" />
-              <span className="proj-autonomy-text">
-                <span className="proj-autonomy-label">Plan mode</span>
-                <span className="proj-autonomy-hint">Agents propose a plan and pause for approval before writing any changes.</span>
-              </span>
-            </label>
-            <label
-              className="proj-autonomy"
-              title="At review time, a second bounded Claude agent opens a live preview of the changed branch and actually clicks through the behavior before writing its verdict — instead of a stateless one-shot text consult. Off by default (a real agent run, not a cheap call); falls back to the plain consult if the preview can't start or the reviewer times out."
-            >
-              <input
-                type="checkbox"
-                className="proj-autonomy-cb"
-                checked={project.deepReview}
-                onChange={(e) => updateProject(project.id, e.target.checked ? { deepReview: true } : { deepReview: false, breakerReview: false })}
-              />
-              <span className="proj-autonomy-switch" aria-hidden="true" />
-              <span className="proj-autonomy-text">
-                <span className="proj-autonomy-label">Deep review</span>
-                <span className="proj-autonomy-hint">A second agent actually runs the change in a live preview before approving — not just reading the diff.</span>
-              </span>
-            </label>
-            {project.deepReview && (
-              <label
-                className="proj-autonomy"
-                title="After the deep reviewer approves, a third agent tries to BREAK the change — malformed input, edge cases, auth boundaries, concurrent actions. Any reproduced medium+ severity finding flips the verdict to flag. Requires deep review on. Off by default."
-              >
-                <input
-                  type="checkbox"
-                  className="proj-autonomy-cb"
-                  checked={project.breakerReview}
-                  onChange={(e) => updateProject(project.id, { breakerReview: e.target.checked })}
-                />
-                <span className="proj-autonomy-switch" aria-hidden="true" />
-                <span className="proj-autonomy-text">
-                  <span className="proj-autonomy-label">Breaker review</span>
-                  <span className="proj-autonomy-hint">After the verifier approves, an adversarial agent tries to reproduce failures before it passes.</span>
-                </span>
-              </label>
-            )}
-            <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
-            <ProjectFlyAccount project={project} onChange={(id) => updateProject(project.id, { flyCredentialId: id })} />
-            <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
-            <ProjectToolAccess project={project} onChange={(tools) => updateProject(project.id, { disallowedTools: tools })} />
             {project.repoPath && (
               <button className="btn" onClick={() => setPreviewOpen(true)} title="Run the app and preview it live — it refreshes as the fleet merges changes.">
                 ▶ Preview app
@@ -1661,25 +1711,36 @@ export function ProjectView({
                 {project.flyDeployment?.status === "live" ? "● Live on Fly" : "⇪ Deploy to Fly.io"}
               </button>
             )}
-            {liveProjectRunCount > 0 && (
-              <button
-                className={"btn btn-ghost" + (informOpen ? " on" : "")}
-                title="Attach a note to every currently live run in this project — no extra turn, no reply expected."
-                onClick={() => setInformOpen((v) => !v)}
-              >
-                📣 Inform active agents
-              </button>
-            )}
-            <button className="btn proj-config-btn" onClick={() => setEditing(true)} title="Project settings" aria-label="Project settings">⚙</button>
-            {confirmDel ? (
-              <span className="del-confirm">
-                Delete project?{" "}
-                <button className="btn btn-danger" onClick={() => { deleteProject(project.id); onBack(); }}>Yes, delete</button>
-                <button className="btn btn-ghost" onClick={() => setConfirmDel(false)}>No</button>
-              </span>
-            ) : (
-              <button className="btn btn-retire" onClick={() => setConfirmDel(true)}>Delete</button>
-            )}
+            <ProjectGovernance
+              project={project}
+              onApprovalLevelChange={(v) => void onApprovalLevelChange(v)}
+              onChange={(patch) => updateProject(project.id, patch)}
+            />
+            <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
+            <ProjectFlyAccount project={project} onChange={(id) => updateProject(project.id, { flyCredentialId: id })} />
+            <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
+            <ProjectToolAccess project={project} onChange={(tools) => updateProject(project.id, { disallowedTools: tools })} />
+            <div className="projview-head-admin">
+              {liveProjectRunCount > 0 && (
+                <button
+                  className={"btn btn-ghost" + (informOpen ? " on" : "")}
+                  title="Attach a note to every currently live run in this project — no extra turn, no reply expected."
+                  onClick={() => setInformOpen((v) => !v)}
+                >
+                  📣 Inform active agents
+                </button>
+              )}
+              <button className="btn proj-config-btn" onClick={() => setEditing(true)} title="Project settings" aria-label="Project settings">⚙</button>
+              {confirmDel ? (
+                <span className="del-confirm">
+                  Delete project?{" "}
+                  <button className="btn btn-danger" onClick={() => { deleteProject(project.id); onBack(); }}>Yes, delete</button>
+                  <button className="btn btn-ghost" onClick={() => setConfirmDel(false)}>No</button>
+                </span>
+              ) : (
+                <button className="btn btn-retire" onClick={() => setConfirmDel(true)}>Delete</button>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1760,13 +1821,13 @@ export function ProjectView({
 
       <div className="projview-lens">
         <div className="lens-switch">
-          {(["kanban", "roadmap", "archived"] as const).map((id) => (
+          {(["kanban", "roadmap", "context", "archived"] as const).map((id) => (
             <button
               key={id}
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : id === "roadmap" ? "Roadmap" : "Archived"}
+              {id === "kanban" ? "Kanban" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : "Archived"}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
@@ -1790,6 +1851,8 @@ export function ProjectView({
 
       {lens === "roadmap" ? (
         <RoadmapDocView project={project} />
+      ) : lens === "context" ? (
+        <ProjectContextView project={project} />
       ) : lens === "archived" ? (
         <div className="projview-archived">
           {archivedTasks.length === 0 ? (

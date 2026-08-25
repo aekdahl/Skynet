@@ -13,7 +13,8 @@ persistent disk (`STORE=file`); secrets live in **Secret Manager**.
 > you to run** — review `terraform plan` before applying; nothing is applied for you.
 
 ## What it provisions
-- A **GCE VM** (`e2-small` default) running the app in Docker, `--restart=always`.
+- A **GCE VM** (`e2-standard-4` default) running the app in Docker, `--restart=always`.
+- A **Redis sidecar** on the same VM for **durable login sessions** (`durable_sessions`, default on): AOF-persisted on `/data/redis`, never published to the host. The app container's restarts are its *designed* recovery path (memory cap → OOM-kill → `--restart=always`), and with in-memory sessions every one of those logged everyone out. Set `durable_sessions=false` for the old `SESSIONS=memory` behavior. No extra cloud resources or cost either way.
 - A **persistent disk** at `/data` — `STORE=file` + the encryption master key. **Snapshot it for backups.**
 - **Secret Manager** secrets (containers only in Terraform; you add the values): Anthropic key, Telegram bot token + owner chat id, admin password, master key, optional GitHub token.
 - A **dedicated VPC** with **default-deny ingress** — the only allowed inbound is Google's **IAP range** (`35.235.240.0/20`) to SSH + the app port.
@@ -161,7 +162,7 @@ A single small VM runs the orchestrator **plus** agents and live-preview builds,
 
 **If the site is unreachable** (a TCP connection *timeout* — not "refused"/502 — means the host itself is wedged):
 
-- **Re-running `./setup.sh` is enough** when the `machine_type` changed since last apply (e.g. adopting the new `e2-standard-2` default): `allow_stopping_for_update` lets Terraform **stop→resize→start** the VM, and that stop/start is a control-plane op (works even when the VM's network is dead) that reboots it into the current startup script. No separate reset needed.
+- **Re-running `./setup.sh` is enough** when the `machine_type` changed since last apply (e.g. adopting the new `e2-standard-4` default): `allow_stopping_for_update` lets Terraform **stop→resize→start** the VM, and that stop/start is a control-plane op (works even when the VM's network is dead) that reboots it into the current startup script. No separate reset needed.
 - **If nothing in the VM config changed**, `terraform apply` won't reboot a running VM, so force it once:
   ```
   gcloud compute instances reset "$(terraform -chdir=deploy/gcp output -raw vm_name)" --zone=<ZONE> --project=<PROJECT>
@@ -170,7 +171,7 @@ A single small VM runs the orchestrator **plus** agents and live-preview builds,
 To diagnose a repeat, SSH in and check `df -h /` (boot-disk full?), `free -m` + `sudo dmesg | grep -i oom` (OOM?), and `top` (CPU pegged?).
 
 ## Cost (rough)
-`e2-standard-2` (the default — 2 dedicated vCPUs / 8 GB) ≈ **~$50/mo** + a 30 GB `pd-balanced` disk + egress + **your LLM tokens**. Dial down in `terraform.tfvars` for lighter use: `e2-medium` (~$25/mo) or `e2-small` (~$13/mo, pure orchestration). Autonomy can spend while you sleep — the spend cap + human-approved gates are your throttle.
+`e2-standard-4` (the default — 4 dedicated vCPUs / 16 GB) ≈ **~$100/mo** + a 30 GB `pd-balanced` disk + egress + **your LLM tokens**. Dial down in `terraform.tfvars` for lighter, mostly-sequential use: `e2-standard-2` (~$50/mo), `e2-medium` (~$25/mo), or `e2-small` (~$13/mo, pure orchestration) — but see the note above: several concurrent agents can saturate a smaller box, so also cap the workspace's `maxRunners` setting to match whatever size you pick. Autonomy can spend while you sleep — the spend cap + human-approved gates are your throttle.
 
 > **Disk cost is fixed, not usage-based.** You're billed for the **provisioned** size (30 GB × ~$0.10/GB ≈ **$3/mo** for `pd-balanced`), regardless of how much is used. "Auto-grows" means the *filesystem* expands to fill the disk you provisioned via `data_disk_gb` — it does **not** silently grow the disk or your bill. It only gets bigger (and costlier) if you raise `data_disk_gb` and redeploy. Bumping the default 20→30 GB adds ~$1/mo.
 

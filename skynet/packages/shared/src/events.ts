@@ -15,6 +15,7 @@ import {
   Module,
   PlanStep,
   Project,
+  ProjectContextEntry,
   ProviderInfo,
   Resolution,
   Agent,
@@ -106,6 +107,8 @@ export const ServerEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("milestone.deleted"), id: z.string() }),
   z.object({ type: z.literal("solutionBrief.upserted"), brief: SolutionBrief }),
   z.object({ type: z.literal("solutionBrief.deleted"), id: z.string() }),
+  z.object({ type: z.literal("contextEntry.upserted"), entry: ProjectContextEntry }),
+  z.object({ type: z.literal("contextEntry.deleted"), id: z.string() }),
   z.object({ type: z.literal("agent.upserted"), agent: Agent }),
   z.object({ type: z.literal("agent.deleted"), id: z.string() }),
 

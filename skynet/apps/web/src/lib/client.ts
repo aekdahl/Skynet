@@ -16,6 +16,8 @@ import {
   type SecretAuditEntry,
   type Project,
   type ProjectCharter,
+  type ProjectContextEntry,
+  type CreateProjectContextEntryRequest,
   type WorkspaceSettings,
   type UpdateWorkspaceSettingsRequest,
   type VerifyCredentialResult,
@@ -639,7 +641,7 @@ export function updateProject(
     breakerReview?: boolean;
   },
 ) {
-  return req<unknown>("PATCH", `/api/projects/${id}`, body);
+  return req<Project>("PATCH", `/api/projects/${id}`, body);
 }
 /** Revoke one standing "approve always" rule from a project's approval policy. */
 export function removeApprovalRule(projectId: string, ruleId: string) {
@@ -755,6 +757,7 @@ export interface AssistantAction {
     | "remove_task"
     | "archive_task"
     | "reorder_task"
+    | "request_review"
     | "rename_project"
     | "set_goal"
     | "set_autonomy"
@@ -864,6 +867,51 @@ export function crystallizeBrief(
   history: { role: "user" | "assistant"; content: string }[],
 ) {
   return req<SolutionBrief>("POST", `/api/projects/${projectId}/briefs/crystallize`, { history });
+}
+
+// ─── Project context (meeting notes, emails, pasted/uploaded docs) ──────────
+// Raw entries the operator feeds in — see the "Context" tab. `Project.
+// contextSummary` (already on the snapshot's Project record) is the condensed
+// digest actually used for grounding; these are the source material behind it.
+
+export function listContextEntries(projectId: string) {
+  return req<ProjectContextEntry[]>("GET", `/api/projects/${projectId}/context`);
+}
+
+export function addContextEntry(projectId: string, body: CreateProjectContextEntryRequest) {
+  return req<ProjectContextEntry>("POST", `/api/projects/${projectId}/context`, body);
+}
+
+/** Multipart upload — bypasses the JSON `req()` helper (the file itself is the
+ *  payload; the browser sets its own multipart boundary, so no content-type
+ *  header here). */
+export async function uploadContextEntry(projectId: string, file: File): Promise<ProjectContextEntry> {
+  if (readOnly) {
+    toast("You're signed in as a viewer — read-only.");
+    throw new ApiError(403, "Viewer sessions are read-only.");
+  }
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const res = await fetch(`/api/projects/${projectId}/context/upload`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token()}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(res.status, text || res.statusText);
+  }
+  return (await res.json()) as ProjectContextEntry;
+}
+
+export function deleteContextEntry(projectId: string, entryId: string) {
+  return req<{ ok: true }>("DELETE", `/api/projects/${projectId}/context/${entryId}`);
+}
+
+/** Manually re-run condensation (e.g. the operator wants a fresh read without
+ *  adding/removing anything) — returns the updated Project. */
+export function refreshProjectContext(projectId: string) {
+  return req<Project>("POST", `/api/projects/${projectId}/context/refresh`);
 }
 
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
@@ -987,6 +1035,13 @@ export function transitionTask(projectId: string, taskId: string, to: string, pr
 export function forceTaskDone(projectId: string, taskId: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/force-done`);
 }
+// Manual "Request review" — force a review pass now instead of waiting for a
+// periodic tick to find an idle reviewer on its own. Throws (ApiError 409)
+// with an honest, specific reason — already reviewed / no open gate / no
+// reviewer free right now — for the caller to surface.
+export function requestReview(projectId: string, taskId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/request-review`);
+}
 export function moveTask(projectId: string, taskId: string, direction: "up" | "down") {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/move`, { direction });
 }
@@ -1027,8 +1082,11 @@ export function startGithubDevice() {
 export function pollGithubDevice(deviceCode: string) {
   return req<{ authorized: boolean }>("POST", "/api/github/device/poll", { device_code: deviceCode });
 }
-export async function fetchGithubOwners(): Promise<GithubOwner[]> {
-  const raw = await req<{ owners: GithubOwner[] }>("GET", "/api/github/owners");
+// `credentialId` lists THAT pinned GitHub account's owners (business/personal —
+// same selector as fetchGithubRepos); omit for the workspace default connection.
+export async function fetchGithubOwners(credentialId?: string): Promise<GithubOwner[]> {
+  const q = credentialId ? `?credentialId=${encodeURIComponent(credentialId)}` : "";
+  const raw = await req<{ owners: GithubOwner[] }>("GET", `/api/github/owners${q}`);
   return raw.owners;
 }
 export async function fetchGithubInstallations(): Promise<GithubInstallation[]> {

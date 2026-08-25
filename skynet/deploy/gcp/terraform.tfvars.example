@@ -4,7 +4,7 @@
 project_id     = "your-gcp-project-id"
 region         = "europe-west1"
 zone           = "europe-west1-b" # NB: europe-west1 has no -a zone (b/c/d only)
-machine_type   = "e2-small" # bump to e2-medium / e2-standard-2 for heavier builds
+machine_type   = "e2-standard-4" # 4 vCPU / 16GB — headroom for several concurrent agents + live-preview builds; drop to e2-standard-2 / e2-medium / e2-small for lighter, mostly-sequential use
 app_port       = 8080                 # remote: port the app listens on inside the VM
 local_port     = 48080                # local: port the IAP tunnel binds on your machine (uncommon, avoids conflicts)
 data_disk_gb   = 20

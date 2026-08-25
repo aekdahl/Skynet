@@ -332,6 +332,12 @@ kbd {
 .readout-label { font-size: var(--fz-11); line-height: 1.35; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
 
 .queue-list { display: flex; flex-direction: column; gap: var(--sp); }
+.queue-section {
+  margin: 4px 0 -4px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted);
+}
+.queue-section:first-child { margin-top: 0; }
 .qcard {
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   padding: var(--card-pad); display: flex; flex-direction: column; gap: 12px;
@@ -1195,6 +1201,12 @@ button.kb-done:hover { opacity: 1; }
 .triage-risks li { margin: 0; }
 .kb-flag { font-size: var(--fz-11); color: var(--warn); line-height: 1.4; }
 .kb-review-ok { font-size: var(--fz-11); color: var(--ok, var(--muted)); line-height: 1.4; }
+.kb-unreviewed { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: var(--fz-11); color: var(--muted); line-height: 1.4; }
+.kb-unreviewed-btn {
+  flex: none; font-size: var(--fz-11); color: var(--accent); background: none; border: none;
+  cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 2px;
+}
+.kb-unreviewed-btn:hover { color: var(--text); }
 .kb-verdict-flag { color: var(--warn); }
 .kb-verdict-approve { color: var(--ok, var(--muted)); }
 /* Task linter v0 (assistive) — a dismissible hint, never a blocker. */
@@ -1788,11 +1800,19 @@ button.kb-done:hover { opacity: 1; }
    a coherent header at any width. */
 .projview-head { display: flex; flex-direction: column; gap: 14px; }
 .projview-head-main { max-width: 720px; }
-/* Every control in this row — Approvals, Autonomy, GitHub account, Keys,
-   Preview app, the gear, Delete — shares one pill height/border/background
-   (see .proj-approval / .proj-keys-summary / .btn) so the row reads as one
-   toolbar of same-weight controls, not a mix of bare form fields and buttons. */
+/* Every control in this row — Governance, GitHub account, Keys, Preview app,
+   the admin cluster — shares one pill height/border/background (see
+   .proj-approval / .proj-keys-summary / .btn) so the row reads as one
+   toolbar of same-weight controls, not a mix of bare form fields and
+   buttons. Governance (Approvals/Autonomy/budget/Plan mode/Deep review —
+   seven controls that used to sit here individually) is collapsed into one
+   .proj-keys popover, same idiom as Keys/Tools, to keep this row scannable. */
 .projview-head-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* Inform / project settings / Delete — administrative, not day-to-day, so
+   they're pushed to the row's trailing edge (wrapping as one unit if the
+   row runs out of width) instead of interleaving with Preview/Deploy/
+   Governance. */
+.projview-head-admin { display: flex; gap: 8px; align-items: center; margin-left: auto; }
 .projview-edit { display: flex; flex-direction: column; gap: 10px; }
 .projview-edit .qx-input:first-of-type { font-size: var(--fz-18); font-weight: 600; }
 /* A single setting inside the project settings panel: label above its control. */
@@ -1801,6 +1821,22 @@ button.kb-done:hover { opacity: 1; }
    the same height as the rest of the toolbar row. */
 .proj-config-btn { width: 36px; height: 36px; padding: 0; justify-content: center; font-size: var(--fz-15); line-height: 1; }
 .del-confirm { display: inline-flex; align-items: center; gap: 8px; font-size: var(--fz-13); color: var(--danger); }
+/* The Governance popover's menu is wider than Keys/Tools' checkbox lists (it
+   holds full toggle/select rows, not compact checkboxes) and stacks its
+   contents full-width rather than leaving them at their natural inline
+   width. Left-aligned (not .proj-keys-menu's default right: 0) because
+   Governance sits at the START of the toolbar — a right-aligned 320px menu
+   there overflows off the left edge of the page instead of staying inside
+   it the way Keys/Tools' menus do further along the row. */
+.proj-governance-menu { left: 0; right: auto; min-width: 320px; }
+.proj-governance-menu .proj-approval,
+.proj-governance-menu .proj-autonomy { width: 100%; box-sizing: border-box; }
+/* Full autonomy's danger treatment needs to be visible on the COLLAPSED
+   summary pill too — it's the one governance state risky enough to matter
+   before you open the menu — mirroring .proj-approval-danger's colors but
+   scoped to the popover's own summary/value elements. */
+.proj-governance-danger > .proj-keys-summary { border-color: color-mix(in oklch, var(--danger), transparent 40%); }
+.proj-governance-danger > .proj-keys-summary .proj-keys-value { color: var(--danger); font-weight: 600; }
 
 /* ===== backlog CRUD ===== */
 .kb-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
@@ -2870,6 +2906,37 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .prd-phase-pill { font-family: var(--font-mono); font-size: var(--fz-10); letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent), transparent 55%); background: color-mix(in oklch, var(--accent), transparent 88%); border-radius: 999px; padding: 2px 8px; flex: none; }
 .prd-phase-frac { flex: none; font-size: var(--fz-11); color: var(--muted); }
 .prd-phase-body { padding: 0 4px 20px 46px; }
+
+/* ── Project Context tab: pasted/uploaded notes + the condensed summary ──── */
+.prj-ctx { display: flex; flex-direction: column; gap: 20px; }
+.prj-ctx-summary { border: 1px solid var(--line-soft); border-radius: 10px; padding: 14px 16px; background: color-mix(in oklch, var(--accent), transparent 96%); }
+.prj-ctx-summary-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.prj-ctx-summary-title { font-size: var(--fz-11); font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--accent); }
+.prj-ctx-summary-chars { font-size: var(--fz-10-5); color: var(--muted); }
+.prj-ctx-summary-updated { font-size: var(--fz-10-5); color: var(--muted); }
+.prj-ctx-summary-head .btn { margin-left: auto; }
+.prj-ctx-summary-body { font-size: var(--fz-13); line-height: 1.55; white-space: pre-wrap; margin: 0; }
+
+.prj-ctx-add { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line-soft); border-radius: 10px; padding: 12px; }
+.prj-ctx-textarea-wrap { position: relative; }
+.prj-ctx-textarea { resize: vertical; min-height: 80px; font: inherit; width: 100%; }
+.prj-ctx-char-count { position: absolute; right: 8px; bottom: 8px; font-size: var(--fz-10); color: var(--faint); background: var(--panel, var(--bg)); padding: 1px 5px; border-radius: 4px; pointer-events: none; }
+.prj-ctx-add-actions { display: flex; align-items: center; gap: 10px; }
+.prj-ctx-upload-label { position: relative; cursor: pointer; }
+.prj-ctx-upload-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+.prj-ctx-hint { font-size: var(--fz-10-5); color: var(--faint); margin-left: auto; }
+
+.prj-ctx-list-total { font-size: var(--fz-10-5); color: var(--muted); margin-bottom: -8px; }
+.prj-ctx-list { display: flex; flex-direction: column; gap: 10px; }
+.prj-ctx-entry { border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px 12px; }
+.prj-ctx-entry-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.prj-ctx-badge { font-family: var(--font-mono); font-size: var(--fz-9-5); letter-spacing: 0.06em; text-transform: uppercase; border-radius: 999px; padding: 2px 8px; flex: none; }
+.prj-ctx-badge-paste { color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent), transparent 55%); background: color-mix(in oklch, var(--accent), transparent 88%); }
+.prj-ctx-badge-upload { color: var(--ok, var(--muted)); border: 1px solid color-mix(in oklch, var(--ok, var(--muted)), transparent 55%); background: color-mix(in oklch, var(--ok, var(--muted)), transparent 88%); }
+.prj-ctx-entry-label { font-weight: 600; font-size: var(--fz-13); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prj-ctx-entry-chars { font-size: var(--fz-10-5); color: var(--faint); flex: none; }
+.prj-ctx-entry-date { font-size: var(--fz-10-5); color: var(--muted); flex: none; }
+.prj-ctx-entry-body { font-size: var(--fz-12-5); color: var(--muted); line-height: 1.5; max-height: 4.5em; overflow: hidden; white-space: pre-wrap; }
 
 /* ── Roadmap: milestone columns on a time track ──────────────────────────── */
 .rm-track { display: flex; gap: 14px; overflow-x: auto; padding: 8px 2px 12px; align-items: stretch; }

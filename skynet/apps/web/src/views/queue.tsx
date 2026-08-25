@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { TaskRun, HitlItem } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { fmtWait, hitlHeadline, KIND_META, openQueue, projectName, waitedSecs } from "../lib/derive";
+import { fmtWait, hitlHeadline, KIND_META, needsReviewConfirm, openQueue, projectName, sortForInbox, waitedSecs } from "../lib/derive";
 import { isTypingTarget } from "../lib/keys";
-import { useChoice } from "../components/confirm";
+import { useChoice, useConfirm } from "../components/confirm";
 import { RiskChip } from "../components/hitl-context";
 import { DiffView } from "../components/diff-view";
 
@@ -27,8 +27,9 @@ export function QueueCard({
   // the mount-time effect run never fires it.
   modifyTrigger?: number;
 }) {
-  const { resolveHitl, streamAgentMessage, readOnly, projects } = useStore();
+  const { resolveHitl, streamAgentMessage, readOnly, projects, tasks } = useStore();
   const choice = useChoice();
+  const confirm = useConfirm();
   const k = hitlHeadline(item);
   const [mode, setMode] = useState<null | "modify" | "chat" | "remember">(null);
   const [draft, setDraft] = useState("");
@@ -95,6 +96,9 @@ export function QueueCard({
       <p className="qcard-why">{item.why}</p>
 
       {item.command && <pre className="qcard-code">$ {item.command}</pre>}
+      {item.output && item.kind === "merge" && (
+        <p className="qcard-plan-label mono">Conflict (captured before the merge was aborted) — Modify sends this to the agent as-is</p>
+      )}
       {item.output && <pre className="qcard-code qcard-output">{item.output}</pre>}
 
       {item.flags && item.flags.length > 0 && (
@@ -225,7 +229,22 @@ export function QueueCard({
           <button
             className="btn btn-primary"
             disabled={readOnly}
-            onClick={() => resolveHitl(item.id, "approve", approveExtra)}
+            onClick={async () => {
+              // No other agent has reviewed this yet — friction, not a block
+              // (some projects can never get a second opinion; see
+              // needsReviewConfirm's own doc comment).
+              if (
+                needsReviewConfirm(item, tasks) &&
+                !(await confirm({
+                  title: "Merge without a review?",
+                  body: "No other agent has reviewed this yet — you'd be the first (and only) look at it before it merges.",
+                  confirmLabel: "Merge anyway",
+                  danger: true,
+                }))
+              )
+                return;
+              resolveHitl(item.id, "approve", approveExtra);
+            }}
           >
             Approve
           </button>
@@ -248,9 +267,10 @@ export function QueueCard({
           </button>
           <button
             className={"btn btn-ghost" + (mode === "modify" ? " btn-lit" : "")}
+            title={item.kind === "merge" ? "Have the agent resolve the conflict, using the diff captured below" : undefined}
             onClick={() => setMode(mode === "modify" ? null : "modify")}
           >
-            Modify
+            {item.kind === "merge" ? "Ask agent to fix" : "Modify"}
           </button>
           <button
             className={"btn btn-ghost" + (mode === "chat" ? " btn-lit" : "")}
@@ -312,7 +332,11 @@ export function QueueCard({
             className="qx-input"
             rows={3}
             autoFocus
-            placeholder="Adjust the instruction — the agent resumes with this guidance…"
+            placeholder={
+              item.kind === "merge"
+                ? "Optional — extra guidance for resolving the conflict below. Leave blank and the agent still sees the full conflict."
+                : "Adjust the instruction — the agent resumes with this guidance…"
+            }
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
           />
@@ -324,7 +348,7 @@ export function QueueCard({
                 resolveHitl(item.id, "modify", { guidance: draft.trim() })
               }
             >
-              Send &amp; resume
+              {item.kind === "merge" ? "Ask agent to fix" : "Send & resume"}
             </button>
             <button className="btn btn-ghost" onClick={() => setMode(null)}>
               Cancel
@@ -395,10 +419,15 @@ export function QueueView({
   onOpen: (id: string) => void;
   now: number;
 }) {
-  const { queue, runs, resolveHitl } = useStore();
-  const open = openQueue(queue).sort(
-    (a, b) => waitedSecs(b, now) - waitedSecs(a, now),
-  );
+  const { queue, runs, tasks, resolveHitl } = useStore();
+  const confirm = useConfirm();
+  // A single flat, index-ordered array (not two separately-indexed lists) so
+  // j/k/a/r/m keyboard nav and `selectedIdx` keep working unchanged — the
+  // Approvals/Other grouping (see sortForInbox) is purely a render-time
+  // section split (see the section headers in the list below).
+  const open = sortForInbox(openQueue(queue), now);
+  const approvalCount = open.filter((it) => it.kind !== "escalation").length;
+  const otherCount = open.length - approvalCount;
   // Resolved *today* (since local midnight) — a bounded, self-resetting momentum
   // stat. The old count was every resolved gate the store still held, so it only
   // ever grew and never reset (it was mislabeled "this session").
@@ -454,8 +483,23 @@ export function QueueView({
           e.preventDefault();
           // Options-kind cards have no bare "approve" button — the closest
           // equivalent is the recommended (or first) option's own button.
-          if (it.options) resolveHitl(it.id, "option", { optionIndex: it.recommended ?? 0 });
-          else resolveHitl(it.id, "approve");
+          if (it.options) {
+            resolveHitl(it.id, "option", { optionIndex: it.recommended ?? 0 });
+          } else if (needsReviewConfirm(it, tasks)) {
+            // Same "merge without a review?" friction as the card's own
+            // Approve button — the keyboard shortcut shouldn't be a silent
+            // bypass of it.
+            void confirm({
+              title: "Merge without a review?",
+              body: "No other agent has reviewed this yet — you'd be the first (and only) look at it before it merges.",
+              confirmLabel: "Merge anyway",
+              danger: true,
+            }).then((ok) => {
+              if (ok) resolveHitl(it.id, "approve");
+            });
+          } else {
+            resolveHitl(it.id, "approve");
+          }
           break;
         case "r":
           // Options-kind cards have no reject button (the operator picks an
@@ -473,7 +517,7 @@ export function QueueView({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, selectedIdx, onSelectIdx, onOpen, resolveHitl]);
+  }, [open, selectedIdx, onSelectIdx, onOpen, resolveHitl, tasks, confirm]);
 
   const rejectAll = async () => {
     setClearing(true);
@@ -562,15 +606,25 @@ export function QueueView({
       ) : (
         <div className="queue-list">
           {open.map((it, i) => (
-            <QueueCard
-              key={it.id}
-              item={it}
-              agent={runs.find((a) => a.id === it.runId)}
-              now={now}
-              selected={i === selectedIdx}
-              onOpen={() => onOpen(it.runId)}
-              modifyTrigger={modifyRequest?.id === it.id ? modifyRequest.nonce : 0}
-            />
+            <Fragment key={it.id}>
+              {/* A section header fires once, right before the first item of
+                  its group — approvals always come first, so this only ever
+                  transitions once (approvals → other), not per-item. */}
+              {i === 0 && approvalCount > 0 && (
+                <h2 className="queue-section">Approvals · {approvalCount}</h2>
+              )}
+              {it.kind === "escalation" && (i === 0 || open[i - 1]!.kind !== "escalation") && (
+                <h2 className="queue-section">Other · {otherCount}</h2>
+              )}
+              <QueueCard
+                item={it}
+                agent={runs.find((a) => a.id === it.runId)}
+                now={now}
+                selected={i === selectedIdx}
+                onOpen={() => onOpen(it.runId)}
+                modifyTrigger={modifyRequest?.id === it.id ? modifyRequest.nonce : 0}
+              />
+            </Fragment>
           ))}
         </div>
       )}

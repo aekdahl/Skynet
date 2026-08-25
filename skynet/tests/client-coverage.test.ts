@@ -126,6 +126,12 @@ const ALLOW = new Set<string>([
   // No happy-path journey exercises it because the normal review → done path
   // is the intended path; this is only reached when that path is stuck.
   "forceTaskDone",
+  // manual "Request review" — needs a genuinely idle, review-eligible SECOND
+  // agent to exist at the moment it's called; no offline journey shape
+  // reproduces that fleet state. Full success/failure-mode coverage (already
+  // reviewed / no open gate / no reviewer free) is server-side in
+  // request-review.test.ts, driving the real Orchestrator/Operations.
+  "requestReview",
   // Feature + milestone CRUD (task grouping + roadmap) — exercised by the
   // features-and-roadmap tests (features-roadmap.test.ts) which drive the
   // full Operations path with real store + hub. No fleet journey shape uses
@@ -198,6 +204,17 @@ const ALLOW = new Set<string>([
   // inform.test.ts; the delivery mechanics (Claude's shouldQuery:false, the
   // CLI buffer+prepend) in claude-inform.test.ts / cli-inform.test.ts.
   "informRuns",
+  // Project context (meeting notes/emails/pasted or uploaded docs): every
+  // mutating call (add/upload/delete) triggers a real LLM condensation pass
+  // server-side (steward/context.ts) on the workspace's own provider key —
+  // same "needs a live key" shape as stewardChat/crystallizeBrief above, so no
+  // offline journey exercises them. listContextEntries is a plain read with no
+  // LLM dependency, allowlisted alongside its mutating siblings since a
+  // journey has nothing to list without them. The full Operations path (raw
+  // entries kept verbatim, condense-on-add/upload/delete, clears to null when
+  // the last entry is removed) is exercised with a stubbed model reply in
+  // project-context.test.ts; extraction (.txt/.md/unsupported-type) likewise.
+  "listContextEntries", "addContextEntry", "uploadContextEntry", "deleteContextEntry", "refreshProjectContext",
 ]);
 
 describe("client API coverage", () => {

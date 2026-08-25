@@ -4,7 +4,8 @@
 # straight into Secret Manager (nothing secret is stored in this repo or in
 # Terraform state), builds + pushes the image, provisions the VM, and prints the
 # tunnel command. Re-running is safe: existing config + already-set secrets are
-# kept (it only asks for what's missing).
+# kept (it only asks for what's missing) — with one exception: an undersized
+# machine_type (e2-small/e2-medium) is auto-bumped to e2-standard-4 every run.
 #
 # The only hard prereqs are gcloud + terraform installed. The one thing NOT
 # automated is the final `terraform apply` confirmation — you review the plan and
@@ -45,15 +46,17 @@ if [ ! -f terraform.tfvars ]; then
   read -r -p "  Your Google account email (IAP access + web login) [alex@zubi.ai]: " EMAIL_IN; EMAIL_IN=${EMAIL_IN:-alex@zubi.ai}
   [ -n "$EMAIL_IN" ] || { echo "  email is required"; exit 1; }
   echo "  Machine type:"
-  echo "    1) e2-small      — 2 vCPU · 2 GB   (light; orchestration only)"
-  echo "    2) e2-medium     — 2 vCPU · 4 GB   (recommended — headroom for agent builds)"
-  echo "    3) e2-standard-2 — 2 vCPU · 8 GB   (heavy / parallel agents)"
-  read -r -p "  Choose 1-3, or type any machine type [2]: " MT_IN; MT_IN=${MT_IN:-2}
+  echo "    1) e2-small      — 2 vCPU · 2 GB    (light; orchestration only)"
+  echo "    2) e2-medium     — 2 vCPU · 4 GB    (single agent at a time)"
+  echo "    3) e2-standard-2 — 2 vCPU · 8 GB    (light concurrent use)"
+  echo "    4) e2-standard-4 — 4 vCPU · 16 GB   (recommended — several concurrent agents + live-preview builds without choking)"
+  read -r -p "  Choose 1-4, or type any machine type [4]: " MT_IN; MT_IN=${MT_IN:-4}
   case "$MT_IN" in
     1) MT="e2-small" ;;
     2) MT="e2-medium" ;;
     3) MT="e2-standard-2" ;;
-    *) MT="$MT_IN" ;; # a custom machine type typed verbatim (e.g. e2-standard-4)
+    4) MT="e2-standard-4" ;;
+    *) MT="$MT_IN" ;; # a custom machine type typed verbatim (e.g. e2-standard-8)
   esac
   read -r -p "  Allow control (approve/create/etc.) over Telegram? [Y/n]: " TC_IN
   TC=true; [[ "${TC_IN:-y}" =~ ^[Nn] ]] && TC=false
@@ -84,6 +87,23 @@ acme_email       = "${ACME_IN}"
 TFV
   fi
   echo "  ✓ wrote terraform.tfvars (edit it anytime; re-run to reuse)"
+fi
+
+# ── 1b. Auto-upgrade an undersized machine_type on an EXISTING tfvars ────────
+# The wizard above only runs on a FIRST deploy — an existing terraform.tfvars
+# (from before e2-standard-4 became the recommendation) never sees it again,
+# so a plain re-run alone wouldn't pick up the bump. A live incident showed
+# e2-small/e2-medium genuinely can't handle a few concurrent agents (memory
+# pressure severe enough to make the whole VM briefly unresponsive, not just
+# the app container) — so those two specifically are auto-upgraded on every
+# run, not just offered. Anything else (including a deliberately-larger custom
+# type) is left alone. Self-limiting: once bumped, the grep below no longer
+# matches, so this is a no-op on every subsequent run.
+if [ -f terraform.tfvars ] && grep -qE '^machine_type[[:space:]]*=[[:space:]]*"(e2-small|e2-medium)"' terraform.tfvars; then
+  OLD_MT=$(grep -E '^machine_type[[:space:]]*=' terraform.tfvars | sed -E 's/^machine_type[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+  say "▸ Bumping machine_type: ${OLD_MT} → e2-standard-4 (too small for concurrent agents — see deploy/gcp/README.md)"
+  awk '/^machine_type[[:space:]]*=/{print "machine_type     = \"e2-standard-4\""; next} {print}' terraform.tfvars >terraform.tfvars.new
+  mv terraform.tfvars.new terraform.tfvars
 fi
 
 say "▸ terraform init"

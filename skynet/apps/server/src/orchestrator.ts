@@ -102,6 +102,33 @@ export class TaskAlreadyAssignedError extends Error {
 }
 
 /**
+ * requestReview()'s failure modes — each an honest, actionable reason a manual
+ * "Request review" couldn't run, rather than a silent no-op or a fake success.
+ * The single-agent-fleet case (no OTHER eligible agent can ever exist, since a
+ * run can't review itself) is exactly why this can't be a hard block on
+ * merging unreviewed work elsewhere — some projects genuinely have no way to
+ * satisfy it.
+ */
+export class NoOpenReviewGateError extends Error {
+  constructor() {
+    super("This run has no open review gate right now — nothing for a review to attach to.");
+    this.name = "NoOpenReviewGateError";
+  }
+}
+export class AlreadyReviewedError extends Error {
+  constructor(by: string, decision: string, reason: string) {
+    super(`Already reviewed by ${by} — ${decision}: ${reason}`);
+    this.name = "AlreadyReviewedError";
+  }
+}
+export class NoReviewerAvailableError extends Error {
+  constructor() {
+    super("No other agent is free to review this right now — try again once one is idle, or review it yourself.");
+    this.name = "NoReviewerAvailableError";
+  }
+}
+
+/**
  * PURE: extract a trailing `{"estMinutes": N, "clarity": "clear"|"unclear"}`
  * JSON tag off the triage LLM's reply. Returns the body (with the tag stripped)
  * plus each parsed field. Tolerates a code fence around the tag; ignores
@@ -197,7 +224,7 @@ export function splitEstMinutesTag(raw: string): TriageTag {
 // wandering into unrequested adjacent work — is the #1 way a run burns its turn
 // budget and stalls. Keep the agent inside the requested scope so it finishes.
 const SCOPE_NOTE =
-  "\n\n---\nScope discipline: do exactly what's asked above, then stop. Don't expand into adjacent or unrequested work — extra features, UI, refactors, or speculative follow-ups. When the requested change is complete, report and finish rather than inventing more scope. If you're genuinely blocked, or the task is too big for one focused session, escalate (AskUserQuestion with header \"ESCALATE\") instead of grinding through your turn budget.";
+  "\n\n---\nScope discipline: do exactly what's asked above, then stop. Don't expand into adjacent or unrequested work — extra features, UI, refactors, or speculative follow-ups. When the requested change is complete, report and finish rather than inventing more scope. If you're genuinely blocked, or the task is too big for one focused session, escalate (AskUserQuestion with header \"ESCALATE\") instead of grinding through your turn budget.\n\nIf you spawned a subagent for research or exploration, wait for its result before concluding your own work — never finish a turn (including a no-changes-needed completion) while a subagent you launched is still running; its findings may change what \"done\" means here. If you decide to stop waiting on one, say why. And before reporting no changes are needed, check that against each concrete thing this task asked for — a plausible-looking comment or test elsewhere is a clue to verify, not proof by itself.";
 
 // A deep-review reviewer (see Project.deepReview / runDeepReview) is a real but
 // deliberately SHORT-LIVED agent run — read the brief, browse the live preview,
@@ -616,7 +643,7 @@ export class Orchestrator {
           // merging INTO its feature branch) is a normal per-run merge in every
           // other respect and needs no special-casing here.
           onMerged: (req) => (isFeatureUpMerge(req) ? this.completeFeatureMerged(req) : this.completeMerged(req.runId, req.agentBranch)),
-          onConflict: (req, files) => this.raiseMergeHitl(req, files),
+          onConflict: (req, files, conflictDiff) => this.raiseMergeHitl(req, files, conflictDiff),
           onChecksFailed: async (req, out) => {
             if (isFeatureUpMerge(req)) {
               // No single owning run to bounce back to "review" (or raise a
@@ -997,6 +1024,28 @@ export class Orchestrator {
       await this.hub.runLog(runId, "concluded without an answer to its question — needs attention (no change made)");
       this.live.delete(runId);
       return;
+    }
+
+    // A zero-diff completion against a task with explicit acceptance criteria (a
+    // linked SolutionBrief's `acceptanceCriteria`) is exactly the shape of a
+    // premature "nothing to do here" self-report — the agent decided the task
+    // was already satisfied without producing any change to check that claim
+    // against. Route to review instead of trusting it blindly; a genuinely
+    // correct "already done" completion just costs one confirming look.
+    if (live?.taskId) {
+      const task = await this.store.getTask(live.taskId).catch(() => undefined);
+      const brief = task ? await this.findTaskBrief(task, task.workspaceId) : undefined;
+      if (brief && brief.acceptanceCriteria.some((c) => c.trim())) {
+        await this.freeRunner(live.agentId);
+        await this.hub.runStatus(runId, "review");
+        await this.moveTaskToReview(live.taskId);
+        await this.hub.runLog(
+          runId,
+          `concluded with no changes against ${brief.acceptanceCriteria.length} acceptance criterion/criteria — needs confirmation before closing`,
+        );
+        this.live.delete(runId);
+        return;
+      }
     }
 
     // Phase 0 / no-diff completion: free the runner, finish the task & agent.
@@ -2217,8 +2266,18 @@ export class Orchestrator {
         (item.kind === "verifier" && (resolution.action === "modify" || resolution.action === "reject"))) &&
       !this.live.has(runId)
     ) {
-      const guidance = resolution.guidance?.trim() || (item.kind === "verifier" ? item.output ?? "" : "");
-      await this.reviseAfterReview(runId, guidance);
+      const typed = resolution.guidance?.trim() || "";
+      // Blank guidance falls back to the gate's own captured output — a
+      // verifier's check failure. A merge conflict is different: the
+      // conflict markers MergeEngine captured before aborting are ALWAYS the
+      // agent's primary context (Modify works with zero typing), with any
+      // operator guidance appended rather than replacing it — the diff is
+      // what needs resolving, not a stand-in for missing instructions.
+      const guidance =
+        item.kind === "merge"
+          ? [item.output, typed ? `Additional guidance from the operator:\n${typed}` : null].filter(Boolean).join("\n\n")
+          : typed || (item.kind === "verifier" ? item.output ?? "" : "");
+      await this.reviseAfterReview(runId, guidance, item.kind === "merge");
       return;
     }
 
@@ -2302,7 +2361,7 @@ export class Orchestrator {
    *  only on merge), so a fresh turn edits on top of it; on the agent's next
    *  completion, complete() re-commits and re-raises the review. Loops until the
    *  operator approves. */
-  private async reviseAfterReview(runId: string, guidance: string): Promise<void> {
+  private async reviseAfterReview(runId: string, guidance: string, isConflict = false): Promise<void> {
     const review = this.reviews.get(runId);
     const run = await this.store.getRun(runId);
     if (!run || !review) {
@@ -2327,10 +2386,15 @@ export class Orchestrator {
       project,
       feature,
       brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
-      body:
-        `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
-        `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
-        `only the changes needed to address the request, then stop.`,
+      body: isConflict
+        ? `Your branch (${run.branch}) has a merge conflict integrating into the target branch — it could not be ` +
+          `merged automatically. Below is the actual conflict (git diff output, including the ` +
+          `<<<<<<</=======/>>>>>>> markers) captured right before the merge attempt was aborted:\n\n${guidance}\n\n` +
+          `Your previous output is already in the working directory. Resolve the conflict — pick the right ` +
+          `resolution for each hunk, remove the conflict markers — commit it, then stop. It'll be retried automatically.`
+        : `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
+          `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
+          `only the changes needed to address the request, then stop.`,
     });
     await this.hub.runStatus(runId, "running");
     if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
@@ -3379,8 +3443,14 @@ export class Orchestrator {
     });
   }
 
-  /** Textual merge conflict → raise a `merge` HITL for an operator to reconcile. */
-  private async raiseMergeHitl(req: MergeRequest, files: string[]): Promise<void> {
+  /** Textual merge conflict → raise a `merge` HITL for an operator to reconcile.
+   *  `conflictDiff` (the actual `<<<<<<<`/`=======`/`>>>>>>>` markers, captured
+   *  by MergeEngine before it aborts the merge) rides on `output` — the same
+   *  field a verifier gate's check output uses, and the same field `deliver()`
+   *  falls back to as Modify's guidance when the operator leaves it blank, so
+   *  clicking Modify with no typed text is enough to have the agent resolve
+   *  the conflict it's actually looking at. */
+  private async raiseMergeHitl(req: MergeRequest, files: string[], conflictDiff: string): Promise<void> {
     const agent = await this.store.getRun(req.runId);
     if (!agent) return;
     // Feature-scoped branch batching: a step-1 conflict (task → feature branch)
@@ -3400,8 +3470,8 @@ export class Orchestrator {
       kind: "merge",
       title: `Merge conflict — ${files.length} file${files.length === 1 ? "" : "s"}`,
       why: featureUp
-        ? `${files.length} file(s) conflict merging the feature branch ${req.agentBranch} into the project's integration branch. Reconcile, then approve to retry.`
-        : `${files.length} file(s) conflict integrating ${req.agentBranch}. Reconcile, then approve to retry.`,
+        ? `${files.length} file(s) conflict merging the feature branch ${req.agentBranch} into the project's integration branch. Reconcile yourself and approve to retry, or click Modify (guidance optional — it'll use the conflict below) to have the agent resolve it.`
+        : `${files.length} file(s) conflict integrating ${req.agentBranch}. Reconcile yourself and approve to retry, or click Modify (guidance optional — it'll use the conflict below) to have the agent resolve it.`,
       risk: "high",
       raisedAt: now(),
       expiresAt: null,
@@ -3414,7 +3484,7 @@ export class Orchestrator {
       steps: null,
       // Same carry-forward as raiseMergeFailedHitl above.
       diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, mergeBrief: null, defaultTargetBranch: req.targetBranch ?? null },
-      output: null,
+      output: conflictDiff ? conflictDiff.slice(0, Orchestrator.VERIFIER_OUTPUT_CAP) : null,
       flags: files, // the conflicting files — shown as chips
       sourceBranchOverride: featureUp ? req.agentBranch : null,
     });
@@ -4908,6 +4978,37 @@ export class Orchestrator {
     // decision === "flag" OR (approve without autonomy) → verdict is recorded
     // (`withVerdict`), HITL stays open for the human. Nothing else to do here.
     void withVerdict;
+  }
+
+  /**
+   * Manual "Request review" — an operator forcing a review pass on demand,
+   * instead of waiting for a periodic tick to happen to find an idle
+   * reviewer (the periodic path in tick() above only reviews opportunistically
+   * when one already exists). Reuses `autoReview` — same deepReview/
+   * breakerReview opt-ins, same verdict-writing, same audit trail — this is
+   * just an eager entry point for the SAME reviewer-selection the tick does.
+   * Throws an honest, specific error rather than silently doing nothing: a
+   * task already reviewed, a run with no open gate to review, or no eligible
+   * reviewer free right now (a single-agent project can never satisfy this —
+   * a run can't review itself).
+   */
+  async requestReview(ws: string, taskId: string): Promise<void> {
+    const task = await this.store.getTask(taskId);
+    if (!task || task.workspaceId !== ws || task.state !== "review" || !task.runId) {
+      throw new NoOpenReviewGateError();
+    }
+    if (task.reviewVerdict) {
+      throw new AlreadyReviewedError(task.reviewVerdict.by, task.reviewVerdict.decision, task.reviewVerdict.reason);
+    }
+    const hitl = (await this.store.listQueue(ws)).find(
+      (h) => h.runId === task.runId && !h.resolvedAt && (h.kind === "diff" || h.kind === "merge" || h.kind === "verifier"),
+    );
+    if (!hitl) throw new NoOpenReviewGateError();
+    const doerId = (await this.store.getRun(task.runId))?.agentId;
+    const reviewer = (await this.store.listAgents(ws)).find((a) => a.status === "idle" && a.id !== doerId && a.canReview !== false);
+    if (!reviewer) throw new NoReviewerAvailableError();
+    const project = await this.store.getProject(task.projectId);
+    await this.autoReview(ws, reviewer, task, hitl, project?.autonomy ?? false);
   }
 
   /**
