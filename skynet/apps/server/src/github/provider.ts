@@ -295,22 +295,26 @@ export class GitHubProvider implements GitProvider {
     const mergeable = pr.mergeable ?? null;
 
     let checks: PrStatus["checks"] = "none";
+    let runs: PrStatus["runs"] = [];
     try {
-      const runs = await this.api<{ total_count: number; check_runs: { conclusion: string | null }[] }>(
+      const res = await this.api<{ total_count: number; check_runs: { name: string; conclusion: string | null }[] }>(
         token,
         "GET",
         `/repos/${repo}/commits/${pr.head.sha}/check-runs`,
       );
-      if (runs.total_count > 0) {
-        const conclusions = runs.check_runs.map((r) => r.conclusion);
-        if (conclusions.some((c) => c === null)) checks = "pending";
-        else if (conclusions.some((c) => c !== "success" && c !== "neutral" && c !== "skipped")) checks = "failing";
+      if (res.total_count > 0) {
+        runs = res.check_runs.map((r) => ({
+          name: r.name,
+          state: r.conclusion === null ? "pending" : r.conclusion === "success" || r.conclusion === "neutral" || r.conclusion === "skipped" ? "pass" : "fail",
+        }));
+        if (runs.some((r) => r.state === "pending")) checks = "pending";
+        else if (runs.some((r) => r.state === "fail")) checks = "failing";
         else checks = "passing";
       }
     } catch {
       /* checks are best-effort metadata */
     }
-    return { state, checks, mergeable };
+    return { state, checks, mergeable, runs };
   }
 
   async mergePr(token: string, repo: string, num: number, method: "merge" | "squash" | "rebase"): Promise<MergeResult> {

@@ -43,6 +43,10 @@ export interface PrStatus {
   // textual conflict (base moved under the PR); `null` = GitHub is still
   // computing it (retry shortly). Distinguishes a conflict from a policy block.
   mergeable: boolean | null;
+  // Per-check-run breakdown behind `checks` — one entry per named CI job
+  // (e.g. "lint", "typecheck", "test"), so a reviewer sees which gate actually
+  // failed instead of just the aggregate verdict. [] when the repo has none.
+  runs: { name: string; state: "pass" | "fail" | "pending" }[];
 }
 
 export interface MergeResult {

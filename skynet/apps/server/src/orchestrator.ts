@@ -446,6 +446,37 @@ export function mergeTouchesTests(files: string[]): boolean {
   return files.some((f) => /(\.test\.|\.spec\.|\/tests?\/|__tests__)/i.test(f));
 }
 
+// A fixed, narrow policy list — distinct from SENSITIVE_AREA's broad word-match
+// heuristic above — for the handful of path shapes where a bad LLM instinct
+// plus a green light does the most damage: CI/deploy config, schema
+// migrations, auth code, and dependency manifests. Surfaced on BOTH the
+// diff-review gate (raiseDiffReview) and the ready-to-merge briefing so a
+// reviewer sees it at every stage, not just one. Display-only here — this
+// mirrors, not replaces, the merge-guardrails path-policy that decides what
+// actually blocks an auto-merge.
+const REQUIRES_HUMAN_PATTERNS: { label: string; re: RegExp }[] = [
+  { label: "migrations/**", re: /(^|\/)migrations\// },
+  { label: ".github/workflows/**", re: /^\.github\/workflows\// },
+  { label: "auth/**", re: /(^|\/)auth\// },
+];
+const DEPENDENCY_MANIFESTS = new Set([
+  "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
+  "go.mod", "go.sum", "Cargo.toml", "Cargo.lock", "requirements.txt", "Pipfile", "Pipfile.lock",
+  "pyproject.toml", "poetry.lock", "composer.json", "composer.lock", "Gemfile", "Gemfile.lock",
+]);
+
+/** The specific glob/category labels a diff's file list trips against the
+ *  fixed "always needs a human" policy list — the evidence behind the
+ *  "requires human" marker, not just its boolean fact. Empty = none matched. */
+export function mergeRequiresHumanGlobs(files: string[]): string[] {
+  const matched = new Set<string>();
+  for (const f of files) {
+    for (const { label, re } of REQUIRES_HUMAN_PATTERNS) if (re.test(f)) matched.add(label);
+    if (DEPENDENCY_MANIFESTS.has(f.split("/").pop() ?? f)) matched.add("dependency manifest");
+  }
+  return [...matched];
+}
+
 /** Risk for the ready-to-merge card: a sensitive area → high; an otherwise
  *  broad change → medium; else low. */
 export function mergeRisk(stat: { add: number; del: number; files: string[] }, sensitive: boolean): Risk {
@@ -478,10 +509,12 @@ export function computeMergeBriefing(input: {
   const sensitiveFiles = mergeSensitiveFiles(files, modules);
   const sensitive = sensitiveFiles.length > 0;
   const touchesTests = mergeTouchesTests(files);
+  const requiresHumanGlobs = mergeRequiresHumanGlobs(files);
+  const requiresHuman = requiresHumanGlobs.length > 0;
   return {
     summary: `${runName} — ${stat.add}+/${stat.del}− across ${files.length} file(s)`,
     impact: mergeImpact(modules, files.length, sensitive, touchesTests),
-    risk: mergeRisk(stat, sensitive),
+    risk: requiresHuman ? "high" : mergeRisk(stat, sensitive),
     recommendation: verdict?.decision === "flag" ? "rework" : "merge",
     rationale: verdict ? `${verdict.by}: ${verdict.reason}` : "No AI review recorded — merge at your discretion.",
     by: verdict?.by ?? "heuristic",
@@ -495,6 +528,8 @@ export function computeMergeBriefing(input: {
     reviewedBy: verdict?.by ?? null,
     reviewDecision: verdict?.decision ?? null,
     featureBrief: null, // single-run PR — never drafted for these (see feature-brief.ts)
+    requiresHuman,
+    requiresHumanGlobs,
   };
 }
 
@@ -516,10 +551,12 @@ export function computeFeatureMergeBriefing(input: {
   const sensitiveFiles = mergeSensitiveFiles(files, modules);
   const sensitive = sensitiveFiles.length > 0;
   const touchesTests = mergeTouchesTests(files);
+  const requiresHumanGlobs = mergeRequiresHumanGlobs(files);
+  const requiresHuman = requiresHumanGlobs.length > 0;
   return {
     summary: `${featureName} — ${stat.add}+/${stat.del}− across ${files.length} file(s), ${taskNames.length} task(s): ${taskNames.slice(0, 4).join(", ")}${taskNames.length > 4 ? ` +${taskNames.length - 4} more` : ""}`,
     impact: mergeImpact(modules, files.length, sensitive, touchesTests),
-    risk: mergeRisk(stat, sensitive),
+    risk: requiresHuman ? "high" : mergeRisk(stat, sensitive),
     recommendation: flaggedCount > 0 ? "rework" : "merge",
     rationale:
       flaggedCount > 0
@@ -539,6 +576,8 @@ export function computeFeatureMergeBriefing(input: {
     reviewedBy: null,
     reviewDecision: flaggedCount > 0 ? "flag" : anyReviewed ? "approve" : null,
     featureBrief: null, // filled in by openPrForFeature (draftFeatureBrief) after this heuristic returns
+    requiresHuman,
+    requiresHumanGlobs,
   };
 }
 
@@ -1215,7 +1254,13 @@ export class Orchestrator {
     // Record what actually changed on the run so every view reflects it (the run
     // itself, not just the review card). `modifiedFiles` was never populated.
     await this.hub.runModifiedFiles(runId, stat.files);
-    const risk: Risk = stat.del > 200 || stat.files.length > 40 ? "high" : "medium";
+    // A fixed path-policy list (migrations/**, .github/workflows/**, auth/**,
+    // dependency manifests) always reads as high risk here, regardless of
+    // diff size — same list the ready-to-merge briefing checks (see
+    // mergeRequiresHumanGlobs's own comment); this is the earliest review
+    // surface, so the marker should already be visible here, not just later.
+    const requiresHumanGlobs = mergeRequiresHumanGlobs(stat.files);
+    const risk: Risk = requiresHumanGlobs.length > 0 || stat.del > 200 || stat.files.length > 40 ? "high" : "medium";
     // Drafted BEFORE the item is raised — the reviewer should never see a diff
     // gate that later "pops in" a walkthrough or brief. Best-effort: any
     // failure (no consult support, no credential, unreadable reply) yields
@@ -1248,7 +1293,9 @@ export class Orchestrator {
       // (queue card, audit row, run header), so embedding the whole task prompt
       // here just bloats the row. The stats + branch live in `why`.
       title: `Review diff — ${stat.add}+/${stat.del}− (${stat.files.length} file${stat.files.length === 1 ? "" : "s"})`,
-      why: `Finished on ${agent.branch} — ${stat.add}+/${stat.del}- across ${stat.files.length} file(s). Approve to integrate.`,
+      why:
+        `Finished on ${agent.branch} — ${stat.add}+/${stat.del}- across ${stat.files.length} file(s). Approve to integrate.` +
+        (requiresHumanGlobs.length > 0 ? ` Touches ${requiresHumanGlobs.join(", ")} — always needs a human look.` : ""),
       risk,
       raisedAt: now(),
       expiresAt: null,
@@ -1261,7 +1308,10 @@ export class Orchestrator {
       steps: null,
       diff: { add: stat.add, del: stat.del, modules, files: stat.files, walkthrough, mergeBrief, defaultTargetBranch },
       output: null,
-      flags: [],
+      // The fixed path-policy hits, as scannable chips — the evidence behind a
+      // "high" risk on an otherwise-small diff. Empty when nothing in the
+      // policy list matched, same as every other gate kind's `flags`.
+      flags: requiresHumanGlobs,
       sourceBranchOverride: null,
     };
     // `full` autonomy (see ApprovalLevel in @skynet/shared) skips even a diff's
@@ -3263,7 +3313,7 @@ export class Orchestrator {
     if (!run || run.workspaceId !== workspaceId || !run.pr) return null;
     const cred = (await this.store.getProject(run.projectId))?.githubCredentialId ?? null;
     const status = await githubService.prStatus(workspaceId, run.pr.repo, run.pr.number, cred).catch(() => null);
-    return status ? { checks: status.checks, mergeable: status.mergeable } : null;
+    return status ? { checks: status.checks, mergeable: status.mergeable, runs: status.runs } : null;
   }
 
   /** Merge an open PR from the ready list. Success → integrate + settle to done
@@ -3393,7 +3443,7 @@ export class Orchestrator {
     if (!feature || feature.workspaceId !== workspaceId || !feature.pr) return null;
     const cred = (await this.store.getProject(feature.projectId))?.githubCredentialId ?? null;
     const status = await githubService.prStatus(workspaceId, feature.pr.repo, feature.pr.number, cred).catch(() => null);
-    return status ? { checks: status.checks, mergeable: status.mergeable } : null;
+    return status ? { checks: status.checks, mergeable: status.mergeable, runs: status.runs } : null;
   }
 
   /** Merge a feature's aggregate PR. Success → mark the feature shipped.

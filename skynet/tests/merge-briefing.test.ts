@@ -10,6 +10,7 @@ import {
   mergeSensitiveFiles,
   mergeTouchesTests,
   mergeRisk,
+  mergeRequiresHumanGlobs,
   computeMergeBriefing,
   computeFeatureMergeBriefing,
 } from "../apps/server/src/orchestrator.js";
@@ -54,6 +55,28 @@ describe("mergeRisk", () => {
   });
   it("a small, non-sensitive change is low", () => {
     expect(mergeRisk({ add: 10, del: 5, files: ["a.ts", "b.ts"] }, false)).toBe("low");
+  });
+});
+
+describe("mergeRequiresHumanGlobs", () => {
+  it("flags migrations/**, .github/workflows/**, and auth/** by path shape", () => {
+    expect(mergeRequiresHumanGlobs(["server/migrations/0007_x.sql"])).toEqual(["migrations/**"]);
+    expect(mergeRequiresHumanGlobs([".github/workflows/ci.yml"])).toEqual([".github/workflows/**"]);
+    expect(mergeRequiresHumanGlobs(["src/auth/session.ts"])).toEqual(["auth/**"]);
+  });
+  it("flags dependency manifests by filename, wherever they live", () => {
+    expect(mergeRequiresHumanGlobs(["apps/web/package.json"])).toEqual(["dependency manifest"]);
+    expect(mergeRequiresHumanGlobs(["pnpm-lock.yaml"])).toEqual(["dependency manifest"]);
+  });
+  it("returns [] on an ordinary diff — no false positive", () => {
+    expect(mergeRequiresHumanGlobs(["src/ui/button.tsx", "README.md"])).toEqual([]);
+  });
+  it("dedupes and reports every distinct category that matched, not just the first", () => {
+    const files = ["server/migrations/0001_init.sql", "server/migrations/0002_x.sql", "package.json"];
+    expect(mergeRequiresHumanGlobs(files).sort()).toEqual(["dependency manifest", "migrations/**"]);
+  });
+  it("a workflow-shaped path elsewhere in the tree doesn't false-positive — only the repo-root .github/workflows/**", () => {
+    expect(mergeRequiresHumanGlobs(["docs/.github/workflows/ci.yml"])).toEqual([]);
   });
 });
 
@@ -115,6 +138,25 @@ describe("computeMergeBriefing — single-run PR", () => {
     expect(b.modules).toEqual([]);
     expect(b.impact).toContain("no mapped module");
   });
+
+  it("a diff touching a requires-human path is forced to high risk even when tiny — and an approving reviewer doesn't override the marker", () => {
+    const b = computeMergeBriefing({
+      runName: "x",
+      authoredBy: "agent-1",
+      verdict: { by: "agent-2", reason: "looks fine", decision: "approve" },
+      stat: { add: 1, del: 1, files: [".github/workflows/deploy.yml"] },
+      modules: [],
+    });
+    expect(b.requiresHuman).toBe(true);
+    expect(b.requiresHumanGlobs).toEqual([".github/workflows/**"]);
+    expect(b.risk).toBe("high");
+  });
+
+  it("an ordinary diff carries requiresHuman:false and an empty glob list", () => {
+    const b = computeMergeBriefing({ runName: "x", authoredBy: null, verdict: null, stat: { add: 3, del: 1, files: ["src/ui/button.tsx"] }, modules: [] });
+    expect(b.requiresHuman).toBe(false);
+    expect(b.requiresHumanGlobs).toEqual([]);
+  });
 });
 
 describe("computeFeatureMergeBriefing — batched feature PR", () => {
@@ -138,5 +180,19 @@ describe("computeFeatureMergeBriefing — batched feature PR", () => {
     expect(b.authoredBy).toBeNull();
     expect(b.reviewedBy).toBeNull();
     expect(b.reviewDecision).toBe("approve");
+  });
+
+  it("a batch touching a requires-human path is forced to high risk, even with no flagged siblings", () => {
+    const b = computeFeatureMergeBriefing({
+      featureName: "Checkout",
+      taskNames: ["do X"],
+      stat: { add: 2, del: 0, files: ["package.json"] },
+      modules: [],
+      flaggedCount: 0,
+      anyReviewed: true,
+    });
+    expect(b.requiresHuman).toBe(true);
+    expect(b.requiresHumanGlobs).toEqual(["dependency manifest"]);
+    expect(b.risk).toBe("high");
   });
 });
