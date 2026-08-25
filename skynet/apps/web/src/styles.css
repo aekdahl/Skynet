@@ -2114,9 +2114,10 @@ button.rb-proj:hover { color: var(--accent); }
   max-width: 100%; overflow: hidden; white-space: nowrap;
 }
 .rb-pill:hover { border-color: var(--accent); color: var(--accent); }
-/* The vendor's own mark (colored glyph) — a real identity signal, not the
-   fleet runner's custom name alone. */
+/* The vendor's own mark (colored glyph) + name — real identity, not the fleet
+   runner's custom label alone. Name inherits the provider color from inline style. */
 .rb-prov-glyph { flex: none; font-size: var(--fz-12); line-height: 1; }
+.rb-prov-name { font-size: var(--fz-12); font-weight: 500; }
 .rb-off { color: var(--faint); }
 .rb-time { font-family: var(--font-mono); font-size: var(--fz-11-5); color: var(--muted); }
 
@@ -2136,7 +2137,7 @@ button.rb-proj:hover { color: var(--accent); }
     100% { transform: scaleY(1); opacity: 1; }
   }
 }
-/* No heartbeat in a while (see STALE_HEARTBEAT_SEC in home.tsx) — overrides
+/* No heartbeat in a while (see STALE_HEARTBEAT_SEC in derive.ts) — overrides
    the tag's own color so "running" and "paused" both read as suspect the
    same way, distinct from --danger (an open gate genuinely needs a decision)
    and --info (a healthy, actively-heartbeating run). */
