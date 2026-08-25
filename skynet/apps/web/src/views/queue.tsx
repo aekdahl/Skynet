@@ -94,6 +94,9 @@ export function QueueCard({
       <h3 className="qcard-title">{item.title}</h3>
       {item.rationale && <p className="qcard-reason">💭 {item.rationale}</p>}
       <p className="qcard-why">{item.why}</p>
+      {item.diff && item.diff.modules.length > 0 && (
+        <p className="qcard-modules mono">Touches {item.diff.modules.join(", ")}</p>
+      )}
 
       {item.command && <pre className="qcard-code">$ {item.command}</pre>}
       {item.output && item.kind === "merge" && (
@@ -102,10 +105,12 @@ export function QueueCard({
       {item.output && <pre className="qcard-code qcard-output">{item.output}</pre>}
 
       {item.flags && item.flags.length > 0 && (
-        <div className="qcard-flags">
-          <span className="qcard-flags-label mono">{item.kind === "merge" ? "Conflicts in" : "Flagged"}</span>
+        <div className={"qcard-flags" + (item.kind === "diff" ? " qcard-flags-human" : "")}>
+          <span className="qcard-flags-label mono">
+            {item.kind === "merge" ? "Conflicts in" : item.kind === "diff" ? "⚠ Requires human review" : "Flagged"}
+          </span>
           {item.flags.map((f, i) => (
-            <span key={i} className={"flag-chip" + (item.kind === "merge" ? " flag-file mono" : "")}>{f}</span>
+            <span key={i} className={"flag-chip" + (item.kind === "merge" || item.kind === "diff" ? " flag-file mono" : "")}>{f}</span>
           ))}
         </div>
       )}
