@@ -700,7 +700,7 @@ export class Orchestrator {
           // merging INTO its feature branch) is a normal per-run merge in every
           // other respect and needs no special-casing here.
           onMerged: (req) => (isFeatureUpMerge(req) ? this.completeFeatureMerged(req) : this.completeMerged(req.runId, req.agentBranch)),
-          onConflict: (req, files, conflictDiff) => this.raiseMergeHitl(req, files, conflictDiff),
+          onConflict: (req, files, conflictDiff, targetBranch) => this.raiseMergeHitl(req, files, conflictDiff, targetBranch),
           onChecksFailed: async (req, out) => {
             if (isFeatureUpMerge(req)) {
               // No single owning run to bounce back to "review" (or raise a
@@ -2323,15 +2323,45 @@ export class Orchestrator {
       }
     }
 
-    // Review feedback loop: a `modify` on a finished run's diff/merge review, or
-    // a `modify`/`reject` on a failed verifier gate (a check failure's own
-    // output IS actionable guidance — reject needs no typed text to still bounce
-    // the agent). Compute was freed for the review, so there's no live handle —
-    // re-acquire one and resume the run in its worktree with the guidance
+    // Operator escape hatch on a merge conflict: push the run's own branch and
+    // open a GitHub PR against the project's base branch REGARDLESS of the
+    // local conflict, instead of reconciling it via the (possibly batched)
+    // local merge queue — so a human can resolve it on GitHub, which has real
+    // conflict-resolution tooling, rather than being blocked on an automated
+    // clean merge. Reuses the exact push+PR path a normal diff approval takes
+    // when GitHub is connected; pushToGithub/openPrForRun already escalate for
+    // a rebase on a stale-base conflict, so that safety net still applies here.
+    if (resolution.action === "push" && item.kind === "merge") {
+      const agent = await this.store.getRun(runId);
+      if (!agent) return;
+      const project = await this.store.getProject(agent.projectId);
+      const git = this.gitContextFor(project);
+      const conn = await githubService.get(agent.workspaceId);
+      if (!(conn?.connected && project?.repo && git)) {
+        await this.hub.runLog(
+          runId,
+          "push requested, but no GitHub repo is connected for this project — nothing to open a PR against.",
+        );
+        return;
+      }
+      await this.hub.runLog(runId, "pushing the branch and opening a PR despite the local merge conflict — reconcile it there");
+      await this.pushToGithub(git, agent, project.repo, project);
+      return;
+    }
+
+    // Review feedback loop: a `modify` OR `reject` on a finished run's
+    // diff/merge/verifier review bounces the agent back to revise rather than
+    // abandoning the run — reject needs no typed text to still bounce the agent
+    // (a verifier's check failure, or a merge conflict's captured markers, is
+    // already actionable guidance on its own). This mirrors the verifier gate's
+    // existing reject semantics: "reject" here means "send it back for another
+    // pass", not "kill the run" — that stronger action is what Stop is for.
+    // Compute was freed for the review, so there's no live handle — re-acquire
+    // one and resume the run in its worktree with the guidance
     // (reviseAfterReview), rather than silently dropping it.
     if (
-      (((item.kind === "diff" || item.kind === "merge") && resolution.action === "modify") ||
-        (item.kind === "verifier" && (resolution.action === "modify" || resolution.action === "reject"))) &&
+      (item.kind === "diff" || item.kind === "merge" || item.kind === "verifier") &&
+      (resolution.action === "modify" || resolution.action === "reject") &&
       !this.live.has(runId)
     ) {
       const typed = resolution.guidance?.trim() || "";
@@ -2457,8 +2487,13 @@ export class Orchestrator {
       body: isConflict
         ? `Your branch (${run.branch}) has a merge conflict integrating into the target branch — it could not be ` +
           `merged automatically. Below is the actual conflict (git diff output, including the ` +
-          `<<<<<<</=======/>>>>>>> markers) captured right before the merge attempt was aborted:\n\n${guidance}\n\n` +
-          `Your previous output is already in the working directory. Resolve the conflict — pick the right ` +
+          `<<<<<<</=======/>>>>>>> markers) captured right before the merge attempt was aborted — the first line ` +
+          `names the real target branch/ref:\n\n${guidance}\n\n` +
+          `Your previous output is already in the working directory, but the target branch's OWN content is not — ` +
+          `the diff above is a snapshot, not something to trust blindly for a non-trivial conflict. Before resolving, ` +
+          `inspect the target branch's actual current content directly, e.g. \`git show <target branch>:<path>\` or ` +
+          `\`git diff <target branch> -- <path>\` for each conflicting file, so your resolution reflects its real ` +
+          `current state, not just a reconstruction from the diff snippet. Then resolve the conflict — pick the right ` +
           `resolution for each hunk, remove the conflict markers — commit it, then stop. It'll be retried automatically.`
         : `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
           `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
@@ -3533,8 +3568,12 @@ export class Orchestrator {
    *  field a verifier gate's check output uses, and the same field `deliver()`
    *  falls back to as Modify's guidance when the operator leaves it blank, so
    *  clicking Modify with no typed text is enough to have the agent resolve
-   *  the conflict it's actually looking at. */
-  private async raiseMergeHitl(req: MergeRequest, files: string[], conflictDiff: string): Promise<void> {
+   *  the conflict it's actually looking at. `targetBranch` (the RESOLVED
+   *  destination — see `MergeCallbacks.onConflict`) is prefixed onto `output`
+   *  so an agent asked to fix this later (reviseAfterReview) knows the real
+   *  ref name and can inspect its actual current content directly with git,
+   *  instead of reconstructing the merge blind from the diff snippet alone. */
+  private async raiseMergeHitl(req: MergeRequest, files: string[], conflictDiff: string, targetBranch: string): Promise<void> {
     const agent = await this.store.getRun(req.runId);
     if (!agent) return;
     // Feature-scoped branch batching: a step-1 conflict (task → feature branch)
@@ -3568,7 +3607,9 @@ export class Orchestrator {
       steps: null,
       // Same carry-forward as raiseMergeFailedHitl above.
       diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, mergeBrief: null, defaultTargetBranch: req.targetBranch ?? null },
-      output: conflictDiff ? conflictDiff.slice(0, Orchestrator.VERIFIER_OUTPUT_CAP) : null,
+      output: conflictDiff
+        ? `Target branch: ${targetBranch}\n\n${conflictDiff}`.slice(0, Orchestrator.VERIFIER_OUTPUT_CAP)
+        : null,
       flags: files, // the conflicting files — shown as chips
       sourceBranchOverride: featureUp ? req.agentBranch : null,
     });

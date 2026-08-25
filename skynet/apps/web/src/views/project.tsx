@@ -580,6 +580,14 @@ function TaskCard({
                 ⚡
               </button>
             )}
+            <button
+              className="kb-tool"
+              title="Reopen this done task in the backlog for another round of work — doesn't touch the already-merged branch."
+              aria-label="Send to Backlog for rework"
+              onClick={() => void transitionTask(pid, task.id, "backlog")}
+            >
+              ↺
+            </button>
             <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" aria-label="Archive task" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
           </span>
         )}
