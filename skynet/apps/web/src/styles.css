@@ -3243,3 +3243,4 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .spend-legend-hint { color: var(--faint); font-size: var(--fz-11); }
 .spend-legend-num { margin-left: auto; color: var(--muted); font-size: var(--fz-11); }
 .spend-eff-caveat { font-size: var(--fz-11); color: var(--faint); border-left: 2px solid var(--line); padding-left: 8px; }
+.settings-saved { font-size: var(--fz-11); color: var(--ok, var(--accent)); margin-top: 6px; }

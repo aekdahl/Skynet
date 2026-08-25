@@ -93,6 +93,22 @@ export class Hub {
     this.bus.publish(a.workspaceId, { type: "run.progress", runId, progress, plan });
   }
 
+  /**
+   * Store a run's usage as reported. `usage` is already the run's TRUE running
+   * total, not a delta: the SDK's `result` messages carry a running total for
+   * their own query() call, and the runner folds completed query segments
+   * (turn-budget continues, transient relaunches — each of which resets the
+   * SDK's own counters) into it before emitting. See ClaudeRunnerHandle's
+   * emitUsage/sealSegment.
+   *
+   * Deliberately a REPLACE, and it must stay one: accumulating here on top of
+   * an already-cumulative reading would multiply a long run's recorded cost by
+   * roughly its turn count. The accounting bug this file was part of was never
+   * "replace vs. accumulate" — it was that the runner emitted only the current
+   * segment (dropping every prior one) while reading a `usage` field that the
+   * SDK documents as main-loop-only, excluding Task subagents. Both are fixed
+   * at the source, in the runner.
+   */
   async runUsage(runId: string, usage: Usage): Promise<void> {
     const a = await this.store.getRun(runId);
     if (!a) return;

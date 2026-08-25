@@ -89,6 +89,77 @@ describe("classifier", () => {
   });
 });
 
+// Cost accounting across the relaunch boundary. The SDK's result carries a
+// RUNNING TOTAL for its own query() call, but a resumed session restarts those
+// counters at zero — so the runner must fold finished segments forward, and
+// must not double-count within one. Pure-function coverage of readUsage/
+// addUsage lives in usage-accounting.test.ts; this drives the real runner.
+describe("ClaudeRunner usage accounting", () => {
+  let q: ReturnType<typeof scriptedQuery>;
+  beforeEach(() => {
+    q = scriptedQuery();
+    __setClaudeTestHooks({ query: q.fn as never, backoffMs: () => 5 });
+  });
+
+  const withUsage = (over: { subtype: string; is_error: boolean; input: number; out: number; cost: number; turns: number }) => ({
+    type: "result",
+    subtype: over.subtype,
+    is_error: over.is_error,
+    num_turns: over.turns,
+    total_cost_usd: over.cost,
+    modelUsage: {
+      "claude-sonnet-5": {
+        inputTokens: over.input, outputTokens: over.out,
+        cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: over.cost,
+      },
+    },
+    // Main-loop-only field, deliberately understated — reading it was the bug.
+    usage: { input_tokens: 1, output_tokens: 1 },
+    result: "",
+  });
+
+  it("within ONE query, a later result REPLACES the earlier running total (never sums)", async () => {
+    q.push([
+      sys,
+      withUsage({ subtype: "success", is_error: false, input: 1_000, out: 10, cost: 1, turns: 1 }),
+    ]);
+    const events = fakeEvents();
+    await new ClaudeRunnerProvider().start(spec, events);
+    await vi.waitFor(() => expect(events.onUsage).toHaveBeenCalled(), { timeout: 2000, interval: 20 });
+    const [, u] = events.onUsage.mock.calls.at(-1)!;
+    expect(u.inputTokens).toBe(1_000); // not 1 — modelUsage, not `usage`
+    expect(u.costUsd).toBeCloseTo(1, 6);
+  });
+
+  it("across a turn-budget relaunch, finished segments are CARRIED FORWARD", async () => {
+    // Segment 1 exhausts its turns (60), then segment 2 completes (40 more).
+    q.push([sys, withUsage({ subtype: "error_max_turns", is_error: true, input: 3_000_000, out: 30_000, cost: 3, turns: 60 })]);
+    q.push([sys, withUsage({ subtype: "success", is_error: false, input: 1_000_000, out: 10_000, cost: 1, turns: 40 })]);
+    const events = fakeEvents();
+    await new ClaudeRunnerProvider().start(spec, events);
+    await vi.waitFor(() => expect(events.onCompleted).toHaveBeenCalled(), { timeout: 3000, interval: 20 });
+    const [, u] = events.onUsage.mock.calls.at(-1)!;
+    // The bug reported only the LAST segment: 1M tokens / $1 / 40 turns for a
+    // run that really spent 4M / $4 / 100 turns.
+    expect(u.inputTokens).toBe(4_000_000);
+    expect(u.outputTokens).toBe(40_000);
+    expect(u.costUsd).toBeCloseTo(4, 6);
+    expect(u.turns).toBe(100);
+  });
+
+  it("across a TRANSIENT-error relaunch, the failed segment's spend still counts", async () => {
+    // A 529 storm costs real money before it's retried — it must not vanish.
+    q.push([sys, { ...withUsage({ subtype: "error_during_execution", is_error: true, input: 500_000, out: 5_000, cost: 0.5, turns: 12 }), result: "Overloaded (529)" }]);
+    q.push([sys, withUsage({ subtype: "success", is_error: false, input: 200_000, out: 2_000, cost: 0.2, turns: 5 })]);
+    const events = fakeEvents();
+    await new ClaudeRunnerProvider().start(spec, events);
+    await vi.waitFor(() => expect(events.onCompleted).toHaveBeenCalled(), { timeout: 3000, interval: 20 });
+    const [, u] = events.onUsage.mock.calls.at(-1)!;
+    expect(u.inputTokens).toBe(700_000);
+    expect(u.costUsd).toBeCloseTo(0.7, 6);
+  });
+});
+
 describe("ClaudeRunner error handling", () => {
   let q: ReturnType<typeof scriptedQuery>;
   beforeEach(() => {
