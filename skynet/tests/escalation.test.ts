@@ -111,7 +111,7 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     expect((await store.getRun(run.id))?.status).toBe("waiting");
   });
 
-  it("Stop (reject) an escalation → the run ends and the runner is torn down", async () => {
+  it("Stop (reject) an escalation → the run ends, the runner is torn down, AND the task is freed back to todo", async () => {
     const { run, events, handle } = await assignRun();
     events.onHitl(run.id, {
       kind: "escalation", title: "Stuck", why: "cannot proceed", risk: "medium", rationale: null,
@@ -124,6 +124,16 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     await waitFor(async () => (await store.getRun(run.id))?.status === "done");
     expect(handle.stopCalls).toBeGreaterThanOrEqual(1);
     expect((await store.getAgent("r1"))?.status).toBe("idle"); // runner freed
+    // The invariant haltAgent (plain "Stop run" on a live run) already upholds:
+    // a stopped run integrates no change, so its task must not be left
+    // stranded "ongoing" with no live run behind it. Found live on a real
+    // deployment — deliverEscalation's reject branch was a separate
+    // implementation that skipped this sync, orphaning every task stopped via
+    // an escalation card (not the plain Stop button) permanently in "ongoing".
+    const freed = (await store.listTasks(DEFAULT_WORKSPACE))[0]!;
+    expect(freed.state).toBe("todo");
+    expect(freed.runId).toBeNull();
+    expect(freed.reviewVerdict).toBeNull();
   });
 
   it("Help & resume (modify) an agent escalation → the live agent resumes with guidance", async () => {

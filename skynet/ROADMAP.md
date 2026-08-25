@@ -516,6 +516,19 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   `deliverEscalation`. Regression-proofed with 4 new real-git tests (`escalation.test.ts`) covering both
   choices on both flows, and verified live end-to-end (pause → Start → resumes the SAME run id; reset →
   a brand-new run with its own fresh worktree).*
+- [x] **Fix: Stop on an escalation card orphaned its task in "ongoing" forever.** Found live on a real
+  deployment — 11 of 11 tasks stuck in "ongoing" turned out to have runs that had already reached a
+  terminal state (`done`, mostly via a stall reap or the operator resolving the escalation with Stop), yet
+  the task itself never moved. Root cause: `haltAgent` (the plain "Stop run" button on a live, non-escalated
+  run) correctly upholds the invariant "an ongoing task always has a live run" — it returns the task to
+  `todo` when the run stops. `deliverEscalation`'s `reject` branch (Stop **on an escalation card**
+  specifically) was a separate, parallel implementation of "stop this run" that did the same runner/worktree
+  cleanup but never synced the task, silently violating that invariant every time. Since `ongoing`'s only
+  legal human kanban move is → `todo`, and nothing was ever making that move automatically, the task just
+  sat there — unreachable by drag (nothing to drop it onto) and invisible as "broken" (no error, no card, no
+  escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
+  confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
+  `reviewVerdict → null` and genuinely fails without it, popped it back.
 - [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
   Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
   credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself
