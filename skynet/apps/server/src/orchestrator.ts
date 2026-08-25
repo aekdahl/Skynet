@@ -4494,6 +4494,9 @@ export class Orchestrator {
       "Draft the answer the OPERATOR would most likely give, grounded strictly in the context below.",
       "Be concrete and short — a few sentences or bullets, no preamble, no restating the questions.",
       "Where the context genuinely doesn't settle something, say plainly what you'd assume and flag it as an assumption; never invent a decision as though it were established fact.",
+      "You have NO tools here — no code search, no repo access, nothing beyond the text below — and this is a single one-shot reply, not a conversation: there is no later turn to report back on. " +
+        "Answer from the context given, right now. Never say you'll investigate further, look at the code, launch a subagent, or get back to the operator once you have more information — you cannot do any of that, and claiming to is simply false. " +
+        "If the context truly isn't enough to guess even roughly, say that plainly in one line instead — do not describe an investigation you're not actually able to perform.",
       "",
       `PROJECT: ${project?.name ?? "(unknown)"}`,
       `GOAL: ${project?.goal?.trim() || "(none set)"}`,
