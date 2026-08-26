@@ -642,9 +642,13 @@ export const TaskSource = z.discriminatedUnion("kind", [
 ]);
 export type TaskSource = z.infer<typeof TaskSource>;
 
-// One quality concern from the task linter v0 (see Task.lint below).
+// One quality concern from the task linter (see Task.lint below). The first
+// three kinds are the v1.5 assistive v0; `missing-dependency` and
+// `parallel-candidate` are the v5 "LLM coach" layer on top — same structured
+// concern shape, just two more things worth flagging once the linter is also
+// given the rest of the open backlog to reason against (see task-linter.ts).
 export const TaskLintConcern = z.object({
-  kind: z.enum(["vague", "multi-module", "no-done-definition"]),
+  kind: z.enum(["vague", "multi-module", "no-done-definition", "missing-dependency", "parallel-candidate"]),
   note: z.string(),
 });
 export type TaskLintConcern = z.infer<typeof TaskLintConcern>;
@@ -728,14 +732,18 @@ export const Task = z.object({
   // names what's missing; cleared when the operator answers. Additive and
   // nullable, so every task predating this parses unchanged.
   clarification: TaskClarification.nullable().default(null),
-  // Task linter v0 (assistive) — cheap quality hints computed in the
-  // background right after the task is created or its text/description is
-  // edited (see apps/server/src/task-linter.ts). NEVER blocks creation or
-  // edits, and NEVER auto-splits a task: `concerns` is a dismissible hint the
-  // operator can act on or ignore. Empty `concerns` = the linter ran and found
-  // nothing worth flagging (or its reply was unreadable — same "nothing to
-  // report" outcome, never a thrown error). `null` = not linted yet for the
-  // CURRENT text (freshly created, or the text/description just changed).
+  // Task linter — cheap quality hints computed in the background right after
+  // the task is created or its text/description is edited (see
+  // apps/server/src/task-linter.ts). NEVER blocks creation or edits, and
+  // NEVER auto-splits a task: `concerns` is a dismissible hint the operator
+  // can act on or ignore. Empty `concerns` = the linter ran and found nothing
+  // worth flagging (or its reply was unreadable — same "nothing to report"
+  // outcome, never a thrown error). `null` = not linted yet for the CURRENT
+  // text (freshly created, or the text/description just changed). v5 also
+  // hands the linter a short list of sibling backlog/todo titles from the
+  // same project, so it can flag an implied-but-uncaptured dependency or an
+  // open sibling that looks independent enough to run in parallel — the
+  // "coach" layered on the v1.5 assistive v0.
   lint: z
     .object({
       concerns: z.array(TaskLintConcern),

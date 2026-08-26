@@ -66,6 +66,50 @@ describe("gateNotice", () => {
   });
 });
 
+// Reported live: a merge-conflict card rendered as an unexplained raw `diff
+// --cc` dump — no title, no explanation, no list of which files conflicted,
+// just a tail-truncated combined-diff snippet cut off mid-sentence. `why` was
+// dropped entirely (the web queue card always shows it — queue.tsx), so
+// Telegram gave the operator nothing to actually decide on.
+describe("merge conflict gate — actionable, not a raw diff dump", () => {
+  const mergeConflict = (o: Partial<HitlItem> = {}) =>
+    item({
+      kind: "merge",
+      diff: { add: 0, del: 0, modules: ["m1"], files: [], walkthrough: null, mergeBrief: null, defaultTargetBranch: "main" } as never,
+      title: "Merge conflict — 2 files",
+      why: "2 file(s) conflict integrating claude/foo. Reconcile yourself and approve to retry, or click Modify (guidance optional — it'll use the conflict below) to have the agent resolve it.",
+      flags: ["ROADMAP.md", "apps/server/src/x.ts"],
+      output: "Target branch: main\n\n<<<<<<< HEAD\nfoo\n=======\nbar\n>>>>>>> claude/foo\n",
+      ...o,
+    });
+
+  it("gateNotice leads with the title, the why explanation, and the conflicting files — not just raw output", () => {
+    const msg = gateNotice(mergeConflict(), NAMES, true);
+    expect(msg).toContain("Merge conflict — 2 files");
+    expect(msg).toContain("Reconcile yourself and approve to retry");
+    expect(msg).toContain("Conflicts in: ROADMAP.md, apps/server/src/x.ts");
+    // The raw conflict text is still present (Modify uses it as guidance) but
+    // labeled, not the only content on the card.
+    expect(msg).toContain("Conflict (captured before the merge was aborted)");
+    expect(msg).toContain("<<<<<<< HEAD");
+  });
+
+  it("decisionCardHtml leads with title + why + conflicting-file chips before the raw conflict text", () => {
+    const html = decisionCardHtml(mergeConflict(), NAMES, true);
+    expect(html).toContain("<b>Merge conflict — 2 files</b>");
+    expect(html).toContain("Reconcile yourself and approve to retry");
+    expect(html).toContain("<b>Conflicts in:</b>");
+    expect(html).toContain("<code>ROADMAP.md</code>");
+    expect(html).toContain("<code>apps/server/src/x.ts</code>");
+    expect(html).toContain("Conflict (captured before the merge was aborted)");
+    // HTML-escaped, since it rides inside a <pre> block.
+    expect(html).toContain("&lt;&lt;&lt;&lt;&lt;&lt;&lt; HEAD");
+    // Ordering: the explanation comes BEFORE the raw conflict dump, so a
+    // truncated preview never leaves the operator with nothing else to go on.
+    expect(html.indexOf("Reconcile yourself")).toBeLessThan(html.indexOf("&lt;&lt;&lt;&lt;&lt;&lt;&lt; HEAD"));
+  });
+});
+
 describe("stuck-review escalation — done, awaiting review, not an alarm", () => {
   // A stuck-review escalation (orchestrator.ts's reapStuckReviews) fires when a
   // run already finished and reached review with no open gate pointing at it —
