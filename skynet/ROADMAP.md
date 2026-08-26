@@ -529,6 +529,29 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Manual "Force to review" on an ongoing card.** Requested live, right after Force Done's own real
+  commit/push/merge fix: `ongoing → review/done` was purely agent-driven — the only human control on an
+  ongoing card was "Send to To-do" (abandon it). No escape hatch existed for the far more common ask: a run
+  that's stuck, slow, or has done enough for a human to want to look now, without abandoning its in-progress
+  work. New `⚡ Force to review` button, next to the existing `⚡ Force done`, runs the EXACT same
+  commit → diff → raise-review path `complete()` already runs on the runner's own natural finish — just
+  triggered by the operator instead of the `onCompleted` event. Deliberately commit-before-stop: the
+  worktree is committed FIRST, and the live session is only stopped once a real commit lands — so clicking
+  this on a run that hasn't produced anything yet can never kill real in-progress work for nothing; it fails
+  honestly with `NothingToReviewError` instead ("nothing has changed yet") and leaves the session running
+  untouched. Also throws honestly (not a silent no-op) when the run isn't live right now — an `ongoing` task
+  is supposed to always have a live run behind it, so this only fires for a genuinely dead/already-reaped
+  edge case. `tests/force-review.test.ts` (3 tests) drives
+  the real Orchestrator against a real throwaway git repo: a live run with real uncommitted work is
+  committed + stopped + raises a genuine diff review (task flips to `review`, the commit is verifiably on
+  the branch); a live run with a CLEAN worktree throws and leaves the session running (nothing torn down);
+  a non-`ongoing` task 404s before ever touching the orchestrator. New `Orchestrator.forceReviewRun` /
+  `Operations.forceReview`, `POST /api/projects/:id/tasks/:tid/force-review`, and an MCP `force_review` tool.
+  Live interactive verification of the success path needs a real provider credential this sandbox doesn't
+  have (an `ongoing` task can only be reached through a genuinely live run — no mock runner exists in the
+  real server binary, only in test harnesses); confirmed instead that the new button renders cleanly with
+  no console errors and the app typechecks end to end, backed by the real-git integration tests above for
+  the correctness-critical path.
 - [x] **Fix: answering a triage clarifying question could loop forever — same question, every time.**
   Reported live right after clarifying questions shipped: answer the question → task returns to `backlog`
   for re-triage (by design, since the answer can change the effort/risk/grouping read) → triage runs again

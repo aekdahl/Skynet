@@ -338,6 +338,7 @@ function TaskCard({
     deleteTask,
     forceTaskDone,
     requestReview,
+    forceReview,
     archiveTask,
     assignTask,
     transitionTask,
@@ -781,8 +782,10 @@ function TaskCard({
             // be yanked off it by a stray drag — but `ongoing → todo` is a legal,
             // safe move (stops + detaches the run, task returns clean). Expose it
             // as an explicit button since there's no lane to drag to. `ongoing →
-            // review/done` is agent-driven (it advances itself when finished), so
-            // there's no human control for those.
+            // review/done` is normally agent-driven (it advances itself when
+            // finished) — Force to review, just below, is the explicit human
+            // override for a run that's stuck or taking too long to finish on
+            // its own.
             <button
               className="kb-move"
               title="Stop the agent working on this and send the task back to To-do — choose whether to keep its in-progress work."
@@ -809,6 +812,15 @@ function TaskCard({
               }}
             >
               ↩ Send to To-do
+            </button>
+          )}
+          {s === "ongoing" && (
+            <button
+              className="kb-move kb-move-force"
+              title="Pull this run up for review right now instead of waiting for it to finish its own turn — commits whatever's on the worktree and stops the session, then raises a real diff review. Fails honestly if nothing's changed yet."
+              onClick={() => void forceReview(pid, task.id)}
+            >
+              ⚡ Force to review
             </button>
           )}
           {(s === "ongoing" || s === "review") && (

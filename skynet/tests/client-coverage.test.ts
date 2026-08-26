@@ -132,6 +132,13 @@ const ALLOW = new Set<string>([
   // reviewed / no open gate / no reviewer free) is server-side in
   // request-review.test.ts, driving the real Orchestrator/Operations.
   "requestReview",
+  // manual "Force to review" — needs a genuinely live, still-`ongoing` run at
+  // the moment it's called; no offline journey shape reproduces that fleet
+  // state. Full success/failure-mode coverage (commits + stops + raises a
+  // real diff review, not-ongoing, nothing-changed-yet) is server-side in
+  // force-review.test.ts, driving the real Orchestrator/Operations against a
+  // real throwaway git repo.
+  "forceReview",
   // manual "Re-sync" — needs a real GitHub-bound project + a live GitHub API,
   // so no offline journey exercises it. Full pull/push behavior (new issues,
   // drifted title/description, new checklist items, push-drift with sync on/

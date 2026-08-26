@@ -240,6 +240,7 @@ export interface Store extends StoreState {
   transitionTask: (projectId: string, taskId: string, to: string, preserve?: boolean) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   requestReview: (projectId: string, taskId: string) => Promise<void>;
+  forceReview: (projectId: string, taskId: string) => Promise<void>;
   resyncProjectSource: (projectId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
@@ -715,6 +716,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await api.requestReview(projectId, taskId);
         } catch (e) {
           if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't request a review."));
+        }
+      },
+      forceReview: async (projectId, taskId) => {
+        try {
+          await api.forceReview(projectId, taskId);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't force this to review."));
         }
       },
       resyncProjectSource: async (projectId) => {

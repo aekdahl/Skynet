@@ -1055,6 +1055,13 @@ export function forceTaskDone(projectId: string, taskId: string) {
 export function requestReview(projectId: string, taskId: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/request-review`);
 }
+// Manual "Force to review" — pull a still-ongoing task's live run up for
+// review right now instead of waiting for the agent to finish its own turn.
+// Throws (ApiError 409) with an honest, specific reason — not ongoing / run
+// not live / nothing changed yet — for the caller to surface.
+export function forceReview(projectId: string, taskId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/force-review`);
+}
 export function moveTask(projectId: string, taskId: string, direction: "up" | "down") {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/move`, { direction });
 }

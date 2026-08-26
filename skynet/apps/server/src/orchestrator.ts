@@ -133,6 +133,16 @@ export class NoReviewerAvailableError extends Error {
   }
 }
 
+/** forceReviewRun()'s failure modes — a manual "Force to review" couldn't
+ *  find anything to actually put up for review, rather than a silent
+ *  no-op or a review card with nothing on it. */
+export class NothingToReviewError extends Error {
+  constructor(message?: string) {
+    super(message ?? "This run isn't live right now — nothing to force to review.");
+    this.name = "NothingToReviewError";
+  }
+}
+
 /**
  * PURE: extract a trailing `{"estMinutes": N, "clarity": "clear"|"unclear"}`
  * JSON tag off the triage LLM's reply. Returns the body (with the tag stripped)
@@ -1125,6 +1135,46 @@ export class Orchestrator {
     }
     await this.hub.runStatus(runId, "done");
     await this.hub.runCompleted(runId, branch);
+    this.live.delete(runId);
+  }
+
+  /**
+   * Manual "Force to review" — an operator pulling a still-live `ongoing`
+   * run up for review right now, instead of waiting for the agent to finish
+   * its own turn (or getting stuck waiting on one that's stalled without
+   * tripping the reap/stuck-run guards). Runs the EXACT same commit → diff →
+   * raiseDiffReview path `complete()` runs on the runner's own natural
+   * finish signal — just triggered by the operator instead.
+   *
+   * Commit-before-stop, deliberately in that order: `commitAll` is checked
+   * FIRST, and the live session is only stopped once a real commit lands —
+   * so clicking this on a run that hasn't produced anything yet never kills
+   * real in-progress work for nothing. Throws `NothingToReviewError` (never
+   * a silent no-op) when the run isn't live right now, or genuinely has no
+   * changes to show.
+   */
+  async forceReviewRun(runId: string): Promise<void> {
+    const live = this.live.get(runId);
+    if (!live?.git || live.baseRef === undefined) throw new NothingToReviewError();
+    const wt = live.git.worktrees;
+    const agent = await this.store.getRun(runId);
+    const res = await wt
+      .commitAll(runId, `Skynet agent ${runId}${agent ? `: ${agent.name}` : ""} (forced to review by operator)`)
+      .catch(() => ({ committed: false }) as const);
+    if (!res.committed) {
+      throw new NothingToReviewError("No changes have been made on this run yet — nothing to review.");
+    }
+
+    await live.handle.stop().catch(() => undefined);
+    const stat = await wt.diffStat(runId, live.baseRef);
+    const patch = await wt.patch(runId, live.baseRef);
+    await this.freeRunner(live.agentId);
+    await this.hub.runStatus(runId, "review");
+    await this.moveTaskToReview(live.taskId);
+    await this.raiseDiffReview(runId, stat, patch);
+    // Keep what a `modify` review resolution needs to resume this run for a
+    // revision — same bookkeeping complete()'s own success path leaves.
+    this.reviews.set(runId, { git: live.git, baseRef: live.baseRef, taskId: live.taskId });
     this.live.delete(runId);
   }
 
