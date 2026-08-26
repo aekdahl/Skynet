@@ -967,14 +967,15 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
-  // Force a task to `done` — bypasses HUMAN_TRANSITIONS and always syncs the
-  // linked run's status to "done". The escape hatch when the normal
-  // review → done path fails (merge queue stuck, HITL wedged, run finished
-  // without advancing the card). Never merges the branch: it's a
-  // "call it done" operator override, not a work-completion signal.
+  // Force a task to `done` — bypasses HUMAN_TRANSITIONS. The escape hatch
+  // when the normal review → done path fails (merge queue stuck, HITL
+  // wedged, run finished without advancing the card). Commits + pushes/opens
+  // a PR (or enqueues the local merge) through the same path a normal
+  // Approve uses, so "done" reflects real, integrated work — see
+  // Operations.forceTaskDone's doc comment.
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/force-done", async (req, reply) => {
     try {
-      return await ops.forceTaskDone(ws(req), req.params.tid);
+      return await ops.forceTaskDone(ws(req), req.params.tid, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }
