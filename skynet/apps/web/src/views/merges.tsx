@@ -22,15 +22,37 @@ const CHECKS_META: Record<PrChecksStatus["checks"], { label: string; cls: string
   none: { label: "", cls: "" }, // handled separately — no badge, a quieter note
 };
 
-/** Live GitHub check-run status, fetched by the CARD ITSELF on mount (a real
- *  GitHub API call — never baked into the polled snapshot). Shown BEFORE a
- *  merge decision, not just after GitHub blocks an attempt: an operator
- *  deciding whether to trust "RECOMMEND MERGE" needs to know whether anything
- *  automated actually ran and passed. `checks:"none"` (no CI configured on the
- *  repo) is shown explicitly too — silence isn't the same as passing. */
-function PrChecksBadge({ fetchChecks }: { fetchChecks: () => Promise<PrChecksStatus | null> }) {
-  const [status, setStatus] = useState<PrChecksStatus | null | "loading">("loading");
+const RUN_STATE_META: Record<PrChecksStatus["runs"][number]["state"], { mark: string; cls: string }> = {
+  pass: { mark: "✓", cls: "check-run-pass" },
+  fail: { mark: "✗", cls: "check-run-fail" },
+  pending: { mark: "⏳", cls: "check-run-pending" },
+};
 
+/** The named CI jobs (e.g. lint/typecheck/test) behind the aggregate `checks`
+ *  verdict — so a reviewer sees WHICH gate failed, not just that "checks" as a
+ *  whole are red, without leaving this card for the GitHub Checks tab. */
+function CheckRunList({ runs }: { runs: PrChecksStatus["runs"] }) {
+  if (runs.length === 0) return null;
+  return (
+    <ul className="merge-check-runs">
+      {runs.map((r) => {
+        const meta = RUN_STATE_META[r.state];
+        return (
+          <li key={r.name} className={`merge-check-run ${meta.cls}`}>
+            <span className="merge-check-run-mark">{meta.mark}</span> {r.name}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Live GitHub check-run status, fetched by the CARD ITSELF on mount (a real
+ *  GitHub API call — never baked into the polled snapshot). Lifted out of the
+ *  badge so the same fetch backs both the head's compact pill AND the
+ *  per-check breakdown shown in the card body — one fetch, two views of it. */
+function usePrChecksStatus(fetchChecks: () => Promise<PrChecksStatus | null>) {
+  const [status, setStatus] = useState<PrChecksStatus | null | "loading">("loading");
   const load = () => {
     setStatus("loading");
     fetchChecks()
@@ -38,7 +60,15 @@ function PrChecksBadge({ fetchChecks }: { fetchChecks: () => Promise<PrChecksSta
       .catch(() => setStatus(null));
   };
   useEffect(load, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return { status, reload: load };
+}
 
+/** The compact head-row pill. Shown BEFORE a merge decision, not just after
+ *  GitHub blocks an attempt: an operator deciding whether to trust "RECOMMEND
+ *  MERGE" needs to know whether anything automated actually ran and passed.
+ *  `checks:"none"` (no CI configured on the repo) is shown explicitly too —
+ *  silence isn't the same as passing. */
+function PrChecksBadge({ status, onRefresh }: { status: PrChecksStatus | null | "loading"; onRefresh: () => void }) {
   if (status === "loading") return <span className="merge-nocheck">checking CI…</span>;
   if (status === null) return null; // unreachable — fail silent, no misleading badge
   if (status.checks === "none") {
@@ -52,7 +82,7 @@ function PrChecksBadge({ fetchChecks }: { fetchChecks: () => Promise<PrChecksSta
   return (
     <span className={`merge-checks ${meta.cls}`}>
       {meta.label}
-      <button className="merge-checks-refresh" onClick={load} title="Re-check CI status" aria-label="Re-check CI status"><RefreshIcon /></button>
+      <button className="merge-checks-refresh" onClick={onRefresh} title="Re-check CI status" aria-label="Re-check CI status"><RefreshIcon /></button>
     </span>
   );
 }
@@ -73,6 +103,14 @@ function MergeBriefingDetail({ b, fleet }: { b: MergeBriefing; fleet: import("@s
         {" · "}
         {b.testsChanged ? "tests changed" : "no test changes"}
       </p>
+      {b.requiresHuman && (
+        <div className="qcard-flags qcard-flags-human">
+          <span className="qcard-flags-label">⚠ Requires human review</span>
+          {b.requiresHumanGlobs.map((g) => (
+            <span key={g} className="flag-chip flag-file">{g}</span>
+          ))}
+        </div>
+      )}
       {b.sensitiveFiles.length > 0 && (
         <div className="qcard-flags">
           <span className="qcard-flags-label">Sensitive area</span>
@@ -109,6 +147,7 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
   const [busy, setBusy] = useState<null | string>(null);
   const [blocked, setBlocked] = useState<{ reason: string; kind?: "conflict" | "checks" | "protection" } | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const checks = usePrChecksStatus(() => api.fetchPrChecks(run.id));
 
   const doMerge = async () => {
     setBusy("merge");
@@ -156,7 +195,7 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
       <div className="qcard-head">
         <span className="kind-chip" style={{ color: rec.color, borderColor: rec.color }}>{rec.label}</span>
         {b && <RiskChip risk={b.risk} />}
-        <PrChecksBadge fetchChecks={() => api.fetchPrChecks(run.id)} />
+        <PrChecksBadge status={checks.status} onRefresh={checks.reload} />
         <span className="qcard-project" title="Project">{projectName(run.projectId, projects)}</span>
         <button className="qcard-agent" onClick={() => onOpenTask(run.id)}>{run.name}</button>
         <a className="merge-prlink mono" href={pr.url} target="_blank" rel="noreferrer" title="Open the pull request on GitHub">
@@ -165,6 +204,12 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
       </div>
 
       <h3 className="qcard-title">{b?.summary ?? `${run.name} — ready to merge`}</h3>
+      {checks.status && checks.status !== "loading" && checks.status.runs.length > 0 && (
+        <div className="merge-gate-results">
+          <span className="qcard-flags-label mono">Gate results</span>
+          <CheckRunList runs={checks.status.runs} />
+        </div>
+      )}
       {b && <MergeBriefingDetail b={b} fleet={fleet} />}
       <p className="merge-branch mono">{pr.branch} → {pr.base} · <a href={pr.url} target="_blank" rel="noreferrer">view diff on GitHub ↗</a></p>
 
@@ -282,6 +327,7 @@ function FeatureMergeCard({ feature, taskNames }: { feature: Feature; taskNames:
   const rec = REC_META[b?.recommendation ?? "hold"] ?? REC_META.hold!;
   const [busy, setBusy] = useState<null | string>(null);
   const [blocked, setBlocked] = useState<{ reason: string; kind?: "conflict" | "checks" | "protection" } | null>(null);
+  const checks = usePrChecksStatus(() => api.fetchFeaturePrChecks(feature.id));
 
   const doMerge = async () => {
     setBusy("merge");
@@ -301,7 +347,7 @@ function FeatureMergeCard({ feature, taskNames }: { feature: Feature; taskNames:
       <div className="qcard-head">
         <span className="kind-chip" style={{ color: rec.color, borderColor: rec.color }}>{rec.label}</span>
         {b && <RiskChip risk={b.risk} />}
-        <PrChecksBadge fetchChecks={() => api.fetchFeaturePrChecks(feature.id)} />
+        <PrChecksBadge status={checks.status} onRefresh={checks.reload} />
         <span className="qcard-project" title="Project">{projectName(feature.projectId, projects)}</span>
         <span className="qcard-agent">{feature.name}</span>
         <a className="merge-prlink mono" href={pr.url} target="_blank" rel="noreferrer" title="Open the pull request on GitHub">
@@ -313,6 +359,12 @@ function FeatureMergeCard({ feature, taskNames }: { feature: Feature; taskNames:
       <p className="merge-branch">
         {taskNames.length} task{taskNames.length === 1 ? "" : "s"} batched: {taskNames.join(", ")}
       </p>
+      {checks.status && checks.status !== "loading" && checks.status.runs.length > 0 && (
+        <div className="merge-gate-results">
+          <span className="qcard-flags-label mono">Gate results</span>
+          <CheckRunList runs={checks.status.runs} />
+        </div>
+      )}
       {b && <MergeBriefingDetail b={b} fleet={fleet} />}
       {b?.featureBrief && <FeatureBriefDetail brief={b.featureBrief} />}
       <p className="merge-branch mono">{pr.branch} → {pr.base} · <a href={pr.url} target="_blank" rel="noreferrer">view diff on GitHub ↗</a></p>

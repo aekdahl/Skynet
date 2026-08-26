@@ -234,6 +234,13 @@ export const MergeBriefing = z.object({
   // briefing (see buildMergeBriefing) — nullable + defaulted so an older
   // record written before this field existed still parses.
   featureBrief: FeatureBrief.nullable().default(null),
+  // A fixed path-policy list (migrations/**, .github/workflows/**, auth/**,
+  // dependency manifests) that ALWAYS reads as "a human must look", regardless
+  // of size/risk score — see mergeRequiresHumanGlobs in orchestrator.ts.
+  // `requiresHumanGlobs` is the evidence (which categories actually matched),
+  // not just the boolean. Defaulted so an older record still parses.
+  requiresHuman: z.boolean().default(false),
+  requiresHumanGlobs: z.array(z.string()).default([]),
 });
 export type MergeBriefing = z.infer<typeof MergeBriefing>;
 
@@ -242,9 +249,21 @@ export type MergeBriefing = z.infer<typeof MergeBriefing>;
  *  card can show whether CI actually ran and passed BEFORE a human clicks
  *  Merge, not just after GitHub blocks it. `"none"` = no checks configured on
  *  the repo (distinct from a passing/failing verdict — silence isn't success). */
+// A single named CI job (e.g. "lint", "typecheck", "test") — the breakdown
+// behind the aggregate `checks` verdict below, so a reviewer sees WHICH gate
+// failed/is pending, not just that "checks" as a whole are failing.
+export const PrCheckRun = z.object({
+  name: z.string(),
+  state: z.enum(["pass", "fail", "pending"]),
+});
+export type PrCheckRun = z.infer<typeof PrCheckRun>;
+
 export const PrChecksStatus = z.object({
   checks: z.enum(["none", "pending", "passing", "failing"]),
   mergeable: z.boolean().nullable(), // null = GitHub is still computing it
+  // Per-check-run breakdown backing `checks` — [] when the repo has no CI
+  // configured (mirrors `checks:"none"`) or on an older/best-effort read.
+  runs: z.array(PrCheckRun).default([]),
 });
 export type PrChecksStatus = z.infer<typeof PrChecksStatus>;
 
@@ -1008,7 +1027,13 @@ export type DiffSummary = z.infer<typeof DiffSummary>;
 // "dismiss" clears an escalation card with NO operation on the run — no stop,
 // resume, or reassign (orchestrator.ts's deliverEscalation). Only meaningful
 // for `escalation` gates; other kinds don't offer it.
-export const ResolveAction = z.enum(["approve", "reject", "modify", "option", "reassign", "dismiss"]);
+// "push" — `merge`-kind only: push the run's branch and open a GitHub PR
+// against the project's base branch REGARDLESS of the local conflict, instead
+// of resolving it locally first — an escape hatch so a human can reconcile on
+// GitHub (which has real conflict-resolution tooling) instead of blocking on
+// automated local merge. Requires the workspace's GitHub connection + the
+// project's repo; orchestrator.ts's deliver() logs and no-ops otherwise.
+export const ResolveAction = z.enum(["approve", "reject", "modify", "option", "reassign", "dismiss", "push"]);
 export type ResolveAction = z.infer<typeof ResolveAction>;
 
 export const Resolution = z.object({

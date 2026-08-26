@@ -517,6 +517,24 @@ kbd {
 .merge-attribution b { color: var(--text); font-weight: 600; }
 .merge-nocheck { font-size: var(--fz-11); color: var(--faint); font-style: italic; }
 .qcard-project { font-size: var(--fz-12); color: var(--muted); white-space: nowrap; }
+/* Path globs a diff/merge touches — surfaced next to size/risk so a reviewer
+   sees WHAT areas changed without opening the diff (see queue.tsx/merges.tsx). */
+.qcard-modules { font-size: var(--fz-12); color: var(--muted); margin: 2px 0; }
+/* "Requires human review" — a fixed path-policy hit (migrations/**,
+   .github/workflows/**, auth/**, dependency manifests) that always needs a
+   human look, regardless of size/risk score. Distinct (bolder) styling from
+   the generic "Flagged"/"Sensitive area" chips so it reads as a hard stop. */
+.qcard-flags-human .qcard-flags-label { color: var(--danger); font-weight: 700; }
+/* Per-check-run breakdown behind the aggregate CI verdict — named gates
+   (lint/typecheck/test) with their own pass/fail/pending state, not just the
+   one-word aggregate (see merges.tsx's CheckRunList). */
+.merge-gate-results { margin: 4px 0; }
+.merge-check-runs { display: flex; flex-wrap: wrap; gap: 6px 14px; list-style: none; margin: 2px 0 0; padding: 0; }
+.merge-check-run { font-size: var(--fz-11); font-family: var(--font-mono); white-space: nowrap; }
+.merge-check-run-mark { display: inline-block; width: 1em; }
+.merge-check-run.check-run-pass { color: var(--ok); }
+.merge-check-run.check-run-fail { color: var(--danger); }
+.merge-check-run.check-run-pending { color: var(--warn); }
 /* Guided merge — the target-branch picker on a diff/merge gate. */
 .qcard-branch { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .qcard-branch-label { font-size: var(--fz-11); letter-spacing: 0.04em; color: var(--muted); white-space: nowrap; }

@@ -270,6 +270,14 @@ async function main() {
   if (config.agentReapMs > 0) {
     const sweep = () => {
       void orchestrator.reapStaleAgents().catch((err) => app.log.warn(`reaper: ${(err as Error).message}`));
+      // Self-heal runs archived while still mid-flight. Archiving settles the
+      // run at the point of archiving now, but runs archived BEFORE that fix
+      // are stuck non-terminal forever (the stuck-review sweep skips archived
+      // runs) — this clears them without a data migration, and is a cheap
+      // no-op once none remain.
+      void orchestrator
+        .settleArchivedRuns()
+        .catch((err) => app.log.warn(`archived-run sweep: ${(err as Error).message}`));
       void syncBase();
     };
     await sweep();

@@ -28,9 +28,9 @@ export function HitlContext({ q, runName, openDiff = false }: { q: HitlItem; run
     });
 
   const flags = q.flags ?? [];
-  const flagLabel = q.kind === "merge" ? "Conflicts in" : q.kind === "escalation" ? "Trigger" : "Flagged";
+  const flagLabel = q.kind === "merge" ? "Conflicts in" : q.kind === "diff" ? "⚠ Requires human review" : q.kind === "escalation" ? "Trigger" : "Flagged";
   const showDiff = !!q.diff && (q.kind === "diff" || q.kind === "merge");
-  if (rows.length === 0 && flags.length === 0 && !showDiff) return null;
+  if (rows.length === 0 && flags.length === 0 && !(q.diff?.modules.length) && !showDiff) return null;
   return (
     <div className="hitl-ctx">
       {rows.map((r, i) => (
@@ -39,12 +39,18 @@ export function HitlContext({ q, runName, openDiff = false }: { q: HitlItem; run
           <span className="hitl-ctx-val">{r.value}</span>
         </div>
       ))}
+      {q.diff && q.diff.modules.length > 0 && (
+        <div className="hitl-ctx-row">
+          <span className="hitl-ctx-label">Touches</span>
+          <span className="hitl-ctx-val mono">{q.diff.modules.join(", ")}</span>
+        </div>
+      )}
       {flags.length > 0 && (
         <div className="hitl-ctx-row">
           <span className="hitl-ctx-label">{flagLabel}</span>
           <span className="hitl-ctx-val hitl-flags">
             {flags.map((f, i) => (
-              <span key={i} className={"flag-chip" + (q.kind === "merge" ? " flag-file mono" : "")}>{f}</span>
+              <span key={i} className={"flag-chip" + (q.kind === "merge" || q.kind === "diff" ? " flag-file mono" : "")}>{f}</span>
             ))}
           </span>
         </div>
