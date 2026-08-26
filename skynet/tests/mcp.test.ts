@@ -73,7 +73,7 @@ describe("MCP tool core", () => {
         "transition_task", "force_task_done", "request_review", "move_task", "reorder_task", "archive_task", "delete_task",
         "update_milestone", "delete_milestone", "delete_feature",
         "pause_agent", "resume_agent", "run_diff",
-        "import_github_issues", "import_repo_file",
+        "import_github_issues", "import_repo_file", "resync_source",
         "list_tasks", "get_task", "list_features", "list_milestones",
         "list_audit", "get_audit",
         "list_briefs", "get_brief", "create_brief", "update_brief",
@@ -108,6 +108,16 @@ describe("MCP tool core", () => {
     const result = await client.callTool({ name: "request_review", arguments: { taskId: task.id } });
     expect(result.isError).toBe(true);
     expect(text(result)).toMatch(/no open review gate/i);
+  });
+
+  it("resync_source delegates to Operations and surfaces its honest failure reason on error", async () => {
+    const { client } = await connect(author);
+    // No `repo` set at creation — resyncProjectSource's own guard.
+    const project = json(await client.callTool({ name: "create_project", arguments: { name: "Proj", goal: "ship" } }));
+
+    const result = await client.callTool({ name: "resync_source", arguments: { projectId: project.id } });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/isn't bound to a github repo/i);
   });
 
   it("enforces scopes: an author token cannot resolve_hitl, an approver can", async () => {

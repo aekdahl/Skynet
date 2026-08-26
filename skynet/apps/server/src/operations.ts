@@ -73,6 +73,7 @@ import { flyDeploy, type FlyDeployState } from "./fly/deploy.js";
 import { githubService, parseRepoRef } from "./github/index.js";
 import { parseChecklist } from "./tasks/checklist.js";
 import { lintTask } from "./task-linter.js";
+import { reconcileSourceState } from "./task-sync.js";
 import { buildDecomposePrompt, parseDecomposition } from "./decompose.js";
 import {
   answerProjectQuestion,
@@ -780,6 +781,16 @@ export class Operations {
     await this.getRun(ws, runId);
     const updated = await this.hub.setRunArchived(runId, archived);
     if (!updated) throw new NotFoundError("TaskRun");
+    // Archiving a run that's still mid-flight (review/running/waiting/paused)
+    // must SETTLE it, not just hide it: otherwise it keeps its status, its
+    // runner and its live controls forever, and the stuck-review sweep skips
+    // archived runs so nothing can ever finish it off. The worktree is kept —
+    // archive is a reversible soft-hide, not a delete. See
+    // Orchestrator.settleArchivedRun.
+    if (archived) {
+      await this.orchestrator.settleArchivedRun(runId).catch(() => undefined);
+      return (await this.store.getRun(runId)) ?? updated;
+    }
     return updated;
   }
   /** Pause a running/waiting task run — halts its agent, keeps the session. */
@@ -1224,6 +1235,81 @@ export class Operations {
     }
     return { imported, skipped: open.length - imported };
   }
+
+  /**
+   * Manual "Re-sync" — the operator (or Steward) explicitly asking to catch up
+   * both directions at once, rather than waiting on either the one-time import
+   * or the event-driven write-back (task-sync.ts) to happen to have covered
+   * everything. Three passes, each safe to call repeatedly:
+   *  1. PULL new — importGithubIssues/importRepoFile's own dedup (unchanged).
+   *  2. PULL drift — an already-linked github_issue task's title/description
+   *     is re-synced from the CURRENT issue (last-GitHub-write-wins for those
+   *     two fields; see docs/task-source-sync.md's "two-way sync deferred" —
+   *     this is the narrow, safe slice of it: no conflict detection, no
+   *     sourceRev, just "GitHub is the source of truth for these fields").
+   *     repo_file items have no stable id to update against (anchored by their
+   *     own label text), so only new-item pull applies there.
+   *  3. PUSH drift — reconcileSourceState for every sourced task in the
+   *     project, catching a state change that never made it back (sync was
+   *     off, or a write-back attempt failed) — see task-sync.ts. Gated on
+   *     `project.syncSourceStatus` same as the automatic path; re-sync is a
+   *     catch-up on the project's own policy, not a way around it.
+   * Best-effort per task/issue — one failure doesn't abort the rest.
+   */
+  async resyncProjectSource(ws: string, projectId: string): Promise<{ imported: number; updated: number; pushed: number }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repo) throw new Error("Project isn't bound to a GitHub repo — nothing to re-sync.");
+
+    let imported = 0;
+    let updated = 0;
+
+    // 1 + 2: GitHub issues — new ones, plus drift on already-linked ones.
+    const issues = await githubService.listIssues(ws, project.repo, project.githubCredentialId).catch(() => []);
+    const mine = (await this.store.listTasks(ws)).filter((t) => t.projectId === projectId);
+    const byIssue = new Map(
+      mine.flatMap((t) => (t.source?.kind === "github_issue" ? [[`${t.source.repo}#${t.source.number}`, t] as const] : [])),
+    );
+    for (const iss of issues) {
+      const linked = byIssue.get(`${project.repo}#${iss.number}`);
+      if (!linked) {
+        await this.createTask(ws, projectId, {
+          text: iss.title,
+          description: iss.body || undefined,
+          source: { kind: "github_issue", repo: project.repo, number: iss.number, url: iss.url },
+        }).then(() => imported++).catch(() => undefined);
+        continue;
+      }
+      const wantDescription = iss.body || null;
+      if (linked.text !== iss.title || (linked.description ?? null) !== wantDescription) {
+        await this.updateTask(ws, linked.id, { text: iss.title, description: wantDescription })
+          .then(() => updated++)
+          .catch(() => undefined);
+      }
+    }
+
+    // 1: repo-file checklist items — re-scan every distinct file already linked
+    // in this project for newly-added open items (no stable id to detect
+    // per-item title drift against, so that half doesn't apply here).
+    const repoFilePaths = new Set(mine.flatMap((t) => (t.source?.kind === "repo_file" ? [t.source.path] : [])));
+    for (const path of repoFilePaths) {
+      const res = await this.importRepoFile(ws, projectId, path).catch(() => ({ imported: 0, skipped: 0 }));
+      imported += res.imported;
+    }
+
+    // 3: push drift for every sourced task, current project state.
+    let pushed = 0;
+    if (project.syncSourceStatus) {
+      const sourced = (await this.store.listTasks(ws)).filter((t) => t.projectId === projectId && t.source);
+      for (const t of sourced) {
+        const did = await reconcileSourceState(t, { store: this.store }).catch(() => false);
+        if (did) pushed++;
+      }
+    }
+
+    return { imported, updated, pushed };
+  }
+
   async updateTask(ws: string, tid: string, patch: UpdateTaskRequest): Promise<Task> {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
@@ -1626,14 +1712,44 @@ export class Operations {
    * fails (e.g. the merge queue chokes on a conflict, an HITL got stuck, or the
    * run finished but the task didn't advance and there's no HITL to resolve).
    * Bypasses HUMAN_TRANSITIONS: usable from ANY state (except archived).
-   * ALWAYS syncs run.status to "done" when a run is linked. Never merges the
-   * branch — this is a "call it done" operator override, not a work-completion
-   * signal for the runner; use the normal Approve → Done for that.
+   *
+   * This is "call it done" pressure applied to the SAME integration path a
+   * normal Approve uses, not a cosmetic label flip: an open diff/merge/
+   * verifier gate gets approved (commits + pushes/opens a PR, or enqueues the
+   * local merge, exactly like a human clicking Approve); with no open gate,
+   * whatever's sitting uncommitted in the run's worktree — live or not — gets
+   * committed and pushed through the same pipeline (Orchestrator.forceIntegrateRun).
+   * The task only flips to `done` here in the store when nothing could be
+   * integrated (no run, or no git backend at all) — the GitHub-push case marks
+   * done synchronously as part of that same call, and the local-merge-queue
+   * case marks it done asynchronously once the merge actually lands (or raises
+   * a real conflict gate instead of lying about "done"), same as any other
+   * approve. So this can return a task still in `review` — that's real
+   * in-flight state, not the old unconditional flip.
    */
-  async forceTaskDone(ws: string, tid: string): Promise<Task> {
+  async forceTaskDone(ws: string, tid: string, operatorId: string): Promise<Task> {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
     if (task.archived) throw new NotFoundError("Task"); // archived is a soft-hide, not force-doneable
+
+    if (task.runId) {
+      const open = (await this.store.listQueue(ws)).find(
+        (h) => h.runId === task.runId && !h.resolvedAt && (h.kind === "diff" || h.kind === "merge" || h.kind === "verifier"),
+      );
+      if (open) {
+        await this.resolveHitl(ws, open.id, { action: "approve" }, operatorId);
+        return (await this.store.getTask(tid)) ?? task;
+      }
+      // No gate waiting — the run may still be live/mid-turn, or finished
+      // with real, uncommitted work sitting in its worktree. Commit it and
+      // route it through the same push/merge integration a diff approval
+      // uses, so "done" isn't a fiction over unlanded work.
+      const integrated = await this.orchestrator.forceIntegrateRun(task.runId).catch(() => false);
+      if (integrated) return (await this.store.getTask(tid)) ?? task;
+    }
+
+    // Nothing to integrate (no run, or no git backend at all) — cosmetic-only,
+    // same as this escape hatch's original behavior.
     const updated = await this.hub.upsertTask({
       ...task,
       state: "done",

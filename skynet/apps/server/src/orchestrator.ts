@@ -709,7 +709,7 @@ export class Orchestrator {
           // merging INTO its feature branch) is a normal per-run merge in every
           // other respect and needs no special-casing here.
           onMerged: (req) => (isFeatureUpMerge(req) ? this.completeFeatureMerged(req) : this.completeMerged(req.runId, req.agentBranch)),
-          onConflict: (req, files, conflictDiff) => this.raiseMergeHitl(req, files, conflictDiff),
+          onConflict: (req, files, conflictDiff, targetBranch) => this.raiseMergeHitl(req, files, conflictDiff, targetBranch),
           onChecksFailed: async (req, out) => {
             if (isFeatureUpMerge(req)) {
               // No single owning run to bounce back to "review" (or raise a
@@ -2218,6 +2218,146 @@ export class Orchestrator {
     return (await this.store.getRun(runId))!;
   }
 
+  /**
+   * The actual push-to-GitHub / local-merge-queue integration a diff/merge/
+   * verifier APPROVAL triggers — factored out of {@link deliver} so
+   * `forceIntegrateRun` (Force Done's path, below) can trigger the exact
+   * same integration without a HITL item to approve. Byte-for-byte the same
+   * decision tree deliver() always used (feature-batch retry → feature-batch
+   * step 1 → GitHub PR → local merge queue), just parameterized by primitives
+   * instead of a HitlItem + Resolution. Returns false when there was nothing
+   * to integrate (no run, or no git backend at all) so the caller knows to
+   * fall back to a cosmetic-only "done" rather than silently no-op'ing.
+   */
+  private async integrateRun(
+    runId: string,
+    opts: {
+      sourceBranchOverride?: string | null;
+      targetBranch?: string;
+      /** Only affects LOG WORDING ("retrying…" vs "queued…") — never the
+       *  actual git operation. Defaults to "diff" (fresh-approval wording). */
+      kind?: "diff" | "merge" | "verifier";
+    } = {},
+  ): Promise<boolean> {
+    const agent = await this.store.getRun(runId);
+    if (!agent) return false;
+    const project = await this.store.getProject(agent.projectId);
+    const git = this.gitContextFor(project);
+    const kind = opts.kind ?? "diff";
+
+    // Feature-scoped branch batching, step 2 retry: this HITL was raised
+    // merging a FEATURE branch itself up into the project's integration
+    // branch (see raiseMergeHitl/raiseMergeFailedHitl), not any run's own
+    // branch — there's no "owning run" to re-derive the source from, so it's
+    // stored on the item and replayed exactly, skipping GitHub entirely
+    // (this step never opens a PR — see completeFeatureMerged).
+    if (opts.sourceBranchOverride && git) {
+      await this.hub.runLog(runId, "retrying feature-branch merge after reconciliation");
+      git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: opts.sourceBranchOverride, workspaceId: agent.workspaceId });
+      return true;
+    }
+
+    // Feature-scoped branch batching, step 1: a task under a Feature merges
+    // into the shared feature branch (always via the local queue, even for a
+    // GitHub-bound project — see the plan) instead of opening its own PR.
+    // Re-derived fresh from the task on every call (same as `agent.branch`
+    // below), so a merge-retry after a conflict re-targets correctly too.
+    // Falls through to the default routing if the feature's PR already
+    // opened — an in-flight aggregate PR doesn't accept more tasks in v1.
+    const task = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === runId);
+    const feature = task?.featureId ? await this.store.getFeature(task.featureId) : undefined;
+    if (feature && feature.pr?.state !== "open" && git) {
+      await this.hub.runStatus(runId, "review");
+      await this.hub.runLog(
+        runId,
+        kind === "merge"
+          ? `retrying merge into the "${feature.name}" feature branch after reconciliation`
+          : `diff approved — queued for the "${feature.name}" feature branch`,
+      );
+      git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId, featureId: feature.id });
+      return true;
+    }
+
+    const conn = await githubService.get(agent.workspaceId);
+    // Guided merge — the caller's explicit choice wins; unset falls back to
+    // whatever's already the default (a fresh diff's computed default, or a
+    // merge retry's carried-forward target) so a plain approve from ANY
+    // surface — including one with no branch picker — still lands where the
+    // gate said it would.
+    const targetBranch = opts.targetBranch;
+    // GitHub PR flow: workspace connected, project bound to one repo, and a
+    // worktree to push from. Otherwise fall back to the local merge queue
+    // (against the project's own repo when git-backed, else the global one).
+    if (conn?.connected && project?.repo && git) {
+      // The GitHub PR flow's base branch isn't operator-choosable yet (a
+      // separate mechanism from the local merge queue below) — never
+      // silently drop a non-default choice, note it instead.
+      if (targetBranch && targetBranch !== this.baseBranchFor(project)) {
+        await this.hub.runLog(
+          runId,
+          `note: merge target "${targetBranch}" isn't supported for the GitHub PR flow yet — opening the PR against ${this.baseBranchFor(project)} as usual.`,
+        );
+      }
+      await this.pushToGithub(git, agent, project.repo, project);
+      return true;
+    }
+    if (git) {
+      await this.hub.runStatus(runId, "review");
+      await this.hub.runLog(
+        runId,
+        (kind === "merge" ? "retrying merge after reconciliation" : kind === "verifier" ? "retrying merge + checks" : "diff approved — queued for merge") +
+          (targetBranch ? ` — into ${targetBranch}` : ""),
+      );
+      // Verifier gate is per-project (Project.checkCmd, else the
+      // workspace-global config.checkCmd) — resolved here, not baked into
+      // the cached MergeEngine, so it can never go stale or leak across
+      // projects sharing a (repo, baseBranch) cache key. See
+      // MergeRequest.checkCmd's doc comment.
+      const checkCmd = project?.checkCmd?.trim() || undefined;
+      git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId, targetBranch, checkCmd });
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Force Done's git-aware path when there's no open HITL to approve:
+   * commits whatever's sitting uncommitted in a still-LIVE run's worktree
+   * (mirroring what `complete()` already does at the end of a normal turn —
+   * a live run may be mid-turn and never reached that point), frees the
+   * runner the same way `stopAgent()`/`restoreCheckpoint()` already do, then
+   * routes the branch through {@link integrateRun} — the exact same push/
+   * merge integration a diff approval uses. Returns false when there's
+   * genuinely nothing to integrate (no run, already done, or no worktree/git
+   * backend at all) so the caller falls back to a cosmetic-only "done"
+   * rather than fabricating one over unlanded work.
+   */
+  async forceIntegrateRun(runId: string): Promise<boolean> {
+    const agent = await this.store.getRun(runId);
+    if (!agent || agent.status === "done") return false;
+    const live = this.live.get(runId);
+    const project = await this.store.getProject(agent.projectId);
+    const git = live?.git ?? this.gitContextFor(project);
+    if (!git || !git.worktrees.exists(runId)) return false;
+
+    // Commit whatever's uncommitted right now — idempotent (a no-op on a
+    // clean worktree, same as complete()'s own call).
+    await git.worktrees
+      .commitAll(runId, `Skynet agent ${runId}: ${agent.name} (force-completed by operator)`)
+      .catch(() => undefined);
+
+    // A live run holds its runner exclusively — free it before handing the
+    // worktree to the merge/push pipeline, the same release restoreCheckpoint()
+    // already performs before rewinding a live run's worktree out from under it.
+    if (live) {
+      await live.handle.stop().catch(() => undefined);
+      await this.freeRunner(live.agentId);
+      this.live.delete(runId);
+    }
+
+    return this.integrateRun(runId);
+  }
+
   // ── deliver a resolved decision ────────────────────────────────────────────
   async deliver(item: HitlItem, resolution: Resolution): Promise<void> {
     const runId = item.runId;
@@ -2249,98 +2389,53 @@ export class Orchestrator {
     // guardrail: the diff review gated here, so reaching this point means an
     // operator approved the push (or a failed merge/check is being retried).
     if (resolution.action === "approve" && (item.kind === "diff" || item.kind === "merge" || item.kind === "verifier")) {
-      const agent = await this.store.getRun(runId);
-      if (agent) {
-        const project = await this.store.getProject(agent.projectId);
-        const git = this.gitContextFor(project);
-
-        // Feature-scoped branch batching, step 2 retry: this HITL was raised
-        // merging a FEATURE branch itself up into the project's integration
-        // branch (see raiseMergeHitl/raiseMergeFailedHitl), not any run's own
-        // branch — there's no "owning run" to re-derive the source from, so it's
-        // stored on the item and replayed exactly, skipping GitHub entirely
-        // (this step never opens a PR — see completeFeatureMerged).
-        if (item.sourceBranchOverride && git) {
-          await this.hub.runLog(runId, "retrying feature-branch merge after reconciliation");
-          git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: item.sourceBranchOverride, workspaceId: agent.workspaceId });
-          return;
-        }
-
-        // Feature-scoped branch batching, step 1: a task under a Feature merges
-        // into the shared feature branch (always via the local queue, even for a
-        // GitHub-bound project — see the plan) instead of opening its own PR.
-        // Re-derived fresh from the task on every call (same as `agent.branch`
-        // below), so a merge-retry after a conflict re-targets correctly too.
-        // Falls through to today's default routing if the feature's PR already
-        // opened — an in-flight aggregate PR doesn't accept more tasks in v1.
-        const task = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === runId);
-        const feature = task?.featureId ? await this.store.getFeature(task.featureId) : undefined;
-        if (feature && feature.pr?.state !== "open" && git) {
-          await this.hub.runStatus(runId, "review");
-          await this.hub.runLog(
-            runId,
-            item.kind === "merge"
-              ? `retrying merge into the "${feature.name}" feature branch after reconciliation`
-              : `diff approved — queued for the "${feature.name}" feature branch`,
-          );
-          git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId, featureId: feature.id });
-          return;
-        }
-
-        const conn = await githubService.get(agent.workspaceId);
-        // Guided merge — the operator's explicit choice wins; unset falls back
-        // to whatever this gate already offered as the default (a fresh diff's
-        // computed default, or a merge retry's carried-forward target) so a
-        // plain "Approve" from ANY surface — including one with no branch
-        // picker — still lands where the gate said it would.
-        const targetBranch = resolution.targetBranch ?? item.diff?.defaultTargetBranch ?? undefined;
-        // GitHub PR flow: workspace connected, project bound to one repo, and a
-        // worktree to push from. Otherwise fall back to the local merge queue
-        // (against the project's own repo when git-backed, else the global one).
-        if (conn?.connected && project?.repo && git) {
-          // The GitHub PR flow's base branch isn't operator-choosable yet (a
-          // separate mechanism from the local merge queue below) — never
-          // silently drop a non-default choice, note it instead.
-          if (targetBranch && targetBranch !== this.baseBranchFor(project)) {
-            await this.hub.runLog(
-              runId,
-              `note: merge target "${targetBranch}" isn't supported for the GitHub PR flow yet — opening the PR against ${this.baseBranchFor(project)} as usual.`,
-            );
-          }
-          await this.pushToGithub(git, agent, project.repo, project);
-          return;
-        }
-        if (git) {
-          await this.hub.runStatus(runId, "review");
-          await this.hub.runLog(
-            runId,
-            (item.kind === "merge"
-              ? "retrying merge after reconciliation"
-              : item.kind === "verifier"
-                ? "retrying merge + checks"
-                : "diff approved — queued for merge") + (targetBranch ? ` — into ${targetBranch}` : ""),
-          );
-          // Verifier gate is per-project (Project.checkCmd, else the
-          // workspace-global config.checkCmd) — resolved here, not baked into
-          // the cached MergeEngine, so it can never go stale or leak across
-          // projects sharing a (repo, baseBranch) cache key. See
-          // MergeRequest.checkCmd's doc comment.
-          const checkCmd = project?.checkCmd?.trim() || undefined;
-          git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId, targetBranch, checkCmd });
-          return;
-        }
-      }
+      const integrated = await this.integrateRun(runId, {
+        sourceBranchOverride: item.sourceBranchOverride,
+        targetBranch: resolution.targetBranch ?? item.diff?.defaultTargetBranch ?? undefined,
+        kind: item.kind,
+      });
+      if (integrated) return;
     }
 
-    // Review feedback loop: a `modify` on a finished run's diff/merge review, or
-    // a `modify`/`reject` on a failed verifier gate (a check failure's own
-    // output IS actionable guidance — reject needs no typed text to still bounce
-    // the agent). Compute was freed for the review, so there's no live handle —
-    // re-acquire one and resume the run in its worktree with the guidance
+    // Operator escape hatch on a merge conflict: push the run's own branch and
+    // open a GitHub PR against the project's base branch REGARDLESS of the
+    // local conflict, instead of reconciling it via the (possibly batched)
+    // local merge queue — so a human can resolve it on GitHub, which has real
+    // conflict-resolution tooling, rather than being blocked on an automated
+    // clean merge. Reuses the exact push+PR path a normal diff approval takes
+    // when GitHub is connected; pushToGithub/openPrForRun already escalate for
+    // a rebase on a stale-base conflict, so that safety net still applies here.
+    if (resolution.action === "push" && item.kind === "merge") {
+      const agent = await this.store.getRun(runId);
+      if (!agent) return;
+      const project = await this.store.getProject(agent.projectId);
+      const git = this.gitContextFor(project);
+      const conn = await githubService.get(agent.workspaceId);
+      if (!(conn?.connected && project?.repo && git)) {
+        await this.hub.runLog(
+          runId,
+          "push requested, but no GitHub repo is connected for this project — nothing to open a PR against.",
+        );
+        return;
+      }
+      await this.hub.runLog(runId, "pushing the branch and opening a PR despite the local merge conflict — reconcile it there");
+      await this.pushToGithub(git, agent, project.repo, project);
+      return;
+    }
+
+    // Review feedback loop: a `modify` OR `reject` on a finished run's
+    // diff/merge/verifier review bounces the agent back to revise rather than
+    // abandoning the run — reject needs no typed text to still bounce the agent
+    // (a verifier's check failure, or a merge conflict's captured markers, is
+    // already actionable guidance on its own). This mirrors the verifier gate's
+    // existing reject semantics: "reject" here means "send it back for another
+    // pass", not "kill the run" — that stronger action is what Stop is for.
+    // Compute was freed for the review, so there's no live handle — re-acquire
+    // one and resume the run in its worktree with the guidance
     // (reviseAfterReview), rather than silently dropping it.
     if (
-      (((item.kind === "diff" || item.kind === "merge") && resolution.action === "modify") ||
-        (item.kind === "verifier" && (resolution.action === "modify" || resolution.action === "reject"))) &&
+      (item.kind === "diff" || item.kind === "merge" || item.kind === "verifier") &&
+      (resolution.action === "modify" || resolution.action === "reject") &&
       !this.live.has(runId)
     ) {
       const typed = resolution.guidance?.trim() || "";
@@ -2466,8 +2561,13 @@ export class Orchestrator {
       body: isConflict
         ? `Your branch (${run.branch}) has a merge conflict integrating into the target branch — it could not be ` +
           `merged automatically. Below is the actual conflict (git diff output, including the ` +
-          `<<<<<<</=======/>>>>>>> markers) captured right before the merge attempt was aborted:\n\n${guidance}\n\n` +
-          `Your previous output is already in the working directory. Resolve the conflict — pick the right ` +
+          `<<<<<<</=======/>>>>>>> markers) captured right before the merge attempt was aborted — the first line ` +
+          `names the real target branch/ref:\n\n${guidance}\n\n` +
+          `Your previous output is already in the working directory, but the target branch's OWN content is not — ` +
+          `the diff above is a snapshot, not something to trust blindly for a non-trivial conflict. Before resolving, ` +
+          `inspect the target branch's actual current content directly, e.g. \`git show <target branch>:<path>\` or ` +
+          `\`git diff <target branch> -- <path>\` for each conflicting file, so your resolution reflects its real ` +
+          `current state, not just a reconstruction from the diff snippet. Then resolve the conflict — pick the right ` +
           `resolution for each hunk, remove the conflict markers — commit it, then stop. It'll be retried automatically.`
         : `A reviewer looked at your work and asked for changes before it can be merged:\n\n${guidance}\n\n` +
           `Your previous output is already in the working directory (branch ${run.branch}). Read it, make ` +
@@ -3542,8 +3642,12 @@ export class Orchestrator {
    *  field a verifier gate's check output uses, and the same field `deliver()`
    *  falls back to as Modify's guidance when the operator leaves it blank, so
    *  clicking Modify with no typed text is enough to have the agent resolve
-   *  the conflict it's actually looking at. */
-  private async raiseMergeHitl(req: MergeRequest, files: string[], conflictDiff: string): Promise<void> {
+   *  the conflict it's actually looking at. `targetBranch` (the RESOLVED
+   *  destination — see `MergeCallbacks.onConflict`) is prefixed onto `output`
+   *  so an agent asked to fix this later (reviseAfterReview) knows the real
+   *  ref name and can inspect its actual current content directly with git,
+   *  instead of reconstructing the merge blind from the diff snippet alone. */
+  private async raiseMergeHitl(req: MergeRequest, files: string[], conflictDiff: string, targetBranch: string): Promise<void> {
     const agent = await this.store.getRun(req.runId);
     if (!agent) return;
     // Feature-scoped branch batching: a step-1 conflict (task → feature branch)
@@ -3577,7 +3681,9 @@ export class Orchestrator {
       steps: null,
       // Same carry-forward as raiseMergeFailedHitl above.
       diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, mergeBrief: null, defaultTargetBranch: req.targetBranch ?? null },
-      output: conflictDiff ? conflictDiff.slice(0, Orchestrator.VERIFIER_OUTPUT_CAP) : null,
+      output: conflictDiff
+        ? `Target branch: ${targetBranch}\n\n${conflictDiff}`.slice(0, Orchestrator.VERIFIER_OUTPUT_CAP)
+        : null,
       flags: files, // the conflicting files — shown as chips
       sourceBranchOverride: featureUp ? req.agentBranch : null,
     });
@@ -4532,6 +4638,9 @@ export class Orchestrator {
       "Draft the answer the OPERATOR would most likely give, grounded strictly in the context below.",
       "Be concrete and short — a few sentences or bullets, no preamble, no restating the questions.",
       "Where the context genuinely doesn't settle something, say plainly what you'd assume and flag it as an assumption; never invent a decision as though it were established fact.",
+      "You have NO tools here — no code search, no repo access, nothing beyond the text below — and this is a single one-shot reply, not a conversation: there is no later turn to report back on. " +
+        "Answer from the context given, right now. Never say you'll investigate further, look at the code, launch a subagent, or get back to the operator once you have more information — you cannot do any of that, and claiming to is simply false. " +
+        "If the context truly isn't enough to guess even roughly, say that plainly in one line instead — do not describe an investigation you're not actually able to perform.",
       "",
       `PROJECT: ${project?.name ?? "(unknown)"}`,
       `GOAL: ${project?.goal?.trim() || "(none set)"}`,
@@ -5392,6 +5501,73 @@ export class Orchestrator {
       await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
     }
     return this.store.getRun(runId);
+  }
+
+  /**
+   * Settle a run that has been ARCHIVED while still in a non-terminal state.
+   *
+   * Archiving used to be cosmetic — `setRunArchived` flipped a boolean and
+   * nothing else — so a run archived from `review` kept that status, kept its
+   * `agentId`, and kept offering live controls (Fork/Pause/Stop) forever. And
+   * because gcWorktrees' stuck-review sweep deliberately SKIPS archived runs,
+   * nothing could ever settle it: found live with 14 such zombies, the oldest
+   * idle for days.
+   *
+   * Archiving IS the operator saying "I'm done with this", so settle it: stop
+   * any live handle, hand the runner back, mark the run terminal, and release
+   * the owning task rather than leaving it stranded pointing at a hidden run
+   * (the same invariant haltAgent upholds — see the escalation-reject fix).
+   *
+   * Deliberately does NOT retire the worktree, unlike haltAgent/stopAgent.
+   * Archive is documented as a REVERSIBLE soft-hide that "never deletes", so
+   * the branch and its work must survive: this settles the run's bookkeeping,
+   * it doesn't throw away what the run produced.
+   */
+  async settleArchivedRun(runId: string): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (!run || run.status === "done") return; // already terminal — nothing to settle
+    const live = this.live.get(runId);
+    if (live) await live.handle.stop().catch(() => undefined);
+    await this.freeRunner(live?.agentId ?? run.agentId ?? null);
+    await this.releaseScratchCwd(live?.scratchCwd);
+    this.live.delete(runId);
+    this.escalations.delete(runId);
+    this.failCounts.delete(runId);
+    // Any gate still pointing at this run is now unanswerable — the run is
+    // hidden and settled, so leaving the card would strand it in the Inbox.
+    const open = (await this.store.listQueue(run.workspaceId).catch(() => [] as HitlItem[])).filter(
+      (q) => q.runId === runId && q.resolvedAt == null,
+    );
+    for (const q of open) {
+      await this.hub
+        .resolveHitl(q.id, {
+          action: "dismiss",
+          by: "system",
+          at: now(),
+          optionIndex: null,
+          guidance: null,
+          targetBranch: null,
+          memoryNote: null,
+          resetWork: false,
+        })
+        .catch(() => undefined);
+    }
+    await this.hub.runStatus(runId, "done");
+    await this.hub.runLog(runId, "archived — run settled, runner freed (its branch is kept)");
+    const task = (await this.store.listTasks(run.workspaceId).catch(() => [] as Task[])).find((t) => t.runId === runId);
+    if (task && (task.state === "ongoing" || task.state === "review")) {
+      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
+    }
+  }
+
+  /** Self-heal: settle any run that is already archived but stuck in a
+   *  non-terminal state. Runs on the periodic sweep so the zombies created
+   *  before archiving settled anything are cleaned up without a migration. */
+  async settleArchivedRuns(): Promise<number> {
+    const runs = await this.store.listAllRuns().catch(() => [] as TaskRun[]);
+    const stuck = runs.filter((r) => r.archived && r.status !== "done");
+    for (const r of stuck) await this.settleArchivedRun(r.id).catch(() => undefined);
+    return stuck.length;
   }
 
   isBusy(agentId: string): boolean {

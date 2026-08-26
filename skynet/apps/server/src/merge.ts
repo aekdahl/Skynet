@@ -68,8 +68,12 @@ export interface MergeCallbacks {
    *  `>>>>>>>` hunks), captured in the scratch worktree BEFORE `merge --abort`
    *  discards it — the only place this state exists, since the merge is
    *  always aborted rather than left dangling. Best-effort: "" on any git
-   *  failure reading it, never blocks raising the gate. */
-  onConflict(req: MergeRequest, conflictedFiles: string[], conflictDiff: string): Promise<void>;
+   *  failure reading it, never blocks raising the gate. `targetBranch` is the
+   *  RESOLVED destination (`targetBranchFor(req)` — a concrete ref, unlike
+   *  `req.targetBranch` which is only set for a guided-merge override) so a
+   *  caller can tell an agent exactly what to diff against without
+   *  re-deriving the feature/default-branch routing itself. */
+  onConflict(req: MergeRequest, conflictedFiles: string[], conflictDiff: string, targetBranch: string): Promise<void>;
   /** Project checks failed after merge — bounce back to the agent to revise. */
   onChecksFailed(req: MergeRequest, output: string): Promise<void>;
   /**
@@ -244,7 +248,7 @@ export class MergeEngine {
         await this.git(scratch, "merge", "--abort").catch(() => undefined);
         if (conflicted.length > 0) {
           this.cb.onLog(req.runId, `merge conflict in ${conflicted.length} file(s) — escalating`);
-          await this.cb.onConflict(req, conflicted, conflictDiff);
+          await this.cb.onConflict(req, conflicted, conflictDiff, branch);
         } else {
           const reason = gitReason(err);
           this.cb.onLog(req.runId, `merge failed (not a conflict): ${reason}`);

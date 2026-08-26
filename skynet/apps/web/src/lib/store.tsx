@@ -240,6 +240,7 @@ export interface Store extends StoreState {
   transitionTask: (projectId: string, taskId: string, to: string, preserve?: boolean) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   requestReview: (projectId: string, taskId: string) => Promise<void>;
+  resyncProjectSource: (projectId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
   answerClarification: (projectId: string, taskId: string, answer: string) => Promise<void>;
@@ -714,6 +715,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await api.requestReview(projectId, taskId);
         } catch (e) {
           if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't request a review."));
+        }
+      },
+      resyncProjectSource: async (projectId) => {
+        try {
+          const res = await api.resyncProjectSource(projectId);
+          const parts = [
+            res.imported ? `${res.imported} imported` : null,
+            res.updated ? `${res.updated} updated` : null,
+            res.pushed ? `${res.pushed} pushed` : null,
+          ].filter((p): p is string => p !== null);
+          toast(parts.length ? `Re-synced — ${parts.join(", ")}.` : "Re-synced — already up to date.");
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't re-sync."));
         }
       },
       deleteTask: async (projectId, taskId) => {
