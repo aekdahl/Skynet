@@ -277,6 +277,16 @@ export function QueueCard({
           >
             {item.kind === "merge" ? "Ask agent to fix" : "Modify"}
           </button>
+          {item.kind === "merge" && (
+            <button
+              className="btn btn-ghost"
+              title="Push this branch and open a GitHub PR against the base branch as-is, conflict and all — for reconciling on GitHub instead of locally. No-ops if this project has no connected GitHub repo."
+              disabled={readOnly}
+              onClick={() => resolveHitl(item.id, "push")}
+            >
+              Push &amp; open PR anyway
+            </button>
+          )}
           <button
             className={"btn btn-ghost" + (mode === "chat" ? " btn-lit" : "")}
             onClick={() => setMode(mode === "chat" ? null : "chat")}
