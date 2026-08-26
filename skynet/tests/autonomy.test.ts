@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import type { Agent, Feature, HitlItem, Milestone, Project, Task, TaskRun, ServerEvent } from "@skynet/shared";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { Hub } from "../apps/server/src/hub.js";
-import { Orchestrator } from "../apps/server/src/orchestrator.js";
+import { CLARIFICATION_ANSWERED_MARKER, Orchestrator } from "../apps/server/src/orchestrator.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
 import type { Bus } from "../apps/server/src/bus.js";
 import type { RunnerEvents, RunnerHandle, RunnerProvider, StartSpec } from "@skynet/runner-sdk";
@@ -143,6 +143,32 @@ describe("autonomy loop", () => {
     const t = await store.getTask("t1");
     expect(t?.state).toBe("triage");
     expect(t?.assessment).toContain("Ambiguous");
+  });
+
+  // Without this, a model that stays "unclear" even after the operator answered
+  // would send the task backlog → triage → backlog → triage forever — the exact
+  // loop reported live, each lap re-asking the same already-answered question.
+  it("loop breaker: forces a promote instead of re-asking once a task already carries an answered clarification", async () => {
+    const { store, orch } = await setup('Still not fully sure.\n{"clarity":"unclear","questions":["Which auth flow?"]}');
+    await store.putTask(mkTask({
+      state: "backlog",
+      description: [
+        "Original brief.",
+        "",
+        "---",
+        CLARIFICATION_ANSWERED_MARKER,
+        "- _Which auth flow?_",
+        "",
+        "Use OAuth device-code.",
+      ].join("\n"),
+    }));
+    await orch.tickAutonomy();
+    const t = await store.getTask("t1");
+    // Forced past "unclear" on the second round — never opens a fresh ask.
+    expect(t?.state).toBe("todo");
+    expect(t?.clarification).toBeNull();
+    // The model's continued doubt still surfaces, just as a risk, not a question.
+    expect(t?.assessmentRisks.some((r) => /still flagged this unclear/i.test(r))).toBe(true);
   });
 
   it("parks in triage when the LLM omits clarity entirely (missing = unclear-equivalent)", async () => {

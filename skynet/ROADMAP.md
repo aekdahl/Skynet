@@ -529,6 +529,56 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Fix: answering a triage clarifying question could loop forever — same question, every time.**
+  Reported live right after clarifying questions shipped: answer the question → task returns to `backlog`
+  for re-triage (by design, since the answer can change the effort/risk/grouping read) → triage runs again
+  → the model comes back "unclear" with the SAME question → asked again → answer again → ... The re-triage
+  prompt had zero awareness that this was a SECOND pass: it re-read the (now-answered) task from scratch
+  with no signal that an answer already sat right there in the description, so a model that stayed
+  unconvinced by its own earlier ambiguity — or simply wasn't confident — had nothing steering it toward
+  "clear" the second time, and nothing stopped a third, fourth, or hundredth lap either. Each lap silently
+  burned a triage consult AND a Steward clarification-draft consult, for a question the operator had already
+  answered.
+  Two layers, since a prompt instruction alone is advisory, not a guarantee: (1) the triage prompt now
+  explicitly says so when `task.description` carries `CLARIFICATION_ANSWERED_MARKER` — the exact heading
+  `Operations.answerClarification` stamps above the operator's answer — telling the model to treat that
+  answer as authoritative and never re-ask the same or a rephrased version of it, reporting "clear" unless
+  the answer reveals a genuinely NEW gap. (2) A code-level breaker backs that up regardless of whether the
+  model complies: `tickAutonomy`'s triage step checks for that same marker (grepping for OUR OWN literal
+  string, never classifying the model's free text — same discipline as every other triage signal) and, if
+  the model still says "unclear" on a task that's already been through one answered round, FORCES a promote
+  to `todo` instead of opening a second `clarification` — the model's continued doubt gets folded into
+  `assessmentRisks` as a flagged risk instead of another question. Guarantees the loop terminates after
+  exactly one ask-and-answer round no matter what the model does on the second pass.
+  New test in `tests/autonomy.test.ts` drives a provider that always replies "unclear" against a task
+  already carrying an answered clarification and asserts the forced promote + risk note; the existing
+  first-time-unclear case (no marker yet) is unchanged — it still parks in `triage` with a fresh ask.
+- [x] **Fix: Force Done didn't force anything DONE — it forced the card to say so.** The escape hatch's own
+  doc comment said it out loud: *"Never merges the branch — this is a 'call it done' operator override, not
+  a work-completion signal."* That's exactly the trap — an operator reaching for Force Done (a wedged HITL,
+  a stuck merge queue, a run that finished but never advanced the card) got a green "Done" label over an
+  agent's real work that was still sitting uncommitted or unmerged in its worktree, one `retire()` away from
+  being silently lost the next time that worktree got reclaimed. "Done" has to mean the work actually landed.
+  Now Force Done routes through the SAME integration pipeline a normal Approve click uses, not a label flip:
+  an open diff/merge/verifier gate gets approved for real (`resolveHitl` → `deliver`, unchanged); with no
+  gate open, the new `Orchestrator.forceIntegrateRun` commits whatever's uncommitted in the run's worktree —
+  live or not — via `WorktreeProvisioner.commitAll` (idempotent, a no-op on an already-clean tree), cleanly
+  detaches a still-live run first (stop the handle, free the runner — the same sequence
+  `restoreCheckpoint`'s live-detach already used, just with a commit added before it), then hands the branch
+  to a new shared `Orchestrator.integrateRun` — `deliver()`'s old inline approve-branch logic, extracted
+  byte-for-byte so both callers get the identical feature-branch-batch / GitHub-PR / local-merge-queue
+  routing rather than a second, drifting copy of it. Only falls back to the old cosmetic-only flip when
+  there's genuinely nothing to integrate (no run, or no git backend at all) — everything else waits for the
+  real result: a GitHub push marks the task done synchronously as part of that same call; a local merge
+  enqueue marks it done asynchronously once the merge actually lands, or raises a real conflict gate instead
+  of lying about "done", exactly like any other approve. So the endpoint can now legitimately return a task
+  still sitting in `review` — that's honest in-flight state, not a regression.
+  `tests/force-done-integration.test.ts` (new, 2 tests) runs this against a REAL throwaway git repo (same
+  harness as `guided-merge-orchestrator.test.ts`, not a mocked backend): a still-live run with uncommitted
+  work gets its file committed, its runner freed, and the branch landed on the project's integration branch
+  before the task flips done; a run with an open diff gate gets that gate genuinely approved (not bypassed)
+  and lands the same way. `tests/task-transitions.test.ts`'s existing 3 cases (no git backend configured)
+  now pin that the `!git` guard falls all the way through to the unchanged cosmetic tail.
 - [x] **Triage asks — clarifying questions with a Steward-drafted answer.** Triage could already decide a
   task was `unclear`, but had nowhere to say WHAT was unclear and no way to get it resolved: the task parked
   in `triage` indefinitely with nobody told what was missing. The expensive consequence showed up live —

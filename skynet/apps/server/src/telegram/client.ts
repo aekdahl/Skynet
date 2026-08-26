@@ -51,6 +51,24 @@ export interface SentMessage {
   messageId: number;
 }
 
+/**
+ * A test run must NEVER reach the real Telegram API.
+ *
+ * Found the hard way: `tests/auth-mfa-*.test.ts` deliberately force MFA on and
+ * POST /api/auth/login with valid credentials. On a laptop that's harmless —
+ * no bot token is configured, so the login route's `if (token && chatId)`
+ * guard skips the send. But the suite also gets run INSIDE the production
+ * container (an agent working on this repo runs `pnpm test`), where
+ * SKYNET_TELEGRAM_BOT_TOKEN / _OWNER_CHAT_ID are real — so those tests sent
+ * genuine "Skynet login code: NNNNNN" messages to the operator's phone, with
+ * nobody logging in. Alarming, and indistinguishable from an intrusion.
+ *
+ * Guarding at the OUTBOUND BOUNDARY rather than in each test is deliberate:
+ * it covers every existing and future test automatically, and can't be
+ * defeated by a new test forgetting to stub the config.
+ */
+const IN_TEST = (): boolean => process.env.VITEST !== undefined || process.env.NODE_ENV === "test";
+
 export class TelegramClient {
   private readonly base: string;
 
@@ -69,6 +87,7 @@ export class TelegramClient {
    * Telegram outage must never crash the poll loop. The token is never surfaced.
    */
   async getUpdates(offset: number, timeoutS: number): Promise<TelegramUpdate[]> {
+    if (IN_TEST()) return [];
     const url = `${this.base}/getUpdates?timeout=${timeoutS}&offset=${offset}`;
     try {
       // Give the socket slightly longer than the long-poll window before aborting.
@@ -101,6 +120,8 @@ export class TelegramClient {
     text: string,
     opts?: { reply_markup?: InlineKeyboardMarkup; parse_mode?: "HTML" },
   ): Promise<SentMessage> {
+    // See IN_TEST above — never deliver to a real chat from a test run.
+    if (IN_TEST()) return { chatId, messageId: 0 };
     const url = `${this.base}/sendMessage`;
     let res: Response;
     try {
@@ -145,6 +166,7 @@ export class TelegramClient {
     text: string,
     opts?: { reply_markup?: InlineKeyboardMarkup | null; parse_mode?: "HTML" },
   ): Promise<void> {
+    if (IN_TEST()) return;
     const url = `${this.base}/editMessageText`;
     let res: Response;
     try {
@@ -179,6 +201,7 @@ export class TelegramClient {
    * caller if desired.
    */
   async answerCallbackQuery(callbackQueryId: string, opts?: { text?: string }): Promise<void> {
+    if (IN_TEST()) return;
     const url = `${this.base}/answerCallbackQuery`;
     let res: Response;
     try {
@@ -206,6 +229,7 @@ export class TelegramClient {
     messageId: number,
     replyMarkup: InlineKeyboardMarkup | null,
   ): Promise<void> {
+    if (IN_TEST()) return;
     const url = `${this.base}/editMessageReplyMarkup`;
     let res: Response;
     try {

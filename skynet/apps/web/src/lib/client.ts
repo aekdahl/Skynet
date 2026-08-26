@@ -664,6 +664,11 @@ export function importGithubIssues(projectId: string) {
 export function importRepoFile(projectId: string, path: string) {
   return req<{ imported: number; skipped: number }>("POST", `/api/projects/${projectId}/import/repo-file`, { path });
 }
+// Manual "Re-sync": pull new/drifted GitHub issues + repo-file checklist items,
+// and push any Skynet-side task state that never made it back to the source.
+export function resyncProjectSource(projectId: string) {
+  return req<{ imported: number; updated: number; pushed: number }>("POST", `/api/projects/${projectId}/resync-source`);
+}
 
 // Tasks
 export function createTask(projectId: string, text: string, description?: string) {
@@ -765,6 +770,7 @@ export interface AssistantAction {
     | "archive_task"
     | "reorder_task"
     | "request_review"
+    | "resync_source"
     | "rename_project"
     | "set_goal"
     | "set_autonomy"

@@ -49,7 +49,7 @@ export function StewardDock({
   seedText?: string;
   seedNonce?: number;
 }) {
-  const { projects, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, requestReview, updateProject, createFeature, createMilestone, updateFeature } = useStore();
+  const { projects, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, requestReview, resyncProjectSource, updateProject, createFeature, createMilestone, updateFeature } = useStore();
   const [msgs, setMsgs] = useState<Msg[]>(thread);
   const [input, setInput] = useState(draftCache);
   const [busy, setBusy] = useState(false);
@@ -85,6 +85,7 @@ export function StewardDock({
       case "remove_task": return deleteTask(projectId, a.taskId!);
       case "archive_task": return archiveTask(projectId, a.taskId!, true);
       case "request_review": return requestReview(projectId, a.taskId!);
+      case "resync_source": return resyncProjectSource(projectId);
       case "reorder_task": return moveTask(projectId, a.taskId!, a.direction!);
       case "rename_project": return updateProject(projectId, { name: a.name });
       case "set_goal": return updateProject(projectId, { goal: a.goal });

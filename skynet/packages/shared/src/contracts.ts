@@ -1027,7 +1027,13 @@ export type DiffSummary = z.infer<typeof DiffSummary>;
 // "dismiss" clears an escalation card with NO operation on the run — no stop,
 // resume, or reassign (orchestrator.ts's deliverEscalation). Only meaningful
 // for `escalation` gates; other kinds don't offer it.
-export const ResolveAction = z.enum(["approve", "reject", "modify", "option", "reassign", "dismiss"]);
+// "push" — `merge`-kind only: push the run's branch and open a GitHub PR
+// against the project's base branch REGARDLESS of the local conflict, instead
+// of resolving it locally first — an escape hatch so a human can reconcile on
+// GitHub (which has real conflict-resolution tooling) instead of blocking on
+// automated local merge. Requires the workspace's GitHub connection + the
+// project's repo; orchestrator.ts's deliver() logs and no-ops otherwise.
+export const ResolveAction = z.enum(["approve", "reject", "modify", "option", "reassign", "dismiss", "push"]);
 export type ResolveAction = z.infer<typeof ResolveAction>;
 
 export const Resolution = z.object({
