@@ -1961,7 +1961,9 @@ User-owned memory that no single vendor can match, because everything streams th
 - [ ] **Open-core split** — the *format + read/write MCP* are free/open (drive ubiquity); *distillation
   intelligence, cross-vendor translation quality, hosted sync, team sharing, and governance* are the paid layer.
 - [ ] 🔬 **LLM-assisted distillation** of good memory from history — open research; start with
-  operator-authored + decision-derived facts, add a Skynet-side curating LLM later.
+  operator-authored + decision-derived facts, add a Skynet-side curating LLM later. Spike writeup
+  (pipeline shape, guardrails against a fabricating/over-generalizing corpus, eval approach, phasing):
+  [docs/memory-distillation.md](docs/memory-distillation.md).
 
 ## v5 — Moat Layer: Agent fluency (M2)  🔬🔗
 Help users run **more agents with clearer tasks** — the flywheel (better results + more usage).
