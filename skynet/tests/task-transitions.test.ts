@@ -138,9 +138,13 @@ describe("transitionTask — task.done syncs run.status", () => {
   });
 });
 
-// Escape hatch: forceTaskDone bypasses HUMAN_TRANSITIONS and always syncs the
-// linked run's status. Only used when the normal path is stuck (merge queue,
-// wedged HITL, run finished without advancing the card).
+// Escape hatch: forceTaskDone bypasses HUMAN_TRANSITIONS and routes through the
+// same integrate-and-sync path a normal Approve uses. These three run with no
+// git backend configured (bare MemoryStore, non-git-backed project, no
+// SKYNET_INTEGRATION_REPO) — Orchestrator.forceIntegrateRun's `!git` guard
+// makes it a no-op, so these fall all the way to the cosmetic-only tail, same
+// as the escape hatch's original behavior. The real commit+push/merge path is
+// covered separately in tests/force-done-integration.test.ts.
 describe("forceTaskDone — escape hatch", () => {
   let store: MemoryStore;
   let ops: Operations;
@@ -161,7 +165,7 @@ describe("forceTaskDone — escape hatch", () => {
     } as never);
     await store.putTask({ ...mkTask("ongoing"), runId: "run-1" });
 
-    const t = await ops.forceTaskDone(DEFAULT_WORKSPACE, "t1");
+    const t = await ops.forceTaskDone(DEFAULT_WORKSPACE, "t1", "op-1");
     expect(t.state).toBe("done");
     expect((await store.getRun("run-1"))?.status).toBe("done");
   });
@@ -174,14 +178,14 @@ describe("forceTaskDone — escape hatch", () => {
     } as never);
     await store.putTask({ ...mkTask("done"), runId: "run-1" });
 
-    const t = await ops.forceTaskDone(DEFAULT_WORKSPACE, "t1");
+    const t = await ops.forceTaskDone(DEFAULT_WORKSPACE, "t1", "op-1");
     expect(t.state).toBe("done");
     expect((await store.getRun("run-1"))?.status).toBe("done");
   });
 
   it("works even with no linked run (nothing to sync)", async () => {
     await store.putTask({ ...mkTask("review"), runId: null });
-    const t = await ops.forceTaskDone(DEFAULT_WORKSPACE, "t1");
+    const t = await ops.forceTaskDone(DEFAULT_WORKSPACE, "t1", "op-1");
     expect(t.state).toBe("done");
     expect(t.runId).toBeNull();
   });

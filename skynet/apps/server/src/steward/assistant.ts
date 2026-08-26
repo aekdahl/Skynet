@@ -58,6 +58,7 @@ const SYSTEM =
   '  {"kind":"archive_task","taskId":"<id>"}\n' +
   '  {"kind":"reorder_task","taskId":"<id>","direction":"up|down"}\n' +
   '  {"kind":"request_review","taskId":"<id>"}\n' +
+  '  {"kind":"resync_source"}\n' +
   '  {"kind":"rename_project","name":"<new name>"}\n' +
   '  {"kind":"set_goal","goal":"<goal>"}\n' +
   '  {"kind":"set_autonomy","autonomy":true|false}\n' +
@@ -87,7 +88,8 @@ const SYSTEM =
   "Notes on archive_task vs remove_task: PREFER archive_task when the operator says 'archive', 'hide', 'shelve', 'set aside', " +
   "or wants the task out of the way but recoverable (soft-hide — stays in the store, hidden from the board). " +
   "Only use remove_task for an unambiguous 'delete' / 'remove for good' — that's a hard delete.\n" +
-  "Notes on request_review: only propose this for a task whose state is 'review' — it forces a fresh review pass by another agent right now, instead of waiting for one to become free on its own. It can fail with an honest reason (already reviewed, or no other agent free to review right now) rather than always succeeding.";
+  "Notes on request_review: only propose this for a task whose state is 'review' — it forces a fresh review pass by another agent right now, instead of waiting for one to become free on its own. It can fail with an honest reason (already reviewed, or no other agent free to review right now) rather than always succeeding.\n" +
+  "Notes on resync_source: use when the operator asks to re-sync, refresh, or catch up GitHub issues/tasks — it pulls new or edited GitHub issues and repo-file checklist items into tasks, and pushes any task status change that never made it back (e.g. from before \"Sync to source\" was turned on). Whole-project, no fields; fails with an honest reason if the project isn't GitHub-bound.";
 
 /**
  * Prefetch a bounded snapshot of a project's repo — the top-level file list plus
@@ -125,6 +127,7 @@ export type ProjectActionKind =
   | "archive_task"
   | "reorder_task"
   | "request_review"
+  | "resync_source"
   | "rename_project"
   | "set_goal"
   | "set_autonomy"
@@ -289,6 +292,13 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
       // an honest reason (already reviewed / no open gate / no reviewer free).
       const t = task(o.taskId);
       return t ? { kind, taskId: t.id, summary: `Request a review on “${clip(t.text)}”` } : null;
+    }
+    case "resync_source": {
+      // No fields — this project (ctx.project) is the whole target. Whether
+      // it's actually GitHub-bound is only known server-side
+      // (Operations.resyncProjectSource), so a confirmed chip can still fail
+      // with an honest reason on an unbound project.
+      return { kind, summary: `Re-sync GitHub issues & tasks for “${ctx.project.name}”` };
     }
     case "reorder_task": {
       const t = task(o.taskId);
