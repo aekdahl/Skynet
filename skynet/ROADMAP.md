@@ -1505,24 +1505,23 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   (`tests/feature-brief.test.ts`) and an orchestrator-level test driving two real tasks through a real
   git batch completion, including a forced consult failure proving the PR still opens
   (`tests/feature-brief-orchestrator.test.ts`).
-- [ ] **🔬⭐ Autonomous backlog sweep — the v1 path to the auto dev team.** Point Skynet at a whole
+- [x] **🔬⭐ Autonomous backlog sweep — the v1 path to the auto dev team.** Point Skynet at a whole
   backlog/roadmap under an explicit daily budget and let the fleet build it out unattended: humans
   approve only *completed, working* features, agents test and try to break their own work before a
   human ever sees it, and the fleet replenishes the backlog from what it finds along the way — every
   autonomous loop bounded by construction, never by hope. This is the concrete v1 path toward
   **⭐ North star: the auto dev team** and its **🔗 Product steward & the living Plan** substrate (v2,
   above): Charter → Blueprint → Plan needs exactly this — a fleet that can run unattended for a whole
-  work session without drifting, overspending, or silently shipping broken work. It **composes existing
-  v1 machinery into five phases; only the gates and the budget rollup below are genuinely new**:
-  1. **Budget ceiling.** `tickAutonomy`'s auto-pick step (`orchestrator.ts`) already rank-orders
-     eligible `todo` tasks by `order` and fires them while idle capacity lasts — but nothing today rolls
-     per-run spend (`TaskRun.usage.costUsd`, already tracked, nullable when a vendor omits it) into a
-     project- or workspace-level daily total, and nothing gates auto-pick on it. New: a daily spend
-     rollup that auto-pick checks before starting another task — an exhausted budget pauses auto-pick
-     for the rest of the window, not the project's `autonomy` toggle itself (see the gate philosophy
-     below — a human can always still assign manually). Per-run wall-clock/idle-stall caps
-     (`runtimeCapMs`/`idleCapMs`, `runner-sdk/src/caps.ts`) already bound a single run's worst case;
-     this is the same idea one level up, in dollars instead of minutes.
+  work session without drifting, overspending, or silently shipping broken work. It **composed existing
+  v1 machinery into five phases — all five now shipped**:
+  1. ~~**Budget ceiling.**~~ — **shipped.** `computeDailySpend` (`packages/shared`) rolls per-run
+     spend (`TaskRun.usage.costUsd`, nullable when a vendor omits it) into a project's daily total;
+     `tickAutonomy`'s auto-pick step (`orchestrator.ts`) checks it before starting another task, so an
+     exhausted `dailyBudgetUsd` pauses auto-pick for the rest of the window — never the project's
+     `autonomy` toggle itself (see the gate philosophy below — a human can always still assign
+     manually). Per-run wall-clock/idle-stall caps (`runtimeCapMs`/`idleCapMs`,
+     `runner-sdk/src/caps.ts`) already bound a single run's worst case; this is the same idea one level
+     up, in dollars instead of minutes. (`tests/daily-budget.test.ts`)
   2. ~~**Two-lens review: verifier + breaker.**~~ — **shipped, both halves.** Plain `autoReview`
      (`orchestrator.ts`) was a single reviewer-≠-author `consult` call — stateless, text-in/text-out, the
      last 30 log lines as context, **no tool use at all** — enough to judge "does this look right on
@@ -1537,12 +1536,16 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
      `reviewVerdict: flag` — parked in review for a human. Not built: neither lens has a settings UI yet
      (`PATCH /api/projects/:id` only) and breaker findings don't yet auto-create backlog tasks — both
      natural follow-ups, out of scope for the lenses themselves.
-  3. **Circuit breakers + right-sized batches.** Three guardrails, one spirit — an autonomous loop must
-     be able to stop *itself*, with no human watching: **(a)** a **session circuit-breaker** — N
-     consecutive flagged/failed TASKS on the same project pauses that project's `autonomy` toggle with
-     ONE summary escalation, not N separate HITL gates — distinct from the existing PER-RUN retry
-     ceiling (`config.runMaxFailures`/`failCounts`, which bounds retries on a single run, never a
-     project's whole unattended session); **(b)** ~~a feature size guardrail~~ — **shipped**, see
+  3. ~~**Circuit breakers + right-sized batches.**~~ — **shipped, all three.** Three guardrails, one
+     spirit — an autonomous loop must be able to stop *itself*, with no human watching: **(a)** ~~a
+     session circuit-breaker~~ — **shipped**: `noteAutonomyBadOutcome`/`autonomyStreaks`
+     (`orchestrator.ts`) trips at `config.autonomyMaxConsecutiveFailures` consecutive flagged/failed
+     TASKS on the same project, turns that project's `autonomy` toggle off (persisted — the existing UI
+     switch reflects it, and flipping it back on resumes + resets the streak), and raises ONE summary
+     escalation, not N separate HITL gates — distinct from the existing PER-RUN retry ceiling
+     (`config.runMaxFailures`/`failCounts`, which bounds retries on a single run, never a project's
+     whole unattended session) (`tests/autonomy-circuit-breaker.test.ts`); **(b)** ~~a feature size
+     guardrail~~ — **shipped**, see
      **Feature-batch size guardrail** above: caps how large a Feature's auto-picked task batch may grow
      unattended before it forces a human check-in, so a mis-scoped Feature can't silently balloon into a
      week of unattended spend; **(c)** ~~a
@@ -1572,12 +1575,14 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
      malformed entries dropped), every placement branch as a pure decision, and the full path through a
      real `tickAutonomy()` — new-scope parked, in-scope promoted, each of the three degradation paths,
      dedup, and the daily cap.
-  5. **Budget as allocation, not just a ceiling.** `assessTask`'s triage consult already estimates
-     `estimatedDurationMs` per task (`orchestrator.ts`); extend that same consult to estimate cost too
-     (or derive it from duration × a per-model rate) and use it for PACING, not only a stop-loss —
-     auto-pick spends the day's budget against the rank-ordered backlog instead of burning it on
-     whichever task happened to be first, and slows down as the ceiling approaches rather than running
-     at full tilt until it hits a wall.
+  5. ~~**Budget as allocation, not just a ceiling.**~~ — **shipped.** `costBandFor`/`committedUsd`
+     (`packages/shared`) derive a rough $ signal from triage's already-computed `assessmentEffort` (no
+     second estimation call), and `pacedAvailableUsd` spreads the daily budget across
+     `config.budgetPacingWindowMs` — opt-in per project via `Project.budgetPacing` — instead of
+     committing it all to the first tick; `selectAffordable` (`orchestrator.ts`) then greedily picks
+     what fits against the rank-ordered backlog in priority order, without ever reordering it, so
+     auto-pick slows down as the ceiling approaches rather than running at full tilt until it hits a
+     wall. (`tests/budget-allocation.test.ts`)
 
   **Gate philosophy, stated once:** budget gates *autonomy* only — a human can always assign a task
   manually regardless of spend; autonomy is a convenience toggle, never the only door. **Scope growth
