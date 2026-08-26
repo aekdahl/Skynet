@@ -50,7 +50,7 @@ Items are ranked PMF > Platform > Product within each batch:
 |-------|---|------|-------|
 | **N (now)** | 1 | deep-review / breaker-review settings UI toggle | PMF |
 | | 2 | Memory v0 — operator-authored facts, injected per project | Platform |
-| | 3 | Kimi Code runner + reactive runner breadth | Product |
+| | 3 | Reactive runner breadth (Kimi Code landed) | Product |
 | | 4 | First-run onboarding telemetry (anonymous install events) | PMF |
 | | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
 | **N+1** | 1 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
@@ -264,10 +264,9 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   - **Copilot** — a real per-invocation flag, `--additional-mcp-config <json>` (verified against
     `@github/copilot` 1.0.80); tool calls fall through the existing generic approval-prompt match, same
     live gate as any other tool.
-- [~] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot, OpenCode** done;
-  **Kimi Code** (Moonshot AI's terminal coding agent, same CLI shape as Claude/Codex/Gemini,
-  [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) still to do; then breadth reactively from
-  the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
+- [~] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot, OpenCode, Kimi Code**
+  all done; then breadth reactively from the candidate list in
+  [docs/runner-catalog.md](docs/runner-catalog.md).
   *Landed: Codex, Gemini, Cursor, and Copilot are all real, wired-up `CliRunnerProvider`s
   (`orchestrator.ts`'s `getProvider` dynamic-imports each from `runner-sdk`), plus Hermes (not
   originally named in this bullet) — five non-Claude vendors live today, each with real CLI
@@ -291,7 +290,25 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   changes the real working directory but never syncs `PWD` to match) silently pointed it at the Skynet
   server's own launch directory instead of the agent's worktree, writing real files there while `commitAll`
   correctly saw a clean, unrelated worktree and reported "no changes to integrate" — fixed by setting `PWD`
-  to match `cwd` on every spawn.* Still to do: **Kimi Code** and reactive breadth from the candidate list.
+  to match `cwd` on every spawn.* **Kimi Code landed** (`packages/runner-sdk/src/kimi.ts`, `RUNNER=kimi`,
+  native single-binary install — [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — drives
+  `kimi -p <task> --output-format stream-json`, a real NDJSON stream verified live against kimi-code 0.38.0
+  (installed via the official `install.sh`; a plain reply, a successful bash call, a *failing* bash call,
+  and a file write, each captured and locked into `tests/cli-runner-vendor-usage.test.ts`). No usage/cost is
+  ever reported by this mode (confirmed against the CLI's own docs and every live capture) — `onUsage`
+  simply never fires for this vendor, an honest gap rather than a fabricated row. No live HITL gate: `-p`
+  mode runs under a fixed `auto` permission policy by design and can't even be combined with `--yolo`/
+  `--auto` (verified live — both hard-error before spawning), so like Hermes/OpenCode, Skynet's own
+  post-run diff review gates the merge. Credential injection is unusual for this vendor: Kimi Code's docs
+  are explicit that provider credentials are *never* read from ambient shell env vars, with exactly one
+  documented exception — the ephemeral `KIMI_MODEL_*` family, which is the only channel available for
+  per-workspace key injection without writing `config.toml`. The model string is a `"<type>/<id>"` prefix
+  (`kimi`/`anthropic`/`openai`, defaulting to `kimi` — Moonshot's own models — with no prefix) that
+  `kimi.ts` splits into `KIMI_MODEL_PROVIDER_TYPE`/`KIMI_MODEL_NAME`; the `anthropic` path was verified
+  live end-to-end with a real `ANTHROPIC_API_KEY` (the `kimi` native path is mechanically identical but
+  wasn't independently live-verified for lack of a Moonshot key in this environment). No `closeStdin` or
+  `PWD` workaround needed here — both were verified live to behave correctly out of the box, unlike
+  OpenCode. Reactive breadth from the candidate list is still open-ended.
 - [x] **Agent labels / custom grouping** — Fleet already supports both: a "Group" field
   (`label`) with a known-groups datalist, the fleet grid groups by label with headings, and
   editing an agent's name is already part of the same Configure form.

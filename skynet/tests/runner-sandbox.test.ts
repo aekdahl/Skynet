@@ -72,3 +72,20 @@ describe("opencode provider registration", () => {
     }
   });
 });
+
+describe("kimi provider registration", () => {
+  it("is a valid ProviderId and appears in the default catalog", () => {
+    expect(ProviderId.safeParse("kimi").success).toBe(true);
+    const entry = DEFAULT_PROVIDERS.find((p) => p.id === "kimi");
+    expect(entry).toBeDefined();
+    expect(entry!.models.length).toBeGreaterThan(0);
+  });
+
+  it("the OS sandbox whitelists kimi-code's dot-dir (~/.kimi-code, a single top-level dir like Claude/Codex)", () => {
+    process.env[KEY] = "1";
+    const w = wrapForSandbox("kimi", ["-p", "do X", "--output-format", "stream-json"], { cwd: "/work/wt" });
+    if (w.sandboxed) {
+      expect(w.args.some((a) => a.includes(".kimi-code"))).toBe(true);
+    }
+  });
+});

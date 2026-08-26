@@ -9,6 +9,14 @@
 //     json` invocations with a live ANTHROPIC_API_KEY (a plain reply, a bash
 //     tool call, a file write, and a fatal auth error), field names/nesting
 //     verbatim from those runs.
+//   - Kimi Code: kimi-code 0.38.0 (official native install.sh binary) —
+//     captured from real `kimi -p ... --output-format stream-json` invocations
+//     configured via KIMI_MODEL_* against a live ANTHROPIC_API_KEY (a plain
+//     reply, a successful bash call, a FAILING bash call, and a file write),
+//     field names/nesting verbatim from those runs. See kimi.ts's file header
+//     for the full capture notes (including the fatal-auth-error path, which
+//     never emits a JSON line — just a non-zero exit, already handled generically
+//     by cli-runner.ts).
 // Cursor's --output-format stream-json is confirmed current via `cursor-agent
 // --help`, but a live authenticated run needs a separate CURSOR_API_KEY beyond
 // the interactive CLI login this environment had — its case below documents
@@ -24,6 +32,7 @@ import { codex } from "../packages/runner-sdk/src/codex.js";
 import { gemini } from "../packages/runner-sdk/src/gemini.js";
 import { buildUsage, durationFromResultUsage } from "../packages/runner-sdk/src/copilot.js";
 import { opencode } from "../packages/runner-sdk/src/opencode.js";
+import { kimi } from "../packages/runner-sdk/src/kimi.js";
 import { usageFromJson } from "../packages/runner-sdk/src/cli-runner.js";
 
 describe("Codex usage parsing (real TokenCountEvent shape)", () => {
@@ -282,5 +291,109 @@ describe("OpenCode event parsing (real --format json shapes, see file header)", 
   it("no live decision/message channel — run is one-shot headless (see file header)", () => {
     expect(opencode.encodeDecision(undefined, {})).toBeNull();
     expect(opencode.encodeMessage("anything")).toBeNull();
+  });
+});
+
+describe("Kimi Code event parsing (real -p --output-format stream-json shapes, see kimi.ts header)", () => {
+  it("buildArgs: -p, the task, structured json — model selection happens entirely via env, not argv", () => {
+    const args = kimi.buildArgs({
+      runId: "r1",
+      projectId: "p1",
+      task: "fix the bug",
+      model: "anthropic/claude-sonnet-5",
+      branch: "agent/r1",
+    });
+    expect(args).toEqual(["-p", "fix the bug", "--output-format", "stream-json"]);
+  });
+
+  it("env: a '<type>/<id>' model routes to that KIMI_MODEL_PROVIDER_TYPE, verified live against anthropic", () => {
+    const env = kimi.env!({
+      runId: "r1",
+      projectId: "p1",
+      task: "fix the bug",
+      model: "anthropic/claude-sonnet-5",
+      branch: "agent/r1",
+      apiKey: "sk-ant-real",
+    });
+    expect(env).toEqual({
+      KIMI_MODEL_NAME: "claude-sonnet-5",
+      KIMI_MODEL_API_KEY: "sk-ant-real",
+      KIMI_MODEL_PROVIDER_TYPE: "anthropic",
+    });
+  });
+
+  it("env: a bare model id defaults to the 'kimi' (Moonshot-native) backend", () => {
+    const env = kimi.env!({
+      runId: "r1",
+      projectId: "p1",
+      task: "fix the bug",
+      model: "kimi-for-coding",
+      branch: "agent/r1",
+      apiKey: "sk-moonshot",
+    });
+    expect(env).toEqual({
+      KIMI_MODEL_NAME: "kimi-for-coding",
+      KIMI_MODEL_API_KEY: "sk-moonshot",
+      KIMI_MODEL_PROVIDER_TYPE: "kimi",
+    });
+  });
+
+  it("env: no apiKey → inherit ambient env (e.g. a prior `kimi login`), no KIMI_MODEL_* vars at all", () => {
+    const env = kimi.env!({ runId: "r1", projectId: "p1", task: "x", model: "kimi-for-coding", branch: "agent/r1" });
+    expect(env).toEqual({});
+  });
+
+  it("a meta line (version banner, resume hint) carries nothing useful — ignored", () => {
+    expect(kimi.parseLine(JSON.stringify({ role: "meta", type: "system.version", version: "0.38.0" }), {})).toEqual({ kind: "ignore" });
+    expect(
+      kimi.parseLine(
+        JSON.stringify({ role: "meta", type: "session.resume_hint", session_id: "session_abc", command: "kimi -r session_abc", content: "To resume this session: kimi -r session_abc" }),
+        {},
+      ),
+    ).toEqual({ kind: "ignore" });
+  });
+
+  it("an assistant tool_calls line → tool, labelled from the parsed arguments (real Bash shape)", () => {
+    const line = JSON.stringify({
+      role: "assistant",
+      tool_calls: [{ type: "function", id: "toolu_01AeAVSNqF8d6KeUK9mf7q67", function: { name: "Bash", arguments: '{"command":"cat note.txt"}' } }],
+    });
+    expect(kimi.parseLine(line, {})).toEqual([{ kind: "tool", label: "cat note.txt" }]);
+  });
+
+  it("an assistant tool_calls line for Write → tool, labelled from the file path (real shape)", () => {
+    const line = JSON.stringify({
+      role: "assistant",
+      tool_calls: [{ type: "function", id: "toolu_01GbKS7t2RcyComPoNjgdGRE", function: { name: "Write", arguments: '{"path":"marker.txt","content":"hello"}' } }],
+    });
+    expect(kimi.parseLine(line, {})).toEqual([{ kind: "tool", label: "marker.txt" }]);
+  });
+
+  it("a tool-result line — success and failure both land here as plain text, no error flag; ignored either way", () => {
+    const success = JSON.stringify({ role: "tool", tool_call_id: "toolu_1", content: "line one\n" });
+    expect(kimi.parseLine(success, {})).toEqual({ kind: "ignore" });
+    const failure = JSON.stringify({ role: "tool", tool_call_id: "toolu_2", content: "Process exited with code 1\nCommand failed with exit code: 1." });
+    expect(kimi.parseLine(failure, {})).toEqual({ kind: "ignore" });
+  });
+
+  it("a plain assistant reply → chat (the base decides log vs. chat-reply)", () => {
+    expect(kimi.parseLine(JSON.stringify({ role: "assistant", content: "DONE" }), {})).toEqual({ kind: "chat", text: "DONE" });
+  });
+
+  it("never reports usage — this vendor's stream-json mode carries no token/cost field (see file header)", () => {
+    // Every real captured line above already asserts its own kind; this just
+    // confirms the defensive usageFromJson call can't accidentally fire on one.
+    const line = JSON.stringify({ role: "assistant", content: "DONE" });
+    const ev = kimi.parseLine(line, {});
+    expect(Array.isArray(ev) ? ev.some((e) => e.kind === "usage") : ev.kind === "usage").toBe(false);
+  });
+
+  it("a non-JSON line passes through as a raw log line", () => {
+    expect(kimi.parseLine("some non-json startup banner", {})).toEqual({ kind: "log", line: "some non-json startup banner" });
+  });
+
+  it("no live decision/message channel — -p mode runs under a fixed auto-permission policy (see file header)", () => {
+    expect(kimi.encodeDecision(undefined, {})).toBeNull();
+    expect(kimi.encodeMessage("anything")).toBeNull();
   });
 });
