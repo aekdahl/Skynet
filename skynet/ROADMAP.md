@@ -529,6 +529,24 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Manual "Request re-triage" on a card parked in triage.** Requested live: the only way back into
+  triage's assessment was to wait for the task to cycle through `backlog` on the periodic sweep — no way to
+  ask for a fresh read on demand once project context changed (goal, instructions, a newly added feature)
+  or the description was edited after the original "unclear" verdict. Mirrors the existing "Request review"
+  button exactly: a new `Re-triage` action on any card sitting in the Triage column, alongside a "Parked in
+  triage" label (same `kb-unreviewed`/`kb-unreviewed-btn` styling `requestReview` already uses — no new
+  CSS). Server-side, `Orchestrator.tickAutonomy`'s own triage-write logic (assessment + duration + clarity +
+  grouping + the clarification loop breaker) was extracted into a shared `triageOne(ws, agent, task)` so the
+  periodic sweep and the new eager `requestRetriage(ws, taskId)` entry point run the IDENTICAL write path
+  rather than two copies that could drift — the loop-breaker fix directly above this one automatically
+  covers the manual path too. Throws honest, specific errors instead of a silent no-op: `NoTriageTargetError`
+  when the task isn't in `triage` right now, `NoCapacityError` (reused — the same error every other manual
+  on-demand action already throws) when no agent is idle. `tests/request-retriage.test.ts` (5 tests) covers
+  both outcomes (clear → promotes to `todo`, unclear → fresh clarification) plus both failure modes and the
+  404 case; the write-logic itself (including the loop breaker) stays covered by `autonomy.test.ts` since
+  `triageOne` is now the one implementation both paths share. Verified live: seeded a task into Triage with
+  no idle agent — clicking Re-triage surfaced "No idle runner available" as a toast (not a silent no-op);
+  adding an idle runner and clicking again returned 204 and the card's assessment updated in place.
 - [x] **Fix: answering a triage clarifying question could loop forever — same question, every time.**
   Reported live right after clarifying questions shipped: answer the question → task returns to `backlog`
   for re-triage (by design, since the answer can change the effort/risk/grouping read) → triage runs again
