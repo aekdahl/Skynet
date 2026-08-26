@@ -14,9 +14,9 @@ import { MemoryStore } from "../apps/server/src/store/memory.js";
 import type { Bus } from "../apps/server/src/bus.js";
 import type { RunnerEvents, RunnerHandle, RunnerProvider, StartSpec } from "@skynet/runner-sdk";
 
-const lintTask = vi.fn<(text: string, description: string | null) => Promise<TaskLintConcern[]>>();
+const lintTask = vi.fn<(text: string, description: string | null, siblingTitles?: string[]) => Promise<TaskLintConcern[]>>();
 vi.mock("../apps/server/src/task-linter.js", () => ({
-  lintTask: (text: string, description: string | null) => lintTask(text, description),
+  lintTask: (text: string, description: string | null, siblingTitles?: string[]) => lintTask(text, description, siblingTitles),
 }));
 
 class RecordingBus implements Bus {
@@ -102,7 +102,7 @@ describe("Task linter v0 — Operations wiring", () => {
     await flush();
     const after = await store.getTask(created.id);
     expect(after?.lint?.concerns).toEqual([]);
-    expect(lintTask).toHaveBeenCalledWith("Fix the null-pointer crash in checkout when the cart is empty", null);
+    expect(lintTask).toHaveBeenCalledWith("Fix the null-pointer crash in checkout when the cart is empty", null, []);
   });
 
   it("an edit that doesn't touch text/description leaves the lint result alone", async () => {
@@ -116,5 +116,44 @@ describe("Task linter v0 — Operations wiring", () => {
     expect(updated.lint?.concerns).toEqual([{ kind: "vague", note: "no concrete target" }]);
     await flush();
     expect(lintTask).not.toHaveBeenCalled();
+  });
+
+  // v5 "coach": the linter is handed the rest of the project's own open
+  // backlog/todo titles, so it can reason about dependency/parallel signals
+  // that a single task's own text can't show on its own. Sibling states are
+  // set directly via the hub (not transitionTask) — only the resulting store
+  // state matters for what lintTaskNow gathers, not how a task got there.
+  it("passes sibling backlog/todo titles from the same project, excluding itself, other projects, and archived/done work", async () => {
+    const { ops, hub } = setup();
+    const project = await mkProject(ops);
+    const otherProject = await mkProject(ops);
+    lintTask.mockResolvedValue([]);
+
+    const backlogSibling = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "Add dark mode toggle" });
+    await flush();
+    const todoSibling = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "Improve empty states" });
+    await flush();
+    await hub.upsertTask({ ...todoSibling, state: "todo" });
+    const doneSibling = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "Already shipped thing" });
+    await flush();
+    await hub.upsertTask({ ...doneSibling, state: "done" });
+    const archivedSibling = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "Abandoned idea" });
+    await flush();
+    await hub.upsertTask({ ...archivedSibling, archived: true });
+    await ops.createTask(DEFAULT_WORKSPACE, otherProject.id, { text: "Unrelated project's task" });
+    await flush();
+
+    lintTask.mockClear();
+    lintTask.mockResolvedValueOnce([]);
+    await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "Fix pagination bug" });
+    await flush();
+
+    expect(lintTask).toHaveBeenCalledWith(
+      "Fix pagination bug",
+      null,
+      expect.arrayContaining(["Add dark mode toggle", "Improve empty states"]),
+    );
+    const [, , siblings] = lintTask.mock.calls[0];
+    expect(siblings).toHaveLength(2);
   });
 });
