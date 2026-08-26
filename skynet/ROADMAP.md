@@ -529,6 +529,26 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Fix: a Telegram merge-conflict card was an unexplained raw diff dump — impossible to act on.**
+  Reported live with a screenshot: "A merge needs a look" arrived on the phone as a tail-truncated `diff
+  --cc` combined-diff snippet cut off mid-sentence, no title, no explanation, nothing saying which files
+  conflicted or what Approve/Reject/Modify would actually do. Root cause: `decisionCardHtml`/`gateNotice`
+  (`telegram/notices.ts`) picked exactly ONE content block per gate via an if/else-if chain — for a `diff`
+  gate that's the stats+file list, but a `merge` gate isn't a `diff` gate, so it fell through to the
+  captured-output branch and rendered the raw `<<<<<<<`/`=======`/`>>>>>>>` conflict text (or a
+  `diff --cc` combined diff for the feature-branch-batch case) as the ENTIRE card. Worse: `HitlItem.why` —
+  the system-authored explanation of what happened and what the buttons do, which the web queue card
+  (`queue.tsx`) has always shown unconditionally — was never read by either Telegram function at all, and
+  the conflicting files already carried on `flags` (rendered as chips on web) were never shown either.
+  Rewrote both to match the web card's own ordering (title → rationale → why → kind-specific content →
+  captured output → conflicting files): the raw conflict text now rides at the BOTTOM as clearly-labeled
+  supplementary detail ("Conflict (captured before the merge was aborted) — Modify sends this to the agent
+  as-is"), preceded by the actual explanation and a `Conflicts in: <files>` line — so the operator can
+  decide from the card alone, with the raw diff only as backup context (or the existing "View diff" /
+  "Open in the app" for full detail). Added to `tests/telegram-notices.test.ts` (2 new tests) covering a
+  realistic merge-conflict item: title, why, and conflicting files all present and ordered BEFORE the raw
+  (HTML-escaped) conflict text, not instead of it. All prior diff/command/question card tests unaffected —
+  `title`/`why` are additive lines, never replacing the existing kind-specific content.
 - [x] **Fix: answering a triage clarifying question could loop forever — same question, every time.**
   Reported live right after clarifying questions shipped: answer the question → task returns to `backlog`
   for re-triage (by design, since the answer can change the effort/risk/grouping read) → triage runs again
