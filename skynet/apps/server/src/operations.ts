@@ -87,7 +87,7 @@ import { extractText } from "./steward/extract.js";
 import { commitLocalRepoFile } from "./local-repo-write.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
 import type { CapturedDiff, Hub } from "./hub.js";
-import { NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
+import { CLARIFICATION_ANSWERED_MARKER, NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import { resolveExecutable } from "./steward/execution.js";
 import { secretService, withSecretAvailability } from "./secrets/index.js";
 import type { Store } from "./store/store.js";
@@ -1142,6 +1142,12 @@ export class Operations {
    * grouping read, and the whole point of this loop is that the clarity call is
    * made with the missing information in hand. Clearing `clarification` is what
    * makes the ask disappear from the board.
+   *
+   * The stamped `CLARIFICATION_ANSWERED_MARKER` heading isn't just a nice
+   * transcript — the re-triage tick greps for it to recognize "this task
+   * already went through one round" and forces a promote if the model still
+   * comes back unclear, so a stubborn model can't re-ask the same question
+   * forever (see tickAutonomy's triage step in orchestrator.ts).
    */
   async answerClarification(ws: string, tid: string, answer: string): Promise<Task> {
     const task = await this.store.getTask(tid);
@@ -1151,7 +1157,7 @@ export class Operations {
     const block = [
       "",
       "---",
-      "**Clarifications** (asked at triage, answered by the operator):",
+      CLARIFICATION_ANSWERED_MARKER,
       ...asked.map((q) => `- _${q}_`),
       "",
       answer.trim(),

@@ -252,6 +252,15 @@ const SCOPE_NOTE =
 const DEEP_REVIEW_MAX_TURNS = 20;
 const DEEP_REVIEW_TIMEOUT_MS = 6 * 60_000;
 
+// The exact heading Operations.answerClarification stamps into a task's
+// description above the operator's answer. Checking for OUR OWN literal
+// marker — never classifying the model's free text — lets `assessTask` and
+// the autonomy tick recognize "this task already went through one clarify
+// round" deterministically, so a model that stays "unclear" even after being
+// answered can't re-ask the same question forever (backlog → triage →
+// backlog → ... with no way out). See the tickAutonomy triage step below.
+export const CLARIFICATION_ANSWERED_MARKER = "**Clarifications** (asked at triage, answered by the operator):";
+
 // The breaker (Project.breakerReview / runBreakerReview) runs strictly AFTER
 // the deepReview reviewer above already approved — it's pure extra scrutiny on
 // a change that's already been judged to work, so its own budget is tighter
@@ -4246,29 +4255,48 @@ export class Orchestrator {
               // milestone when a feature was picked).
               const nextFeatureId = backlog.featureId ?? featureId;
               const nextMilestoneId = backlog.featureId || backlog.milestoneId ? backlog.milestoneId : milestoneId;
+              // Loop breaker: this task already went through ONE ask-and-answer
+              // round (its description carries the operator's answer, stamped by
+              // answerClarification — see CLARIFICATION_ANSWERED_MARKER). A model
+              // that still comes back "unclear" after that — same underlying
+              // ambiguity, or just not confident — would otherwise re-ask forever
+              // (backlog → triage → backlog → ...), each lap burning a consult AND
+              // a Steward draft for a question the operator already answered.
+              // Trust the self-report only ONCE per round: force a promote here
+              // rather than opening a second clarification, and surface the
+              // model's continued doubt as a risk instead of another question.
+              const alreadyAnsweredOnce = (backlog.description ?? "").includes(CLARIFICATION_ANSWERED_MARKER);
+              const forcedClear = clarity === "unclear" && alreadyAnsweredOnce;
               // Auto-promote to todo when the LLM said "clear" — the eligibility
               // check above already guarantees the task can leave backlog.
-              const nextState: Task["state"] = clarity === "clear" ? "todo" : "triage";
+              const nextState: Task["state"] = clarity === "clear" || forcedClear ? "todo" : "triage";
               // Unclear WITH specific questions → ask, and have Steward draft an
               // answer the operator can accept or edit. Without this the task
               // just parked in triage with nobody told what was missing, and an
               // agent later rediscovered the same ambiguity at agent prices.
-              // A clear task never carries a clarification; re-triage clears a
-              // stale one rather than leaving an answered question on the card.
+              // A clear task (or a forced one, see above) never carries a
+              // clarification; re-triage clears a stale one rather than leaving
+              // an answered question on the card.
               const clarification =
-                questions.length > 0
+                !forcedClear && questions.length > 0
                   ? {
                       questions,
                       draft: await this.draftClarificationAnswer(ws, backlog, questions).catch(() => null),
                       askedAt: now(),
                     }
                   : null;
+              const nextAssessmentRisks = forcedClear
+                ? [
+                    ...assessmentRisks,
+                    "Triage still flagged this unclear after the operator's answer — proceeding anyway; confirm scope before/while working it.",
+                  ]
+                : assessmentRisks;
               await this.hub.upsertTask({
                 ...backlog,
                 state: nextState,
                 assessment,
                 assessmentEffort,
-                assessmentRisks,
+                assessmentRisks: nextAssessmentRisks,
                 clarification,
                 estimatedDurationMs: nextEst,
                 featureId: nextFeatureId,
@@ -4416,6 +4444,16 @@ export class Orchestrator {
       // give concrete agent-wall-clock anchors for S/M/L.
       const taskBody = task.description ? `${task.text}\n\n${task.description}` : task.text;
       const feature = task.featureId ? features.find((f) => f.id === task.featureId) : undefined;
+      // This task already went through one ask-and-answer round — the operator's
+      // answer is IN taskBody (see CLARIFICATION_ANSWERED_MARKER), so tell the
+      // model explicitly rather than let it silently re-derive "unclear" from
+      // the same original ambiguity and re-ask a question that's already been
+      // answered. A code-level breaker also catches this (see tickAutonomy) if
+      // the model ignores the instruction, but getting a genuinely better
+      // "clear" verdict here means never falling back to that breaker at all.
+      const alreadyAnsweredInstr = taskBody.includes(CLARIFICATION_ANSWERED_MARKER)
+        ? "\nThis task already had clarifying questions asked and ANSWERED once (see the \"Clarifications\" section above) — treat that answer as authoritative and do NOT ask the same or a rephrased version of it again. Only report \"unclear\" again if the answer reveals a genuinely NEW gap it doesn't cover; otherwise report \"clear\" and note any residual doubt in \"risks\" instead."
+        : "";
       const reply = await provider.consult(
         { task: buildAgentContext({ project, feature, body: taskBody }), model: agent.model, cwd: config.runnerCwd, apiKey },
         [
@@ -4427,7 +4465,7 @@ export class Orchestrator {
           "An autonomous coding agent works fast: a task that would take a person hours typically takes an agent minutes.",
           "Anchors (agent wall-clock): small ≈ 5m (rename, config tweak, single small edit), medium ≈ 20m (a real feature — new endpoint, migration, small refactor), large ≈ 60m (multi-file change, cross-module work). Cap at 240m even for very large asks. `effort` should agree with `estMinutes`.",
           "clarity = \"clear\" ONLY if the ask is well-scoped and actionable AS WRITTEN (an agent could start without more info).",
-          '"unclear" if it needs clarification, is missing acceptance criteria, or the scope is ambiguous. When in doubt, choose "unclear".',
+          '"unclear" if it needs clarification, is missing acceptance criteria, or the scope is ambiguous. When in doubt, choose "unclear".' + alreadyAnsweredInstr,
           'When (and ONLY when) clarity is "unclear", add "questions": 1-3 SHORT, SPECIFIC, ANSWERABLE things you need from the operator before an agent could start — name the actual missing decision or fact ("which auth flow should this use?", "what counts as done here?"), never a generic "please clarify". These get asked directly, so a vague question wastes the exchange.',
           '"risks" = 0-3 short, CONCRETE risks specific to this task (e.g. "touches auth — check session handling", "no tests in this area yet") — omit the field entirely (not an empty array) if you see none worth flagging; never pad with generic filler like "could have bugs".',
           "Omit any field you can't confidently supply; a missing signal is honest, a fabricated one is not." + groupingInstr,
