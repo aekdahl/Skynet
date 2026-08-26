@@ -1205,6 +1205,15 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   });
 
   // ── project roadmap doc (ROADMAP.md, read straight from the bound repo) ──
+  // Scenario coverage for the project's checked-out branch (read-only scan).
+  app.get<{ Params: { id: string } }>("/api/projects/:id/quality", async (req, reply) => {
+    try {
+      return await ops.getProjectQuality(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.get<{ Params: { id: string } }>("/api/projects/:id/roadmap", async (req, reply) => {
     try {
       return await ops.getProjectRoadmap(ws(req), req.params.id);

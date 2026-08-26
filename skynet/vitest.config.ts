@@ -12,6 +12,17 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // Line/branch coverage, emitted as a machine-readable summary the
+    // per-project Coverage panel reads (server/quality/scan.ts) — it never
+    // runs the suite itself. `enabled: false` keeps the default `pnpm test`
+    // fast; produce a summary with `pnpm test -- --coverage`.
+    coverage: {
+      enabled: false,
+      provider: "v8",
+      reporter: ["text-summary", "json-summary"],
+      reportsDirectory: "./coverage",
+      include: ["apps/**/src/**/*.ts", "apps/**/src/**/*.tsx", "packages/**/src/**/*.ts"],
+    },
     include: ["tests/**/*.test.ts"],
     // Merge-engine tests spawn git in temp repos; give them headroom.
     testTimeout: 20_000,

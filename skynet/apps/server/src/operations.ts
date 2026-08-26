@@ -35,6 +35,7 @@ import type {
   PrChecksStatus,
   Project,
   ProjectCharter,
+  ProjectQualityResult,
   ProjectContextEntry,
   ProviderInfo,
   ResolveRequest,
@@ -83,6 +84,7 @@ import {
 import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
 import { contentHash, readProjectDoc, resolveRoadmapDoc } from "./steward/docs.js";
 import { draftBriefFromConversation, summarizeConversation } from "./steward/crystallize.js";
+import { scanRepo } from "./quality/scan.js";
 import { condenseProjectContext } from "./steward/context.js";
 import { extractText } from "./steward/extract.js";
 import { commitLocalRepoFile } from "./local-repo-write.js";
@@ -2193,6 +2195,39 @@ export class Operations {
     } catch (err) {
       return { state: "github_error", message: (err as Error).message };
     }
+  }
+
+  /**
+   * Scenario coverage for a project's checked-out branch — the "how well does
+   * this actually work?" panel. Derived purely by READING the repo (see
+   * quality/scan.ts): it never runs the project's toolchain, so it's safe to
+   * point at code an agent just wrote and fast enough to be an on-demand panel.
+   *
+   * Local checkout only. A GitHub-only project would need hundreds of Contents
+   * API reads to scan, which is neither fast nor free — reported honestly as
+   * `missing_local_repo` rather than silently returning an empty report that
+   * would read as "nothing to cover".
+   */
+  async getProjectQuality(ws: string, projectId: string): Promise<ProjectQualityResult> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const root = project.repoPath ?? (config.reposDir ? join(config.reposDir, project.id) : null);
+    if (!root && !project.repo) return { state: "unbound" };
+    if (!root || !existsSync(root)) return { state: "missing_local_repo" };
+    const scan = await scanRepo(root, now());
+    return {
+      state: "ok",
+      quality: {
+        axes: scan.scenarios.axes,
+        behaviourCount: scan.scenarios.behaviours.length,
+        totalCases: scan.scenarios.totalCases,
+        coveredCases: scan.scenarios.coveredCases,
+        sourceFiles: scan.scenarios.sourceFiles,
+        testFiles: scan.scenarios.testFiles,
+        coverage: scan.coverage,
+        scannedAt: scan.scannedAt,
+      },
+    };
   }
 
   /** Commit a Steward-drafted edit to the project's roadmap doc — only reachable

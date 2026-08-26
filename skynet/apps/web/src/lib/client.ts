@@ -28,6 +28,7 @@ import {
   SignedComplianceReport,
   type SolutionBrief,
   type Task,
+  type ProjectQualityResult,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -435,6 +436,12 @@ export type ProjectRoadmapResult =
   | { state: "missing_local_repo" }
   | { state: "not_found" }
   | { state: "github_error"; message: string };
+
+/** Scenario coverage for a project's checked-out branch — which of the
+ *  codebase's enumerable behaviour sets the tests exercise at all. */
+export function fetchProjectQuality(projectId: string) {
+  return req<ProjectQualityResult>("GET", `/api/projects/${projectId}/quality`);
+}
 
 export function fetchProjectRoadmap(projectId: string) {
   return req<ProjectRoadmapResult>("GET", `/api/projects/${projectId}/roadmap`);
