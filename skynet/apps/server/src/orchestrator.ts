@@ -3091,13 +3091,65 @@ export class Orchestrator {
    *  the feature branch merged cleanly into the project's integration branch.
    *  There's no single owning run to finalize (every task already reached
    *  `done` in step 1) — just mark the feature shipped and nudge the preview,
-   *  mirroring the tail of `completeMerged` without any per-run cleanup. */
+   *  mirroring the tail of `completeMerged` without any per-run cleanup.
+   *
+   *  `Project.deepReview` opt-in: before shipping, runFeatureVerification
+   *  browses the just-merged result against the feature's OWN description +
+   *  tasks. A flag holds back `status: "shipped"` (the code stays merged
+   *  either way — only the ship label is gated) and its findings flow into
+   *  the self-replenishing backlog, same as a normal review's proposals. No
+   *  reviewer available / verification couldn't run → ships anyway, same as
+   *  today: this is a best-effort extra check, never a new blocking gate. */
   private async completeFeatureMerged(req: MergeRequest): Promise<void> {
     const featureId = req.agentBranch.slice(FEATURE_BRANCH_PREFIX.length);
     const feature = await this.store.getFeature(featureId);
-    if (feature) await this.hub.upsertFeature({ ...feature, status: "shipped" });
-    await this.hub.runLog(req.runId, `"${feature?.name ?? featureId}" — feature branch merged into the integration branch. Shipped.`).catch(() => undefined);
+    if (!feature) return;
+
+    const verdict = await this.verifyFeatureBeforeShip(req.workspaceId, feature, req.projectId, req.runId).catch(() => null);
+    if (verdict?.decision === "flag") {
+      await this.hub.upsertFeature({ ...feature, verification: { decision: "flag", reason: verdict.reason, evidence: verdict.evidence, at: now() } });
+      await this.hub.runLog(req.runId, `"${feature.name}" — merged, but verification flagged it — not marking shipped`, verdict.reason).catch(() => undefined);
+    } else {
+      await this.hub.upsertFeature({
+        ...feature,
+        status: "shipped",
+        verification: verdict ? { decision: "pass", reason: verdict.reason, evidence: verdict.evidence, at: now() } : feature.verification,
+      });
+      await this.hub.runLog(req.runId, `"${feature.name}" — feature branch merged into the integration branch. Shipped.`).catch(() => undefined);
+    }
     void projectPreview.refresh(req.projectId).catch(() => undefined);
+  }
+
+  /** Best-effort wrapper around runFeatureVerification: resolves the project/
+   *  siblings/reviewer runFeatureVerification needs, and — on a flag — routes
+   *  its proposals through the same self-replenishing-backlog path a normal
+   *  review's proposals use. Returns null (not a flag) whenever verification
+   *  didn't or couldn't run, so the caller ships as it always has. */
+  private async verifyFeatureBeforeShip(
+    ws: string,
+    feature: Feature,
+    projectId: string,
+    anchorRunId: string,
+  ): Promise<{ decision: "pass" | "flag"; reason: string; evidence: string[] | null } | null> {
+    const project = await this.store.getProject(projectId);
+    if (!project?.deepReview) return null;
+    const git = this.gitContextFor(project);
+    if (!git) return null;
+    const siblings = (await this.store.listTasks(ws)).filter((t) => t.featureId === feature.id && !t.archived);
+    if (siblings.length === 0) return null;
+    const idle = (await this.store.listAgents(ws)).filter((a) => a.status === "idle" && a.canReview !== false);
+    const reviewer = idle[0];
+    if (!reviewer) return null;
+
+    const result = await this.runFeatureVerification(ws, reviewer, feature, siblings, project, git, anchorRunId);
+    if (!result) return null;
+    if (result.decision === "flag" && result.proposals.length > 0) {
+      const anchorTask = siblings.find((t) => t.runId === anchorRunId) ?? siblings[0]!;
+      await this.processFleetProposals(project, anchorTask, anchorRunId, result.proposals).catch((err) =>
+        this.hub.runLog(anchorRunId, `feature verification proposal processing failed: ${(err as Error).message}`).catch(() => undefined),
+      );
+    }
+    return { decision: result.decision === "approve" ? "pass" : "flag", reason: result.reason, evidence: result.evidence };
   }
 
   /**
@@ -4811,6 +4863,156 @@ export class Orchestrator {
       const field = obj && typeof obj.verdict === "string" ? obj.verdict.trim().toLowerCase() : "";
       if (field !== "approve" && field !== "flag") return null;
       const verdict = parseReviewVerdict(lastText);
+      return {
+        decision: verdict.approve ? "approve" : "flag",
+        reason: verdict.reason,
+        evidence: [...evidence],
+        proposals: parseReviewProposals(lastText),
+      };
+    } finally {
+      await previewMgr.stop(previewKey).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Feature-level counterpart to `runDeepReview`, above — same mechanics
+   * (a real bounded second agent, browser on, no edit tools, the same
+   * structured verdict contract), but scoped to a whole FEATURE instead of
+   * one run's diff: grounded on the feature's own description + every
+   * sibling task's text/description (the "spec"), browsing the live preview
+   * of the just-merged integration branch rather than one run's own branch.
+   * `Project.deepReview` opt-in (reused, not a new project setting) — called
+   * once every sibling task is `done` and the feature branch has merged, right
+   * before the feature is marked `shipped` (see `completeFeatureMerged`).
+   * Same honest-degrade discipline as `runDeepReview`: any failure (wrong
+   * provider, no local checkout, preview won't start, timeout, unreadable
+   * verdict) returns `null` — the caller treats that as "couldn't verify",
+   * never as a flag.
+   */
+  private async runFeatureVerification(
+    ws: string,
+    reviewer: Agent,
+    feature: Feature,
+    siblings: Task[],
+    project: Project,
+    git: GitContext,
+    anchorRunId: string,
+  ): Promise<{ decision: "approve" | "flag"; reason: string; evidence: string[]; proposals: ProposedTask[] } | null> {
+    if (reviewer.provider !== "claude") return null;
+    if (!project.repoPath) return null; // a preview needs a real local checkout
+
+    const previewMgr = this.previewOverride ?? projectPreview;
+    const verifyRunId = `feature-verify-${feature.id}`;
+    const previewKey = `run:${verifyRunId}`;
+    let preview;
+    try {
+      preview = await previewMgr.startRun(verifyRunId, {
+        repoPath: project.repoPath,
+        projectId: project.id,
+        branch: git.merge.integrationBranch(project.id), // where the feature branch's content just landed
+        workspaceId: ws,
+      });
+    } catch {
+      return null;
+    }
+    if (preview.status !== "live" || !preview.url) {
+      await previewMgr.stop(previewKey).catch(() => undefined);
+      return null;
+    }
+    const cwd = previewMgr.dirFor(previewKey);
+    if (!cwd) {
+      await previewMgr.stop(previewKey).catch(() => undefined);
+      return null;
+    }
+
+    try {
+      const provider = await this.getProvider(reviewer.provider);
+      const apiKey = await secretService.resolve(ws, reviewer.credentialId ?? reviewer.provider);
+      const taskLines = siblings.map((t) => `- ${t.text}${t.description?.trim() ? `: ${t.description.trim()}` : ""}`).join("\n");
+      const brief = [
+        `You are verifying a whole FEATURE another set of agents just finished: "${feature.name}"`,
+        feature.description?.trim() ? `Feature description: ${feature.description.trim()}` : null,
+        `It was built as ${siblings.length} task(s):\n${taskLines}`,
+        project.instructions ? `Project instructions: ${project.instructions}` : null,
+        `A live preview of the MERGED result is running at: ${preview.url}\nUse your browser tools to load it and actually exercise the feature end to end — click through the flow described above, don't just read code. Ground your verdict in what you observe in the browser, not assumptions. Judge the FEATURE as a whole against its description and tasks — a per-task nitpick that doesn't affect the feature working isn't a flag.`,
+        "You are a REVIEWER ONLY — you have no edit tools and must not attempt to fix anything you find. If something's broken, that IS the finding: report it, don't repair it.",
+        `When you're done, reply with ONLY the required JSON — no other text. ${REVIEW_OUTPUT_INSTRUCTION}`,
+      ]
+        .filter((l): l is string => !!l)
+        .join("\n\n");
+
+      const reviewRunId = `review-${verifyRunId}-${++this.seq}`;
+      let lastText = "";
+      const evidence: string[] = [];
+      let handle: RunnerHandle | undefined;
+      const outcome = await Promise.race([
+        new Promise<"completed" | "failed">((resolve) => {
+          const events: RunnerEvents = {
+            onLog: (_id, line, detail) => {
+              if (detail === undefined) {
+                if (line.trim()) lastText = line;
+                return;
+              }
+              if (/^▸ mcp__browser__/.test(line)) {
+                evidence.push(line.slice(2));
+                if (evidence.length > 12) evidence.shift();
+              }
+            },
+            onProgress: () => {},
+            onHeartbeat: () => {},
+            onStatus: () => {},
+            onHitl: (_id, raise) => {
+              if (!handle) return;
+              const resolution: Resolution =
+                raise.kind === "approval"
+                  ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "feature-verify-harness", at: now() }
+                  : {
+                      action: "reject",
+                      optionIndex: null,
+                      guidance: "Don't ask questions or make a plan — just use the browser to check the feature, then reply with only the required JSON verdict.",
+                      targetBranch: null,
+                      memoryNote: null,
+                      resetWork: false,
+                      by: "feature-verify-harness",
+                      at: now(),
+                    };
+              void handle.resume(resolution).catch(() => undefined);
+            },
+            onCompleted: () => resolve("completed"),
+            onFailed: () => resolve("failed"),
+            onChatReply: () => {},
+          };
+          provider
+            .start(
+              {
+                runId: reviewRunId,
+                projectId: project.id,
+                task: brief,
+                model: reviewer.model,
+                branch: git.merge.integrationBranch(project.id),
+                cwd,
+                apiKey,
+                browser: true,
+                maxTurns: DEEP_REVIEW_MAX_TURNS,
+                disallowedTools: ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"],
+              },
+              events,
+            )
+            .then((h) => {
+              handle = h;
+            })
+            .catch(() => resolve("failed"));
+        }),
+        new Promise<"failed">((resolve) => setTimeout(() => resolve("failed"), DEEP_REVIEW_TIMEOUT_MS)),
+      ]);
+      await handle?.stop().catch(() => undefined);
+
+      if (outcome !== "completed" || !lastText) return null;
+      const obj = extractJsonObject(lastText);
+      const field = obj && typeof obj.verdict === "string" ? obj.verdict.trim().toLowerCase() : "";
+      if (field !== "approve" && field !== "flag") return null;
+      const verdict = parseReviewVerdict(lastText);
+      await this.hub.runLog(anchorRunId, `"${feature.name}" — feature verification: ${verdict.approve ? "passed" : "flagged"}`, verdict.reason).catch(() => undefined);
       return {
         decision: verdict.approve ? "approve" : "flag",
         reason: verdict.reason,

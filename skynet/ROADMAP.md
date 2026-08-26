@@ -1517,6 +1517,30 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
      `reviewVerdict: flag` — parked in review for a human. Not built: neither lens has a settings UI yet
      (`PATCH /api/projects/:id` only) and breaker findings don't yet auto-create backlog tasks — both
      natural follow-ups, out of scope for the lenses themselves.
+  2b. ~~**Feature-level verification — a third altitude.**~~ — **shipped.** The verifier/breaker lenses
+     above judge one run's OWN diff; a Feature usually batches several tasks, and nothing checked the
+     FEATURE as a whole against what it was actually supposed to deliver — an intake flow that writes up
+     an epic → sprints → tasks has no way to verify the epic itself once its tasks are all individually
+     done. `Orchestrator.runFeatureVerification` extends the verifier lens one altitude up: same
+     mechanics (a bounded second agent, browser tools, no edit tools, the same field-based verdict
+     contract) but grounded on the Feature's own description + every sibling task's text/description (the
+     "spec"), browsing the live preview of the just-merged integration branch rather than one run's own
+     branch. Fires from `completeFeatureMerged` once every sibling task is `done` and the feature branch
+     has merged (local-only projects; the GitHub-PR feature path — `mergeReadyFeaturePr` — is a
+     deliberate non-goal for now, since a human already reviews that PR before merging), gated on the
+     SAME `Project.deepReview` opt-in — no new project setting. A flag holds `Feature.status` back from
+     `shipped` (the code stays merged either way — only the ship label is gated) and its findings flow
+     through the SAME self-replenishing-backlog path (`processFleetProposals`) a normal review's
+     proposals already use, rather than a dead end. No eligible reviewer / verification couldn't run →
+     ships as before, same honest-degrade discipline as the verifier lens itself (a best-effort extra
+     check, never a new blocking gate). Unlike the per-diff verifier, does NOT exclude the doer as
+     reviewer — a multi-task Feature usually has several doers and no single "the" author to exclude, and
+     a single-agent project would otherwise never get feature-level verification at all. 4 tests
+     (`tests/feature-verification.test.ts`): real git + a real preview process (mirrors
+     `deep-review.test.ts`'s harness) driving two real tasks through a shared feature branch —
+     `deepReview` off leaves shipping untouched, a passing verdict ships + records browser evidence, a
+     flagged verdict withholds shipping and its proposal becomes a real backlog task, and a single-agent
+     project still gets verified.
   3. **Circuit breakers + right-sized batches.** Three guardrails, one spirit — an autonomous loop must
      be able to stop *itself*, with no human watching: **(a)** a **session circuit-breaker** — N
      consecutive flagged/failed TASKS on the same project pauses that project's `autonomy` toggle with

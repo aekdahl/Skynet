@@ -2904,6 +2904,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .tag { font-size: var(--fz-10-5); padding: 1px 7px; border-radius: 20px; font-family: var(--font-mono); flex: none; }
 .tag-ship { color: var(--ok); border: 1px solid color-mix(in oklch, var(--ok), transparent 62%); }
 .tag-pause { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn), transparent 62%); }
+.tag-flag { color: var(--danger); border: 1px solid color-mix(in oklch, var(--danger), transparent 62%); }
 
 /* ── Project Roadmap tab: ROADMAP.md read straight from the repo ─────────── */
 .prd-path-picker { display: flex; gap: 8px; align-items: center; margin-top: 10px; }

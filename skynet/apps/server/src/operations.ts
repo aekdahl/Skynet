@@ -1796,6 +1796,7 @@ export class Operations {
       createdAt: now(),
       pr: null,
       sizeWarning: null,
+      verification: null,
     };
     return this.hub.upsertFeature(feature);
   }
@@ -2101,6 +2102,7 @@ export class Operations {
       createdAt: at,
       pr: null,
       sizeWarning: null,
+      verification: null,
     };
     await this.hub.upsertFeature(feature);
 
