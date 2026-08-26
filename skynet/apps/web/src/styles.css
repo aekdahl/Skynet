@@ -355,7 +355,10 @@ kbd {
 .qcard.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 8px 32px rgba(0,0,0,0.35); }
 .qcard.leaving { opacity: 0; transform: translateX(32px); }
 @media (prefers-reduced-motion: reduce) { .qcard { transition: border-color var(--motion-fast); } .qcard.leaving { opacity: 1; transform: none; } }
-.qcard-head { display: flex; align-items: center; gap: 12px; }
+/* Collapsed-by-default row (queue.tsx): the head is the whole "one row"
+   summary — clicking it (or the ▸/▾ mark) toggles the rest of the card. */
+.qcard-head { display: flex; align-items: center; gap: 12px; cursor: pointer; }
+.qcard-expand-toggle { flex-shrink: 0; width: 10px; text-align: center; color: var(--faint); font-size: var(--fz-12); }
 .kind-chip {
   font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.12em;
   border: 1px solid; border-radius: 4px; padding: 2px 7px; white-space: nowrap;
@@ -366,8 +369,9 @@ kbd {
   max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
 }
 .qcard-agent:hover { color: var(--text); }
-.qcard-wait { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-12); color: var(--warn); font-variant-numeric: tabular-nums; }
+.qcard-wait { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-12); color: var(--warn); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .qcard-title { font-size: calc(var(--fs) + 4px); font-weight: 600; letter-spacing: -0.01em; }
+.qcard-title-inline { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* ── Ready-to-merge card ─────────────────────────────────────────────────── */
 .merge-prlink { margin-left: auto; color: var(--muted); font-size: var(--fz-12-5); text-decoration: none; }
 .merge-prlink:hover { color: var(--accent); }
