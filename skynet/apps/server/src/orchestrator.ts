@@ -33,6 +33,7 @@ import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./
 import { composeFeatureBrief, parseFeatureNarrative, FEATURE_BRIEF_INSTRUCTION, FEATURE_BRIEF_SYSTEM } from "./feature-brief.js";
 import { decisionResumePrompt } from "./decision-resume.js";
 import { buildAgentContext, withInstructions } from "./agent-context.js";
+import { syncRepoNativeMemory } from "./repo-memory-sync.js";
 import { buildSiblingDigest } from "./sibling-digest.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
@@ -1779,6 +1780,7 @@ export class Orchestrator {
     git: GitContext | undefined,
     runId: string,
     branch: string,
+    project: Project | null | undefined,
     baseRef?: string,
   ): Promise<{ cwd: string | undefined; baseRef?: string; scratchCwd?: string }> {
     if (!git) {
@@ -1788,6 +1790,14 @@ export class Orchestrator {
     }
     const prov = await git.worktrees.provision(runId, branch, { baseRef });
     await this.hub.runLog(runId, `worktree ready on ${branch} (from ${prov.baseRef})`);
+    // v4: project Skynet's portable memory (Project.contextSummary) into the
+    // freshly-checked-out worktree's own CLAUDE.md / .cursor/rules / Copilot
+    // instructions, so a vendor tool opened directly against this checkout
+    // (no Skynet in the loop) sees the same grounding an agent's prompt does.
+    // Best-effort: a filesystem hiccup here must never stop the run itself.
+    await syncRepoNativeMemory(prov.cwd, project?.contextSummary).catch((err) =>
+      this.hub.runLog(runId, `repo-native memory sync failed: ${(err as Error).message}`).catch(() => undefined),
+    );
     return { cwd: prov.cwd, baseRef: prov.baseRef };
   }
 
@@ -1987,7 +1997,7 @@ export class Orchestrator {
       // branches from origin/<base> (no baseRef passed), so every run starts on
       // the newest human-merged state — not a stale local integration branch.
       // With no bound repo (chat-only), this instead mints a private scratch dir.
-      const prov = await this.provisionCwd(git, runId, branch);
+      const prov = await this.provisionCwd(git, runId, branch, project);
       const { cwd, baseRef } = prov;
       scratchCwd = prov.scratchCwd;
       // Inject this workspace's provider key (env fallback when none is stored).
@@ -2074,7 +2084,7 @@ export class Orchestrator {
     let scratchCwd: string | undefined;
     try {
       // A fork branches from its parent (family-internal integration, §7).
-      const prov = await this.provisionCwd(git, runId, agent.branch, parent.branch);
+      const prov = await this.provisionCwd(git, runId, agent.branch, project, parent.branch);
       const { cwd, baseRef } = prov;
       scratchCwd = prov.scratchCwd;
       const apiKey = await secretService.resolve(parent.workspaceId, runner.credentialId ?? runner.provider);
@@ -2190,7 +2200,7 @@ export class Orchestrator {
 
     const runner = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId, await this.projectKeyAllowlist(run.projectId));
     const provider = await this.getProvider(runner.provider);
-    const { cwd, baseRef } = await this.provisionCwd(git, runId, run.branch, checkpoint.sha);
+    const { cwd, baseRef } = await this.provisionCwd(git, runId, run.branch, project, checkpoint.sha);
     const apiKey = await secretService.resolve(run.workspaceId, runner.credentialId ?? runner.provider);
     const resumeSessionId = run.provider === "claude" ? checkpoint.claudeSessionId : null;
     const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
@@ -4192,6 +4202,18 @@ export class Orchestrator {
       await this.stopAgent(a.id, reason).catch(() => undefined);
       await this.hub.runStatus(a.id, "done").catch(() => undefined);
       await this.hub.runCompleted(a.id, a.branch).catch(() => undefined);
+      // stopAgent retired the worktree — this run integrates no change, so its
+      // owning task must not be left stranded "ongoing" (or "review") showing
+      // a live-looking column next to a run whose chip now reads "done". Same
+      // invariant haltAgent/settleArchivedRun uphold; this sweep was the one
+      // termination path missing it (reported live: a kanban card sitting in
+      // a mid-pipeline column while its status chip showed done).
+      const reapedTask = (await this.store.listTasks(a.workspaceId).catch(() => [] as Task[])).find(
+        (t) => t.runId === a.id,
+      );
+      if (reapedTask && (reapedTask.state === "ongoing" || reapedTask.state === "review")) {
+        await this.hub.upsertTask({ ...reapedTask, state: "todo", runId: null, reviewVerdict: null }).catch(() => undefined);
+      }
     }
   }
 

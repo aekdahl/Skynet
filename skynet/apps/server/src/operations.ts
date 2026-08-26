@@ -1111,7 +1111,7 @@ export class Operations {
   }
 
   /**
-   * Task linter v0 (assistive): run {@link lintTask} in the BACKGROUND right
+   * Task linter (assistive): run {@link lintTask} in the BACKGROUND right
    * after a task is created or its text/description is edited, same
    * best-effort fire-and-forget shape as `maybeAutoClone`. Never blocks the
    * caller and never throws into it — a failure just leaves `lint` unset,
@@ -1124,7 +1124,13 @@ export class Operations {
     );
   }
   private async lintTaskNow(ws: string, task: Task): Promise<void> {
-    const concerns = await lintTask(task.text, task.description);
+    // v5 coach context: the rest of the project's own open backlog, for the
+    // missing-dependency / parallel-candidate rules — a snapshot at lint time,
+    // same staleness caveat as everywhere else this is advisory-only.
+    const siblingTitles = (await this.store.listTasks(ws))
+      .filter((t) => t.projectId === task.projectId && t.id !== task.id && !t.archived && (t.state === "backlog" || t.state === "todo"))
+      .map((t) => t.text);
+    const concerns = await lintTask(task.text, task.description, siblingTitles);
     const current = await this.store.getTask(task.id);
     if (!current || current.workspaceId !== ws) return; // deleted meanwhile
     // The task may have been edited again while the consult was in flight —

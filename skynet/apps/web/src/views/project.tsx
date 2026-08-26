@@ -32,12 +32,15 @@ import { InformComposer, toastInformResult } from "./fleet";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
-// Task linter v0 (assistive) — short label per concern kind, shown before the
-// model's own one-line note. See apps/server/src/task-linter.ts.
+// Task linter — short label per concern kind, shown before the model's own
+// one-line note. See apps/server/src/task-linter.ts. The first three are the
+// v1.5 assistive v0; the last two are the v5 "coach" layer.
 const LINT_KIND_LABEL: Record<string, string> = {
   vague: "Vague",
   "multi-module": "Spans modules",
   "no-done-definition": "No done definition",
+  "missing-dependency": "Missing dependency",
+  "parallel-candidate": "Could run in parallel",
 };
 
 // ─── Board drag & drop ───────────────────────────────────────────────────────

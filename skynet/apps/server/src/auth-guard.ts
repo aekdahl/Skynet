@@ -11,10 +11,11 @@ import type { Scope } from "./auth.js";
 // auth-hardening test asserts against them, so production behavior and the test
 // can never drift.
 
-/** A guarded surface — /api or /mcp — that requires a resolved principal. */
+/** A guarded surface — /api, /mcp, or the /v1 interop surface (OpenAI-compat +
+ *  REST, see interop/) — that requires a resolved principal. */
 export function isGuardedPath(url: string): boolean {
   const path = url.toLowerCase();
-  return path.startsWith("/api") || path.startsWith("/mcp");
+  return path.startsWith("/api") || path.startsWith("/mcp") || path.startsWith("/v1");
 }
 
 /** The public /api auth routes: login + the MFA second-factor exchange both
@@ -74,10 +75,13 @@ function isExemptMutation(method: string, path: string): boolean {
 
 /**
  * The scope a request requires beyond "has a resolved principal", or null when
- * none applies (reads; the exemptions above; anything outside /api). Default
- * for a non-GET /api route is "author" (create/assign/fork/chat/stop/archive,
- * configure fleet runners/providers — the SCOPES doc comment in auth.ts);
- * "approver" is reserved for the HITL/merge decision gates it names by name.
+ * none applies (reads; the exemptions above; anything outside /api and /v1).
+ * Default for a non-GET /api or /v1 route is "author" (create/assign/fork/
+ * chat/stop/archive, configure fleet runners/providers — the SCOPES doc
+ * comment in auth.ts); "approver" is reserved for the HITL/merge decision
+ * gates it names by name. /v1 (interop/) never names an approver decision
+ * today, so it always falls through to "author" — same bar as spinning up a
+ * run via /mcp's assign_task.
  *
  * Admin promotion (POST /api/operators/:id/promote) is deliberately NOT
  * exempted — it needs no escape hatch the way self-service elevation would
@@ -90,7 +94,7 @@ function isExemptMutation(method: string, path: string): boolean {
 export function requiredScope(method: string, url: string): Scope | null {
   const q = url.indexOf("?");
   const path = (q < 0 ? url : url.slice(0, q)).toLowerCase();
-  if (!path.startsWith("/api")) return null; // /mcp: self-gated per tool call
+  if (!path.startsWith("/api") && !path.startsWith("/v1")) return null; // /mcp: self-gated per tool call
   if (method === "GET" || method === "HEAD") return null;
   if (isExemptMutation(method, path)) return null;
   return isApproverDecision(method, path) ? "approver" : "author";
