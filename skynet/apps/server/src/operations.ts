@@ -1620,14 +1620,44 @@ export class Operations {
    * fails (e.g. the merge queue chokes on a conflict, an HITL got stuck, or the
    * run finished but the task didn't advance and there's no HITL to resolve).
    * Bypasses HUMAN_TRANSITIONS: usable from ANY state (except archived).
-   * ALWAYS syncs run.status to "done" when a run is linked. Never merges the
-   * branch — this is a "call it done" operator override, not a work-completion
-   * signal for the runner; use the normal Approve → Done for that.
+   *
+   * This is "call it done" pressure applied to the SAME integration path a
+   * normal Approve uses, not a cosmetic label flip: an open diff/merge/
+   * verifier gate gets approved (commits + pushes/opens a PR, or enqueues the
+   * local merge, exactly like a human clicking Approve); with no open gate,
+   * whatever's sitting uncommitted in the run's worktree — live or not — gets
+   * committed and pushed through the same pipeline (Orchestrator.forceIntegrateRun).
+   * The task only flips to `done` here in the store when nothing could be
+   * integrated (no run, or no git backend at all) — the GitHub-push case marks
+   * done synchronously as part of that same call, and the local-merge-queue
+   * case marks it done asynchronously once the merge actually lands (or raises
+   * a real conflict gate instead of lying about "done"), same as any other
+   * approve. So this can return a task still in `review` — that's real
+   * in-flight state, not the old unconditional flip.
    */
-  async forceTaskDone(ws: string, tid: string): Promise<Task> {
+  async forceTaskDone(ws: string, tid: string, operatorId: string): Promise<Task> {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
     if (task.archived) throw new NotFoundError("Task"); // archived is a soft-hide, not force-doneable
+
+    if (task.runId) {
+      const open = (await this.store.listQueue(ws)).find(
+        (h) => h.runId === task.runId && !h.resolvedAt && (h.kind === "diff" || h.kind === "merge" || h.kind === "verifier"),
+      );
+      if (open) {
+        await this.resolveHitl(ws, open.id, { action: "approve" }, operatorId);
+        return (await this.store.getTask(tid)) ?? task;
+      }
+      // No gate waiting — the run may still be live/mid-turn, or finished
+      // with real, uncommitted work sitting in its worktree. Commit it and
+      // route it through the same push/merge integration a diff approval
+      // uses, so "done" isn't a fiction over unlanded work.
+      const integrated = await this.orchestrator.forceIntegrateRun(task.runId).catch(() => false);
+      if (integrated) return (await this.store.getTask(tid)) ?? task;
+    }
+
+    // Nothing to integrate (no run, or no git backend at all) — cosmetic-only,
+    // same as this escape hatch's original behavior.
     const updated = await this.hub.upsertTask({
       ...task,
       state: "done",

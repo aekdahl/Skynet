@@ -529,6 +529,32 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Fix: Force Done didn't force anything DONE — it forced the card to say so.** The escape hatch's own
+  doc comment said it out loud: *"Never merges the branch — this is a 'call it done' operator override, not
+  a work-completion signal."* That's exactly the trap — an operator reaching for Force Done (a wedged HITL,
+  a stuck merge queue, a run that finished but never advanced the card) got a green "Done" label over an
+  agent's real work that was still sitting uncommitted or unmerged in its worktree, one `retire()` away from
+  being silently lost the next time that worktree got reclaimed. "Done" has to mean the work actually landed.
+  Now Force Done routes through the SAME integration pipeline a normal Approve click uses, not a label flip:
+  an open diff/merge/verifier gate gets approved for real (`resolveHitl` → `deliver`, unchanged); with no
+  gate open, the new `Orchestrator.forceIntegrateRun` commits whatever's uncommitted in the run's worktree —
+  live or not — via `WorktreeProvisioner.commitAll` (idempotent, a no-op on an already-clean tree), cleanly
+  detaches a still-live run first (stop the handle, free the runner — the same sequence
+  `restoreCheckpoint`'s live-detach already used, just with a commit added before it), then hands the branch
+  to a new shared `Orchestrator.integrateRun` — `deliver()`'s old inline approve-branch logic, extracted
+  byte-for-byte so both callers get the identical feature-branch-batch / GitHub-PR / local-merge-queue
+  routing rather than a second, drifting copy of it. Only falls back to the old cosmetic-only flip when
+  there's genuinely nothing to integrate (no run, or no git backend at all) — everything else waits for the
+  real result: a GitHub push marks the task done synchronously as part of that same call; a local merge
+  enqueue marks it done asynchronously once the merge actually lands, or raises a real conflict gate instead
+  of lying about "done", exactly like any other approve. So the endpoint can now legitimately return a task
+  still sitting in `review` — that's honest in-flight state, not a regression.
+  `tests/force-done-integration.test.ts` (new, 2 tests) runs this against a REAL throwaway git repo (same
+  harness as `guided-merge-orchestrator.test.ts`, not a mocked backend): a still-live run with uncommitted
+  work gets its file committed, its runner freed, and the branch landed on the project's integration branch
+  before the task flips done; a run with an open diff gate gets that gate genuinely approved (not bypassed)
+  and lands the same way. `tests/task-transitions.test.ts`'s existing 3 cases (no git backend configured)
+  now pin that the `!git` guard falls all the way through to the unchanged cosmetic tail.
 - [x] **Triage asks — clarifying questions with a Steward-drafted answer.** Triage could already decide a
   task was `unclear`, but had nowhere to say WHAT was unclear and no way to get it resolved: the task parked
   in `triage` indefinitely with nobody told what was missing. The expensive consequence showed up live —
