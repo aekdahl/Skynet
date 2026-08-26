@@ -1048,6 +1048,11 @@ export function transitionTask(projectId: string, taskId: string, to: string, pr
 export function forceTaskDone(projectId: string, taskId: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/force-done`);
 }
+// Steward-driven board tidy: priority-sort every non-done column, archive
+// everything in Done. See Operations.organizeBoard's doc comment.
+export function organizeBoard(projectId: string) {
+  return req<{ reordered: number; archived: number }>("POST", `/api/projects/${projectId}/organize`);
+}
 // Manual "Request review" — force a review pass now instead of waiting for a
 // periodic tick to find an idle reviewer on its own. Throws (ApiError 409)
 // with an honest, specific reason — already reviewed / no open gate / no

@@ -638,7 +638,13 @@ export class Orchestrator {
   // after the live handle is torn down. Presence = "already escalated" (so a
   // guard doesn't re-raise). Cleared when the escalation is resolved or the run
   // completes. See escalate() / deliverEscalation() / relaunchEscalated().
-  private escalations = new Map<string, { git?: GitContext; baseRef?: string; taskId: string | null; source: EscalationSource }>();
+  // `agentId` is the runner this run escalated FROM — captured so a later
+  // Reassign can explicitly exclude it (see relaunchEscalated): now that
+  // every escalation frees its runner immediately at raise time (rather than
+  // holding it busy until reassign's own acquire-then-free), that runner is
+  // idle again by the time reassign runs and would otherwise just get
+  // re-picked as its own "replacement".
+  private escalations = new Map<string, { git?: GitContext; baseRef?: string; taskId: string | null; source: EscalationSource; agentId?: string | null }>();
   // Per-run failure counter (onFailed): past config.runMaxFailures the run is
   // escalated instead of parked in `review`. Cleared on success/resolution.
   private failCounts = new Map<string, number>();
@@ -970,13 +976,30 @@ export class Orchestrator {
         return;
       }
     }
-    // Agent-driven escalation: the run is HALTED on the live gate. Capture the
-    // worktree/git context so a later resume/reassign works, and mark it escalated.
+    // Agent-driven escalation: halt + free the runner exactly like a
+    // system-driven escalation (escalate()) — a "blocked on a human" gate has
+    // no reason to hold a compute slot idle for however long that takes.
+    // Capture the worktree/git context so a later resume/reassign works
+    // (relaunchEscalated re-acquires fresh compute in the same worktree,
+    // same as the system-driven path already does) — this trades away the
+    // narrower "resume the exact live session" optimization deliverEscalation
+    // used to take for a live-handle `modify`, for consistent compute release.
+    //
+    // ONLY when `live.git` is set, though: a chat-only run (no bound repo —
+    // see LiveAgent.scratchCwd) has no worktree for relaunchEscalated to
+    // reacquire INTO, so freeing its runner here would make "Help & resume"
+    // unrecoverable — deliverEscalation's live-handle-resume fallback stays
+    // the real (only) path for that case, not dead code.
     if (raise.kind === "escalation") {
       const live = this.live.get(runId);
-      this.escalations.set(runId, { git: live?.git, baseRef: live?.baseRef, taskId: live?.taskId ?? null, source: "agent" });
+      if (live?.git) {
+        await live.handle.stop().catch(() => undefined);
+        await this.freeRunner(live.agentId);
+        this.live.delete(runId);
+      }
+      this.escalations.set(runId, { git: live?.git, baseRef: live?.baseRef, taskId: live?.taskId ?? null, source: "agent", agentId: live?.agentId });
       await this.hub.runStatus(runId, "waiting"); // an escalation gate always blocks the run
-      await this.hub.runLog(runId, `escalated by the agent — ${raise.title}`);
+      await this.hub.runLog(runId, `escalated by the agent${live?.git ? " — freed its runner" : ""} — ${raise.title}`);
     }
     await this.hub.raiseHitl(item);
     if (expiresAt != null) {
@@ -1723,13 +1746,19 @@ export class Orchestrator {
     // isn't allowed to run on. The provisioned fallback uses the requested
     // credential, which the caller already resolved from an allowed run.
     allowedCredentialIds: string[] = [],
+    // Reassign's own "give me a DIFFERENT runner" ask — every escalation now
+    // frees its runner immediately at raise time (not held busy until reassign
+    // itself frees it), so that runner is idle again by the time reassign
+    // runs and would otherwise just get re-picked as its own "replacement".
+    // Only relaunchEscalated's reassign path sets this.
+    excludeAgentId?: string | null,
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
       const keyAllowed = (r: Agent) =>
         allowedCredentialIds.length === 0 || allowedCredentialIds.includes(r.credentialId ?? r.provider);
       // Prefer an idle agent that's on an allowed key AND can actually execute.
-      for (const r of runners.filter((r) => r.status === "idle" && keyAllowed(r))) {
+      for (const r of runners.filter((r) => r.status === "idle" && keyAllowed(r) && r.id !== excludeAgentId)) {
         if (await this.providerUsable(workspaceId, r.provider, r.credentialId)) {
           await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
           return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
@@ -2603,8 +2632,10 @@ export class Orchestrator {
   /** System-driven escalation (too long / too many failures): halt the run and
    *  hand it to a human. Captures the worktree context so it can be resumed,
    *  frees the runner (but never retires the worktree), and raises an
-   *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes through
-   *  raise() instead (the live gate stays parked). */
+   *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes
+   *  through raise() instead — same free-the-runner treatment for a
+   *  worktree-backed run (a chat-only run's live gate still stays parked;
+   *  see raise()'s own doc comment). */
   private async escalate(runId: string, reason: string, source: EscalationSource): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
@@ -2654,9 +2685,9 @@ export class Orchestrator {
     run: TaskRun,
     reason: string,
     source: EscalationSource,
-    ctx: { git?: GitContext; baseRef?: string; taskId?: string | null },
+    ctx: { git?: GitContext; baseRef?: string; taskId?: string | null; agentId?: string | null },
   ): Promise<void> {
-    this.escalations.set(run.id, { git: ctx.git, baseRef: ctx.baseRef, taskId: ctx.taskId ?? null, source });
+    this.escalations.set(run.id, { git: ctx.git, baseRef: ctx.baseRef, taskId: ctx.taskId ?? null, source, agentId: ctx.agentId });
     const item: HitlItem = {
       id: `q-${run.id}-${++this.seq}`,
       workspaceId: run.workspaceId,
@@ -2824,8 +2855,13 @@ export class Orchestrator {
       }
       return;
     }
-    // Agent-driven escalation still holds a live gate → resume it in place with
-    // the operator's guidance (preserves the agent's session context). modify only.
+    // A worktree-backed escalation frees its runner + clears `this.live` the
+    // moment it's raised (see raise()/escalate()), so `live` is normally gone
+    // by the time an operator resolves the card — falls through to
+    // relaunchEscalated below. The one case this DOES still fire: a chat-only
+    // run (no bound repo), which raise() deliberately leaves parked, because
+    // relaunchEscalated has no worktree to reacquire into for it — this is
+    // that run's only real resume path, not a hypothetical safety net.
     if (resolution.action === "modify" && live) {
       await this.hub.runStatus(runId, "running");
       await live.handle.resume(resolution);
@@ -2907,7 +2943,14 @@ export class Orchestrator {
         await this.freeRunner(live.agentId);
         this.live.delete(runId);
       }
-      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, undefined, await this.projectKeyAllowlist(run.projectId));
+      acq = await this.acquireOrProvisionRunner(
+        run.workspaceId,
+        run.provider,
+        run.model,
+        undefined,
+        await this.projectKeyAllowlist(run.projectId),
+        reassign ? (live?.agentId ?? ctx?.agentId) : undefined,
+      );
       if (reassign && live) {
         await live.handle.stop().catch(() => undefined);
         await this.freeRunner(live.agentId);
