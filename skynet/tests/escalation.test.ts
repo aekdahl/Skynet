@@ -53,7 +53,9 @@ class ControllableProvider implements RunnerProvider {
   readonly id: ProviderId = "claude";
   events = new Map<string, RunnerEvents>();
   handles = new Map<string, Handle>();
+  starts: StartSpec[] = [];
   async start(spec: StartSpec, events: RunnerEvents): Promise<RunnerHandle> {
+    this.starts.push(spec);
     this.events.set(spec.runId, events);
     const h = new Handle(spec.runId);
     this.handles.set(spec.runId, h);
@@ -136,13 +138,22 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     expect(freed.reviewVerdict).toBeNull();
   });
 
-  it("Help & resume (modify) an agent escalation → the live agent resumes with guidance", async () => {
+  it("Help & resume (modify) a CHAT-ONLY run's agent escalation → the live agent resumes with guidance (no worktree to relaunch into)", async () => {
+    // assignRun()'s project has no repoPath/repo — gitContextFor resolves to
+    // undefined, so this run's LiveAgent has no `git` (see LiveAgent.scratchCwd).
+    // raise() deliberately does NOT free the runner for that case — there'd be
+    // no worktree for relaunchEscalated to reacquire into, so the live handle
+    // staying parked (and modify resuming it directly) is this run's only real
+    // path, not just an optimization. See the git-backed test below for the
+    // opposite case, where the runner IS freed at raise time.
     const { run, events, handle } = await assignRun();
     events.onHitl(run.id, {
       kind: "escalation", title: "Need a decision", why: "which auth flow?", risk: "medium", rationale: null,
       command: null, options: null, recommended: null, steps: null, diff: null,
     });
     await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+    expect(handle.stopCalls).toBe(0); // NOT freed — chat-only, nothing to reacquire into
+    expect((await store.getAgent("r1"))?.status).toBe("busy");
     const esc = bus.raised().find((i) => i.kind === "escalation")!;
 
     await ops.resolveHitl(DEFAULT_WORKSPACE, esc.id, { action: "modify", guidance: "Use the device-code flow." }, "op-1");
@@ -152,7 +163,7 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     expect((await store.getRun(run.id))?.status).toBe("running");
   });
 
-  it("Dismiss an agent escalation → clears the card, but stops/resumes NOTHING and leaves status alone", async () => {
+  it("Dismiss an agent escalation → clears the card without any FURTHER side effect (raise() already stopped/freed it)", async () => {
     const { run, events, handle } = await assignRun();
     events.onHitl(run.id, {
       kind: "escalation", title: "Need a decision", why: "which auth flow?", risk: "medium", rationale: null,
@@ -580,5 +591,76 @@ describe("reset vs. continue — operator choice on 'Send to Todo' and 'Reassign
     expect((await store.getRun(run.id))?.status).toBe("running"); // same run id, relaunched
     expect((await store.getTask(task.id))?.runId).toBe(run.id);
     expect(worktrees.exists(run.id)).toBe(true);
+  });
+});
+
+// A worktree-backed run's runner is no longer held idle for however long an
+// agent-driven escalation takes to get a human's attention — freed the moment
+// it's raised, same as a system-driven escalation already does; "Help &
+// resume" reacquires fresh compute (relaunchEscalated) instead of resuming
+// the old live session. Real git repo so relaunchEscalated has an actual
+// worktree to reacquire into (see the chat-only test above for the case
+// where it doesn't, and the old resume-in-place behavior still applies).
+describe("escalation — a worktree-backed run's agent-driven escalation frees its runner", () => {
+  let store: MemoryStore;
+  let bus: RecordingBus;
+  let hub: Hub;
+  let ops: Operations;
+  let orchestrator: Orchestrator;
+  let repo: string;
+  let provider: ControllableProvider;
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), "esc-git-free-repo-"));
+    execFileSync("git", ["init", "-q", "-b", "main", repo]);
+    execFileSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+    execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
+    writeFileSync(join(repo, "README.md"), "base\n");
+    execFileSync("git", ["-C", repo, "add", "-A"]);
+    execFileSync("git", ["-C", repo, "commit", "-q", "-m", "base"]);
+
+    store = new MemoryStore({ seed: false });
+    bus = new RecordingBus();
+    hub = new Hub(store, bus);
+    provider = new ControllableProvider();
+    orchestrator = new Orchestrator(store, hub, provider);
+    ops = new Operations({ store, hub, orchestrator });
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("raises already stopped + freed; Help & resume reacquires a FRESH session (never the old handle) carrying the guidance", async () => {
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repoPath: repo });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "do the thing" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    const worktrees = new WorktreeProvisioner(repo, "main");
+    expect(worktrees.exists(run.id)).toBe(true);
+
+    const events = provider.events.get(run.id)!;
+    const handle = provider.handles.get(run.id)!;
+    events.onHitl(run.id, {
+      kind: "escalation", title: "Need a decision", why: "which auth flow?", risk: "medium", rationale: null,
+      command: null, options: null, recommended: null, steps: null, diff: null,
+    });
+    await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+    // Stopped + freed by raise() itself — before the operator has done anything.
+    expect(handle.stopCalls).toBeGreaterThanOrEqual(1);
+    expect((await store.getAgent("r1"))?.status).toBe("idle");
+    const esc = bus.raised().find((i) => i.kind === "escalation")!;
+
+    await ops.resolveHitl(DEFAULT_WORKSPACE, esc.id, { action: "modify", guidance: "Use the device-code flow." }, "op-1");
+    await waitFor(async () => (await store.getRun(run.id))?.status === "running");
+    expect(handle.resumeCalls.length).toBe(0); // the OLD handle was never resumed
+    // A brand new session was reacquired for the SAME run, in the SAME
+    // worktree, carrying the guidance in its prompt (relaunchEscalated's own
+    // reconstruction, not a resumed live conversation).
+    expect(provider.handles.get(run.id)).not.toBe(handle);
+    const relaunchSpec = provider.starts[provider.starts.length - 1]!;
+    expect(relaunchSpec.runId).toBe(run.id);
+    expect(relaunchSpec.task).toContain("Use the device-code flow.");
+    expect(worktrees.exists(run.id)).toBe(true); // the prior work is still there to resume into
   });
 });
