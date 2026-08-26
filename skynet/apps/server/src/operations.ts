@@ -1718,7 +1718,12 @@ export class Operations {
    * verifier gate gets approved (commits + pushes/opens a PR, or enqueues the
    * local merge, exactly like a human clicking Approve); with no open gate,
    * whatever's sitting uncommitted in the run's worktree — live or not — gets
-   * committed and pushed through the same pipeline (Orchestrator.forceIntegrateRun).
+   * committed, sanity-checked, and pushed through the same pipeline
+   * (Orchestrator.forceIntegrateRun). Skipping the normal review gate doesn't
+   * skip judgment entirely: forceIntegrateRun's own completeness check can
+   * come back "flag" — nothing gets pushed, a real diff review is raised
+   * instead (which is also the notification — Telegram/push fires the moment
+   * that gate is raised), and the task lands in `review`, not `done`.
    * The task only flips to `done` here in the store when nothing could be
    * integrated (no run, or no git backend at all) — the GitHub-push case marks
    * done synchronously as part of that same call, and the local-merge-queue
@@ -1743,9 +1748,11 @@ export class Operations {
       // No gate waiting — the run may still be live/mid-turn, or finished
       // with real, uncommitted work sitting in its worktree. Commit it and
       // route it through the same push/merge integration a diff approval
-      // uses, so "done" isn't a fiction over unlanded work.
-      const integrated = await this.orchestrator.forceIntegrateRun(task.runId).catch(() => false);
-      if (integrated) return (await this.store.getTask(tid)) ?? task;
+      // uses, so "done" isn't a fiction over unlanded work — "flagged" means
+      // it held back and raised a real review instead; either way real work
+      // just happened, so neither outcome falls through to the cosmetic tail.
+      const outcome = await this.orchestrator.forceIntegrateRun(task.runId).catch(() => "nothing" as const);
+      if (outcome !== "nothing") return (await this.store.getTask(tid)) ?? task;
     }
 
     // Nothing to integrate (no run, or no git backend at all) — cosmetic-only,

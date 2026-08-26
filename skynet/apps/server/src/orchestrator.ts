@@ -45,7 +45,7 @@ import { previewService } from "./preview/index.js";
 import { projectPreview, type ProjectPreviewManager } from "./preview/project-preview.js";
 import { prepareWorktree } from "./preview/worktree.js";
 import type { Store } from "./store/store.js";
-import { WorktreeProvisioner } from "./worktrees.js";
+import { WorktreeProvisioner, type DiffStat } from "./worktrees.js";
 
 interface LiveAgent {
   handle: RunnerHandle;
@@ -1252,6 +1252,7 @@ export class Orchestrator {
     runId: string,
     stat: { add: number; del: number; files: string[] },
     patch: string,
+    opts: { skipFullAutonomy?: boolean } = {},
   ): Promise<void> {
     const agent = await this.store.getRun(runId);
     if (!agent) return;
@@ -1342,7 +1343,11 @@ export class Orchestrator {
     // full-auto-merges could accumulate toward the threshold without ever
     // resetting. Flagged, not silently missing — narrowing the breaker to
     // exactly the two mechanisms its spec named, rather than expanding scope.
-    if (project?.approvalLevel === "full" && project.autonomy && risk !== "high") {
+    // `skipFullAutonomy`: forceIntegrateRun's own completeness check already
+    // judged this diff incomplete — a `full`-autonomy policy auto-merging it
+    // anyway right here would silently undo that finding, so this ONE caller
+    // opts out of the fast path regardless of the project's approval level.
+    if (!opts.skipFullAutonomy && project?.approvalLevel === "full" && project.autonomy && risk !== "high") {
       const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "policy:full-autonomy", at: now() };
       await this.hub.runLog(runId, `auto-merged (policy:full-autonomy): ${item.title}`);
       await this.hub.raiseAndAutoResolveHitl(item, resolution);
@@ -2321,30 +2326,105 @@ export class Orchestrator {
   }
 
   /**
+   * Force Done skips the normal review gate entirely — the one sanity check
+   * that survives that skip: a plain "does this satisfy the task" consult on
+   * the run's OWN provider (never a separate reviewer agent — Force Done
+   * must still work on a single-agent fleet), the SAME prompt/field-based
+   * parsing `autoReview`'s own plain-consult path uses (`REVIEW_OUTPUT_INSTRUCTION`
+   * / `parseReviewVerdict` — never classifying the model's prose). Returns
+   * null — "no signal available", never a block — when there's no linked
+   * task to judge against, the provider has no `consult` support, there's
+   * nothing to diff, or the consult itself throws; the caller treats null
+   * exactly like an "approve" so Force Done's override still works on a
+   * fleet/provider that simply can't answer this.
+   */
+  private async judgeForceDoneCompleteness(
+    agent: TaskRun,
+    project: Project | undefined,
+    git: GitContext,
+    baseRef: string,
+  ): Promise<{ approve: boolean; reason: string; stat: DiffStat; patch: string } | null> {
+    const task = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === agent.id);
+    if (!task) return null;
+    const provider = await this.getProvider(agent.provider);
+    if (!provider.consult) return null;
+    const stat = await git.worktrees.diffStat(agent.id, baseRef);
+    const patch = await git.worktrees.patch(agent.id, baseRef);
+    if (!patch) return null; // nothing changed — nothing to judge
+    const apiKey = await secretService.resolve(agent.workspaceId, agent.credentialId ?? agent.provider);
+    const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
+    const reply = await provider.consult(
+      { task: buildAgentContext({ project, feature, body: task.text }), model: agent.model, cwd: config.runnerCwd, apiKey, context: patch },
+      `Review whether this run satisfies the task "${task.text}". ${REVIEW_OUTPUT_INSTRUCTION}`,
+    );
+    const verdict = parseReviewVerdict(reply);
+    return { approve: verdict.approve, reason: verdict.reason, stat, patch };
+  }
+
+  /**
+   * Force Done's completeness check came back "flag": don't push/merge —
+   * raise a REAL diff review instead (bypassing raiseDiffReview's own
+   * `full`-autonomy fast path, which would otherwise silently auto-merge
+   * straight past the finding this function exists to surface) and stamp the
+   * verdict onto the task immediately so the "⚠ flagged for you" banner shows
+   * without waiting for a later autonomy tick. Raising the HITL is also the
+   * notification — Telegram/push already fires for every newly-raised gate,
+   * so the operator hears about this the moment it happens, not silently.
+   */
+  private async flagForceDoneIncomplete(
+    runId: string,
+    workspaceId: string,
+    taskId: string | null,
+    judged: { reason: string; stat: DiffStat; patch: string },
+  ): Promise<void> {
+    await this.hub.runStatus(runId, "review");
+    await this.hub.runLog(runId, `Force Done held back — looks incomplete: ${judged.reason}`);
+    const resolvedTaskId = taskId ?? (await this.store.listTasks(workspaceId)).find((t) => t.runId === runId)?.id ?? null;
+    if (resolvedTaskId) {
+      const task = await this.store.getTask(resolvedTaskId);
+      if (task) {
+        await this.hub.upsertTask({
+          ...task,
+          state: "review",
+          reviewVerdict: { decision: "flag", reason: judged.reason, by: "force-done-check", at: now(), evidence: null, breaker: null },
+        });
+      }
+    }
+    await this.raiseDiffReview(runId, judged.stat, judged.patch, { skipFullAutonomy: true });
+  }
+
+  /**
    * Force Done's git-aware path when there's no open HITL to approve:
    * commits whatever's sitting uncommitted in a still-LIVE run's worktree
    * (mirroring what `complete()` already does at the end of a normal turn —
    * a live run may be mid-turn and never reached that point), frees the
    * runner the same way `stopAgent()`/`restoreCheckpoint()` already do, then
-   * routes the branch through {@link integrateRun} — the exact same push/
-   * merge integration a diff approval uses. Returns false when there's
-   * genuinely nothing to integrate (no run, already done, or no worktree/git
-   * backend at all) so the caller falls back to a cosmetic-only "done"
-   * rather than fabricating one over unlanded work.
+   * checks completeness before pushing: an "approve" (or no signal — see
+   * {@link judgeForceDoneCompleteness}) routes the branch through
+   * {@link integrateRun} exactly as before; a "flag" withholds the push and
+   * raises a real diff review instead (see {@link flagForceDoneIncomplete}).
+   * Returns "nothing" when there's genuinely nothing to integrate (no run,
+   * already done, or no worktree/git backend at all) so the caller falls
+   * back to a cosmetic-only "done" rather than fabricating one over unlanded
+   * work; "integrated" or "flagged" both mean real work happened here and
+   * the caller must NOT also cosmetically flip the task.
    */
-  async forceIntegrateRun(runId: string): Promise<boolean> {
+  async forceIntegrateRun(runId: string): Promise<"integrated" | "flagged" | "nothing"> {
     const agent = await this.store.getRun(runId);
-    if (!agent || agent.status === "done") return false;
+    if (!agent || agent.status === "done") return "nothing";
     const live = this.live.get(runId);
     const project = await this.store.getProject(agent.projectId);
     const git = live?.git ?? this.gitContextFor(project);
-    if (!git || !git.worktrees.exists(runId)) return false;
+    if (!git || !git.worktrees.exists(runId)) return "nothing";
 
     // Commit whatever's uncommitted right now — idempotent (a no-op on a
     // clean worktree, same as complete()'s own call).
     await git.worktrees
       .commitAll(runId, `Skynet agent ${runId}: ${agent.name} (force-completed by operator)`)
       .catch(() => undefined);
+
+    const taskId = live?.taskId ?? null;
+    const baseRef = live?.baseRef ?? this.baseBranchFor(project);
 
     // A live run holds its runner exclusively — free it before handing the
     // worktree to the merge/push pipeline, the same release restoreCheckpoint()
@@ -2355,7 +2435,13 @@ export class Orchestrator {
       this.live.delete(runId);
     }
 
-    return this.integrateRun(runId);
+    const judged = await this.judgeForceDoneCompleteness(agent, project, git, baseRef).catch(() => null);
+    if (judged && !judged.approve) {
+      await this.flagForceDoneIncomplete(runId, agent.workspaceId, taskId, judged);
+      return "flagged";
+    }
+
+    return (await this.integrateRun(runId)) ? "integrated" : "nothing";
   }
 
   // ── deliver a resolved decision ────────────────────────────────────────────
