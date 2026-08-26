@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Project, ProjectQualityResult, ScenarioAxis } from "@skynet/shared";
 import * as api from "../lib/client";
+import { CoverageTree } from "../components/coverage-tree";
 
 // The project-detail "Coverage" tab — scenario coverage for the checked-out
 // branch. Answers the question line coverage can't: which of the codebase's
@@ -50,6 +51,9 @@ export function ProjectQualityView({ project }: { project: Project }) {
   const [err, setErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   const [showAll, setShowAll] = useState(false);
+  // Tree first: the panel exists to make gaps graspable, and "which
+  // subsystems are unpinned" is the question a flat ranked list can't answer.
+  const [mode, setMode] = useState<"tree" | "list">("tree");
 
   useEffect(() => {
     let live = true;
@@ -129,22 +133,39 @@ export function ProjectQualityView({ project }: { project: Project }) {
         </div>
       ) : (
         <>
-          <div className="qa-listhead">
-            <span className="qa-listhead-t">
-              {showAll ? `All ${q.axes.length} sets` : `${withGaps.length} of ${q.axes.length} sets have a gap`}
-            </span>
-            <button className="qa-toggle" onClick={() => setShowAll((v) => !v)}>
-              {showAll ? "Show only gaps" : "Show all"}
-            </button>
+          <div className="qa-modes">
+            {(["tree", "list"] as const).map((m) => (
+              <button
+                key={m}
+                className={"qa-mode" + (mode === m ? " qa-mode-on" : "")}
+                onClick={() => setMode(m)}
+              >
+                {m === "tree" ? "Where the gaps are" : "Worst sets first"}
+              </button>
+            ))}
           </div>
-          {shown.length === 0 ? (
-            <div className="kb-empty">Every enumerable case is mentioned by at least one test.</div>
+          {mode === "tree" ? (
+            <CoverageTree axes={q.axes} />
           ) : (
-            <div className="qa-axes">
-              {shown.map((a) => (
-                <AxisRow key={a.name + a.file} axis={a} />
-              ))}
-            </div>
+            <>
+              <div className="qa-listhead">
+                <span className="qa-listhead-t">
+                  {showAll ? `All ${q.axes.length} sets` : `${withGaps.length} of ${q.axes.length} sets have a gap`}
+                </span>
+                <button className="qa-toggle" onClick={() => setShowAll((v) => !v)}>
+                  {showAll ? "Show only gaps" : "Show all"}
+                </button>
+              </div>
+              {shown.length === 0 ? (
+                <div className="kb-empty">Every enumerable case is mentioned by at least one test.</div>
+              ) : (
+                <div className="qa-axes">
+                  {shown.map((a) => (
+                    <AxisRow key={a.name + a.file} axis={a} />
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </>
       )}

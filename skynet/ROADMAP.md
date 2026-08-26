@@ -1613,6 +1613,16 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   the strongest direct answer to "does it work", since it verifies assertions actually *hold*, but it
   needs per-project runner config and real runtime budget, so it's a separate piece of work, not a
   panel that renders in half a second.
+  **Tree view** (`packages/shared/src/coverage-tree.ts`, `apps/web/src/components/coverage-tree.tsx`):
+  a ranked flat list answers *"what do I fix next"* but dissolves structure — 44 rows can't show that
+  the gaps cluster in `evals/`, `preview/` and `settings/` while `orchestrator.ts`, `command-safety.ts`
+  and `steward/` are fully pinned. That clustering is what says whether an **area** is understood, and
+  it exists only in the hierarchy. Every axis already carries its declaring file, so directory → file →
+  axis → case is derivable with no new server work; un-branching chains collapse to one row
+  (`apps/web/src`), siblings sort by gap count, and branches leading to a gap start expanded. **The
+  roll-ups deliberately fill by GAP and leave "covered" neutral, never green** — a green `38/47` on
+  `apps/server/` would read as "this subsystem is tested" when it only means every case is mentioned
+  somewhere, and a tree that renders reassurance it hasn't earned is worse than no tree at all.
 
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
