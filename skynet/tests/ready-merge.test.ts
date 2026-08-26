@@ -159,11 +159,30 @@ describe("ready-to-merge", () => {
   // operator can see whether CI actually ran and passed before trusting a
   // "RECOMMEND MERGE" verdict.
   it("prChecksForRun surfaces the real check-run status for the open PR", async () => {
-    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "open", checks: "passing", mergeable: true });
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "open", checks: "passing", mergeable: true, runs: [] });
     const { store, orch } = await setup();
     await store.putRun(mkRun());
-    expect(await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1")).toEqual({ checks: "passing", mergeable: true });
+    expect(await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1")).toEqual({ checks: "passing", mergeable: true, runs: [] });
     expect(githubService.prStatus).toHaveBeenCalledWith(DEFAULT_WORKSPACE, "acme/app", 42, null);
+  });
+
+  // (c): the aggregate "checks: failing" verdict alone doesn't say WHICH gate
+  // failed — the per-check-run breakdown (named lint/typecheck/test jobs) must
+  // pass through untouched so the ready-to-merge card can show it inline.
+  it("prChecksForRun forwards the per-check-run breakdown, not just the aggregate verdict", async () => {
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      state: "open",
+      checks: "failing",
+      mergeable: true,
+      runs: [{ name: "lint", state: "pass" }, { name: "typecheck", state: "fail" }, { name: "test", state: "pending" }],
+    });
+    const { store, orch } = await setup();
+    await store.putRun(mkRun());
+    expect(await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1")).toEqual({
+      checks: "failing",
+      mergeable: true,
+      runs: [{ name: "lint", state: "pass" }, { name: "typecheck", state: "fail" }, { name: "test", state: "pending" }],
+    });
   });
 
   it("prChecksForRun returns null (never throws) when there's no open PR or the workspace doesn't match", async () => {

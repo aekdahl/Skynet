@@ -457,7 +457,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     { taskId: z.string(), to: TaskState },
     (a) => operations.transitionTask(ws, a.taskId, a.to, principal.operatorId),
   );
-  tool("force_task_done", "author", "Escape hatch: force a task straight to done from any state and sync its run — use only when the normal review→done path is stuck (wedged gate, run finished out-of-band).", { taskId: z.string() }, (a) => operations.forceTaskDone(ws, a.taskId));
+  tool("force_task_done", "author", "Escape hatch: force a task straight to done from any state — commits + pushes/opens a PR (or enqueues the local merge) through the same path a normal Approve uses, so it's really done, not just relabeled. Use only when the normal review→done path is stuck (wedged gate, run finished out-of-band).", { taskId: z.string() }, (a) => operations.forceTaskDone(ws, a.taskId, principal.operatorId));
   tool("request_review", "author", "Force a review pass on a review-stage task now, instead of waiting for a periodic tick to find an idle reviewer on its own. Throws if the task isn't in review with an open gate, already has a verdict, or no other (non-doer) agent is free to review right now.", { taskId: z.string() }, (a) => operations.requestReview(ws, a.taskId));
   tool("move_task", "author", "Bump a task up or down within its column's priority order (also the auto-pick order when Autonomy is on).", { taskId: z.string(), direction: z.enum(["up", "down"]) }, (a) => operations.moveTask(ws, a.taskId, a.direction));
   tool("reorder_task", "author", "Reorder a task to sit immediately before another task in the same column (beforeId = null moves it to the end).", { taskId: z.string(), beforeId: z.string().nullable() }, (a) => operations.reorderTask(ws, a.taskId, a.beforeId));
@@ -468,6 +468,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   });
   tool("import_github_issues", "author", "Import a project's connected-repo open GitHub issues as tasks (deduped; sets each task's source so status changes can sync back). Needs the project bound to a GitHub repo.", { projectId: z.string() }, (a) => operations.importGithubIssues(ws, a.projectId));
   tool("import_repo_file", "author", "Import a repo file's `- [ ]` checklist items as tasks (anchored by label; completing one later checks its box). Needs the project bound to a GitHub repo.", { projectId: z.string(), path: z.string() }, (a) => operations.importRepoFile(ws, a.projectId, a.path));
+  tool("resync_source", "author", "Catch up GitHub sync both ways for a project in one call: pull new/edited issues and repo-file checklist items into tasks, and push any task status change that never made it back (e.g. from before syncSourceStatus was on, or a failed write-back). Needs the project bound to a GitHub repo. Returns {imported, updated, pushed}.", { projectId: z.string() }, (a) => operations.resyncProjectSource(ws, a.projectId));
   tool("create_feature", "author", "Create a feature (a task grouping) in a project. Optionally roll it up into a milestone via `milestoneId`.", { projectId: z.string(), ...CreateFeatureRequest.shape }, (a) => {
     const { projectId, ...body } = a;
     return operations.createFeature(ws, projectId, body);

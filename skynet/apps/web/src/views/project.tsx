@@ -580,6 +580,14 @@ function TaskCard({
                 ⚡
               </button>
             )}
+            <button
+              className="kb-tool"
+              title="Reopen this done task in the backlog for another round of work — doesn't touch the already-merged branch."
+              aria-label="Send to Backlog for rework"
+              onClick={() => void transitionTask(pid, task.id, "backlog")}
+            >
+              ↺
+            </button>
             <button className="kb-tool" title="Archive — hide from the board (kept in the store, still read by Steward)" aria-label="Archive task" onClick={() => archiveTask(pid, task.id, true)}>⤓</button>
           </span>
         )}
@@ -1452,6 +1460,7 @@ export function ProjectView({
     assignTask,
     reorderTask,
     informRuns,
+    resyncProjectSource,
   } = useStore();
   const confirm = useConfirm();
   const noFleet = fleet.length === 0;
@@ -1599,6 +1608,7 @@ export function ProjectView({
   // Write task status back to the source (e.g. close/comment the linked GitHub
   // issue on done). Lives in this settings panel now; only meaningful with a repo.
   const [syncToSource, setSyncToSource] = useState(project.syncSourceStatus);
+  const [resyncing, setResyncing] = useState(false);
   const hasRepo = !!(project.gitBacked || project.repo);
 
   useEffect(() => {
@@ -1668,6 +1678,21 @@ export function ProjectView({
                 <span className="proj-autonomy-switch" aria-hidden="true" />
                 <span className="proj-autonomy-label">{syncToSource ? "On — status flows back to GitHub" : "Off"}</span>
               </label>
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={resyncing}
+                title="Pull new/edited GitHub issues and checklist items now, and push any task status change that never made it back (e.g. from before Sync to source was on)."
+                onClick={async () => {
+                  setResyncing(true);
+                  try {
+                    await resyncProjectSource(project.id);
+                  } finally {
+                    setResyncing(false);
+                  }
+                }}
+              >
+                {resyncing ? "Re-syncing…" : "Re-sync now"}
+              </button>
             </div>
           )}
           <div className="qx-row">

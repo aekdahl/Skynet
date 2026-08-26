@@ -85,6 +85,13 @@ describe("validateProjectAction — whitelist + project-scoped id resolution", (
     expect(validateProjectAction({ kind: "request_review", taskId: "ghost" }, ctx)).toBeNull();
   });
 
+  it("resync_source needs no fields — the whole project is the target", () => {
+    const a = validateProjectAction({ kind: "resync_source" }, ctx);
+    expect(a).toMatchObject({ kind: "resync_source" });
+    expect(a?.summary).toMatch(/re-sync/i);
+    expect(a?.summary).toContain("Takeoff"); // ctx.project.name
+  });
+
   it("project edits validate their fields", () => {
     expect(validateProjectAction({ kind: "rename_project", name: "Liftoff" }, ctx)).toMatchObject({ kind: "rename_project", name: "Liftoff" });
     expect(validateProjectAction({ kind: "set_goal", goal: "ship v1" }, ctx)).toMatchObject({ kind: "set_goal", goal: "ship v1" });
