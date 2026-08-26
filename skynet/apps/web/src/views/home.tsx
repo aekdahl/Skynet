@@ -16,6 +16,7 @@ import {
   providerReadiness,
   runnerName,
   spendEfficiency,
+  STALE_HEARTBEAT_SEC,
   type RunTag,
   waitedSecs,
 } from "../lib/derive";
@@ -460,14 +461,6 @@ function SpendEfficiencyCard() {
 // list — idle capacity and the unassigned backlog are single-number stats,
 // not rows; drilling into a project's own page still shows that project's map.
 const DONE_CAP = 8;
-// A live run heartbeats every ~5s (CliRunnerHandle / the Claude runner's own
-// interval); the server's own reaper (SKYNET_AGENT_REAP_MS) presumes a
-// running/waiting agent dead after 180s of silence and escalates it. 60s is
-// the visual early-warning line: 12x the normal cadence (so ordinary jitter
-// never false-flags a healthy run), but a full two minutes' notice before the
-// reaper would actually act — the operator sees "this looks stuck" before
-// Skynet decides it IS stuck.
-const STALE_HEARTBEAT_SEC = 60;
 interface RunRow {
   run: TaskRun;
   agentId: string | null;
