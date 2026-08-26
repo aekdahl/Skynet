@@ -132,6 +132,12 @@ const ALLOW = new Set<string>([
   // reviewed / no open gate / no reviewer free) is server-side in
   // request-review.test.ts, driving the real Orchestrator/Operations.
   "requestReview",
+  // manual "Re-sync" — needs a real GitHub-bound project + a live GitHub API,
+  // so no offline journey exercises it. Full pull/push behavior (new issues,
+  // drifted title/description, new checklist items, push-drift with sync on/
+  // off) is server-side in resync-source.test.ts, driving the real Operations
+  // with a stubbed GitHub service.
+  "resyncProjectSource",
   // Feature + milestone CRUD (task grouping + roadmap) — exercised by the
   // features-and-roadmap tests (features-roadmap.test.ts) which drive the
   // full Operations path with real store + hub. No fleet journey shape uses
