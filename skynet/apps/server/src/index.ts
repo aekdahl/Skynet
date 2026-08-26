@@ -22,7 +22,7 @@ import { projectPreview } from "./preview/project-preview.js";
 import { registerLivePreviewProxy } from "./preview/preview-proxy.js";
 import { recordPublicOrigin } from "./preview/public-origin.js";
 import { registerSecretsRoutes } from "./secrets/index.js";
-import { registerGithubRoutes, configureGithub, githubService } from "./github/index.js";
+import { registerGithubRoutes, registerGithubWebhookRoutes, configureGithub, githubService } from "./github/index.js";
 import { startTaskSourceSync } from "./task-sync.js";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { registerEvalsRoutes } from "./evals/index.js";
@@ -201,6 +201,9 @@ async function main() {
   await registerSecretsRoutes(app);
   // GitHub App connection + safety policy (workspace-scoped); /api auth applies.
   await registerGithubRoutes(app);
+  // Inbound GitHub webhook (issues → task) — outside /api on purpose; the HMAC
+  // signature is its own auth. No-op unless GITHUB_WEBHOOK_SECRET is set.
+  await registerGithubWebhookRoutes(app, { operations });
   // LLM-judged acceptance evals (real runs via the standalone evals/ suite,
   // spawned as a subprocess); /api auth hook applies.
   await registerEvalsRoutes(app);

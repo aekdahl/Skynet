@@ -1867,9 +1867,22 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
 Turn Skynet from "I assign tasks" into "work flows in from my stack, human-gated." Every integration
 uses the **user's own accounts** (their Sentry, GitHub, LLM key) — Skynet is the connective +
 supervision layer, it doesn't host or resell those services.
-- [ ] **The enabling primitive:** an **inbound-trigger** concept — a webhook/event creates a task or agent
+- [x] **The enabling primitive:** an **inbound-trigger** concept — a webhook/event creates a task or agent
   in a workspace. Today the only trigger is "operator assigns a task"; this one primitive unlocks the
   whole category. (Cheap to design early so we don't foreclose it; build here.)
+  *Landed, first concrete instance:* `POST /webhooks/github` — a GitHub App `issues` webhook
+  (opened/reopened/labeled) creates the linked task immediately via `Operations.handleGithubIssueEvent`,
+  instead of waiting on the next manual "Import issues" click or re-sync. Deliberately outside `/api`
+  (the bearer-token auth guard doesn't apply — GitHub can't carry one); verified instead by an HMAC
+  signature (`X-Hub-Signature-256`) against `GITHUB_WEBHOOK_SECRET`, the same App-wide secret
+  `config.ts` already reserved for this. No workspace context arrives with a GitHub webhook, so it
+  resolves the owning project(s) with a new `Store.listAllProjects()` cross-workspace sweep (mirrors
+  `listAllRuns`/`listAllAgents`), filters to `repo` match + the same opt-in `Project.syncSourceStatus`
+  gate the write-back side already uses, and dedupes on `source.repo`+`source.number` — so a redelivered
+  or already-imported issue is a no-op. Other event types (push, check_run, …) 2xx-ack without acting, so
+  GitHub doesn't disable the webhook. The generic (non-GitHub) shape — any inbound webhook → task, for
+  Sentry/Linear/Slack/etc. — is still open; this proves the primitive end-to-end for the first, highest-
+  frequency source.
 - [ ] **Tools via MCP:** an agent gets scoped tools (GitHub / Sentry / Slack MCP) to act back into the
   user's services. A "Sentry agent" = a coding agent + Sentry MCP + a Sentry webhook trigger.
 - [x] **Skynet *as* an MCP server (shipped):** the reverse direction — Skynet exposes its own surface
@@ -1897,8 +1910,9 @@ supervision layer, it doesn't host or resell those services.
   already live in. **Landed, in three passes — every piece below is done:**
   - **Read (issue → task):** an "import issues" action (callable anytime, not just at project creation —
     `POST /api/projects/:id/import/github-issues`) pulls open issues from the connected repo; each becomes
-    a Task linked back via `Task.source` (issue number + URL). Pull-on-demand only; a webhook trigger
-    (issue opened/labeled → task) still waits on the v3 inbound-trigger primitive.
+    a Task linked back via `Task.source` (issue number + URL). *Landed this pass:* the pull is no longer
+    the only path in — `POST /webhooks/github` (the v3 inbound-trigger primitive, above) creates the same
+    linked task the moment an issue is opened/reopened/labeled, gated by the same opt-in.
   - **Work:** the task runs the standard loop (assign → worktree → diff → PR). *Landed this pass:* the PR
     body is auto-linked with `Closes #<n>` (`orchestrator.ts`'s `openPrForRun`) whenever the task's
     `source.kind === "github_issue"`, so merging the PR closes the issue on GitHub even if write-back
