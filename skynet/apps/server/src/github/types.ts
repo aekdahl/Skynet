@@ -102,6 +102,10 @@ export interface GitProvider {
   /** Every label currently on an issue (names only), so a caller can preserve
    *  the ones it doesn't own before replacing the set. */
   getIssueLabels(token: string, repo: string, number: number): Promise<string[]>;
+  /** An issue's current open/closed state + labels — unlike listIssues (open
+   *  issues only), this also reaches a closed one. Manual re-sync's reconcile
+   *  pass needs this to detect drift regardless of which way it went. */
+  getIssue(token: string, repo: string, number: number): Promise<{ state: "open" | "closed"; labels: string[] }>;
   /** Replace an issue's ENTIRE label set (GitHub's replace-all semantics). */
   setIssueLabels(token: string, repo: string, number: number, labels: string[]): Promise<void>;
   /** Read a file's decoded text + blob sha (the sha is needed to commit an update).

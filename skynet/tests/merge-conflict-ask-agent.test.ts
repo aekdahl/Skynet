@@ -118,6 +118,10 @@ describe("a merge conflict's captured diff can resume the agent with zero typing
     const mergeItem = (await openOf("merge"))!;
     expect(mergeItem.runId).toBe(runB.id);
     expect(mergeItem.output).toBeTruthy();
+    // The RESOLVED target branch (no featureId, no operator override here —
+    // the project's own default integration branch) is named up front, not
+    // left for the agent to guess from "the target branch" alone.
+    expect(mergeItem.output).toContain("Target branch: skynet/integration/p1");
     expect(mergeItem.output).toContain("<<<<<<<");
     expect(mergeItem.output).toContain("version A");
     expect(mergeItem.output).toContain("version B");
@@ -136,5 +140,10 @@ describe("a merge conflict's captured diff can resume the agent with zero typing
     expect(resumedPrompt).toContain("version A");
     expect(resumedPrompt).toContain("version B");
     expect(resumedPrompt).toMatch(/merge conflict/i);
+    // The real target ref rides the prompt, and the agent is told it can go
+    // look at that branch's actual current content directly rather than
+    // reconstructing the merge blind from the diff snippet alone.
+    expect(resumedPrompt).toContain("Target branch: skynet/integration/p1");
+    expect(resumedPrompt).toMatch(/git show|git diff/);
   });
 });
