@@ -264,6 +264,38 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     expect((await store.getRun(run.id))?.status).toBe("waiting");
   });
 
+  it("a reaped (heartbeat-silent) run parked on a normal gate is freed AND its task is un-stranded — not left 'ongoing' showing a done run", async () => {
+    const { run, events, handle } = await assignRun();
+    // Parked on a plain (non-escalation, non-auto-approved) gate — the runner
+    // itself reports "waiting" for this branch, unlike the escalation kind
+    // which the orchestrator sets internally (see the "agent hands off" test).
+    events.onStatus(run.id, "waiting");
+    events.onHitl(run.id, {
+      kind: "question", title: "Which auth flow?", why: "need to pick one before continuing",
+      risk: "medium", rationale: null, command: null, options: ["OAuth", "SAML"], recommended: null, steps: null, diff: null,
+    });
+    await waitFor(async () => (await store.getRun(run.id))?.status === "waiting");
+    expect(bus.raised().some((i) => i.kind === "question")).toBe(true); // a real gate, not an escalation
+
+    // Simulate the session dying while parked here: heartbeat goes stale.
+    const cur = (await store.getRun(run.id))!;
+    await store.putRun({ ...cur, status: "waiting", lastHeartbeatAt: 0 });
+
+    await orchestrator.reapStaleAgents();
+
+    await waitFor(async () => (await store.getRun(run.id))?.status === "done");
+    expect(handle.stopCalls).toBeGreaterThanOrEqual(1); // dead session torn down
+    expect((await store.getAgent("r1"))?.status).toBe("idle"); // runner freed
+    // Reported live: this reap path used to leave the owning task stranded
+    // "ongoing" — a kanban card sitting in a mid-pipeline column while its
+    // run's own status chip read "done". Same invariant haltAgent/
+    // settleArchivedRun uphold on every other termination path.
+    const freed = (await store.listTasks(DEFAULT_WORKSPACE))[0]!;
+    expect(freed.state).toBe("todo");
+    expect(freed.runId).toBeNull();
+    expect(freed.reviewVerdict).toBeNull();
+  });
+
   it("out of credits trips the key breaker: escalates once, pauses new runs on the key, resume clears it", async () => {
     const { run, events } = await assignRun();
     // The runner hits a billing wall (surfaced as the provider's own message).
