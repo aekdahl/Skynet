@@ -84,6 +84,7 @@ import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resol
 import { contentHash, readProjectDoc, resolveRoadmapDoc } from "./steward/docs.js";
 import { draftBriefFromConversation, summarizeConversation } from "./steward/crystallize.js";
 import { condenseProjectContext } from "./steward/context.js";
+import { prioritizeColumn } from "./steward/organize.js";
 import { extractText } from "./steward/extract.js";
 import { commitLocalRepoFile } from "./local-repo-write.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
@@ -174,6 +175,9 @@ export interface OperationsDeps {
   /** Test seam: override the model call refreshProjectContext makes (see
    *  condenseProjectContext's `ask` param). Same rationale as crystallizeAsk. */
   contextAsk?: (prompt: string) => Promise<string>;
+  /** Test seam: override the model call organizeBoard makes per column (see
+   *  prioritizeColumn's `ask` param). Same rationale as crystallizeAsk. */
+  organizeAsk?: (prompt: string) => Promise<string>;
 }
 
 export class Operations {
@@ -184,6 +188,7 @@ export class Operations {
   private readonly decomposeConsult: (opts: { prompt: string; model: string; apiKey?: string | null }) => Promise<string>;
   private readonly crystallizeAsk?: (prompt: string) => Promise<string>;
   private readonly contextAsk?: (prompt: string) => Promise<string>;
+  private readonly organizeAsk?: (prompt: string) => Promise<string>;
 
   constructor(deps: OperationsDeps) {
     this.store = deps.store;
@@ -192,6 +197,7 @@ export class Operations {
     this.decomposeConsult = deps.decomposeConsult ?? ((opts) => oneShotText({ ...opts, apiKey: opts.apiKey ?? undefined }));
     this.crystallizeAsk = deps.crystallizeAsk;
     this.contextAsk = deps.contextAsk;
+    this.organizeAsk = deps.organizeAsk;
   }
 
   private uid(prefix: string): string {
@@ -1431,6 +1437,58 @@ export class Operations {
       if (rank(list[i]!) !== i) await this.hub.upsertTask({ ...list[i]!, order: i });
     }
     return (await this.store.getTask(tid))!;
+  }
+  /** Steward-driven board tidy: priority-sorts every non-done column by what
+   *  it can infer from each task's title + description (see
+   *  steward/organize.ts), and archives every current Done task — recorded
+   *  work with no reason to keep cluttering the active board; Archive is
+   *  fully reversible from the Archived view. One explicit operator-triggered
+   *  action (not a background job) — same one-click directness as Force done
+   *  / Archive. Best-effort per column: a column whose consult fails/degrades
+   *  keeps its existing order rather than failing the whole tidy. */
+  async organizeBoard(ws: string, projectId: string): Promise<{ reordered: number; archived: number }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const all = (await this.store.listTasks(ws)).filter((t) => t.projectId === projectId && !t.archived);
+
+    const ask =
+      this.organizeAsk ??
+      (async (prompt: string) => {
+        const apiKey = (await secretService.resolve(ws, "claude")) ?? undefined;
+        return oneShotText({ prompt, model: ASSISTANT_MODEL, apiKey });
+      });
+    // Skip the (doomed) call when we already know no key resolves — same
+    // structural guard as refreshProjectContext, not reply-content sniffing.
+    const canAsk = !!this.organizeAsk || !!(await secretService.resolve(ws, "claude"));
+
+    let reordered = 0;
+    const rank = (t: Task) => t.order ?? 0;
+    if (canAsk) {
+      for (const state of ["backlog", "triage", "todo", "ongoing", "review"] as const) {
+        const column = all.filter((t) => t.state === state).sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
+        if (column.length < 2) continue;
+        const order = await prioritizeColumn(
+          ask,
+          project.name,
+          project.goal,
+          column.map((t) => ({ id: t.id, text: t.text, description: t.description })),
+        );
+        for (let i = 0; i < order.length; i++) {
+          const task = column.find((t) => t.id === order[i]);
+          if (task && rank(task) !== i) {
+            await this.hub.upsertTask({ ...task, order: i });
+            reordered++;
+          }
+        }
+      }
+    }
+
+    let archived = 0;
+    for (const task of all.filter((t) => t.state === "done")) {
+      await this.hub.upsertTask({ ...task, archived: true });
+      archived++;
+    }
+    return { reordered, archived };
   }
   async deleteTask(ws: string, tid: string): Promise<void> {
     const task = await this.store.getTask(tid);

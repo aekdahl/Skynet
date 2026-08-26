@@ -102,6 +102,14 @@ const ALLOW = new Set<string>([
   // creation) — a real LLM call on the workspace's own key, same "needs a live
   // provider" shape as stewardChat above; no offline journey drafts one.
   "draftCharter",
+  // Steward-driven board tidy (priority-sort every non-done column + archive
+  // Done) — one real LLM call per column on the workspace's own key, same
+  // "needs a live provider" shape as stewardChat/crystallizeBrief/draftCharter
+  // above; no offline journey exercises it. The full Operations path (reorder
+  // via an injected reply, archive-Done, degrade-to-unchanged on an unreadable
+  // reply, the one retry, and repairing a reply that drops/duplicates/invents
+  // ids) is exercised with a stubbed `organizeAsk` in organize-board.test.ts.
+  "organizeBoard",
   // auth handshake — needs live operator credentials + a session token exchange,
   // so it can't run in an offline journey (the login screen exercises it live)
   "login",

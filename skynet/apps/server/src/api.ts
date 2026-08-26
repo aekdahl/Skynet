@@ -967,6 +967,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Steward-driven board tidy: priority-sort every non-done column by title +
+  // description, archive everything currently in Done. One explicit
+  // operator-triggered action — see Operations.organizeBoard's doc comment.
+  app.post<{ Params: { id: string } }>("/api/projects/:id/organize", async (req, reply) => {
+    try {
+      return await ops.organizeBoard(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // Force a task to `done` — bypasses HUMAN_TRANSITIONS. The escape hatch
   // when the normal review → done path fails (merge queue stuck, HITL
   // wedged, run finished without advancing the card). Commits + pushes/opens

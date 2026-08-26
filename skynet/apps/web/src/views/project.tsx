@@ -29,6 +29,7 @@ import { TimelineView } from "./home";
 import { RoadmapDocView } from "./project-roadmap";
 import { ProjectContextView } from "./project-context";
 import { InformComposer, toastInformResult } from "./fleet";
+import { toast } from "../components/toast";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -1461,9 +1462,11 @@ export function ProjectView({
     reorderTask,
     informRuns,
     resyncProjectSource,
+    organizeBoard,
   } = useStore();
   const confirm = useConfirm();
   const noFleet = fleet.length === 0;
+  const [organizing, setOrganizing] = useState(false);
   // Mass inform, whole-project mode: attach a note to every currently live run
   // in this project — see InformComposer (fleet.tsx) for the shared UI.
   const [informOpen, setInformOpen] = useState(false);
@@ -1823,6 +1826,24 @@ export function ProjectView({
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
             <ProjectToolAccess project={project} onChange={(tools) => updateProject(project.id, { disallowedTools: tools })} />
             <div className="projview-head-admin">
+              <button
+                className="btn btn-ghost"
+                disabled={organizing}
+                title="Steward reads every task's title + description and priority-sorts each column; every current Done task is archived (recorded work, off the active board — fully reversible from Archived)."
+                onClick={async () => {
+                  setOrganizing(true);
+                  const { reordered, archived } = await organizeBoard(project.id);
+                  setOrganizing(false);
+                  toast(
+                    reordered || archived
+                      ? `Organized — ${reordered} task(s) reordered, ${archived} archived from Done.`
+                      : "Nothing to organize — every column was already in order and Done was empty.",
+                    "success",
+                  );
+                }}
+              >
+                {organizing ? "✨ Organizing…" : "✨ Organize board"}
+              </button>
               {liveProjectRunCount > 0 && (
                 <button
                   className={"btn btn-ghost" + (informOpen ? " on" : "")}
