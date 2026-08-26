@@ -4181,6 +4181,18 @@ export class Orchestrator {
       await this.stopAgent(a.id, reason).catch(() => undefined);
       await this.hub.runStatus(a.id, "done").catch(() => undefined);
       await this.hub.runCompleted(a.id, a.branch).catch(() => undefined);
+      // stopAgent retired the worktree — this run integrates no change, so its
+      // owning task must not be left stranded "ongoing" (or "review") showing
+      // a live-looking column next to a run whose chip now reads "done". Same
+      // invariant haltAgent/settleArchivedRun uphold; this sweep was the one
+      // termination path missing it (reported live: a kanban card sitting in
+      // a mid-pipeline column while its status chip showed done).
+      const reapedTask = (await this.store.listTasks(a.workspaceId).catch(() => [] as Task[])).find(
+        (t) => t.runId === a.id,
+      );
+      if (reapedTask && (reapedTask.state === "ongoing" || reapedTask.state === "review")) {
+        await this.hub.upsertTask({ ...reapedTask, state: "todo", runId: null, reviewVerdict: null }).catch(() => undefined);
+      }
     }
   }
 

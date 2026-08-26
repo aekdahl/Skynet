@@ -529,6 +529,22 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Fix: a third termination path could strand a task "ongoing"/"review" while its run showed "done".**
+  Reported live: "Task status should of course match the column in kanban it is in" — a card sitting in a
+  mid-pipeline column (Ongoing/Review) whose own status chip (driven by the linked run's `status`, a
+  SEPARATE state machine from the task's kanban `state` — see `apps/web/src/views/project.tsx`'s per-card
+  chip) read "done". The invariant "an ongoing/review task always has a live run behind it" already has two
+  enforcers — `haltAgent` (the plain Stop button, and the fix directly above this one for its escalation-card
+  twin) and `settleArchivedRun` — both of which return the task to `todo` + detach it when their run goes
+  terminal. `reapStaleAgents`'s OWN third termination path — the sweep that frees a runner whose session died
+  silently while its run sat `waiting` on an open gate (not yet an escalation) — never got this fix: it
+  called `stopAgent` + `runStatus(..., "done")` + `runCompleted(...)` but never touched the owning task, so a
+  run reaped this way left its task permanently stranded in whatever column it was in, now showing a "done"
+  run underneath it. Added the identical task-reset (`state → "todo"`, `runId → null`, `reviewVerdict →
+  null`) this sweep was missing, matching `haltAgent`/`settleArchivedRun` byte-for-byte. New test in
+  `escalation.test.ts`: a run parked on a plain (non-escalation) gate whose heartbeat goes stale is reaped,
+  and the task is un-stranded to `todo` — the exact scenario that used to leave a done-looking run under a
+  mid-pipeline card.
 - [x] **Fix: answering a triage clarifying question could loop forever — same question, every time.**
   Reported live right after clarifying questions shipped: answer the question → task returns to `backlog`
   for re-triage (by design, since the answer can change the effort/risk/grouping read) → triage runs again
