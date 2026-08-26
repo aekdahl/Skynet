@@ -1876,11 +1876,16 @@ User-owned memory that no single vendor can match, because everything streams th
   instructions, etc.**, and project Skynet's portable memory into each vendor's native format.
 - [ ] Injection via the vendor-agnostic `runner-sdk`; sourced from the streams + `hitl_audit` already
   flowing through the `hub`.
-- [ ] **⭐ Open the format — openness is the second moat.** Publish a versioned, human-readable, git-committable
+- [x] **⭐ Open the format — openness is the second moat.** Publish a versioned, human-readable, git-committable
   **open memory spec** (align with / extend `AGENTS.md`-style conventions) so the memory is a *substrate,
   not a new silo*. Openness is the adoption + trust lever — users only pour knowledge into something they
   can't be locked out of — which makes Skynet the default hub. The durable moat then shifts to *curation
   quality + the accumulated personal corpus + being the hub*, not owning the format (the git → GitHub play).
+  *Landed: [docs/memory-format.md](docs/memory-format.md) — spec v0.1. `.skynet/memory/` holds Markdown
+  files (workspace/project/area/agent-family scoped), YAML frontmatter for file-level metadata, one `##`
+  section per fact with an inert HTML-comment metadata line (id/source/author/created/confidence/
+  supersedes), append-only editing so `git log` stays a meaningful record. Format-only: no reader/writer,
+  MCP server, or runner-sdk injection ships here — those stay separate, unbuilt roadmap items below.*
 - [ ] **⭐ Memory as an MCP server** — expose the brain over MCP so **any** agent or tool can read/write it, even
   ones never run through Skynet. Your context follows you everywhere; rides the shipped `/mcp` surface.
 - [ ] **Open-core split** — the *format + read/write MCP* are free/open (drive ubiquity); *distillation
