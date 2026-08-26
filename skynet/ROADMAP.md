@@ -1956,6 +1956,7 @@ User-owned memory that no single vendor can match, because everything streams th
   not a new silo*. Openness is the adoption + trust lever — users only pour knowledge into something they
   can't be locked out of — which makes Skynet the default hub. The durable moat then shifts to *curation
   quality + the accumulated personal corpus + being the hub*, not owning the format (the git → GitHub play).
+- [x] **⭐ Memory as an MCP server** — expose the brain over MCP so **any** agent or tool can read/write it, even
   *Landed: [docs/memory-format.md](docs/memory-format.md) — spec v0.1. `.skynet/memory/` holds Markdown
   files (workspace/project/area/agent-family scoped), YAML frontmatter for file-level metadata, one `##`
   section per fact with an inert HTML-comment metadata line (id/source/author/created/confidence/
@@ -1963,6 +1964,12 @@ User-owned memory that no single vendor can match, because everything streams th
   MCP server, or runner-sdk injection ships here — those stay separate, unbuilt roadmap items below.*
 - [ ] **⭐ Memory as an MCP server** — expose the brain over MCP so **any** agent or tool can read/write it, even
   ones never run through Skynet. Your context follows you everywhere; rides the shipped `/mcp` surface.
+  *Landed (thin v0): four new MCP tools — `list_memory`/`add_memory`/`delete_memory`/`refresh_memory` — put
+  a project's memory (`ProjectContextEntry`, condensed into `Project.contextSummary`, the primer every
+  agent's prompt already reads via `agent-context.ts`) on the wire for any MCP client, scoped/gated exactly
+  like every other project-bearing tool (see [docs/mcp.md](docs/mcp.md)). Wired to TODAY's store, not the
+  richer open, git-committable format above (`.skynet/memory/`) — that lands underneath this same tool
+  contract once it ships, no client-facing change needed.*
 - [ ] **Open-core split** — the *format + read/write MCP* are free/open (drive ubiquity); *distillation
   intelligence, cross-vendor translation quality, hosted sync, team sharing, and governance* are the paid layer.
 - [ ] 🔬 **LLM-assisted distillation** of good memory from history — open research; start with
