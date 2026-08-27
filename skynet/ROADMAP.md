@@ -50,7 +50,7 @@ Items are ranked PMF > Platform > Product within each batch:
 |-------|---|------|-------|
 | **N (now)** | 1 | deep-review / breaker-review settings UI toggle | PMF |
 | | 2 | Memory v0 — operator-authored facts, injected per project | Platform |
-| | 3 | Kimi Code runner + reactive runner breadth | Product |
+| | 3 | Reactive runner breadth (Kimi Code landed) | Product |
 | | 4 | First-run onboarding telemetry (anonymous install events) | PMF |
 | | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
 | **N+1** | 1 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
@@ -264,10 +264,9 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   - **Copilot** — a real per-invocation flag, `--additional-mcp-config <json>` (verified against
     `@github/copilot` 1.0.80); tool calls fall through the existing generic approval-prompt match, same
     live gate as any other tool.
-- [~] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot, OpenCode** done;
-  **Kimi Code** (Moonshot AI's terminal coding agent, same CLI shape as Claude/Codex/Gemini,
-  [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) still to do; then breadth reactively from
-  the candidate list in [docs/runner-catalog.md](docs/runner-catalog.md).
+- [~] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot, OpenCode, Kimi Code**
+  all done; then breadth reactively from the candidate list in
+  [docs/runner-catalog.md](docs/runner-catalog.md).
   *Landed: Codex, Gemini, Cursor, and Copilot are all real, wired-up `CliRunnerProvider`s
   (`orchestrator.ts`'s `getProvider` dynamic-imports each from `runner-sdk`), plus Hermes (not
   originally named in this bullet) — five non-Claude vendors live today, each with real CLI
@@ -291,7 +290,25 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   changes the real working directory but never syncs `PWD` to match) silently pointed it at the Skynet
   server's own launch directory instead of the agent's worktree, writing real files there while `commitAll`
   correctly saw a clean, unrelated worktree and reported "no changes to integrate" — fixed by setting `PWD`
-  to match `cwd` on every spawn.* Still to do: **Kimi Code** and reactive breadth from the candidate list.
+  to match `cwd` on every spawn.* **Kimi Code landed** (`packages/runner-sdk/src/kimi.ts`, `RUNNER=kimi`,
+  native single-binary install — [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)) — drives
+  `kimi -p <task> --output-format stream-json`, a real NDJSON stream verified live against kimi-code 0.38.0
+  (installed via the official `install.sh`; a plain reply, a successful bash call, a *failing* bash call,
+  and a file write, each captured and locked into `tests/cli-runner-vendor-usage.test.ts`). No usage/cost is
+  ever reported by this mode (confirmed against the CLI's own docs and every live capture) — `onUsage`
+  simply never fires for this vendor, an honest gap rather than a fabricated row. No live HITL gate: `-p`
+  mode runs under a fixed `auto` permission policy by design and can't even be combined with `--yolo`/
+  `--auto` (verified live — both hard-error before spawning), so like Hermes/OpenCode, Skynet's own
+  post-run diff review gates the merge. Credential injection is unusual for this vendor: Kimi Code's docs
+  are explicit that provider credentials are *never* read from ambient shell env vars, with exactly one
+  documented exception — the ephemeral `KIMI_MODEL_*` family, which is the only channel available for
+  per-workspace key injection without writing `config.toml`. The model string is a `"<type>/<id>"` prefix
+  (`kimi`/`anthropic`/`openai`, defaulting to `kimi` — Moonshot's own models — with no prefix) that
+  `kimi.ts` splits into `KIMI_MODEL_PROVIDER_TYPE`/`KIMI_MODEL_NAME`; the `anthropic` path was verified
+  live end-to-end with a real `ANTHROPIC_API_KEY` (the `kimi` native path is mechanically identical but
+  wasn't independently live-verified for lack of a Moonshot key in this environment). No `closeStdin` or
+  `PWD` workaround needed here — both were verified live to behave correctly out of the box, unlike
+  OpenCode. Reactive breadth from the candidate list is still open-ended.
 - [x] **Agent labels / custom grouping** — Fleet already supports both: a "Group" field
   (`label`) with a known-groups datalist, the fleet grid groups by label with headings, and
   editing an agent's name is already part of the same Configure form.
@@ -529,6 +546,29 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Organize board also unsticks unassigned backlog tasks it's confident about.** Requested live: "when
+  Steward organize the tasks it should also set the ones that make sense to any agent in backlog so they can
+  be picked up for work." An `unassigned` backlog task never leaves backlog on its own — the eligibility
+  choice is deliberately the operator's (`AssignmentRequiredError`), and the autonomy triage sweep skips it
+  too — so a task created without an explicit "who can work this" choice just sat there until a human
+  noticed and set it. "Organize board" already visits every task's title + description for priority-sorting,
+  so it's a natural second moment to also clear that ONE blocker for the tasks that don't actually need a
+  routing judgment call. A new, independent consult (`suggestAnyAgentEligible`, `steward/organize.ts`) asks
+  which currently-unassigned backlog tasks are self-contained/well-scoped enough that WHICH agent picks them
+  up wouldn't matter — explicitly told to default to leaving a task off the list (for a human to route by
+  hand) whenever unsure, since wrongly declaring a task fine for anyone is the costlier mistake. Same
+  discipline as the existing prioritize consult: one retry on an unreadable reply, degrades to "suggest
+  nothing" (never guesses, never throws) on a persistently bad reply or an ask failure; a reply that parses
+  as valid JSON but simply has no `anyAgent` field reads as "nothing suggested" rather than a parse error, so
+  a differently-shaped-but-valid reply never burns a wasted retry. `organizeBoard`'s result gained an
+  `assigned` count alongside `reordered`/`archived`, surfaced in the button's toast and title.
+  `tests/organize-board.test.ts` (4 new tests): the consult's named ids get `{mode:"any"}` and nothing else
+  is touched; a task that already has an assignment is never even asked about (0 consult calls); an
+  unreadable reply assigns nothing; a made-up id in the reply is discarded. Also updated the one existing
+  retry-count test — the SAME shared mock now also answers the new eligibility consult, so the total call
+  count went from 2 to 3 (the eligibility call's valid-but-field-less reply doesn't itself trigger a retry).
+  Verified live end-to-end: the button's title and the empty-state toast both render the updated copy; the
+  full request/response roundtrip (including the new `assigned` field) works correctly.
 - [x] **Manual "Force to review" on an ongoing card.** Requested live, right after Force Done's own real
   commit/push/merge fix: `ongoing → review/done` was purely agent-driven — the only human control on an
   ongoing card was "Send to To-do" (abandon it). No escape hatch existed for the far more common ask: a run
@@ -2128,9 +2168,22 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
 Turn Skynet from "I assign tasks" into "work flows in from my stack, human-gated." Every integration
 uses the **user's own accounts** (their Sentry, GitHub, LLM key) — Skynet is the connective +
 supervision layer, it doesn't host or resell those services.
-- [ ] **The enabling primitive:** an **inbound-trigger** concept — a webhook/event creates a task or agent
+- [x] **The enabling primitive:** an **inbound-trigger** concept — a webhook/event creates a task or agent
   in a workspace. Today the only trigger is "operator assigns a task"; this one primitive unlocks the
   whole category. (Cheap to design early so we don't foreclose it; build here.)
+  *Landed, first concrete instance:* `POST /webhooks/github` — a GitHub App `issues` webhook
+  (opened/reopened/labeled) creates the linked task immediately via `Operations.handleGithubIssueEvent`,
+  instead of waiting on the next manual "Import issues" click or re-sync. Deliberately outside `/api`
+  (the bearer-token auth guard doesn't apply — GitHub can't carry one); verified instead by an HMAC
+  signature (`X-Hub-Signature-256`) against `GITHUB_WEBHOOK_SECRET`, the same App-wide secret
+  `config.ts` already reserved for this. No workspace context arrives with a GitHub webhook, so it
+  resolves the owning project(s) with a new `Store.listAllProjects()` cross-workspace sweep (mirrors
+  `listAllRuns`/`listAllAgents`), filters to `repo` match + the same opt-in `Project.syncSourceStatus`
+  gate the write-back side already uses, and dedupes on `source.repo`+`source.number` — so a redelivered
+  or already-imported issue is a no-op. Other event types (push, check_run, …) 2xx-ack without acting, so
+  GitHub doesn't disable the webhook. The generic (non-GitHub) shape — any inbound webhook → task, for
+  Sentry/Linear/Slack/etc. — is still open; this proves the primitive end-to-end for the first, highest-
+  frequency source.
 - [ ] **Tools via MCP:** an agent gets scoped tools (GitHub / Sentry / Slack MCP) to act back into the
   user's services. A "Sentry agent" = a coding agent + Sentry MCP + a Sentry webhook trigger.
 - [x] **Skynet *as* an MCP server (shipped):** the reverse direction — Skynet exposes its own surface
@@ -2158,8 +2211,9 @@ supervision layer, it doesn't host or resell those services.
   already live in. **Landed, in three passes — every piece below is done:**
   - **Read (issue → task):** an "import issues" action (callable anytime, not just at project creation —
     `POST /api/projects/:id/import/github-issues`) pulls open issues from the connected repo; each becomes
-    a Task linked back via `Task.source` (issue number + URL). Pull-on-demand only; a webhook trigger
-    (issue opened/labeled → task) still waits on the v3 inbound-trigger primitive.
+    a Task linked back via `Task.source` (issue number + URL). *Landed this pass:* the pull is no longer
+    the only path in — `POST /webhooks/github` (the v3 inbound-trigger primitive, above) creates the same
+    linked task the moment an issue is opened/reopened/labeled, gated by the same opt-in.
   - **Work:** the task runs the standard loop (assign → worktree → diff → PR). *Landed this pass:* the PR
     body is auto-linked with `Closes #<n>` (`orchestrator.ts`'s `openPrForRun`) whenever the task's
     `source.kind === "github_issue"`, so merging the PR closes the issue on GitHub even if write-back

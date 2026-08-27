@@ -53,6 +53,10 @@ export interface Store {
 
   // projects
   listProjects(workspaceId: string): Promise<Project[]>;
+  // Cross-workspace sweep (mirrors listAllRuns/listAllAgents) — the inbound
+  // GitHub webhook has no workspace context (GitHub doesn't send one), so it
+  // resolves the owning project(s) by matching `repo` across every workspace.
+  listAllProjects(): Promise<Project[]>;
   getProject(id: string): Promise<Project | undefined>;
   putProject(project: Project): Promise<Project>;
   deleteProject(id: string): Promise<void>;

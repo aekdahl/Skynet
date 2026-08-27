@@ -50,7 +50,7 @@ function onPath(bin: string): boolean {
 function writableRoots(cwd: string): string[] {
   const home = homedir();
   const roots = [cwd, tmpdir(), "/tmp", "/private/tmp", "/private/var/folders"];
-  for (const rel of [".cache", ".config", ".claude", ".codex", ".gemini", ".cursor", ".copilot", ".hermes", ".npm"]) {
+  for (const rel of [".cache", ".config", ".claude", ".codex", ".gemini", ".cursor", ".copilot", ".hermes", ".npm", ".kimi-code"]) {
     roots.push(join(home, rel));
   }
   // OpenCode doesn't use a single top-level dot-dir like the others — it

@@ -1858,15 +1858,15 @@ export function ProjectView({
               <button
                 className="btn btn-ghost"
                 disabled={organizing}
-                title="Steward reads every task's title + description and priority-sorts each column; every current Done task is archived (recorded work, off the active board — fully reversible from Archived)."
+                title="Steward reads every task's title + description and priority-sorts each column; suggests any-agent eligibility for unassigned backlog tasks that don't need an operator's routing judgment; every current Done task is archived (recorded work, off the active board — fully reversible from Archived)."
                 onClick={async () => {
                   setOrganizing(true);
-                  const { reordered, archived } = await organizeBoard(project.id);
+                  const { reordered, archived, assigned } = await organizeBoard(project.id);
                   setOrganizing(false);
                   toast(
-                    reordered || archived
-                      ? `Organized — ${reordered} task(s) reordered, ${archived} archived from Done.`
-                      : "Nothing to organize — every column was already in order and Done was empty.",
+                    reordered || archived || assigned
+                      ? `Organized — ${reordered} task(s) reordered, ${assigned} opened up for any agent, ${archived} archived from Done.`
+                      : "Nothing to organize — every column was already in order, no unassigned backlog task looked ready, and Done was empty.",
                     "success",
                   );
                 }}

@@ -42,6 +42,10 @@
       "types": "./dist/opencode.d.ts",
       "default": "./dist/opencode.js"
     },
+    "./kimi": {
+      "types": "./dist/kimi.d.ts",
+      "default": "./dist/kimi.js"
+    },
     "./sandbox": {
       "types": "./dist/sandbox.d.ts",
       "default": "./dist/sandbox.js"

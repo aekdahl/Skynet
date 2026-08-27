@@ -904,15 +904,29 @@ function isEscalation(q: ParsedQuestion): boolean {
 // stopped and needs a human (help & resume, reassign, or stop). Unlike a
 // question, there's no answer that mechanically continues it — the operator's
 // guidance rides the trusted operator channel on resume (see resume()).
+//
+// But an escalating agent has still ASKED something, and usually offered
+// concrete choices. Dropping those left the operator staring at a bare "Agent
+// is blocked — needs a human" with nothing to answer: the question was only
+// reachable by expanding Details, and the agent's own options were discarded
+// entirely, so a human had to retype an answer the agent had already written
+// down. We keep both — the options ride through as one-click guidance (the UI
+// resolves a pick as `modify`, which is exactly what typing that text would do).
 function buildEscalationRaise(q: ParsedQuestion): HitlRaise {
+  const detail = q.options.some((o) => o.description)
+    ? q.options.map((o) => `• ${o.label}${o.description ? ` — ${o.description}` : ""}`).join("\n")
+    : null;
   return {
     kind: "escalation",
     title: /^\s*escalate\s*$/i.test(q.header) ? "Agent is blocked — needs a human" : q.header,
     why: q.prompt,
     risk: "medium",
-    rationale: q.prompt,
-    command: null,
-    options: null,
+    // Deliberately NOT q.prompt again: `why` already carries the agent's own
+    // words here, and setting both rendered the identical paragraph twice in
+    // the detail panel ("Agent's account" then "What happened").
+    rationale: null,
+    command: detail, // option descriptions, if any, for the detail box
+    options: q.options.map((o) => o.label),
     recommended: null,
     steps: null,
     diff: null,

@@ -239,7 +239,11 @@ export function TaskDetail({
         setDraft("");
         setPicked(null);
       } else if (q.options && picked != null) {
-        resolveHitl(q.id, "option", { optionIndex: picked });
+        // An escalation has no `option` resolution server-side (deliverEscalation
+        // handles reject/modify/reassign/dismiss only) — send the chosen label as
+        // guidance, which is exactly what typing it would have done.
+        if (q.kind === "escalation") resolveHitl(q.id, "modify", { guidance: q.options[picked]! });
+        else resolveHitl(q.id, "option", { optionIndex: picked });
         setPicked(null);
       }
       return;
@@ -576,6 +580,11 @@ export function TaskDetail({
                   <span className="log-decision-title">{q.title}</span>
                   <RiskChip risk={q.risk} />
                   <span className="qcard-wait">{fmtWait(waitedSecs(q, now))}</span>
+                  {/* The actual ASK. Without this the bar showed only a generic
+                      title ("Agent is blocked — needs a human") and the operator
+                      had to open Details to find out what was being asked —
+                      i.e. a question that never surfaced as a question. */}
+                  {q.why && <p className="log-decision-why">{q.why}</p>}
                   <span className="log-decision-actions">
                     {q.kind === "escalation" ? (
                       // The agent (or a guard) halted this run and asked for help.
@@ -583,6 +592,20 @@ export function TaskDetail({
                       // to a fresh runner, stops it, or types guidance below and
                       // resumes (the composer's "Send & resume" = the modify action).
                       <>
+                        {/* The agent asked something and offered choices; picking
+                            one resumes it with that choice as the operator's
+                            directive — the same path a typed answer takes. */}
+                        {q.options?.map((opt, i) => (
+                          <button
+                            key={i}
+                            className={"btn btn-sm" + (i === picked ? " btn-primary" : "")}
+                            aria-pressed={i === picked}
+                            onClick={() => setPicked(i)}
+                            onDoubleClick={() => resolveHitl(q.id, "modify", { guidance: opt })}
+                          >
+                            {i === picked ? "● " : "○ "}“{opt}”
+                          </button>
+                        ))}
                         <button
                           className="btn btn-sm"
                           title="Hand this run to a different runner — choose whether to keep its work or start clean"
@@ -663,6 +686,8 @@ export function TaskDetail({
                     q
                       ? q.options
                         ? "Pick an option above, or type a different answer…"
+                        : q.kind === "escalation"
+                          ? "Answer the agent and resume it — or Reassign / Stop run…"
                         : "Reply and resume — e.g. “yes, commit and open a PR”…"
                       : agent.status === "done"
                         ? "Ask about what shipped…"

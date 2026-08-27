@@ -182,6 +182,10 @@ export class PostgresStore implements Store {
   async putHitl(item: HitlItem) { await this.put("hitl_queue", item.id, item.workspaceId, item); return item; }
 
   listProjects(ws: string) { return this.list<Project>("projects", ws); }
+  async listAllProjects(): Promise<Project[]> {
+    const { rows } = await this.pool.query<{ data: Project }>("SELECT data FROM projects");
+    return rows.map((r) => r.data);
+  }
   getProject(id: string) { return this.get<Project>("projects", id); }
   async putProject(p: Project) { await this.put("projects", p.id, p.workspaceId, p); return p; }
   deleteProject(id: string) { return this.del("projects", id); }

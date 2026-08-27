@@ -63,7 +63,7 @@ export const config = {
   sessions: (process.env.SESSIONS || undefined) as "memory" | "postgres" | "redis" | undefined,
   // Working directory for a real runner (the target repo / agent worktree).
   // Each agent executes on its fleet runner's own provider
-  // (claude/codex/gemini/cursor/copilot/hermes/opencode); there is no mock and no global
+  // (claude/codex/gemini/cursor/copilot/hermes/opencode/kimi); there is no mock and no global
   // RUNNER override — a runner runs only if its provider has a credential (or is
   // a CLI-login provider), else nothing runs.
   runnerCwd: process.env.SKYNET_RUNNER_CWD || undefined,

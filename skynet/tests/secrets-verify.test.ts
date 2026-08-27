@@ -123,6 +123,16 @@ describe("verifyProviderCredential", () => {
     expect((init as RequestInit).headers).toMatchObject({ "x-api-key": "sk-ant-bad" });
   });
 
+  it("kimi — a bad key hits Moonshot's OpenAI-compatible models endpoint (real captured error shape)", async () => {
+    mockResponse(false, { error: { message: "Invalid Authentication", type: "invalid_authentication_error" } });
+    const result = await verifyProviderCredential("kimi", "sk-moonshot-bad");
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("Invalid Authentication");
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.moonshot.ai/v1/models");
+    expect((init as RequestInit).headers).toMatchObject({ authorization: "Bearer sk-moonshot-bad" });
+  });
+
   it("never throws on a network failure — comes back as {ok:false, message}", async () => {
     fetchMock.mockRejectedValue(new Error("getaddrinfo ENOTFOUND"));
     const result = await verifyProviderCredential("claude", "sk-ant-x");

@@ -32,9 +32,11 @@ describe("provider-install", () => {
     // OpenCode's CLI is the `opencode-ai` npm package (verified live against
     // opencode-ai@1.18.18) — also a plain npm install.
     expect(installCommandFor("opencode")).toEqual({ packageManager: "npm", command: "npm install -g opencode-ai" });
-    // The rest stay null: cursor is a `curl | bash` script and hermes is a manual
-    // download — neither is a plain npm install the no-shell installer will run.
+    // The rest stay null: cursor and kimi are each a `curl | bash` script and
+    // hermes is a manual download — none is a plain npm install the no-shell
+    // installer will run.
     expect(installCommandFor("cursor")).toBeNull();
     expect(installCommandFor("hermes")).toBeNull();
+    expect(installCommandFor("kimi")).toBeNull();
   });
 });

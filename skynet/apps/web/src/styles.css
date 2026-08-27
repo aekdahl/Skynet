@@ -370,7 +370,7 @@ kbd {
 }
 .qcard-agent:hover { color: var(--text); }
 .qcard-wait { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-12); color: var(--warn); font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.qcard-title { font-size: calc(var(--fs) + 4px); font-weight: 600; letter-spacing: -0.01em; }
+.qcard-title { font-size: calc(var(--fs) + 2px); font-weight: 600; letter-spacing: -0.01em; }
 .qcard-title-inline { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* ── Ready-to-merge card ─────────────────────────────────────────────────── */
 .merge-prlink { margin-left: auto; color: var(--muted); font-size: var(--fz-12-5); text-decoration: none; }
@@ -686,6 +686,13 @@ kbd {
 .log-decision { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .log-decision-title { font-size: var(--fz-13); color: var(--text); font-weight: 500; min-width: 0; }
 .log-decision-actions { display: inline-flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+/* The agent's actual question, on the bar rather than hidden behind Details.
+   Full width of the wrapping flex row so it reads as a paragraph, clamped so a
+   long escalation account can't push the buttons off-screen (Details has it
+   all). */
+.log-decision-why { flex-basis: 100%; margin: 2px 0 0; font-size: var(--fz-12-5); color: var(--muted);
+  line-height: 1.55; text-wrap: pretty; white-space: pre-wrap; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6; overflow: hidden; }
 .log-composer { display: flex; gap: 8px; }
 .log-composer .qx-line { flex: 1; }
 @media (prefers-reduced-motion: no-preference) {
