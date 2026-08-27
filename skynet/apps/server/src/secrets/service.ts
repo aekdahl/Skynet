@@ -5,8 +5,14 @@
 
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { ProviderId, type CredentialProvider, type SecretMeta } from "@skynet/shared";
+import { ProviderId, ratesFor, vendorForBaseUrl, type CredentialProvider, type EndpointSmokeResult, type SecretMeta } from "@skynet/shared";
+import { smokeTestEndpoint } from "@skynet/runner-sdk";
 import { config } from "../config.js";
+
+// Model used for a smoke test on a credential with no catalogued vendor (i.e.
+// Anthropic itself, or a custom endpoint). Cheap on purpose — the probe reads
+// one small file, so the smallest model proves as much as the largest.
+const DEFAULT_SMOKE_MODEL = "haiku";
 import { PROVIDER_ENV_VAR, providerEnvCredential } from "../provider-env.js";
 import { fingerprint, masterKey, open, seal } from "./crypto.js";
 import { MemorySecretStore } from "./memory.js";
@@ -220,6 +226,24 @@ export class SecretService {
     // Env fallback applies only to a provider's DEFAULT credential (id === provider).
     const parsed = ProviderId.safeParse(credentialId);
     return parsed.success ? process.env[PROVIDER_ENV_VAR[parsed.data]] || undefined : undefined;
+  }
+
+  /**
+   * Run ONE tiny real task on this credential and report what the endpoint's
+   * compatibility layer actually did — see smokeTestEndpoint.
+   *
+   * Picks a default model from the catalog when the caller doesn't name one, so
+   * the operator isn't asked to guess a model id before they've used the vendor.
+   */
+  async smokeTest(workspaceId: string, credentialId: string, model?: string): Promise<EndpointSmokeResult> {
+    const record = await this.store.get(workspaceId, credentialId);
+    const parsed = ProviderId.safeParse(credentialId);
+    if (!record && !parsed.success) throw new UnknownCredentialError(credentialId);
+    const apiKey = await this.resolve(workspaceId, credentialId);
+    const baseUrl = await this.resolveEndpoint(workspaceId, credentialId);
+    const vendor = vendorForBaseUrl(baseUrl);
+    const chosen = model?.trim() || vendor?.models[0]?.id || DEFAULT_SMOKE_MODEL;
+    return smokeTestEndpoint({ apiKey, baseUrl, model: chosen, rates: ratesFor(baseUrl, chosen) });
   }
 
   /**

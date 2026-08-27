@@ -201,3 +201,41 @@ export function priceUsage(
     per(tokens.cacheWriteTokens, rates.cacheWritePerMTok ?? rates.inputPerMTok)
   );
 }
+
+
+// ─── Endpoint smoke test ───────────────────────────────────────────────────
+// Verifying a key proves it AUTHENTICATES. It says nothing about whether that
+// vendor's compatibility layer can actually drive Skynet's agent loop — which
+// is precisely what varies between them, and varies silently: a shim that
+// drops tool calls, omits cache tiers, or never streams will pass verify and
+// then behave wrong in ways that are hard to attribute to the endpoint.
+//
+// So this runs ONE tiny real task and reports what actually happened. It costs
+// a fraction of a cent and is always operator-triggered — never automatic.
+
+export type SmokeStatus = "pass" | "fail" | "skip";
+
+export interface SmokeCheck {
+  id: string;
+  /** What capability this proves, in the operator's terms. */
+  label: string;
+  status: SmokeStatus;
+  /** Why it failed, or what was observed. */
+  detail?: string;
+  /** True when Skynet cannot run agents on this endpoint without it. */
+  critical: boolean;
+}
+
+export interface EndpointSmokeResult {
+  ok: boolean;
+  model: string;
+  endpoint: string | null;
+  /** Vendor label, or null for Anthropic's own API. */
+  vendor: string | null;
+  checks: SmokeCheck[];
+  costUsd: number | null;
+  durationMs: number;
+  /** Known compatibility gaps from the catalog — things a live probe can't see
+   *  (MCP support, context-window honesty) but an operator still must know. */
+  caveat: string | null;
+}

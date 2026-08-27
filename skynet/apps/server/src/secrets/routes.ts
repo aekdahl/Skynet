@@ -100,4 +100,23 @@ export async function registerSecretsRoutes(app: FastifyInstance): Promise<void>
       }
     },
   );
+
+  // Smoke-test a credential by running ONE tiny real task through the agent
+  // loop on it. Verify proves a key authenticates; this proves the endpoint can
+  // actually drive Skynet — tool calls the gate can intercept, tool results fed
+  // back, streamed output, metered usage. Costs a fraction of a cent, so it is
+  // operator-triggered only and never runs on its own.
+  app.post<{ Params: { id: string }; Body: { model?: string } }>(
+    "/api/credentials/:id/smoke",
+    async (req: FastifyRequest<{ Params: { id: string }; Body: { model?: string } }>, reply: FastifyReply) => {
+      const { workspaceId } = req.principal!;
+      try {
+        return reply.code(200).send(await secretService.smokeTest(workspaceId, req.params.id, req.body?.model));
+      } catch (err) {
+        if (err instanceof SecretsDisabledError) return reply.code(501).send({ error: err.message });
+        if (err instanceof UnknownCredentialError) return reply.code(404).send({ error: err.message });
+        throw err;
+      }
+    },
+  );
 }

@@ -19,8 +19,11 @@ import {
   type SettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync } from "node:fs";
-import type { ModelRates, PlanStep, ProviderId, Resolution } from "@skynet/shared";
-import { priceUsage } from "@skynet/shared";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { EndpointSmokeResult, ModelRates, PlanStep, ProviderId, Resolution, SmokeCheck, SmokeStatus } from "@skynet/shared";
+import { endpointLabel, priceUsage, vendorForBaseUrl } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
 import type {
   ConsultSpec,
@@ -424,6 +427,162 @@ async function* oneShotConsultStream(opts: {
     },
   });
   yield* streamQueryText(q as AsyncIterable<SDKMessage>, opts.onUsage);
+}
+
+// ─── Endpoint smoke test ───────────────────────────────────────────────────
+// One tiny REAL task against a credential, reporting what the vendor's
+// compatibility layer actually did. Verify proves a key authenticates; this
+// proves the endpoint can drive Skynet's agent loop, which is the part that
+// varies silently between vendors — a shim that never emits tool calls, or
+// omits cache tiers, passes verify and then misbehaves in ways nobody
+// attributes to the endpoint.
+//
+// Deliberately minimal: read one small file and echo a token back. That single
+// task exercises every capability Skynet depends on — a tool call the gate can
+// intercept, a tool RESULT fed back into the model, streamed text, and a
+// metered result — for a fraction of a cent. Operator-triggered only.
+
+const SMOKE_TOKEN = "skynet-endpoint-ok";
+const SMOKE_FILE = "skynet-probe.txt";
+// A probe that hasn't answered in a minute has told us what we need to know.
+// The SDK retries transient failures internally, so a dead endpoint burns the
+// whole budget — better to cut it and report than to leave a spinner running.
+const SMOKE_TIMEOUT_MS = 60_000;
+
+export async function smokeTestEndpoint(opts: {
+  apiKey?: string | null;
+  baseUrl?: string | null;
+  model: string;
+  rates?: ModelRates | null;
+}): Promise<EndpointSmokeResult> {
+  const started = Date.now();
+  const checks: SmokeCheck[] = [];
+  const add = (id: string, label: string, status: SmokeStatus, critical: boolean, detail?: string) =>
+    checks.push({ id, label, status, critical, detail });
+
+  const dir = await mkdtemp(join(tmpdir(), "skynet-smoke-"));
+  await writeFile(join(dir, SMOKE_FILE), SMOKE_TOKEN, "utf8");
+
+  let sawTool = false;
+  let sawStream = false;
+  let answer = "";
+  let usage: RunnerUsage | null = null;
+  let failure: string | null = null;
+
+  try {
+    // queryImpl, not the raw import: this is the seam __setClaudeTestHooks swaps,
+    // so the probe is testable without a real vendor call.
+    const q = queryImpl({
+      prompt:
+        `Read the file ${SMOKE_FILE} in the current directory, then reply with ONLY the exact text it contains. ` +
+        `No preamble, no explanation, no quotes.`,
+      options: {
+        cwd: dir,
+        model: mapModel(opts.model),
+        permissionMode: "default",
+        // The preset is what makes Read exist at all — a bare query() loads no
+        // tools, and the probe would then "pass" without proving anything.
+        systemPrompt: { type: "preset", preset: "claude_code" },
+        canUseTool: (name, input) => {
+          // Reaching here at all is the finding: the vendor emitted a tool_use
+          // block AND our gate intercepted it. That gate is what every HITL,
+          // approval and escalation in Skynet is built on.
+          sawTool = true;
+          return Promise.resolve(
+            name === "Read"
+              ? ({ behavior: "allow", updatedInput: input } as PermissionResult)
+              : ({ behavior: "deny", message: "Smoke test — only Read is needed." } as PermissionResult),
+          );
+        },
+        maxTurns: 6,
+        env: applyCredential(buildRunnerEnv(), opts),
+        includePartialMessages: true,
+        settingSources: NO_FS_SETTINGS,
+      },
+    });
+
+    const deadline = setTimeout(() => void (q as { interrupt?: () => Promise<void> }).interrupt?.(), SMOKE_TIMEOUT_MS);
+    try {
+      for await (const msg of q as AsyncIterable<SDKMessage>) {
+        if (msg.type === "stream_event") sawStream = true;
+        const delta = textDeltaOf(msg);
+        if (delta) answer += delta;
+        else if (msg.type === "assistant") {
+          const { text } = readAssistant((msg as { message: { content?: unknown } }).message);
+          if (text && text.length > answer.length) answer = text;
+        } else if (msg.type === "result") {
+          const r = msg as Record<string, unknown>;
+          // An SDK result is a success|error union. A bad key comes back as an
+          // ERROR result, not a thrown exception — treating it as a normal
+          // result reported "authenticates ✓" for a credential that authenticated
+          // with nothing at all.
+          if (r.is_error === true || (typeof r.subtype === "string" && r.subtype !== "success")) {
+            // Prefer the vendor's OWN message over the bare subtype —
+            // "invalid api key" tells an operator what to fix;
+            // "error_during_execution" does not.
+            const said = typeof r.result === "string" ? r.result.trim() : "";
+            failure = said || classifyResult(r, "endpoint smoke test")?.reason || "the endpoint returned an error";
+          }
+          usage = readUsage(r, opts.rates);
+          break;
+        }
+      }
+    } finally {
+      clearTimeout(deadline);
+    }
+  } catch (err) {
+    failure = (err as Error).message;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  // Auth is the gate everything else depends on: with no session there is
+  // nothing to say about tools or streaming, so the rest report `skip` rather
+  // than a misleading fail.
+  // `usage` is an OBJECT even when every counter is zero, so truthiness alone
+  // would call a completely empty session "reachable" — which it did, reporting
+  // a pass for a key that authenticated with nothing.
+  const reachable = !failure && (sawTool || sawStream || answer.length > 0 || (usage != null && usage.inputTokens > 0));
+  add(
+    "auth",
+    "Endpoint reachable and the key authenticates",
+    reachable ? "pass" : "fail",
+    true,
+    failure ?? (reachable ? undefined : "No response from the endpoint."),
+  );
+
+  const skipRest = !reachable;
+  const s = (ok: boolean): SmokeStatus => (skipRest ? "skip" : ok ? "pass" : "fail");
+
+  add("tools", "Emits tool calls, and Skynet's gate intercepts them", s(sawTool), true,
+    skipRest ? undefined : sawTool ? undefined : "No tool call was made — approvals, HITL and escalations all depend on this.");
+  add("toolResult", "Tool results feed back into the model", s(answer.includes(SMOKE_TOKEN)), true,
+    skipRest ? undefined : answer.includes(SMOKE_TOKEN) ? undefined : `Expected the file's contents back; got ${answer ? `"${answer.slice(0, 60)}"` : "nothing"}.`);
+  add("streaming", "Streams partial output", s(sawStream), false,
+    skipRest ? undefined : sawStream ? undefined : "No token-level deltas — the live log and Steward chat will only update when a turn completes.");
+  add("usage", "Reports token usage", s(!!usage && usage.inputTokens > 0), true,
+    skipRest ? undefined : usage && usage.inputTokens > 0 ? undefined : "No token counts came back — spend can't be tracked for this endpoint.");
+
+  const tiers = !!usage && (usage.cacheReadTokens > 0 || usage.cacheWriteTokens > 0);
+  add("cacheTiers", "Separates cached from fresh input", skipRest ? "skip" : tiers ? "pass" : "skip", false,
+    skipRest ? undefined : tiers
+      ? undefined
+      : "No cache tiers on this probe. It's one short call so there may be nothing cached yet — but if they never appear, cost will be over-stated, since cached input is billed far cheaper than fresh.");
+
+  add("pricing", "Published rates available for this model", opts.rates ? "pass" : "skip", false,
+    opts.rates ? undefined : "Not in the catalog, so spend falls back to the SDK's Anthropic-priced figure — which is wrong for a non-Anthropic endpoint. Costs will be misreported.");
+
+  const vendor = vendorForBaseUrl(opts.baseUrl);
+  return {
+    ok: checks.every((c) => !c.critical || c.status === "pass"),
+    model: opts.model,
+    endpoint: opts.baseUrl ?? null,
+    vendor: endpointLabel(opts.baseUrl),
+    checks,
+    costUsd: usage?.costUsd ?? null,
+    durationMs: Date.now() - started,
+    caveat: vendor?.caveat ?? null,
+  };
 }
 
 /** Accumulating (non-streaming) consult — the whole answer, or `fallback` if

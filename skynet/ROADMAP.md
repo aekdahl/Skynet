@@ -1814,6 +1814,27 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   actually picked on every non-clone add — so an agent pinned to a second key (or to a cheap endpoint)
   quietly ran on the provider's default one instead.
 
+- [x] **Endpoint smoke test — prove a vendor can actually drive the agent loop, not just authenticate.**
+  Verify answers "does this key work". It does not answer the question that decides whether a
+  Claude-compatible endpoint is usable *for Skynet*, and that gap is dangerous precisely because it's
+  invisible: a compatibility shim can authenticate perfectly and never emit a tool call, which silently
+  kills every approval, question and escalation — and nobody would attribute the symptom to the endpoint.
+  New **Test** button per credential (Settings) runs ONE tiny real task — read a scratch file, echo its
+  contents — and reports a checklist rather than a verdict: endpoint reachable · emits tool calls *and
+  Skynet's gate intercepts them* · tool results feed back · streams partial output · reports usage ·
+  separates cache tiers · has published rates. Critical checks gate the verdict; streaming and cache
+  tiers report without blocking (Skynet works without token-level deltas, just less liveliness).
+  Auth failing SKIPS the rest rather than printing a wall of red — with no session there's nothing
+  truthful to say about tools, and a false "tools failed" sends someone debugging the wrong layer.
+  Costs a fraction of a cent, capped at 60s, and is **operator-triggered only** — never automatic, since
+  unlike verify it spends money. Catalog caveats a live probe *can't* see (DeepSeek ignoring MCP, so
+  browser tools vanish) are surfaced alongside the results.
+  **Two bugs the first live run against a real endpoint exposed**, both invisible to unit tests: an SDK
+  result is a `success|error` union, so a rejected key came back as an error RESULT rather than a thrown
+  exception — nothing threw, a zero-filled usage object existed, and `auth` reported a cheerful **pass**
+  for a credential that had authenticated with nothing; and `usage` is an object even when every counter
+  is zero, so truthiness alone called an entirely empty session "reachable". Both now pinned by tests.
+
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease

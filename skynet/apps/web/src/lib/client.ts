@@ -21,6 +21,7 @@ import {
   type WorkspaceSettings,
   type UpdateWorkspaceSettingsRequest,
   type VerifyCredentialResult,
+  type EndpointSmokeResult,
   type CommandPolicy,
   type PolicyVersion,
   type PolicyDryRunResult,
@@ -531,6 +532,13 @@ export function createCredential(provider: string, name: string, apiKey: string,
 // save that already happened; this is UI feedback only.
 export function verifyCredential(id: string) {
   return req<VerifyCredentialResult>("POST", `/api/credentials/${id}/verify`);
+}
+// Smoke-test a credential: runs ONE tiny real task through the agent loop on it
+// and reports what the endpoint actually supported. Verify proves the key
+// authenticates; this proves the endpoint can drive Skynet. Costs a fraction of
+// a cent, so it is only ever triggered by the operator.
+export function smokeTestCredential(id: string, model?: string) {
+  return req<EndpointSmokeResult>("POST", `/api/credentials/${id}/smoke`, model ? { model } : {});
 }
 // Credential lifecycle log (created/rotated/removed, who + when — never the
 // key) — answers "why did this provider suddenly show not connected".

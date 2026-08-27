@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type {
+  EndpointSmokeResult,
   SecretMeta,
   WorkspaceSettings,
   UpdateWorkspaceSettingsRequest,
@@ -24,6 +25,43 @@ import { fmtWait, providerReadiness } from "../lib/derive";
 // missing half: key entry already worked, this proves the key actually
 // authenticates instead of just being present.
 export type VerifyState = { status: "verifying" } | { status: "ok"; message?: string } | { status: "fail"; message?: string };
+
+/**
+ * Results of a real probe run against a credential's endpoint. Renders the
+ * checks rather than a single verdict, because "it works" is the wrong shape of
+ * answer here: a vendor can authenticate fine and still never emit a tool call,
+ * which would leave every approval, question and escalation silently dead.
+ * Non-critical gaps are shown but don't fail the run.
+ */
+function SmokeResults({ result }: { result: EndpointSmokeResult }) {
+  const mark = (s: string) => (s === "pass" ? "✓" : s === "fail" ? "✕" : "–");
+  return (
+    <div className={"smoke" + (result.ok ? "" : " smoke-bad")}>
+      <div className="smoke-head">
+        <span className={"smoke-verdict " + (result.ok ? "ok" : "bad")}>
+          {result.ok ? "Usable" : "Not usable"}
+        </span>
+        <span className="smoke-sub mono">
+          {result.vendor ?? "Anthropic"} · {result.model} · {(result.durationMs / 1000).toFixed(1)}s
+          {result.costUsd != null && ` · $${result.costUsd.toFixed(4)}`}
+        </span>
+      </div>
+      <ul className="smoke-checks">
+        {result.checks.map((c) => (
+          <li key={c.id} className={"smoke-check smoke-" + c.status}>
+            <span className="smoke-mark">{mark(c.status)}</span>
+            <span className="smoke-label">
+              {c.label}
+              {c.status === "fail" && c.critical && <span className="smoke-req"> required</span>}
+              {c.detail && <span className="smoke-detail"> — {c.detail}</span>}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {result.caveat && <p className="smoke-caveat">⚠ {result.caveat}</p>}
+    </div>
+  );
+}
 
 export function VerifyBadge({ state, onDismiss }: { state: VerifyState | undefined; onDismiss?: () => void }) {
   if (!state) return null;
@@ -71,6 +109,19 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
       setVerify((v) => ({ ...v, [id]: { status: result.ok ? "ok" : "fail", message: result.message } }));
     } catch (e) {
       setVerify((v) => ({ ...v, [id]: { status: "fail", message: (e as Error).message } }));
+    }
+  }, []);
+  // Smoke test — a REAL (tiny) agent run on this credential. Separate from
+  // verify on purpose: verify is automatic and free, this costs money and is
+  // only ever started by a click.
+  const [smoke, setSmoke] = useState<Record<string, { running: boolean; result?: EndpointSmokeResult; error?: string }>>({});
+  const runSmoke = useCallback(async (id: string) => {
+    setSmoke((s) => ({ ...s, [id]: { running: true } }));
+    try {
+      const result = await api.smokeTestCredential(id);
+      setSmoke((s) => ({ ...s, [id]: { running: false, result } }));
+    } catch (e) {
+      setSmoke((s) => ({ ...s, [id]: { running: false, error: (e as Error).message } }));
     }
   }, []);
   const dismissVerify = (id: string) =>
@@ -372,11 +423,21 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                         Rotate
                       </button>
                     </Blocked>
+                    <button
+                      className="btn btn-ghost"
+                      title="Run one tiny real task on this credential and report what the endpoint actually supports. Costs a fraction of a cent."
+                      disabled={smoke[c.id]?.running}
+                      onClick={() => runSmoke(c.id)}
+                    >
+                      {smoke[c.id]?.running ? "Testing…" : "Test"}
+                    </button>
                     <button className="btn btn-ghost" disabled={busy === c.id} onClick={() => removeCredential(c.id)}>
                       Remove
                     </button>
                   </div>
                   <VerifyBadge state={verify[c.id]} onDismiss={() => dismissVerify(c.id)} />
+                  {smoke[c.id]?.error && <div className="settings-warn">Couldn't run the test: {smoke[c.id]!.error}</div>}
+                  {smoke[c.id]?.result && <SmokeResults result={smoke[c.id]!.result!} />}
                 </div>
               ))}
               <AddCredentialForm provider={p.id} providerName={p.name} onAdded={load} onVerify={runVerify} />

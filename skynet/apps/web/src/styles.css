@@ -3357,3 +3357,26 @@ button.firstrun-step:hover { border-color: var(--accent); }
   border-radius: 999px; padding: 1px 7px; white-space: nowrap; flex: none; }
 .run-endpoint { font-size: var(--fz-10-5); color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent), transparent 65%);
   border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+
+/* Endpoint smoke test — a real probe run, reported as a checklist rather than a
+   single verdict: a vendor can authenticate perfectly and still never emit a
+   tool call, which silently kills every approval, question and escalation. */
+.smoke { border: 1px solid color-mix(in oklch, var(--ok), transparent 60%); border-radius: 8px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 7px; }
+.smoke-bad { border-color: color-mix(in oklch, var(--warn), transparent 55%); }
+.smoke-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.smoke-verdict { font-size: var(--fz-12-5); font-weight: 600; }
+.smoke-verdict.ok { color: var(--ok); }
+.smoke-verdict.bad { color: var(--warn); }
+.smoke-sub { font-size: var(--fz-10-5); color: var(--faint); }
+.smoke-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.smoke-check { display: flex; gap: 8px; font-size: var(--fz-11-5); line-height: 1.5; align-items: baseline; }
+.smoke-mark { flex: none; width: 12px; text-align: center; }
+.smoke-pass .smoke-mark { color: var(--ok); }
+.smoke-fail .smoke-mark { color: var(--warn); }
+.smoke-skip { color: var(--muted); }
+.smoke-skip .smoke-mark { color: var(--faint); }
+.smoke-label { min-width: 0; }
+.smoke-req { color: var(--warn); font-size: var(--fz-10); text-transform: uppercase; letter-spacing: 0.04em; }
+.smoke-detail { color: var(--muted); }
+.smoke-caveat { font-size: var(--fz-11); color: var(--warn); line-height: 1.5; margin: 0; max-width: 78ch; }
