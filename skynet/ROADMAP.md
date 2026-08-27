@@ -1835,6 +1835,23 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   for a credential that had authenticated with nothing; and `usage` is an object even when every counter
   is zero, so truthiness alone called an entirely empty session "reachable". Both now pinned by tests.
 
+- [x] **Internal surfaces gate on RELEASE, not on "production".** Conflating those two is what hid QA &
+  Testing from the one place it's useful. The gate keyed off `import.meta.env.DEV`, which is false for
+  *any* `vite build` — and the GCP deploy runs the same `pnpm build` a packaged app does, so our own
+  running instance was treated exactly like a shipped product and lost its own tooling. (The Roadmap
+  already needed a hand-written exemption to work around precisely this, with a TEMP comment saying to
+  undo it "before launch" — the workaround was the symptom.) Now `isReleaseBuild()` reads
+  `VITE_SKYNET_RELEASE`, set only by `apps/web`'s `build:release`, which the desktop `dist`/`dist:mac`/
+  `dist:win`/`publish` scripts all run. Internal surfaces are therefore **on everywhere by default and
+  off only in a distributed build**: a release that forgets the flag hides our tooling (annoying, and we
+  notice) rather than shipping it (embarrassing, and we don't). `localStorage.skynet.devtools` overrides
+  both ways — `"1"` to debug a release, `"0"` to preview what a release looks like without cutting one.
+  **Also closes a real hole**: `acceptance`/`simulation` were hidden from the nav but absent from
+  `DEV_ONLY_VIEWS`, so `gateView` never coerced them — in a shipped build both pages stayed reachable by
+  deep link, stale hash, or a PWA/notification nav. A source-scanning test now asserts every view behind
+  the QA nav section is also route-gated, and that the desktop build scripts actually set the release
+  flag, since the gate defaults to ON and a missing flag would silently ship internal tooling.
+
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease
