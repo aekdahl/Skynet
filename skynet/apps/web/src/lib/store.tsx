@@ -248,7 +248,7 @@ export interface Store extends StoreState {
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
   answerClarification: (projectId: string, taskId: string, answer: string) => Promise<void>;
   createAgent: (provider: string, model: string, name?: string, credentialId?: string, label?: string | null) => Promise<void>;
-  updateAgent: (id: string, patch: { model?: string; name?: string; canReview?: boolean; label?: string | null }) => Promise<void>;
+  updateAgent: (id: string, patch: { model?: string; name?: string; canReview?: boolean; label?: string | null; credentialId?: string | null }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
   // audit trail maintenance — mirror archive (agent) + delete (project/task/runner)
   archiveAudit: (hitlId: string, archived: boolean) => Promise<void>;

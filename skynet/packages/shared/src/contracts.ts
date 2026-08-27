@@ -1770,6 +1770,11 @@ export const UpdateRunnerRequest = z.object({
   canReview: z.boolean().optional(), // toggle reviewer-eligibility (see Agent.canReview)
   // Set/clear the grouping label (see Agent.label). null clears → ungrouped.
   label: z.string().nullable().optional(),
+  // Repoint the runner at a different credential — which, since a credential can
+  // name a Claude-compatible endpoint, is how an existing runner moves to a
+  // cheaper vendor. null clears → the provider's default key. Applies to the
+  // runner's NEXT run; a run already in flight resolved its credential at start.
+  credentialId: z.string().nullable().optional(),
 });
 export type UpdateRunnerRequest = z.infer<typeof UpdateRunnerRequest>;
 

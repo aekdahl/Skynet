@@ -2472,6 +2472,17 @@ export class Operations {
       const invalid = modelValidForProvider(await this.store.listProviders(), existing.provider, patch.model);
       if (invalid) throw new Error(invalid);
     }
+    // A credential must exist AND belong to this runner's provider. Without the
+    // provider check you could point a Claude runner at a GitHub or Fly token,
+    // which would authenticate nothing and fail only once a real run started.
+    if (patch.credentialId) {
+      const creds = await secretService.list(ws);
+      const cred = creds.find((c) => c.id === patch.credentialId);
+      if (!cred) throw new Error(`Unknown credential "${patch.credentialId}"`);
+      if (cred.provider !== existing.provider) {
+        throw new Error(`That credential is for ${cred.provider}, but this runner is a ${existing.provider} runner.`);
+      }
+    }
     // Normalize an empty/whitespace label to null so a cleared field lands in the
     // "Ungrouped" bucket rather than a phantom "" group.
     const normalized =
