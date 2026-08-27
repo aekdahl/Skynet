@@ -239,7 +239,9 @@ export interface Store extends StoreState {
   reorderTask: (projectId: string, taskId: string, beforeId: string | null) => Promise<void>;
   transitionTask: (projectId: string, taskId: string, to: string, preserve?: boolean) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
+  organizeBoard: (projectId: string) => Promise<{ reordered: number; archived: number }>;
   requestReview: (projectId: string, taskId: string) => Promise<void>;
+  requestRetriage: (projectId: string, taskId: string) => Promise<void>;
   resyncProjectSource: (projectId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
@@ -710,11 +712,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't force the task done."));
         }
       },
+      organizeBoard: async (projectId) => {
+        try {
+          return await api.organizeBoard(projectId);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't organize the board."));
+          return { reordered: 0, archived: 0 };
+        }
+      },
       requestReview: async (projectId, taskId) => {
         try {
           await api.requestReview(projectId, taskId);
         } catch (e) {
           if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't request a review."));
+        }
+      },
+      requestRetriage: async (projectId, taskId) => {
+        try {
+          await api.requestRetriage(projectId, taskId);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't re-triage."));
         }
       },
       resyncProjectSource: async (projectId) => {

@@ -33,6 +33,7 @@ import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./
 import { composeFeatureBrief, parseFeatureNarrative, FEATURE_BRIEF_INSTRUCTION, FEATURE_BRIEF_SYSTEM } from "./feature-brief.js";
 import { decisionResumePrompt } from "./decision-resume.js";
 import { buildAgentContext, withInstructions } from "./agent-context.js";
+import { syncRepoNativeMemory } from "./repo-memory-sync.js";
 import { buildSiblingDigest } from "./sibling-digest.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
@@ -45,7 +46,7 @@ import { previewService } from "./preview/index.js";
 import { projectPreview, type ProjectPreviewManager } from "./preview/project-preview.js";
 import { prepareWorktree } from "./preview/worktree.js";
 import type { Store } from "./store/store.js";
-import { WorktreeProvisioner } from "./worktrees.js";
+import { WorktreeProvisioner, type DiffStat } from "./worktrees.js";
 
 interface LiveAgent {
   handle: RunnerHandle;
@@ -130,6 +131,17 @@ export class NoReviewerAvailableError extends Error {
   constructor() {
     super("No other agent is free to review this right now — try again once one is idle, or review it yourself.");
     this.name = "NoReviewerAvailableError";
+  }
+}
+
+/** requestRetriage()'s "nothing to re-triage" failure mode — the task isn't
+ *  (or is no longer) sitting in `triage`. NoCapacityError covers the other
+ *  failure mode (no idle agent right now) — same error every other manual
+ *  on-demand action already uses for that. */
+export class NoTriageTargetError extends Error {
+  constructor() {
+    super("This task isn't in triage right now — nothing to re-triage.");
+    this.name = "NoTriageTargetError";
   }
 }
 
@@ -637,7 +649,13 @@ export class Orchestrator {
   // after the live handle is torn down. Presence = "already escalated" (so a
   // guard doesn't re-raise). Cleared when the escalation is resolved or the run
   // completes. See escalate() / deliverEscalation() / relaunchEscalated().
-  private escalations = new Map<string, { git?: GitContext; baseRef?: string; taskId: string | null; source: EscalationSource }>();
+  // `agentId` is the runner this run escalated FROM — captured so a later
+  // Reassign can explicitly exclude it (see relaunchEscalated): now that
+  // every escalation frees its runner immediately at raise time (rather than
+  // holding it busy until reassign's own acquire-then-free), that runner is
+  // idle again by the time reassign runs and would otherwise just get
+  // re-picked as its own "replacement".
+  private escalations = new Map<string, { git?: GitContext; baseRef?: string; taskId: string | null; source: EscalationSource; agentId?: string | null }>();
   // Per-run failure counter (onFailed): past config.runMaxFailures the run is
   // escalated instead of parked in `review`. Cleared on success/resolution.
   private failCounts = new Map<string, number>();
@@ -969,13 +987,30 @@ export class Orchestrator {
         return;
       }
     }
-    // Agent-driven escalation: the run is HALTED on the live gate. Capture the
-    // worktree/git context so a later resume/reassign works, and mark it escalated.
+    // Agent-driven escalation: halt + free the runner exactly like a
+    // system-driven escalation (escalate()) — a "blocked on a human" gate has
+    // no reason to hold a compute slot idle for however long that takes.
+    // Capture the worktree/git context so a later resume/reassign works
+    // (relaunchEscalated re-acquires fresh compute in the same worktree,
+    // same as the system-driven path already does) — this trades away the
+    // narrower "resume the exact live session" optimization deliverEscalation
+    // used to take for a live-handle `modify`, for consistent compute release.
+    //
+    // ONLY when `live.git` is set, though: a chat-only run (no bound repo —
+    // see LiveAgent.scratchCwd) has no worktree for relaunchEscalated to
+    // reacquire INTO, so freeing its runner here would make "Help & resume"
+    // unrecoverable — deliverEscalation's live-handle-resume fallback stays
+    // the real (only) path for that case, not dead code.
     if (raise.kind === "escalation") {
       const live = this.live.get(runId);
-      this.escalations.set(runId, { git: live?.git, baseRef: live?.baseRef, taskId: live?.taskId ?? null, source: "agent" });
+      if (live?.git) {
+        await live.handle.stop().catch(() => undefined);
+        await this.freeRunner(live.agentId);
+        this.live.delete(runId);
+      }
+      this.escalations.set(runId, { git: live?.git, baseRef: live?.baseRef, taskId: live?.taskId ?? null, source: "agent", agentId: live?.agentId });
       await this.hub.runStatus(runId, "waiting"); // an escalation gate always blocks the run
-      await this.hub.runLog(runId, `escalated by the agent — ${raise.title}`);
+      await this.hub.runLog(runId, `escalated by the agent${live?.git ? " — freed its runner" : ""} — ${raise.title}`);
     }
     await this.hub.raiseHitl(item);
     if (expiresAt != null) {
@@ -1252,6 +1287,7 @@ export class Orchestrator {
     runId: string,
     stat: { add: number; del: number; files: string[] },
     patch: string,
+    opts: { skipFullAutonomy?: boolean } = {},
   ): Promise<void> {
     const agent = await this.store.getRun(runId);
     if (!agent) return;
@@ -1342,7 +1378,11 @@ export class Orchestrator {
     // full-auto-merges could accumulate toward the threshold without ever
     // resetting. Flagged, not silently missing — narrowing the breaker to
     // exactly the two mechanisms its spec named, rather than expanding scope.
-    if (project?.approvalLevel === "full" && project.autonomy && risk !== "high") {
+    // `skipFullAutonomy`: forceIntegrateRun's own completeness check already
+    // judged this diff incomplete — a `full`-autonomy policy auto-merging it
+    // anyway right here would silently undo that finding, so this ONE caller
+    // opts out of the fast path regardless of the project's approval level.
+    if (!opts.skipFullAutonomy && project?.approvalLevel === "full" && project.autonomy && risk !== "high") {
       const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "policy:full-autonomy", at: now() };
       await this.hub.runLog(runId, `auto-merged (policy:full-autonomy): ${item.title}`);
       await this.hub.raiseAndAutoResolveHitl(item, resolution);
@@ -1722,13 +1762,19 @@ export class Orchestrator {
     // isn't allowed to run on. The provisioned fallback uses the requested
     // credential, which the caller already resolved from an allowed run.
     allowedCredentialIds: string[] = [],
+    // Reassign's own "give me a DIFFERENT runner" ask — every escalation now
+    // frees its runner immediately at raise time (not held busy until reassign
+    // itself frees it), so that runner is idle again by the time reassign
+    // runs and would otherwise just get re-picked as its own "replacement".
+    // Only relaunchEscalated's reassign path sets this.
+    excludeAgentId?: string | null,
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
       const keyAllowed = (r: Agent) =>
         allowedCredentialIds.length === 0 || allowedCredentialIds.includes(r.credentialId ?? r.provider);
       // Prefer an idle agent that's on an allowed key AND can actually execute.
-      for (const r of runners.filter((r) => r.status === "idle" && keyAllowed(r))) {
+      for (const r of runners.filter((r) => r.status === "idle" && keyAllowed(r) && r.id !== excludeAgentId)) {
         if (await this.providerUsable(workspaceId, r.provider, r.credentialId)) {
           await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
           return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
@@ -1768,6 +1814,7 @@ export class Orchestrator {
     git: GitContext | undefined,
     runId: string,
     branch: string,
+    project: Project | null | undefined,
     baseRef?: string,
   ): Promise<{ cwd: string | undefined; baseRef?: string; scratchCwd?: string }> {
     if (!git) {
@@ -1777,6 +1824,14 @@ export class Orchestrator {
     }
     const prov = await git.worktrees.provision(runId, branch, { baseRef });
     await this.hub.runLog(runId, `worktree ready on ${branch} (from ${prov.baseRef})`);
+    // v4: project Skynet's portable memory (Project.contextSummary) into the
+    // freshly-checked-out worktree's own CLAUDE.md / .cursor/rules / Copilot
+    // instructions, so a vendor tool opened directly against this checkout
+    // (no Skynet in the loop) sees the same grounding an agent's prompt does.
+    // Best-effort: a filesystem hiccup here must never stop the run itself.
+    await syncRepoNativeMemory(prov.cwd, project?.contextSummary).catch((err) =>
+      this.hub.runLog(runId, `repo-native memory sync failed: ${(err as Error).message}`).catch(() => undefined),
+    );
     return { cwd: prov.cwd, baseRef: prov.baseRef };
   }
 
@@ -1976,7 +2031,7 @@ export class Orchestrator {
       // branches from origin/<base> (no baseRef passed), so every run starts on
       // the newest human-merged state — not a stale local integration branch.
       // With no bound repo (chat-only), this instead mints a private scratch dir.
-      const prov = await this.provisionCwd(git, runId, branch);
+      const prov = await this.provisionCwd(git, runId, branch, project);
       const { cwd, baseRef } = prov;
       scratchCwd = prov.scratchCwd;
       // Inject this workspace's provider key (env fallback when none is stored).
@@ -2063,7 +2118,7 @@ export class Orchestrator {
     let scratchCwd: string | undefined;
     try {
       // A fork branches from its parent (family-internal integration, §7).
-      const prov = await this.provisionCwd(git, runId, agent.branch, parent.branch);
+      const prov = await this.provisionCwd(git, runId, agent.branch, project, parent.branch);
       const { cwd, baseRef } = prov;
       scratchCwd = prov.scratchCwd;
       const apiKey = await secretService.resolve(parent.workspaceId, runner.credentialId ?? runner.provider);
@@ -2179,7 +2234,7 @@ export class Orchestrator {
 
     const runner = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, run.credentialId, await this.projectKeyAllowlist(run.projectId));
     const provider = await this.getProvider(runner.provider);
-    const { cwd, baseRef } = await this.provisionCwd(git, runId, run.branch, checkpoint.sha);
+    const { cwd, baseRef } = await this.provisionCwd(git, runId, run.branch, project, checkpoint.sha);
     const apiKey = await secretService.resolve(run.workspaceId, runner.credentialId ?? runner.provider);
     const resumeSessionId = run.provider === "claude" ? checkpoint.claudeSessionId : null;
     const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
@@ -2321,30 +2376,105 @@ export class Orchestrator {
   }
 
   /**
+   * Force Done skips the normal review gate entirely — the one sanity check
+   * that survives that skip: a plain "does this satisfy the task" consult on
+   * the run's OWN provider (never a separate reviewer agent — Force Done
+   * must still work on a single-agent fleet), the SAME prompt/field-based
+   * parsing `autoReview`'s own plain-consult path uses (`REVIEW_OUTPUT_INSTRUCTION`
+   * / `parseReviewVerdict` — never classifying the model's prose). Returns
+   * null — "no signal available", never a block — when there's no linked
+   * task to judge against, the provider has no `consult` support, there's
+   * nothing to diff, or the consult itself throws; the caller treats null
+   * exactly like an "approve" so Force Done's override still works on a
+   * fleet/provider that simply can't answer this.
+   */
+  private async judgeForceDoneCompleteness(
+    agent: TaskRun,
+    project: Project | undefined,
+    git: GitContext,
+    baseRef: string,
+  ): Promise<{ approve: boolean; reason: string; stat: DiffStat; patch: string } | null> {
+    const task = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === agent.id);
+    if (!task) return null;
+    const provider = await this.getProvider(agent.provider);
+    if (!provider.consult) return null;
+    const stat = await git.worktrees.diffStat(agent.id, baseRef);
+    const patch = await git.worktrees.patch(agent.id, baseRef);
+    if (!patch) return null; // nothing changed — nothing to judge
+    const apiKey = await secretService.resolve(agent.workspaceId, agent.credentialId ?? agent.provider);
+    const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
+    const reply = await provider.consult(
+      { task: buildAgentContext({ project, feature, body: task.text }), model: agent.model, cwd: config.runnerCwd, apiKey, context: patch },
+      `Review whether this run satisfies the task "${task.text}". ${REVIEW_OUTPUT_INSTRUCTION}`,
+    );
+    const verdict = parseReviewVerdict(reply);
+    return { approve: verdict.approve, reason: verdict.reason, stat, patch };
+  }
+
+  /**
+   * Force Done's completeness check came back "flag": don't push/merge —
+   * raise a REAL diff review instead (bypassing raiseDiffReview's own
+   * `full`-autonomy fast path, which would otherwise silently auto-merge
+   * straight past the finding this function exists to surface) and stamp the
+   * verdict onto the task immediately so the "⚠ flagged for you" banner shows
+   * without waiting for a later autonomy tick. Raising the HITL is also the
+   * notification — Telegram/push already fires for every newly-raised gate,
+   * so the operator hears about this the moment it happens, not silently.
+   */
+  private async flagForceDoneIncomplete(
+    runId: string,
+    workspaceId: string,
+    taskId: string | null,
+    judged: { reason: string; stat: DiffStat; patch: string },
+  ): Promise<void> {
+    await this.hub.runStatus(runId, "review");
+    await this.hub.runLog(runId, `Force Done held back — looks incomplete: ${judged.reason}`);
+    const resolvedTaskId = taskId ?? (await this.store.listTasks(workspaceId)).find((t) => t.runId === runId)?.id ?? null;
+    if (resolvedTaskId) {
+      const task = await this.store.getTask(resolvedTaskId);
+      if (task) {
+        await this.hub.upsertTask({
+          ...task,
+          state: "review",
+          reviewVerdict: { decision: "flag", reason: judged.reason, by: "force-done-check", at: now(), evidence: null, breaker: null },
+        });
+      }
+    }
+    await this.raiseDiffReview(runId, judged.stat, judged.patch, { skipFullAutonomy: true });
+  }
+
+  /**
    * Force Done's git-aware path when there's no open HITL to approve:
    * commits whatever's sitting uncommitted in a still-LIVE run's worktree
    * (mirroring what `complete()` already does at the end of a normal turn —
    * a live run may be mid-turn and never reached that point), frees the
    * runner the same way `stopAgent()`/`restoreCheckpoint()` already do, then
-   * routes the branch through {@link integrateRun} — the exact same push/
-   * merge integration a diff approval uses. Returns false when there's
-   * genuinely nothing to integrate (no run, already done, or no worktree/git
-   * backend at all) so the caller falls back to a cosmetic-only "done"
-   * rather than fabricating one over unlanded work.
+   * checks completeness before pushing: an "approve" (or no signal — see
+   * {@link judgeForceDoneCompleteness}) routes the branch through
+   * {@link integrateRun} exactly as before; a "flag" withholds the push and
+   * raises a real diff review instead (see {@link flagForceDoneIncomplete}).
+   * Returns "nothing" when there's genuinely nothing to integrate (no run,
+   * already done, or no worktree/git backend at all) so the caller falls
+   * back to a cosmetic-only "done" rather than fabricating one over unlanded
+   * work; "integrated" or "flagged" both mean real work happened here and
+   * the caller must NOT also cosmetically flip the task.
    */
-  async forceIntegrateRun(runId: string): Promise<boolean> {
+  async forceIntegrateRun(runId: string): Promise<"integrated" | "flagged" | "nothing"> {
     const agent = await this.store.getRun(runId);
-    if (!agent || agent.status === "done") return false;
+    if (!agent || agent.status === "done") return "nothing";
     const live = this.live.get(runId);
     const project = await this.store.getProject(agent.projectId);
     const git = live?.git ?? this.gitContextFor(project);
-    if (!git || !git.worktrees.exists(runId)) return false;
+    if (!git || !git.worktrees.exists(runId)) return "nothing";
 
     // Commit whatever's uncommitted right now — idempotent (a no-op on a
     // clean worktree, same as complete()'s own call).
     await git.worktrees
       .commitAll(runId, `Skynet agent ${runId}: ${agent.name} (force-completed by operator)`)
       .catch(() => undefined);
+
+    const taskId = live?.taskId ?? null;
+    const baseRef = live?.baseRef ?? this.baseBranchFor(project);
 
     // A live run holds its runner exclusively — free it before handing the
     // worktree to the merge/push pipeline, the same release restoreCheckpoint()
@@ -2355,7 +2485,13 @@ export class Orchestrator {
       this.live.delete(runId);
     }
 
-    return this.integrateRun(runId);
+    const judged = await this.judgeForceDoneCompleteness(agent, project, git, baseRef).catch(() => null);
+    if (judged && !judged.approve) {
+      await this.flagForceDoneIncomplete(runId, agent.workspaceId, taskId, judged);
+      return "flagged";
+    }
+
+    return (await this.integrateRun(runId)) ? "integrated" : "nothing";
   }
 
   // ── deliver a resolved decision ────────────────────────────────────────────
@@ -2593,8 +2729,10 @@ export class Orchestrator {
   /** System-driven escalation (too long / too many failures): halt the run and
    *  hand it to a human. Captures the worktree context so it can be resumed,
    *  frees the runner (but never retires the worktree), and raises an
-   *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes through
-   *  raise() instead (the live gate stays parked). */
+   *  `escalation` HITL. Idempotent per run. Agent-driven escalation goes
+   *  through raise() instead — same free-the-runner treatment for a
+   *  worktree-backed run (a chat-only run's live gate still stays parked;
+   *  see raise()'s own doc comment). */
   private async escalate(runId: string, reason: string, source: EscalationSource): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
@@ -2644,9 +2782,9 @@ export class Orchestrator {
     run: TaskRun,
     reason: string,
     source: EscalationSource,
-    ctx: { git?: GitContext; baseRef?: string; taskId?: string | null },
+    ctx: { git?: GitContext; baseRef?: string; taskId?: string | null; agentId?: string | null },
   ): Promise<void> {
-    this.escalations.set(run.id, { git: ctx.git, baseRef: ctx.baseRef, taskId: ctx.taskId ?? null, source });
+    this.escalations.set(run.id, { git: ctx.git, baseRef: ctx.baseRef, taskId: ctx.taskId ?? null, source, agentId: ctx.agentId });
     const item: HitlItem = {
       id: `q-${run.id}-${++this.seq}`,
       workspaceId: run.workspaceId,
@@ -2814,8 +2952,13 @@ export class Orchestrator {
       }
       return;
     }
-    // Agent-driven escalation still holds a live gate → resume it in place with
-    // the operator's guidance (preserves the agent's session context). modify only.
+    // A worktree-backed escalation frees its runner + clears `this.live` the
+    // moment it's raised (see raise()/escalate()), so `live` is normally gone
+    // by the time an operator resolves the card — falls through to
+    // relaunchEscalated below. The one case this DOES still fire: a chat-only
+    // run (no bound repo), which raise() deliberately leaves parked, because
+    // relaunchEscalated has no worktree to reacquire into for it — this is
+    // that run's only real resume path, not a hypothetical safety net.
     if (resolution.action === "modify" && live) {
       await this.hub.runStatus(runId, "running");
       await live.handle.resume(resolution);
@@ -2897,7 +3040,14 @@ export class Orchestrator {
         await this.freeRunner(live.agentId);
         this.live.delete(runId);
       }
-      acq = await this.acquireOrProvisionRunner(run.workspaceId, run.provider, run.model, undefined, await this.projectKeyAllowlist(run.projectId));
+      acq = await this.acquireOrProvisionRunner(
+        run.workspaceId,
+        run.provider,
+        run.model,
+        undefined,
+        await this.projectKeyAllowlist(run.projectId),
+        reassign ? (live?.agentId ?? ctx?.agentId) : undefined,
+      );
       if (reassign && live) {
         await live.handle.stop().catch(() => undefined);
         await this.freeRunner(live.agentId);
@@ -4233,6 +4383,18 @@ export class Orchestrator {
       await this.stopAgent(a.id, reason).catch(() => undefined);
       await this.hub.runStatus(a.id, "done").catch(() => undefined);
       await this.hub.runCompleted(a.id, a.branch).catch(() => undefined);
+      // stopAgent retired the worktree — this run integrates no change, so its
+      // owning task must not be left stranded "ongoing" (or "review") showing
+      // a live-looking column next to a run whose chip now reads "done". Same
+      // invariant haltAgent/settleArchivedRun uphold; this sweep was the one
+      // termination path missing it (reported live: a kanban card sitting in
+      // a mid-pipeline column while its status chip showed done).
+      const reapedTask = (await this.store.listTasks(a.workspaceId).catch(() => [] as Task[])).find(
+        (t) => t.runId === a.id,
+      );
+      if (reapedTask && (reapedTask.state === "ongoing" || reapedTask.state === "review")) {
+        await this.hub.upsertTask({ ...reapedTask, state: "todo", runId: null, reviewVerdict: null }).catch(() => undefined);
+      }
     }
   }
 
@@ -4398,69 +4560,7 @@ export class Orchestrator {
             const backlog = mine.find(
               (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") !== "unassigned",
             );
-            if (backlog) {
-              const { assessment, assessmentEffort, assessmentRisks, estimatedDurationMs, clarity, featureId, milestoneId, questions } =
-                await this.assessTask(ws, idle[0]!, backlog);
-              // Only OVERWRITE an existing estimate when triage produced a new
-              // one — leaves an operator-set estimate intact if triage failed
-              // to guess (or on retriage of a task that already had one).
-              const nextEst = estimatedDurationMs != null
-                ? estimatedDurationMs
-                : backlog.estimatedDurationMs;
-              // File under a suitable feature/milestone — but only when the task
-              // isn't ALREADY grouped, so triage never clobbers an operator's
-              // choice. A feature carries its milestone (assessTask nulls a direct
-              // milestone when a feature was picked).
-              const nextFeatureId = backlog.featureId ?? featureId;
-              const nextMilestoneId = backlog.featureId || backlog.milestoneId ? backlog.milestoneId : milestoneId;
-              // Loop breaker: this task already went through ONE ask-and-answer
-              // round (its description carries the operator's answer, stamped by
-              // answerClarification — see CLARIFICATION_ANSWERED_MARKER). A model
-              // that still comes back "unclear" after that — same underlying
-              // ambiguity, or just not confident — would otherwise re-ask forever
-              // (backlog → triage → backlog → ...), each lap burning a consult AND
-              // a Steward draft for a question the operator already answered.
-              // Trust the self-report only ONCE per round: force a promote here
-              // rather than opening a second clarification, and surface the
-              // model's continued doubt as a risk instead of another question.
-              const alreadyAnsweredOnce = (backlog.description ?? "").includes(CLARIFICATION_ANSWERED_MARKER);
-              const forcedClear = clarity === "unclear" && alreadyAnsweredOnce;
-              // Auto-promote to todo when the LLM said "clear" — the eligibility
-              // check above already guarantees the task can leave backlog.
-              const nextState: Task["state"] = clarity === "clear" || forcedClear ? "todo" : "triage";
-              // Unclear WITH specific questions → ask, and have Steward draft an
-              // answer the operator can accept or edit. Without this the task
-              // just parked in triage with nobody told what was missing, and an
-              // agent later rediscovered the same ambiguity at agent prices.
-              // A clear task (or a forced one, see above) never carries a
-              // clarification; re-triage clears a stale one rather than leaving
-              // an answered question on the card.
-              const clarification =
-                !forcedClear && questions.length > 0
-                  ? {
-                      questions,
-                      draft: await this.draftClarificationAnswer(ws, backlog, questions).catch(() => null),
-                      askedAt: now(),
-                    }
-                  : null;
-              const nextAssessmentRisks = forcedClear
-                ? [
-                    ...assessmentRisks,
-                    "Triage still flagged this unclear after the operator's answer — proceeding anyway; confirm scope before/while working it.",
-                  ]
-                : assessmentRisks;
-              await this.hub.upsertTask({
-                ...backlog,
-                state: nextState,
-                assessment,
-                assessmentEffort,
-                assessmentRisks: nextAssessmentRisks,
-                clarification,
-                estimatedDurationMs: nextEst,
-                featureId: nextFeatureId,
-                milestoneId: nextMilestoneId,
-              });
-            }
+            if (backlog) await this.triageOne(ws, idle[0]!, backlog);
             // 2) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
             //    Gated by `p.autonomy` — this is where money/time actually gets
             //    spent, so it stays under the project autonomy toggle. Also
@@ -4531,6 +4631,93 @@ export class Orchestrator {
     } finally {
       this.autonomyTicking = false;
     }
+  }
+
+  /**
+   * Run one triage assessment for `task` via `agent` and write the resulting
+   * state/assessment/clarification/grouping fields. Factored out of
+   * `tickAutonomy`'s triage step so the periodic sweep (a `backlog` task) and
+   * `requestRetriage` (an operator re-triaging a `triage` task on demand) go
+   * through the EXACT same write logic — including the clarification loop
+   * breaker below — rather than two copies that can drift.
+   */
+  private async triageOne(ws: string, agent: Agent, task: Task): Promise<void> {
+    const { assessment, assessmentEffort, assessmentRisks, estimatedDurationMs, clarity, featureId, milestoneId, questions } =
+      await this.assessTask(ws, agent, task);
+    // Only OVERWRITE an existing estimate when triage produced a new one —
+    // leaves an operator-set estimate intact if triage failed to guess (or on
+    // a re-triage of a task that already had one).
+    const nextEst = estimatedDurationMs != null ? estimatedDurationMs : task.estimatedDurationMs;
+    // File under a suitable feature/milestone — but only when the task isn't
+    // ALREADY grouped, so triage never clobbers an operator's choice. A
+    // feature carries its milestone (assessTask nulls a direct milestone
+    // when a feature was picked).
+    const nextFeatureId = task.featureId ?? featureId;
+    const nextMilestoneId = task.featureId || task.milestoneId ? task.milestoneId : milestoneId;
+    // Loop breaker: this task already went through ONE ask-and-answer round
+    // (its description carries the operator's answer, stamped by
+    // answerClarification — see CLARIFICATION_ANSWERED_MARKER). A model that
+    // still comes back "unclear" after that — same underlying ambiguity, or
+    // just not confident — would otherwise re-ask forever (backlog → triage →
+    // backlog → ...), each lap burning a consult AND a Steward draft for a
+    // question the operator already answered. Trust the self-report only
+    // ONCE per round: force a promote here rather than opening a second
+    // clarification, and surface the model's continued doubt as a risk
+    // instead of another question.
+    const alreadyAnsweredOnce = (task.description ?? "").includes(CLARIFICATION_ANSWERED_MARKER);
+    const forcedClear = clarity === "unclear" && alreadyAnsweredOnce;
+    // Auto-promote to todo when the LLM said "clear" — a task only ever
+    // reaches triage (whether via the periodic sweep or a manual re-triage)
+    // once its eligibility is already set, so nothing else gates the move.
+    const nextState: Task["state"] = clarity === "clear" || forcedClear ? "todo" : "triage";
+    // Unclear WITH specific questions → ask, and have Steward draft an answer
+    // the operator can accept or edit. Without this the task just parked in
+    // triage with nobody told what was missing, and an agent later
+    // rediscovered the same ambiguity at agent prices. A clear task (or a
+    // forced one, see above) never carries a clarification; re-triage clears
+    // a stale one rather than leaving an answered question on the card.
+    const clarification =
+      !forcedClear && questions.length > 0
+        ? { questions, draft: await this.draftClarificationAnswer(ws, task, questions).catch(() => null), askedAt: now() }
+        : null;
+    const nextAssessmentRisks = forcedClear
+      ? [
+          ...assessmentRisks,
+          "Triage still flagged this unclear after the operator's answer — proceeding anyway; confirm scope before/while working it.",
+        ]
+      : assessmentRisks;
+    await this.hub.upsertTask({
+      ...task,
+      state: nextState,
+      assessment,
+      assessmentEffort,
+      assessmentRisks: nextAssessmentRisks,
+      clarification,
+      estimatedDurationMs: nextEst,
+      featureId: nextFeatureId,
+      milestoneId: nextMilestoneId,
+    });
+  }
+
+  /**
+   * Manual "Request re-triage" — an operator forcing a fresh triage pass on a
+   * task already parked in `triage`, instead of waiting for it to cycle back
+   * through `backlog` (the only path the periodic sweep picks up on its own).
+   * Useful once project context changed (goal, instructions, a newly added
+   * feature) since the original read, after editing the task's description
+   * directly, or just to get a second opinion without dragging the card
+   * around. Reuses `triageOne` — the identical read+write the periodic tick
+   * uses (same clarification loop breaker, same grouping validation), just an
+   * eager entry point. Throws `NoTriageTargetError` when the task isn't
+   * sitting in `triage` (nothing to re-triage) and `NoCapacityError` when no
+   * agent is idle right now.
+   */
+  async requestRetriage(ws: string, taskId: string): Promise<void> {
+    const task = await this.store.getTask(taskId);
+    if (!task || task.workspaceId !== ws || task.state !== "triage") throw new NoTriageTargetError();
+    const agent = (await this.store.listAgents(ws)).find((a) => a.status === "idle");
+    if (!agent) throw new NoCapacityError();
+    await this.triageOne(ws, agent, task);
   }
 
   /**

@@ -44,4 +44,15 @@ describe("parseTaskLint — structured", () => {
     const many = Array.from({ length: 8 }, () => ({ kind: "vague", note: "x" }));
     expect(parseTaskLint(JSON.stringify({ concerns: many }))).toHaveLength(5);
   });
+
+  // v5 "coach" concern kinds — same structured field, just two more values.
+  it("reads the v5 missing-dependency and parallel-candidate kinds", () => {
+    const c = parseTaskLint(
+      '{"concerns":[{"kind":"missing-dependency","note":"says \\"once the API ships\\" but nothing links it"},{"kind":"parallel-candidate","note":"independent of \\"Fix pagination bug\\""}]}',
+    );
+    expect(c).toEqual([
+      { kind: "missing-dependency", note: 'says "once the API ships" but nothing links it' },
+      { kind: "parallel-candidate", note: 'independent of "Fix pagination bug"' },
+    ]);
+  });
 });

@@ -35,6 +35,7 @@ import type {
   PrChecksStatus,
   Project,
   ProjectCharter,
+  ProjectQualityResult,
   ProjectContextEntry,
   ProviderInfo,
   ResolveRequest,
@@ -83,7 +84,9 @@ import {
 import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
 import { contentHash, readProjectDoc, resolveRoadmapDoc } from "./steward/docs.js";
 import { draftBriefFromConversation, summarizeConversation } from "./steward/crystallize.js";
+import { scanRepo } from "./quality/scan.js";
 import { condenseProjectContext } from "./steward/context.js";
+import { prioritizeColumn } from "./steward/organize.js";
 import { extractText } from "./steward/extract.js";
 import { commitLocalRepoFile } from "./local-repo-write.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
@@ -174,6 +177,9 @@ export interface OperationsDeps {
   /** Test seam: override the model call refreshProjectContext makes (see
    *  condenseProjectContext's `ask` param). Same rationale as crystallizeAsk. */
   contextAsk?: (prompt: string) => Promise<string>;
+  /** Test seam: override the model call organizeBoard makes per column (see
+   *  prioritizeColumn's `ask` param). Same rationale as crystallizeAsk. */
+  organizeAsk?: (prompt: string) => Promise<string>;
 }
 
 export class Operations {
@@ -184,6 +190,7 @@ export class Operations {
   private readonly decomposeConsult: (opts: { prompt: string; model: string; apiKey?: string | null }) => Promise<string>;
   private readonly crystallizeAsk?: (prompt: string) => Promise<string>;
   private readonly contextAsk?: (prompt: string) => Promise<string>;
+  private readonly organizeAsk?: (prompt: string) => Promise<string>;
 
   constructor(deps: OperationsDeps) {
     this.store = deps.store;
@@ -192,6 +199,7 @@ export class Operations {
     this.decomposeConsult = deps.decomposeConsult ?? ((opts) => oneShotText({ ...opts, apiKey: opts.apiKey ?? undefined }));
     this.crystallizeAsk = deps.crystallizeAsk;
     this.contextAsk = deps.contextAsk;
+    this.organizeAsk = deps.organizeAsk;
   }
 
   private uid(prefix: string): string {
@@ -1111,7 +1119,7 @@ export class Operations {
   }
 
   /**
-   * Task linter v0 (assistive): run {@link lintTask} in the BACKGROUND right
+   * Task linter (assistive): run {@link lintTask} in the BACKGROUND right
    * after a task is created or its text/description is edited, same
    * best-effort fire-and-forget shape as `maybeAutoClone`. Never blocks the
    * caller and never throws into it — a failure just leaves `lint` unset,
@@ -1124,7 +1132,13 @@ export class Operations {
     );
   }
   private async lintTaskNow(ws: string, task: Task): Promise<void> {
-    const concerns = await lintTask(task.text, task.description);
+    // v5 coach context: the rest of the project's own open backlog, for the
+    // missing-dependency / parallel-candidate rules — a snapshot at lint time,
+    // same staleness caveat as everywhere else this is advisory-only.
+    const siblingTitles = (await this.store.listTasks(ws))
+      .filter((t) => t.projectId === task.projectId && t.id !== task.id && !t.archived && (t.state === "backlog" || t.state === "todo"))
+      .map((t) => t.text);
+    const concerns = await lintTask(task.text, task.description, siblingTitles);
     const current = await this.store.getTask(task.id);
     if (!current || current.workspaceId !== ws) return; // deleted meanwhile
     // The task may have been edited again while the consult was in flight —
@@ -1432,6 +1446,58 @@ export class Operations {
     }
     return (await this.store.getTask(tid))!;
   }
+  /** Steward-driven board tidy: priority-sorts every non-done column by what
+   *  it can infer from each task's title + description (see
+   *  steward/organize.ts), and archives every current Done task — recorded
+   *  work with no reason to keep cluttering the active board; Archive is
+   *  fully reversible from the Archived view. One explicit operator-triggered
+   *  action (not a background job) — same one-click directness as Force done
+   *  / Archive. Best-effort per column: a column whose consult fails/degrades
+   *  keeps its existing order rather than failing the whole tidy. */
+  async organizeBoard(ws: string, projectId: string): Promise<{ reordered: number; archived: number }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const all = (await this.store.listTasks(ws)).filter((t) => t.projectId === projectId && !t.archived);
+
+    const ask =
+      this.organizeAsk ??
+      (async (prompt: string) => {
+        const apiKey = (await secretService.resolve(ws, "claude")) ?? undefined;
+        return oneShotText({ prompt, model: ASSISTANT_MODEL, apiKey });
+      });
+    // Skip the (doomed) call when we already know no key resolves — same
+    // structural guard as refreshProjectContext, not reply-content sniffing.
+    const canAsk = !!this.organizeAsk || !!(await secretService.resolve(ws, "claude"));
+
+    let reordered = 0;
+    const rank = (t: Task) => t.order ?? 0;
+    if (canAsk) {
+      for (const state of ["backlog", "triage", "todo", "ongoing", "review"] as const) {
+        const column = all.filter((t) => t.state === state).sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
+        if (column.length < 2) continue;
+        const order = await prioritizeColumn(
+          ask,
+          project.name,
+          project.goal,
+          column.map((t) => ({ id: t.id, text: t.text, description: t.description })),
+        );
+        for (let i = 0; i < order.length; i++) {
+          const task = column.find((t) => t.id === order[i]);
+          if (task && rank(task) !== i) {
+            await this.hub.upsertTask({ ...task, order: i });
+            reordered++;
+          }
+        }
+      }
+    }
+
+    let archived = 0;
+    for (const task of all.filter((t) => t.state === "done")) {
+      await this.hub.upsertTask({ ...task, archived: true });
+      archived++;
+    }
+    return { reordered, archived };
+  }
   async deleteTask(ws: string, tid: string): Promise<void> {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
@@ -1718,7 +1784,12 @@ export class Operations {
    * verifier gate gets approved (commits + pushes/opens a PR, or enqueues the
    * local merge, exactly like a human clicking Approve); with no open gate,
    * whatever's sitting uncommitted in the run's worktree — live or not — gets
-   * committed and pushed through the same pipeline (Orchestrator.forceIntegrateRun).
+   * committed, sanity-checked, and pushed through the same pipeline
+   * (Orchestrator.forceIntegrateRun). Skipping the normal review gate doesn't
+   * skip judgment entirely: forceIntegrateRun's own completeness check can
+   * come back "flag" — nothing gets pushed, a real diff review is raised
+   * instead (which is also the notification — Telegram/push fires the moment
+   * that gate is raised), and the task lands in `review`, not `done`.
    * The task only flips to `done` here in the store when nothing could be
    * integrated (no run, or no git backend at all) — the GitHub-push case marks
    * done synchronously as part of that same call, and the local-merge-queue
@@ -1743,9 +1814,11 @@ export class Operations {
       // No gate waiting — the run may still be live/mid-turn, or finished
       // with real, uncommitted work sitting in its worktree. Commit it and
       // route it through the same push/merge integration a diff approval
-      // uses, so "done" isn't a fiction over unlanded work.
-      const integrated = await this.orchestrator.forceIntegrateRun(task.runId).catch(() => false);
-      if (integrated) return (await this.store.getTask(tid)) ?? task;
+      // uses, so "done" isn't a fiction over unlanded work — "flagged" means
+      // it held back and raised a real review instead; either way real work
+      // just happened, so neither outcome falls through to the cosmetic tail.
+      const outcome = await this.orchestrator.forceIntegrateRun(task.runId).catch(() => "nothing" as const);
+      if (outcome !== "nothing") return (await this.store.getTask(tid)) ?? task;
     }
 
     // Nothing to integrate (no run, or no git backend at all) — cosmetic-only,
@@ -1772,6 +1845,17 @@ export class Operations {
   async requestReview(ws: string, tid: string): Promise<void> {
     const task = await this.getTask(ws, tid);
     await this.orchestrator.requestReview(ws, task.id);
+  }
+
+  /**
+   * Manual "Request re-triage" — force a fresh triage pass on a task already
+   * parked in `triage` now, instead of waiting for it to cycle back through
+   * `backlog` on its own. Throws NoTriageTargetError / NoCapacityError
+   * (orchestrator.ts) for the honest failure modes.
+   */
+  async requestRetriage(ws: string, tid: string): Promise<void> {
+    const task = await this.getTask(ws, tid);
+    await this.orchestrator.requestRetriage(ws, task.id);
   }
 
   // ── features (task grouping) ───────────────────────────────────────────
@@ -2195,6 +2279,39 @@ export class Operations {
     } catch (err) {
       return { state: "github_error", message: (err as Error).message };
     }
+  }
+
+  /**
+   * Scenario coverage for a project's checked-out branch — the "how well does
+   * this actually work?" panel. Derived purely by READING the repo (see
+   * quality/scan.ts): it never runs the project's toolchain, so it's safe to
+   * point at code an agent just wrote and fast enough to be an on-demand panel.
+   *
+   * Local checkout only. A GitHub-only project would need hundreds of Contents
+   * API reads to scan, which is neither fast nor free — reported honestly as
+   * `missing_local_repo` rather than silently returning an empty report that
+   * would read as "nothing to cover".
+   */
+  async getProjectQuality(ws: string, projectId: string): Promise<ProjectQualityResult> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const root = project.repoPath ?? (config.reposDir ? join(config.reposDir, project.id) : null);
+    if (!root && !project.repo) return { state: "unbound" };
+    if (!root || !existsSync(root)) return { state: "missing_local_repo" };
+    const scan = await scanRepo(root, now());
+    return {
+      state: "ok",
+      quality: {
+        axes: scan.scenarios.axes,
+        behaviourCount: scan.scenarios.behaviours.length,
+        totalCases: scan.scenarios.totalCases,
+        coveredCases: scan.scenarios.coveredCases,
+        sourceFiles: scan.scenarios.sourceFiles,
+        testFiles: scan.scenarios.testFiles,
+        coverage: scan.coverage,
+        scannedAt: scan.scannedAt,
+      },
+    };
   }
 
   /** Commit a Steward-drafted edit to the project's roadmap doc — only reachable

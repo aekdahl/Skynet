@@ -43,6 +43,29 @@ class CompletesProvider implements RunnerProvider {
   }
 }
 
+// Stays live (like StaysLiveProvider) but supports `consult` — so
+// forceIntegrateRun's completeness check has a real reply to read. Returns
+// the SAME verdict for every call whose question asks "does this satisfy
+// the task" (the completeness check); anything else (the diff walkthrough /
+// merge brief drafts that fire once raiseDiffReview raises the gate) gets an
+// empty object, which those best-effort drafters already tolerate as "no
+// draft" — not what these tests are covering.
+class JudgingLiveProvider implements RunnerProvider {
+  readonly id: ProviderId = "claude";
+  stopped = false;
+  constructor(private verdict: string, private fileName = "half-done.txt") {}
+  async start(spec: StartSpec, _events: RunnerEvents): Promise<RunnerHandle> {
+    writeFileSync(join(spec.cwd!, this.fileName), "partial work\n");
+    return {
+      runId: spec.runId, provider: this.id,
+      async pause() {}, async resume() {}, async message() {},
+      stop: async () => { this.stopped = true; },
+    };
+  }
+  consult = async (_spec: unknown, question: string): Promise<string> =>
+    /Review whether this run satisfies/.test(question) ? this.verdict : "{}";
+}
+
 let Hub: typeof import("../apps/server/src/hub.js").Hub;
 let Orchestrator: typeof import("../apps/server/src/orchestrator.js").Orchestrator;
 let Operations: typeof import("../apps/server/src/operations.js").Operations;
@@ -130,5 +153,43 @@ describe("forceTaskDone — an open diff gate gets approved, not bypassed", () =
     expect(git("cat-file", "-t", "skynet/integration/p-gated:done.txt")).toBe("blob");
     await waitFor(async () => (await store.getTask("t1"))?.state === "done");
     expect((await openDiff())).toBeUndefined(); // the gate got resolved, not skipped
+  });
+});
+
+// Skipping the normal review gate shouldn't also skip judgment: with no open
+// HITL to approve, forceIntegrateRun runs its own "does this satisfy the
+// task" consult before pushing. These pin both outcomes.
+describe("forceTaskDone — completeness check gates the push", () => {
+  it("a FLAG verdict holds back the push and raises a real diff review instead — the review IS the notification", async () => {
+    const provider = new JudgingLiveProvider('{"verdict":"flag","reason":"Missing tests for the new endpoint."}', "half-done.txt");
+    const { store, ops, run } = await setup(provider, "p-incomplete");
+
+    await ops.forceTaskDone(DEFAULT_WORKSPACE, "t1", "op-1");
+    await waitFor(async () => provider.stopped); // the session still gets stopped — the work is real, just held back
+
+    const t = await store.getTask("t1");
+    expect(t?.state).toBe("review"); // NOT done
+    expect(t?.reviewVerdict).toMatchObject({ decision: "flag", reason: "Missing tests for the new endpoint." });
+
+    const openDiff = (await store.listQueue(DEFAULT_WORKSPACE)).find(
+      (h) => h.runId === run.id && h.kind === "diff" && !h.resolvedAt,
+    );
+    expect(openDiff).toBeDefined(); // a real, actionable Approve/Reject/Modify gate
+    expect(openDiff?.diff?.files).toContain("half-done.txt");
+
+    // Never reached the integration branch.
+    expect(() => git("cat-file", "-e", "skynet/integration/p-incomplete:half-done.txt")).toThrow();
+  });
+
+  it("an APPROVE verdict still pushes through exactly as before", async () => {
+    const provider = new JudgingLiveProvider('{"verdict":"approve","reason":"Looks complete."}', "all-done.txt");
+    const { store, ops } = await setup(provider, "p-complete-judge");
+
+    await ops.forceTaskDone(DEFAULT_WORKSPACE, "t1", "op-1");
+
+    await waitFor(async () => {
+      try { git("cat-file", "-e", "skynet/integration/p-complete-judge:all-done.txt"); return true; } catch { return false; }
+    });
+    await waitFor(async () => (await store.getTask("t1"))?.state === "done");
   });
 });

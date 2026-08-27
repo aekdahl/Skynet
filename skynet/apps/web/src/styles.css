@@ -355,7 +355,10 @@ kbd {
 .qcard.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 8px 32px rgba(0,0,0,0.35); }
 .qcard.leaving { opacity: 0; transform: translateX(32px); }
 @media (prefers-reduced-motion: reduce) { .qcard { transition: border-color var(--motion-fast); } .qcard.leaving { opacity: 1; transform: none; } }
-.qcard-head { display: flex; align-items: center; gap: 12px; }
+/* Collapsed-by-default row (queue.tsx): the head is the whole "one row"
+   summary — clicking it (or the ▸/▾ mark) toggles the rest of the card. */
+.qcard-head { display: flex; align-items: center; gap: 12px; cursor: pointer; }
+.qcard-expand-toggle { flex-shrink: 0; width: 10px; text-align: center; color: var(--faint); font-size: var(--fz-12); }
 .kind-chip {
   font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.12em;
   border: 1px solid; border-radius: 4px; padding: 2px 7px; white-space: nowrap;
@@ -366,8 +369,9 @@ kbd {
   max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
 }
 .qcard-agent:hover { color: var(--text); }
-.qcard-wait { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-12); color: var(--warn); font-variant-numeric: tabular-nums; }
+.qcard-wait { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-12); color: var(--warn); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .qcard-title { font-size: calc(var(--fs) + 4px); font-weight: 600; letter-spacing: -0.01em; }
+.qcard-title-inline { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* ── Ready-to-merge card ─────────────────────────────────────────────────── */
 .merge-prlink { margin-left: auto; color: var(--muted); font-size: var(--fz-12-5); text-decoration: none; }
 .merge-prlink:hover { color: var(--accent); }
@@ -2132,9 +2136,10 @@ button.rb-proj:hover { color: var(--accent); }
   max-width: 100%; overflow: hidden; white-space: nowrap;
 }
 .rb-pill:hover { border-color: var(--accent); color: var(--accent); }
-/* The vendor's own mark (colored glyph) — a real identity signal, not the
-   fleet runner's custom name alone. */
+/* The vendor's own mark (colored glyph) + name — real identity, not the fleet
+   runner's custom label alone. Name inherits the provider color from inline style. */
 .rb-prov-glyph { flex: none; font-size: var(--fz-12); line-height: 1; }
+.rb-prov-name { font-size: var(--fz-12); font-weight: 500; }
 .rb-off { color: var(--faint); }
 .rb-time { font-family: var(--font-mono); font-size: var(--fz-11-5); color: var(--muted); }
 
@@ -2154,7 +2159,7 @@ button.rb-proj:hover { color: var(--accent); }
     100% { transform: scaleY(1); opacity: 1; }
   }
 }
-/* No heartbeat in a while (see STALE_HEARTBEAT_SEC in home.tsx) — overrides
+/* No heartbeat in a while (see STALE_HEARTBEAT_SEC in derive.ts) — overrides
    the tag's own color so "running" and "paused" both read as suspect the
    same way, distinct from --danger (an open gate genuinely needs a decision)
    and --info (a healthy, actively-heartbeating run). */
@@ -3272,3 +3277,57 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .spend-legend-num { margin-left: auto; color: var(--muted); font-size: var(--fz-11); }
 .spend-eff-caveat { font-size: var(--fz-11); color: var(--faint); border-left: 2px solid var(--line); padding-left: 8px; }
 .settings-saved { font-size: var(--fz-11); color: var(--ok, var(--accent)); margin-top: 6px; }
+
+/* ── Project Coverage tab: scenario coverage ─────────────────────────────── */
+.qa { display: flex; flex-direction: column; gap: 16px; }
+.qa-head { display: flex; align-items: flex-start; gap: 16px; }
+.qa-head .btn { margin-left: auto; flex: none; }
+.qa-sub { font-size: var(--fz-12); color: var(--muted); margin: 4px 0 0; line-height: 1.5; max-width: 70ch; }
+.qa-stats { display: flex; gap: 28px; }
+.qa-stat { display: flex; flex-direction: column; gap: 2px; }
+.qa-stat-num { font-size: var(--fz-16); font-weight: 600; }
+.qa-stat-lbl { font-size: var(--fz-11); color: var(--muted); }
+.qa-caveat { font-size: var(--fz-11-5); color: var(--muted); line-height: 1.5; border-left: 2px solid var(--line); padding-left: 10px; max-width: 80ch; }
+.qa-listhead { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line-soft); padding-bottom: 6px; }
+.qa-listhead-t { font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--muted); }
+.qa-toggle { margin-left: auto; background: none; border: none; cursor: pointer; color: var(--accent); font-family: var(--font-ui); font-size: var(--fz-11); text-decoration: underline; text-underline-offset: 2px; padding: 0; }
+.qa-axes { display: flex; flex-direction: column; gap: 10px; }
+.qa-axis { border: 1px solid var(--line-soft); border-radius: 8px; padding: 9px 11px; display: flex; flex-direction: column; gap: 7px; }
+.qa-axis-gap { border-color: color-mix(in oklch, var(--warn), transparent 60%); }
+.qa-axis-head { display: flex; align-items: baseline; gap: 8px; }
+.qa-axis-name { font-size: var(--fz-12-5); font-weight: 600; }
+.qa-axis-kind { font-size: var(--fz-10); color: var(--faint); text-transform: uppercase; letter-spacing: 0.05em; }
+.qa-axis-file { font-size: var(--fz-10-5); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.qa-axis-count { font-size: var(--fz-11); color: var(--muted); flex: none; }
+.qa-count-gap { color: var(--warn); }
+.qa-cases { display: flex; flex-wrap: wrap; gap: 5px; }
+.qa-case { font-family: var(--font-mono); font-size: var(--fz-10-5); border-radius: 999px; padding: 2px 8px; border: 1px solid transparent; }
+.qa-case-on { color: var(--muted); border-color: var(--line-soft); }
+.qa-case-off { color: var(--warn); border-color: color-mix(in oklch, var(--warn), transparent 55%); background: color-mix(in oklch, var(--warn), transparent 90%); text-decoration: line-through; text-decoration-thickness: 1px; }
+.qa-hint { font-size: var(--fz-11-5); color: var(--muted); line-height: 1.55; background: var(--bg2); border-radius: 8px; padding: 10px 12px; max-width: 80ch; }
+
+/* Coverage tree — "where are the gaps". Bars fill by GAP and covered stays
+   neutral (never green): a roll-up only proves every case is mentioned
+   somewhere, not that anything is asserted, and a green bar would claim the
+   stronger thing. See apps/web/src/components/coverage-tree.tsx. */
+.qt { display: flex; flex-direction: column; gap: 8px; }
+.qt-rows { display: flex; flex-direction: column; }
+.qt-row { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; cursor: pointer;
+  font-family: var(--font-ui); color: var(--fg); text-align: left; padding: 3px 6px; border-radius: 5px; }
+.qt-row:hover { background: var(--bg2); }
+.qt-row-clean { color: var(--faint); }
+.qt-caret { font-size: var(--fz-10); color: var(--faint); width: 9px; flex: none; }
+.qt-caret-none { visibility: hidden; }
+.qt-name { font-size: var(--fz-11-5); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qt-name-axis { font-family: var(--font-ui); font-weight: 600; }
+.qt-spacer { flex: 1; min-width: 8px; }
+.qt-gaps { font-size: var(--fz-10-5); color: var(--warn); flex: none; }
+.qt-count { font-size: var(--fz-10-5); color: var(--muted); flex: none; min-width: 44px; text-align: right; }
+.qt-bar { flex: none; width: 52px; height: 4px; border-radius: 999px; background: var(--line-soft); overflow: hidden; }
+.qt-bar-fill { display: block; height: 100%; background: var(--warn); border-radius: 999px; }
+.qt-cases { display: flex; flex-wrap: wrap; gap: 5px; padding: 4px 6px 8px 34px; }
+.qa-modes { display: flex; gap: 4px; border-bottom: 1px solid var(--line-soft); padding-bottom: 8px; }
+.qa-mode { background: none; border: 1px solid transparent; border-radius: 6px; cursor: pointer;
+  font-family: var(--font-ui); font-size: var(--fz-11-5); color: var(--muted); padding: 4px 10px; }
+.qa-mode:hover { color: var(--fg); }
+.qa-mode-on { color: var(--fg); background: var(--bg2); border-color: var(--line-soft); }
