@@ -16,7 +16,7 @@ import {
 // Cheap, tool-less one-shot for the clarification draft. Explicit mid-tier
 // model: this is a short, high-frequency assistant call where the top tier
 // buys nothing and costs several times more.
-import { oneShotText } from "@skynet/runner-sdk/claude";
+import { oneShotText, ASSISTANT_MODEL } from "@skynet/runner-sdk/claude";
 const CLARIFY_DRAFT_MODEL = "sonnet";
 import { basename, join, resolve } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -26,6 +26,7 @@ import { decideAutoApproval } from "./approval-policy.js";
 import { resolveActivePolicy } from "./command-policy.js";
 import { resolveMergeTarget } from "./derive/merge-target.js";
 import { parseReviewVerdict, extractJsonObject, REVIEW_OUTPUT_INSTRUCTION, parseReviewProposals, type ProposedTask } from "./review-verdict.js";
+import { suggestAnyAgentEligible } from "./steward/organize.js";
 import { parseBreakerVerdict, BREAKER_OUTPUT_INSTRUCTION, type BreakerVerdictOut } from "./breaker-verdict.js";
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
@@ -714,6 +715,13 @@ export class Orchestrator {
     // previewOverride's injected manager sidesteps the same problem — this
     // does the equivalent for exploreBrief specifically.
     private exploreWorktreesDirOverride?: string,
+    // Test seam for suggestAnyAgentForOne's standalone consult — mirrors
+    // Operations.organizeAsk (the SAME underlying question, asked from a
+    // click instead of a tick). @skynet/runner-sdk/claude's `oneShotText` is
+    // resolved via Node's real module loader for a workspace package, so
+    // `vi.mock` can't reliably intercept it from a test; injecting the `ask`
+    // function directly here sidesteps that instead of fighting it.
+    private anyAgentAskOverride?: (prompt: string) => Promise<string>,
   ) {}
 
   /** Build (or reuse) the git backend for a repo path + base branch. Cached so
@@ -4600,10 +4608,29 @@ export class Orchestrator {
           // spawning a run that then shows the archived task "running".
           const mine = tasks.filter((t) => t.projectId === p.id && !t.archived);
           try {
-            // 1) Triage one backlog item → assessment + duration + clarity.
+            // 1) Any-agent eligibility for ONE currently-unassigned backlog
+            //    task. ALWAYS runs (no p.autonomy gate) — advisory judgment,
+            //    not a spending action, and never assigns to a SPECIFIC
+            //    agent, only ever widens to "any". An `unassigned` task is
+            //    invisible to triage below AND to auto-pick (both filter it
+            //    out — the eligibility choice is the operator's) until a
+            //    human sets it by hand or clicks "Organize board"
+            //    (steward/organize.ts's SAME consult, batched over every
+            //    unassigned task at once). This closes that gap on its own,
+            //    one task per tick, so a freshly created task doesn't sit
+            //    stuck for no reason other than nobody happened to click a
+            //    button. Best-effort: suggestAnyAgentForOne degrades to
+            //    doing nothing on any failure — never guesses, never blocks
+            //    the rest of this tick.
+            const unassignedBacklog = mine.find(
+              (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") === "unassigned",
+            );
+            if (unassignedBacklog) await this.suggestAnyAgentForOne(ws, unassignedBacklog);
+            // 2) Triage one backlog item → assessment + duration + clarity.
             //    ALWAYS runs (no p.autonomy gate) — it's informative, not
             //    action. Skip `unassigned` tasks: an eligibility choice is still
-            //    the operator's, and autonomy never guesses one.
+            //    the operator's, and autonomy never guesses one (step 1 above
+            //    is the only thing that widens it, and only when confident).
             //    If the LLM self-reports clarity=clear, auto-promote triage→todo
             //    in the SAME write — that's the "reduce human dependence" step.
             //    Unclear (or missing signal) parks in triage for a human read.
@@ -4611,7 +4638,7 @@ export class Orchestrator {
               (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") !== "unassigned",
             );
             if (backlog) await this.triageOne(ws, idle[0]!, backlog);
-            // 2) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
+            // 3) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
             //    Gated by `p.autonomy` — this is where money/time actually gets
             //    spent, so it stays under the project autonomy toggle. Also
             //    honors each task's eligibility set via assignTask → acquireAgent.
@@ -4647,7 +4674,7 @@ export class Orchestrator {
               const affordable = await this.selectAffordable(p, runs, pickable);
               await Promise.allSettled(affordable.map((t) => this.assignTask(p.id, t.id)));
             }
-            // 3) Review a finished run — runs REGARDLESS of `p.autonomy`.
+            // 4) Review a finished run — runs REGARDLESS of `p.autonomy`.
             //    Recording a verdict is diagnostic (an LLM consult), not a
             //    spending action, so every review-state task deserves a
             //    reviewer's opinion for the human's audit trail. The
@@ -4945,6 +4972,44 @@ export class Orchestrator {
       .join("\n");
     const reply = (await oneShotText({ prompt, model: CLARIFY_DRAFT_MODEL, apiKey })).trim();
     return reply || null;
+  }
+
+  /**
+   * Any-agent eligibility for ONE currently-unassigned backlog task — the
+   * periodic-tick counterpart to steward/organize.ts's `suggestAnyAgentEligible`
+   * (which "Organize board" already runs, batched over every unassigned task
+   * at once). An `unassigned` task is invisible to triage and auto-pick alike
+   * (see tickAutonomy's own filters) until a human sets its eligibility or
+   * clicks Organize — this closes that gap automatically, one task at a
+   * time, so a freshly created task doesn't sit stuck for no reason other
+   * than nobody happened to click a button.
+   *
+   * Same cheap, tool-less, one-shot consult `organizeBoard` uses (never the
+   * agent's own provider/session — this doesn't compete for runner capacity).
+   * Degrades to doing nothing on any failure (no credential, unreadable
+   * reply, the consult declining to vouch for it) — never guesses, never
+   * throws, never blocks the rest of the tick.
+   */
+  private async suggestAnyAgentForOne(ws: string, task: Task): Promise<void> {
+    const ask =
+      this.anyAgentAskOverride ??
+      (async (prompt: string) => {
+        const apiKey = await secretService.resolve(ws, "claude");
+        if (!apiKey) throw new Error("no usable credential"); // caught below — leave it for a human, or a later Organize board click
+        return oneShotText({ prompt, model: ASSISTANT_MODEL, apiKey });
+      });
+    const project = await this.store.getProject(task.projectId).catch(() => null);
+    const eligible = await suggestAnyAgentEligible(ask, project?.name ?? "", project?.goal ?? "", [
+      { id: task.id, text: task.text, description: task.description },
+    ]).catch(() => [] as string[]);
+    if (!eligible.includes(task.id)) return;
+    // Re-fetch fresh before writing — the operator (or a parallel "Organize
+    // board" click) may have already routed this task while the consult was
+    // in flight; never clobber a state that's moved on since we read it.
+    const fresh = await this.store.getTask(task.id);
+    if (fresh && fresh.state === "backlog" && (fresh.assignment?.mode ?? "unassigned") === "unassigned") {
+      await this.hub.upsertTask({ ...fresh, assignment: { mode: "any", agentIds: [] } });
+    }
   }
 
   /**

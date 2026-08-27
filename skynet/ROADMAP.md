@@ -529,6 +529,29 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Any-agent eligibility also runs on the periodic autonomy tick, not just an "Organize board" click.**
+  Direct follow-up, requested live: "do organize board only run on click? or scheduled or event triggered as
+  well? ... shouldn't there [be one]? in order to keep things flowing." True on both counts — the click-only
+  version (the entry directly below) only closed the gap when an operator happened to press the button, AND
+  an `unassigned` backlog task was ALREADY invisible to the autonomy triage sweep itself (its own picker
+  explicitly filters unassigned tasks out), so a freshly created task with no eligibility choice sat
+  completely inert until a human noticed. New `Orchestrator.suggestAnyAgentForOne`, wired as `tickAutonomy`'s
+  new step 1 (renumbering the rest): ALWAYS runs (no `p.autonomy` gate, same as triage — advisory judgment,
+  not a spending action, and it only ever widens eligibility to "any", never assigns a specific agent), one
+  currently-unassigned backlog task per tick, reusing the SAME `suggestAnyAgentEligible` consult "Organize
+  board" already runs (steward/organize.ts) — same prompt, same tolerant parse/one-retry/degrade-quietly
+  discipline. Placed before the triage step specifically: triage's own picker still skips unassigned tasks,
+  so a task this step widens only becomes triage-visible on a LATER tick, never the same one (no double-
+  processing risk since the two steps read disjoint `assignment.mode` subsets of the same tick's snapshot).
+  Testing note: `@skynet/runner-sdk/claude`'s `oneShotText` is a real network call resolved through Node's
+  own module loader for a workspace package, so `vi.mock` can't reliably intercept it from a test (confirmed
+  empirically — the real function kept running against a fake key, several real seconds per call, until this
+  was traced down). Orchestrator's constructor gained an `anyAgentAskOverride` test seam instead, mirroring
+  the EXISTING `providerOverride`/`previewOverride`/`exploreWorktreesDirOverride` pattern already used for
+  exactly this class of problem. `tests/autonomy-any-agent-tick.test.ts` (6 new tests, instant — no network):
+  the consult's positive verdict sets `{mode:"any"}`; a negative verdict or unreadable reply leaves it
+  unassigned; an already-assigned task never even reaches the consult; no credential resolving degrades to
+  the same safe no-op; a made-up id in the reply is discarded.
 - [x] **Organize board also unsticks unassigned backlog tasks it's confident about.** Requested live: "when
   Steward organize the tasks it should also set the ones that make sense to any agent in backlog so they can
   be picked up for work." An `unassigned` backlog task never leaves backlog on its own — the eligibility
