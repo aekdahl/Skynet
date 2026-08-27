@@ -550,6 +550,60 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   integration.test.ts` (2 new tests, against a real throwaway git repo) pin both outcomes: a flag verdict
   holds back the push (the file never lands on the integration branch) and raises an actionable diff gate
   carrying the real changed files; an approve verdict still pushes through exactly as before.
+- [x] **Manual "Request re-triage" on a card parked in triage.** Requested live: the only way back into
+  triage's assessment was to wait for the task to cycle through `backlog` on the periodic sweep — no way to
+  ask for a fresh read on demand once project context changed (goal, instructions, a newly added feature)
+  or the description was edited after the original "unclear" verdict. Mirrors the existing "Request review"
+  button exactly: a new `Re-triage` action on any card sitting in the Triage column, alongside a "Parked in
+  triage" label (same `kb-unreviewed`/`kb-unreviewed-btn` styling `requestReview` already uses — no new
+  CSS). Server-side, `Orchestrator.tickAutonomy`'s own triage-write logic (assessment + duration + clarity +
+  grouping + the clarification loop breaker) was extracted into a shared `triageOne(ws, agent, task)` so the
+  periodic sweep and the new eager `requestRetriage(ws, taskId)` entry point run the IDENTICAL write path
+  rather than two copies that could drift — the loop-breaker fix directly above this one automatically
+  covers the manual path too. Throws honest, specific errors instead of a silent no-op: `NoTriageTargetError`
+  when the task isn't in `triage` right now, `NoCapacityError` (reused — the same error every other manual
+  on-demand action already throws) when no agent is idle. `tests/request-retriage.test.ts` (5 tests) covers
+  both outcomes (clear → promotes to `todo`, unclear → fresh clarification) plus both failure modes and the
+  404 case; the write-logic itself (including the loop breaker) stays covered by `autonomy.test.ts` since
+  `triageOne` is now the one implementation both paths share. Verified live: seeded a task into Triage with
+  no idle agent — clicking Re-triage surfaced "No idle runner available" as a toast (not a silent no-op);
+  adding an idle runner and clicking again returned 204 and the card's assessment updated in place.
+- [x] **Fix: a third termination path could strand a task "ongoing"/"review" while its run showed "done".**
+  Reported live: "Task status should of course match the column in kanban it is in" — a card sitting in a
+  mid-pipeline column (Ongoing/Review) whose own status chip (driven by the linked run's `status`, a
+  SEPARATE state machine from the task's kanban `state` — see `apps/web/src/views/project.tsx`'s per-card
+  chip) read "done". The invariant "an ongoing/review task always has a live run behind it" already has two
+  enforcers — `haltAgent` (the plain Stop button, and the fix directly above this one for its escalation-card
+  twin) and `settleArchivedRun` — both of which return the task to `todo` + detach it when their run goes
+  terminal. `reapStaleAgents`'s OWN third termination path — the sweep that frees a runner whose session died
+  silently while its run sat `waiting` on an open gate (not yet an escalation) — never got this fix: it
+  called `stopAgent` + `runStatus(..., "done")` + `runCompleted(...)` but never touched the owning task, so a
+  run reaped this way left its task permanently stranded in whatever column it was in, now showing a "done"
+  run underneath it. Added the identical task-reset (`state → "todo"`, `runId → null`, `reviewVerdict →
+  null`) this sweep was missing, matching `haltAgent`/`settleArchivedRun` byte-for-byte. New test in
+  `escalation.test.ts`: a run parked on a plain (non-escalation) gate whose heartbeat goes stale is reaped,
+  and the task is un-stranded to `todo` — the exact scenario that used to leave a done-looking run under a
+  mid-pipeline card.
+- [x] **Fix: a Telegram merge-conflict card was an unexplained raw diff dump — impossible to act on.**
+  Reported live with a screenshot: "A merge needs a look" arrived on the phone as a tail-truncated `diff
+  --cc` combined-diff snippet cut off mid-sentence, no title, no explanation, nothing saying which files
+  conflicted or what Approve/Reject/Modify would actually do. Root cause: `decisionCardHtml`/`gateNotice`
+  (`telegram/notices.ts`) picked exactly ONE content block per gate via an if/else-if chain — for a `diff`
+  gate that's the stats+file list, but a `merge` gate isn't a `diff` gate, so it fell through to the
+  captured-output branch and rendered the raw `<<<<<<<`/`=======`/`>>>>>>>` conflict text (or a
+  `diff --cc` combined diff for the feature-branch-batch case) as the ENTIRE card. Worse: `HitlItem.why` —
+  the system-authored explanation of what happened and what the buttons do, which the web queue card
+  (`queue.tsx`) has always shown unconditionally — was never read by either Telegram function at all, and
+  the conflicting files already carried on `flags` (rendered as chips on web) were never shown either.
+  Rewrote both to match the web card's own ordering (title → rationale → why → kind-specific content →
+  captured output → conflicting files): the raw conflict text now rides at the BOTTOM as clearly-labeled
+  supplementary detail ("Conflict (captured before the merge was aborted) — Modify sends this to the agent
+  as-is"), preceded by the actual explanation and a `Conflicts in: <files>` line — so the operator can
+  decide from the card alone, with the raw diff only as backup context (or the existing "View diff" /
+  "Open in the app" for full detail). Added to `tests/telegram-notices.test.ts` (2 new tests) covering a
+  realistic merge-conflict item: title, why, and conflicting files all present and ordered BEFORE the raw
+  (HTML-escaped) conflict text, not instead of it. All prior diff/command/question card tests unaffected —
+  `title`/`why` are additive lines, never replacing the existing kind-specific content.
 - [x] **Fix: answering a triage clarifying question could loop forever — same question, every time.**
   Reported live right after clarifying questions shipped: answer the question → task returns to `backlog`
   for re-triage (by design, since the answer can change the effort/risk/grouping read) → triage runs again
@@ -1506,24 +1560,23 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   (`tests/feature-brief.test.ts`) and an orchestrator-level test driving two real tasks through a real
   git batch completion, including a forced consult failure proving the PR still opens
   (`tests/feature-brief-orchestrator.test.ts`).
-- [ ] **🔬⭐ Autonomous backlog sweep — the v1 path to the auto dev team.** Point Skynet at a whole
+- [x] **🔬⭐ Autonomous backlog sweep — the v1 path to the auto dev team.** Point Skynet at a whole
   backlog/roadmap under an explicit daily budget and let the fleet build it out unattended: humans
   approve only *completed, working* features, agents test and try to break their own work before a
   human ever sees it, and the fleet replenishes the backlog from what it finds along the way — every
   autonomous loop bounded by construction, never by hope. This is the concrete v1 path toward
   **⭐ North star: the auto dev team** and its **🔗 Product steward & the living Plan** substrate (v2,
   above): Charter → Blueprint → Plan needs exactly this — a fleet that can run unattended for a whole
-  work session without drifting, overspending, or silently shipping broken work. It **composes existing
-  v1 machinery into five phases; only the gates and the budget rollup below are genuinely new**:
-  1. **Budget ceiling.** `tickAutonomy`'s auto-pick step (`orchestrator.ts`) already rank-orders
-     eligible `todo` tasks by `order` and fires them while idle capacity lasts — but nothing today rolls
-     per-run spend (`TaskRun.usage.costUsd`, already tracked, nullable when a vendor omits it) into a
-     project- or workspace-level daily total, and nothing gates auto-pick on it. New: a daily spend
-     rollup that auto-pick checks before starting another task — an exhausted budget pauses auto-pick
-     for the rest of the window, not the project's `autonomy` toggle itself (see the gate philosophy
-     below — a human can always still assign manually). Per-run wall-clock/idle-stall caps
-     (`runtimeCapMs`/`idleCapMs`, `runner-sdk/src/caps.ts`) already bound a single run's worst case;
-     this is the same idea one level up, in dollars instead of minutes.
+  work session without drifting, overspending, or silently shipping broken work. It **composed existing
+  v1 machinery into five phases — all five now shipped**:
+  1. ~~**Budget ceiling.**~~ — **shipped.** `computeDailySpend` (`packages/shared`) rolls per-run
+     spend (`TaskRun.usage.costUsd`, nullable when a vendor omits it) into a project's daily total;
+     `tickAutonomy`'s auto-pick step (`orchestrator.ts`) checks it before starting another task, so an
+     exhausted `dailyBudgetUsd` pauses auto-pick for the rest of the window — never the project's
+     `autonomy` toggle itself (see the gate philosophy below — a human can always still assign
+     manually). Per-run wall-clock/idle-stall caps (`runtimeCapMs`/`idleCapMs`,
+     `runner-sdk/src/caps.ts`) already bound a single run's worst case; this is the same idea one level
+     up, in dollars instead of minutes. (`tests/daily-budget.test.ts`)
   2. ~~**Two-lens review: verifier + breaker.**~~ — **shipped, both halves.** Plain `autoReview`
      (`orchestrator.ts`) was a single reviewer-≠-author `consult` call — stateless, text-in/text-out, the
      last 30 log lines as context, **no tool use at all** — enough to judge "does this look right on
@@ -1538,12 +1591,16 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
      `reviewVerdict: flag` — parked in review for a human. Not built: neither lens has a settings UI yet
      (`PATCH /api/projects/:id` only) and breaker findings don't yet auto-create backlog tasks — both
      natural follow-ups, out of scope for the lenses themselves.
-  3. **Circuit breakers + right-sized batches.** Three guardrails, one spirit — an autonomous loop must
-     be able to stop *itself*, with no human watching: **(a)** a **session circuit-breaker** — N
-     consecutive flagged/failed TASKS on the same project pauses that project's `autonomy` toggle with
-     ONE summary escalation, not N separate HITL gates — distinct from the existing PER-RUN retry
-     ceiling (`config.runMaxFailures`/`failCounts`, which bounds retries on a single run, never a
-     project's whole unattended session); **(b)** ~~a feature size guardrail~~ — **shipped**, see
+  3. ~~**Circuit breakers + right-sized batches.**~~ — **shipped, all three.** Three guardrails, one
+     spirit — an autonomous loop must be able to stop *itself*, with no human watching: **(a)** ~~a
+     session circuit-breaker~~ — **shipped**: `noteAutonomyBadOutcome`/`autonomyStreaks`
+     (`orchestrator.ts`) trips at `config.autonomyMaxConsecutiveFailures` consecutive flagged/failed
+     TASKS on the same project, turns that project's `autonomy` toggle off (persisted — the existing UI
+     switch reflects it, and flipping it back on resumes + resets the streak), and raises ONE summary
+     escalation, not N separate HITL gates — distinct from the existing PER-RUN retry ceiling
+     (`config.runMaxFailures`/`failCounts`, which bounds retries on a single run, never a project's
+     whole unattended session) (`tests/autonomy-circuit-breaker.test.ts`); **(b)** ~~a feature size
+     guardrail~~ — **shipped**, see
      **Feature-batch size guardrail** above: caps how large a Feature's auto-picked task batch may grow
      unattended before it forces a human check-in, so a mis-scoped Feature can't silently balloon into a
      week of unattended spend; **(c)** ~~a
@@ -1573,12 +1630,14 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
      malformed entries dropped), every placement branch as a pure decision, and the full path through a
      real `tickAutonomy()` — new-scope parked, in-scope promoted, each of the three degradation paths,
      dedup, and the daily cap.
-  5. **Budget as allocation, not just a ceiling.** `assessTask`'s triage consult already estimates
-     `estimatedDurationMs` per task (`orchestrator.ts`); extend that same consult to estimate cost too
-     (or derive it from duration × a per-model rate) and use it for PACING, not only a stop-loss —
-     auto-pick spends the day's budget against the rank-ordered backlog instead of burning it on
-     whichever task happened to be first, and slows down as the ceiling approaches rather than running
-     at full tilt until it hits a wall.
+  5. ~~**Budget as allocation, not just a ceiling.**~~ — **shipped.** `costBandFor`/`committedUsd`
+     (`packages/shared`) derive a rough $ signal from triage's already-computed `assessmentEffort` (no
+     second estimation call), and `pacedAvailableUsd` spreads the daily budget across
+     `config.budgetPacingWindowMs` — opt-in per project via `Project.budgetPacing` — instead of
+     committing it all to the first tick; `selectAffordable` (`orchestrator.ts`) then greedily picks
+     what fits against the rank-ordered backlog in priority order, without ever reordering it, so
+     auto-pick slows down as the ceiling approaches rather than running at full tilt until it hits a
+     wall. (`tests/budget-allocation.test.ts`)
 
   **Gate philosophy, stated once:** budget gates *autonomy* only — a human can always assign a task
   manually regardless of spend; autonomy is a convenience toggle, never the only door. **Scope growth
@@ -1611,6 +1670,39 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   atomic patches instead of whole-record read-modify-write, or a compare-and-swap primitive on
   `Store.putTask` that every caller routes through. Scope this deliberately rather than bolting a
   fix onto one call site — the race is systemic, not local to triage or to `update_task`.
+
+- [x] **⭐ Scenario coverage — "how well does what we built actually work?" per project.** The
+  recurring failure mode isn't an untested *file*, it's an untested **cell in a small closed set**:
+  both bugs fixed this week were exactly that (escalation `reject` × task-state — [#541](https://github.com/aekdahl/Skynet/pull/541);
+  archive × non-terminal run status — [#550](https://github.com/aekdahl/Skynet/pull/550)). Line coverage
+  reported both files as covered, because it answers *which statements ran*, not *which behaviours are
+  pinned*. New **Coverage** lens on the project page (`apps/web/src/views/project-quality.tsx`) reads the
+  project's checked-out branch and extracts its *enumerable behaviour axes* — TypeScript string-literal
+  unions and zod enums, the closed sets the code branches on — then crosses every case against the test
+  corpus. The analyzer (`apps/server/src/quality/scenarios.ts`) is **pure and string-based**: no
+  TypeScript compiler, no install step, and it **never runs the scanned repo's toolchain** — so it works
+  on *any* branch of *any* repo (447ms across this whole monorepo: 213 source / 191 test files, 44 axes,
+  193 cases) and is safe to point at code an agent just wrote. It picks up a standard
+  `coverage/coverage-summary.json` when one exists and says "not configured" plainly when it doesn't,
+  rather than rendering a misleading 0%. **The panel leads with gaps, not a score, and says why**: the
+  signal is deliberately asymmetric — a case no test *mentions* is strong evidence it's untested, while a
+  case that is mentioned proves only mention, not assertion. Presenting a percentage would overclaim the
+  weak half, so the UI states the limitation next to the numbers instead of burying it. Found 25 real
+  gaps on its first run against Skynet itself (eval `Phase` queued/executing/judging, `BuildStatus`
+  queued/ready, `FlyDeployStatus` deploying, …). **Deferred: mutation testing** (Stryker on the diff) —
+  the strongest direct answer to "does it work", since it verifies assertions actually *hold*, but it
+  needs per-project runner config and real runtime budget, so it's a separate piece of work, not a
+  panel that renders in half a second.
+  **Tree view** (`packages/shared/src/coverage-tree.ts`, `apps/web/src/components/coverage-tree.tsx`):
+  a ranked flat list answers *"what do I fix next"* but dissolves structure — 44 rows can't show that
+  the gaps cluster in `evals/`, `preview/` and `settings/` while `orchestrator.ts`, `command-safety.ts`
+  and `steward/` are fully pinned. That clustering is what says whether an **area** is understood, and
+  it exists only in the hierarchy. Every axis already carries its declaring file, so directory → file →
+  axis → case is derivable with no new server work; un-branching chains collapse to one row
+  (`apps/web/src`), siblings sort by gap count, and branches leading to a gap start expanded. **The
+  roll-ups deliberately fill by GAP and leave "covered" neutral, never green** — a green `38/47` on
+  `apps/server/` would read as "this subsystem is tested" when it only means every case is mentioned
+  somewhere, and a tree that renders reassurance it hasn't earned is worse than no tree at all.
 
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
@@ -1947,17 +2039,31 @@ User-owned memory that no single vendor can match, because everything streams th
   instructions, etc.**, and project Skynet's portable memory into each vendor's native format.
 - [ ] Injection via the vendor-agnostic `runner-sdk`; sourced from the streams + `hitl_audit` already
   flowing through the `hub`.
-- [ ] **⭐ Open the format — openness is the second moat.** Publish a versioned, human-readable, git-committable
+- [x] **⭐ Open the format — openness is the second moat.** Publish a versioned, human-readable, git-committable
   **open memory spec** (align with / extend `AGENTS.md`-style conventions) so the memory is a *substrate,
   not a new silo*. Openness is the adoption + trust lever — users only pour knowledge into something they
   can't be locked out of — which makes Skynet the default hub. The durable moat then shifts to *curation
   quality + the accumulated personal corpus + being the hub*, not owning the format (the git → GitHub play).
+- [x] **⭐ Memory as an MCP server** — expose the brain over MCP so **any** agent or tool can read/write it, even
+  *Landed: [docs/memory-format.md](docs/memory-format.md) — spec v0.1. `.skynet/memory/` holds Markdown
+  files (workspace/project/area/agent-family scoped), YAML frontmatter for file-level metadata, one `##`
+  section per fact with an inert HTML-comment metadata line (id/source/author/created/confidence/
+  supersedes), append-only editing so `git log` stays a meaningful record. Format-only: no reader/writer,
+  MCP server, or runner-sdk injection ships here — those stay separate, unbuilt roadmap items below.*
 - [ ] **⭐ Memory as an MCP server** — expose the brain over MCP so **any** agent or tool can read/write it, even
   ones never run through Skynet. Your context follows you everywhere; rides the shipped `/mcp` surface.
+  *Landed (thin v0): four new MCP tools — `list_memory`/`add_memory`/`delete_memory`/`refresh_memory` — put
+  a project's memory (`ProjectContextEntry`, condensed into `Project.contextSummary`, the primer every
+  agent's prompt already reads via `agent-context.ts`) on the wire for any MCP client, scoped/gated exactly
+  like every other project-bearing tool (see [docs/mcp.md](docs/mcp.md)). Wired to TODAY's store, not the
+  richer open, git-committable format above (`.skynet/memory/`) — that lands underneath this same tool
+  contract once it ships, no client-facing change needed.*
 - [ ] **Open-core split** — the *format + read/write MCP* are free/open (drive ubiquity); *distillation
   intelligence, cross-vendor translation quality, hosted sync, team sharing, and governance* are the paid layer.
 - [ ] 🔬 **LLM-assisted distillation** of good memory from history — open research; start with
-  operator-authored + decision-derived facts, add a Skynet-side curating LLM later.
+  operator-authored + decision-derived facts, add a Skynet-side curating LLM later. Spike writeup
+  (pipeline shape, guardrails against a fabricating/over-generalizing corpus, eval approach, phasing):
+  [docs/memory-distillation.md](docs/memory-distillation.md).
 
 ## v5 — Moat Layer: Agent fluency (M2)  🔬🔗
 Help users run **more agents with clearer tasks** — the flywheel (better results + more usage).

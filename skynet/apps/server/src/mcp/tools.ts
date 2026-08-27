@@ -14,6 +14,7 @@ import {
   ConfigureRunnerRequest,
   CreateFeatureRequest,
   CreateMilestoneRequest,
+  CreateProjectContextEntryRequest,
   CreateProjectRequest,
   CreateSolutionBriefRequest,
   CreateTaskRequest,
@@ -442,6 +443,47 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
     const { projectId, ...patch } = a;
     return operations.updateProject(ws, projectId, patch);
   });
+  // The project's "brain": raw pasted/uploaded material (the web UI's
+  // "Context" tab) condensed into Project.contextSummary — the primer every
+  // agent's task prompt and Steward's grounding read (agent-context.ts).
+  // Exposing read/write here is the point of "Memory as an MCP server": any
+  // MCP client, including one never run through Skynet, sees and grows the
+  // same portable memory driving every agent's prompt.
+  tool(
+    "list_memory",
+    "observe",
+    "List a project's memory entries — the raw pasted notes / uploaded docs behind its condensed primer (see get_snapshot/list_projects for a project's current contextSummary). Newest first.",
+    { projectId: z.string() },
+    (a) => operations.listContextEntries(ws, a.projectId),
+    { readOnly: true },
+  );
+  tool(
+    "add_memory",
+    "author",
+    "Add a note to a project's memory (pasted text; file upload is web-UI only). Automatically re-condenses the project's primer (contextSummary) that every agent's prompt and Steward read.",
+    { projectId: z.string(), ...CreateProjectContextEntryRequest.shape },
+    (a) => {
+      const { projectId, ...body } = a;
+      return operations.addContextEntry(ws, projectId, principal.operatorId, body);
+    },
+  );
+  tool(
+    "delete_memory",
+    "author",
+    "Delete one memory entry from a project. Automatically re-condenses the project's primer (contextSummary).",
+    { projectId: z.string(), entryId: z.string() },
+    async (a) => {
+      await operations.deleteContextEntry(ws, a.projectId, a.entryId);
+      return { deleted: a.entryId };
+    },
+  );
+  tool(
+    "refresh_memory",
+    "author",
+    "Re-condense a project's accumulated memory entries into its primer (contextSummary) on demand. Normally automatic on add_memory/delete_memory — use this after an out-of-band change or to force a fresh pass.",
+    { projectId: z.string() },
+    (a) => operations.refreshProjectContext(ws, a.projectId),
+  );
   tool("create_task", "author", "Add a task to a project's backlog.", { projectId: z.string(), ...CreateTaskRequest.shape }, (a) => {
     const { projectId, ...body } = a;
     return operations.createTask(ws, projectId, body);
@@ -459,6 +501,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   );
   tool("force_task_done", "author", "Escape hatch: force a task straight to done from any state — commits + pushes/opens a PR (or enqueues the local merge) through the same path a normal Approve uses, so it's really done, not just relabeled. A quick completeness check runs first when skipping an open gate; if it looks incomplete, nothing is pushed and a real diff review is raised instead. Use only when the normal review→done path is stuck (wedged gate, run finished out-of-band).", { taskId: z.string() }, (a) => operations.forceTaskDone(ws, a.taskId, principal.operatorId));
   tool("request_review", "author", "Force a review pass on a review-stage task now, instead of waiting for a periodic tick to find an idle reviewer on its own. Throws if the task isn't in review with an open gate, already has a verdict, or no other (non-doer) agent is free to review right now.", { taskId: z.string() }, (a) => operations.requestReview(ws, a.taskId));
+  tool("request_retriage", "author", "Force a fresh triage pass on a task already parked in triage, instead of waiting for it to cycle back through backlog on its own. Throws if the task isn't in triage right now, or no agent is idle.", { taskId: z.string() }, (a) => operations.requestRetriage(ws, a.taskId));
   tool("move_task", "author", "Bump a task up or down within its column's priority order (also the auto-pick order when Autonomy is on).", { taskId: z.string(), direction: z.enum(["up", "down"]) }, (a) => operations.moveTask(ws, a.taskId, a.direction));
   tool("reorder_task", "author", "Reorder a task to sit immediately before another task in the same column (beforeId = null moves it to the end).", { taskId: z.string(), beforeId: z.string().nullable() }, (a) => operations.reorderTask(ws, a.taskId, a.beforeId));
   tool("archive_task", "author", "Archive (or restore) a task — hides it from the board without deleting it (still read by Steward).", { projectId: z.string(), taskId: z.string(), archived: z.boolean().optional() }, (a) => operations.archiveTask(ws, a.projectId, a.taskId, a.archived ?? true));
