@@ -935,6 +935,25 @@ export const Feature = z.object({
     })
     .nullable()
     .default(null),
+  // Feature-level verification (Project.deepReview opt-in): once every sibling
+  // task is done and the feature branch merges, a bounded second agent
+  // browses the live merged preview and checks the WHOLE feature — grounded
+  // on this feature's own description + its tasks' text/description — against
+  // Task.reviewVerdict's per-task, per-diff review. "flag" holds the feature
+  // back from `status: "shipped"` (the code stays merged either way; only the
+  // ship label is gated) and its findings flow into the self-replenishing
+  // backlog the same way a normal review's proposals do. Same shape as
+  // Task.reviewVerdict, minus `by` (a run-anchored `runLog` line carries who/
+  // when instead — a Feature has no single agent's log to attribute it to).
+  verification: z
+    .object({
+      decision: z.enum(["pass", "flag"]),
+      reason: z.string(),
+      evidence: z.array(z.string()).nullable().default(null),
+      at: Timestamp,
+    })
+    .nullable()
+    .default(null),
 });
 export type Feature = z.infer<typeof Feature>;
 
