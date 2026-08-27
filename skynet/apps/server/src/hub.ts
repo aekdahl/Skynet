@@ -37,8 +37,35 @@ export class Hub {
   // Per-hitl-id promise chain so overlapping resolves of the same id run
   // serially — the read-check-write in resolveHitl is otherwise a TOCTOU race.
   private hitlLocks = new Map<string, Promise<unknown>>();
+  // Same idea, per-run-id: every run-row mutator below is a read-then-write
+  // (getRun → spread → putRun), and they fire concurrently and unawaited from
+  // orchestrator.ts's events() — a 5s heartbeat timer, per-tool-call progress
+  // updates, usage/status changes, all racing the same row. On a real network
+  // store (Postgres) two overlapping writes can land out of order: a stale
+  // progress update (still carrying `plan: []` from before the agent's first
+  // TodoWrite) can complete AFTER a later, correct plan write and silently
+  // clobber it back to empty — reported live as every "ongoing" card stuck on
+  // "starting…" forever, since nothing then corrects it until the agent's
+  // NEXT TodoWrite call (itself racing the same way). Serializing per runId
+  // (same pattern as hitlLocks above) makes getRun→putWrite atomic relative to
+  // every OTHER mutator on that run, so the final state always reflects the
+  // last-ISSUED write, never whichever happened to land last in the store.
+  private runLocks = new Map<string, Promise<unknown>>();
 
   constructor(private store: Store, private bus: Bus) {}
+
+  private async withRunLock<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+    const prior = this.runLocks.get(runId) ?? Promise.resolve();
+    const run = prior.catch(() => {}).then(fn); // a prior failure must not poison the queue
+    this.runLocks.set(runId, run);
+    try {
+      return await run;
+    } finally {
+      // Only the last enqueued mutation clears the map, so we never drop a
+      // still-pending chain (mirrors resolveHitl's identical cleanup).
+      if (this.runLocks.get(runId) === run) this.runLocks.delete(runId);
+    }
+  }
 
   /**
    * Recompute conflicts for a workspace and emit `conflict.detected` for any
@@ -87,10 +114,12 @@ export class Hub {
   }
 
   async runProgress(runId: string, progress: number, plan: PlanStep[]): Promise<void> {
-    const a = await this.store.getRun(runId);
-    if (!a) return;
-    await this.store.putRun({ ...a, progress, plan });
-    this.bus.publish(a.workspaceId, { type: "run.progress", runId, progress, plan });
+    await this.withRunLock(runId, async () => {
+      const a = await this.store.getRun(runId);
+      if (!a) return;
+      await this.store.putRun({ ...a, progress, plan });
+      this.bus.publish(a.workspaceId, { type: "run.progress", runId, progress, plan });
+    });
   }
 
   /**
@@ -110,10 +139,12 @@ export class Hub {
    * at the source, in the runner.
    */
   async runUsage(runId: string, usage: Usage): Promise<void> {
-    const a = await this.store.getRun(runId);
-    if (!a) return;
-    await this.store.putRun({ ...a, usage });
-    this.bus.publish(a.workspaceId, { type: "run.usage", runId, usage });
+    await this.withRunLock(runId, async () => {
+      const a = await this.store.getRun(runId);
+      if (!a) return;
+      await this.store.putRun({ ...a, usage });
+      this.bus.publish(a.workspaceId, { type: "run.usage", runId, usage });
+    });
   }
 
   /** Persist the files a finished run actually changed (surfaced to the UI as
@@ -122,24 +153,30 @@ export class Hub {
    *  dedicated delta event: modifiedFiles rides along in the run snapshot, and
    *  it's written alongside the run.status→review delta raised at review time. */
   async runModifiedFiles(runId: string, files: string[]): Promise<void> {
-    const a = await this.store.getRun(runId);
-    if (!a) return;
-    await this.store.putRun({ ...a, modifiedFiles: files });
+    await this.withRunLock(runId, async () => {
+      const a = await this.store.getRun(runId);
+      if (!a) return;
+      await this.store.putRun({ ...a, modifiedFiles: files });
+    });
   }
 
   async runHeartbeat(runId: string): Promise<void> {
-    const a = await this.store.getRun(runId);
-    if (!a) return;
-    const at = now();
-    await this.store.putRun({ ...a, lastHeartbeatAt: at });
-    this.bus.publish(a.workspaceId, { type: "run.heartbeat", runId, at });
+    await this.withRunLock(runId, async () => {
+      const a = await this.store.getRun(runId);
+      if (!a) return;
+      const at = now();
+      await this.store.putRun({ ...a, lastHeartbeatAt: at });
+      this.bus.publish(a.workspaceId, { type: "run.heartbeat", runId, at });
+    });
   }
 
   async runStatus(runId: string, status: TaskRun["status"]): Promise<void> {
-    const a = await this.store.getRun(runId);
-    if (!a) return;
-    await this.store.putRun({ ...a, status });
-    this.bus.publish(a.workspaceId, { type: "run.status", runId, status });
+    await this.withRunLock(runId, async () => {
+      const a = await this.store.getRun(runId);
+      if (!a) return;
+      await this.store.putRun({ ...a, status });
+      this.bus.publish(a.workspaceId, { type: "run.status", runId, status });
+    });
   }
 
   async runCompleted(runId: string, branch: string): Promise<void> {
@@ -150,18 +187,22 @@ export class Hub {
   /** Persist a full run and broadcast a whole-run replace. For fields without a
    *  dedicated event (e.g. `pr`, the ready-to-merge record). */
   async upsertRun(run: TaskRun): Promise<TaskRun> {
-    await this.store.putRun(run);
-    this.bus.publish(run.workspaceId, { type: "run.updated", run });
-    return run;
+    return this.withRunLock(run.id, async () => {
+      await this.store.putRun(run);
+      this.bus.publish(run.workspaceId, { type: "run.updated", run });
+      return run;
+    });
   }
 
   async setRunArchived(runId: string, archived: boolean): Promise<TaskRun | undefined> {
-    const a = await this.store.getRun(runId);
-    if (!a) return undefined;
-    const updated = { ...a, archived };
-    await this.store.putRun(updated);
-    this.bus.publish(a.workspaceId, { type: "run.archived", runId, archived });
-    return updated;
+    return this.withRunLock(runId, async () => {
+      const a = await this.store.getRun(runId);
+      if (!a) return undefined;
+      const updated = { ...a, archived };
+      await this.store.putRun(updated);
+      this.bus.publish(a.workspaceId, { type: "run.archived", runId, archived });
+      return updated;
+    });
   }
 
   // ── HITL ────────────────────────────────────────────────────────────────
