@@ -1787,22 +1787,110 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   `apps/server/` would read as "this subsystem is tested" when it only means every case is mentioned
   somewhere, and a tree that renders reassurance it hasn't earned is worse than no tree at all.
 
-- [x] **An escalating agent's question actually reaches the operator.** A run that called
-  `AskUserQuestion` with an `ESCALATE` header surfaced as a bare *"Agent is blocked — needs a human"*
-  banner with **nothing to answer**: the run-detail decision bar rendered only the title, risk chip and
-  buttons, so the question itself was reachable only by expanding *Details* — and `buildEscalationRaise`
-  (`packages/runner-sdk/src/claude.ts`) threw away the concrete `options` the agent had already written
-  down, forcing a human to retype an answer that existed. Found live: an agent correctly reported it
-  could find no Kimi adapter in its branch and asked how to proceed, with three options; the operator
-  saw a generic blocked banner. Three parts: **(1)** the raise keeps the agent's `options` (and their
-  descriptions, in the detail box) and stops duplicating the same paragraph into both `why` and
-  `rationale` — which rendered it twice in the detail panel; **(2)** the run-detail bar renders `why`
-  directly (clamped, full text still in Details) — the Inbox card already did, so the two surfaces now
-  agree; **(3)** picking an option resolves as `modify` with that label as guidance, since
-  `deliverEscalation` handles reject/modify/reassign/dismiss only and has no `option` action — exactly
-  what typing the same text would do. Also fixes a regression the change would otherwise have
-  introduced: the Inbox's `r` (Stop run) shortcut guarded on `it.options`, which escalations now carry,
-  silently disabling keyboard-stop for them.
+- [x] **⚠️ CRITICAL — the agent-control loop exists ONLY on the Claude SDK path.** Read this before
+  adding any runner. `apps/…/claude.ts` drives the Claude Agent SDK, and it is the **only** provider
+  with `canUseTool` gating, `question` / `plan` / `escalation` HITL, resume-with-guidance, plan-mode,
+  subagents and per-model cost metering. **Every CLI-backed runner** — `codex`, `gemini`, `cursor`,
+  `copilot`, `hermes`, `opencode` — shells out to a vendor binary and parses stdout: they get an
+  `approval` gate at best, and `hermes.ts` says it outright in its own header: *"there is no live HITL
+  gate here."* Everything that makes a run supervisable — an escalation reaching the operator
+  ([#575](https://github.com/aekdahl/Skynet/pull/575)), a question surfacing as an answerable card, a
+  decision resuming a live run ([#541](https://github.com/aekdahl/Skynet/pull/541)) — is Claude-SDK-only.
+  **Consequence for cost work:** a new native adapter for a cheaper vendor buys cheap tokens and hands
+  back a second-class, *ungovernable* runner. Route cheap models through the SDK via a Claude-compatible
+  endpoint instead (below) — same harness, different biller. Closing this gap for the CLI runners is its
+  own (large) piece of work; until it's done, "which runner" is a supervision decision, not just a price.
+- [x] **Alternative LLM providers, phase 1 — Claude-compatible endpoint per credential.** Claude is the
+  dominant cost line, and the cheapest way off it is *not* a new adapter: `claude.ts` already documented
+  a gateway credential (`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`), it just wasn't reachable from
+  the product — the endpoint lived nowhere in the credential model, and an injected `spec.apiKey`
+  actively **stripped** the gateway (a static `ANTHROPIC_API_KEY` shadows it by design). Now a credential
+  carries an optional `baseUrl` (`SecretMeta.baseUrl`, plaintext — it's a routing target, not a secret,
+  and "which model am I billing" must be answerable at a glance), resolved per-run beside the key and
+  threaded to every runner and side-call site. Point it at any provider speaking the Anthropic wire
+  protocol — Moonshot (Kimi), Z.ai (GLM), MiniMax, or a LiteLLM-style proxy fronting an OpenAI-compatible
+  vendor — and it runs the **full** agent loop, not a degraded one. Because it's per-*credential*, a
+  single fleet mixes tiers: cheap runners on routine work, Claude pinned to the hard tasks, both
+  supervised identically. **Two safety properties are tested, not assumed:** the two auth shapes are
+  strictly exclusive, so an ambient Anthropic key can never be handed to a third-party endpoint *and*
+  can never shadow the endpoint into silently billing the expensive API; and a malformed endpoint is
+  rejected loudly rather than falling back to the vendor (the failure mode there is a month of surprise
+  invoices). A key rotation preserves the endpoint. **Model ids are deliberately not hard-coded** — the
+  catalog is advisory (see `providers.ts`), so a model released after this shipped is typed in, not
+  waited for. **Phase 2 (a native OpenAI-compatible adapter) is explicitly NOT planned**: it would mean
+  rebuilding the agent loop against raw chat-completions — the exact second-class-runner trap the item
+  above warns about — and a translating proxy reaches the same vendors through the harness we already
+  have. Revisit only if a proxy hop proves untenable in practice.
+
+- [x] **Compatible endpoints, made usable: presets, real pricing, and a "not Claude" marker.** The
+  endpoint field shipped as a free-text URL box, which worked but wasn't a *setup*. Four parts.
+  **(1) A vendor catalog** (`packages/shared/src/compatible-endpoints.ts`) — DeepSeek, Moonshot (Kimi),
+  Z.ai (GLM), MiniMax: base URL, current model ids, published per-million rates, and each vendor's known
+  compatibility gaps, all verified against vendor docs on 2026-08-27. Advisory exactly like
+  `DEFAULT_PROVIDERS`; a custom endpoint and an unlisted model always work. Settings picks from a
+  dropdown and shows the rate table *with Anthropic Sonnet as the baseline row*, which is how you can
+  see at a glance that `kimi-k3` is at Sonnet parity and therefore not a saving at all — the exact trap
+  someone switching to "the newest Kimi" would fall into. Fleet's model list follows the chosen
+  credential, because several endpoints silently remap an unknown model id, so an Anthropic id there
+  half-works and you cannot tell what actually ran.
+  **(2) Spend is now REAL on a compatible endpoint.** The SDK prices every run from Claude Code's own
+  Anthropic table — meaningless once another vendor served the tokens, and it defeated the only honest
+  way to evaluate the switch (cost per *merged PR*, not per token). `RunnerUsage` now keeps the cache
+  tiers apart and the orchestrator passes the endpoint's published rates down, so cache reads are priced
+  as cache reads. That distinction is the whole ballgame: this repo's own month was ~510M cached input
+  against 3.4M output, so folding cache into fresh input would overstate a cheap endpoint by ~10x and
+  hide the saving it exists to prove.
+  **(3) Verify was broken** — it hardcoded `api.anthropic.com`, so verifying a Kimi credential sent the
+  Moonshot key to Anthropic and always failed. It now checks the credential's own endpoint, and treats a
+  404 on `/v1/models` as inconclusive rather than as a bad key (several endpoints serve only
+  `/v1/messages`).
+  **(4) A "via <vendor>" marker** on the fleet card, the idle row and the run header. A runner on a
+  compatible endpoint still shows the Claude glyph — the Agent SDK really is driving it — so without the
+  marker there is no way to tell which vendor served the tokens or why a run's cost looks unfamiliar.
+  Recorded on the RUN (`TaskRun.endpoint`), not resolved live from the credential, so history stays
+  truthful after a credential is re-pointed.
+  **Also fixes a pre-existing bug that would have made all of this dead on arrival:** Fleet's
+  "Add agent" passed `cloneFrom?.credentialId` to `createAgent`, silently discarding the Key the operator
+  actually picked on every non-clone add — so an agent pinned to a second key (or to a cheap endpoint)
+  quietly ran on the provider's default one instead.
+
+- [x] **Endpoint smoke test — prove a vendor can actually drive the agent loop, not just authenticate.**
+  Verify answers "does this key work". It does not answer the question that decides whether a
+  Claude-compatible endpoint is usable *for Skynet*, and that gap is dangerous precisely because it's
+  invisible: a compatibility shim can authenticate perfectly and never emit a tool call, which silently
+  kills every approval, question and escalation — and nobody would attribute the symptom to the endpoint.
+  New **Test** button per credential (Settings) runs ONE tiny real task — read a scratch file, echo its
+  contents — and reports a checklist rather than a verdict: endpoint reachable · emits tool calls *and
+  Skynet's gate intercepts them* · tool results feed back · streams partial output · reports usage ·
+  separates cache tiers · has published rates. Critical checks gate the verdict; streaming and cache
+  tiers report without blocking (Skynet works without token-level deltas, just less liveliness).
+  Auth failing SKIPS the rest rather than printing a wall of red — with no session there's nothing
+  truthful to say about tools, and a false "tools failed" sends someone debugging the wrong layer.
+  Costs a fraction of a cent, capped at 60s, and is **operator-triggered only** — never automatic, since
+  unlike verify it spends money. Catalog caveats a live probe *can't* see (DeepSeek ignoring MCP, so
+  browser tools vanish) are surfaced alongside the results.
+  **Two bugs the first live run against a real endpoint exposed**, both invisible to unit tests: an SDK
+  result is a `success|error` union, so a rejected key came back as an error RESULT rather than a thrown
+  exception — nothing threw, a zero-filled usage object existed, and `auth` reported a cheerful **pass**
+  for a credential that had authenticated with nothing; and `usage` is an object even when every counter
+  is zero, so truthiness alone called an entirely empty session "reachable". Both now pinned by tests.
+
+- [x] **Internal surfaces gate on RELEASE, not on "production".** Conflating those two is what hid QA &
+  Testing from the one place it's useful. The gate keyed off `import.meta.env.DEV`, which is false for
+  *any* `vite build` — and the GCP deploy runs the same `pnpm build` a packaged app does, so our own
+  running instance was treated exactly like a shipped product and lost its own tooling. (The Roadmap
+  already needed a hand-written exemption to work around precisely this, with a TEMP comment saying to
+  undo it "before launch" — the workaround was the symptom.) Now `isReleaseBuild()` reads
+  `VITE_SKYNET_RELEASE`, set only by `apps/web`'s `build:release`, which the desktop `dist`/`dist:mac`/
+  `dist:win`/`publish` scripts all run. Internal surfaces are therefore **on everywhere by default and
+  off only in a distributed build**: a release that forgets the flag hides our tooling (annoying, and we
+  notice) rather than shipping it (embarrassing, and we don't). `localStorage.skynet.devtools` overrides
+  both ways — `"1"` to debug a release, `"0"` to preview what a release looks like without cutting one.
+  **Also closes a real hole**: `acceptance`/`simulation` were hidden from the nav but absent from
+  `DEV_ONLY_VIEWS`, so `gateView` never coerced them — in a shipped build both pages stayed reachable by
+  deep link, stale hash, or a PWA/notification nav. A source-scanning test now asserts every view behind
+  the QA nav section is also route-gated, and that the desktop build scripts actually set the release
+  flag, since the gate defaults to ON and a missing flag would silently ship internal tooling.
 
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in

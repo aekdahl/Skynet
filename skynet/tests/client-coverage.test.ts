@@ -53,6 +53,12 @@ const ALLOW = new Set<string>([
   // outbound call, so it can't run in an offline journey; covered server-side
   // by secrets-verify.test.ts (mocked fetch, both the ok and failing paths).
   "verifyCredential",
+  // Endpoint smoke test — runs a REAL (if tiny) agent task against a live
+  // vendor to prove the endpoint can drive the agent loop. It costs money and
+  // needs a working credential, so it can't run in an offline journey; the
+  // probe's own result-shaping is covered by endpoint-smoke.test.ts, which
+  // scripts a vendor that authenticates but never emits a tool call.
+  "smokeTestCredential",
   // streaming variant of sendAgentMessage (which IS journey-covered) — same
   // chat surface, just delta-rendered; no separate journey needed.
   "streamAgentMessage",

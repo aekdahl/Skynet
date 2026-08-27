@@ -19,7 +19,11 @@ import {
   type SettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync } from "node:fs";
-import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { EndpointSmokeResult, ModelRates, PlanStep, ProviderId, Resolution, SmokeCheck, SmokeStatus } from "@skynet/shared";
+import { endpointLabel, priceUsage, vendorForBaseUrl } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
 import type {
   ConsultSpec,
@@ -199,6 +203,33 @@ export function buildRunnerEnv(): Record<string, string> {
   return env;
 }
 
+/**
+ * Apply a resolved credential to a runner env.
+ *
+ * When the credential names a Claude-COMPATIBLE endpoint (Moonshot/Kimi,
+ * Z.ai/GLM, MiniMax, a LiteLLM proxy), the key authenticates THAT endpoint, so
+ * it rides as the gateway bearer token — not as ANTHROPIC_API_KEY.
+ *
+ * ANTHROPIC_API_KEY is stripped in that case, and the strip is load-bearing in
+ * two ways. It shadows the gateway (buildRunnerEnv documents the same
+ * precedence), so leaving it would silently bill the expensive vendor API while
+ * the operator believed they were on a cheap endpoint. Worse, an ambient
+ * Anthropic key inherited from the server's own environment would be handed to
+ * a third-party endpoint the operator pointed this credential at. Neither is
+ * acceptable, so the two auth shapes are strictly exclusive.
+ */
+export function applyCredential(
+  env: Record<string, string>,
+  cred: { apiKey?: string | null; baseUrl?: string | null },
+): Record<string, string> {
+  if (!cred.apiKey) return env;
+  if (cred.baseUrl) {
+    const { ANTHROPIC_API_KEY: _shadowed, ...rest } = env;
+    return { ...rest, ANTHROPIC_BASE_URL: cred.baseUrl, ANTHROPIC_AUTH_TOKEN: cred.apiKey };
+  }
+  return { ...env, ANTHROPIC_API_KEY: cred.apiKey };
+}
+
 // Anthropic streaming: content_block_delta → { delta: { type:"text_delta", text } }.
 // Requires `includePartialMessages: true` in the query options, else the SDK
 // never emits `stream_event` messages at all. Shared by every place that reads
@@ -232,6 +263,13 @@ export interface RunnerUsage {
   costUsd: number | null;
   turns: number;
   durationMs: number | null;
+  /** Cache READS, also counted inside `inputTokens`. Kept separately so a run
+   *  on a compatible endpoint can be priced from that vendor's own cache rate
+   *  — an agent workload is mostly replayed context, and pricing it as fresh
+   *  input would overstate a cheap endpoint enough to hide the saving. */
+  cacheReadTokens: number;
+  /** Cache WRITES, likewise also inside `inputTokens`. */
+  cacheWriteTokens: number;
 }
 
 /**
@@ -257,11 +295,13 @@ export interface RunnerUsage {
  * still billed, so omitting it under-reports real token volume (`costUsd`,
  * which the SDK prices itself, already reflects the discount).
  */
-export function readUsage(result: Record<string, unknown>): RunnerUsage {
+export function readUsage(result: Record<string, unknown>, rates?: ModelRates | null): RunnerUsage {
   const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
   const models = (result.modelUsage ?? {}) as Record<string, Record<string, unknown>>;
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
   let modelCost = 0;
   let sawModelUsage = false;
   for (const m of Object.values(models)) {
@@ -269,6 +309,8 @@ export function readUsage(result: Record<string, unknown>): RunnerUsage {
     sawModelUsage = true;
     inputTokens += n(m.inputTokens) + n(m.cacheReadInputTokens) + n(m.cacheCreationInputTokens);
     outputTokens += n(m.outputTokens);
+    cacheReadTokens += n(m.cacheReadInputTokens);
+    cacheWriteTokens += n(m.cacheCreationInputTokens);
     modelCost += n(m.costUSD);
   }
   // Fall back to the main-loop-only `usage` when an older/edge result carries
@@ -277,12 +319,25 @@ export function readUsage(result: Record<string, unknown>): RunnerUsage {
     const u = (result.usage ?? {}) as Record<string, unknown>;
     inputTokens = n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens);
     outputTokens = n(u.output_tokens);
+    cacheReadTokens = n(u.cache_read_input_tokens);
+    cacheWriteTokens = n(u.cache_creation_input_tokens);
   }
   const total = typeof result.total_cost_usd === "number" ? result.total_cost_usd : null;
+  // The SDK prices every run from Claude Code's own ANTHROPIC price table. That
+  // figure is meaningless once the tokens were served by someone else — either
+  // zero (a model id it doesn't know) or Anthropic's rate for a model that
+  // isn't Anthropic's. When the caller supplies the endpoint's real rates, they
+  // win. With no rates we keep the SDK's number rather than invent one: an
+  // admitted gap beats a confident wrong answer.
+  const priced = rates
+    ? priceUsage({ inputTokens: inputTokens - cacheReadTokens - cacheWriteTokens, outputTokens, cacheReadTokens, cacheWriteTokens }, rates)
+    : null;
   return {
     inputTokens,
     outputTokens,
-    costUsd: total ?? (sawModelUsage ? modelCost : null),
+    cacheReadTokens,
+    cacheWriteTokens,
+    costUsd: priced ?? total ?? (sawModelUsage ? modelCost : null),
     turns: n(result.num_turns),
     durationMs: typeof result.duration_ms === "number" ? result.duration_ms : null,
   };
@@ -294,13 +349,15 @@ export function addUsage(a: RunnerUsage, b: RunnerUsage): RunnerUsage {
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
     costUsd: a.costUsd == null && b.costUsd == null ? null : (a.costUsd ?? 0) + (b.costUsd ?? 0),
     turns: a.turns + b.turns,
     durationMs: a.durationMs == null && b.durationMs == null ? null : (a.durationMs ?? 0) + (b.durationMs ?? 0),
   };
 }
 
-const ZERO_USAGE: RunnerUsage = { inputTokens: 0, outputTokens: 0, costUsd: null, turns: 0, durationMs: null };
+const ZERO_USAGE: RunnerUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, turns: 0, durationMs: null };
 
 /**
  * Yield an SDK query's answer as text deltas. With `includePartialMessages` the
@@ -372,6 +429,162 @@ async function* oneShotConsultStream(opts: {
   yield* streamQueryText(q as AsyncIterable<SDKMessage>, opts.onUsage);
 }
 
+// ─── Endpoint smoke test ───────────────────────────────────────────────────
+// One tiny REAL task against a credential, reporting what the vendor's
+// compatibility layer actually did. Verify proves a key authenticates; this
+// proves the endpoint can drive Skynet's agent loop, which is the part that
+// varies silently between vendors — a shim that never emits tool calls, or
+// omits cache tiers, passes verify and then misbehaves in ways nobody
+// attributes to the endpoint.
+//
+// Deliberately minimal: read one small file and echo a token back. That single
+// task exercises every capability Skynet depends on — a tool call the gate can
+// intercept, a tool RESULT fed back into the model, streamed text, and a
+// metered result — for a fraction of a cent. Operator-triggered only.
+
+const SMOKE_TOKEN = "skynet-endpoint-ok";
+const SMOKE_FILE = "skynet-probe.txt";
+// A probe that hasn't answered in a minute has told us what we need to know.
+// The SDK retries transient failures internally, so a dead endpoint burns the
+// whole budget — better to cut it and report than to leave a spinner running.
+const SMOKE_TIMEOUT_MS = 60_000;
+
+export async function smokeTestEndpoint(opts: {
+  apiKey?: string | null;
+  baseUrl?: string | null;
+  model: string;
+  rates?: ModelRates | null;
+}): Promise<EndpointSmokeResult> {
+  const started = Date.now();
+  const checks: SmokeCheck[] = [];
+  const add = (id: string, label: string, status: SmokeStatus, critical: boolean, detail?: string) =>
+    checks.push({ id, label, status, critical, detail });
+
+  const dir = await mkdtemp(join(tmpdir(), "skynet-smoke-"));
+  await writeFile(join(dir, SMOKE_FILE), SMOKE_TOKEN, "utf8");
+
+  let sawTool = false;
+  let sawStream = false;
+  let answer = "";
+  let usage: RunnerUsage | null = null;
+  let failure: string | null = null;
+
+  try {
+    // queryImpl, not the raw import: this is the seam __setClaudeTestHooks swaps,
+    // so the probe is testable without a real vendor call.
+    const q = queryImpl({
+      prompt:
+        `Read the file ${SMOKE_FILE} in the current directory, then reply with ONLY the exact text it contains. ` +
+        `No preamble, no explanation, no quotes.`,
+      options: {
+        cwd: dir,
+        model: mapModel(opts.model),
+        permissionMode: "default",
+        // The preset is what makes Read exist at all — a bare query() loads no
+        // tools, and the probe would then "pass" without proving anything.
+        systemPrompt: { type: "preset", preset: "claude_code" },
+        canUseTool: (name, input) => {
+          // Reaching here at all is the finding: the vendor emitted a tool_use
+          // block AND our gate intercepted it. That gate is what every HITL,
+          // approval and escalation in Skynet is built on.
+          sawTool = true;
+          return Promise.resolve(
+            name === "Read"
+              ? ({ behavior: "allow", updatedInput: input } as PermissionResult)
+              : ({ behavior: "deny", message: "Smoke test — only Read is needed." } as PermissionResult),
+          );
+        },
+        maxTurns: 6,
+        env: applyCredential(buildRunnerEnv(), opts),
+        includePartialMessages: true,
+        settingSources: NO_FS_SETTINGS,
+      },
+    });
+
+    const deadline = setTimeout(() => void (q as { interrupt?: () => Promise<void> }).interrupt?.(), SMOKE_TIMEOUT_MS);
+    try {
+      for await (const msg of q as AsyncIterable<SDKMessage>) {
+        if (msg.type === "stream_event") sawStream = true;
+        const delta = textDeltaOf(msg);
+        if (delta) answer += delta;
+        else if (msg.type === "assistant") {
+          const { text } = readAssistant((msg as { message: { content?: unknown } }).message);
+          if (text && text.length > answer.length) answer = text;
+        } else if (msg.type === "result") {
+          const r = msg as Record<string, unknown>;
+          // An SDK result is a success|error union. A bad key comes back as an
+          // ERROR result, not a thrown exception — treating it as a normal
+          // result reported "authenticates ✓" for a credential that authenticated
+          // with nothing at all.
+          if (r.is_error === true || (typeof r.subtype === "string" && r.subtype !== "success")) {
+            // Prefer the vendor's OWN message over the bare subtype —
+            // "invalid api key" tells an operator what to fix;
+            // "error_during_execution" does not.
+            const said = typeof r.result === "string" ? r.result.trim() : "";
+            failure = said || classifyResult(r, "endpoint smoke test")?.reason || "the endpoint returned an error";
+          }
+          usage = readUsage(r, opts.rates);
+          break;
+        }
+      }
+    } finally {
+      clearTimeout(deadline);
+    }
+  } catch (err) {
+    failure = (err as Error).message;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  // Auth is the gate everything else depends on: with no session there is
+  // nothing to say about tools or streaming, so the rest report `skip` rather
+  // than a misleading fail.
+  // `usage` is an OBJECT even when every counter is zero, so truthiness alone
+  // would call a completely empty session "reachable" — which it did, reporting
+  // a pass for a key that authenticated with nothing.
+  const reachable = !failure && (sawTool || sawStream || answer.length > 0 || (usage != null && usage.inputTokens > 0));
+  add(
+    "auth",
+    "Endpoint reachable and the key authenticates",
+    reachable ? "pass" : "fail",
+    true,
+    failure ?? (reachable ? undefined : "No response from the endpoint."),
+  );
+
+  const skipRest = !reachable;
+  const s = (ok: boolean): SmokeStatus => (skipRest ? "skip" : ok ? "pass" : "fail");
+
+  add("tools", "Emits tool calls, and Skynet's gate intercepts them", s(sawTool), true,
+    skipRest ? undefined : sawTool ? undefined : "No tool call was made — approvals, HITL and escalations all depend on this.");
+  add("toolResult", "Tool results feed back into the model", s(answer.includes(SMOKE_TOKEN)), true,
+    skipRest ? undefined : answer.includes(SMOKE_TOKEN) ? undefined : `Expected the file's contents back; got ${answer ? `"${answer.slice(0, 60)}"` : "nothing"}.`);
+  add("streaming", "Streams partial output", s(sawStream), false,
+    skipRest ? undefined : sawStream ? undefined : "No token-level deltas — the live log and Steward chat will only update when a turn completes.");
+  add("usage", "Reports token usage", s(!!usage && usage.inputTokens > 0), true,
+    skipRest ? undefined : usage && usage.inputTokens > 0 ? undefined : "No token counts came back — spend can't be tracked for this endpoint.");
+
+  const tiers = !!usage && (usage.cacheReadTokens > 0 || usage.cacheWriteTokens > 0);
+  add("cacheTiers", "Separates cached from fresh input", skipRest ? "skip" : tiers ? "pass" : "skip", false,
+    skipRest ? undefined : tiers
+      ? undefined
+      : "No cache tiers on this probe. It's one short call so there may be nothing cached yet — but if they never appear, cost will be over-stated, since cached input is billed far cheaper than fresh.");
+
+  add("pricing", "Published rates available for this model", opts.rates ? "pass" : "skip", false,
+    opts.rates ? undefined : "Not in the catalog, so spend falls back to the SDK's Anthropic-priced figure — which is wrong for a non-Anthropic endpoint. Costs will be misreported.");
+
+  const vendor = vendorForBaseUrl(opts.baseUrl);
+  return {
+    ok: checks.every((c) => !c.critical || c.status === "pass"),
+    model: opts.model,
+    endpoint: opts.baseUrl ?? null,
+    vendor: endpointLabel(opts.baseUrl),
+    checks,
+    costUsd: usage?.costUsd ?? null,
+    durationMs: Date.now() - started,
+    caveat: vendor?.caveat ?? null,
+  };
+}
+
 /** Accumulating (non-streaming) consult — the whole answer, or `fallback` if
  *  empty. Delegates to {@link oneShotConsultStream} so both share one query. */
 async function oneShotConsult(opts: {
@@ -406,6 +619,7 @@ export async function oneShotText(opts: {
   model: string;
   cwd?: string;
   apiKey?: string;
+  baseUrl?: string | null;
   onUsage?: UsageSink;
 }): Promise<string> {
   let out = "";
@@ -419,10 +633,10 @@ export function oneShotTextStream(opts: {
   model: string;
   cwd?: string;
   apiKey?: string;
+  baseUrl?: string | null;
   onUsage?: UsageSink;
 }): AsyncIterable<string> {
-  const env = buildRunnerEnv();
-  if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
+  const env = applyCredential(buildRunnerEnv(), opts);
   return oneShotConsultStream({
     prompt: opts.prompt,
     cwd: opts.cwd ?? process.cwd(),
@@ -447,6 +661,7 @@ export async function oneShotRepoAssistant(opts: {
   cwd: string;
   model: string;
   apiKey?: string;
+  baseUrl?: string | null;
   onUsage?: UsageSink;
 }): Promise<string> {
   let answer = "";
@@ -467,10 +682,10 @@ export function oneShotRepoAssistantStream(opts: {
   cwd: string;
   model: string;
   apiKey?: string;
+  baseUrl?: string | null;
   onUsage?: UsageSink;
 }): AsyncIterable<string> {
-  const env = buildRunnerEnv();
-  if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
+  const env = applyCredential(buildRunnerEnv(), opts);
   const q = query({
     prompt: opts.prompt,
     options: {
@@ -988,6 +1203,9 @@ class ClaudeRunnerHandle implements RunnerHandle {
   // Cost accounting across relaunches — see emitUsage/sealSegment. `priorSegments`
   // is what finished query() calls spent; `segmentUsage` is the latest running
   // total for the query currently in flight.
+  // Published rates for this run's (endpoint, model), when catalogued — see
+  // readUsage. Null keeps the SDK's own (Anthropic-priced) figure.
+  private rates: ModelRates | null = null;
   private priorSegments: RunnerUsage = ZERO_USAGE;
   private segmentUsage: RunnerUsage = ZERO_USAGE;
   private lastApiError = ""; // most recent overload/error text seen, for classification
@@ -1101,7 +1319,8 @@ class ClaudeRunnerHandle implements RunnerHandle {
     // whatever survives here is usable. Fast-fail with a clear reason rather than
     // spinning up an agent that immediately 401s.
     const env = buildRunnerEnv();
-    this.sdkEnv = spec.apiKey ? { ...env, ANTHROPIC_API_KEY: spec.apiKey } : env;
+    this.sdkEnv = applyCredential(env, spec);
+    this.rates = spec.rates ?? null;
     const authed =
       !!spec.apiKey ||
       !!this.sdkEnv.ANTHROPIC_API_KEY ||
@@ -1339,7 +1558,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
    * far`, which is what the consumer stores verbatim.
    */
   private emitUsage(result: Record<string, unknown>) {
-    this.segmentUsage = readUsage(result);
+    this.segmentUsage = readUsage(result, this.rates);
     this.events.onUsage?.(this.runId, addUsage(this.priorSegments, this.segmentUsage));
   }
 
@@ -1779,7 +1998,7 @@ function consultQuery(
   question: string,
 ): { prompt: string; cwd: string; model: string; env: Record<string, string> } {
   const base = buildRunnerEnv();
-  const env = spec.apiKey ? { ...base, ANTHROPIC_API_KEY: spec.apiKey } : base;
+  const env = applyCredential(base, spec);
   // Two framings share this function:
   //   • spec.system set  → caller owns the ROLE (e.g. Telegram intent classifier
   //     with its own "you are Skynet's assistant, return {reply, action}" prompt).

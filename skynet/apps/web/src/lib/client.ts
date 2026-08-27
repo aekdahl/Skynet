@@ -21,6 +21,7 @@ import {
   type WorkspaceSettings,
   type UpdateWorkspaceSettingsRequest,
   type VerifyCredentialResult,
+  type EndpointSmokeResult,
   type CommandPolicy,
   type PolicyVersion,
   type PolicyDryRunResult,
@@ -513,22 +514,31 @@ export function fetchSecrets() {
 }
 // Set or rotate a credential's key by id — a provider id targets that provider's
 // DEFAULT credential; a `cred-…` id rotates an existing named one.
-export function setSecret(id: string, apiKey: string) {
-  return req<{ secret: SecretMeta }>("PUT", `/api/secrets/${id}`, { apiKey });
+// `baseUrl` omitted = leave the stored endpoint alone (a plain rotation); null
+// clears it back to the vendor's own API. See SecretMeta.baseUrl.
+export function setSecret(id: string, apiKey: string, baseUrl?: string | null) {
+  return req<{ secret: SecretMeta }>("PUT", `/api/secrets/${id}`, baseUrl === undefined ? { apiKey } : { apiKey, baseUrl });
 }
 export function deleteSecret(id: string) {
   return req<unknown>("DELETE", `/api/secrets/${id}`);
 }
 // Create a NAMED credential — a second key for a provider that already has one
 // ("Claude on another account"). Agents can then be pinned to it via credentialId.
-export function createCredential(provider: string, name: string, apiKey: string) {
-  return req<{ secret: SecretMeta }>("POST", "/api/credentials", { provider, name, apiKey });
+export function createCredential(provider: string, name: string, apiKey: string, baseUrl?: string | null) {
+  return req<{ secret: SecretMeta }>("POST", "/api/credentials", { provider, name, apiKey, baseUrl: baseUrl ?? null });
 }
 // Live-verify a credential's key against its vendor — a real, cheap call
 // (never a generation) confirming it actually authenticates. Never blocks the
 // save that already happened; this is UI feedback only.
 export function verifyCredential(id: string) {
   return req<VerifyCredentialResult>("POST", `/api/credentials/${id}/verify`);
+}
+// Smoke-test a credential: runs ONE tiny real task through the agent loop on it
+// and reports what the endpoint actually supported. Verify proves the key
+// authenticates; this proves the endpoint can drive Skynet. Costs a fraction of
+// a cent, so it is only ever triggered by the operator.
+export function smokeTestCredential(id: string, model?: string) {
+  return req<EndpointSmokeResult>("POST", `/api/credentials/${id}/smoke`, model ? { model } : {});
 }
 // Credential lifecycle log (created/rotated/removed, who + when — never the
 // key) — answers "why did this provider suddenly show not connected".

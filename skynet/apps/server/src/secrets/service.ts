@@ -5,8 +5,14 @@
 
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { ProviderId, type CredentialProvider, type SecretMeta } from "@skynet/shared";
+import { ProviderId, ratesFor, vendorForBaseUrl, type CredentialProvider, type EndpointSmokeResult, type SecretMeta } from "@skynet/shared";
+import { smokeTestEndpoint } from "@skynet/runner-sdk";
 import { config } from "../config.js";
+
+// Model used for a smoke test on a credential with no catalogued vendor (i.e.
+// Anthropic itself, or a custom endpoint). Cheap on purpose — the probe reads
+// one small file, so the smallest model proves as much as the largest.
+const DEFAULT_SMOKE_MODEL = "haiku";
 import { PROVIDER_ENV_VAR, providerEnvCredential } from "../provider-env.js";
 import { fingerprint, masterKey, open, seal } from "./crypto.js";
 import { MemorySecretStore } from "./memory.js";
@@ -38,9 +44,43 @@ export class UnknownCredentialError extends Error {
   }
 }
 
+/** A credential's endpoint wasn't an absolute http(s) URL. Surfaced as a 400 —
+ *  never silently dropped (see normalizeBaseUrl). */
+export class InvalidEndpointError extends Error {
+  constructor(value: string) {
+    super(`"${value}" is not a valid endpoint URL — use an absolute https:// address, or leave it blank for the vendor's own API.`);
+    this.name = "InvalidEndpointError";
+  }
+}
+
 /** Providers with a credential in the server environment (any accepted var). */
 export function envBackedProviders(): ProviderId[] {
   return (Object.keys(PROVIDER_ENV_VAR) as ProviderId[]).filter(providerEnvCredential);
+}
+
+/**
+ * Validate + canonicalise a Claude-compatible endpoint.
+ *
+ * This value is injected as ANTHROPIC_BASE_URL into a runner subprocess, i.e.
+ * it decides where an agent's prompts (and the repo contents they carry) get
+ * sent. So it is validated, not trusted: only absolute http(s) URLs, and the
+ * trailing slash is dropped so the same endpoint typed two ways is one value.
+ * Anything unparseable is rejected loudly rather than silently ignored — a
+ * typo'd endpoint that fell back to the vendor would bill the expensive API
+ * while the operator believed they were on a cheap one.
+ */
+export function normalizeBaseUrl(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new InvalidEndpointError(trimmed);
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new InvalidEndpointError(trimmed);
+  return url.toString().replace(/\/+$/, "");
 }
 
 const toMeta = (r: SecretRecord): SecretMeta => ({
@@ -50,6 +90,7 @@ const toMeta = (r: SecretRecord): SecretMeta => ({
   provider: r.provider,
   isDefault: isDefaultCredential(r.id, r.provider),
   last4: r.last4,
+  baseUrl: r.baseUrl ?? null,
   updatedAt: r.updatedAt,
   updatedBy: r.updatedBy,
 });
@@ -62,7 +103,7 @@ export class SecretService {
     return masterKey() !== null;
   }
 
-  private sealRecord(workspaceId: string, id: string, name: string, provider: CredentialProvider, apiKey: string, operatorId: string, at: number): SecretRecord {
+  private sealRecord(workspaceId: string, id: string, name: string, provider: CredentialProvider, apiKey: string, operatorId: string, at: number, baseUrl?: string | null): SecretRecord {
     const key = masterKey();
     if (!key) throw new SecretsDisabledError();
     return {
@@ -72,6 +113,7 @@ export class SecretService {
       provider,
       ciphertext: seal(apiKey, key),
       last4: fingerprint(apiKey),
+      baseUrl: normalizeBaseUrl(baseUrl),
       updatedAt: at,
       updatedBy: operatorId,
     };
@@ -105,6 +147,7 @@ export class SecretService {
     apiKey: string,
     operatorId: string,
     at: number,
+    baseUrl?: string | null,
   ): Promise<SecretMeta> {
     const existing = await this.store.get(workspaceId, id);
     const parsed = ProviderId.safeParse(id);
@@ -112,7 +155,10 @@ export class SecretService {
     // default is created on first set, its id being the provider.
     if (!existing && !parsed.success) throw new UnknownCredentialError(id);
     const provider = existing?.provider ?? (parsed.data as ProviderId);
-    const record = this.sealRecord(workspaceId, id, existing?.name ?? "", provider, apiKey, operatorId, at);
+    // `undefined` = a plain key rotation, which must not silently re-point an
+    // endpoint-backed credential at the vendor. Explicit `null` clears it.
+    const endpoint = baseUrl === undefined ? existing?.baseUrl : baseUrl;
+    const record = this.sealRecord(workspaceId, id, existing?.name ?? "", provider, apiKey, operatorId, at, endpoint);
     await this.store.put(record);
     await this.audit(record, existing ? "rotated" : "created", operatorId, at);
     return toMeta(record);
@@ -126,9 +172,10 @@ export class SecretService {
     apiKey: string,
     operatorId: string,
     at: number,
+    baseUrl?: string | null,
   ): Promise<SecretMeta> {
     const id = `cred-${provider}-${randomUUID().slice(0, 8)}`;
-    const record = this.sealRecord(workspaceId, id, name.trim(), provider, apiKey, operatorId, at);
+    const record = this.sealRecord(workspaceId, id, name.trim(), provider, apiKey, operatorId, at, baseUrl);
     await this.store.put(record);
     await this.audit(record, "created", operatorId, at);
     return toMeta(record);
@@ -182,6 +229,34 @@ export class SecretService {
   }
 
   /**
+   * Run ONE tiny real task on this credential and report what the endpoint's
+   * compatibility layer actually did — see smokeTestEndpoint.
+   *
+   * Picks a default model from the catalog when the caller doesn't name one, so
+   * the operator isn't asked to guess a model id before they've used the vendor.
+   */
+  async smokeTest(workspaceId: string, credentialId: string, model?: string): Promise<EndpointSmokeResult> {
+    const record = await this.store.get(workspaceId, credentialId);
+    const parsed = ProviderId.safeParse(credentialId);
+    if (!record && !parsed.success) throw new UnknownCredentialError(credentialId);
+    const apiKey = await this.resolve(workspaceId, credentialId);
+    const baseUrl = await this.resolveEndpoint(workspaceId, credentialId);
+    const vendor = vendorForBaseUrl(baseUrl);
+    const chosen = model?.trim() || vendor?.models[0]?.id || DEFAULT_SMOKE_MODEL;
+    return smokeTestEndpoint({ apiKey, baseUrl, model: chosen, rates: ratesFor(baseUrl, chosen) });
+  }
+
+  /**
+   * The Claude-compatible endpoint a credential points at, or undefined for the
+   * vendor's own API. Deliberately separate from {@link resolve}: the key is a
+   * secret and the endpoint is not, and every caller needs both independently.
+   */
+  async resolveEndpoint(workspaceId: string, credentialId: string): Promise<string | undefined> {
+    const record = await this.store.get(workspaceId, credentialId);
+    return record?.baseUrl || undefined;
+  }
+
+  /**
    * Live-verify a credential's key against its vendor — the same key
    * `resolve` would hand a runner (stored key, else an env fallback for a
    * default credential). Never throws for a bad/unreachable key, only for an
@@ -194,7 +269,10 @@ export class SecretService {
     const provider: CredentialProvider = record?.provider ?? (parsed.data as ProviderId);
     const apiKey = await this.resolve(workspaceId, id);
     if (!apiKey) return { ok: false, message: "No key is set for this credential (and no environment fallback)." };
-    return verifyProviderCredential(provider, apiKey);
+    // Verify against the endpoint this credential actually talks to — see
+    // verifyProviderCredential.
+    const baseUrl = await this.resolveEndpoint(workspaceId, id);
+    return verifyProviderCredential(provider, apiKey, baseUrl);
   }
 }
 

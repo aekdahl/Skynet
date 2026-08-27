@@ -1,4 +1,5 @@
 import type {
+  ModelRates,
   TaskRunStatus,
   HitlItem,
   PlanStep,
@@ -35,6 +36,26 @@ export interface StartSpec {
    * environment (the local-dev default). Never logged.
    */
   apiKey?: string | null;
+  /**
+   * A Claude-COMPATIBLE endpoint to talk to instead of the vendor's own API —
+   * Moonshot/Kimi, Z.ai/GLM, MiniMax, a LiteLLM proxy: anything speaking the
+   * Anthropic wire protocol. Resolved by the orchestrator from the run's
+   * credential (see SecretMeta.baseUrl); null/absent = the vendor's API.
+   *
+   * Only the Claude runner acts on it, and that's the point: routing a cheaper
+   * model through the Agent SDK keeps the ENTIRE agent loop — canUseTool
+   * gating, question/plan/escalation HITL, resume-with-guidance, per-model cost
+   * metering — none of which the CLI-backed runners have.
+   */
+  baseUrl?: string | null;
+  /**
+   * Published per-million-token rates for (endpoint, model), resolved by the
+   * orchestrator from the shared catalog. Present so a run on a compatible
+   * endpoint reports REAL spend: the SDK prices everything from Claude Code's
+   * own Anthropic table, which is meaningless once another vendor served the
+   * tokens. Absent → keep the SDK's own figure rather than invent one.
+   */
+  rates?: ModelRates | null;
   /**
    * Opt-in: give the agent a real browser for this run (a Playwright/Chrome MCP
    * server exposed to the runner). Resolved by the orchestrator from the
@@ -182,6 +203,13 @@ export interface ConsultSpec {
   model: string;
   cwd?: string;
   apiKey?: string | null;
+  /** Claude-compatible endpoint for this consult — same meaning and same
+   *  credential source as {@link StartSpec.baseUrl}. Side calls (review,
+   *  injection checks, digests) are a real share of spend, so they follow the
+   *  runner's credential rather than always hitting the vendor API. */
+  baseUrl?: string | null;
+  /** Published rates for this consult's (endpoint, model) — see StartSpec.rates. */
+  rates?: ModelRates | null;
   /** What the agent did — its final summary and/or recent log, for grounding. */
   context?: string;
   /**

@@ -4,7 +4,7 @@
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
 import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
-import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow, pacedAvailableUsd, resolveTaskBrief } from "@skynet/shared";
+import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow, pacedAvailableUsd, ratesFor, resolveTaskBrief } from "@skynet/shared";
 import {
   isCreditExhaustionError,
   type HitlRaise,
@@ -1461,8 +1461,10 @@ export class Orchestrator {
       return { steered: false, reason: "provider has no consult support — check skipped", source: null };
     }
     const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+    const baseUrl = await secretService.resolveEndpoint(run.workspaceId, run.credentialId ?? run.provider).catch(() => undefined);
+    const rates = ratesFor(baseUrl, run.model);
     const reply = await provider.consult(
-      { task: run.name, model: run.model, cwd: config.runnerCwd, apiKey },
+      { task: run.name, model: run.model, cwd: config.runnerCwd, apiKey, baseUrl, rates },
       buildInjectionPrompt(command, reads),
     );
     return parseInjectionVerdict(reply);
@@ -1486,12 +1488,16 @@ export class Orchestrator {
       const provider = await this.getProvider(run.provider);
       if (!provider.consult) return null;
       const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+      const baseUrl = await secretService.resolveEndpoint(run.workspaceId, run.credentialId ?? run.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, run.model);
       const reply = await provider.consult(
         {
           task: buildAgentContext({ project, body: run.name }),
           model: run.model,
           cwd: config.runnerCwd,
           apiKey,
+          baseUrl,
+          rates,
           context: patch,
           system: DIFF_WALKTHROUGH_SYSTEM,
         },
@@ -1528,12 +1534,16 @@ export class Orchestrator {
       const provider = await this.getProvider(run.provider);
       if (!provider.consult) return null;
       const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+      const baseUrl = await secretService.resolveEndpoint(run.workspaceId, run.credentialId ?? run.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, run.model);
       const reply = await provider.consult(
         {
           task: buildAgentContext({ project, body: run.name }),
           model: run.model,
           cwd: config.runnerCwd,
           apiKey,
+          baseUrl,
+          rates,
           context: patch,
           system: MERGE_BRIEF_SYSTEM,
         },
@@ -1584,12 +1594,16 @@ export class Orchestrator {
         const provider = await this.getProvider(anchorRun.provider);
         if (provider.consult) {
           const apiKey = await secretService.resolve(anchorRun.workspaceId, anchorRun.credentialId ?? anchorRun.provider);
+          const baseUrl = await secretService.resolveEndpoint(anchorRun.workspaceId, anchorRun.credentialId ?? anchorRun.provider).catch(() => undefined);
+          const rates = ratesFor(baseUrl, anchorRun.model);
           const reply = await provider.consult(
             {
               task: anchorRun.name,
               model: anchorRun.model,
               cwd: config.runnerCwd,
               apiKey,
+              baseUrl,
+              rates,
               context: patch,
               system: FEATURE_BRIEF_SYSTEM,
             },
@@ -2023,8 +2037,15 @@ export class Orchestrator {
       branch,
       seedVisual: false,
     });
+    // Stamped on the run, not resolved live from the credential later: a
+    // credential can be re-pointed, and history should still say what this run
+    // actually talked to. It's also what lets every surface flag a
+    // non-Anthropic run without a second fetch.
+    const runEndpoint =
+      (await secretService.resolveEndpoint(project.workspaceId, runner.credentialId ?? runner.provider).catch(() => undefined)) ?? null;
     const agent: TaskRun = {
       id: runId,
+      endpoint: runEndpoint,
       workspaceId: project.workspaceId,
       projectId,
       name: task.text,
@@ -2088,6 +2109,8 @@ export class Orchestrator {
       scratchCwd = prov.scratchCwd;
       // Inject this workspace's provider key (env fallback when none is stored).
       const apiKey = await secretService.resolve(project.workspaceId, runner.credentialId ?? runner.provider);
+      const baseUrl = await secretService.resolveEndpoint(project.workspaceId, runner.credentialId ?? runner.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, runner.model);
       // The agent gets the full brief: the short name plus the longer
       // description when one exists (the run's display name stays the short text).
       const taskBody = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
@@ -2105,7 +2128,7 @@ export class Orchestrator {
       // runner decides how to expose it (Claude → a Playwright MCP server).
       const { browserTools } = await this.fleetPolicy(project.workspaceId);
       const handle = await provider.start(
-        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, browser: browserTools, planModeGate: project.planModeGate, disallowedTools: project.disallowedTools },
+        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, baseUrl, rates, browser: browserTools, planModeGate: project.planModeGate, disallowedTools: project.disallowedTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId, branch, baseRef, git, scratchCwd });
@@ -2140,8 +2163,11 @@ export class Orchestrator {
       branch: forkBranch,
       seedVisual: parent.visual,
     });
+    const forkEndpoint =
+      (await secretService.resolveEndpoint(parent.workspaceId, runner.credentialId ?? runner.provider).catch(() => undefined)) ?? null;
     const agent: TaskRun = {
       ...parent,
+      endpoint: forkEndpoint,
       id: runId,
       name: `${parent.name} (fork)`,
       status: "running",
@@ -2174,6 +2200,8 @@ export class Orchestrator {
       const { cwd, baseRef } = prov;
       scratchCwd = prov.scratchCwd;
       const apiKey = await secretService.resolve(parent.workspaceId, runner.credentialId ?? runner.provider);
+      const baseUrl = await secretService.resolveEndpoint(parent.workspaceId, runner.credentialId ?? runner.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, runner.model);
       const parentTask = (await this.store.listTasks(parent.workspaceId)).find((t) => t.runId === parentId);
       const feature = parentTask?.featureId ? await this.store.getFeature(parentTask.featureId).catch(() => undefined) : undefined;
       const solutionBrief = parentTask ? await this.findTaskBrief(parentTask, parent.workspaceId) : undefined;
@@ -2189,6 +2217,8 @@ export class Orchestrator {
           parentId,
           branchFromStep: stepIndex,
           apiKey,
+          baseUrl,
+          rates,
           disallowedTools: project?.disallowedTools,
         },
         this.events(),
@@ -2288,6 +2318,8 @@ export class Orchestrator {
     const provider = await this.getProvider(runner.provider);
     const { cwd, baseRef } = await this.provisionCwd(git, runId, run.branch, project, checkpoint.sha);
     const apiKey = await secretService.resolve(run.workspaceId, runner.credentialId ?? runner.provider);
+    const baseUrl = await secretService.resolveEndpoint(run.workspaceId, runner.credentialId ?? runner.provider).catch(() => undefined);
+    const rates = ratesFor(baseUrl, runner.model);
     const resumeSessionId = run.provider === "claude" ? checkpoint.claudeSessionId : null;
     const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
     const task = taskId ? await this.store.getTask(taskId) : undefined;
@@ -2312,6 +2344,8 @@ export class Orchestrator {
           branch: run.branch,
           cwd,
           apiKey,
+          baseUrl,
+          rates,
           resumeSessionId,
           disallowedTools: project?.disallowedTools,
         },
@@ -2454,9 +2488,11 @@ export class Orchestrator {
     const patch = await git.worktrees.patch(agent.id, baseRef);
     if (!patch) return null; // nothing changed — nothing to judge
     const apiKey = await secretService.resolve(agent.workspaceId, agent.credentialId ?? agent.provider);
+    const baseUrl = await secretService.resolveEndpoint(agent.workspaceId, agent.credentialId ?? agent.provider).catch(() => undefined);
+    const rates = ratesFor(baseUrl, agent.model);
     const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
     const reply = await provider.consult(
-      { task: buildAgentContext({ project, feature, body: task.text }), model: agent.model, cwd: config.runnerCwd, apiKey, context: patch },
+      { task: buildAgentContext({ project, feature, body: task.text }), model: agent.model, cwd: config.runnerCwd, apiKey, baseUrl, rates, context: patch },
       `Review whether this run satisfies the task "${task.text}". ${REVIEW_OUTPUT_INSTRUCTION}`,
     );
     const verdict = parseReviewVerdict(reply);
@@ -2689,6 +2725,8 @@ export class Orchestrator {
     const provider = await this.getProvider(acq.provider);
     const cwd = git.worktrees.pathFor(runId);
     const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+    const baseUrl = await secretService.resolveEndpoint(run.workspaceId, run.credentialId ?? run.provider).catch(() => undefined);
+    const rates = ratesFor(baseUrl, run.model);
     const project = await this.store.getProject(run.projectId);
     const taskId = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id ?? null;
     const task = taskId ? await this.store.getTask(taskId) : undefined;
@@ -2705,7 +2743,7 @@ export class Orchestrator {
     await this.hub.runLog(runId, `re-acquired compute to deliver "${resolution.action}" — resuming in the run's worktree`);
     try {
       const handle = await provider.start(
-        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, disallowedTools: project?.disallowedTools },
+        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, disallowedTools: project?.disallowedTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId, branch: run.branch, baseRef: config.baseBranch, git });
@@ -2738,6 +2776,8 @@ export class Orchestrator {
     const provider = await this.getProvider(acq.provider);
     const cwd = review.git.worktrees.pathFor(runId);
     const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+    const baseUrl = await secretService.resolveEndpoint(run.workspaceId, run.credentialId ?? run.provider).catch(() => undefined);
+    const rates = ratesFor(baseUrl, run.model);
     const project = await this.store.getProject(run.projectId);
     const task = review.taskId ? await this.store.getTask(review.taskId) : undefined;
     const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
@@ -2766,7 +2806,7 @@ export class Orchestrator {
     await this.hub.runLog(runId, "revising per review guidance");
     try {
       const handle = await provider.start(
-        { runId, projectId: run.projectId, task: revisePrompt, model: run.model, branch: run.branch, cwd, apiKey, disallowedTools: project?.disallowedTools },
+        { runId, projectId: run.projectId, task: revisePrompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, disallowedTools: project?.disallowedTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId: review.taskId, branch: run.branch, baseRef: review.baseRef, git: review.git });
@@ -3140,6 +3180,8 @@ export class Orchestrator {
     const provider = await this.getProvider(acq.provider);
     const cwd = git.worktrees.pathFor(runId);
     const apiKey = await secretService.resolve(run.workspaceId, run.provider);
+    const baseUrl = await secretService.resolveEndpoint(run.workspaceId, run.provider).catch(() => undefined);
+    const rates = ratesFor(baseUrl, run.model);
     const project = await this.store.getProject(run.projectId);
     const task = ctx?.taskId ? await this.store.getTask(ctx.taskId) : undefined;
     const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
@@ -3169,7 +3211,7 @@ export class Orchestrator {
     await this.hub.runLog(runId, reassign ? "reassigned to another runner after escalation" : "resuming after escalation with operator guidance");
     try {
       const handle = await provider.start(
-        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, disallowedTools: project?.disallowedTools },
+        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, disallowedTools: project?.disallowedTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId: ctx?.taskId ?? null, branch: run.branch, baseRef: ctx?.baseRef ?? this.baseBranchFor(project), git });
@@ -4140,6 +4182,8 @@ export class Orchestrator {
 
     for (const c of candidates) {
       const apiKey = await secretService.resolve(ws, c.provider).catch(() => undefined);
+      const baseUrl = await secretService.resolveEndpoint(ws, c.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, c.model);
       if (!apiKey) continue;
       let provider: RunnerProvider;
       try {
@@ -4155,6 +4199,8 @@ export class Orchestrator {
             model: c.model,
             cwd: config.runnerCwd,
             apiKey,
+            baseUrl,
+            rates,
             context,
             ...(system ? { system } : {}),
           },
@@ -4199,6 +4245,8 @@ export class Orchestrator {
       return;
     }
     const apiKey = await secretService.resolve(agent.workspaceId, agent.credentialId ?? agent.provider);
+    const baseUrl = await secretService.resolveEndpoint(agent.workspaceId, agent.credentialId ?? agent.provider).catch(() => undefined);
+    const rates = ratesFor(baseUrl, agent.model);
     const logText = agent.log.slice(-40).map((l) => l.line).join("\n").slice(-4000);
     // A run that didn't finish cleanly (failed / escalated / needs-attention) is
     // RESUMABLE from its own controls — so the consult must not dead-end the
@@ -4208,7 +4256,7 @@ export class Orchestrator {
         ? ""
         : "SITUATION: This run did not finish — it is paused / needs attention and can be RESUMED to keep working, from the run's own controls (its escalation card: Help & resume · Reassign · Stop). You are read-only in this chat: explain what happened or advise on the work, but never tell the operator to relaunch, retry, or start a fresh agent themselves, and don't imply you can edit files or resume from here.\n\n";
     const context = note + logText;
-    const spec = { task: agent.name, model: agent.model, cwd: config.runnerCwd, apiKey, context };
+    const spec = { task: agent.name, model: agent.model, cwd: config.runnerCwd, apiKey, baseUrl, rates, context };
     try {
       if (provider.consultStream) {
         yield* provider.consultStream(spec, question);
@@ -4815,6 +4863,8 @@ export class Orchestrator {
         };
       }
       const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
+      const baseUrl = await secretService.resolveEndpoint(ws, agent.credentialId ?? agent.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, agent.model);
       const project = await this.store.getProject(task.projectId);
       // Offer the project's OPEN features + milestones so triage can file the task
       // under a suitable one. The model must pick an id FROM these lists (or null);
@@ -4852,7 +4902,7 @@ export class Orchestrator {
         ? "\nThis task already had clarifying questions asked and ANSWERED once (see the \"Clarifications\" section above) — treat that answer as authoritative and do NOT ask the same or a rephrased version of it again. Only report \"unclear\" again if the answer reveals a genuinely NEW gap it doesn't cover; otherwise report \"clear\" and note any residual doubt in \"risks\" instead."
         : "";
       const reply = await provider.consult(
-        { task: buildAgentContext({ project, feature, body: taskBody }), model: agent.model, cwd: config.runnerCwd, apiKey },
+        { task: buildAgentContext({ project, feature, body: taskBody }), model: agent.model, cwd: config.runnerCwd, apiKey, baseUrl, rates },
         [
           "You are triaging a backlog item for a coding project.",
           "In ONE short line: summarize the ask (is it clear, what's the gist). Be terse — the effort size and any risks go in the JSON tag below, not this line.",
@@ -4922,6 +4972,8 @@ export class Orchestrator {
    */
   private async draftClarificationAnswer(ws: string, task: Task, questions: string[]): Promise<string | null> {
     const apiKey = (await secretService.resolve(ws, "claude").catch(() => undefined)) ?? undefined;
+    const baseUrl = await secretService.resolveEndpoint(ws, "claude").catch(() => undefined);
+    const rates = ratesFor(baseUrl, CLARIFY_DRAFT_MODEL);
     if (!apiKey) return null; // no usable key — ask without a draft rather than fail the tick
     const project = await this.store.getProject(task.projectId).catch(() => null);
     const prompt = [
@@ -4945,7 +4997,7 @@ export class Orchestrator {
     ]
       .filter((l) => l !== "")
       .join("\n");
-    const reply = (await oneShotText({ prompt, model: CLARIFY_DRAFT_MODEL, apiKey })).trim();
+    const reply = (await oneShotText({ prompt, model: CLARIFY_DRAFT_MODEL, apiKey, baseUrl })).trim();
     return reply || null;
   }
 
@@ -5005,6 +5057,8 @@ export class Orchestrator {
     try {
       const provider = await this.getProvider(reviewer.provider);
       const apiKey = await secretService.resolve(ws, reviewer.credentialId ?? reviewer.provider);
+      const baseUrl = await secretService.resolveEndpoint(ws, reviewer.credentialId ?? reviewer.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, reviewer.model);
       const diffSummary = hitl.diff
         ? `Files changed (${hitl.diff.files.length}): ${hitl.diff.files.slice(0, 25).join(", ")}${hitl.diff.files.length > 25 ? ", …" : ""} (+${hitl.diff.add}/-${hitl.diff.del})`
         : "No diff stat available for this run.";
@@ -5077,6 +5131,8 @@ export class Orchestrator {
                 branch: run.branch,
                 cwd,
                 apiKey,
+                baseUrl,
+                rates,
                 browser: true,
                 maxTurns: DEEP_REVIEW_MAX_TURNS,
                 // Categorically no edits/shell — a reviewer can browse and read,
@@ -5167,6 +5223,8 @@ export class Orchestrator {
     try {
       const provider = await this.getProvider(reviewer.provider);
       const apiKey = await secretService.resolve(ws, reviewer.credentialId ?? reviewer.provider);
+      const baseUrl = await secretService.resolveEndpoint(ws, reviewer.credentialId ?? reviewer.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, reviewer.model);
       const taskLines = siblings.map((t) => `- ${t.text}${t.description?.trim() ? `: ${t.description.trim()}` : ""}`).join("\n");
       const brief = [
         `You are verifying a whole FEATURE another set of agents just finished: "${feature.name}"`,
@@ -5231,6 +5289,8 @@ export class Orchestrator {
                 branch: git.merge.integrationBranch(project.id),
                 cwd,
                 apiKey,
+                baseUrl,
+                rates,
                 browser: true,
                 maxTurns: DEEP_REVIEW_MAX_TURNS,
                 disallowedTools: ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"],
@@ -5328,6 +5388,8 @@ export class Orchestrator {
     try {
       const provider = await this.getProvider(reviewer.provider);
       const apiKey = await secretService.resolve(ws, reviewer.credentialId ?? reviewer.provider);
+      const baseUrl = await secretService.resolveEndpoint(ws, reviewer.credentialId ?? reviewer.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, reviewer.model);
       // Resolved once, up front — decideAutoApproval below needs the workspace's
       // ACTIVE command policy, same as a real run's Bash gate (see raise()).
       const policy = await resolveActivePolicy(this.store, ws);
@@ -5411,6 +5473,8 @@ export class Orchestrator {
                 branch: run.branch,
                 cwd,
                 apiKey,
+                baseUrl,
+                rates,
                 browser: true,
                 maxTurns: BREAKER_MAX_TURNS,
                 // Edits stay off, same as the reviewer. Bash deliberately stays
@@ -5474,6 +5538,8 @@ export class Orchestrator {
       const provider = await this.getProvider("claude").catch(() => null);
       if (!provider) return null;
       const apiKey = (await secretService.resolve(ws, "claude").catch(() => undefined)) ?? undefined;
+      const baseUrl = await secretService.resolveEndpoint(ws, "claude").catch(() => undefined);
+      const rates = ratesFor(baseUrl, EXPLORE_MODEL);
 
       const prompt = [
         `You are grounding a DRAFT plan against the ACTUAL codebase before a human decides whether to approve it. Read the repo — don't assume.`,
@@ -5536,6 +5602,8 @@ export class Orchestrator {
                 branch: this.baseBranchFor(project),
                 cwd,
                 apiKey,
+                baseUrl,
+                rates,
                 maxTurns: EXPLORE_MAX_TURNS,
                 disallowedTools: ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"],
               },
@@ -5602,10 +5670,12 @@ export class Orchestrator {
         const provider = await this.getProvider(agent.provider);
         if (provider.consult && run) {
           const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
+          const baseUrl = await secretService.resolveEndpoint(ws, agent.credentialId ?? agent.provider).catch(() => undefined);
+          const rates = ratesFor(baseUrl, agent.model);
           const context = run.log.slice(-30).map((l) => l.line).join("\n").slice(-3000);
           const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
           const reply = await provider.consult(
-            { task: buildAgentContext({ project, feature, body: task.text }), model: agent.model, cwd: config.runnerCwd, apiKey, context },
+            { task: buildAgentContext({ project, feature, body: task.text }), model: agent.model, cwd: config.runnerCwd, apiKey, baseUrl, rates, context },
             `Review whether this run satisfies the task "${task.text}". ${REVIEW_OUTPUT_INSTRUCTION}`,
           );
           // The verdict is the MODEL's, read from a structured field — we never

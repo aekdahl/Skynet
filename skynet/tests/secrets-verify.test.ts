@@ -147,3 +147,57 @@ describe("verifyProviderCredential", () => {
     expect(result.message).toBe("500 Internal Server Error");
   });
 });
+
+// A credential that names a Claude-compatible endpoint must be verified against
+// THAT endpoint. Checking it against api.anthropic.com sent a third-party key
+// to Anthropic and then reported a failure that said nothing about whether the
+// credential works — wrong answer, wrong destination.
+describe("verifyProviderCredential — compatible endpoints", () => {
+  it("checks the credential's OWN endpoint, never Anthropic", async () => {
+    mockResponse(true, { data: [] });
+    const result = await verifyProviderCredential("claude", "sk-moonshot", "https://api.moonshot.ai/anthropic");
+    expect(result.ok).toBe(true);
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toBe("https://api.moonshot.ai/anthropic/v1/models");
+    expect(url).not.toContain("api.anthropic.com");
+  });
+
+  it("never sends the third-party key to Anthropic", async () => {
+    mockResponse(true, { data: [] });
+    await verifyProviderCredential("claude", "sk-moonshot", "https://api.moonshot.ai/anthropic");
+    for (const [url] of fetchMock.mock.calls) expect(String(url)).not.toContain("anthropic.com");
+  });
+
+  it("names the vendor in the success message, so the operator knows what passed", async () => {
+    mockResponse(true, { data: [] });
+    const result = await verifyProviderCredential("claude", "k", "https://api.deepseek.com/anthropic");
+    expect(result.message).toContain("DeepSeek");
+  });
+
+  it("tolerates a trailing slash on the stored endpoint", async () => {
+    mockResponse(true, { data: [] });
+    await verifyProviderCredential("claude", "k", "https://api.z.ai/api/anthropic/");
+    expect(String(fetchMock.mock.calls[0]![0])).toBe("https://api.z.ai/api/anthropic/v1/models");
+  });
+
+  it("a 404 on /v1/models is inconclusive, not a failed credential", async () => {
+    // Several compatible endpoints serve only /v1/messages. Reporting a working
+    // key as broken would send an operator chasing a problem that isn't there.
+    fetchMock.mockResolvedValue({ ok: false, status: 404, statusText: "Not Found", text: async () => "" } as unknown as Response);
+    const result = await verifyProviderCredential("claude", "k", "https://api.moonshot.ai/anthropic");
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain("couldn't be confirmed");
+  });
+
+  it("still reports a genuinely rejected key as a failure", async () => {
+    mockResponse(false, { error: { message: "invalid api key" } });
+    const result = await verifyProviderCredential("claude", "bad", "https://api.deepseek.com/anthropic");
+    expect(result.ok).toBe(false);
+  });
+
+  it("with no endpoint, still verifies against Anthropic as before", async () => {
+    mockResponse(true, { data: [] });
+    await verifyProviderCredential("claude", "sk-ant", null);
+    expect(String(fetchMock.mock.calls[0]![0])).toContain("api.anthropic.com");
+  });
+});

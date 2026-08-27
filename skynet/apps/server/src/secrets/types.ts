@@ -23,6 +23,11 @@ export interface SecretRecord {
   /** base64(iv|tag|ciphertext) — see crypto.seal. Never the raw key. */
   ciphertext: string;
   last4: string;
+  /** Claude-compatible endpoint this credential talks to (Moonshot, Z.ai, a
+   *  LiteLLM proxy, …), or null/undefined for the vendor's own API. Stored in
+   *  PLAINTEXT deliberately — it's a routing target, not a secret, and the
+   *  operator must be able to see where a runner's traffic is going. */
+  baseUrl?: string | null;
   updatedAt: number;
   updatedBy: string;
 }

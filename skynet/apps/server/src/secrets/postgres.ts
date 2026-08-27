@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS workspace_secrets (
   id           text,
   name         text NOT NULL DEFAULT ''
 );
+-- A Claude-compatible endpoint this credential talks to (null = the vendor's
+-- own API). Added after the table shipped, so it's an idempotent ALTER rather
+-- than a column in the CREATE above.
+ALTER TABLE workspace_secrets ADD COLUMN IF NOT EXISTS base_url text;
 -- Backfill the credential id for rows created before named credentials existed:
 -- the default credential's id is its provider.
 UPDATE workspace_secrets SET id = provider WHERE id IS NULL;
@@ -55,6 +59,7 @@ interface Row {
   provider: string;
   ciphertext: string;
   last4: string;
+  base_url: string | null;
   updated_at: string;
   updated_by: string;
 }
@@ -66,6 +71,7 @@ const toRecord = (r: Row): SecretRecord => ({
   provider: r.provider as ProviderId,
   ciphertext: r.ciphertext,
   last4: r.last4,
+  baseUrl: r.base_url,
   updatedAt: Number(r.updated_at),
   updatedBy: r.updated_by,
 });
@@ -91,11 +97,11 @@ export class PostgresSecretStore implements SecretStore {
   async put(r: SecretRecord): Promise<void> {
     const pool = await this.db();
     await pool.query(
-      `INSERT INTO workspace_secrets(workspace_id,id,name,provider,ciphertext,last4,updated_at,updated_by)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+      `INSERT INTO workspace_secrets(workspace_id,id,name,provider,ciphertext,last4,updated_at,updated_by,base_url)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT(workspace_id,id)
-       DO UPDATE SET name=$3, provider=$4, ciphertext=$5, last4=$6, updated_at=$7, updated_by=$8`,
-      [r.workspaceId, r.id, r.name, r.provider, r.ciphertext, r.last4, r.updatedAt, r.updatedBy],
+       DO UPDATE SET name=$3, provider=$4, ciphertext=$5, last4=$6, updated_at=$7, updated_by=$8, base_url=$9`,
+      [r.workspaceId, r.id, r.name, r.provider, r.ciphertext, r.last4, r.updatedAt, r.updatedBy, r.baseUrl ?? null],
     );
   }
 

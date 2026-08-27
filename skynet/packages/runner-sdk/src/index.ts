@@ -7,4 +7,4 @@ export * from "./types.js";
 
 // Pure API-error classifiers — the orchestrator's key-health breaker keys off
 // billing (credit/quota) exhaustion, so surface them through the barrel too.
-export { isTransientApiError, isCreditExhaustionError } from "./claude.js";
+export { isTransientApiError, isCreditExhaustionError, smokeTestEndpoint } from "./claude.js";

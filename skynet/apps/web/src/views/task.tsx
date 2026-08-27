@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Checkpoint, TaskRun } from "@skynet/shared";
+import { endpointLabel } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { fetchCheckpoints } from "../lib/client";
 import {
@@ -347,6 +348,14 @@ export function TaskDetail({
         <div className="detail-meta">
           <span className="mono">{agent.branch}</span>
           <span>{agent.model}</span>
+          {/* Which vendor actually served this run. Recorded on the run itself,
+              so it stays true even if the credential is later re-pointed — and
+              so a non-Anthropic run is never read as a Claude one. */}
+          {endpointLabel(agent.endpoint) && (
+            <span className="run-endpoint" title={`Not Anthropic — this run went to ${agent.endpoint}`}>
+              via {endpointLabel(agent.endpoint)}
+            </span>
+          )}
           <span>{fmtElapsed(agent, now)}</span>
           {fmtUsage(agent.usage) && <span className="usage-chip mono" title="Tokens · cost · turns reported by the agent">{fmtUsage(agent.usage)}</span>}
           {agent.status === "done" ? (

@@ -18,6 +18,7 @@
 // verified via a cheap GraphQL viewer query — Fly has no plain GET whoami.
 
 import type { CredentialProvider } from "@skynet/shared";
+import { endpointLabel } from "@skynet/shared";
 
 export interface VerifyCredentialResult {
   ok: boolean;
@@ -124,7 +125,44 @@ const VERIFIERS: Record<CredentialProvider, (apiKey: string) => Promise<VerifyCr
     checkEndpoint("https://api.moonshot.ai/v1/models", { authorization: `Bearer ${apiKey}` }, "Key authenticates with the Moonshot AI API."),
 };
 
-/** Live-verify a decrypted key against its vendor. Never throws. */
-export async function verifyProviderCredential(provider: CredentialProvider, apiKey: string): Promise<VerifyCredentialResult> {
+/**
+ * Live-verify a decrypted key against its vendor. Never throws.
+ *
+ * A credential that names a Claude-compatible endpoint must be checked against
+ * THAT endpoint. Verifying it against api.anthropic.com would send a
+ * third-party key to Anthropic and then report a failure that says nothing
+ * about whether the credential works — wrong answer and wrong destination.
+ *
+ * Compatible endpoints authenticate the way Claude Code does against them:
+ * a bearer token (ANTHROPIC_AUTH_TOKEN), which is what the runner sends too —
+ * so a pass here means the same thing a real run would experience.
+ */
+export async function verifyProviderCredential(
+  provider: CredentialProvider,
+  apiKey: string,
+  baseUrl?: string | null,
+): Promise<VerifyCredentialResult> {
+  if (baseUrl) return verifyCompatibleEndpoint(apiKey, baseUrl);
   return VERIFIERS[provider](apiKey);
+}
+
+async function verifyCompatibleEndpoint(apiKey: string, baseUrl: string): Promise<VerifyCredentialResult> {
+  const root = baseUrl.replace(/\/+$/, "");
+  const label = endpointLabel(baseUrl) ?? root;
+  const res = await checkEndpoint(
+    `${root}/v1/models`,
+    { authorization: `Bearer ${apiKey}`, "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    `Key authenticates with ${label}.`,
+  );
+  // Not every compatible endpoint implements /v1/models — several only serve
+  // /v1/messages. A 404 there says the endpoint is reachable and the path is
+  // simply absent, which is not a credential failure; treat it as inconclusive
+  // rather than telling the operator a working key is broken.
+  if (!res.ok && /\b404\b/.test(res.message ?? "")) {
+    return {
+      ok: true,
+      message: `${label} is reachable but doesn't expose /v1/models, so the key couldn't be confirmed here — a real run will tell you.`,
+    };
+  }
+  return res;
 }

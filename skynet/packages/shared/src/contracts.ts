@@ -297,6 +297,11 @@ export const TaskRun = z.object({
   // spawn). null → the provider's default credential (id === provider).
   credentialId: z.string().nullable().default(null),
   model: z.string(),
+  // The Claude-compatible endpoint this run actually talked to, or null for the
+  // vendor's own API. Recorded ON THE RUN rather than resolved live from the
+  // credential, so history stays truthful after a credential is re-pointed —
+  // and so every surface can flag a non-Anthropic run without a second fetch.
+  endpoint: z.string().nullable().default(null),
   branch: z.string(),
   modules: z.array(z.string()), // architectural module ids it touches
   progress: z.number().min(0).max(1),
@@ -1786,6 +1791,12 @@ export const SecretMeta = z.object({
   provider: CredentialProvider,
   isDefault: z.boolean().default(false),
   last4: z.string(), // last 4 chars of the key — for recognition, not reuse
+  // A Claude-COMPATIBLE endpoint to talk to instead of api.anthropic.com
+  // (Moonshot/Kimi, Z.ai/GLM, MiniMax, a LiteLLM proxy — anything speaking the
+  // Anthropic wire protocol). Null = the vendor's own API. Not a secret: the
+  // operator has to be able to see which endpoint a credential points at, and
+  // "why is this run cheap/expensive" is unanswerable if it's hidden.
+  baseUrl: z.string().nullable().default(null),
   updatedAt: Timestamp,
   updatedBy: z.string(), // operator id — audit trail
 });
@@ -1809,6 +1820,9 @@ export type SecretAuditEntry = z.infer<typeof SecretAuditEntry>;
 /** Body for setting/rotating a credential's key. */
 export const SetSecretRequest = z.object({
   apiKey: z.string().min(1),
+  // Omit to leave the stored endpoint untouched (a plain key rotation); pass
+  // null to clear it back to the vendor's own API.
+  baseUrl: z.string().nullable().optional(),
 });
 export type SetSecretRequest = z.infer<typeof SetSecretRequest>;
 
@@ -1818,6 +1832,8 @@ export const CreateCredentialRequest = z.object({
   provider: CredentialProvider,
   name: z.string().min(1).max(60),
   apiKey: z.string().min(1),
+  /** Claude-compatible endpoint this credential talks to. See SecretMeta.baseUrl. */
+  baseUrl: z.string().nullable().optional(),
 });
 export type CreateCredentialRequest = z.infer<typeof CreateCredentialRequest>;
 
