@@ -14,6 +14,7 @@ import type {
 } from "@skynet/shared";
 import { COMPATIBLE_VENDORS } from "@skynet/shared";
 import { useStore } from "../lib/store";
+import { toast } from "../components/toast";
 import * as api from "../lib/client";
 import type { McpScope, ServiceTokenMeta } from "../lib/client";
 import { InstallControls } from "../components/install-controls";
@@ -115,6 +116,33 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
   // verify on purpose: verify is automatic and free, this costs money and is
   // only ever started by a click.
   const [smoke, setSmoke] = useState<Record<string, { running: boolean; result?: EndpointSmokeResult; error?: string }>>({});
+  // Pause/resume a credential. Pausing stops the runs already on it, so it asks
+  // for a reason — a benched key with no explanation is unactionable to whoever
+  // finds it next week, which is usually not the person who benched it.
+  const [busyPause, setBusyPause] = useState<string | null>(null);
+  const togglePause = useCallback(async (c: SecretMeta) => {
+    setBusyPause(c.id);
+    try {
+      if (c.paused) {
+        await api.resumeCredential(c.id);
+        toast(`Resumed — runners on this key can pick up work again.`);
+      } else {
+        const reason = window.prompt("Why is this key being paused? (shown wherever the pause surfaces)");
+        if (!reason?.trim()) return;
+        const res = await api.pauseCredential(c.id, reason.trim());
+        toast(
+          res.haltedRunIds.length
+            ? `Paused — stopped ${res.haltedRunIds.length} run${res.haltedRunIds.length === 1 ? "" : "s"} and released their tasks.`
+            : "Paused — no runs were active on this key.",
+        );
+      }
+      await load();
+    } catch (e) {
+      toast(`Couldn't change the pause state: ${(e as Error).message}`);
+    } finally {
+      setBusyPause(null);
+    }
+  }, []);
   const runSmoke = useCallback(async (id: string) => {
     setSmoke((s) => ({ ...s, [id]: { running: true } }));
     try {
@@ -407,6 +435,11 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                         plain text on purpose — "which model am I billing" must
                         be answerable without opening anything. */}
                     {c.baseUrl && <> · <span className="settings-cred-ep" title={c.baseUrl}>{c.baseUrl.replace(/^https?:\/\//, "")}</span></>}
+                    {c.paused && (
+                      <span className="settings-cred-paused" title={`Paused by ${c.paused.by}: ${c.paused.reason}`}>
+                        ⏸ paused — {c.paused.reason}
+                      </span>
+                    )}
                   </span>
                   <div className="settings-key">
                     <input
@@ -430,6 +463,18 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                       onClick={() => runSmoke(c.id)}
                     >
                       {smoke[c.id]?.running ? "Testing…" : "Test"}
+                    </button>
+                    <button
+                      className={"btn btn-ghost" + (c.paused ? " btn-lit" : "")}
+                      title={
+                        c.paused
+                          ? "Put this key back to work — its runners become eligible for new tasks again."
+                          : "Bench this key: stop every run using it (their tasks return to To do) and give it no new work until resumed."
+                      }
+                      disabled={busyPause === c.id}
+                      onClick={() => togglePause(c)}
+                    >
+                      {busyPause === c.id ? "…" : c.paused ? "Resume" : "Pause"}
                     </button>
                     <button className="btn btn-ghost" disabled={busy === c.id} onClick={() => removeCredential(c.id)}>
                       Remove
@@ -782,9 +827,10 @@ function FleetAutomationSection() {
         <div className="settings-setup-title">Fleet auto-scale</div>
         <div className="settings-setup-sub">
           Add a runner automatically when a task needs one and none is free — cloned from a busy runner on a key the
-          project is allowed to use. The max is the safety valve so auto-creation can’t run away (default 100; 0 = no
-          cap); it caps every way runners get created, including MCP tokens. Auto-created runners are retired again once
-          they’ve sat idle past the timeout below — operator-added runners are never touched.
+          project is allowed to use. <b>Max runners</b> caps how many work <em>at once</em> (default 100; 0 = no cap) —
+          it never stops you adding agents to the fleet, and idle ones don’t count against it. Past the cap, tasks
+          simply queue until a runner frees up; the Fleet page says so when your roster is larger. Auto-created runners
+          are retired again once they’ve sat idle past the timeout below — operator-added runners are never touched.
         </div>
         {err && <div className="settings-warn">{err}</div>}
         {!err && savedAt > 0 && <div className="settings-saved">Saved</div>}

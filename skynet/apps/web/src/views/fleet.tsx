@@ -575,7 +575,7 @@ export function FleetView({
   onOpenTask: (id: string) => void;
   onOpenAgent: (id: string) => void;
 }) {
-  const { fleet, runs, providers, createAgent, updateAgent, deleteAgent, informRuns } =
+  const { fleet, runs, providers, workspaceSettings, createAgent, updateAgent, deleteAgent, informRuns } =
     useStore();
   const confirm = useConfirm();
   // Mass inform (roadmap "Mass inform"): pick a set of BUSY agents (only a
@@ -599,6 +599,11 @@ export function FleetView({
   }, []);
   const endpointOf = (a: Agent): string | null =>
     fleetSecrets.find((c) => c.id === (a.credentialId ?? a.provider))?.baseUrl ?? null;
+  // A runner on a benched key takes no work at all — distinct from merely
+  // queueing behind the concurrency cap, and worth saying separately.
+  const pausedKeyOf = (a: Agent) => fleetSecrets.find((c) => c.id === (a.credentialId ?? a.provider))?.paused ?? null;
+  const pausedCount = fleet.filter((a) => !!pausedKeyOf(a)).length;
+  const maxRunners = workspaceSettings?.maxRunners ?? 0;
   const takenNames = new Set(fleet.map((a) => a.name));
 
   const taskCountOf = (r: Agent) => runs.filter((a) => a.agentId === r.id).length;
@@ -672,6 +677,17 @@ export function FleetView({
   return (
     <section className="vw">
 
+      {/* maxRunners caps CONCURRENCY, not roster size — adding agents is never
+          blocked. So when the roster is larger than the cap, say what will
+          actually happen rather than letting an operator wonder why their
+          eleventh runner never picks anything up. */}
+      {maxRunners > 0 && fleet.length > maxRunners && (
+        <div className="fleet-cap-note">
+          <b>{fleet.length} agents configured, {maxRunners} work at once.</b> The rest wait for a runner to
+          free up — nothing is lost, tasks just queue. Raise <em>max runners</em> in Settings to widen it.
+          {pausedCount > 0 && ` ${pausedCount} agent${pausedCount === 1 ? " is" : "s are"} on a paused key and won't take work at all.`}
+        </div>
+      )}
       <div className="fleet-head">
         <div className="vw-head">
           <h1>Agent fleet</h1>

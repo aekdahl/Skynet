@@ -1633,6 +1633,10 @@ export class Orchestrator {
     // work — regardless of the provider seam — until it's topped up. Checked
     // FIRST so a depleted key can't slip through the injected-provider path.
     if (this.depletedKeys.has(this.keyId(workspaceId, provider, credentialId))) return false;
+    // A DELIBERATE pause (operator or Steward benched this key). Distinct from
+    // the breaker above: durable, reason-carrying, and cleared only by an
+    // explicit resume — see SecretService.setPaused.
+    if (await secretService.isPaused(workspaceId, credentialId ?? provider)) return false;
     // An injected provider (test seam / a deliberately-supplied backend, see
     // getProvider) is a working provider — credentialing is the injector's
     // responsibility, so it's usable regardless of env/secret.
@@ -1646,6 +1650,38 @@ export class Orchestrator {
     }
     // Named credential: no ambient-env fallback — it must carry its own stored key.
     return (await secretService.resolve(workspaceId, credId)) !== undefined;
+  }
+
+  /**
+   * Take every live run off a credential — used when it's benched.
+   *
+   * "Paused" has to mean the work actually STOPS, not just that no new work
+   * starts: a key that's leaking, rate-limited or compromised keeps doing
+   * whatever it's doing until the runs on it end. haltAgent is the existing
+   * primitive for that — it stops the handle, retires the worktree, frees the
+   * runner, and returns the task to `todo` so it's cleanly re-pickable by a
+   * runner on a different key. Returns the run ids it stopped, so the caller can
+   * tell the operator what the pause actually did.
+   */
+  async haltRunsOnCredential(workspaceId: string, credentialId: string): Promise<string[]> {
+    const runs = await this.store.listRuns(workspaceId);
+    const halted: string[] = [];
+    for (const run of runs) {
+      if (run.status === "done" || run.archived) continue;
+      if ((run.credentialId ?? run.provider) !== credentialId) continue;
+      // Best-effort per run: one wedged handle must not leave the rest of the
+      // fleet running on a key the operator just benched.
+      await this.haltAgent(run.id).catch(() => undefined);
+      halted.push(run.id);
+    }
+    return halted;
+  }
+
+  /** Clear the in-memory quota breaker for a credential. An explicit resume is
+   *  the operator saying the key is good again, so a stale "depleted" mark must
+   *  not keep refusing it. */
+  clearKeyBreaker(workspaceId: string, credentialId: string): void {
+    this.depletedKeys.delete(`${workspaceId}:${credentialId}`);
   }
 
   /** Breaker key for a run's effective credential (`credentialId ?? provider`). */
@@ -1762,7 +1798,8 @@ export class Orchestrator {
         // making the task wait. At the cap we fall through to NoCapacityError —
         // the task queues until a runner frees up. Atomic under acquireExclusive.
         const settings = await this.fleetPolicy(workspaceId);
-        const underCap = !settings.maxRunners || runners.length < settings.maxRunners;
+        // Concurrency, not roster size — see the cap check in acquire() below.
+        const underCap = !settings.maxRunners || runners.filter((r) => r.status === "busy").length < settings.maxRunners;
         const template = eligibleRunners[0]; // a busy runner on an allowed key
         if (settings.autoProvisionRunners && underCap && template && (await this.providerUsable(workspaceId, template.provider, template.credentialId))) {
           const id = `runner-auto-${++this.seq}`;
@@ -1846,11 +1883,18 @@ export class Orchestrator {
           return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
         }
       }
-      // Respect the workspace fleet cap — fork/retry provisioning is auto-creation
-      // too, so the ceiling applies here as well (0 = no cap).
+      // maxRunners caps CONCURRENCY — how many runners work at once — not how
+      // many may exist. Counting the roster punished an operator for configuring
+      // spare runners (one per cheap endpoint, a spare on a second key) that
+      // were sitting idle and costing nothing. Counting BUSY runners caps the
+      // thing that actually consumes tokens and CPU, and means a benched
+      // credential's runners stop occupying the cap the moment their runs stop.
       const settings = await this.fleetPolicy(workspaceId);
-      if (settings.maxRunners && runners.length >= settings.maxRunners) {
-        throw new NoCapacityError(`Fleet is at its maximum of ${settings.maxRunners} runners — free a runner or raise the limit in settings.`);
+      const working = runners.filter((r) => r.status === "busy").length;
+      if (settings.maxRunners && working >= settings.maxRunners) {
+        throw new NoCapacityError(
+          `${working} runner${working === 1 ? " is" : "s are"} already working, which is this workspace's limit — the task waits for one to free up, or raise "max runners" in Settings.`,
+        );
       }
       // None idle+usable → provision one for the requested provider + credential,
       // but only if that credential is usable (else nothing can run).

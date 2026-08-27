@@ -71,6 +71,8 @@ const SYSTEM =
   '  {"kind":"set_feature_milestone","featureId":"<feature id>","milestoneId":"<milestone id, or null to detach>"}\n' +
   '  {"kind":"edit_roadmap","path":"<the ROADMAP.md path shown in REPO CONTENT>","content":"<the ENTIRE new file>"}\n' +
   '  {"kind":"set_roadmap_path","path":"<repo-relative path to the real roadmap doc>"}\n' +
+  '  {"kind":"pause_key","credentialId":"<credential id>","reason":"<why, one short sentence>"}\n' +
+  '  {"kind":"resume_key","credentialId":"<credential id>"}\n' +
   "Notes on edit_roadmap: only propose this when the operator explicitly asks to change the roadmap DOC (ROADMAP.md) — NOT for add_feature/add_milestone, which are unrelated task-grouping records, not the file. " +
   "`content` MUST be the complete file: reproduce every unchanged line verbatim, and change only what the operator asked for — no reformatting, no fixing unrelated typos — so the diff the operator reviews shows exactly the intended edit and nothing else. " +
   "`path` must be exactly the ROADMAP.md path shown under REPO CONTENT; if no roadmap doc was shown there, say so instead of guessing a path or inventing content.\n" +
@@ -140,6 +142,8 @@ export type ProjectActionKind =
   | "set_feature_milestone"
   | "edit_roadmap"
   | "set_roadmap_path"
+  | "pause_key"
+  | "resume_key"
   // Execution intents (S10): validated here (so a future proposer — MCP, an
   // operator-typed command — gets the same id-resolution + confirm-chip
   // summary every other kind gets), but DELIBERATELY not yet in `SYSTEM`
@@ -170,6 +174,11 @@ export interface AssistantAction {
   // (so an operator can undo a scheduled start or drop an estimate).
   estimatedDurationMs?: number | null;
   plannedStartAt?: number | null;
+  // Credential pause/resume (pause_key / resume_key). Workspace-scoped rather
+  // than project-scoped, unlike everything above: a key is shared by the whole
+  // fleet, so benching one affects every project.
+  credentialId?: string;
+  reason?: string;
   // Agent eligibility (set_assignment). `mode` picks WHO may take the task;
   // `agentIds` is the pool for `agents` mode (empty otherwise).
   mode?: TaskAssignment["mode"];
@@ -317,6 +326,19 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
     case "set_autonomy": {
       if (typeof o.autonomy !== "boolean") return null;
       return { kind, autonomy: o.autonomy, summary: `Turn autonomy ${o.autonomy ? "on" : "off"}` };
+    }
+    case "pause_key": {
+      // Benching a key stops live runs and releases their tasks — a real,
+      // fleet-wide action, so it needs an id we can act on and a reason a human
+      // will still understand next week. Never inferred from a bare "pause it".
+      const credentialId = str(o.credentialId);
+      const reason = str(o.reason);
+      if (!credentialId || !reason) return null;
+      return { kind, credentialId, reason, summary: `Pause key ${credentialId} — ${clip(reason)} (stops its live runs)` };
+    }
+    case "resume_key": {
+      const credentialId = str(o.credentialId);
+      return credentialId ? { kind, credentialId, summary: `Resume key ${credentialId}` } : null;
     }
     case "set_status": {
       const status = str(o.status) as Project["status"];

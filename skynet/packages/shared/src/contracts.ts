@@ -1802,10 +1802,40 @@ export const SecretMeta = z.object({
   // operator has to be able to see which endpoint a credential points at, and
   // "why is this run cheap/expensive" is unanswerable if it's hidden.
   baseUrl: z.string().nullable().default(null),
+  // Set while this credential is BENCHED: no runner authenticating with it may
+  // be given new work, and any run already on it was stopped and its task
+  // released when the pause was applied. Durable on purpose — a key paused
+  // because something is wrong with it must not quietly come back on a restart,
+  // unlike the in-memory quota breaker (orchestrator's `depletedKeys`), which
+  // SHOULD re-learn itself because the key may have been topped up.
+  paused: z
+    .object({
+      at: Timestamp,
+      by: z.string(), // operator id, or "steward"
+      reason: z.string(), // why — shown wherever the pause surfaces
+    })
+    .nullable()
+    .default(null),
   updatedAt: Timestamp,
   updatedBy: z.string(), // operator id — audit trail
 });
 export type SecretMeta = z.infer<typeof SecretMeta>;
+
+/** Body for pausing a credential. Resume takes no body. */
+export const PauseCredentialRequest = z.object({
+  // Free text, required: "paused" with no reason is unactionable later, and the
+  // operator who finds it benched next week is usually not the one who did it.
+  reason: z.string().min(1).max(280),
+});
+export type PauseCredentialRequest = z.infer<typeof PauseCredentialRequest>;
+
+/** What a pause actually did — the runs it stopped, so the caller can say so. */
+export const PauseCredentialResult = z.object({
+  secret: SecretMeta,
+  /** Run ids stopped and released back to `todo` by this pause. */
+  haltedRunIds: z.array(z.string()).default([]),
+});
+export type PauseCredentialResult = z.infer<typeof PauseCredentialResult>;
 
 /** One credential lifecycle event (created/rotated/removed) — kept past the
  *  credential's own deletion so "why did this provider disconnect" has an
@@ -1816,7 +1846,7 @@ export const SecretAuditEntry = z.object({
   credentialId: z.string(),
   provider: CredentialProvider,
   label: z.string(), // display name at the time of the event ("" = default)
-  action: z.enum(["created", "rotated", "removed"]),
+  action: z.enum(["created", "rotated", "removed", "paused", "resumed"]),
   operatorId: z.string(),
   at: Timestamp,
 });
@@ -1925,10 +1955,13 @@ export const WorkspaceSettings = z.object({
   // (cloned from a busy one already on an allowed key) instead of waiting — up to
   // `maxRunners`. Off = today's behavior (the task waits for a runner to free).
   autoProvisionRunners: z.boolean().default(false),
-  // Hard ceiling on total fleet size, enforced on every creation path (auto-scale,
-  // fork/retry provisioning, and explicit configure). Defaults to 100 — a sane
-  // upper bound rather than unbounded; set 0 to explicitly remove the cap. The
-  // safety valve that keeps auto-creation from running away.
+  // How many runners may be WORKING at once — a concurrency ceiling, not a limit
+  // on how many may exist. Adding runners is never blocked by it, and idle ones
+  // don't count: an operator configuring a fleet (one runner per cheap endpoint,
+  // a spare on a second key) isn't the runaway case this defends against —
+  // starting them all simultaneously is, and that's where it's enforced
+  // (Orchestrator.acquire + auto-scale). Past the cap, tasks queue for a runner
+  // to free up. Defaults to 100; 0 removes the cap.
   maxRunners: z.number().int().min(0).default(100),
   // Auto-decommission: retire a SYSTEM-provisioned runner (one auto-scale/fork
   // created) once it has sat idle this many minutes, so auto-scaled capacity is
