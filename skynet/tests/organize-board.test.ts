@@ -121,10 +121,95 @@ describe("organizeBoard: Steward priority-sorts columns and archives Done", () =
     await store.putTask(mkTask("t2", "second", "backlog", 1));
 
     await ops.organizeBoard(DEFAULT_WORKSPACE, "p1");
-    expect(calls).toBe(2);
+    // 2 calls to prioritize the backlog column (1 unreadable + 1 retry), plus
+    // 1 more for the any-agent eligibility consult (both backlog tasks are
+    // unassigned by default) — that 3rd reply parses as valid JSON but has no
+    // "anyAgent" field, which reads as "nothing suggested", not a failure, so
+    // it does NOT itself trigger a retry.
+    expect(calls).toBe(3);
     const backlog = (await store.listTasks(DEFAULT_WORKSPACE))
       .filter((t) => t.state === "backlog")
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     expect(backlog.map((t) => t.id)).toEqual(["t2", "t1"]);
+  });
+});
+
+// Any-agent eligibility: an `unassigned` backlog task never leaves backlog on
+// its own (AssignmentRequiredError) — organizeBoard is also Steward's chance
+// to clear that blocker for tasks that don't need an operator's routing
+// judgment. A SEPARATE consult from prioritization, distinguished here by
+// prompt content (mirrors how other multi-consult tests in this repo tell
+// apart which question a shared mock is answering).
+describe("organizeBoard: any-agent eligibility for unassigned backlog tasks", () => {
+  const askByPrompt = (replies: { match: RegExp; reply: string }[]) => async (prompt: string) => {
+    const hit = replies.find((r) => r.match.test(prompt));
+    if (!hit) throw new Error(`unexpected prompt: ${prompt.slice(0, 80)}`);
+    return hit.reply;
+  };
+
+  it("sets {mode: 'any'} on exactly the ids the consult names, leaving the rest untouched", async () => {
+    const { store, ops } = await setup(
+      askByPrompt([
+        { match: /HIGHEST to LOWEST priority/, reply: JSON.stringify({ order: ["t1", "t2"] }) },
+        { match: /ANY available agent/, reply: JSON.stringify({ anyAgent: ["t1"] }) },
+      ]),
+    );
+    await store.putTask(mkTask("t1", "rename a config key", "backlog", 0));
+    await store.putTask(mkTask("t2", "redesign the auth flow", "backlog", 1));
+
+    const result = await ops.organizeBoard(DEFAULT_WORKSPACE, "p1");
+    expect(result.assigned).toBe(1);
+
+    const tasks = await store.listTasks(DEFAULT_WORKSPACE);
+    expect(tasks.find((t) => t.id === "t1")?.assignment).toEqual({ mode: "any", agentIds: [] });
+    expect(tasks.find((t) => t.id === "t2")?.assignment ?? null).toBeNull(); // left for an operator
+  });
+
+  it("never touches a task that already has an assignment set", async () => {
+    let eligibilityAsked = false;
+    const { store, ops } = await setup(async (prompt: string) => {
+      if (/ANY available agent/.test(prompt)) {
+        eligibilityAsked = true;
+        return JSON.stringify({ anyAgent: [] });
+      }
+      return JSON.stringify({ order: ["t1"] });
+    });
+    await store.putTask({ ...mkTask("t1", "already routed", "backlog", 0), assignment: { mode: "specific", agentIds: ["a1"] } } as Task);
+
+    const result = await ops.organizeBoard(DEFAULT_WORKSPACE, "p1");
+    expect(result.assigned).toBe(0);
+    expect(eligibilityAsked).toBe(false); // no unassigned tasks — the consult is never even called
+    expect((await store.getTask("t1"))?.assignment).toEqual({ mode: "specific", agentIds: ["a1"] });
+  });
+
+  it("an unreadable eligibility reply degrades to assigning nothing — never throws, never guesses", async () => {
+    const { store, ops } = await setup(
+      askByPrompt([
+        { match: /HIGHEST to LOWEST priority/, reply: JSON.stringify({ order: ["t1", "t2"] }) },
+        { match: /ANY available agent/, reply: "not json at all" },
+      ]),
+    );
+    await store.putTask(mkTask("t1", "first", "backlog", 0));
+    await store.putTask(mkTask("t2", "second", "backlog", 1));
+
+    const result = await ops.organizeBoard(DEFAULT_WORKSPACE, "p1");
+    expect(result.assigned).toBe(0);
+    const tasks = await store.listTasks(DEFAULT_WORKSPACE);
+    expect(tasks.find((t) => t.id === "t1")?.assignment ?? null).toBeNull();
+    expect(tasks.find((t) => t.id === "t2")?.assignment ?? null).toBeNull();
+  });
+
+  it("a made-up id in the reply is discarded, not assigned", async () => {
+    const { store, ops } = await setup(
+      askByPrompt([
+        { match: /HIGHEST to LOWEST priority/, reply: JSON.stringify({ order: ["t1"] }) },
+        { match: /ANY available agent/, reply: JSON.stringify({ anyAgent: ["t1", "ghost"] }) },
+      ]),
+    );
+    await store.putTask(mkTask("t1", "solo task", "backlog", 0));
+
+    const result = await ops.organizeBoard(DEFAULT_WORKSPACE, "p1");
+    expect(result.assigned).toBe(1); // only the real id
+    expect((await store.getTask("t1"))?.assignment).toEqual({ mode: "any", agentIds: [] });
   });
 });
