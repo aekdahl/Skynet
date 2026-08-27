@@ -984,8 +984,10 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   // when the normal review → done path fails (merge queue stuck, HITL
   // wedged, run finished without advancing the card). Commits + pushes/opens
   // a PR (or enqueues the local merge) through the same path a normal
-  // Approve uses, so "done" reflects real, integrated work — see
-  // Operations.forceTaskDone's doc comment.
+  // Approve uses, so "done" reflects real, integrated work — unless a quick
+  // completeness check comes back "flag", in which case nothing is pushed
+  // and a real diff review is raised instead — see Operations.forceTaskDone's
+  // doc comment.
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/force-done", async (req, reply) => {
     try {
       return await ops.forceTaskDone(ws(req), req.params.tid, req.principal!.operatorId);

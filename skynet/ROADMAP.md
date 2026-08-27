@@ -529,6 +529,27 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Force Done gets a completeness check before it pushes.** Requested live as a direct follow-up to
+  Force Done committing + pushing/opening a PR (the entry three below): skipping the normal review gate
+  shouldn't ALSO skip judgment on whether the work is actually done — an operator hitting Force Done on a
+  run that stalled halfway through would previously get the same unconditional push as one that genuinely
+  finished. Now, whenever `forceIntegrateRun` is about to push/merge with no open HITL to approve (the only
+  branch that never went through a human-endorsed diff review), it first runs the SAME "does this run
+  satisfy the task" consult `autoReview`'s plain-consult path already uses — same prompt
+  (`REVIEW_OUTPUT_INSTRUCTION`), same field-based `parseReviewVerdict` (never classifying the model's
+  prose) — on the run's OWN provider, so it still works on a single-agent fleet (unlike `requestReview`,
+  which needs a second, non-doer agent). An "approve" (or no signal at all — no linked task, no `consult`
+  support, nothing to diff, a failed consult) pushes exactly as before. A "flag" holds the push back
+  entirely and raises a REAL diff review instead — deliberately bypassing `raiseDiffReview`'s own
+  `full`-autonomy fast path (a new `skipFullAutonomy` option), since a `full`-approval-level project
+  auto-merging straight past this finding would silently undo the whole point of checking. The task lands
+  in `review` (not `done`) with `reviewVerdict: {decision:"flag", reason, by:"force-done-check"}` stamped
+  immediately, so the "⚠ flagged for you" banner shows without waiting for a later autonomy tick. Raising
+  the gate IS the notification: Telegram/push already fires the moment any HITL is raised, so the operator
+  hears about it the instant it happens — no new notification plumbing needed. `tests/force-done-
+  integration.test.ts` (2 new tests, against a real throwaway git repo) pin both outcomes: a flag verdict
+  holds back the push (the file never lands on the integration branch) and raises an actionable diff gate
+  carrying the real changed files; an approve verdict still pushes through exactly as before.
 - [x] **Manual "Request re-triage" on a card parked in triage.** Requested live: the only way back into
   triage's assessment was to wait for the task to cycle through `backlog` on the periodic sweep — no way to
   ask for a fresh read on demand once project context changed (goal, instructions, a newly added feature)
