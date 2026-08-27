@@ -697,6 +697,61 @@ export const TaskClarification = z.object({
 });
 export type TaskClarification = z.infer<typeof TaskClarification>;
 
+// ─── Project quality: scenario coverage ─────────────────────────────────────
+// Answers "how well does the built thing actually work?" in the one way line
+// coverage cannot: which of the codebase's ENUMERABLE behaviour sets (union
+// types, zod enums — the closed sets it branches on) are exercised by tests at
+// all. Derived by scanning a checked-out branch; see server/quality/scenarios.ts
+// for the method and, importantly, its stated limits — absence of a case in the
+// tests is a strong signal, presence is a weak one.
+export const ScenarioCase = z.object({ value: z.string(), covered: z.boolean() });
+export type ScenarioCase = z.infer<typeof ScenarioCase>;
+
+export const ScenarioAxis = z.object({
+  name: z.string(),
+  file: z.string(),
+  kind: z.enum(["union", "enum"]),
+  cases: z.array(ScenarioCase).default([]),
+  covered: z.number().int().nonnegative().default(0),
+  total: z.number().int().nonnegative().default(0),
+});
+export type ScenarioAxis = z.infer<typeof ScenarioAxis>;
+
+/** Line/branch coverage, only when the project already emits a summary — null
+ *  means "not configured", which the UI says outright instead of showing 0%. */
+export const CoverageSummary = z.object({
+  lines: z.number(),
+  statements: z.number(),
+  branches: z.number(),
+  functions: z.number(),
+  path: z.string(),
+  generatedAt: Timestamp.nullable().default(null),
+});
+export type CoverageSummary = z.infer<typeof CoverageSummary>;
+
+export const ProjectQuality = z.object({
+  axes: z.array(ScenarioAxis).default([]),
+  /** How many `describe`/`it` titles the suite declares. A count, not the list:
+   *  the UI only ever shows the number, and a monorepo's list is ~100KB. */
+  behaviourCount: z.number().int().nonnegative().default(0),
+  totalCases: z.number().int().nonnegative().default(0),
+  coveredCases: z.number().int().nonnegative().default(0),
+  sourceFiles: z.number().int().nonnegative().default(0),
+  testFiles: z.number().int().nonnegative().default(0),
+  coverage: CoverageSummary.nullable().default(null),
+  scannedAt: Timestamp,
+});
+export type ProjectQuality = z.infer<typeof ProjectQuality>;
+
+/** Why a project has no quality report — stated plainly rather than as an
+ *  empty panel the operator has to interpret. */
+export const ProjectQualityResult = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("ok"), quality: ProjectQuality }),
+  z.object({ state: z.literal("unbound") }),           // no repo connected
+  z.object({ state: z.literal("missing_local_repo") }), // bound, but not on disk
+]);
+export type ProjectQualityResult = z.infer<typeof ProjectQualityResult>;
+
 export const Task = z.object({
   id: z.string(),
   workspaceId: z.string(),

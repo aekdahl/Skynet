@@ -1650,6 +1650,39 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   `Store.putTask` that every caller routes through. Scope this deliberately rather than bolting a
   fix onto one call site — the race is systemic, not local to triage or to `update_task`.
 
+- [x] **⭐ Scenario coverage — "how well does what we built actually work?" per project.** The
+  recurring failure mode isn't an untested *file*, it's an untested **cell in a small closed set**:
+  both bugs fixed this week were exactly that (escalation `reject` × task-state — [#541](https://github.com/aekdahl/Skynet/pull/541);
+  archive × non-terminal run status — [#550](https://github.com/aekdahl/Skynet/pull/550)). Line coverage
+  reported both files as covered, because it answers *which statements ran*, not *which behaviours are
+  pinned*. New **Coverage** lens on the project page (`apps/web/src/views/project-quality.tsx`) reads the
+  project's checked-out branch and extracts its *enumerable behaviour axes* — TypeScript string-literal
+  unions and zod enums, the closed sets the code branches on — then crosses every case against the test
+  corpus. The analyzer (`apps/server/src/quality/scenarios.ts`) is **pure and string-based**: no
+  TypeScript compiler, no install step, and it **never runs the scanned repo's toolchain** — so it works
+  on *any* branch of *any* repo (447ms across this whole monorepo: 213 source / 191 test files, 44 axes,
+  193 cases) and is safe to point at code an agent just wrote. It picks up a standard
+  `coverage/coverage-summary.json` when one exists and says "not configured" plainly when it doesn't,
+  rather than rendering a misleading 0%. **The panel leads with gaps, not a score, and says why**: the
+  signal is deliberately asymmetric — a case no test *mentions* is strong evidence it's untested, while a
+  case that is mentioned proves only mention, not assertion. Presenting a percentage would overclaim the
+  weak half, so the UI states the limitation next to the numbers instead of burying it. Found 25 real
+  gaps on its first run against Skynet itself (eval `Phase` queued/executing/judging, `BuildStatus`
+  queued/ready, `FlyDeployStatus` deploying, …). **Deferred: mutation testing** (Stryker on the diff) —
+  the strongest direct answer to "does it work", since it verifies assertions actually *hold*, but it
+  needs per-project runner config and real runtime budget, so it's a separate piece of work, not a
+  panel that renders in half a second.
+  **Tree view** (`packages/shared/src/coverage-tree.ts`, `apps/web/src/components/coverage-tree.tsx`):
+  a ranked flat list answers *"what do I fix next"* but dissolves structure — 44 rows can't show that
+  the gaps cluster in `evals/`, `preview/` and `settings/` while `orchestrator.ts`, `command-safety.ts`
+  and `steward/` are fully pinned. That clustering is what says whether an **area** is understood, and
+  it exists only in the hierarchy. Every axis already carries its declaring file, so directory → file →
+  axis → case is derivable with no new server work; un-branching chains collapse to one row
+  (`apps/web/src`), siblings sort by gap count, and branches leading to a gap start expanded. **The
+  roll-ups deliberately fill by GAP and leave "covered" neutral, never green** — a green `38/47` on
+  `apps/server/` would read as "this subsystem is tested" when it only means every case is mentioned
+  somewhere, and a tree that renders reassurance it hasn't earned is worse than no tree at all.
+
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease
