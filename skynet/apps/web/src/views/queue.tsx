@@ -31,6 +31,17 @@ export function QueueCard({
   const choice = useChoice();
   const confirm = useConfirm();
   const k = hitlHeadline(item);
+  // Collapsed by default — the Inbox reads as a scannable list of one-line
+  // rows; expanding reveals the full context (why/diff/output/flags/steps)
+  // and the action bar. `manualExpand` is the click-to-toggle state; `selected`
+  // (keyboard j/k nav) ORs into the same visible `expanded` value AS A PLAIN
+  // DERIVED READ, not a one-way effect — so if `selectedIdx` ever lands on a
+  // different item across a re-render (the queue reordering as gates
+  // arrive/resolve), a card that's no longer selected reliably collapses back
+  // instead of latching open forever. A manually-expanded row still stays
+  // open after the selection moves elsewhere.
+  const [manualExpand, setManualExpand] = useState(false);
+  const expanded = selected || manualExpand;
   const [mode, setMode] = useState<null | "modify" | "chat" | "remember">(null);
   const [draft, setDraft] = useState("");
   // Separate from `draft` (guidance TO the agent) — a memory note is a durable
@@ -49,7 +60,10 @@ export function QueueCard({
   const approveExtra = isMergeable && branchDraft.trim() ? { targetBranch: branchDraft.trim() } : undefined;
 
   useEffect(() => {
-    if (modifyTrigger) setMode((m) => (m === "modify" ? null : "modify"));
+    if (modifyTrigger) {
+      setMode((m) => (m === "modify" ? null : "modify"));
+      setManualExpand(true); // the `m` shortcut's panel needs to actually be visible
+    }
   }, [modifyTrigger]); // eslint-disable-line react-hooks/exhaustive-deps -- functional updater reads mode, doesn't need it as a dep
 
   const send = async () => {
@@ -80,18 +94,33 @@ export function QueueCard({
         "qcard" + (selected ? " sel" : "") + (resolved ? " leaving" : "")
       }
     >
-      <div className="qcard-head">
+      <div
+        className="qcard-head"
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={() => setManualExpand((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setManualExpand((v) => !v);
+          }
+        }}
+      >
+        <span className="qcard-expand-toggle mono" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
         <span className="kind-chip" style={{ color: k.color, borderColor: k.color }}>
           {k.label}
         </span>
         <RiskChip risk={item.risk} />
         {agent && <span className="qcard-project" title="Project">{projectName(agent.projectId, projects)}</span>}
-        <button className="qcard-agent" onClick={onOpen}>
+        <button className="qcard-agent" onClick={(e) => { e.stopPropagation(); onOpen(); }}>
           {agentName}
         </button>
+        <h3 className="qcard-title qcard-title-inline">{item.title}</h3>
         <span className="qcard-wait">{fmtWait(waitedSecs(item, now))}</span>
       </div>
-      <h3 className="qcard-title">{item.title}</h3>
+      {expanded && (
+      <>
       {item.rationale && <p className="qcard-reason">💭 {item.rationale}</p>}
       <p className="qcard-why">{item.why}</p>
       {item.diff && item.diff.modules.length > 0 && (
@@ -405,6 +434,8 @@ export function QueueCard({
             </button>
           </div>
         </div>
+      )}
+      </>
       )}
     </article>
   );

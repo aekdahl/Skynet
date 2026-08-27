@@ -25,13 +25,17 @@ class RunningProvider implements RunnerProvider {
   }
 }
 
-/** Wire a real Operations over a memory store + bus, then connect an MCP client. */
+/** Wire a real Operations over a memory store + bus, then connect an MCP client.
+ *  contextAsk is stubbed (never a real LLM call) so refreshProjectContext —
+ *  triggered by add_memory/delete_memory/refresh_memory — stays hermetic even
+ *  when a real provider key is present in the environment (see
+ *  project-context.test.ts for the same stub-injection pattern). */
 async function connect(principal: Principal) {
   const store = new MemoryStore({ seed: false });
   const bus = new InProcessBus();
   const hub = new Hub(store, bus);
   const orchestrator = new Orchestrator(store, hub, new RunningProvider());
-  const operations = new Operations({ store, hub, orchestrator });
+  const operations = new Operations({ store, hub, orchestrator, contextAsk: async () => "stub summary" });
   const server = buildMcpServer(principal, { operations, bus });
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -77,6 +81,7 @@ describe("MCP tool core", () => {
         "list_tasks", "get_task", "list_features", "list_milestones",
         "list_audit", "get_audit",
         "list_briefs", "get_brief", "create_brief", "update_brief",
+        "list_memory", "add_memory", "delete_memory", "refresh_memory",
       ]),
     );
 
@@ -291,6 +296,66 @@ describe("MCP solution briefs", () => {
     expect(deniedUpdate.isError).toBe(true);
     expect(text(deniedUpdate)).toMatch(/scoped to project "B"/);
     expect((await store.getSolutionBrief("brief-b"))?.title).toBe("In B"); // untouched
+  });
+});
+
+describe("MCP project memory", () => {
+  const observer: Principal = { workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:observer", scopes: ["observe"] };
+
+  it("adds, lists, refreshes, and deletes a project's memory entries", async () => {
+    const { client } = await connect(author);
+    const project = json(await client.callTool({ name: "create_project", arguments: { name: "P", goal: "g" } }));
+
+    const added = json(
+      await client.callTool({ name: "add_memory", arguments: { projectId: project.id, label: "Kickoff", content: "Q3 deadline" } }),
+    );
+    expect(added.projectId).toBe(project.id);
+    expect(added.label).toBe("Kickoff");
+    expect(added.content).toBe("Q3 deadline");
+
+    const listed = json(await client.callTool({ name: "list_memory", arguments: { projectId: project.id } }));
+    expect(listed.map((e: { id: string }) => e.id)).toEqual([added.id]);
+
+    const refreshed = json(await client.callTool({ name: "refresh_memory", arguments: { projectId: project.id } }));
+    expect(refreshed.id).toBe(project.id);
+    expect(refreshed.contextSummary).toBe("stub summary");
+
+    const deleted = json(await client.callTool({ name: "delete_memory", arguments: { projectId: project.id, entryId: added.id } }));
+    expect(deleted.deleted).toBe(added.id);
+    const listedAfter = json(await client.callTool({ name: "list_memory", arguments: { projectId: project.id } }));
+    expect(listedAfter).toEqual([]);
+  });
+
+  it("an observe-only token can list memory but not write it", async () => {
+    const { client, store } = await connect(observer);
+    await store.putProject({ id: "P", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" });
+
+    const listed = json(await client.callTool({ name: "list_memory", arguments: { projectId: "P" } }));
+    expect(listed).toEqual([]);
+
+    const denied = await client.callTool({ name: "add_memory", arguments: { projectId: "P", content: "nope" } });
+    expect(denied.isError).toBe(true);
+    expect(text(denied)).toMatch(/scope/i);
+    expect(await store.listContextEntries(DEFAULT_WORKSPACE)).toEqual([]);
+  });
+
+  it("a project-scoped token's memory tools are confined to its allowed projects", async () => {
+    const scoped: Principal = {
+      workspaceId: DEFAULT_WORKSPACE, operatorId: "mcp:scoped-memory",
+      scopes: ["observe", "author"], projectIds: ["A"],
+    };
+    const { client, store } = await connect(scoped);
+    await store.putProject({ id: "A", workspaceId: DEFAULT_WORKSPACE, name: "A", goal: "", runIds: [], status: "active" });
+    await store.putProject({ id: "B", workspaceId: DEFAULT_WORKSPACE, name: "B", goal: "", runIds: [], status: "active" });
+
+    const okAdd = json(await client.callTool({ name: "add_memory", arguments: { projectId: "A", content: "in scope" } }));
+    expect(okAdd.id).toBeTruthy();
+    const deniedAdd = await client.callTool({ name: "add_memory", arguments: { projectId: "B", content: "out of scope" } });
+    expect(deniedAdd.isError).toBe(true);
+    expect(text(deniedAdd)).toMatch(/scoped to project "B"/);
+
+    const deniedList = await client.callTool({ name: "list_memory", arguments: { projectId: "B" } });
+    expect(deniedList.isError).toBe(true);
   });
 });
 

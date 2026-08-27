@@ -87,18 +87,29 @@ function headFor(it: HitlItem): string {
 }
 
 /** The gate heads-up body. `control` toggles the tappable-buttons hint vs the
- *  slash-command fallback. Never includes the internal gate/run id in the prose. */
+ *  slash-command fallback. Never includes the internal gate/run id in the prose.
+ *  Mirrors the web queue card's own ordering (queue.tsx): title → why →
+ *  kind-specific content → captured output → conflicting files. `why` — the
+ *  system's own explanation of what's being asked and what the buttons do —
+ *  used to be dropped entirely here; a merge/verifier gate then rendered as a
+ *  raw captured-output dump with nothing explaining it, unreadable/unactionable
+ *  on a phone (reported live against a merge-conflict card). */
 export function gateNotice(it: HitlItem, names: Names, control: boolean, link?: string): string {
   const head = headFor(it);
   const lines = [`🔔 ${head}${names.project ? ` · ${names.project}` : ""}`, names.run];
+  if (it.title) lines.push(it.title);
+  if (it.why) lines.push(it.why);
   if (it.kind === "diff" && it.diff) {
     const n = it.diff.files?.length ?? 0;
     lines.push(`+${it.diff.add} −${it.diff.del} · ${it.risk} risk${n ? ` · ${n} file${n === 1 ? "" : "s"}` : ""}`);
     lines.push(...fileLines(it, (s) => s, (s) => s));
   } else if (it.command) lines.push(it.command);
   else if (it.kind === "question" && it.options?.length) lines.push(it.options.map((o, i) => `${i + 1}. ${o}`).join("\n"));
-  else if (outputSnippet(it)) lines.push(outputSnippet(it)!);
-  else if (it.title) lines.push(it.title);
+  if (outputSnippet(it)) {
+    if (it.kind === "merge") lines.push("Conflict (captured before the merge was aborted) — Modify sends this to the agent as-is:");
+    lines.push(outputSnippet(it)!);
+  }
+  if (it.kind === "merge" && it.flags?.length) lines.push(`Conflicts in: ${it.flags.join(", ")}`);
   lines.push(control ? "Approve or reject below 👇" : `Reply /approve ${it.id} or /reject ${it.id}`);
   if (link) lines.push(`Open in the app → ${link}`);
   return lines.join("\n");
@@ -110,12 +121,23 @@ export function gateNotice(it: HitlItem, names: Names, control: boolean, link?: 
  * and the agent's OWN reasoning (rationale) when it gave one. Rendered with
  * Telegram HTML parse_mode; all dynamic text is escaped. `control` toggles the
  * tappable-buttons hint vs. the slash-command fallback line.
+ *
+ * Ordering mirrors the web queue card (queue.tsx): title → rationale → why →
+ * kind-specific content → captured output → conflicting files. `why` — the
+ * system's own explanation of what's being asked and what the buttons do —
+ * used to be dropped entirely: a merge/verifier gate rendered as a raw
+ * captured-output dump (a conflict diff or check log) with nothing telling the
+ * operator what happened or what to do about it — reported live as literally
+ * impossible to act on from a merge-conflict card.
  */
 export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, link?: string): string {
   const head = headFor(it);
   const lines: string[] = [];
   lines.push(`🔔 <b>${esc(head)}</b>${names.project ? ` · ${esc(names.project)}` : ""}`);
   lines.push(esc(names.run));
+  if (it.title) lines.push(`<b>${esc(it.title)}</b>`);
+  if (it.rationale) lines.push(`<i>“${esc(it.rationale.trim())}”</i>`);
+  if (it.why) lines.push(esc(it.why));
   if (it.kind === "diff" && it.diff) {
     const n = it.diff.files?.length ?? 0;
     lines.push(`<code>+${it.diff.add} −${it.diff.del}</code> · ${esc(it.risk)} risk${n ? ` · ${n} file${n === 1 ? "" : "s"}` : ""}`);
@@ -123,18 +145,23 @@ export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, l
   } else if (it.command) {
     lines.push(`<code>${esc(it.command)}</code>`);
   } else if (it.kind === "question" && it.options?.length) {
-    // A decision: show the question, then a numbered choice list (matches the
-    // per-option buttons) so it's unmistakably a selection.
-    if (it.title) lines.push(esc(it.title));
+    // A decision: show a numbered choice list (matches the per-option
+    // buttons) so it's unmistakably a selection — the question itself is
+    // already shown above as the title.
     lines.push("<b>Choose one:</b>");
     lines.push(it.options.map((o, i) => `${i + 1}. ${esc(o)}`).join("\n"));
-  } else if (outputSnippet(it)) {
-    lines.push(`<pre>${esc(outputSnippet(it)!)}</pre>`);
-  } else if (it.title) {
-    lines.push(esc(it.title));
   }
-  // The agent's own words for WHY — the thing the plain notice dropped.
-  if (it.rationale) lines.push(`\n<i>“${esc(it.rationale.trim())}”</i>`);
+  if (outputSnippet(it)) {
+    // A merge gate's captured output is the raw `<<<<<<<`/`=======`/`>>>>>>>`
+    // conflict text — genuinely hard to read on a phone even labeled, but
+    // `why` above already told the operator what it is and what to do; this
+    // is supplementary detail, same as the web card's own labeled preview.
+    if (it.kind === "merge") lines.push("<i>Conflict (captured before the merge was aborted) — Modify sends this to the agent as-is:</i>");
+    lines.push(`<pre>${esc(outputSnippet(it)!)}</pre>`);
+  }
+  if (it.kind === "merge" && it.flags?.length) {
+    lines.push(`<b>Conflicts in:</b> ${it.flags.map((f) => `<code>${esc(f)}</code>`).join(", ")}`);
+  }
   const isChoice = it.kind === "question" && !!it.options?.length;
   lines.push(
     control

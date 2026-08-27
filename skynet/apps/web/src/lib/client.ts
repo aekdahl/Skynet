@@ -28,6 +28,7 @@ import {
   SignedComplianceReport,
   type SolutionBrief,
   type Task,
+  type ProjectQualityResult,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -435,6 +436,12 @@ export type ProjectRoadmapResult =
   | { state: "missing_local_repo" }
   | { state: "not_found" }
   | { state: "github_error"; message: string };
+
+/** Scenario coverage for a project's checked-out branch — which of the
+ *  codebase's enumerable behaviour sets the tests exercise at all. */
+export function fetchProjectQuality(projectId: string) {
+  return req<ProjectQualityResult>("GET", `/api/projects/${projectId}/quality`);
+}
 
 export function fetchProjectRoadmap(projectId: string) {
   return req<ProjectRoadmapResult>("GET", `/api/projects/${projectId}/roadmap`);
@@ -1048,12 +1055,24 @@ export function transitionTask(projectId: string, taskId: string, to: string, pr
 export function forceTaskDone(projectId: string, taskId: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/force-done`);
 }
+// Steward-driven board tidy: priority-sort every non-done column, archive
+// everything in Done. See Operations.organizeBoard's doc comment.
+export function organizeBoard(projectId: string) {
+  return req<{ reordered: number; archived: number }>("POST", `/api/projects/${projectId}/organize`);
+}
 // Manual "Request review" — force a review pass now instead of waiting for a
 // periodic tick to find an idle reviewer on its own. Throws (ApiError 409)
 // with an honest, specific reason — already reviewed / no open gate / no
 // reviewer free right now — for the caller to surface.
 export function requestReview(projectId: string, taskId: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/request-review`);
+}
+// Manual "Request re-triage" — force a fresh triage pass on a task already
+// parked in `triage` now, instead of waiting for it to cycle back through
+// Backlog on its own. Throws (ApiError 409) with an honest, specific reason
+// — not in triage / no agent idle right now — for the caller to surface.
+export function requestRetriage(projectId: string, taskId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/request-retriage`);
 }
 // Manual "Force to review" — pull a still-ongoing task's live run up for
 // review right now instead of waiting for the agent to finish its own turn.

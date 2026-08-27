@@ -410,6 +410,15 @@ export function hitlHeadline(item: HitlItem): { label: string; color: string } {
 
 export type RunTag = "running" | "blocked" | "paused" | "done";
 
+// A live run heartbeats every ~5s (CliRunnerHandle / the Claude runner's own
+// interval); the server's own reaper (SKYNET_AGENT_REAP_MS) presumes a
+// running/waiting agent dead after 180s of silence and escalates it. 60s is
+// the visual early-warning line: 12x the normal cadence (so ordinary jitter
+// never false-flags a healthy run), but a full two minutes' notice before the
+// reaper would actually act — the operator sees "this looks stuck" before
+// Skynet decides it IS stuck.
+export const STALE_HEARTBEAT_SEC = 60;
+
 // Classifies one run for the global Runs dashboard: which bucket it's in, what
 // its status cell says, and how to sort it. PURE — unit-tested.
 //

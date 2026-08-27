@@ -1,10 +1,10 @@
 // ─── Rate limiting (in-memory, per-IP, fixed 1-minute window) ────────────────
 // Blunts credential brute-force and request abuse on the guarded surface
-// (/api + /mcp). Single-process / single-tenant, so an in-memory limiter is the
-// right size — no Redis. It runs as the FIRST onRequest hook (before auth), so a
-// flood is rejected before doing any work.
+// (/api + /mcp + /v1). Single-process / single-tenant, so an in-memory limiter
+// is the right size — no Redis. It runs as the FIRST onRequest hook (before
+// auth), so a flood is rejected before doing any work.
 //
-// - General cap (config.rateMax) applies to all /api + /mcp requests.
+// - General cap (config.rateMax) applies to all /api + /mcp + /v1 requests.
 // - Login (/api/auth/login) gets a much tighter cap (config.loginRateMax) so a
 //   guessed-password attack is throttled hard.
 // - Loopback is exempt ONLY in devMode (the trusted local desktop / test suites),
@@ -50,7 +50,7 @@ export function registerRateLimit(app: FastifyInstance): void {
   app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
     const url = req.url.toLowerCase();
     // Only the guarded surface — never the SPA, /health, or the WS upgrade.
-    if (!(url.startsWith("/api") || url.startsWith("/mcp"))) return;
+    if (!(url.startsWith("/api") || url.startsWith("/mcp") || url.startsWith("/v1"))) return;
     // Trust the local desktop / test suites (loopback) — but only in dev/test.
     if (config.devMode && isLoopback(req.ip)) return;
 
