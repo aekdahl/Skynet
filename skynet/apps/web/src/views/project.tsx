@@ -345,6 +345,7 @@ function TaskCard({
     requestReview,
     requestRetriage,
     forceReview,
+    reassignTaskAgent,
     archiveTask,
     assignTask,
     transitionTask,
@@ -368,6 +369,7 @@ function TaskCard({
   const brief = resolveTaskBrief(task, projBriefs);
   const [editing, setEditing] = useState(false);
   const [detail, setDetail] = useState(false); // full-detail modal for a card with no run
+  const [switchingAgent, setSwitchingAgent] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const detailCloseRef = useRef<HTMLButtonElement>(null);
   // Keyboard a11y for the detail modal: focus its close button on open (Escape
@@ -840,6 +842,33 @@ function TaskCard({
             >
               ⚡ Force to review
             </button>
+          )}
+          {s === "ongoing" && (
+            <select
+              className="kb-move kb-switch-agent"
+              value=""
+              disabled={switchingAgent}
+              title="Switch this run to a different idle agent — keeps the same worktree, branch, and committed work; just changes who's working it. Fails honestly (and leaves the run untouched) if the chosen agent isn't free."
+              onChange={async (e) => {
+                const agentId = e.target.value;
+                if (!agentId) return;
+                setSwitchingAgent(true);
+                try {
+                  await reassignTaskAgent(pid, task.id, agentId);
+                } finally {
+                  setSwitchingAgent(false);
+                }
+              }}
+            >
+              <option value="">{switchingAgent ? "🔀 Switching…" : "🔀 Switch agent…"}</option>
+              {fleet
+                .filter((a) => a.status === "idle" && a.id !== run?.agentId)
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+            </select>
           )}
           {(s === "ongoing" || s === "review") && (
             <button

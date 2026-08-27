@@ -1940,6 +1940,21 @@ export class Operations {
     await this.orchestrator.forceReviewRun(task.runId);
   }
 
+  /**
+   * Manual "Switch agent" — move a still-`ongoing` task's live run to a
+   * SPECIFIC, operator-chosen idle agent: stops the current session, keeps
+   * the same worktree/branch/committed work, resumes it on the target.
+   * Throws an honest error (task isn't ongoing / has no linked run, or the
+   * chosen agent isn't found/idle/usable — see
+   * Orchestrator.acquireSpecificAgent) rather than a silent no-op; the live
+   * run is left untouched on failure.
+   */
+  async reassignTaskAgent(ws: string, tid: string, targetAgentId: string): Promise<void> {
+    const task = await this.getTask(ws, tid);
+    if (task.state !== "ongoing" || !task.runId) throw new Error("This task isn't ongoing right now — nothing to reassign.");
+    await this.orchestrator.reassignRunToAgent(task.runId, targetAgentId);
+  }
+
   // ── features (task grouping) ───────────────────────────────────────────
   async createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature> {
     const project = await this.store.getProject(projectId);

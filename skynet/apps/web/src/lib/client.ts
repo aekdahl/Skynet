@@ -1092,6 +1092,14 @@ export function requestRetriage(projectId: string, taskId: string) {
 export function forceReview(projectId: string, taskId: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/force-review`);
 }
+// Manual "Switch agent" — move a still-ongoing task's live run to a specific
+// idle agent, keeping the same worktree/branch/committed work. Throws
+// (ApiError 400) with an honest, specific reason — not ongoing / agent not
+// found/busy/unusable — for the caller to surface; the live run is left
+// untouched on failure.
+export function reassignTaskAgent(projectId: string, taskId: string, agentId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/reassign-agent`, { agentId });
+}
 export function moveTask(projectId: string, taskId: string, direction: "up" | "down") {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/move`, { direction });
 }

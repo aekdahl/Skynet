@@ -1194,6 +1194,8 @@ button.kb-done:hover { opacity: 1; }
 /* Escape-hatch: forces a task done bypassing the normal review/merge path.
    Muted amber so it reads as "use sparingly" without competing with the primary. */
 .kb-move-force { color: var(--warn); border-color: color-mix(in oklch, var(--warn), transparent 60%); }
+/* Manual "Switch agent" — a <select> sized like its sibling .kb-move buttons. */
+.kb-switch-agent { max-width: 160px; }
 .kb-autopick { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fz-11); color: var(--muted); cursor: pointer; }
 /* Start-picker preference (which provider/model auto-pick should try first) */
 .kb-pref { display: inline-flex; gap: 4px; min-width: 0; }

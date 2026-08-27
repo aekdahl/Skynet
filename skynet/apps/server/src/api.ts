@@ -1039,6 +1039,26 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Manual "Switch agent" — move a still-`ongoing` task's live run to a
+  // specific, operator-chosen idle agent. Keeps the same worktree/branch/
+  // committed work; stops the current session and resumes on the target.
+  // 400s with a specific, honest reason (not ongoing / agent not found,
+  // busy, or unusable) rather than a generic failure — the live run is left
+  // untouched on failure.
+  app.post<{ Params: { id: string; tid: string }; Body: { agentId?: string } }>(
+    "/api/projects/:id/tasks/:tid/reassign-agent",
+    async (req, reply) => {
+      const agentId = req.body?.agentId?.trim();
+      if (!agentId) return reply.code(400).send({ error: "agentId is required" });
+      try {
+        await ops.reassignTaskAgent(ws(req), req.params.tid, agentId);
+        return reply.code(204).send();
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
   // Manually promote (up) / demote (down) a task's backlog priority.
   app.post<{ Params: { id: string; tid: string }; Body: { direction?: string } }>("/api/projects/:id/tasks/:tid/move", async (req, reply) => {
     const direction = req.body?.direction;
