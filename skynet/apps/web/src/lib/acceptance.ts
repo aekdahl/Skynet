@@ -307,4 +307,38 @@ export const SCENARIOS: Scenario[] = [
       return steps;
     },
   },
+  {
+    id: "project-quality-scan",
+    name: "Coverage tab scans the bound branch",
+    desc: "The Coverage tab's scan endpoint reports the right state for an unbound project and one bound to a missing local path, and never runs the scanned repo's toolchain.",
+    run: async () => {
+      const steps: Step[] = [];
+      const unboundName = `UAT: quality unbound ${uid()}`;
+      await api.createProject({ name: unboundName, goal: "acceptance" });
+      let s = await settle((sn) => sn.projects.some((p) => p.name === unboundName));
+      const unbound = s.projects.find((p) => p.name === unboundName)!;
+      const unboundResult = await api.fetchProjectQuality(unbound.id);
+      steps.push(step("unbound project reports state 'unbound'", unboundResult.state === "unbound", unboundResult.state));
+
+      const missingName = `UAT: quality missing-repo ${uid()}`;
+      await api.createProject({ name: missingName, goal: "acceptance", repoPath: `/tmp/uat-quality-missing-${uid()}` });
+      s = await settle((sn) => sn.projects.some((p) => p.name === missingName));
+      const missing = s.projects.find((p) => p.name === missingName)!;
+      const missingResult = await api.fetchProjectQuality(missing.id);
+      steps.push(
+        step(
+          "project bound to a missing local path reports 'missing_local_repo'",
+          missingResult.state === "missing_local_repo",
+          missingResult.state,
+        ),
+      );
+      // A scan that can't find a repo must say so — never render as a real
+      // zero-gap result, which would read as "fully covered".
+      steps.push(step("a failed scan never masquerades as a clean result", missingResult.state !== "ok"));
+
+      await swallow(api.deleteProject(unbound.id));
+      await swallow(api.deleteProject(missing.id));
+      return steps;
+    },
+  },
 ];

@@ -115,6 +115,7 @@ its full detail — `get_agent`'s log defaults to the most recent 100 entries
 exclude archived records, and every response reports `total`/`hasMore` so a
 short page is never mistaken for the whole list.
 - *author — workspace & projects* — `update_settings`, `create_project`, `update_project`
+- *author — project memory* — `add_memory`, `delete_memory`, `refresh_memory` (see [Project memory](#project-memory-the-brain-over-mcp) below); `list_memory` is *observe*
 - *author — backlog & board* — `create_task`, `update_task`, `transition_task` (move through the kanban), `force_task_done`, `move_task`, `reorder_task`, `archive_task`, `delete_task`, `import_github_issues`, `import_repo_file`
 - *author — roadmap* — `create_feature`, `update_feature`, `delete_feature`, `create_milestone`, `update_milestone`, `delete_milestone`
 - *author — agents & fleet* — `assign_task`, `message_agent`, `fork_agent`, `stop_agent`, `pause_agent`, `resume_agent`, `archive_agent`, `configure_runner`, `update_runner`, `retire_runner`
@@ -136,6 +137,42 @@ A typical agent loop:
 get_snapshot → create_project → create_task ×N → assign_task
    → wait_for_hitl → (resolve_hitl | surface to a human) → wait_for_agent → done
 ```
+
+---
+
+## Project memory — the brain, over MCP
+
+Every project carries a "brain": raw pasted notes / uploaded docs (the web UI's
+**Context** tab, `ProjectContextEntry`) condensed by one LLM pass into
+`Project.contextSummary` — the primer every agent's task prompt and Steward's
+grounding read automatically (see `agent-context.ts`). This is the same
+memory a human operator builds up by pasting meeting notes or client emails
+into a project.
+
+The four `*_memory` tools put that memory on the wire for **any** MCP client —
+not just runs launched through Skynet — so a coding tool used directly against
+a checkout can pull in (or add to) the same context a Skynet-launched agent
+would have seen:
+
+- `list_memory` (*observe*) — a project's raw entries, newest first.
+- `add_memory` (*author*) — append a note (pasted text; file upload stays
+  web-UI only). Automatically re-condenses `contextSummary`.
+- `delete_memory` (*author*) — remove one entry. Automatically re-condenses.
+- `refresh_memory` (*author*) — force a re-condense on demand (normally
+  automatic on add/delete).
+
+All four take a `projectId` and are gated/filtered by project scope exactly
+like every other project-bearing tool (see [Authentication &
+scopes](#authentication--scopes)) — a token confined to a project allowlist
+can only read or write that project's memory.
+
+This is the "thin v0" of the roadmap's Portable Cross-Vendor Memory pillar
+(see [ROADMAP.md](../ROADMAP.md) — "v4 — Moat Layer: Portable cross-vendor
+memory"): today's store is `Project.contextSummary`/`ProjectContextEntry`, not
+yet the richer open, git-committable memory format or repo-native (`CLAUDE.md`
+/`.cursor/rules`/Copilot instructions) sync tracked elsewhere on that roadmap
+— those land underneath this same MCP surface without changing the tool
+contract above.
 
 ---
 

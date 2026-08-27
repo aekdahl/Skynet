@@ -59,6 +59,8 @@ import {
   NoOpenReviewGateError,
   AlreadyReviewedError,
   NoReviewerAvailableError,
+  NothingToReviewError,
+  NoTriageTargetError,
   type Orchestrator,
 } from "./orchestrator.js";
 import { NotFoundError, type Operations, RoadmapConflictError, RunnerBusyError } from "./operations.js";
@@ -97,7 +99,9 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
     err instanceof RoadmapConflictError ||
     err instanceof NoOpenReviewGateError ||
     err instanceof AlreadyReviewedError ||
-    err instanceof NoReviewerAvailableError
+    err instanceof NoReviewerAvailableError ||
+    err instanceof NothingToReviewError ||
+    err instanceof NoTriageTargetError
   ) {
     return reply.code(409).send({ error: (err as Error).message });
   }
@@ -967,12 +971,25 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Steward-driven board tidy: priority-sort every non-done column by title +
+  // description, archive everything currently in Done. One explicit
+  // operator-triggered action — see Operations.organizeBoard's doc comment.
+  app.post<{ Params: { id: string } }>("/api/projects/:id/organize", async (req, reply) => {
+    try {
+      return await ops.organizeBoard(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // Force a task to `done` — bypasses HUMAN_TRANSITIONS. The escape hatch
   // when the normal review → done path fails (merge queue stuck, HITL
   // wedged, run finished without advancing the card). Commits + pushes/opens
   // a PR (or enqueues the local merge) through the same path a normal
-  // Approve uses, so "done" reflects real, integrated work — see
-  // Operations.forceTaskDone's doc comment.
+  // Approve uses, so "done" reflects real, integrated work — unless a quick
+  // completeness check comes back "flag", in which case nothing is pushed
+  // and a real diff review is raised instead — see Operations.forceTaskDone's
+  // doc comment.
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/force-done", async (req, reply) => {
     try {
       return await ops.forceTaskDone(ws(req), req.params.tid, req.principal!.operatorId);
@@ -989,6 +1006,32 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/request-review", async (req, reply) => {
     try {
       await ops.requestReview(ws(req), req.params.tid);
+      return reply.code(204).send();
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Manual "Request re-triage" — force a fresh triage pass on a task already
+  // parked in `triage`, instead of waiting for it to cycle back through
+  // Backlog on its own. 409s with a specific, honest reason (not in triage /
+  // no agent idle right now) rather than a generic failure.
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/request-retriage", async (req, reply) => {
+    try {
+      await ops.requestRetriage(ws(req), req.params.tid);
+      return reply.code(204).send();
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Manual "Force to review" — pull a still-`ongoing` task's live run up for
+  // review right now, instead of waiting for the agent to finish its own
+  // turn. 409s with a specific, honest reason (not ongoing / run not live /
+  // nothing changed yet) rather than a generic failure.
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/force-review", async (req, reply) => {
+    try {
+      await ops.forceReview(ws(req), req.params.tid);
       return reply.code(204).send();
     } catch (err) {
       return fail(reply, err);
@@ -1205,6 +1248,15 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   });
 
   // ── project roadmap doc (ROADMAP.md, read straight from the bound repo) ──
+  // Scenario coverage for the project's checked-out branch (read-only scan).
+  app.get<{ Params: { id: string } }>("/api/projects/:id/quality", async (req, reply) => {
+    try {
+      return await ops.getProjectQuality(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.get<{ Params: { id: string } }>("/api/projects/:id/roadmap", async (req, reply) => {
     try {
       return await ops.getProjectRoadmap(ws(req), req.params.id);
