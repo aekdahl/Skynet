@@ -59,6 +59,7 @@ import {
   NoOpenReviewGateError,
   AlreadyReviewedError,
   NoReviewerAvailableError,
+  NoTriageTargetError,
   type Orchestrator,
 } from "./orchestrator.js";
 import { NotFoundError, type Operations, RoadmapConflictError, RunnerBusyError } from "./operations.js";
@@ -97,7 +98,8 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
     err instanceof RoadmapConflictError ||
     err instanceof NoOpenReviewGateError ||
     err instanceof AlreadyReviewedError ||
-    err instanceof NoReviewerAvailableError
+    err instanceof NoReviewerAvailableError ||
+    err instanceof NoTriageTargetError
   ) {
     return reply.code(409).send({ error: (err as Error).message });
   }
@@ -1000,6 +1002,19 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/request-review", async (req, reply) => {
     try {
       await ops.requestReview(ws(req), req.params.tid);
+      return reply.code(204).send();
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Manual "Request re-triage" — force a fresh triage pass on a task already
+  // parked in `triage`, instead of waiting for it to cycle back through
+  // Backlog on its own. 409s with a specific, honest reason (not in triage /
+  // no agent idle right now) rather than a generic failure.
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/request-retriage", async (req, reply) => {
+    try {
+      await ops.requestRetriage(ws(req), req.params.tid);
       return reply.code(204).send();
     } catch (err) {
       return fail(reply, err);

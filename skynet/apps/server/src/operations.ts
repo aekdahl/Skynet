@@ -1838,6 +1838,17 @@ export class Operations {
     await this.orchestrator.requestReview(ws, task.id);
   }
 
+  /**
+   * Manual "Request re-triage" — force a fresh triage pass on a task already
+   * parked in `triage` now, instead of waiting for it to cycle back through
+   * `backlog` on its own. Throws NoTriageTargetError / NoCapacityError
+   * (orchestrator.ts) for the honest failure modes.
+   */
+  async requestRetriage(ws: string, tid: string): Promise<void> {
+    const task = await this.getTask(ws, tid);
+    await this.orchestrator.requestRetriage(ws, task.id);
+  }
+
   // ── features (task grouping) ───────────────────────────────────────────
   async createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature> {
     const project = await this.store.getProject(projectId);

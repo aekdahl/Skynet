@@ -342,6 +342,7 @@ function TaskCard({
     deleteTask,
     forceTaskDone,
     requestReview,
+    requestRetriage,
     archiveTask,
     assignTask,
     transitionTask,
@@ -619,6 +620,18 @@ function TaskCard({
       )}
 
       {s === "triage" && <TriageCard task={task} />}
+      {s === "triage" && (
+        <div className="kb-unreviewed" onClick={stop}>
+          <span>Parked in triage</span>
+          <button
+            className="kb-unreviewed-btn"
+            title="Re-run triage now — useful after project context changed or the description was edited, instead of waiting for it to cycle back through Backlog"
+            onClick={() => void requestRetriage(pid, task.id)}
+          >
+            Re-triage
+          </button>
+        </div>
+      )}
       {(s === "backlog" || s === "triage" || s === "todo") &&
         task.lint &&
         !task.lint.dismissed &&

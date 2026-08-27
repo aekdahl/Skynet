@@ -1060,6 +1060,13 @@ export function organizeBoard(projectId: string) {
 export function requestReview(projectId: string, taskId: string) {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/request-review`);
 }
+// Manual "Request re-triage" — force a fresh triage pass on a task already
+// parked in `triage` now, instead of waiting for it to cycle back through
+// Backlog on its own. Throws (ApiError 409) with an honest, specific reason
+// — not in triage / no agent idle right now — for the caller to surface.
+export function requestRetriage(projectId: string, taskId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/request-retriage`);
+}
 export function moveTask(projectId: string, taskId: string, direction: "up" | "down") {
   return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/move`, { direction });
 }

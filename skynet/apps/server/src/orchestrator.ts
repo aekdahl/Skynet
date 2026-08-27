@@ -134,6 +134,17 @@ export class NoReviewerAvailableError extends Error {
   }
 }
 
+/** requestRetriage()'s "nothing to re-triage" failure mode — the task isn't
+ *  (or is no longer) sitting in `triage`. NoCapacityError covers the other
+ *  failure mode (no idle agent right now) — same error every other manual
+ *  on-demand action already uses for that. */
+export class NoTriageTargetError extends Error {
+  constructor() {
+    super("This task isn't in triage right now — nothing to re-triage.");
+    this.name = "NoTriageTargetError";
+  }
+}
+
 /**
  * PURE: extract a trailing `{"estMinutes": N, "clarity": "clear"|"unclear"}`
  * JSON tag off the triage LLM's reply. Returns the body (with the tag stripped)
@@ -4411,69 +4422,7 @@ export class Orchestrator {
             const backlog = mine.find(
               (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") !== "unassigned",
             );
-            if (backlog) {
-              const { assessment, assessmentEffort, assessmentRisks, estimatedDurationMs, clarity, featureId, milestoneId, questions } =
-                await this.assessTask(ws, idle[0]!, backlog);
-              // Only OVERWRITE an existing estimate when triage produced a new
-              // one — leaves an operator-set estimate intact if triage failed
-              // to guess (or on retriage of a task that already had one).
-              const nextEst = estimatedDurationMs != null
-                ? estimatedDurationMs
-                : backlog.estimatedDurationMs;
-              // File under a suitable feature/milestone — but only when the task
-              // isn't ALREADY grouped, so triage never clobbers an operator's
-              // choice. A feature carries its milestone (assessTask nulls a direct
-              // milestone when a feature was picked).
-              const nextFeatureId = backlog.featureId ?? featureId;
-              const nextMilestoneId = backlog.featureId || backlog.milestoneId ? backlog.milestoneId : milestoneId;
-              // Loop breaker: this task already went through ONE ask-and-answer
-              // round (its description carries the operator's answer, stamped by
-              // answerClarification — see CLARIFICATION_ANSWERED_MARKER). A model
-              // that still comes back "unclear" after that — same underlying
-              // ambiguity, or just not confident — would otherwise re-ask forever
-              // (backlog → triage → backlog → ...), each lap burning a consult AND
-              // a Steward draft for a question the operator already answered.
-              // Trust the self-report only ONCE per round: force a promote here
-              // rather than opening a second clarification, and surface the
-              // model's continued doubt as a risk instead of another question.
-              const alreadyAnsweredOnce = (backlog.description ?? "").includes(CLARIFICATION_ANSWERED_MARKER);
-              const forcedClear = clarity === "unclear" && alreadyAnsweredOnce;
-              // Auto-promote to todo when the LLM said "clear" — the eligibility
-              // check above already guarantees the task can leave backlog.
-              const nextState: Task["state"] = clarity === "clear" || forcedClear ? "todo" : "triage";
-              // Unclear WITH specific questions → ask, and have Steward draft an
-              // answer the operator can accept or edit. Without this the task
-              // just parked in triage with nobody told what was missing, and an
-              // agent later rediscovered the same ambiguity at agent prices.
-              // A clear task (or a forced one, see above) never carries a
-              // clarification; re-triage clears a stale one rather than leaving
-              // an answered question on the card.
-              const clarification =
-                !forcedClear && questions.length > 0
-                  ? {
-                      questions,
-                      draft: await this.draftClarificationAnswer(ws, backlog, questions).catch(() => null),
-                      askedAt: now(),
-                    }
-                  : null;
-              const nextAssessmentRisks = forcedClear
-                ? [
-                    ...assessmentRisks,
-                    "Triage still flagged this unclear after the operator's answer — proceeding anyway; confirm scope before/while working it.",
-                  ]
-                : assessmentRisks;
-              await this.hub.upsertTask({
-                ...backlog,
-                state: nextState,
-                assessment,
-                assessmentEffort,
-                assessmentRisks: nextAssessmentRisks,
-                clarification,
-                estimatedDurationMs: nextEst,
-                featureId: nextFeatureId,
-                milestoneId: nextMilestoneId,
-              });
-            }
+            if (backlog) await this.triageOne(ws, idle[0]!, backlog);
             // 2) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
             //    Gated by `p.autonomy` — this is where money/time actually gets
             //    spent, so it stays under the project autonomy toggle. Also
@@ -4544,6 +4493,93 @@ export class Orchestrator {
     } finally {
       this.autonomyTicking = false;
     }
+  }
+
+  /**
+   * Run one triage assessment for `task` via `agent` and write the resulting
+   * state/assessment/clarification/grouping fields. Factored out of
+   * `tickAutonomy`'s triage step so the periodic sweep (a `backlog` task) and
+   * `requestRetriage` (an operator re-triaging a `triage` task on demand) go
+   * through the EXACT same write logic — including the clarification loop
+   * breaker below — rather than two copies that can drift.
+   */
+  private async triageOne(ws: string, agent: Agent, task: Task): Promise<void> {
+    const { assessment, assessmentEffort, assessmentRisks, estimatedDurationMs, clarity, featureId, milestoneId, questions } =
+      await this.assessTask(ws, agent, task);
+    // Only OVERWRITE an existing estimate when triage produced a new one —
+    // leaves an operator-set estimate intact if triage failed to guess (or on
+    // a re-triage of a task that already had one).
+    const nextEst = estimatedDurationMs != null ? estimatedDurationMs : task.estimatedDurationMs;
+    // File under a suitable feature/milestone — but only when the task isn't
+    // ALREADY grouped, so triage never clobbers an operator's choice. A
+    // feature carries its milestone (assessTask nulls a direct milestone
+    // when a feature was picked).
+    const nextFeatureId = task.featureId ?? featureId;
+    const nextMilestoneId = task.featureId || task.milestoneId ? task.milestoneId : milestoneId;
+    // Loop breaker: this task already went through ONE ask-and-answer round
+    // (its description carries the operator's answer, stamped by
+    // answerClarification — see CLARIFICATION_ANSWERED_MARKER). A model that
+    // still comes back "unclear" after that — same underlying ambiguity, or
+    // just not confident — would otherwise re-ask forever (backlog → triage →
+    // backlog → ...), each lap burning a consult AND a Steward draft for a
+    // question the operator already answered. Trust the self-report only
+    // ONCE per round: force a promote here rather than opening a second
+    // clarification, and surface the model's continued doubt as a risk
+    // instead of another question.
+    const alreadyAnsweredOnce = (task.description ?? "").includes(CLARIFICATION_ANSWERED_MARKER);
+    const forcedClear = clarity === "unclear" && alreadyAnsweredOnce;
+    // Auto-promote to todo when the LLM said "clear" — a task only ever
+    // reaches triage (whether via the periodic sweep or a manual re-triage)
+    // once its eligibility is already set, so nothing else gates the move.
+    const nextState: Task["state"] = clarity === "clear" || forcedClear ? "todo" : "triage";
+    // Unclear WITH specific questions → ask, and have Steward draft an answer
+    // the operator can accept or edit. Without this the task just parked in
+    // triage with nobody told what was missing, and an agent later
+    // rediscovered the same ambiguity at agent prices. A clear task (or a
+    // forced one, see above) never carries a clarification; re-triage clears
+    // a stale one rather than leaving an answered question on the card.
+    const clarification =
+      !forcedClear && questions.length > 0
+        ? { questions, draft: await this.draftClarificationAnswer(ws, task, questions).catch(() => null), askedAt: now() }
+        : null;
+    const nextAssessmentRisks = forcedClear
+      ? [
+          ...assessmentRisks,
+          "Triage still flagged this unclear after the operator's answer — proceeding anyway; confirm scope before/while working it.",
+        ]
+      : assessmentRisks;
+    await this.hub.upsertTask({
+      ...task,
+      state: nextState,
+      assessment,
+      assessmentEffort,
+      assessmentRisks: nextAssessmentRisks,
+      clarification,
+      estimatedDurationMs: nextEst,
+      featureId: nextFeatureId,
+      milestoneId: nextMilestoneId,
+    });
+  }
+
+  /**
+   * Manual "Request re-triage" — an operator forcing a fresh triage pass on a
+   * task already parked in `triage`, instead of waiting for it to cycle back
+   * through `backlog` (the only path the periodic sweep picks up on its own).
+   * Useful once project context changed (goal, instructions, a newly added
+   * feature) since the original read, after editing the task's description
+   * directly, or just to get a second opinion without dragging the card
+   * around. Reuses `triageOne` — the identical read+write the periodic tick
+   * uses (same clarification loop breaker, same grouping validation), just an
+   * eager entry point. Throws `NoTriageTargetError` when the task isn't
+   * sitting in `triage` (nothing to re-triage) and `NoCapacityError` when no
+   * agent is idle right now.
+   */
+  async requestRetriage(ws: string, taskId: string): Promise<void> {
+    const task = await this.store.getTask(taskId);
+    if (!task || task.workspaceId !== ws || task.state !== "triage") throw new NoTriageTargetError();
+    const agent = (await this.store.listAgents(ws)).find((a) => a.status === "idle");
+    if (!agent) throw new NoCapacityError();
+    await this.triageOne(ws, agent, task);
   }
 
   /**

@@ -241,6 +241,7 @@ export interface Store extends StoreState {
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
   organizeBoard: (projectId: string) => Promise<{ reordered: number; archived: number }>;
   requestReview: (projectId: string, taskId: string) => Promise<void>;
+  requestRetriage: (projectId: string, taskId: string) => Promise<void>;
   resyncProjectSource: (projectId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
@@ -724,6 +725,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await api.requestReview(projectId, taskId);
         } catch (e) {
           if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't request a review."));
+        }
+      },
+      requestRetriage: async (projectId, taskId) => {
+        try {
+          await api.requestRetriage(projectId, taskId);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't re-triage."));
         }
       },
       resyncProjectSource: async (projectId) => {
