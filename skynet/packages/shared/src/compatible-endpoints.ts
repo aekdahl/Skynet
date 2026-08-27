@@ -76,8 +76,15 @@ export const COMPATIBLE_VENDORS: CompatibleVendor[] = [
     name: "DeepSeek",
     baseUrl: "https://api.deepseek.com/anthropic",
     docsUrl: "https://api-docs.deepseek.com/guides/anthropic_api/",
+    // NOTE on MCP, because the obvious reading of DeepSeek's docs is wrong:
+    // they list the Messages API's `mcp_servers` field as unsupported, but that
+    // field is for Anthropic's REMOTE MCP connector. Skynet's browser tooling is
+    // a LOCAL server the CLI spawns over stdio (see browserMcpServers), whose
+    // tools reach the model as ordinary `mcp__browser__*` tool definitions — the
+    // one thing every compatible endpoint has to support anyway. So browser runs
+    // should work here; it just hasn't been confirmed against this vendor.
     caveat:
-      "Ignores MCP fields — a run on this endpoint has no browser tools. Keep browser-driven review on Anthropic. Also ignores anthropic-beta, top_k and thinking budget_tokens. Off-peak hours bill at half these rates.",
+      "Thinking works but its budget_tokens cap is ignored, so a hard task can think longer — and cost more — than intended. anthropic-beta and top_k are ignored too (Skynet sets neither). Browser tools ride as ordinary local-MCP tools and should work, despite DeepSeek listing the API's remote-MCP field as unsupported — run this credential's Test to confirm before trusting a browser-driven review to it. Off-peak hours bill at half these rates.",
     models: [
       { id: "deepseek-v4-flash", note: "cheapest — routine coding", rates: r(0.44, 1.32, 0.014) },
       { id: "deepseek-v4-pro", note: "stronger reasoning", rates: r(1.32, 3.96, 0.044) },

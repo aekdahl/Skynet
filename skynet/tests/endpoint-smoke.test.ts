@@ -137,11 +137,12 @@ describe("smokeTestEndpoint", () => {
   });
 
   it("surfaces the catalog's known caveats, which no live probe can see", async () => {
-    // DeepSeek ignores MCP fields, so browser tools vanish — invisible to a
-    // probe that doesn't use them, but decisive for review runs.
+    // Some limits are invisible to a probe by construction: DeepSeek honours a
+    // thinking request but ignores its budget cap, so a hard task can think
+    // longer — and cost more — than intended. A one-file read never triggers it.
     __setClaudeTestHooks({ query: scriptedQuery({ emitTool: true, emitStream: true, answer: OK }) as never });
     const r = await smokeTestEndpoint({ apiKey: "k", baseUrl: "https://api.deepseek.com/anthropic", model: "deepseek-v4-flash" });
-    expect(r.caveat).toContain("MCP");
+    expect(r.caveat).toContain("budget_tokens");
   });
 
   it("prices the probe itself when rates are known", async () => {

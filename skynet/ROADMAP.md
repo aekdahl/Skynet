@@ -1827,8 +1827,8 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   Auth failing SKIPS the rest rather than printing a wall of red — with no session there's nothing
   truthful to say about tools, and a false "tools failed" sends someone debugging the wrong layer.
   Costs a fraction of a cent, capped at 60s, and is **operator-triggered only** — never automatic, since
-  unlike verify it spends money. Catalog caveats a live probe *can't* see (DeepSeek ignoring MCP, so
-  browser tools vanish) are surfaced alongside the results.
+  unlike verify it spends money. Catalog caveats a live probe can't see (an ignored thinking budget, a
+  shim that misreports its context window) are surfaced alongside the results.
   **Two bugs the first live run against a real endpoint exposed**, both invisible to unit tests: an SDK
   result is a `success|error` union, so a rejected key came back as an error RESULT rather than a thrown
   exception — nothing threw, a zero-filled usage object existed, and `auth` reported a cheerful **pass**
