@@ -1138,17 +1138,34 @@ export class Operations {
       preferredModel: null,
     };
     const created = await this.hub.upsertTask(task);
-    this.maybeLintTask(ws, created);
+    // Skip the assistive linter for content imported wholesale from an
+    // EXTERNAL source (a GitHub issue someone else already filed, a
+    // repo-file checklist line already written) — it's already someone
+    // else's text, the linter adds little value re-grading it, and these are
+    // exactly the bulk-import paths that can create many tasks in one call
+    // (importGithubIssues, resyncProjectSource, importRepoFile — the
+    // GitHub-issue resync that fired dozens of concurrent lint calls and
+    // wedged the host, 2026-08-27). An AI-decomposed brief task is NOT
+    // skipped here — unlike an import, that's freshly-drafted content, and
+    // linting it "same as any other newly-created task" is deliberate (see
+    // the S7 comment above); its own bulk loop is protected by
+    // withLintSlot's concurrency cap instead. An operator/Steward editing an
+    // imported task's text later still gets relinted normally (updateTask's
+    // `relint`, below) — at that point it's genuinely being human-tuned one
+    // task at a time, not bulk-ingested.
+    if (created.source?.kind !== "github_issue" && created.source?.kind !== "repo_file") {
+      this.maybeLintTask(ws, created);
+    }
     return created;
   }
 
   /**
    * Task linter (assistive): run {@link lintTask} in the BACKGROUND right
-   * after a task is created or its text/description is edited, same
-   * best-effort fire-and-forget shape as `maybeAutoClone`. Never blocks the
-   * caller and never throws into it — a failure just leaves `lint` unset,
-   * which is indistinguishable from "no concerns" in the UI (advisory-only,
-   * so silence is a safe fallback).
+   * after an organically-created task is created or ANY task's text/
+   * description is edited, same best-effort fire-and-forget shape as
+   * `maybeAutoClone`. Never blocks the caller and never throws into it — a
+   * failure just leaves `lint` unset, which is indistinguishable from "no
+   * concerns" in the UI (advisory-only, so silence is a safe fallback).
    */
   private maybeLintTask(ws: string, task: Task): void {
     void this.lintTaskNow(ws, task).catch((err) =>

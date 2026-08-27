@@ -76,4 +76,39 @@ describe("task-linter bulk-import concurrency cap", () => {
     expect(maxObservedInFlight).toBeLessThanOrEqual(3); // but never more than the cap at once
     expect(maxObservedInFlight).toBeGreaterThan(1); // and the cap isn't accidentally serializing everything to 1
   });
+
+  it("skips the linter entirely for github_issue / repo_file imports, but still lints an organic or brief-decomposed task", async () => {
+    const store = new MemoryStore({ seed: false });
+    const hub = new Hub(store, new NullBus());
+    const orchestrator = new Orchestrator(store, hub, new UnusedProvider());
+    const linted: string[] = [];
+    const lintConsult = async (text: string) => {
+      linted.push(text);
+      return [];
+    };
+    const ops = new Operations({ store, hub, orchestrator, lintConsult });
+    const project: Project = {
+      id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [],
+      status: "active", repoPath: null, gitBacked: false,
+    } as Project;
+    await store.putProject(project);
+
+    await ops.createTask(DEFAULT_WORKSPACE, "p1", {
+      text: "imported issue",
+      source: { kind: "github_issue", repo: "acme/app", number: 1, url: "" },
+    });
+    await ops.createTask(DEFAULT_WORKSPACE, "p1", {
+      text: "imported checklist item",
+      source: { kind: "repo_file", path: "TODO.md", anchor: "" },
+    });
+    await ops.createTask(DEFAULT_WORKSPACE, "p1", {
+      text: "brief-decomposed task",
+      source: { kind: "brief", briefId: "b1" },
+    });
+    await ops.createTask(DEFAULT_WORKSPACE, "p1", { text: "organically typed task" }); // no source
+
+    await new Promise((r) => setTimeout(r, 100)); // let any fire-and-forget lints drain
+
+    expect(linted).toEqual(["brief-decomposed task", "organically typed task"]);
+  });
 });
