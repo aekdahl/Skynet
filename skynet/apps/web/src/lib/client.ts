@@ -513,16 +513,18 @@ export function fetchSecrets() {
 }
 // Set or rotate a credential's key by id — a provider id targets that provider's
 // DEFAULT credential; a `cred-…` id rotates an existing named one.
-export function setSecret(id: string, apiKey: string) {
-  return req<{ secret: SecretMeta }>("PUT", `/api/secrets/${id}`, { apiKey });
+// `baseUrl` omitted = leave the stored endpoint alone (a plain rotation); null
+// clears it back to the vendor's own API. See SecretMeta.baseUrl.
+export function setSecret(id: string, apiKey: string, baseUrl?: string | null) {
+  return req<{ secret: SecretMeta }>("PUT", `/api/secrets/${id}`, baseUrl === undefined ? { apiKey } : { apiKey, baseUrl });
 }
 export function deleteSecret(id: string) {
   return req<unknown>("DELETE", `/api/secrets/${id}`);
 }
 // Create a NAMED credential — a second key for a provider that already has one
 // ("Claude on another account"). Agents can then be pinned to it via credentialId.
-export function createCredential(provider: string, name: string, apiKey: string) {
-  return req<{ secret: SecretMeta }>("POST", "/api/credentials", { provider, name, apiKey });
+export function createCredential(provider: string, name: string, apiKey: string, baseUrl?: string | null) {
+  return req<{ secret: SecretMeta }>("POST", "/api/credentials", { provider, name, apiKey, baseUrl: baseUrl ?? null });
 }
 // Live-verify a credential's key against its vendor — a real, cheap call
 // (never a generation) confirming it actually authenticates. Never blocks the

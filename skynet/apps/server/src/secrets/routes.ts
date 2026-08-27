@@ -13,7 +13,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { CreateCredentialRequest, SetSecretRequest } from "@skynet/shared";
 import { now } from "../config.js";
-import { SecretsDisabledError, UnknownCredentialError, secretService, envBackedProviders } from "./service.js";
+import { SecretsDisabledError, UnknownCredentialError, InvalidEndpointError, secretService, envBackedProviders } from "./service.js";
 
 export async function registerSecretsRoutes(app: FastifyInstance): Promise<void> {
   // List configured credentials (metadata — never the keys) plus the providers
@@ -44,10 +44,12 @@ export async function registerSecretsRoutes(app: FastifyInstance): Promise<void>
         body.data.apiKey,
         operatorId,
         now(),
+        body.data.baseUrl,
       );
       return reply.code(200).send({ secret: meta });
     } catch (err) {
       if (err instanceof SecretsDisabledError) return reply.code(501).send({ error: err.message });
+      if (err instanceof InvalidEndpointError) return reply.code(400).send({ error: err.message });
       throw err;
     }
   });
@@ -61,11 +63,12 @@ export async function registerSecretsRoutes(app: FastifyInstance): Promise<void>
       if (!body.success) return reply.code(400).send({ error: "apiKey is required" });
       const { workspaceId, operatorId } = req.principal!;
       try {
-        const meta = await secretService.setKey(workspaceId, req.params.id, body.data.apiKey, operatorId, now());
+        const meta = await secretService.setKey(workspaceId, req.params.id, body.data.apiKey, operatorId, now(), body.data.baseUrl);
         return reply.code(200).send({ secret: meta });
       } catch (err) {
         if (err instanceof SecretsDisabledError) return reply.code(501).send({ error: err.message });
         if (err instanceof UnknownCredentialError) return reply.code(400).send({ error: err.message });
+        if (err instanceof InvalidEndpointError) return reply.code(400).send({ error: err.message });
         throw err;
       }
     },

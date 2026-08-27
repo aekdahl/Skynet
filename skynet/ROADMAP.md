@@ -1747,6 +1747,41 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   `apps/server/` would read as "this subsystem is tested" when it only means every case is mentioned
   somewhere, and a tree that renders reassurance it hasn't earned is worse than no tree at all.
 
+- [x] **⚠️ CRITICAL — the agent-control loop exists ONLY on the Claude SDK path.** Read this before
+  adding any runner. `apps/…/claude.ts` drives the Claude Agent SDK, and it is the **only** provider
+  with `canUseTool` gating, `question` / `plan` / `escalation` HITL, resume-with-guidance, plan-mode,
+  subagents and per-model cost metering. **Every CLI-backed runner** — `codex`, `gemini`, `cursor`,
+  `copilot`, `hermes`, `opencode` — shells out to a vendor binary and parses stdout: they get an
+  `approval` gate at best, and `hermes.ts` says it outright in its own header: *"there is no live HITL
+  gate here."* Everything that makes a run supervisable — an escalation reaching the operator
+  ([#575](https://github.com/aekdahl/Skynet/pull/575)), a question surfacing as an answerable card, a
+  decision resuming a live run ([#541](https://github.com/aekdahl/Skynet/pull/541)) — is Claude-SDK-only.
+  **Consequence for cost work:** a new native adapter for a cheaper vendor buys cheap tokens and hands
+  back a second-class, *ungovernable* runner. Route cheap models through the SDK via a Claude-compatible
+  endpoint instead (below) — same harness, different biller. Closing this gap for the CLI runners is its
+  own (large) piece of work; until it's done, "which runner" is a supervision decision, not just a price.
+- [x] **Alternative LLM providers, phase 1 — Claude-compatible endpoint per credential.** Claude is the
+  dominant cost line, and the cheapest way off it is *not* a new adapter: `claude.ts` already documented
+  a gateway credential (`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`), it just wasn't reachable from
+  the product — the endpoint lived nowhere in the credential model, and an injected `spec.apiKey`
+  actively **stripped** the gateway (a static `ANTHROPIC_API_KEY` shadows it by design). Now a credential
+  carries an optional `baseUrl` (`SecretMeta.baseUrl`, plaintext — it's a routing target, not a secret,
+  and "which model am I billing" must be answerable at a glance), resolved per-run beside the key and
+  threaded to every runner and side-call site. Point it at any provider speaking the Anthropic wire
+  protocol — Moonshot (Kimi), Z.ai (GLM), MiniMax, or a LiteLLM-style proxy fronting an OpenAI-compatible
+  vendor — and it runs the **full** agent loop, not a degraded one. Because it's per-*credential*, a
+  single fleet mixes tiers: cheap runners on routine work, Claude pinned to the hard tasks, both
+  supervised identically. **Two safety properties are tested, not assumed:** the two auth shapes are
+  strictly exclusive, so an ambient Anthropic key can never be handed to a third-party endpoint *and*
+  can never shadow the endpoint into silently billing the expensive API; and a malformed endpoint is
+  rejected loudly rather than falling back to the vendor (the failure mode there is a month of surprise
+  invoices). A key rotation preserves the endpoint. **Model ids are deliberately not hard-coded** — the
+  catalog is advisory (see `providers.ts`), so a model released after this shipped is typed in, not
+  waited for. **Phase 2 (a native OpenAI-compatible adapter) is explicitly NOT planned**: it would mean
+  rebuilding the agent loop against raw chat-completions — the exact second-class-runner trap the item
+  above warns about — and a translating proxy reaches the same vendors through the harness we already
+  have. Revisit only if a proxy hop proves untenable in practice.
+
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease

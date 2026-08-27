@@ -38,9 +38,43 @@ export class UnknownCredentialError extends Error {
   }
 }
 
+/** A credential's endpoint wasn't an absolute http(s) URL. Surfaced as a 400 —
+ *  never silently dropped (see normalizeBaseUrl). */
+export class InvalidEndpointError extends Error {
+  constructor(value: string) {
+    super(`"${value}" is not a valid endpoint URL — use an absolute https:// address, or leave it blank for the vendor's own API.`);
+    this.name = "InvalidEndpointError";
+  }
+}
+
 /** Providers with a credential in the server environment (any accepted var). */
 export function envBackedProviders(): ProviderId[] {
   return (Object.keys(PROVIDER_ENV_VAR) as ProviderId[]).filter(providerEnvCredential);
+}
+
+/**
+ * Validate + canonicalise a Claude-compatible endpoint.
+ *
+ * This value is injected as ANTHROPIC_BASE_URL into a runner subprocess, i.e.
+ * it decides where an agent's prompts (and the repo contents they carry) get
+ * sent. So it is validated, not trusted: only absolute http(s) URLs, and the
+ * trailing slash is dropped so the same endpoint typed two ways is one value.
+ * Anything unparseable is rejected loudly rather than silently ignored — a
+ * typo'd endpoint that fell back to the vendor would bill the expensive API
+ * while the operator believed they were on a cheap one.
+ */
+export function normalizeBaseUrl(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new InvalidEndpointError(trimmed);
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new InvalidEndpointError(trimmed);
+  return url.toString().replace(/\/+$/, "");
 }
 
 const toMeta = (r: SecretRecord): SecretMeta => ({
@@ -50,6 +84,7 @@ const toMeta = (r: SecretRecord): SecretMeta => ({
   provider: r.provider,
   isDefault: isDefaultCredential(r.id, r.provider),
   last4: r.last4,
+  baseUrl: r.baseUrl ?? null,
   updatedAt: r.updatedAt,
   updatedBy: r.updatedBy,
 });
@@ -62,7 +97,7 @@ export class SecretService {
     return masterKey() !== null;
   }
 
-  private sealRecord(workspaceId: string, id: string, name: string, provider: CredentialProvider, apiKey: string, operatorId: string, at: number): SecretRecord {
+  private sealRecord(workspaceId: string, id: string, name: string, provider: CredentialProvider, apiKey: string, operatorId: string, at: number, baseUrl?: string | null): SecretRecord {
     const key = masterKey();
     if (!key) throw new SecretsDisabledError();
     return {
@@ -72,6 +107,7 @@ export class SecretService {
       provider,
       ciphertext: seal(apiKey, key),
       last4: fingerprint(apiKey),
+      baseUrl: normalizeBaseUrl(baseUrl),
       updatedAt: at,
       updatedBy: operatorId,
     };
@@ -105,6 +141,7 @@ export class SecretService {
     apiKey: string,
     operatorId: string,
     at: number,
+    baseUrl?: string | null,
   ): Promise<SecretMeta> {
     const existing = await this.store.get(workspaceId, id);
     const parsed = ProviderId.safeParse(id);
@@ -112,7 +149,10 @@ export class SecretService {
     // default is created on first set, its id being the provider.
     if (!existing && !parsed.success) throw new UnknownCredentialError(id);
     const provider = existing?.provider ?? (parsed.data as ProviderId);
-    const record = this.sealRecord(workspaceId, id, existing?.name ?? "", provider, apiKey, operatorId, at);
+    // `undefined` = a plain key rotation, which must not silently re-point an
+    // endpoint-backed credential at the vendor. Explicit `null` clears it.
+    const endpoint = baseUrl === undefined ? existing?.baseUrl : baseUrl;
+    const record = this.sealRecord(workspaceId, id, existing?.name ?? "", provider, apiKey, operatorId, at, endpoint);
     await this.store.put(record);
     await this.audit(record, existing ? "rotated" : "created", operatorId, at);
     return toMeta(record);
@@ -126,9 +166,10 @@ export class SecretService {
     apiKey: string,
     operatorId: string,
     at: number,
+    baseUrl?: string | null,
   ): Promise<SecretMeta> {
     const id = `cred-${provider}-${randomUUID().slice(0, 8)}`;
-    const record = this.sealRecord(workspaceId, id, name.trim(), provider, apiKey, operatorId, at);
+    const record = this.sealRecord(workspaceId, id, name.trim(), provider, apiKey, operatorId, at, baseUrl);
     await this.store.put(record);
     await this.audit(record, "created", operatorId, at);
     return toMeta(record);
@@ -179,6 +220,16 @@ export class SecretService {
     // Env fallback applies only to a provider's DEFAULT credential (id === provider).
     const parsed = ProviderId.safeParse(credentialId);
     return parsed.success ? process.env[PROVIDER_ENV_VAR[parsed.data]] || undefined : undefined;
+  }
+
+  /**
+   * The Claude-compatible endpoint a credential points at, or undefined for the
+   * vendor's own API. Deliberately separate from {@link resolve}: the key is a
+   * secret and the endpoint is not, and every caller needs both independently.
+   */
+  async resolveEndpoint(workspaceId: string, credentialId: string): Promise<string | undefined> {
+    const record = await this.store.get(workspaceId, credentialId);
+    return record?.baseUrl || undefined;
   }
 
   /**

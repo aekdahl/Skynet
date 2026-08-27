@@ -199,6 +199,33 @@ export function buildRunnerEnv(): Record<string, string> {
   return env;
 }
 
+/**
+ * Apply a resolved credential to a runner env.
+ *
+ * When the credential names a Claude-COMPATIBLE endpoint (Moonshot/Kimi,
+ * Z.ai/GLM, MiniMax, a LiteLLM proxy), the key authenticates THAT endpoint, so
+ * it rides as the gateway bearer token — not as ANTHROPIC_API_KEY.
+ *
+ * ANTHROPIC_API_KEY is stripped in that case, and the strip is load-bearing in
+ * two ways. It shadows the gateway (buildRunnerEnv documents the same
+ * precedence), so leaving it would silently bill the expensive vendor API while
+ * the operator believed they were on a cheap endpoint. Worse, an ambient
+ * Anthropic key inherited from the server's own environment would be handed to
+ * a third-party endpoint the operator pointed this credential at. Neither is
+ * acceptable, so the two auth shapes are strictly exclusive.
+ */
+export function applyCredential(
+  env: Record<string, string>,
+  cred: { apiKey?: string | null; baseUrl?: string | null },
+): Record<string, string> {
+  if (!cred.apiKey) return env;
+  if (cred.baseUrl) {
+    const { ANTHROPIC_API_KEY: _shadowed, ...rest } = env;
+    return { ...rest, ANTHROPIC_BASE_URL: cred.baseUrl, ANTHROPIC_AUTH_TOKEN: cred.apiKey };
+  }
+  return { ...env, ANTHROPIC_API_KEY: cred.apiKey };
+}
+
 // Anthropic streaming: content_block_delta → { delta: { type:"text_delta", text } }.
 // Requires `includePartialMessages: true` in the query options, else the SDK
 // never emits `stream_event` messages at all. Shared by every place that reads
@@ -406,6 +433,7 @@ export async function oneShotText(opts: {
   model: string;
   cwd?: string;
   apiKey?: string;
+  baseUrl?: string | null;
   onUsage?: UsageSink;
 }): Promise<string> {
   let out = "";
@@ -419,10 +447,10 @@ export function oneShotTextStream(opts: {
   model: string;
   cwd?: string;
   apiKey?: string;
+  baseUrl?: string | null;
   onUsage?: UsageSink;
 }): AsyncIterable<string> {
-  const env = buildRunnerEnv();
-  if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
+  const env = applyCredential(buildRunnerEnv(), opts);
   return oneShotConsultStream({
     prompt: opts.prompt,
     cwd: opts.cwd ?? process.cwd(),
@@ -447,6 +475,7 @@ export async function oneShotRepoAssistant(opts: {
   cwd: string;
   model: string;
   apiKey?: string;
+  baseUrl?: string | null;
   onUsage?: UsageSink;
 }): Promise<string> {
   let answer = "";
@@ -467,10 +496,10 @@ export function oneShotRepoAssistantStream(opts: {
   cwd: string;
   model: string;
   apiKey?: string;
+  baseUrl?: string | null;
   onUsage?: UsageSink;
 }): AsyncIterable<string> {
-  const env = buildRunnerEnv();
-  if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
+  const env = applyCredential(buildRunnerEnv(), opts);
   const q = query({
     prompt: opts.prompt,
     options: {
@@ -1087,7 +1116,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     // whatever survives here is usable. Fast-fail with a clear reason rather than
     // spinning up an agent that immediately 401s.
     const env = buildRunnerEnv();
-    this.sdkEnv = spec.apiKey ? { ...env, ANTHROPIC_API_KEY: spec.apiKey } : env;
+    this.sdkEnv = applyCredential(env, spec);
     const authed =
       !!spec.apiKey ||
       !!this.sdkEnv.ANTHROPIC_API_KEY ||
@@ -1765,7 +1794,7 @@ function consultQuery(
   question: string,
 ): { prompt: string; cwd: string; model: string; env: Record<string, string> } {
   const base = buildRunnerEnv();
-  const env = spec.apiKey ? { ...base, ANTHROPIC_API_KEY: spec.apiKey } : base;
+  const env = applyCredential(base, spec);
   // Two framings share this function:
   //   • spec.system set  → caller owns the ROLE (e.g. Telegram intent classifier
   //     with its own "you are Skynet's assistant, return {reply, action}" prompt).

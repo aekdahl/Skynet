@@ -351,6 +351,10 @@ export function SettingsView({ onRerunSetup }: { onRerunSetup?: () => void }) {
                 <div className="settings-cred" key={c.id}>
                   <span className="settings-cred-name">
                     {c.name || "key"} <span className="mono settings-cred-last4">····{c.last4}</span>
+                    {/* Where this credential's traffic actually goes. Shown in
+                        plain text on purpose — "which model am I billing" must
+                        be answerable without opening anything. */}
+                    {c.baseUrl && <> · <span className="settings-cred-ep" title={c.baseUrl}>{c.baseUrl.replace(/^https?:\/\//, "")}</span></>}
                   </span>
                   <div className="settings-key">
                     <input
@@ -437,17 +441,25 @@ function AddCredentialForm({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
+  const [endpoint, setEndpoint] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Only the Claude runner acts on a compatible endpoint — it's the one path
+  // that drives the Agent SDK, and so the one that keeps the full agent loop
+  // (tool gating, question/escalation HITL, per-model cost metering) when
+  // pointed at a cheaper model. Offering the field for a CLI-backed provider
+  // would promise something that silently does nothing.
+  const supportsEndpoint = provider === "claude";
 
   const add = async () => {
     if (!name.trim() || !key.trim()) return;
     setBusy(true);
     setErr(null);
     try {
-      const { secret } = await api.createCredential(provider, name.trim(), key.trim());
+      const { secret } = await api.createCredential(provider, name.trim(), key.trim(), endpoint.trim() || null);
       setName("");
       setKey("");
+      setEndpoint("");
       setOpen(false);
       await onAdded();
       onVerify(secret.id);
@@ -474,6 +486,22 @@ function AddCredentialForm({
         value={name}
         onChange={(e) => setName(e.target.value)}
       />
+      {supportsEndpoint && (
+        <>
+          <input
+            className="settings-input settings-cred-endpoint mono"
+            placeholder="Endpoint (optional) — e.g. https://api.moonshot.ai/anthropic"
+            value={endpoint}
+            onChange={(e) => setEndpoint(e.target.value)}
+          />
+          <p className="settings-hint">
+            Leave blank for Anthropic's own API. Point it at any <b>Claude-compatible</b> endpoint — Moonshot
+            (Kimi), Z.ai (GLM), MiniMax, or a proxy — and this key runs the <em>full</em> agent loop against
+            that model: tool gating, questions and escalations, live cost metering. Pin a runner to this
+            credential in Fleet to mix cheap and expensive models across the same fleet.
+          </p>
+        </>
+      )}
       <div className="settings-key">
         <input
           type="password"
@@ -492,7 +520,7 @@ function AddCredentialForm({
             Add key
           </button>
         </Blocked>
-        <button className="btn btn-ghost" disabled={busy} onClick={() => { setOpen(false); setName(""); setKey(""); setErr(null); }}>
+        <button className="btn btn-ghost" disabled={busy} onClick={() => { setOpen(false); setName(""); setKey(""); setEndpoint(""); setErr(null); }}>
           Cancel
         </button>
       </div>
