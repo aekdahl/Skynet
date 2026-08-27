@@ -15,6 +15,8 @@ import { Orchestrator } from "./orchestrator.js";
 import { Operations } from "./operations.js";
 import { registerApi } from "./api.js";
 import { registerMcp } from "./mcp/http.js";
+import { registerOpenAiCompat } from "./interop/openai.js";
+import { registerInteropRest } from "./interop/rest.js";
 import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
 import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
@@ -197,6 +199,11 @@ async function main() {
   // MCP endpoint (Streamable HTTP) — runs drive Skynet through the same
   // scoped-principal auth as the /api routes. stdio clients proxy to this too.
   await registerMcp(app, { operations, bus });
+  // Interop surface beyond /mcp: an OpenAI-compatible /v1/chat/completions +
+  // /v1/models (drive the fleet as if it were a hosted model) and a plain
+  // /v1/runs job-submission REST API — same bearer-token auth/scopes as /mcp.
+  await registerOpenAiCompat(app, { operations, bus });
+  await registerInteropRest(app, { operations });
   // Workspace-scoped provider keys (encrypted at rest); /api auth hook applies.
   await registerSecretsRoutes(app);
   // GitHub App connection + safety policy (workspace-scoped); /api auth applies.

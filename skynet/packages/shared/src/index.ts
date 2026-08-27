@@ -4,3 +4,4 @@ export * from "./providers.js";
 export * from "./compliance.js";
 export * from "./budget.js";
 export * from "./solution-brief.js";
+export * from "./coverage-tree.js";

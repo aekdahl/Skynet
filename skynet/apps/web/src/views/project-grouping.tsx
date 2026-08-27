@@ -228,6 +228,9 @@ function FeatureCard({
         )}
         {feature.status === "shipped" && <span className="tag tag-ship">✓ shipped</span>}
         {feature.status === "paused" && <span className="tag tag-pause">⏸ paused</span>}
+        {feature.verification?.decision === "flag" && (
+          <span className="tag tag-flag" title={feature.verification.reason}>⚠ verification flagged</span>
+        )}
         <span className="fcard-pct mono">{pct}%</span>
       </button>
       <PipelineBar counts={counts} dim={feature.status === "paused"} />
@@ -249,6 +252,18 @@ function FeatureCard({
           ) : (
             <>
               {feature.description ? <p className="pf-desc">{feature.description}</p> : <p className="pf-desc pf-desc-empty">No description.</p>}
+              {feature.verification && (
+                <div className="kb-detail-section">
+                  <div className="kb-detail-label mono">
+                    VERIFICATION ·{" "}
+                    <span className={feature.verification.decision === "flag" ? "kb-verdict-flag" : "kb-verdict-approve"}>
+                      {feature.verification.decision === "flag" ? "⚠ FLAGGED" : "✓ PASSED"}
+                    </span>
+                  </div>
+                  <p className="kb-detail-assess">{feature.verification.reason}</p>
+                  <div className="kb-detail-meta mono">{new Date(feature.verification.at).toLocaleString()}</div>
+                </div>
+              )}
               <div className="pf-controls">
                 <label className="pf-ms-picker">
                   <span>Milestone</span>

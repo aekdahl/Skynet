@@ -642,9 +642,13 @@ export const TaskSource = z.discriminatedUnion("kind", [
 ]);
 export type TaskSource = z.infer<typeof TaskSource>;
 
-// One quality concern from the task linter v0 (see Task.lint below).
+// One quality concern from the task linter (see Task.lint below). The first
+// three kinds are the v1.5 assistive v0; `missing-dependency` and
+// `parallel-candidate` are the v5 "LLM coach" layer on top — same structured
+// concern shape, just two more things worth flagging once the linter is also
+// given the rest of the open backlog to reason against (see task-linter.ts).
 export const TaskLintConcern = z.object({
-  kind: z.enum(["vague", "multi-module", "no-done-definition"]),
+  kind: z.enum(["vague", "multi-module", "no-done-definition", "missing-dependency", "parallel-candidate"]),
   note: z.string(),
 });
 export type TaskLintConcern = z.infer<typeof TaskLintConcern>;
@@ -693,6 +697,61 @@ export const TaskClarification = z.object({
 });
 export type TaskClarification = z.infer<typeof TaskClarification>;
 
+// ─── Project quality: scenario coverage ─────────────────────────────────────
+// Answers "how well does the built thing actually work?" in the one way line
+// coverage cannot: which of the codebase's ENUMERABLE behaviour sets (union
+// types, zod enums — the closed sets it branches on) are exercised by tests at
+// all. Derived by scanning a checked-out branch; see server/quality/scenarios.ts
+// for the method and, importantly, its stated limits — absence of a case in the
+// tests is a strong signal, presence is a weak one.
+export const ScenarioCase = z.object({ value: z.string(), covered: z.boolean() });
+export type ScenarioCase = z.infer<typeof ScenarioCase>;
+
+export const ScenarioAxis = z.object({
+  name: z.string(),
+  file: z.string(),
+  kind: z.enum(["union", "enum"]),
+  cases: z.array(ScenarioCase).default([]),
+  covered: z.number().int().nonnegative().default(0),
+  total: z.number().int().nonnegative().default(0),
+});
+export type ScenarioAxis = z.infer<typeof ScenarioAxis>;
+
+/** Line/branch coverage, only when the project already emits a summary — null
+ *  means "not configured", which the UI says outright instead of showing 0%. */
+export const CoverageSummary = z.object({
+  lines: z.number(),
+  statements: z.number(),
+  branches: z.number(),
+  functions: z.number(),
+  path: z.string(),
+  generatedAt: Timestamp.nullable().default(null),
+});
+export type CoverageSummary = z.infer<typeof CoverageSummary>;
+
+export const ProjectQuality = z.object({
+  axes: z.array(ScenarioAxis).default([]),
+  /** How many `describe`/`it` titles the suite declares. A count, not the list:
+   *  the UI only ever shows the number, and a monorepo's list is ~100KB. */
+  behaviourCount: z.number().int().nonnegative().default(0),
+  totalCases: z.number().int().nonnegative().default(0),
+  coveredCases: z.number().int().nonnegative().default(0),
+  sourceFiles: z.number().int().nonnegative().default(0),
+  testFiles: z.number().int().nonnegative().default(0),
+  coverage: CoverageSummary.nullable().default(null),
+  scannedAt: Timestamp,
+});
+export type ProjectQuality = z.infer<typeof ProjectQuality>;
+
+/** Why a project has no quality report — stated plainly rather than as an
+ *  empty panel the operator has to interpret. */
+export const ProjectQualityResult = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("ok"), quality: ProjectQuality }),
+  z.object({ state: z.literal("unbound") }),           // no repo connected
+  z.object({ state: z.literal("missing_local_repo") }), // bound, but not on disk
+]);
+export type ProjectQualityResult = z.infer<typeof ProjectQualityResult>;
+
 export const Task = z.object({
   id: z.string(),
   workspaceId: z.string(),
@@ -728,14 +787,18 @@ export const Task = z.object({
   // names what's missing; cleared when the operator answers. Additive and
   // nullable, so every task predating this parses unchanged.
   clarification: TaskClarification.nullable().default(null),
-  // Task linter v0 (assistive) — cheap quality hints computed in the
-  // background right after the task is created or its text/description is
-  // edited (see apps/server/src/task-linter.ts). NEVER blocks creation or
-  // edits, and NEVER auto-splits a task: `concerns` is a dismissible hint the
-  // operator can act on or ignore. Empty `concerns` = the linter ran and found
-  // nothing worth flagging (or its reply was unreadable — same "nothing to
-  // report" outcome, never a thrown error). `null` = not linted yet for the
-  // CURRENT text (freshly created, or the text/description just changed).
+  // Task linter — cheap quality hints computed in the background right after
+  // the task is created or its text/description is edited (see
+  // apps/server/src/task-linter.ts). NEVER blocks creation or edits, and
+  // NEVER auto-splits a task: `concerns` is a dismissible hint the operator
+  // can act on or ignore. Empty `concerns` = the linter ran and found nothing
+  // worth flagging (or its reply was unreadable — same "nothing to report"
+  // outcome, never a thrown error). `null` = not linted yet for the CURRENT
+  // text (freshly created, or the text/description just changed). v5 also
+  // hands the linter a short list of sibling backlog/todo titles from the
+  // same project, so it can flag an implied-but-uncaptured dependency or an
+  // open sibling that looks independent enough to run in parallel — the
+  // "coach" layered on the v1.5 assistive v0.
   lint: z
     .object({
       concerns: z.array(TaskLintConcern),
@@ -868,6 +931,25 @@ export const Feature = z.object({
       taskCount: z.number().int(), // task count at the moment this tripped
       threshold: z.number().int(), // the configured max-tasks threshold
       note: z.string(), // operator-facing message
+      at: Timestamp,
+    })
+    .nullable()
+    .default(null),
+  // Feature-level verification (Project.deepReview opt-in): once every sibling
+  // task is done and the feature branch merges, a bounded second agent
+  // browses the live merged preview and checks the WHOLE feature — grounded
+  // on this feature's own description + its tasks' text/description — against
+  // Task.reviewVerdict's per-task, per-diff review. "flag" holds the feature
+  // back from `status: "shipped"` (the code stays merged either way; only the
+  // ship label is gated) and its findings flow into the self-replenishing
+  // backlog the same way a normal review's proposals do. Same shape as
+  // Task.reviewVerdict, minus `by` (a run-anchored `runLog` line carries who/
+  // when instead — a Feature has no single agent's log to attribute it to).
+  verification: z
+    .object({
+      decision: z.enum(["pass", "flag"]),
+      reason: z.string(),
+      evidence: z.array(z.string()).nullable().default(null),
       at: Timestamp,
     })
     .nullable()

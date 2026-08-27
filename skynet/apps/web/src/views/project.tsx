@@ -27,17 +27,22 @@ import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
 import { RoadmapDocView } from "./project-roadmap";
+import { ProjectQualityView } from "./project-quality";
 import { ProjectContextView } from "./project-context";
 import { InformComposer, toastInformResult } from "./fleet";
+import { toast } from "../components/toast";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
-// Task linter v0 (assistive) — short label per concern kind, shown before the
-// model's own one-line note. See apps/server/src/task-linter.ts.
+// Task linter — short label per concern kind, shown before the model's own
+// one-line note. See apps/server/src/task-linter.ts. The first three are the
+// v1.5 assistive v0; the last two are the v5 "coach" layer.
 const LINT_KIND_LABEL: Record<string, string> = {
   vague: "Vague",
   "multi-module": "Spans modules",
   "no-done-definition": "No done definition",
+  "missing-dependency": "Missing dependency",
+  "parallel-candidate": "Could run in parallel",
 };
 
 // ─── Board drag & drop ───────────────────────────────────────────────────────
@@ -338,6 +343,8 @@ function TaskCard({
     deleteTask,
     forceTaskDone,
     requestReview,
+    requestRetriage,
+    forceReview,
     archiveTask,
     assignTask,
     transitionTask,
@@ -615,6 +622,18 @@ function TaskCard({
       )}
 
       {s === "triage" && <TriageCard task={task} />}
+      {s === "triage" && (
+        <div className="kb-unreviewed" onClick={stop}>
+          <span>Parked in triage</span>
+          <button
+            className="kb-unreviewed-btn"
+            title="Re-run triage now — useful after project context changed or the description was edited, instead of waiting for it to cycle back through Backlog"
+            onClick={() => void requestRetriage(pid, task.id)}
+          >
+            Re-triage
+          </button>
+        </div>
+      )}
       {(s === "backlog" || s === "triage" || s === "todo") &&
         task.lint &&
         !task.lint.dismissed &&
@@ -781,8 +800,10 @@ function TaskCard({
             // be yanked off it by a stray drag — but `ongoing → todo` is a legal,
             // safe move (stops + detaches the run, task returns clean). Expose it
             // as an explicit button since there's no lane to drag to. `ongoing →
-            // review/done` is agent-driven (it advances itself when finished), so
-            // there's no human control for those.
+            // review/done` is normally agent-driven (it advances itself when
+            // finished) — Force to review, just below, is the explicit human
+            // override for a run that's stuck or taking too long to finish on
+            // its own.
             <button
               className="kb-move"
               title="Stop the agent working on this and send the task back to To-do — choose whether to keep its in-progress work."
@@ -809,6 +830,15 @@ function TaskCard({
               }}
             >
               ↩ Send to To-do
+            </button>
+          )}
+          {s === "ongoing" && (
+            <button
+              className="kb-move kb-move-force"
+              title="Pull this run up for review right now instead of waiting for it to finish its own turn — commits whatever's on the worktree and stops the session, then raises a real diff review. Fails honestly if nothing's changed yet."
+              onClick={() => void forceReview(pid, task.id)}
+            >
+              ⚡ Force to review
             </button>
           )}
           {(s === "ongoing" || s === "review") && (
@@ -1461,9 +1491,11 @@ export function ProjectView({
     reorderTask,
     informRuns,
     resyncProjectSource,
+    organizeBoard,
   } = useStore();
   const confirm = useConfirm();
   const noFleet = fleet.length === 0;
+  const [organizing, setOrganizing] = useState(false);
   // Mass inform, whole-project mode: attach a note to every currently live run
   // in this project — see InformComposer (fleet.tsx) for the shared UI.
   const [informOpen, setInformOpen] = useState(false);
@@ -1531,10 +1563,10 @@ export function ProjectView({
   // Per-project lens (Kanban is the default; Archived shows soft-hidden tasks +
   // restore; Roadmap renders ROADMAP.md from the repo). Persisted per-project in
   // sessionStorage so switching back restores the last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "archived">(() => {
+  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "coverage" | "archived">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "roadmap" || v === "context" || v === "archived" ? v : "kanban";
+    return v === "roadmap" || v === "context" || v === "coverage" || v === "archived" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -1823,6 +1855,24 @@ export function ProjectView({
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
             <ProjectToolAccess project={project} onChange={(tools) => updateProject(project.id, { disallowedTools: tools })} />
             <div className="projview-head-admin">
+              <button
+                className="btn btn-ghost"
+                disabled={organizing}
+                title="Steward reads every task's title + description and priority-sorts each column; every current Done task is archived (recorded work, off the active board — fully reversible from Archived)."
+                onClick={async () => {
+                  setOrganizing(true);
+                  const { reordered, archived } = await organizeBoard(project.id);
+                  setOrganizing(false);
+                  toast(
+                    reordered || archived
+                      ? `Organized — ${reordered} task(s) reordered, ${archived} archived from Done.`
+                      : "Nothing to organize — every column was already in order and Done was empty.",
+                    "success",
+                  );
+                }}
+              >
+                {organizing ? "✨ Organizing…" : "✨ Organize board"}
+              </button>
               {liveProjectRunCount > 0 && (
                 <button
                   className={"btn btn-ghost" + (informOpen ? " on" : "")}
@@ -1923,13 +1973,13 @@ export function ProjectView({
 
       <div className="projview-lens">
         <div className="lens-switch">
-          {(["kanban", "roadmap", "context", "archived"] as const).map((id) => (
+          {(["kanban", "roadmap", "context", "coverage", "archived"] as const).map((id) => (
             <button
               key={id}
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : "Archived"}
+              {id === "kanban" ? "Kanban" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : "Archived"}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
@@ -1953,6 +2003,8 @@ export function ProjectView({
 
       {lens === "roadmap" ? (
         <RoadmapDocView project={project} />
+      ) : lens === "coverage" ? (
+        <ProjectQualityView project={project} />
       ) : lens === "context" ? (
         <ProjectContextView project={project} />
       ) : lens === "archived" ? (
