@@ -41,6 +41,10 @@ import type { Hub } from "./hub.js";
 import { MergeEngine, FEATURE_BRANCH_PREFIX, type MergeRequest } from "./merge.js";
 import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { providerUsableFromEnv } from "./provider-env.js";
+import { assessProjectDrive } from "./drive.js";
+
+/** How long before a project's board may be re-pulled from its source again. */
+const REFILL_COOLDOWN_MS = 15 * 60 * 1000;
 import { secretService } from "./secrets/index.js";
 import { previewService } from "./preview/index.js";
 import { projectPreview, type ProjectPreviewManager } from "./preview/project-preview.js";
@@ -696,6 +700,12 @@ export class Orchestrator {
   // silently) once spend drops back under budget — which happens on its own at
   // local midnight, since the spend window is always recomputed from `now()`.
   private budgetPausedFlagged = new Set<string>();
+  // Last source-refill attempt per project — see updateDriveStates.
+  private lastRefill = new Map<string, number>();
+  /** Injected by Operations: re-pull a project's bound source (issues / roadmap
+   *  doc). Kept as a hook rather than an import so the orchestrator doesn't
+   *  depend on the operations layer that constructs it. */
+  onDriveRefill?: (ws: string, projectId: string) => Promise<void>;
 
   // `providerOverride` is a test seam — inject a runner provider directly instead
   // of resolving the runner's own provider. Production always passes (store, hub) only.
@@ -4621,6 +4631,58 @@ export class Orchestrator {
    * finished run (approve → merge → done, else flag it for a human). The human
    * gate (triage → todo) is never crossed here. Bounded per project per tick.
    */
+  /**
+   * Write each project's "what stands between this project and done?" state,
+   * and take the one automatic remedy the diagnosis allows.
+   *
+   * Persisted only when the answer CHANGES: this is a state an operator reads,
+   * not a log, and re-writing "no capacity" every tick would churn the record
+   * and the websocket for no information. The one action taken here is a
+   * SOURCE REFILL (re-pull issues / a roadmap doc when the board has nothing
+   * startable) — a read, not a run. Everything else is surfaced for a human,
+   * because a project that has genuinely run out of clear work is a decision,
+   * not a scheduling problem.
+   */
+  private async updateDriveStates(ws: string, projects: Project[], tasks: Task[]): Promise<void> {
+    const runs = await this.store.listRuns(ws).catch(() => [] as TaskRun[]);
+    const agents = await this.store.listAgents(ws).catch(() => [] as Agent[]);
+    // Resolved once per (provider, credential) rather than per project — a
+    // paused-key lookup reads the secret store, and the fleet is shared.
+    const usableBy = new Map<string, boolean>();
+    for (const a of agents) {
+      const key = `${a.provider}:${a.credentialId ?? ""}`;
+      if (!usableBy.has(key)) usableBy.set(key, await this.providerUsable(ws, a.provider, a.credentialId).catch(() => false));
+    }
+    const runners = agents.map((agent) => ({ agent, usable: usableBy.get(`${agent.provider}:${agent.credentialId ?? ""}`) ?? false }));
+
+    for (const project of projects) {
+      const mine = tasks.filter((t) => t.projectId === project.id && !t.archived);
+      const liveRuns = runs.filter((r) => r.projectId === project.id && !r.archived && r.status !== "done");
+      const assessment = assessProjectDrive({ project, tasks: mine, liveRuns, runners });
+
+      if (project.drive?.state !== assessment.state || project.drive?.detail !== assessment.detail) {
+        await this.hub
+          .upsertProject({ ...project, drive: { state: assessment.state, detail: assessment.detail, at: now() } })
+          .catch(() => undefined);
+      }
+
+      // Refill from the bound source when nothing is startable. Rate-limited to
+      // one attempt per project per window: the tick runs often, and hammering
+      // GitHub because a board is empty would be a poor way to spend a rate
+      // limit on a project that simply has no more work.
+      if (assessment.refillFromSource && this.refillOk(project.id)) {
+        this.lastRefill.set(project.id, now());
+        await this.onDriveRefill?.(ws, project.id).catch(() => undefined);
+      }
+    }
+  }
+
+  /** One source refill per project per REFILL_COOLDOWN_MS. */
+  private refillOk(projectId: string): boolean {
+    const last = this.lastRefill.get(projectId) ?? 0;
+    return now() - last >= REFILL_COOLDOWN_MS;
+  }
+
   async tickAutonomy(): Promise<void> {
     if (!config.autonomyMs || config.autonomyMs <= 0) return;
     if (this.paused) return; // kill switch engaged — no autonomous work until /resume
@@ -4640,6 +4702,11 @@ export class Orchestrator {
         // Only fetched when at least one project actually has a budget set —
         // every other workspace's tick stays exactly as cheap as before.
         const runs = projects.some((p) => p.dailyBudgetUsd != null) ? await this.store.listRuns(ws) : [];
+        // Diagnose every project BEFORE the action loop below, which `break`s
+        // once workspace capacity runs out. A project blocked by "no capacity"
+        // is exactly the one that most needs its state written down, so it must
+        // not be skipped by the very condition it's reporting on.
+        await this.updateDriveStates(ws, projects, tasks).catch(() => undefined);
         for (const p of projects) {
           // Re-read idle capacity per project (an earlier project may have used it).
           const idle = (await this.store.listAgents(ws)).filter((a) => a.status === "idle");

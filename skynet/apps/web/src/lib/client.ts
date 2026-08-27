@@ -22,6 +22,7 @@ import {
   type UpdateWorkspaceSettingsRequest,
   type VerifyCredentialResult,
   type EndpointSmokeResult,
+  type StewardActionOutcome,
   type CommandPolicy,
   type PolicyVersion,
   type PolicyDryRunResult,
@@ -799,7 +800,14 @@ export interface AssistantAction {
     | "set_task_feature"
     | "set_feature_milestone"
     | "edit_roadmap"
-    | "set_roadmap_path";
+    | "set_roadmap_path"
+    // Execution intents — these RUN work rather than editing records, so they
+    // go through the dedicated endpoint (executeStewardAction), not the plain
+    // task/project mutations every other kind uses.
+    | "start_task"
+    | "queue_tasks"
+    | "start_feature"
+    | "process_backlog";
   summary: string;
   taskId?: string;
   text?: string;
@@ -821,6 +829,11 @@ export interface AssistantAction {
   featureId?: string | null;
   milestoneId?: string | null;
   targetAt?: number | null;
+  // Execution intents. `taskIds` for queue_tasks; `execMode` picks assign-now vs
+  // queue-for-the-tick; `feasibleOnly` drops tasks never triaged clear.
+  taskIds?: string[];
+  execMode?: "queue" | "start_now";
+  feasibleOnly?: boolean;
   // edit_roadmap: the diff to show in the confirm chip, and the baseline it was
   // drafted against (needed by commitProjectRoadmap to detect a concurrent edit).
   path?: string;
@@ -892,6 +905,13 @@ export async function streamStewardChat(
  *  model reply that still can't be read after a server-side retry, this
  *  rejects with an ApiError(422); the caller shows that message and the
  *  thread is left untouched (no brief was created). */
+// Run a Steward EXECUTION intent (start_task / queue_tasks / start_feature /
+// process_backlog). Unlike every other Steward action these start real work, so
+// they run through their own endpoint, which resolves feasibility honestly and
+// reports what it actually did — see Operations.executeStewardAction.
+export function executeStewardAction(projectId: string, action: unknown, dryRun?: boolean) {
+  return req<StewardActionOutcome>("POST", `/api/projects/${projectId}/steward/actions`, { action, ...(dryRun ? { dryRun } : {}) });
+}
 export function crystallizeBrief(
   projectId: string,
   history: { role: "user" | "assistant"; content: string }[],

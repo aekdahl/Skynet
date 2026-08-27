@@ -1892,6 +1892,40 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   the QA nav section is also route-gated, and that the desktop build scripts actually set the release
   flag, since the gate defaults to ON and a missing flag would silently ship internal tooling.
 
+- [x] **⭐ Making Skynet DRIVE projects, not just process tasks — three steps.**
+  **(1) Steward proposes work the discussion produced.** Its prompt said *"include it ONLY for change
+  requests, never for questions, summaries, or chat"* — so agreeing on four things with Steward and then
+  having to ask it a second time to write them down was the designed behaviour, not an omission.
+  Proposing is cheap and reversible (nothing runs unconfirmed; an ignored chip costs nothing), so the
+  rule now allows offering `add_task` when a discussion produced concrete work, with an explicit
+  *don't* list (answered questions, summaries, undecided discussion, speculation, work already on the
+  board). Relaxing it makes duplicate chips the obvious new failure mode, so that guard is CODE, not a
+  sentence a model may ignore: `validateProjectAction` drops an `add_task` whose title already exists
+  (`sameTaskText` — loose about case/spacing/trailing punctuation, deliberately *not* fuzzy beyond that,
+  since silently swallowing genuinely new work is the worse error).
+  **(2) S11 — the execution intents are finally reachable.** `start_task`/`queue_tasks`/`start_feature`/
+  `process_backlog` were fully built, tested (21 tests) and DELIBERATELY switched off: the dock couldn't
+  execute them, so teaching Steward to propose one would have produced a confirm chip that did nothing.
+  The dock now routes them to `POST /projects/:id/steward/actions`, and only then were they added to
+  `SYSTEM`. The outcome is REPORTED, not swallowed — a composite routinely does less than it looks like
+  it will (already running, never triaged clear, over today's budget), and a chip that just says "done"
+  after excluding four of five tasks is a lie. Steward is explicitly told never to propose these
+  speculatively: writing work down is free, starting agents spends money.
+  **(3) The project driver.** The autonomy tick was TASK-scoped — triage one, pick one, review one —
+  so it kept individual tasks moving but never asked the project-level question. A project with an
+  empty backlog, two items stuck in triage and nothing merged for days looked *identical* to a healthy
+  idle one: the loop stayed busy, it didn't drive. `assessProjectDrive` (pure, `drive.ts`) answers
+  "what stands between this project and done?" as one of eight states, ordered so the diagnosis sends
+  you at the right thing — work in flight outranks everything (the project IS progressing); a review
+  waiting on a human outranks a capacity complaint (adding runners wouldn't help); and "no usable
+  runner" is kept distinct from "runners are busy", because a runner on a paused key is configured but
+  cannot work. Written to `Project.drive` only when the answer CHANGES (a state to read, not a log),
+  shown on the project page only when something is actually in the way — a line that also appears for
+  healthy projects is one operators learn to ignore. The single automatic remedy is a source REFILL
+  (re-pull issues / a roadmap doc when nothing is startable), rate-limited to once per project per 15
+  min: a read, not a run. Everything else is surfaced for a human, because a project that has genuinely
+  run out of clear work is a decision, not a scheduling problem.
+
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease

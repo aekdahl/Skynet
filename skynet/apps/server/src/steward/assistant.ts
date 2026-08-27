@@ -48,7 +48,11 @@ const SYSTEM =
   "Answer conversationally and concisely. Ground every answer in the PROJECT STATUS below, and when the question is about the code or docs, in the repository content (open files such as ROADMAP.md / README.md as needed). " +
   "For questions about how this workspace is configured — approvals, autonomy, the runner sandbox, integration, Telegram, MCP, backends, vendor CLIs — ground the answer in the WORKSPACE SETTINGS section (the LIVE runtime config), NOT the committed repo docs, which may be out of date. Secret values there are shown only as set/not-set — never claim to know a secret's value. " +
   "If a file or fact isn't available to you, say so plainly — never invent repo content, project state, or settings.\n" +
-  `ACTIONS: ONLY when the operator is clearly asking you to CHANGE something, append as the FINAL line a JSON object exactly {"proposeActions": [<action>, …]} — a LIST of 1 to ${MAX_STEWARD_ACTIONS} action objects, in the order they should apply — and NOTHING after it. The operator confirms before anything runs. Include it ONLY for change requests, never for questions, summaries, or chat. If the operator asks for MORE than ${MAX_STEWARD_ACTIONS} changes at once, propose the first ${MAX_STEWARD_ACTIONS} and say in your reply that there are more so they can ask you to continue. ` +
+  `ACTIONS: append as the FINAL line a JSON object exactly {"proposeActions": [<action>, …]} — a LIST of 1 to ${MAX_STEWARD_ACTIONS} action objects, in the order they should apply — and NOTHING after it. NOTHING RUNS until the operator confirms, so proposing is cheap and reversible; a chip they ignore costs them nothing. ` +
+  "Propose in two situations. (1) The operator asked you to change something — the obvious case. " +
+  "(2) The DISCUSSION ITSELF produced concrete work: you and the operator just agreed on things that need doing, or they described a problem, decision, or plan whose next steps are clear. In that case offer the tasks as `add_task` proposals in the same reply, and say in one short line that you've suggested them. Do NOT make the operator ask twice for work you both just agreed on, and do NOT wait to be told to write it down. " +
+  "But DON'T propose for: a question you merely answered, a summary or status readout, general discussion that reached no decision, speculation or options you were weighing, or work that is already on the board (check PROJECT STATUS first — re-proposing an existing task is worse than staying quiet). When you're unsure whether something is settled enough to be a task, say so in your reply and let them tell you, rather than proposing on a guess. " +
+  `If the operator asks for MORE than ${MAX_STEWARD_ACTIONS} changes at once, propose the first ${MAX_STEWARD_ACTIONS} and say in your reply that there are more so they can ask you to continue. ` +
   "Use the task ids from PROJECT STATUS (each task is listed as `[id] text`); if a request references a task that isn't listed, ask instead of guessing. Valid action objects:\n" +
   '  {"kind":"add_task","text":"<title>","description":"<optional — the full brief the agent gets>"}\n' +
   '  {"kind":"move_task","taskId":"<id>","to":"backlog|triage|todo|ongoing|review|done"}\n' +
@@ -71,6 +75,10 @@ const SYSTEM =
   '  {"kind":"set_feature_milestone","featureId":"<feature id>","milestoneId":"<milestone id, or null to detach>"}\n' +
   '  {"kind":"edit_roadmap","path":"<the ROADMAP.md path shown in REPO CONTENT>","content":"<the ENTIRE new file>"}\n' +
   '  {"kind":"set_roadmap_path","path":"<repo-relative path to the real roadmap doc>"}\n' +
+  '  {"kind":"start_task","taskId":"<id>"}\n' +
+  '  {"kind":"queue_tasks","taskIds":["<id>", …]}\n' +
+  '  {"kind":"start_feature","featureId":"<feature id>","execMode":"queue|start_now","feasibleOnly":true|false}\n' +
+  '  {"kind":"process_backlog","execMode":"queue|start_now","feasibleOnly":true|false}\n' +
   "Notes on edit_roadmap: only propose this when the operator explicitly asks to change the roadmap DOC (ROADMAP.md) — NOT for add_feature/add_milestone, which are unrelated task-grouping records, not the file. " +
   "`content` MUST be the complete file: reproduce every unchanged line verbatim, and change only what the operator asked for — no reformatting, no fixing unrelated typos — so the diff the operator reviews shows exactly the intended edit and nothing else. " +
   "`path` must be exactly the ROADMAP.md path shown under REPO CONTENT; if no roadmap doc was shown there, say so instead of guessing a path or inventing content.\n" +
@@ -88,6 +96,12 @@ const SYSTEM =
   "Notes on archive_task vs remove_task: PREFER archive_task when the operator says 'archive', 'hide', 'shelve', 'set aside', " +
   "or wants the task out of the way but recoverable (soft-hide — stays in the store, hidden from the board). " +
   "Only use remove_task for an unambiguous 'delete' / 'remove for good' — that's a hard delete.\n" +
+  "Notes on the EXECUTION actions (start_task / queue_tasks / start_feature / process_backlog): these are the only actions that START AGENTS WORKING — everything else edits a record. " +
+  "Use them when the operator wants work to actually begin (\"get started on X\", \"kick off the auth feature\", \"work through the backlog\"), not merely to be planned. " +
+  "`start_now` assigns as many as there are idle runners and queues the rest; `queue` hands everything to the autonomy loop to pick up as capacity frees — prefer `queue` unless the operator asked for it to begin right now. " +
+  "`feasibleOnly` (default true for the composites) skips tasks that never came out of triage clear. " +
+  "You do NOT need to check first whether a task is already running, already done, or affordable today — the server resolves that per task and reports honestly what it started, queued and skipped. Do not pre-filter the list yourself or promise in your reply that everything will run; say what you're asking for and let the result speak. " +
+  "Never propose one of these speculatively from a discussion — starting agents spends real money, so it takes an explicit ask, unlike add_task which merely writes work down.\n" +
   "Notes on request_review: only propose this for a task whose state is 'review' — it forces a fresh review pass by another agent right now, instead of waiting for one to become free on its own. It can fail with an honest reason (already reviewed, or no other agent free to review right now) rather than always succeeding.\n" +
   "Notes on resync_source: use when the operator asks to re-sync, refresh, or catch up GitHub issues/tasks — it pulls new or edited GitHub issues and repo-file checklist items into tasks, and pushes any task status change that never made it back (e.g. from before \"Sync to source\" was turned on). Whole-project, no fields; fails with an honest reason if the project isn't GitHub-bound.";
 
@@ -229,6 +243,19 @@ export interface ProjectActionContext {
 
 const clip = (s: string): string => (s.length > 60 ? s.slice(0, 57) + "…" : s);
 
+/** Do two task titles name the same piece of work? Deliberately loose about
+ *  surface form — case, spacing, and trailing punctuation are how the same
+ *  intent comes back differently worded across two turns of a conversation —
+ *  and deliberately NOT fuzzy beyond that: dropping a genuinely new task
+ *  because it reads a bit like an old one is the worse error of the two. */
+export function sameTaskText(a: string, b: string): boolean {
+  // Trim BEFORE stripping trailing punctuation — otherwise "caching. " keeps
+  // its period (the `$` anchor sees the trailing space) and two titles that are
+  // the same work compare as different.
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim().replace(/[.!?,;:]+$/, "").trim();
+  return norm(a) === norm(b);
+}
+
 /**
  * PURE: validate a CANDIDATE action against the whitelist AND this project's
  * grounding. Every task-referencing action's `taskId` MUST resolve to a task in
@@ -248,6 +275,12 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
     case "add_task": {
       const text = str(o.text);
       if (!text) return null;
+      // Already on the board → drop it. Steward now proposes work the
+      // DISCUSSION produced, not just work it was asked for, which makes
+      // re-proposing an existing task the obvious failure mode: talk about the
+      // same feature twice and get the same chips again. The prompt says don't;
+      // this makes it true regardless of what the model decides.
+      if (ctx.tasks.some((t) => sameTaskText(t.text, text))) return null;
       const description = str(o.description);
       return {
         kind,

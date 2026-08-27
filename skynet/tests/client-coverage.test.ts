@@ -59,6 +59,13 @@ const ALLOW = new Set<string>([
   // probe's own result-shaping is covered by endpoint-smoke.test.ts, which
   // scripts a vendor that authenticates but never emits a tool call.
   "smokeTestCredential",
+  // Steward execution intents (start_task / queue_tasks / start_feature /
+  // process_backlog). These START AGENTS — real runs, real spend — so no
+  // offline journey exercises them. Covered server-side end-to-end by
+  // execution-intents.test.ts (the resolver's exclusion reasons and the
+  // executor through a real Operations + Orchestrator), and the dock/client
+  // wiring is pinned by steward-execution-wiring.test.ts.
+  "executeStewardAction",
   // streaming variant of sendAgentMessage (which IS journey-covered) — same
   // chat surface, just delta-rendered; no separate journey needed.
   "streamAgentMessage",

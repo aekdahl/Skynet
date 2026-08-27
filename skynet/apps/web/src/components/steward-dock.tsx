@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
+import type { StewardActionOutcome } from "@skynet/shared";
 import { Markdown } from "./markdown";
 import { DiffView } from "./diff-view";
 
@@ -75,6 +76,38 @@ export function StewardDock({
   useEffect(() => { threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight }); }, [msgs, busy]);
 
   // Execute a confirmed action via the SAME guarded store methods the board uses.
+
+/** The action minus the display-only fields the endpoint's schema doesn't take. */
+function stripSummary(a: api.AssistantAction): Record<string, unknown> {
+  const { summary: _s, ...rest } = a as unknown as Record<string, unknown> & { summary?: string };
+  return rest;
+}
+
+/** Say what actually happened. `resolveExecutable` decides per task whether it
+ *  can run, so a composite routinely does less than it looks like it will —
+ *  reporting only "done" would hide exactly the part the operator needs. */
+function describeOutcome(kind: string, o: StewardActionOutcome): string {
+  const reason: Record<string, string> = {
+    unclear: "never triaged clear",
+    "already-running": "already running",
+    done: "already done",
+    "over-budget": "no budget left today",
+    "not-in-scope": "not in scope",
+  };
+  const bits: string[] = [];
+  if (o.started.length) bits.push(`started ${o.started.length}`);
+  if (o.queued.length) bits.push(`queued ${o.queued.length}`);
+  if (!bits.length) bits.push("nothing to start");
+  const grouped = new Map<string, number>();
+  for (const e of o.excluded) grouped.set(e.reason, (grouped.get(e.reason) ?? 0) + 1);
+  const skipped = [...grouped].map(([r, n]) => `${n} ${reason[r] ?? r}`).join(", ");
+  return (
+    `**${kind.replace(/_/g, " ")}** — ${bits.join(", ")}` +
+    (skipped ? `; skipped ${skipped}` : "") +
+    (o.autonomyEnabled ? ". Autonomy was off, so I turned it on — queued work needs it to run." : ".")
+  );
+}
+
   // `projectId` is the project the action targets (captured with the message).
   const runAction = async (a: api.AssistantAction, projectId: string): Promise<void> => {
     switch (a.kind) {
@@ -129,6 +162,20 @@ export function StewardDock({
         return updateProject(projectId, { roadmapPath: a.path ?? null }).then(() => {
           window.dispatchEvent(new CustomEvent("skynet:roadmap-updated", { detail: { projectId } }));
         });
+      // ── Execution intents ────────────────────────────────────────────────
+      // These START WORK rather than editing a record, so they go through the
+      // execution endpoint, which resolves feasibility honestly (already
+      // running, never triaged clear, over today's budget) instead of blindly
+      // firing. It reports what it actually did, and we surface that: a chip
+      // that says "done" after excluding four of five tasks would be a lie.
+      case "start_task":
+      case "queue_tasks":
+      case "start_feature":
+      case "process_backlog": {
+        const outcome = await api.executeStewardAction(projectId, stripSummary(a));
+        setMsgs((m) => [...m, { role: "assistant", content: describeOutcome(a.kind, outcome) }]);
+        return;
+      }
       default: {
         // Exhaustiveness guard: every ProjectActionKind Steward can propose MUST
         // have a case here. Without it a confirmed action silently no-ops (the

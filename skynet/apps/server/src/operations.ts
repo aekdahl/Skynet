@@ -197,6 +197,11 @@ export class Operations {
     this.store = deps.store;
     this.hub = deps.hub;
     this.orchestrator = deps.orchestrator;
+    // The project driver may re-pull a bound source when a board runs dry. It
+    // lives on the orchestrator (which ticks) but the pull lives here, so it's
+    // injected rather than imported — the orchestrator must not depend on this
+    // layer.
+    this.orchestrator.onDriveRefill = (ws, projectId) => this.refillProjectSource(ws, projectId);
     this.decomposeConsult = deps.decomposeConsult ?? ((opts) => oneShotText({ ...opts, apiKey: opts.apiKey ?? undefined }));
     this.crystallizeAsk = deps.crystallizeAsk;
     this.contextAsk = deps.contextAsk;
@@ -901,6 +906,9 @@ export class Operations {
     // worktree per agent + the merge queue against it (desktop-first default).
     const project: Project = {
       id: this.uid("p"),
+      // Null until the first autonomy tick has looked at this project — the
+      // driver writes it, nothing seeds it.
+      drive: null,
       workspaceId: ws,
       name: input.name,
       goal: input.goal,
@@ -2478,6 +2486,15 @@ export class Operations {
       patch.label !== undefined ? { ...patch, label: patch.label?.trim() || null } : patch;
     return this.hub.upsertAgent({ ...existing, ...normalized });
   }
+  /** Re-pull a project's bound source. Wired onto the orchestrator as
+   *  `onDriveRefill` so the driver can top a dry board back up without the
+   *  orchestrator depending on this layer. */
+  private async refillProjectSource(ws: string, projectId: string): Promise<void> {
+    const project = await this.store.getProject(projectId).catch(() => undefined);
+    if (!project?.repo || !project.syncSourceStatus) return;
+    await this.importGithubIssues(ws, projectId).catch(() => undefined);
+  }
+
   async retireRunner(ws: string, id: string): Promise<void> {
     const existing = await this.store.getAgent(id);
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Agent");
