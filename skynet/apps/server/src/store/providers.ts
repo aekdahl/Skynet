@@ -18,6 +18,9 @@ const PROVIDER_ENV_KEY: Record<ProviderId, string | undefined> = {
   // OpenCode is provider-agnostic too; defaulted to Anthropic (its own docs'
   // recommendation) — see provider-env.ts.
   opencode: process.env.ANTHROPIC_API_KEY,
+  // Kimi Code's own native backend is the primary/default credential — see
+  // provider-env.ts.
+  kimi: process.env.KIMI_API_KEY,
 };
 
 // Each provider carries its static requirements + a live binOnPath probe (what

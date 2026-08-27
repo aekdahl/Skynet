@@ -31,6 +31,13 @@ export const PROVIDER_ENV_VARS: Record<ProviderId, readonly string[]> = {
   // ("although Anthropic is recommended…"), and it picks up any of these from
   // the ambient env the same way it picks up ANTHROPIC_API_KEY automatically.
   opencode: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"],
+  // Kimi Code CLI works out of the box with Moonshot's own `kimi` backend
+  // (KIMI_API_KEY, primary/native) but also proxies straight to `anthropic` or
+  // `openai` (verified live against the anthropic path — see kimi.ts); the
+  // provider type is picked from a "<type>/<model>" prefix on the run's model
+  // string, defaulting to "kimi" with no prefix. google-genai/vertexai are not
+  // reachable via this env channel (see kimi.ts), so they're omitted here.
+  kimi: ["KIMI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
 };
 
 /** The primary API-key env var per provider (its value is injectable as the key). */

@@ -214,7 +214,7 @@ framework in §7. Items are ranked PMF > Platform > Product within each batch.
 |---|---|---|---|
 | 1 | Deep-review UI toggle + settings panel | PMF | `deepReview`/`breakerReview` are API-only today; operators need to enable them without `curl` |
 | 2 | Memory v0 — operator-authored facts, injected per project | Platform | Earliest moat seed; raw material already accumulating via `hitl_audit`; visible to users |
-| 3 | Kimi Code runner + reactive runner breadth | Product | Completes the multi-vendor seam; unlocks H3 validation |
+| 3 | Reactive runner breadth (Kimi Code landed) | Product | Completes the multi-vendor seam; unlocks H3 validation |
 | 4 | First-run onboarding telemetry (anonymous install events) | PMF | Without install funnel data, H5 cannot be tested; blocking hypothesis validation |
 | 5 | `Mass inform` — Fleet/Project UI (multi-select + whole-project) | Product | Plumbing shipped; UI missing; real user request for coordinating agents mid-sprint |
 

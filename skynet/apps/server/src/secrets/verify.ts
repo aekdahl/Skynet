@@ -117,6 +117,11 @@ const VERIFIERS: Record<CredentialProvider, (apiKey: string) => Promise<VerifyCr
       { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
       "Key authenticates with the Anthropic API (OpenCode's recommended default provider).",
     ),
+  // Kimi Code's native/default backend is Moonshot's own OpenAI-compatible API
+  // (verified live: a bad key gets a real `{"error":{"message":"Invalid
+  // Authentication", ...}}` 401 from this exact endpoint).
+  kimi: (apiKey) =>
+    checkEndpoint("https://api.moonshot.ai/v1/models", { authorization: `Bearer ${apiKey}` }, "Key authenticates with the Moonshot AI API."),
 };
 
 /** Live-verify a decrypted key against its vendor. Never throws. */
