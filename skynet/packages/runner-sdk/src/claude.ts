@@ -19,7 +19,8 @@ import {
   type SettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync } from "node:fs";
-import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
+import type { ModelRates, PlanStep, ProviderId, Resolution } from "@skynet/shared";
+import { priceUsage } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
 import type {
   ConsultSpec,
@@ -259,6 +260,13 @@ export interface RunnerUsage {
   costUsd: number | null;
   turns: number;
   durationMs: number | null;
+  /** Cache READS, also counted inside `inputTokens`. Kept separately so a run
+   *  on a compatible endpoint can be priced from that vendor's own cache rate
+   *  — an agent workload is mostly replayed context, and pricing it as fresh
+   *  input would overstate a cheap endpoint enough to hide the saving. */
+  cacheReadTokens: number;
+  /** Cache WRITES, likewise also inside `inputTokens`. */
+  cacheWriteTokens: number;
 }
 
 /**
@@ -284,11 +292,13 @@ export interface RunnerUsage {
  * still billed, so omitting it under-reports real token volume (`costUsd`,
  * which the SDK prices itself, already reflects the discount).
  */
-export function readUsage(result: Record<string, unknown>): RunnerUsage {
+export function readUsage(result: Record<string, unknown>, rates?: ModelRates | null): RunnerUsage {
   const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
   const models = (result.modelUsage ?? {}) as Record<string, Record<string, unknown>>;
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
   let modelCost = 0;
   let sawModelUsage = false;
   for (const m of Object.values(models)) {
@@ -296,6 +306,8 @@ export function readUsage(result: Record<string, unknown>): RunnerUsage {
     sawModelUsage = true;
     inputTokens += n(m.inputTokens) + n(m.cacheReadInputTokens) + n(m.cacheCreationInputTokens);
     outputTokens += n(m.outputTokens);
+    cacheReadTokens += n(m.cacheReadInputTokens);
+    cacheWriteTokens += n(m.cacheCreationInputTokens);
     modelCost += n(m.costUSD);
   }
   // Fall back to the main-loop-only `usage` when an older/edge result carries
@@ -304,12 +316,25 @@ export function readUsage(result: Record<string, unknown>): RunnerUsage {
     const u = (result.usage ?? {}) as Record<string, unknown>;
     inputTokens = n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens);
     outputTokens = n(u.output_tokens);
+    cacheReadTokens = n(u.cache_read_input_tokens);
+    cacheWriteTokens = n(u.cache_creation_input_tokens);
   }
   const total = typeof result.total_cost_usd === "number" ? result.total_cost_usd : null;
+  // The SDK prices every run from Claude Code's own ANTHROPIC price table. That
+  // figure is meaningless once the tokens were served by someone else — either
+  // zero (a model id it doesn't know) or Anthropic's rate for a model that
+  // isn't Anthropic's. When the caller supplies the endpoint's real rates, they
+  // win. With no rates we keep the SDK's number rather than invent one: an
+  // admitted gap beats a confident wrong answer.
+  const priced = rates
+    ? priceUsage({ inputTokens: inputTokens - cacheReadTokens - cacheWriteTokens, outputTokens, cacheReadTokens, cacheWriteTokens }, rates)
+    : null;
   return {
     inputTokens,
     outputTokens,
-    costUsd: total ?? (sawModelUsage ? modelCost : null),
+    cacheReadTokens,
+    cacheWriteTokens,
+    costUsd: priced ?? total ?? (sawModelUsage ? modelCost : null),
     turns: n(result.num_turns),
     durationMs: typeof result.duration_ms === "number" ? result.duration_ms : null,
   };
@@ -321,13 +346,15 @@ export function addUsage(a: RunnerUsage, b: RunnerUsage): RunnerUsage {
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
     costUsd: a.costUsd == null && b.costUsd == null ? null : (a.costUsd ?? 0) + (b.costUsd ?? 0),
     turns: a.turns + b.turns,
     durationMs: a.durationMs == null && b.durationMs == null ? null : (a.durationMs ?? 0) + (b.durationMs ?? 0),
   };
 }
 
-const ZERO_USAGE: RunnerUsage = { inputTokens: 0, outputTokens: 0, costUsd: null, turns: 0, durationMs: null };
+const ZERO_USAGE: RunnerUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, turns: 0, durationMs: null };
 
 /**
  * Yield an SDK query's answer as text deltas. With `includePartialMessages` the
@@ -1003,6 +1030,9 @@ class ClaudeRunnerHandle implements RunnerHandle {
   // Cost accounting across relaunches — see emitUsage/sealSegment. `priorSegments`
   // is what finished query() calls spent; `segmentUsage` is the latest running
   // total for the query currently in flight.
+  // Published rates for this run's (endpoint, model), when catalogued — see
+  // readUsage. Null keeps the SDK's own (Anthropic-priced) figure.
+  private rates: ModelRates | null = null;
   private priorSegments: RunnerUsage = ZERO_USAGE;
   private segmentUsage: RunnerUsage = ZERO_USAGE;
   private lastApiError = ""; // most recent overload/error text seen, for classification
@@ -1117,6 +1147,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     // spinning up an agent that immediately 401s.
     const env = buildRunnerEnv();
     this.sdkEnv = applyCredential(env, spec);
+    this.rates = spec.rates ?? null;
     const authed =
       !!spec.apiKey ||
       !!this.sdkEnv.ANTHROPIC_API_KEY ||
@@ -1354,7 +1385,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
    * far`, which is what the consumer stores verbatim.
    */
   private emitUsage(result: Record<string, unknown>) {
-    this.segmentUsage = readUsage(result);
+    this.segmentUsage = readUsage(result, this.rates);
     this.events.onUsage?.(this.runId, addUsage(this.priorSegments, this.segmentUsage));
   }
 

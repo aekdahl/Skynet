@@ -93,7 +93,9 @@ describe("readUsage — reads modelUsage, not the main-loop-only `usage`", () =>
   });
 
   it("degrades to zeros/nulls on an empty or malformed result rather than throwing", () => {
-    expect(readUsage({})).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: null, turns: 0, durationMs: null });
+    expect(readUsage({})).toEqual({
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, turns: 0, durationMs: null,
+    });
     expect(readUsage({ modelUsage: { m: { inputTokens: "nope" } }, total_cost_usd: "free" }).inputTokens).toBe(0);
   });
 });
@@ -103,7 +105,8 @@ describe("addUsage — carries COMPLETED query segments across a relaunch", () =
     const a = readUsage(result({ main: { inputTokens: 1_000_000, outputTokens: 10_000 }, cost: 1.5, turns: 60, ms: 60_000 }));
     const b = readUsage(result({ main: { inputTokens: 2_000_000, outputTokens: 20_000 }, cost: 3.0, turns: 60, ms: 90_000 }));
     expect(addUsage(a, b)).toEqual({
-      inputTokens: 3_000_000, outputTokens: 30_000, costUsd: 4.5, turns: 120, durationMs: 150_000,
+      inputTokens: 3_000_000, outputTokens: 30_000, cacheReadTokens: 0, cacheWriteTokens: 0,
+      costUsd: 4.5, turns: 120, durationMs: 150_000,
     });
   });
 

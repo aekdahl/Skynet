@@ -296,6 +296,11 @@ export const TaskRun = z.object({
   // spawn). null → the provider's default credential (id === provider).
   credentialId: z.string().nullable().default(null),
   model: z.string(),
+  // The Claude-compatible endpoint this run actually talked to, or null for the
+  // vendor's own API. Recorded ON THE RUN rather than resolved live from the
+  // credential, so history stays truthful after a credential is re-pointed —
+  // and so every surface can flag a non-Anthropic run without a second fetch.
+  endpoint: z.string().nullable().default(null),
   branch: z.string(),
   modules: z.array(z.string()), // architectural module ids it touches
   progress: z.number().min(0).max(1),

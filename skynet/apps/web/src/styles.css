@@ -3338,3 +3338,22 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .settings-cred-endpoint { font-size: var(--fz-12); }
 .settings-hint { font-size: var(--fz-11-5); color: var(--muted); line-height: 1.55; margin: 2px 0 0; max-width: 78ch; text-wrap: pretty; }
 .settings-cred-ep { font-family: var(--font-mono); font-size: var(--fz-10-5); color: var(--accent); }
+.settings-cred-vendor { max-width: 340px; }
+.settings-vendor { border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.settings-vendor-url { font-size: var(--fz-11); color: var(--accent); }
+.settings-rates { border-collapse: collapse; font-size: var(--fz-11); width: 100%; max-width: 620px; }
+.settings-rates th { text-align: right; font-weight: 500; color: var(--faint); padding: 2px 8px; font-size: var(--fz-10-5); }
+.settings-rates th:first-child { text-align: left; }
+.settings-rates td { text-align: right; padding: 2px 8px; color: var(--muted); white-space: nowrap; }
+.settings-rates td:first-child { text-align: left; color: var(--text); width: 100%; }
+.settings-rate-note { color: var(--faint); font-family: var(--font-ui); }
+.settings-rate-base td { border-top: 1px dashed var(--line-soft); color: var(--faint); padding-top: 5px; }
+.settings-rate-foot { font-size: var(--fz-10-5); color: var(--faint); margin: 0; }
+.settings-vendor-caveat { font-size: var(--fz-11); color: var(--warn); line-height: 1.5; margin: 0; max-width: 78ch; }
+/* "via <vendor>" — a runner on a Claude-compatible endpoint. It still shows the
+   Claude glyph (the Agent SDK really is driving it), so without this chip there
+   is no way to tell which vendor served the tokens. */
+.fleet-endpoint { font-size: var(--fz-10); color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent), transparent 65%);
+  border-radius: 999px; padding: 1px 7px; white-space: nowrap; flex: none; }
+.run-endpoint { font-size: var(--fz-10-5); color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent), transparent 65%);
+  border-radius: 999px; padding: 1px 8px; white-space: nowrap; }

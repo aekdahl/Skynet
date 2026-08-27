@@ -1782,6 +1782,38 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   above warns about — and a translating proxy reaches the same vendors through the harness we already
   have. Revisit only if a proxy hop proves untenable in practice.
 
+- [x] **Compatible endpoints, made usable: presets, real pricing, and a "not Claude" marker.** The
+  endpoint field shipped as a free-text URL box, which worked but wasn't a *setup*. Four parts.
+  **(1) A vendor catalog** (`packages/shared/src/compatible-endpoints.ts`) — DeepSeek, Moonshot (Kimi),
+  Z.ai (GLM), MiniMax: base URL, current model ids, published per-million rates, and each vendor's known
+  compatibility gaps, all verified against vendor docs on 2026-08-27. Advisory exactly like
+  `DEFAULT_PROVIDERS`; a custom endpoint and an unlisted model always work. Settings picks from a
+  dropdown and shows the rate table *with Anthropic Sonnet as the baseline row*, which is how you can
+  see at a glance that `kimi-k3` is at Sonnet parity and therefore not a saving at all — the exact trap
+  someone switching to "the newest Kimi" would fall into. Fleet's model list follows the chosen
+  credential, because several endpoints silently remap an unknown model id, so an Anthropic id there
+  half-works and you cannot tell what actually ran.
+  **(2) Spend is now REAL on a compatible endpoint.** The SDK prices every run from Claude Code's own
+  Anthropic table — meaningless once another vendor served the tokens, and it defeated the only honest
+  way to evaluate the switch (cost per *merged PR*, not per token). `RunnerUsage` now keeps the cache
+  tiers apart and the orchestrator passes the endpoint's published rates down, so cache reads are priced
+  as cache reads. That distinction is the whole ballgame: this repo's own month was ~510M cached input
+  against 3.4M output, so folding cache into fresh input would overstate a cheap endpoint by ~10x and
+  hide the saving it exists to prove.
+  **(3) Verify was broken** — it hardcoded `api.anthropic.com`, so verifying a Kimi credential sent the
+  Moonshot key to Anthropic and always failed. It now checks the credential's own endpoint, and treats a
+  404 on `/v1/models` as inconclusive rather than as a bad key (several endpoints serve only
+  `/v1/messages`).
+  **(4) A "via <vendor>" marker** on the fleet card, the idle row and the run header. A runner on a
+  compatible endpoint still shows the Claude glyph — the Agent SDK really is driving it — so without the
+  marker there is no way to tell which vendor served the tokens or why a run's cost looks unfamiliar.
+  Recorded on the RUN (`TaskRun.endpoint`), not resolved live from the credential, so history stays
+  truthful after a credential is re-pointed.
+  **Also fixes a pre-existing bug that would have made all of this dead on arrival:** Fleet's
+  "Add agent" passed `cloneFrom?.credentialId` to `createAgent`, silently discarding the Key the operator
+  actually picked on every non-clone add — so an agent pinned to a second key (or to a cheap endpoint)
+  quietly ran on the provider's default one instead.
+
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease

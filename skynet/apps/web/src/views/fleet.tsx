@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ProviderId, ProviderInfo, Agent, SecretMeta, TaskRun } from "@skynet/shared";
+import { endpointLabel, vendorForBaseUrl } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { computeUsageRollup, fmtCost, fmtNum, providerInfo, providerReadiness, runnerIdleLabel, type UsageRollup } from "../lib/derive";
@@ -38,14 +39,6 @@ export function ConfigForm({
   );
   const selected = providerInfo(providers, provider);
   const selectedReq = selected.requirements;
-  const models = selected.models;
-  const [model, setModel] = useState(initial ? initial.model : (models[0] ?? ""));
-  // Custom-model mode: the operator typed a model id not in the suggestions —
-  // e.g. one released after this catalog. Starts on when editing an agent whose
-  // model isn't a known suggestion, or when a provider offers none.
-  const [custom, setCustom] = useState(
-    initial ? !models.includes(initial.model) : models.length === 0,
-  );
 
   // Which credential a NEW agent authenticates with. Only offered at create time
   // (an existing agent's credential is fixed); undefined → the provider's default
@@ -53,6 +46,20 @@ export function ConfigForm({
   // account") key can be picked here.
   const [secrets, setSecrets] = useState<SecretMeta[]>([]);
   const [credentialId, setCredentialId] = useState<string | undefined>(undefined);
+  // A credential pointed at a Claude-compatible endpoint runs a DIFFERENT
+  // vendor's models — suggesting Anthropic's ids there would send the operator
+  // straight into a wrong-model run (several endpoints silently remap an
+  // unknown id, so it half-works and you can't tell what actually ran).
+  const credEndpoint = secrets.find((c) => c.id === credentialId)?.baseUrl ?? null;
+  const credVendor = vendorForBaseUrl(credEndpoint);
+  const models = credVendor ? credVendor.models.map((m) => m.id) : selected.models;
+  const [model, setModel] = useState(initial ? initial.model : (models[0] ?? ""));
+  // Custom-model mode: the operator typed a model id not in the suggestions —
+  // e.g. one released after this catalog. Starts on when editing an agent whose
+  // model isn't a known suggestion, or when a provider offers none.
+  const [custom, setCustom] = useState(
+    initial ? !models.includes(initial.model) : models.length === 0,
+  );
   useEffect(() => {
     api.fetchSecrets().then((r) => setSecrets(r.secrets)).catch(() => setSecrets([]));
   }, []);
@@ -71,6 +78,21 @@ export function ConfigForm({
     setCredentialId(undefined); // a new provider → back to its default key
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
+
+  // Switching to a credential on a compatible endpoint switches WHICH VENDOR
+  // serves this runner, so the model has to follow. Leaving an Anthropic id
+  // selected would be worse than an error: several endpoints silently remap an
+  // unknown id to some default, so the run succeeds on a model nobody chose.
+  const credMounted = useRef(false);
+  useEffect(() => {
+    if (!credMounted.current) {
+      credMounted.current = true;
+      return;
+    }
+    setModel(models[0] ?? "");
+    setCustom(models.length === 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [credentialId]);
 
   return (
     <div className="cfg">
@@ -146,6 +168,33 @@ export function ConfigForm({
           </p>
         )}
       </div>
+      {/* Credential picker — only when creating and the provider has more than
+          its default key (a second account/key added in Settings). */}
+      {!initial && extraCreds.length > 0 && (
+        <div className="cfg-row">
+          <label className="cfg-label">Key</label>
+          <select
+            className="qx-input cfg-cred-select"
+            value={credentialId ?? ""}
+            onChange={(e) => setCredentialId(e.target.value || undefined)}
+          >
+            <option value="">Default {selected.name} key</option>
+            {extraCreds.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name || "key"} · ····{c.last4}
+                {c.baseUrl ? ` · ${endpointLabel(c.baseUrl)}` : ""}
+              </option>
+            ))}
+          </select>
+          {credVendor && (
+            <p className="cfg-model-note">
+              This runner will talk to <b>{credVendor.name}</b>, not Anthropic — the models below are theirs.
+              It keeps the full agent loop (tool gating, questions, escalations) and meters spend at their
+              rates.
+            </p>
+          )}
+        </div>
+      )}
       <div className="cfg-row">
         <label className="cfg-label">Model</label>
         <div className="cfg-models">
@@ -187,25 +236,6 @@ export function ConfigForm({
           </p>
         )}
       </div>
-      {/* Credential picker — only when creating and the provider has more than
-          its default key (a second account/key added in Settings). */}
-      {!initial && extraCreds.length > 0 && (
-        <div className="cfg-row">
-          <label className="cfg-label">Key</label>
-          <select
-            className="qx-input cfg-cred-select"
-            value={credentialId ?? ""}
-            onChange={(e) => setCredentialId(e.target.value || undefined)}
-          >
-            <option value="">Default {selected.name} key</option>
-            {extraCreds.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name || "key"} · ····{c.last4}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
       <div className="qx-row">
         <PrimaryButton
           disabled={!model.trim()}
@@ -349,6 +379,23 @@ function costOf(roll: UsageRollup | undefined): { label: string; title: string }
 // ─── Working now: a full card with live task context — unchanged from
 // before except it's always busy here (the idle branch moved to AgentRow,
 // below) ─────────────────────────────────────────────────────────────────
+/**
+ * "This is not standard Claude." A runner on a compatible endpoint still shows
+ * the Claude provider glyph and name — because it genuinely is the Claude Agent
+ * SDK driving it — so without this the operator has no way to tell which vendor
+ * actually served the tokens, or why a run's cost looks unfamiliar.
+ * Renders nothing for Anthropic's own API, which needs no flag.
+ */
+function EndpointChip({ endpoint }: { endpoint: string | null }) {
+  const label = endpointLabel(endpoint);
+  if (!label) return null;
+  return (
+    <span className="fleet-endpoint" title={`Not Anthropic — this runs against ${endpoint}`}>
+      via {label}
+    </span>
+  );
+}
+
 function AgentCard({
   r,
   busy,
@@ -356,12 +403,17 @@ function AgentCard({
   count,
   costRoll,
   actions,
+  endpoint,
   informMode,
   informSelected,
   onToggleInform,
 }: {
   r: Agent;
   busy: TaskRun;
+  /** Compatible endpoint this agent's credential points at, or null for
+   *  Anthropic. Flagged on the card so a non-Claude runner is never mistaken
+   *  for a Claude one — the provider glyph alone still says "Claude Code". */
+  endpoint: string | null;
   p: ProviderInfo;
   count: number;
   // Vendor-reported cost/tokens summed across this agent's runs — see
@@ -398,6 +450,7 @@ function AgentCard({
         </div>
         <div className="fleet-meta">
           <span className="fleet-pname">{p.name}</span>
+          <EndpointChip endpoint={endpoint} />
           <span className="fleet-model mono">{r.model}</span>
           <span className="fleet-histcount">
             {count} task{count === 1 ? "" : "s"}
@@ -455,10 +508,12 @@ function AgentRow({
   count,
   costRoll,
   now,
+  endpoint,
   actions,
 }: {
   r: Agent;
   p: ProviderInfo;
+  endpoint: string | null;
   count: number;
   costRoll: UsageRollup | undefined;
   now: number;
@@ -474,6 +529,7 @@ function AgentRow({
         </span>
         <span className="fleet-rn mono">{r.name}</span>
       </button>
+      <EndpointChip endpoint={endpoint} />
       <span className="fleet-idle-tasks mono">
         {count} task{count === 1 ? "" : "s"}
       </span>
@@ -525,6 +581,16 @@ export function FleetView({
   // + model + credential (no history), so the operator only names the copy.
   const [cloneFrom, setCloneFrom] = useState<Agent | null>(null);
   const now = Date.now();
+  // Credential metadata, so every agent card can say which vendor actually
+  // serves it. Fetched once here rather than per-card: the endpoint is a
+  // property of the runner's CONFIGURED credential, and an idle agent has no
+  // run to read it off.
+  const [fleetSecrets, setFleetSecrets] = useState<SecretMeta[]>([]);
+  useEffect(() => {
+    api.fetchSecrets().then((r) => setFleetSecrets(r.secrets)).catch(() => setFleetSecrets([]));
+  }, []);
+  const endpointOf = (a: Agent): string | null =>
+    fleetSecrets.find((c) => c.id === (a.credentialId ?? a.provider))?.baseUrl ?? null;
   const takenNames = new Set(fleet.map((a) => a.name));
 
   const taskCountOf = (r: Agent) => runs.filter((a) => a.agentId === r.id).length;
@@ -657,7 +723,12 @@ export function FleetView({
             initial={cloneFrom ? { ...cloneFrom, name: suggestCloneName(cloneFrom.name, takenNames) } : undefined}
             submitLabel={cloneFrom ? "Add to fleet" : undefined}
             onSave={(r) => {
-              createAgent(r.provider, r.model, r.name || undefined, cloneFrom?.credentialId ?? undefined, r.label);
+              // The credential the operator actually PICKED wins. This used to
+              // pass only `cloneFrom?.credentialId`, silently discarding the
+              // form's own Key selection on every non-clone add — so an agent
+              // pinned to a second key (or to a compatible endpoint) quietly
+              // ran on the provider's default one instead.
+              createAgent(r.provider, r.model, r.name || undefined, r.credentialId ?? cloneFrom?.credentialId ?? undefined, r.label);
               setAdding(false);
               setCloneFrom(null);
             }}
@@ -700,6 +771,7 @@ export function FleetView({
                           p={providerInfo(providers, r.provider)}
                           count={taskCountOf(r)}
                           costRoll={usageByAgent[r.id]}
+                          endpoint={endpointOf(r)}
                           actions={actions}
                           informMode={informMode}
                           informSelected={informSelected.has(r.id)}
@@ -745,6 +817,7 @@ export function FleetView({
                         count={taskCountOf(r)}
                         costRoll={usageByAgent[r.id]}
                         now={now}
+                        endpoint={endpointOf(r)}
                         actions={actions}
                       />
                     ),

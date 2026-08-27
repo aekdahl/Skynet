@@ -11,6 +11,7 @@ import type {
   PolicyRuleKind,
   Risk,
 } from "@skynet/shared";
+import { COMPATIBLE_VENDORS } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import type { McpScope, ServiceTokenMeta } from "../lib/client";
@@ -441,7 +442,13 @@ function AddCredentialForm({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
+  // Vendor preset drives the endpoint. "" = Anthropic's own API (the default),
+  // "custom" = type any URL. These base URLs are genuinely easy to get wrong —
+  // Z.ai doubles the `api` segment, MiniMax splits .io/.com by region — so
+  // picking beats typing.
+  const [vendorId, setVendorId] = useState("");
   const [endpoint, setEndpoint] = useState("");
+  const vendor = COMPATIBLE_VENDORS.find((v) => v.id === vendorId);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // Only the Claude runner acts on a compatible endpoint — it's the one path
@@ -451,14 +458,18 @@ function AddCredentialForm({
   // would promise something that silently does nothing.
   const supportsEndpoint = provider === "claude";
 
+  // A preset supplies its own URL; only "custom" reads the free-text box.
+  const effectiveEndpoint = () => (vendorId === "custom" ? endpoint.trim() : (vendor?.baseUrl ?? ""));
+
   const add = async () => {
     if (!name.trim() || !key.trim()) return;
     setBusy(true);
     setErr(null);
     try {
-      const { secret } = await api.createCredential(provider, name.trim(), key.trim(), endpoint.trim() || null);
+      const { secret } = await api.createCredential(provider, name.trim(), key.trim(), effectiveEndpoint() || null);
       setName("");
       setKey("");
+      setVendorId("");
       setEndpoint("");
       setOpen(false);
       await onAdded();
@@ -488,17 +499,69 @@ function AddCredentialForm({
       />
       {supportsEndpoint && (
         <>
-          <input
-            className="settings-input settings-cred-endpoint mono"
-            placeholder="Endpoint (optional) — e.g. https://api.moonshot.ai/anthropic"
-            value={endpoint}
-            onChange={(e) => setEndpoint(e.target.value)}
-          />
+          <select
+            className="settings-input settings-cred-vendor"
+            value={vendorId}
+            onChange={(e) => setVendorId(e.target.value)}
+          >
+            <option value="">Anthropic — the standard API</option>
+            {COMPATIBLE_VENDORS.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}
+              </option>
+            ))}
+            <option value="custom">Custom endpoint…</option>
+          </select>
+          {vendorId === "custom" && (
+            <input
+              className="settings-input settings-cred-endpoint mono"
+              placeholder="https://… — any Claude-compatible endpoint"
+              value={endpoint}
+              onChange={(e) => setEndpoint(e.target.value)}
+            />
+          )}
+          {vendor && (
+            <div className="settings-vendor">
+              <div className="settings-vendor-url mono">{vendor.baseUrl}</div>
+              {/* Rates are the reason to be here, so they're shown before the
+                  operator commits — including where a "cheap" option isn't. */}
+              <table className="settings-rates">
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th>In</th>
+                    <th>Out</th>
+                    <th>Cache read</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {vendor.models.map((m) => (
+                    <tr key={m.id}>
+                      <td className="mono">
+                        {m.id}
+                        {m.note && <span className="settings-rate-note"> — {m.note}</span>}
+                      </td>
+                      <td>{m.rates ? `$${m.rates.inputPerMTok}` : "—"}</td>
+                      <td>{m.rates ? `$${m.rates.outputPerMTok}` : "—"}</td>
+                      <td>{m.rates?.cacheReadPerMTok != null ? `$${m.rates.cacheReadPerMTok}` : "—"}</td>
+                    </tr>
+                  ))}
+                  <tr className="settings-rate-base">
+                    <td className="mono">Anthropic Sonnet — today's baseline</td>
+                    <td>$3</td>
+                    <td>$15</td>
+                    <td>$0.30</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p className="settings-rate-foot">Per million tokens, list price as of Aug 2026. Verify against the vendor before relying on them.</p>
+              {vendor.caveat && <p className="settings-vendor-caveat">⚠ {vendor.caveat}</p>}
+            </div>
+          )}
           <p className="settings-hint">
-            Leave blank for Anthropic's own API. Point it at any <b>Claude-compatible</b> endpoint — Moonshot
-            (Kimi), Z.ai (GLM), MiniMax, or a proxy — and this key runs the <em>full</em> agent loop against
-            that model: tool gating, questions and escalations, live cost metering. Pin a runner to this
-            credential in Fleet to mix cheap and expensive models across the same fleet.
+            A key on a compatible endpoint runs the <em>full</em> agent loop — tool gating, questions and
+            escalations, real cost metering. Set the runner's model to one of the ids above in Fleet, then pin
+            it to this credential to mix cheap and expensive models across one fleet.
           </p>
         </>
       )}
@@ -520,7 +583,7 @@ function AddCredentialForm({
             Add key
           </button>
         </Blocked>
-        <button className="btn btn-ghost" disabled={busy} onClick={() => { setOpen(false); setName(""); setKey(""); setEndpoint(""); setErr(null); }}>
+        <button className="btn btn-ghost" disabled={busy} onClick={() => { setOpen(false); setName(""); setKey(""); setVendorId(""); setEndpoint(""); setErr(null); }}>
           Cancel
         </button>
       </div>

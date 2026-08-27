@@ -5,3 +5,4 @@ export * from "./compliance.js";
 export * from "./budget.js";
 export * from "./solution-brief.js";
 export * from "./coverage-tree.js";
+export * from "./compatible-endpoints.js";

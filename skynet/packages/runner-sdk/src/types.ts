@@ -1,4 +1,5 @@
 import type {
+  ModelRates,
   TaskRunStatus,
   HitlItem,
   PlanStep,
@@ -47,6 +48,14 @@ export interface StartSpec {
    * metering — none of which the CLI-backed runners have.
    */
   baseUrl?: string | null;
+  /**
+   * Published per-million-token rates for (endpoint, model), resolved by the
+   * orchestrator from the shared catalog. Present so a run on a compatible
+   * endpoint reports REAL spend: the SDK prices everything from Claude Code's
+   * own Anthropic table, which is meaningless once another vendor served the
+   * tokens. Absent → keep the SDK's own figure rather than invent one.
+   */
+  rates?: ModelRates | null;
   /**
    * Opt-in: give the agent a real browser for this run (a Playwright/Chrome MCP
    * server exposed to the runner). Resolved by the orchestrator from the
@@ -199,6 +208,8 @@ export interface ConsultSpec {
    *  injection checks, digests) are a real share of spend, so they follow the
    *  runner's credential rather than always hitting the vendor API. */
   baseUrl?: string | null;
+  /** Published rates for this consult's (endpoint, model) — see StartSpec.rates. */
+  rates?: ModelRates | null;
   /** What the agent did — its final summary and/or recent log, for grounding. */
   context?: string;
   /**

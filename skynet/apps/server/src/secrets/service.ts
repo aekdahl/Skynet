@@ -245,7 +245,10 @@ export class SecretService {
     const provider: CredentialProvider = record?.provider ?? (parsed.data as ProviderId);
     const apiKey = await this.resolve(workspaceId, id);
     if (!apiKey) return { ok: false, message: "No key is set for this credential (and no environment fallback)." };
-    return verifyProviderCredential(provider, apiKey);
+    // Verify against the endpoint this credential actually talks to — see
+    // verifyProviderCredential.
+    const baseUrl = await this.resolveEndpoint(workspaceId, id);
+    return verifyProviderCredential(provider, apiKey, baseUrl);
   }
 }
 
