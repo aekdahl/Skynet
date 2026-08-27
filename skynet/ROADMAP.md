@@ -1747,6 +1747,23 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   `apps/server/` would read as "this subsystem is tested" when it only means every case is mentioned
   somewhere, and a tree that renders reassurance it hasn't earned is worse than no tree at all.
 
+- [x] **An escalating agent's question actually reaches the operator.** A run that called
+  `AskUserQuestion` with an `ESCALATE` header surfaced as a bare *"Agent is blocked — needs a human"*
+  banner with **nothing to answer**: the run-detail decision bar rendered only the title, risk chip and
+  buttons, so the question itself was reachable only by expanding *Details* — and `buildEscalationRaise`
+  (`packages/runner-sdk/src/claude.ts`) threw away the concrete `options` the agent had already written
+  down, forcing a human to retype an answer that existed. Found live: an agent correctly reported it
+  could find no Kimi adapter in its branch and asked how to proceed, with three options; the operator
+  saw a generic blocked banner. Three parts: **(1)** the raise keeps the agent's `options` (and their
+  descriptions, in the detail box) and stops duplicating the same paragraph into both `why` and
+  `rationale` — which rendered it twice in the detail panel; **(2)** the run-detail bar renders `why`
+  directly (clamped, full text still in Details) — the Inbox card already did, so the two surfaces now
+  agree; **(3)** picking an option resolves as `modify` with that label as guidance, since
+  `deliverEscalation` handles reject/modify/reassign/dismiss only and has no `option` action — exactly
+  what typing the same text would do. Also fixes a regression the change would otherwise have
+  introduced: the Inbox's `r` (Stop run) shortcut guarded on `it.options`, which escalations now carry,
+  silently disabling keyboard-stop for them.
+
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease
