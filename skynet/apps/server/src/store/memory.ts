@@ -96,6 +96,7 @@ export class MemoryStore implements Store {
   async putHitl(item: HitlItem) { this.queue.set(item.id, item); this.persist(); return item; }
 
   async listProjects(ws: string) { return [...this.projects.values()].filter((p) => p.workspaceId === ws); }
+  async listAllProjects() { return [...this.projects.values()]; }
   async getProject(id: string) { return this.projects.get(id); }
   async putProject(project: Project) { this.projects.set(project.id, project); this.persist(); return project; }
   async deleteProject(id: string) { this.projects.delete(id); this.persist(); }

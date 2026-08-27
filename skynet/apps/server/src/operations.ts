@@ -1223,6 +1223,46 @@ export class Operations {
     return { imported, skipped: issues.length - imported };
   }
 
+  /**
+   * The v3 "inbound-trigger" primitive's first concrete instance: a GitHub
+   * `issues` webhook (opened/reopened/labeled) creates the task immediately,
+   * instead of waiting on the next manual "Import issues" click or re-sync.
+   * Called from the verified webhook route (github/webhook.ts) — signature
+   * verification already happened there, so this only does the domain work.
+   * No workspace context arrives with a GitHub webhook, so it fans out across
+   * every workspace's projects bound to that repo (usually exactly one) and
+   * reuses `importGithubIssues`'s same opt-in gate (`syncSourceStatus`) and
+   * dedup key (`source.repo`+`source.number`) so a redelivered or
+   * already-imported issue is a no-op.
+   */
+  async handleGithubIssueEvent(event: {
+    action: string;
+    repo: string;
+    issue: { number: number; title: string; body: string | null; url: string };
+  }): Promise<{ created: number }> {
+    if (!["opened", "reopened", "labeled"].includes(event.action)) return { created: 0 };
+    const projects = (await this.store.listAllProjects()).filter((p) => p.repo === event.repo && p.syncSourceStatus);
+    let created = 0;
+    for (const project of projects) {
+      const existing = await this.store.listTasks(project.workspaceId);
+      const already = existing.some(
+        (t) =>
+          t.projectId === project.id &&
+          t.source?.kind === "github_issue" &&
+          t.source.repo === event.repo &&
+          t.source.number === event.issue.number,
+      );
+      if (already) continue;
+      await this.createTask(project.workspaceId, project.id, {
+        text: event.issue.title,
+        description: event.issue.body || undefined,
+        source: { kind: "github_issue", repo: event.repo, number: event.issue.number, url: event.issue.url },
+      });
+      created++;
+    }
+    return { created };
+  }
+
   /** Import a repo file's OPEN checklist items (`- [ ] …`) as backlog tasks, each
    *  linked back to the file+item so completing the task checks the box (Phase 2).
    *  Deduped by path+label. GitHub-repo-backed projects only. */
