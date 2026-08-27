@@ -91,7 +91,7 @@ import { extractText } from "./steward/extract.js";
 import { commitLocalRepoFile } from "./local-repo-write.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
 import type { CapturedDiff, Hub } from "./hub.js";
-import { CLARIFICATION_ANSWERED_MARKER, NoCapacityError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
+import { CLARIFICATION_ANSWERED_MARKER, NoCapacityError, NothingToReviewError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import { resolveExecutable } from "./steward/execution.js";
 import { secretService, withSecretAvailability } from "./secrets/index.js";
 import type { Store } from "./store/store.js";
@@ -1856,6 +1856,19 @@ export class Operations {
   async requestRetriage(ws: string, tid: string): Promise<void> {
     const task = await this.getTask(ws, tid);
     await this.orchestrator.requestRetriage(ws, task.id);
+  }
+
+  /**
+   * Manual "Force to review" — pull a still-`ongoing` task's live run up for
+   * review right now, instead of waiting for the agent to finish its own
+   * turn. Throws NothingToReviewError (orchestrator.ts) for the honest
+   * failure modes: the task isn't ongoing / has no linked run, its run isn't
+   * live right now, or nothing has actually changed yet to show.
+   */
+  async forceReview(ws: string, tid: string): Promise<void> {
+    const task = await this.getTask(ws, tid);
+    if (task.state !== "ongoing" || !task.runId) throw new NothingToReviewError();
+    await this.orchestrator.forceReviewRun(task.runId);
   }
 
   // ── features (task grouping) ───────────────────────────────────────────
