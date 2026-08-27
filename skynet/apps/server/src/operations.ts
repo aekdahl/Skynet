@@ -86,7 +86,7 @@ import { contentHash, readProjectDoc, resolveRoadmapDoc } from "./steward/docs.j
 import { draftBriefFromConversation, summarizeConversation } from "./steward/crystallize.js";
 import { scanRepo } from "./quality/scan.js";
 import { condenseProjectContext } from "./steward/context.js";
-import { prioritizeColumn } from "./steward/organize.js";
+import { prioritizeColumn, suggestAnyAgentEligible } from "./steward/organize.js";
 import { extractText } from "./steward/extract.js";
 import { commitLocalRepoFile } from "./local-repo-write.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
@@ -177,8 +177,9 @@ export interface OperationsDeps {
   /** Test seam: override the model call refreshProjectContext makes (see
    *  condenseProjectContext's `ask` param). Same rationale as crystallizeAsk. */
   contextAsk?: (prompt: string) => Promise<string>;
-  /** Test seam: override the model call organizeBoard makes per column (see
-   *  prioritizeColumn's `ask` param). Same rationale as crystallizeAsk. */
+  /** Test seam: override the model call organizeBoard makes per column, and
+   *  the one it makes for any-agent eligibility (see prioritizeColumn /
+   *  suggestAnyAgentEligible's `ask` param). Same rationale as crystallizeAsk. */
   organizeAsk?: (prompt: string) => Promise<string>;
 }
 
@@ -1488,13 +1489,19 @@ export class Operations {
   }
   /** Steward-driven board tidy: priority-sorts every non-done column by what
    *  it can infer from each task's title + description (see
-   *  steward/organize.ts), and archives every current Done task — recorded
-   *  work with no reason to keep cluttering the active board; Archive is
-   *  fully reversible from the Archived view. One explicit operator-triggered
-   *  action (not a background job) — same one-click directness as Force done
-   *  / Archive. Best-effort per column: a column whose consult fails/degrades
-   *  keeps its existing order rather than failing the whole tidy. */
-  async organizeBoard(ws: string, projectId: string): Promise<{ reordered: number; archived: number }> {
+   *  steward/organize.ts), suggests any-agent eligibility for currently-
+   *  unassigned backlog tasks (an `unassigned` task never leaves backlog on
+   *  its own — see AssignmentRequiredError — so this is also Steward's
+   *  chance to clear that blocker for the ones that don't actually need an
+   *  operator's routing judgment), and archives every current Done task —
+   *  recorded work with no reason to keep cluttering the active board;
+   *  Archive is fully reversible from the Archived view. One explicit
+   *  operator-triggered action (not a background job) — same one-click
+   *  directness as Force done / Archive. Best-effort throughout: a column
+   *  whose consult fails/degrades keeps its existing order, and a task the
+   *  eligibility consult doesn't confidently vouch for is simply left
+   *  unassigned — never a hard failure over one bad reply. */
+  async organizeBoard(ws: string, projectId: string): Promise<{ reordered: number; archived: number; assigned: number }> {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
     const all = (await this.store.listTasks(ws)).filter((t) => t.projectId === projectId && !t.archived);
@@ -1531,12 +1538,34 @@ export class Operations {
       }
     }
 
+    let assigned = 0;
+    if (canAsk) {
+      const unassigned = all.filter(
+        (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") === "unassigned",
+      );
+      if (unassigned.length > 0) {
+        const eligibleIds = await suggestAnyAgentEligible(
+          ask,
+          project.name,
+          project.goal,
+          unassigned.map((t) => ({ id: t.id, text: t.text, description: t.description })),
+        );
+        for (const id of eligibleIds) {
+          const task = unassigned.find((t) => t.id === id);
+          if (task) {
+            await this.hub.upsertTask({ ...task, assignment: { mode: "any", agentIds: [] } });
+            assigned++;
+          }
+        }
+      }
+    }
+
     let archived = 0;
     for (const task of all.filter((t) => t.state === "done")) {
       await this.hub.upsertTask({ ...task, archived: true });
       archived++;
     }
-    return { reordered, archived };
+    return { reordered, archived, assigned };
   }
   async deleteTask(ws: string, tid: string): Promise<void> {
     const task = await this.store.getTask(tid);

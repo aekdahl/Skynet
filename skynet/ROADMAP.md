@@ -546,6 +546,29 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Organize board also unsticks unassigned backlog tasks it's confident about.** Requested live: "when
+  Steward organize the tasks it should also set the ones that make sense to any agent in backlog so they can
+  be picked up for work." An `unassigned` backlog task never leaves backlog on its own — the eligibility
+  choice is deliberately the operator's (`AssignmentRequiredError`), and the autonomy triage sweep skips it
+  too — so a task created without an explicit "who can work this" choice just sat there until a human
+  noticed and set it. "Organize board" already visits every task's title + description for priority-sorting,
+  so it's a natural second moment to also clear that ONE blocker for the tasks that don't actually need a
+  routing judgment call. A new, independent consult (`suggestAnyAgentEligible`, `steward/organize.ts`) asks
+  which currently-unassigned backlog tasks are self-contained/well-scoped enough that WHICH agent picks them
+  up wouldn't matter — explicitly told to default to leaving a task off the list (for a human to route by
+  hand) whenever unsure, since wrongly declaring a task fine for anyone is the costlier mistake. Same
+  discipline as the existing prioritize consult: one retry on an unreadable reply, degrades to "suggest
+  nothing" (never guesses, never throws) on a persistently bad reply or an ask failure; a reply that parses
+  as valid JSON but simply has no `anyAgent` field reads as "nothing suggested" rather than a parse error, so
+  a differently-shaped-but-valid reply never burns a wasted retry. `organizeBoard`'s result gained an
+  `assigned` count alongside `reordered`/`archived`, surfaced in the button's toast and title.
+  `tests/organize-board.test.ts` (4 new tests): the consult's named ids get `{mode:"any"}` and nothing else
+  is touched; a task that already has an assignment is never even asked about (0 consult calls); an
+  unreadable reply assigns nothing; a made-up id in the reply is discarded. Also updated the one existing
+  retry-count test — the SAME shared mock now also answers the new eligibility consult, so the total call
+  count went from 2 to 3 (the eligibility call's valid-but-field-less reply doesn't itself trigger a retry).
+  Verified live end-to-end: the button's title and the empty-state toast both render the updated copy; the
+  full request/response roundtrip (including the new `assigned` field) works correctly.
 - [x] **Manual "Force to review" on an ongoing card.** Requested live, right after Force Done's own real
   commit/push/merge fix: `ongoing → review/done` was purely agent-driven — the only human control on an
   ongoing card was "Send to To-do" (abandon it). No escape hatch existed for the far more common ask: a run

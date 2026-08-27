@@ -972,8 +972,9 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   });
 
   // Steward-driven board tidy: priority-sort every non-done column by title +
-  // description, archive everything currently in Done. One explicit
-  // operator-triggered action — see Operations.organizeBoard's doc comment.
+  // description, suggest any-agent eligibility for unassigned backlog tasks,
+  // archive everything currently in Done. One explicit operator-triggered
+  // action — see Operations.organizeBoard's doc comment.
   app.post<{ Params: { id: string } }>("/api/projects/:id/organize", async (req, reply) => {
     try {
       return await ops.organizeBoard(ws(req), req.params.id);

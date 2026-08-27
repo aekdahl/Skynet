@@ -239,7 +239,7 @@ export interface Store extends StoreState {
   reorderTask: (projectId: string, taskId: string, beforeId: string | null) => Promise<void>;
   transitionTask: (projectId: string, taskId: string, to: string, preserve?: boolean) => Promise<void>;
   forceTaskDone: (projectId: string, taskId: string) => Promise<void>;
-  organizeBoard: (projectId: string) => Promise<{ reordered: number; archived: number }>;
+  organizeBoard: (projectId: string) => Promise<{ reordered: number; archived: number; assigned: number }>;
   requestReview: (projectId: string, taskId: string) => Promise<void>;
   requestRetriage: (projectId: string, taskId: string) => Promise<void>;
   forceReview: (projectId: string, taskId: string) => Promise<void>;
@@ -718,7 +718,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           return await api.organizeBoard(projectId);
         } catch (e) {
           if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't organize the board."));
-          return { reordered: 0, archived: 0 };
+          return { reordered: 0, archived: 0, assigned: 0 };
         }
       },
       requestReview: async (projectId, taskId) => {
