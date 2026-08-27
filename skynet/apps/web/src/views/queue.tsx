@@ -174,6 +174,15 @@ export function QueueCard({
 
       {item.kind === "escalation" ? (
         <div className="qcard-actions">
+          {/* An escalating agent usually offered concrete choices; picking one
+              resumes it with that choice as the operator's directive — the same
+              path "Help & resume" takes with typed text. Without these the
+              operator had to retype an answer the agent already wrote down. */}
+          {item.options?.map((opt, i) => (
+            <button key={i} className="btn" disabled={readOnly} onClick={() => resolveHitl(item.id, "modify", { guidance: opt })}>
+              “{opt}”
+            </button>
+          ))}
           <button
             className={"btn btn-primary" + (mode === "modify" ? " btn-lit" : "")}
             onClick={() => setMode(mode === "modify" ? null : "modify")}
@@ -550,7 +559,10 @@ export function QueueView({
         case "r":
           // Options-kind cards have no reject button (the operator picks an
           // option instead) — leave that case alone rather than inventing one.
-          if (!it || it.options) return;
+          // An ESCALATION is exempt: it now carries the agent's own options too,
+          // but its reject is "Stop run" and must stay reachable from the
+          // keyboard (guarding on `options` alone silently disabled it).
+          if (!it || (it.kind !== "escalation" && it.options)) return;
           e.preventDefault();
           resolveHitl(it.id, "reject");
           break;

@@ -686,6 +686,13 @@ kbd {
 .log-decision { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .log-decision-title { font-size: var(--fz-13); color: var(--text); font-weight: 500; min-width: 0; }
 .log-decision-actions { display: inline-flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+/* The agent's actual question, on the bar rather than hidden behind Details.
+   Full width of the wrapping flex row so it reads as a paragraph, clamped so a
+   long escalation account can't push the buttons off-screen (Details has it
+   all). */
+.log-decision-why { flex-basis: 100%; margin: 2px 0 0; font-size: var(--fz-12-5); color: var(--muted);
+  line-height: 1.55; text-wrap: pretty; white-space: pre-wrap; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6; overflow: hidden; }
 .log-composer { display: flex; gap: 8px; }
 .log-composer .qx-line { flex: 1; }
 @media (prefers-reduced-motion: no-preference) {
