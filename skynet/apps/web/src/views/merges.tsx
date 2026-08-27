@@ -87,6 +87,23 @@ function PrChecksBadge({ status, onRefresh }: { status: PrChecksStatus | null | 
   );
 }
 
+/** Merged/closed OUTSIDE Skynet, caught by the card's own on-mount status
+ *  check (see usePrChecksStatus / prChecksForRun's doc comment) — the server
+ *  already reconciled its own state by the time this renders; the card
+ *  itself is about to disappear once that update arrives over the WS (the
+ *  ready list filters on `pr.state === "open"`). Shown instead of the normal
+ *  action bar for that brief window so the operator sees WHY, rather than a
+ *  card that looks actionable for a moment then silently vanishes. */
+function AlreadyResolvedNote({ state }: { state: "closed" | "merged" }) {
+  return (
+    <p className="merge-note">
+      {state === "merged"
+        ? "✓ This PR was already merged outside Skynet — reconciling, this card will clear itself."
+        : "This PR was closed outside Skynet without merging — clearing this card."}
+    </p>
+  );
+}
+
 /** The decision-relevant detail a bare "RECOMMEND MERGE" summary doesn't show:
  *  the real diff composition (not just a total), which files actually tripped
  *  the sensitive-area flag (not just the flag), and who authored vs. who
@@ -213,30 +230,36 @@ function MergeCard({ run, onOpenTask }: { run: TaskRun; onOpenTask: (id: string)
       {b && <MergeBriefingDetail b={b} fleet={fleet} />}
       <p className="merge-branch mono">{pr.branch} → {pr.base} · <a href={pr.url} target="_blank" rel="noreferrer">view diff on GitHub ↗</a></p>
 
-      <div className="qcard-actions">
-        <button className="btn btn-primary" disabled={busy != null} onClick={doMerge}>
-          {busy === "merge" ? "Merging…" : "Merge"}
-        </button>
-        {/* Offered once a merge is blocked by a stale base — re-syncs without the agent. */}
-        {blocked?.kind === "conflict" && (
-          <button className="btn" disabled={busy != null} onClick={doUpdateBranch} title={`Fold the latest ${pr.base} into this branch and re-push`}>
-            {busy === "update" ? "Updating…" : "Update branch"}
-          </button>
-        )}
-        <button
-          className={"btn btn-ghost" + (mode === "rework" ? " btn-lit" : "")}
-          disabled={busy != null}
-          onClick={() => setMode(mode === "rework" ? null : "rework")}
-        >
-          Rework with comment
-        </button>
-        <button className="btn btn-ghost" disabled={busy != null} onClick={() => dismissPr(run.id)} title="Set aside — hide from this list; the PR stays open on GitHub">
-          No-op
-        </button>
-      </div>
+      {checks.status && checks.status !== "loading" && checks.status.state !== "open" ? (
+        <AlreadyResolvedNote state={checks.status.state} />
+      ) : (
+        <>
+          <div className="qcard-actions">
+            <button className="btn btn-primary" disabled={busy != null} onClick={doMerge}>
+              {busy === "merge" ? "Merging…" : "Merge"}
+            </button>
+            {/* Offered once a merge is blocked by a stale base — re-syncs without the agent. */}
+            {blocked?.kind === "conflict" && (
+              <button className="btn" disabled={busy != null} onClick={doUpdateBranch} title={`Fold the latest ${pr.base} into this branch and re-push`}>
+                {busy === "update" ? "Updating…" : "Update branch"}
+              </button>
+            )}
+            <button
+              className={"btn btn-ghost" + (mode === "rework" ? " btn-lit" : "")}
+              disabled={busy != null}
+              onClick={() => setMode(mode === "rework" ? null : "rework")}
+            >
+              Rework with comment
+            </button>
+            <button className="btn btn-ghost" disabled={busy != null} onClick={() => dismissPr(run.id)} title="Set aside — hide from this list; the PR stays open on GitHub">
+              No-op
+            </button>
+          </div>
 
-      {blocked && <p className="merge-blocked">⚠ {blocked.reason}</p>}
-      {note && <p className="merge-note">✓ {note}</p>}
+          {blocked && <p className="merge-blocked">⚠ {blocked.reason}</p>}
+          {note && <p className="merge-note">✓ {note}</p>}
+        </>
+      )}
 
       {mode === "rework" && (
         <div className="qx">
@@ -369,16 +392,22 @@ function FeatureMergeCard({ feature, taskNames }: { feature: Feature; taskNames:
       {b?.featureBrief && <FeatureBriefDetail brief={b.featureBrief} />}
       <p className="merge-branch mono">{pr.branch} → {pr.base} · <a href={pr.url} target="_blank" rel="noreferrer">view diff on GitHub ↗</a></p>
 
-      <div className="qcard-actions">
-        <button className="btn btn-primary" disabled={busy != null} onClick={doMerge}>
-          {busy === "merge" ? "Merging…" : "Merge"}
-        </button>
-        <button className="btn btn-ghost" disabled={busy != null} onClick={() => dismissFeaturePr(feature.id)} title="Set aside — hide from this list; the PR stays open on GitHub">
-          No-op
-        </button>
-      </div>
+      {checks.status && checks.status !== "loading" && checks.status.state !== "open" ? (
+        <AlreadyResolvedNote state={checks.status.state} />
+      ) : (
+        <>
+          <div className="qcard-actions">
+            <button className="btn btn-primary" disabled={busy != null} onClick={doMerge}>
+              {busy === "merge" ? "Merging…" : "Merge"}
+            </button>
+            <button className="btn btn-ghost" disabled={busy != null} onClick={() => dismissFeaturePr(feature.id)} title="Set aside — hide from this list; the PR stays open on GitHub">
+              No-op
+            </button>
+          </div>
 
-      {blocked && <p className="merge-blocked">⚠ {blocked.reason}</p>}
+          {blocked && <p className="merge-blocked">⚠ {blocked.reason}</p>}
+        </>
+      )}
     </article>
   );
 }
