@@ -222,12 +222,24 @@ export function applyCredential(
   env: Record<string, string>,
   cred: { apiKey?: string | null; baseUrl?: string | null },
 ): Record<string, string> {
-  if (!cred.apiKey) return env;
+  // A key pasted from a console usually arrives with a trailing newline. It
+  // rides into an `Authorization: Bearer <key>\n` header and the vendor rejects
+  // it as invalid — with an error naming the key, which sends the operator
+  // hunting for a bad key that is actually fine.
+  const apiKey = cred.apiKey?.trim();
+  if (!apiKey) return env;
   if (cred.baseUrl) {
-    const { ANTHROPIC_API_KEY: _shadowed, ...rest } = env;
-    return { ...rest, ANTHROPIC_BASE_URL: cred.baseUrl, ANTHROPIC_AUTH_TOKEN: cred.apiKey };
+    // BOTH Anthropic credentials come off. ANTHROPIC_API_KEY shadows the
+    // gateway, and CLAUDE_CODE_OAUTH_TOKEN — which buildRunnerEnv deliberately
+    // PRESERVES, being a real standalone credential — outranks it too. Left in
+    // place, a run pointed at a third-party endpoint on a host that has a
+    // `claude setup-token` subscription would authenticate with the Anthropic
+    // subscription token instead: the wrong vendor gets the operator's personal
+    // token, and the run 401s citing a key that was never the problem.
+    const { ANTHROPIC_API_KEY: _shadowed, CLAUDE_CODE_OAUTH_TOKEN: _outranks, ...rest } = env;
+    return { ...rest, ANTHROPIC_BASE_URL: cred.baseUrl, ANTHROPIC_AUTH_TOKEN: apiKey };
   }
-  return { ...env, ANTHROPIC_API_KEY: cred.apiKey };
+  return { ...env, ANTHROPIC_API_KEY: apiKey };
 }
 
 // Anthropic streaming: content_block_delta → { delta: { type:"text_delta", text } }.

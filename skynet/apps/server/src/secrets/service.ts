@@ -111,8 +111,13 @@ export class SecretService {
       name,
       workspaceId,
       provider,
-      ciphertext: seal(apiKey, key),
-      last4: fingerprint(apiKey),
+      // Trimmed at the boundary every write goes through, so the stored key,
+      // its last4 fingerprint, and what a runner sends are all the same string.
+      // Pasted keys routinely carry a trailing newline; storing it makes the
+      // displayed fingerprint disagree with the vendor's, which is exactly the
+      // clue an operator needs when a key is rejected.
+      ciphertext: seal(apiKey.trim(), key),
+      last4: fingerprint(apiKey.trim()),
       baseUrl: normalizeBaseUrl(baseUrl),
       updatedAt: at,
       updatedBy: operatorId,
