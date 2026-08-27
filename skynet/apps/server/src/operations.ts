@@ -181,6 +181,12 @@ export interface OperationsDeps {
    *  the one it makes for any-agent eligibility (see prioritizeColumn /
    *  suggestAnyAgentEligible's `ask` param). Same rationale as crystallizeAsk. */
   organizeAsk?: (prompt: string) => Promise<string>;
+  /** Test seam: override the call lintTaskNow makes to grade one task (see
+   *  `withLintSlot`'s bulk-import concurrency cap). Defaults to the real
+   *  `lintTask`. Same rationale as decomposeConsult — needed to make the
+   *  throttle's concurrency ceiling deterministically observable in a test,
+   *  without a real LLM call. */
+  lintConsult?: (text: string, description: string | null, siblingTitles: string[]) => ReturnType<typeof lintTask>;
 }
 
 export class Operations {
@@ -192,6 +198,22 @@ export class Operations {
   private readonly crystallizeAsk?: (prompt: string) => Promise<string>;
   private readonly contextAsk?: (prompt: string) => Promise<string>;
   private readonly organizeAsk?: (prompt: string) => Promise<string>;
+  private readonly lintConsult: (text: string, description: string | null, siblingTitles: string[]) => ReturnType<typeof lintTask>;
+  // Bounds concurrent task-linter calls (see `lintTaskNow`). Each is a real
+  // in-process Claude Agent SDK session (`lintTask` -> `oneShotText`), not a
+  // cheap HTTP call, and `maybeLintTask` is fire-and-forget with no caller-
+  // side throttle. A bulk task-creation path — GitHub-issue resync, brief
+  // decomposition, repo-file import — otherwise fires one of these PER task
+  // with zero concurrency limit: found live, a GitHub-issue re-sync that
+  // pulled in a large batch of never-before-seen issues fired dozens of
+  // concurrent SDK sessions inside the app's own process, exhausted host
+  // memory (no swap at the time either — see startup.sh.tftpl), and wedged
+  // the whole VM (2026-08-27 incident) badly enough that even a plain `echo`
+  // over SSH wouldn't run. 3 concurrent lints keeps single-task-create
+  // latency unaffected while capping bulk-import fan-out.
+  private lintInFlight = 0;
+  private readonly lintQueue: Array<() => void> = [];
+  private static readonly MAX_CONCURRENT_LINTS = 3;
 
   constructor(deps: OperationsDeps) {
     this.store = deps.store;
@@ -201,6 +223,7 @@ export class Operations {
     this.crystallizeAsk = deps.crystallizeAsk;
     this.contextAsk = deps.contextAsk;
     this.organizeAsk = deps.organizeAsk;
+    this.lintConsult = deps.lintConsult ?? lintTask;
   }
 
   private uid(prefix: string): string {
@@ -1132,6 +1155,21 @@ export class Operations {
       console.warn(`[task ${task.id}] linter failed: ${(err as Error).message}`),
     );
   }
+  /** Runs `fn` once fewer than {@link MAX_CONCURRENT_LINTS} lint calls are
+   *  already in flight, queueing (FIFO) otherwise — the bulk-import throttle
+   *  described on the class fields above. */
+  private async withLintSlot<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.lintInFlight >= Operations.MAX_CONCURRENT_LINTS) {
+      await new Promise<void>((resolve) => this.lintQueue.push(resolve));
+    }
+    this.lintInFlight++;
+    try {
+      return await fn();
+    } finally {
+      this.lintInFlight--;
+      this.lintQueue.shift()?.();
+    }
+  }
   private async lintTaskNow(ws: string, task: Task): Promise<void> {
     // v5 coach context: the rest of the project's own open backlog, for the
     // missing-dependency / parallel-candidate rules — a snapshot at lint time,
@@ -1139,7 +1177,7 @@ export class Operations {
     const siblingTitles = (await this.store.listTasks(ws))
       .filter((t) => t.projectId === task.projectId && t.id !== task.id && !t.archived && (t.state === "backlog" || t.state === "todo"))
       .map((t) => t.text);
-    const concerns = await lintTask(task.text, task.description, siblingTitles);
+    const concerns = await this.withLintSlot(() => this.lintConsult(task.text, task.description, siblingTitles));
     const current = await this.store.getTask(task.id);
     if (!current || current.workspaceId !== ws) return; // deleted meanwhile
     // The task may have been edited again while the consult was in flight —
