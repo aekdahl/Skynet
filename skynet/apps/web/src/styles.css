@@ -3389,6 +3389,12 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .smoke-req { color: var(--warn); font-size: var(--fz-10); text-transform: uppercase; letter-spacing: 0.04em; }
 .smoke-detail { color: var(--muted); }
 .smoke-caveat { font-size: var(--fz-11); color: var(--warn); line-height: 1.5; margin: 0; max-width: 78ch; }
+/* Project driver — what stands between this project and done. Rendered only for
+   states that need attention; a line that shows up for healthy projects is one
+   operators stop reading. */
+.proj-drive { display: flex; align-items: center; gap: 8px; font-size: var(--fz-12); color: var(--warn);
+  line-height: 1.5; margin-top: 2px; }
+.proj-drive-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); flex: none; }
 /* A benched credential — its runners get no new work and its live runs were
    stopped. Shown on the row itself: "why is nothing running on this key" has to
    be answerable without opening anything. */

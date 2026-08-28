@@ -498,6 +498,19 @@ export const Project = z.object({
   // preview fails to start, or the reviewer times out / returns no readable
   // verdict — deep review never blocks the pipeline, it only strengthens it.
   deepReview: z.boolean().default(false),
+  // The project driver's latest read of "what stands between this project and
+  // done?" (see apps/server/src/drive.ts). Written by the autonomy tick only
+  // when the answer CHANGES, so it's a state, not a log — and so the UI can
+  // show one honest line instead of making an operator reconstruct it from the
+  // board. Null until the first tick has looked.
+  drive: z
+    .object({
+      state: z.enum(["working", "done", "needs_triage", "needs_review", "no_capacity", "no_runners", "autonomy_off", "empty"]),
+      detail: z.string(),
+      at: Timestamp,
+    })
+    .nullable()
+    .default(null),
   // Opt-in second lens, layered on TOP of `deepReview` (requires it — a no-op
   // while deepReview is off, since there's no verifier pass to run after).
   // After the deepReview reviewer APPROVES, spins up a THIRD bounded agent run

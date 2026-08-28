@@ -1869,6 +1869,16 @@ export function ProjectView({
                 💬 chat only — no repo connected
               </div>
             )}
+            {/* The project driver's answer to "what stands between this and
+                done?" (server-side, apps/server/src/drive.ts). Shown only when
+                something is actually in the way — a line that also appears for
+                healthy projects is one an operator learns to ignore. */}
+            {project.drive && project.drive.state !== "working" && project.drive.state !== "done" && (
+              <div className="proj-drive" title={`Project driver · updated ${new Date(project.drive.at).toLocaleString()}`}>
+                <span className="proj-drive-dot" aria-hidden="true" />
+                {project.drive.detail}
+              </div>
+            )}
             {project.checkCmd && (
               <div className="mono proj-repo-line" title="Runs after a merge, before it's committed — a failure undoes the merge and raises a gate.">
                 ✓ verifier gate: <b>{project.checkCmd}</b>

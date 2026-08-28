@@ -60,6 +60,12 @@ import type {
   SecretMeta,
 } from "@skynet/shared";
 import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
+import { buildReplenishPrompt, parseProposedTasks } from "./steward/replenish.js";
+import { sameTaskText } from "./steward/assistant.js";
+
+// Cheap mid-tier model for backlog replenishment — one short, tool-less call
+// grounded in text we already have. See CLARIFY_DRAFT_MODEL for the same choice.
+const REPLENISH_MODEL = "sonnet";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { assertApprovable, CommandDeniedError } from "./command-safety.js";
@@ -183,6 +189,8 @@ export interface OperationsDeps {
    *  the one it makes for any-agent eligibility (see prioritizeColumn /
    *  suggestAnyAgentEligible's `ask` param). Same rationale as crystallizeAsk. */
   organizeAsk?: (prompt: string) => Promise<string>;
+  /** Injected for tests; defaults to a cheap one-shot. See replenishBacklog. */
+  replenishAsk?: (prompt: string) => Promise<string>;
   /** Test seam: override the call lintTaskNow makes to grade one task (see
    *  `withLintSlot`'s bulk-import concurrency cap). Defaults to the real
    *  `lintTask`. Same rationale as decomposeConsult — needed to make the
@@ -200,6 +208,7 @@ export class Operations {
   private readonly crystallizeAsk?: (prompt: string) => Promise<string>;
   private readonly contextAsk?: (prompt: string) => Promise<string>;
   private readonly organizeAsk?: (prompt: string) => Promise<string>;
+  private readonly replenishAsk?: (prompt: string) => Promise<string>;
   private readonly lintConsult: (text: string, description: string | null, siblingTitles: string[]) => ReturnType<typeof lintTask>;
   // Bounds concurrent task-linter calls (see `lintTaskNow`). Each is a real
   // in-process Claude Agent SDK session (`lintTask` -> `oneShotText`), not a
@@ -221,10 +230,20 @@ export class Operations {
     this.store = deps.store;
     this.hub = deps.hub;
     this.orchestrator = deps.orchestrator;
+    // The project driver may re-pull a bound source when a board runs dry. It
+    // lives on the orchestrator (which ticks) but the pull lives here, so it's
+    // injected rather than imported — the orchestrator must not depend on this
+    // layer.
+    this.orchestrator.onDriveRefill = (ws, projectId) => this.refillProjectSource(ws, projectId);
     this.decomposeConsult = deps.decomposeConsult ?? ((opts) => oneShotText({ ...opts, apiKey: opts.apiKey ?? undefined }));
     this.crystallizeAsk = deps.crystallizeAsk;
     this.contextAsk = deps.contextAsk;
     this.organizeAsk = deps.organizeAsk;
+    this.replenishAsk = deps.replenishAsk;
+    // A dry board proposes its own next steps — see replenishBacklog. Injected
+    // for the same reason as onDriveRefill: the driver ticks in the
+    // orchestrator, the thinking lives here.
+    this.orchestrator.onDriveReplenish = (ws, projectId) => this.replenishBacklog(ws, projectId).then(() => undefined);
     this.lintConsult = deps.lintConsult ?? lintTask;
   }
 
@@ -926,6 +945,9 @@ export class Operations {
     // worktree per agent + the merge queue against it (desktop-first default).
     const project: Project = {
       id: this.uid("p"),
+      // Null until the first autonomy tick has looked at this project — the
+      // driver writes it, nothing seeds it.
+      drive: null,
       workspaceId: ws,
       name: input.name,
       goal: input.goal,
@@ -2581,6 +2603,75 @@ export class Operations {
       patch.label !== undefined ? { ...patch, label: patch.label?.trim() || null } : patch;
     return this.hub.upsertAgent({ ...existing, ...normalized });
   }
+  /** Re-pull a project's bound source. Wired onto the orchestrator as
+   *  `onDriveRefill` so the driver can top a dry board back up without the
+   *  orchestrator depending on this layer. */
+  private async refillProjectSource(ws: string, projectId: string): Promise<void> {
+    const project = await this.store.getProject(projectId).catch(() => undefined);
+    if (!project?.repo || !project.syncSourceStatus) return;
+    await this.importGithubIssues(ws, projectId).catch(() => undefined);
+  }
+
+  /**
+   * A project has run out of startable work — propose what's next from what it
+   * already knows (goal, roadmap doc, operator context, and what's already
+   * done), and put those on the board.
+   *
+   * Created in `backlog` with `autoPick: false`. That is the safety property,
+   * not a detail: auto-pick only ever starts tasks flagged `autoPick`, so
+   * nothing proposed here can start itself. Without it this would be a
+   * perpetual work generator — invent tasks, run them, empty the board, invent
+   * more — which is the one failure mode a cost-conscious operator would never
+   * forgive.
+   *
+   * Returns the tasks it created (empty is a perfectly good outcome — a project
+   * whose direction isn't written down anywhere SHOULD produce nothing rather
+   * than a plausible-sounding invented roadmap).
+   */
+  async replenishBacklog(ws: string, projectId: string): Promise<Task[]> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const ask = this.replenishAsk ?? ((prompt: string) => oneShotText({ prompt, model: REPLENISH_MODEL }));
+
+    const all = (await this.store.listTasks(ws)).filter((t) => t.projectId === projectId && !t.archived);
+    // Best-effort: a project with no repo (or no roadmap doc) simply grounds on
+    // its goal + context instead. Never a hard failure — replenishment is
+    // advisory.
+    const roadmapDoc = await this.getProjectRoadmap(ws, projectId).catch(() => null);
+    const roadmap = roadmapDoc && roadmapDoc.state === "ok" ? roadmapDoc.content.slice(0, 6000) : null;
+    const prompt = buildReplenishPrompt({
+      projectName: project.name,
+      goal: project.goal,
+      roadmap,
+      contextSummary: project.contextSummary ?? null,
+      doneTitles: all.filter((t) => t.state === "done").map((t) => t.text),
+      openTitles: all.filter((t) => t.state !== "done").map((t) => t.text),
+    });
+
+    let proposed = parseProposedTasks(await ask(prompt).catch(() => ""));
+    if (proposed === null) {
+      // ONE retry with the failure named, same as decompose/crystallize. A
+      // second unreadable reply yields nothing rather than a half-parsed guess.
+      proposed = parseProposedTasks(
+        await ask(`${prompt}
+
+Your previous reply could not be parsed as the required JSON. Reply with ONLY the JSON object.`).catch(() => ""),
+      );
+    }
+    if (!proposed?.length) return [];
+
+    // Never re-propose something already on the board, whatever the prompt said.
+    const existing = all.map((t) => t.text);
+    const fresh = proposed.filter((p) => !existing.some((e) => sameTaskText(e, p.text)));
+
+    const created: Task[] = [];
+    for (const p of fresh) {
+      const task = await this.createTask(ws, projectId, { text: p.text, description: p.description }).catch(() => null);
+      if (task) created.push(task);
+    }
+    return created;
+  }
+
   /**
    * Bench a credential: no runner authenticating with it gets new work, and
    * every run already on it is stopped and its task released back to `todo`.
