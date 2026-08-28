@@ -1911,6 +1911,35 @@ export class Orchestrator {
   }
 
   /**
+   * Claim ONE specific idle agent by id — the manual-reassign counterpart to
+   * {@link acquireOrProvisionRunner}'s "any matching idle runner" search.
+   * Same exclusive-claim discipline (acquireExclusive) and idle/key-allowed/
+   * provider-usable checks, just keyed on an exact id instead of a filter —
+   * and it never auto-provisions: the operator picked a SPECIFIC existing
+   * agent, so conjuring a different one on failure would silently ignore
+   * their choice rather than honestly reporting why it couldn't be honored.
+   */
+  private acquireSpecificAgent(
+    workspaceId: string,
+    agentId: string,
+    allowedCredentialIds: string[] = [],
+  ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
+    return this.acquireExclusive(async () => {
+      const r = await this.store.getAgent(agentId);
+      if (!r || r.workspaceId !== workspaceId) throw new Error("That agent no longer exists.");
+      if (r.status !== "idle") throw new Error(`${r.name} is busy right now — pick another idle agent.`);
+      if (allowedCredentialIds.length > 0 && !allowedCredentialIds.includes(r.credentialId ?? r.provider)) {
+        throw new Error(`${r.name}'s key isn't enabled for this project.`);
+      }
+      if (!(await this.providerUsable(workspaceId, r.provider, r.credentialId))) {
+        throw new RunnerNotConfiguredError(`No usable credential for "${r.name}" (${r.provider}) — add a key in Settings.`);
+      }
+      await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
+      return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
+    });
+  }
+
+  /**
    * Provision the runner's working directory. Without an integration repo this
    * is the operator-configured config.runnerCwd (Phase 0) when set, else a
    * fresh, isolated per-run scratch dir (chat-only mode: a project with no
@@ -3128,11 +3157,23 @@ export class Orchestrator {
     await this.relaunchEscalated(runId, resolution.guidance?.trim() || "", resolution.action === "reassign");
   }
 
-  /** Re-acquire compute for an escalated run and start a fresh session in its
-   *  worktree with the operator's guidance. `reassign` moves it to a DIFFERENT
-   *  runner (acquire the replacement BEFORE freeing the current, so the same idle
-   *  runner isn't re-picked). */
-  private async relaunchEscalated(runId: string, guidance: string, reassign: boolean): Promise<void> {
+  /**
+   * Re-acquire compute for a run and start a fresh session in its worktree.
+   * `reassign` moves it to a DIFFERENT runner (acquire the replacement
+   * BEFORE freeing the current, so the same idle runner isn't re-picked).
+   *
+   * `targetAgentId`, when set, claims that EXACT agent ({@link
+   * acquireSpecificAgent}) instead of the escalation flow's "any matching
+   * idle runner" search — the manual "Switch agent" action's entry point
+   * (see `reassignRunToAgent`, below). Unlike the escalation callers, that
+   * one can target a run that's STILL LIVE (never escalated/paused), so
+   * `ctx` (this run's `escalations` entry) may be absent here — `task` and
+   * `baseRef` fall back to the live session's own recollection of them in
+   * that case, so a manual reassign never loses task/feature/brief grounding
+   * or drifts the resumed worktree's base just because there was no prior
+   * escalation to carry that context forward.
+   */
+  private async relaunchEscalated(runId: string, guidance: string, reassign: boolean, targetAgentId?: string): Promise<void> {
     const run = await this.store.getRun(runId);
     const ctx = this.escalations.get(runId);
     if (!run) return;
@@ -3176,20 +3217,32 @@ export class Orchestrator {
         await this.freeRunner(live.agentId);
         this.live.delete(runId);
       }
-      acq = await this.acquireOrProvisionRunner(
-        run.workspaceId,
-        run.provider,
-        run.model,
-        undefined,
-        await this.projectKeyAllowlist(run.projectId),
-        reassign ? (live?.agentId ?? ctx?.agentId) : undefined,
-      );
+      acq = targetAgentId
+        ? await this.acquireSpecificAgent(run.workspaceId, targetAgentId, await this.projectKeyAllowlist(run.projectId))
+        : await this.acquireOrProvisionRunner(
+            run.workspaceId,
+            run.provider,
+            run.model,
+            undefined,
+            await this.projectKeyAllowlist(run.projectId),
+            reassign ? (live?.agentId ?? ctx?.agentId) : undefined,
+          );
       if (reassign && live) {
         await live.handle.stop().catch(() => undefined);
         await this.freeRunner(live.agentId);
         this.live.delete(runId);
       }
     } catch (err) {
+      // A manual "Switch agent" (targetAgentId set) can target a run that's
+      // still genuinely LIVE and healthy — nothing has been touched yet at
+      // this point (the OLD handle is only stopped in the `reassign && live`
+      // branch AFTER a successful acquire, further down), so an acquire
+      // failure here (the chosen agent went busy, was removed, etc.) means
+      // the run is exactly as it was. Raising an escalation would incorrectly
+      // flag a perfectly fine task as stuck; propagate the error instead so
+      // the caller (reassignRunToAgent) surfaces an honest "couldn't switch"
+      // message and leaves the live run running.
+      if (targetAgentId) throw err;
       // Same dead-end as the provider.start() failure below, one step earlier:
       // no runner could be acquired at all (e.g. the assigned agent was removed
       // — "reassign when the runner left" — or every eligible runner is busy).
@@ -3227,7 +3280,11 @@ export class Orchestrator {
     const baseUrl = await secretService.resolveEndpoint(run.workspaceId, run.provider).catch(() => undefined);
     const rates = ratesFor(baseUrl, run.model);
     const project = await this.store.getProject(run.projectId);
-    const task = ctx?.taskId ? await this.store.getTask(ctx.taskId) : undefined;
+    // A manual reassign's run may never have been escalated/paused (`ctx`
+    // absent) — fall back to the live session's own recollection of its task
+    // so grounding (feature/brief/siblings below) isn't silently dropped.
+    const taskIdForResume = ctx?.taskId ?? live?.taskId ?? undefined;
+    const task = taskIdForResume ? await this.store.getTask(taskIdForResume) : undefined;
     const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
     const solutionBrief = task ? await this.findTaskBrief(task, run.workspaceId) : undefined;
     const siblings = project && task ? await this.siblingDigestFor(project, task.id) : undefined;
@@ -3240,9 +3297,11 @@ export class Orchestrator {
       feature,
       brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
       siblings,
-      body: reassign
-        ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
-        : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}).${gitStateNote} Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
+      body: targetAgentId
+        ? `An operator manually reassigned this task to you mid-run — the previous agent wasn't stuck, they just chose to switch who's working it. Its work so far is already in the working directory (branch ${run.branch}).${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+        : reassign
+          ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+          : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}).${gitStateNote} Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
     });
     // Reflect the (re)acquired runner on the persisted run: a reassign moves the
     // run to a DIFFERENT agent, and the board/subway attribute runs by agentId —
@@ -3252,13 +3311,20 @@ export class Orchestrator {
     if (running) await this.hub.upsertRun({ ...running, status: "running", agentId: acq.id });
     else await this.hub.runStatus(runId, "running");
     if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
-    await this.hub.runLog(runId, reassign ? "reassigned to another runner after escalation" : "resuming after escalation with operator guidance");
+    await this.hub.runLog(
+      runId,
+      targetAgentId
+        ? `manually reassigned to ${acq.id} mid-run`
+        : reassign
+          ? "reassigned to another runner after escalation"
+          : "resuming after escalation with operator guidance",
+    );
     try {
       const handle = await provider.start(
         { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, disallowedTools: project?.disallowedTools },
         this.events(),
       );
-      this.live.set(runId, { handle, agentId: acq.id, taskId: ctx?.taskId ?? null, branch: run.branch, baseRef: ctx?.baseRef ?? this.baseBranchFor(project), git });
+      this.live.set(runId, { handle, agentId: acq.id, taskId: taskIdForResume ?? null, branch: run.branch, baseRef: ctx?.baseRef ?? live?.baseRef ?? this.baseBranchFor(project), git });
       this.escalations.delete(runId);
       this.failCounts.delete(runId);
     } catch (err) {
@@ -3273,10 +3339,32 @@ export class Orchestrator {
       await this.freeRunner(acq.id);
       await this.raiseEscalationCard(run, `resume failed — ${(err as Error).message}`, ctx?.source ?? "stalled", {
         git,
-        baseRef: ctx?.baseRef,
-        taskId: ctx?.taskId ?? null,
+        baseRef: ctx?.baseRef ?? live?.baseRef,
+        taskId: taskIdForResume ?? null,
       }).catch(() => undefined);
     }
+  }
+
+  /**
+   * Manual "Switch agent" — move a still-LIVE run's work to a SPECIFIC,
+   * operator-chosen idle agent: stop the current session, keep the same
+   * worktree/branch/committed work, resume it on the target. Thin wrapper
+   * over `relaunchEscalated`'s `targetAgentId` path — see its own doc
+   * comment for the mechanics (task/baseRef fallback for a run that was
+   * never escalated, escalate-on-failed-resume, etc.).
+   *
+   * Deliberately does NOT pre-check the target agent here: `relaunchEscalated`
+   * → `acquireSpecificAgent` already validates existence/idle/usable inside
+   * the SAME `acquireExclusive`-guarded claim, so a second check here would
+   * just be a race-prone duplicate. On failure to ACQUIRE the target
+   * (busy/removed/unusable), the error propagates straight to the caller and
+   * the live run is left completely untouched (see relaunchEscalated's own
+   * targetAgentId branch) — never a silent no-op, never a false "reassigned".
+   */
+  async reassignRunToAgent(runId: string, targetAgentId: string): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (!run) throw new Error("Run not found.");
+    await this.relaunchEscalated(runId, "", true, targetAgentId);
   }
 
   /** Merge committed: free the runner, mark the owning task done, finish the agent. */

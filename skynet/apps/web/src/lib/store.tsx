@@ -243,6 +243,7 @@ export interface Store extends StoreState {
   requestReview: (projectId: string, taskId: string) => Promise<void>;
   requestRetriage: (projectId: string, taskId: string) => Promise<void>;
   forceReview: (projectId: string, taskId: string) => Promise<void>;
+  reassignTaskAgent: (projectId: string, taskId: string, agentId: string) => Promise<void>;
   resyncProjectSource: (projectId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
@@ -740,6 +741,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await api.forceReview(projectId, taskId);
         } catch (e) {
           if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't force this to review."));
+        }
+      },
+      reassignTaskAgent: async (projectId, taskId, agentId) => {
+        try {
+          await api.reassignTaskAgent(projectId, taskId, agentId);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't switch agent."));
         }
       },
       resyncProjectSource: async (projectId) => {

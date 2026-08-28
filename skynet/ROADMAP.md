@@ -399,6 +399,38 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
   confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
   `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Manual "Switch agent" on a live ongoing task.** Requested live alongside the Force Done loading-state
+  fix: "it should be possible to manually switch agent on a task." Before this, once a run started the
+  `AgentEligibility` picker went permanently read-only — the only ways to change WHO was working a task were
+  "Send to To-do" (abandon and restart from scratch) or escalation's "Reassign" (grabs any eligible idle
+  runner, never the operator's own pick). Neither let an operator just say "move this to THAT agent" while
+  the work was healthy and still in progress.
+  New `🔀 Switch agent…` dropdown on any `ongoing` card, populated from the live fleet's idle agents (same
+  `fleet` prop `AgentEligibility` already renders from — no new fetch). Picking one stops the current
+  session and resumes the SAME run — same worktree, same branch, same committed AND uncommitted work — on
+  the chosen agent. Built almost entirely on EXISTING machinery rather than a parallel implementation:
+  `relaunchEscalated` (escalation's own "stop old, acquire new, resume in the same worktree" engine) gained
+  an optional `targetAgentId` — when set, it claims that EXACT agent (`acquireSpecificAgent`, a new
+  id-keyed sibling of `acquireOrProvisionRunner`'s "any matching idle runner" search, same
+  `acquireExclusive` claim discipline, never auto-provisions) instead of picking any match, and frames the
+  handoff prompt as a deliberate operator choice ("wasn't stuck, they just chose to switch") rather than
+  escalation language. The one real wrinkle: `relaunchEscalated` was written for runs already parked in
+  `this.escalations` (`ctx`), and a manual switch targets a run that's STILL LIVE and was never escalated —
+  `ctx` is absent, so `task`/`baseRef` now fall back to the live session's own recollection of them
+  (`live?.taskId` / `live?.baseRef`) instead of silently losing task/feature/brief grounding on resume (also
+  fixes a latent gap in the escalation-failure fallback path, which used to drop `taskId` entirely for a
+  never-escalated run). And since a manual switch can fail (target went busy/removed) while the ORIGINAL
+  session is still perfectly healthy, that one failure path was changed to propagate the error straight to
+  the caller instead of raising an escalation card on a task that isn't actually stuck — new
+  `Orchestrator.reassignRunToAgent` / `Operations.reassignTaskAgent`, `POST /api/projects/:id/tasks/:tid/
+  reassign-agent`, and an MCP `reassign_task_agent` tool.
+  `tests/reassign-task-agent.test.ts` (4 new tests, real throwaway git repo, same harness as
+  `escalation-reassign-interrupted-git.test.ts`): the happy path proves the SAME worktree/uncommitted file
+  survives the switch and the new agent's own prompt carries the manual-reassign framing; target-busy and
+  target-missing both leave the original run completely untouched (old handle never stopped, no second
+  `start()` call); a non-`ongoing` task is refused before the orchestrator is ever touched. All 27
+  pre-existing escalation/reassign tests still pass unchanged — the new `targetAgentId` branch is fully
+  additive to `relaunchEscalated`.
 - [x] **Organize board also unsticks unassigned backlog tasks it's confident about.** Requested live: "when
   Steward organize the tasks it should also set the ones that make sense to any agent in backlog so they can
   be picked up for work." An `unassigned` backlog task never leaves backlog on its own — the eligibility

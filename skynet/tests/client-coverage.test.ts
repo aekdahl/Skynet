@@ -165,6 +165,14 @@ const ALLOW = new Set<string>([
   // force-review.test.ts, driving the real Orchestrator/Operations against a
   // real throwaway git repo.
   "forceReview",
+  // manual "Switch agent" — needs a genuinely live, still-`ongoing` run PLUS a
+  // second idle agent to switch to at the moment it's called; no offline
+  // journey shape reproduces that fleet state. Full success/failure-mode
+  // coverage (stops + resumes on the target agent in the SAME worktree,
+  // target busy/missing, not-ongoing) is server-side in
+  // reassign-task-agent.test.ts, driving the real Orchestrator/Operations
+  // against a real throwaway git repo.
+  "reassignTaskAgent",
   // manual "Re-sync" — needs a real GitHub-bound project + a live GitHub API,
   // so no offline journey exercises it. Full pull/push behavior (new issues,
   // drifted title/description, new checklist items, push-drift with sync on/
