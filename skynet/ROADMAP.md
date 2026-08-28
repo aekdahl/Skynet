@@ -1418,6 +1418,28 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   refill, because that's a read and this is a model call, and a project that just ran dry will still be
   dry in fifteen minutes.
 
+- [x] **MCP kept going down, and `--restart=always` could not save it.** Diagnosed live: the app was
+  unreachable while `docker ps` reported *"Up 24 hours"*. `docker inspect` said `running` with
+  `RestartCount=0`, but the PID it named **did not exist on the host**, and `docker exec` gave the game
+  away — *"cannot exec in a stopped state"* — against a container `inspect` still called running. The
+  container's task had died while dockerd kept stale metadata, so the restart policy **never fired**:
+  Docker didn't believe anything had exited. Nothing recovered it, no alert distinguished it from a
+  healthy idle box, and it stayed down until a human noticed — which is the whole shape of the recurring
+  annoyance.
+  Restored by removing the zombie and re-running the startup script (the canonical container definition,
+  rather than a hand-rebuilt `docker run` that could drift). **The durable fix is a liveness watchdog
+  that asks the APPLICATION, not Docker** (`deploy/gcp/startup.sh.tftpl`): a systemd timer curls
+  `:8080` every 60s and, after **3 consecutive** failures, force-recreates the container regardless of
+  what dockerd believes. Deliberately conservative, because an over-eager watchdog is worse than none —
+  consecutive failures only (a blip during a deploy or a GC pause must not trigger it), and at most one
+  recovery per 10 min so a genuinely broken image isn't recreated every minute forever. Recovery
+  re-runs the startup script rather than duplicating the run command, so the two can't drift apart.
+  Verified three ways: the Terraform template renders (`%%{http_code}` and `$${COOLDOWN}` needed
+  escaping — `%{` and `${` are template syntax, and an unescaped one would have broken the next deploy
+  outright); the timer is active on the box; and the decision logic was exercised against a dead port
+  with recovery stubbed — streak 1 → 2 → fires at 3 → clears → cooldown blocks the next — **without
+  taking the live app down to test it**.
+
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease
