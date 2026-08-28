@@ -366,7 +366,7 @@ kbd {
 .qcard-agent {
   background: none; border: none; cursor: pointer; font-family: var(--font-mono);
   font-size: var(--fz-11); color: var(--muted); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line);
-  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
+  max-width: 160px; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
 }
 .qcard-agent:hover { color: var(--text); }
 .qcard-wait { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-12); color: var(--warn); font-variant-numeric: tabular-nums; flex-shrink: 0; }
@@ -3393,3 +3393,11 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .proj-drive { display: flex; align-items: center; gap: 8px; font-size: var(--fz-12); color: var(--warn);
   line-height: 1.5; margin-top: 2px; }
 .proj-drive-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); flex: none; }
+/* A benched credential — its runners get no new work and its live runs were
+   stopped. Shown on the row itself: "why is nothing running on this key" has to
+   be answerable without opening anything. */
+.settings-cred-paused { font-size: var(--fz-10-5); color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn), transparent 60%);
+  border-radius: 999px; padding: 1px 8px; margin-left: 8px; }
+/* Fleet roster larger than the concurrency cap — a notice, never a blocker. */
+.fleet-cap-note { font-size: var(--fz-11-5); color: var(--muted); line-height: 1.55; background: var(--bg2);
+  border-radius: 8px; padding: 9px 12px; max-width: 80ch; margin-bottom: var(--sp); }

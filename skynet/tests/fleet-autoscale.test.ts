@@ -75,15 +75,34 @@ describe("fleet auto-scale (assignment)", () => {
   });
 });
 
-describe("fleet cap on explicit runner creation", () => {
-  it("configureRunner refuses once the fleet is at maxRunners", async () => {
+describe("maxRunners caps concurrency, not roster size", () => {
+  it("configureRunner is NOT blocked by the cap", async () => {
+    // This used to refuse. Blocking creation was the wrong lever: an operator
+    // configuring a fleet — one runner per cheap endpoint, a spare on a second
+    // key — is not the runaway case the cap defends against. Starting them all
+    // at once is, and that's gated in acquire() (see the cap test above, which
+    // now counts BUSY runners). The Fleet page says how many will work at once.
     const store = new MemoryStore({ seed: false });
     const hub = new Hub(store, new NullBus());
     const operations = new Operations({ store, hub, orchestrator: build(store) });
     await store.putWorkspaceSettings({ workspaceId: WS, autoProvisionRunners: false, maxRunners: 1 });
-    await operations.configureRunner(WS, { provider: "claude", model: "opus" }); // 1st → ok (fleet now 1)
-    await expect(operations.configureRunner(WS, { provider: "claude", model: "opus" })).rejects.toThrow(/maximum of 1 runner/);
-    expect(await fleetSize(store)).toBe(1);
+    await operations.configureRunner(WS, { provider: "claude", model: "opus" });
+    await operations.configureRunner(WS, { provider: "claude", model: "opus" });
+    await operations.configureRunner(WS, { provider: "claude", model: "opus" });
+    expect(await fleetSize(store)).toBe(3);
+  });
+
+  it("an IDLE runner past the cap doesn't stop a busy one finishing — the cap counts work, not roster", async () => {
+    // The complaint this fixes: idle agents counted toward the ceiling, so a
+    // roster of configured-but-resting runners could block all new work.
+    const store = new MemoryStore({ seed: false });
+    await seed(store, { autoProvisionRunners: false, maxRunners: 2 });
+    const hub = new Hub(store, new NullBus());
+    const operations = new Operations({ store, hub, orchestrator: build(store) });
+    for (let i = 0; i < 4; i++) await operations.configureRunner(WS, { provider: "claude", model: "opus" });
+    const orch = build(store);
+    await orch.assignTask("p1", "t1"); // 1 busy, cap 2 → still room despite 5 runners existing
+    expect((await store.getTask("t1"))?.runId).toBeTruthy();
   });
 });
 

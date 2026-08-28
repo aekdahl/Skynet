@@ -23,6 +23,7 @@ import {
   type VerifyCredentialResult,
   type EndpointSmokeResult,
   type StewardActionOutcome,
+  type PauseCredentialResult,
   type CommandPolicy,
   type PolicyVersion,
   type PolicyDryRunResult,
@@ -538,6 +539,15 @@ export function verifyCredential(id: string) {
 // and reports what the endpoint actually supported. Verify proves the key
 // authenticates; this proves the endpoint can drive Skynet. Costs a fraction of
 // a cent, so it is only ever triggered by the operator.
+// Bench a credential: no runner on it gets new work, and every run already on
+// it is stopped and its task released back to `todo`. Returns which runs were
+// stopped, so the UI can say what the pause actually did.
+export function pauseCredential(id: string, reason: string) {
+  return req<PauseCredentialResult>("POST", `/api/credentials/${id}/pause`, { reason });
+}
+export function resumeCredential(id: string) {
+  return req<{ secret: SecretMeta }>("POST", `/api/credentials/${id}/resume`);
+}
 export function smokeTestCredential(id: string, model?: string) {
   return req<EndpointSmokeResult>("POST", `/api/credentials/${id}/smoke`, model ? { model } : {});
 }
@@ -807,7 +817,9 @@ export interface AssistantAction {
     | "start_task"
     | "queue_tasks"
     | "start_feature"
-    | "process_backlog";
+    | "process_backlog"
+    | "pause_key"
+    | "resume_key";
   summary: string;
   taskId?: string;
   text?: string;
@@ -824,6 +836,9 @@ export interface AssistantAction {
   // = the pool for `agents` mode (empty otherwise).
   mode?: "any" | "agents" | "unassigned";
   agentIds?: string[];
+  // Credential pause/resume — workspace-scoped, unlike every project action above.
+  credentialId?: string;
+  reason?: string;
   // Roadmap linkage (add_feature / add_milestone / set_task_feature /
   // set_feature_milestone). `null` clears the respective link.
   featureId?: string | null;
@@ -1124,7 +1139,7 @@ export function reorderTask(projectId: string, taskId: string, beforeId: string 
 export function createAgent(body: { provider: string; model: string; name?: string; credentialId?: string; label?: string | null }) {
   return req<unknown>("POST", "/api/fleet/runners", body);
 }
-export function updateAgent(id: string, body: { model?: string; name?: string; canReview?: boolean; label?: string | null }) {
+export function updateAgent(id: string, body: { model?: string; name?: string; canReview?: boolean; label?: string | null; credentialId?: string | null }) {
   return req<unknown>("PATCH", `/api/fleet/runners/${id}`, body);
 }
 export function deleteAgent(id: string) {

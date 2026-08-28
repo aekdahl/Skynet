@@ -419,7 +419,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   tool(
     "get_settings",
     "observe",
-    "Read the workspace's non-secret settings: the fleet auto-scale policy (autoProvisionRunners + maxRunners) and which providers have a usable key. Project settings live on each project (update_project); secrets are never exposed via MCP.",
+    "Read the workspace's non-secret settings: the fleet auto-scale policy (autoProvisionRunners + maxRunners, the at-once concurrency cap) and which providers have a usable key. Project settings live on each project (update_project); secrets are never exposed via MCP.",
     {},
     async () => {
       const [fleet, providers] = await Promise.all([operations.getWorkspaceSettings(ws), operations.listProviders(ws)]);
@@ -434,7 +434,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   tool(
     "update_settings",
     "author",
-    "Update the workspace fleet policy: autoProvisionRunners (auto-add a runner, cloned from a busy one on an allowed key, when a task has none free), maxRunners (hard cap on fleet size; 0 = no cap), and browserTools (give Claude runners a real browser via a Playwright MCP server; off by default). Workspace-level — a project-scoped token cannot change it.",
+    "Update the workspace fleet policy: autoProvisionRunners (auto-add a runner, cloned from a busy one on an allowed key, when a task has none free), maxRunners (how many runners may work AT ONCE — not a cap on fleet size; adding runners is never blocked, and idle ones don't count; 0 = no cap), and browserTools (give Claude runners a real browser via a Playwright MCP server; off by default). Workspace-level — a project-scoped token cannot change it.",
     UpdateWorkspaceSettingsRequest.shape,
     (a) => operations.updateWorkspaceSettings(ws, a),
   );

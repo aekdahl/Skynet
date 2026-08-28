@@ -78,31 +78,13 @@ merges — all **local-first, on their own machine**.
 2. [x] **Worktree-per-runner provisioning** — each agent gets an isolated git worktree/branch.
 3. [x] **Repo connection + `.skynet/modules.json`** — a workspace points at a real repo + integration branch.
 4. [x] **Provider credential management** — per-workspace keys, injected into runners, never client-exposed.
-5. [x] **Sandboxed runner (local legs)** — defense-in-depth around each agent, shipped without a
-   container: **command allow/deny** (safety classifier, enforced at approve-time),
-   **filesystem write-confinement** to the worktree (opt-in OS sandbox — macOS
-   `sandbox-exec` / Linux `bwrap`, `SKYNET_RUNNER_SANDBOX`), and a **wall-clock
-   runtime cap** (`SKYNET_RUNNER_MAX_RUNTIME_MS`, default 30 min) that force-fails
-   a runaway/hung run. 🏢 *One-container-per-agent isolation, memory/CPU (cgroup) caps,
-   and network-egress allowlist ride the containerized runner with the hosted release.*
+5. [x] **Sandboxed runner (local legs)** — defense-in-depth without a container: command allow/deny, worktree write-confinement, and a wall-clock runtime cap that force-fails runaway runs.
 6. [x] **Real-execution event fidelity** — real diffs → diff HITL, changed files → modules, branch → preview.
-7. [x] **Local auth posture** — the desktop app serves on localhost as the single operator, with
-   `AUTH_REQUIRED` secure-by-default (fails closed unless `NODE_ENV` is explicitly dev/test). 🏢 *Real
-   multi-user login, SSO/OIDC, scoped CORS, and rate limiting are deferred with the hosted release.*
+7. [x] **Local auth posture** — the desktop app serves on localhost as the single operator, secure-by-default via `AUTH_REQUIRED` (fails closed unless dev/test).
 8. [x] **Onboarding / first-run** — create workspace → connect repo → add key → add runner; retire seed fixtures.
-9. [x] **Desktop packaging (beta, unsigned)** — `electron-builder` `.dmg` (mac arm64 + x64) + `.nsis`
-   (win) with the server + SPA bundled, `electron-updater` wired, and a `v*`-tag CI release
-   ([.github/workflows/desktop-release.yml](.github/workflows/desktop-release.yml)) that publishes
-   installers to GitHub Releases. **Beta ships unsigned by decision** — macOS users right-click → Open
-   once (Gatekeeper); Windows background auto-update works unsigned. *(Code-signing + notarization split
-   out to v1 — see below.)*
-10. [x] **E2E of the full loop (manual acceptance)** — operator-run in the app's **QA → Simulation**
-   view: the **"Full run pipeline — edit → diff review → merge"** journey drives a **real Claude agent**
-   through the entire DoD loop (assign → isolated worktree → diff-review gate → approve → merge → run +
-   task reach `done`) and is LLM-judged. Run in the packaged desktop build with a real
-   `ANTHROPIC_API_KEY`. *(Replaces the old hosted-staging E2E; staging is 🏢 deferred. An automated
-   deterministic guard of the same loop runs on every PR — `tests/full-loop.test.ts`.)*
-11. [x] **UX/UI first-run polish to SOTA** — the launch blockers from the pre-release UX/UI review (the first ten minutes, where a new operator meets an empty board): pull QA surfaces (**Acceptance / Simulation**) out of the operator nav; real loading (skeleton + connect→connected lifecycle + retry — no terminal "Connecting to mission control…"); every empty state gets one primary CTA + a one-line mental-model hint; two-column onboarding + fix the **disabled-button** state globally (dim-amber reads as broken); surface **fleet-readiness** ("no provider connected — agents can't run · Add a key") from the first screen. *(Grades the first-run experience from ~3.4 → SOTA; none architectural.)*
+9. [x] **Desktop packaging (beta, unsigned)** — packaged mac/Windows installers via `electron-builder` with `electron-updater` and a tag-triggered CI release to GitHub Releases; ships unsigned by decision for beta.
+10. [x] **E2E of the full loop (manual acceptance)** — the full assign → diff-review → approve → merge → done loop is LLM-judged end-to-end against a real Claude agent in the packaged desktop build, with an automated guard on every PR.
+11. [x] **UX/UI first-run polish to SOTA** — fixed the pre-release UX review's launch blockers in the first-run experience: loading states, empty-state CTAs, disabled-button styling, and fleet-readiness surfacing.
 
 **Scope:** Claude-first · **local-first desktop app** (BYO key, single operator, file-store persistence,
 keys never leave the machine). **Hosted / multi-tenant is out of scope** (🏢 deferred — see below).
@@ -157,113 +139,23 @@ Findings from the July 2026 end-to-end audit. **P0 blocks release; P1 makes the 
 sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below.)
 
 **P0 — integrity & first impressions**
-1. [x] **Router + nav-state integrity** — `parseHash` (`apps/web/src/lib/routing.ts:19-47`) resolves
-   `#/settings`, `#/acceptance`, `#/simulation` deep links, and `DEV_ONLY_VIEWS`
-   (`apps/web/src/lib/dev.ts:25`) is empty, so nothing dev-gates them. The sidebar `.on` highlight
-   derives purely from router state through one function, `activeNav(view)`
-   (`apps/web/src/components/shell.tsx:36-66`) — every nav item's `.on` is `active === <key>`, never
-   an ad-hoc local predicate, so highlights can't accumulate. `:focus-visible`
-   (`styles.css:1849-1852`) is a separate outline from `.on`'s background/box-shadow treatment.
-   Window title reflects view/project/agent via a `useEffect` in `App.tsx:209-217`. *(One nuance:
-   the QA nav-section header carries `.on` too when Acceptance/Simulation is active — a
-   parent-section + child-item pair, deliberately styled differently (`styles.css:1858` just
-   recolors the header text, no outline/background) — not the original "three primary items lit
-   simultaneously" bug.)*
-2. [x] **Onboarding step 2 (GitHub) is a PLACEHOLDER** mid-wizard — removed the GitHub step
-   from the wizard (now Workspace → Module map → Fleet). Integrations already owns the connect
-   flow post-onboarding, so a first-run user never meets the unfinished App-install mid-wizard.
-3. [x] **Blocked-CTA / disabled-state system** — one pattern app-wide: distinct disabled
-   treatment + an inline, readable reason ("Select at least one provider", "name required")
-   next to the button. Applies to GetStarted, wizard step 4, task composer, fleet form.
-   *(GetStarted / wizard / task composer / fleet form already had it. Extended the pattern
-   to the rest of the app: factored `PrimaryButton`'s reason-rendering out into a shared
-   `Blocked` wrapper (`components/empty.tsx`) any button style can use — migrated
-   Start/Assign, Retire (agent detail + fleet), Fork, Simulation's Judge/Copy, Settings'
-   key/credential/token forms, and Merges' rework guidance to it. Selector chips
-   (provider picker, subway rows, task-grouping chips) were left on hover-title — they're
-   multi-choice rows, not a single blocked CTA, so a permanent reason line under each would
-   be noise, not signal.)*
-4. [x] **Legibility floor** — ≥11px and `--muted` for any text that carries meaning; `--faint`
-   only for decoration. Fixed the roadmap's two named offenders (subway anchor labels
-   `.swb-anchor-label`, backlog subtitle `.proj-backlog`) plus the rest of the same bug found on a
-   full sweep of `styles.css`: risk chips, eval scores, test tallies, the Runs-board header row and
-   status pills, subway track/station labels and counts, and every N/M-fraction readout across the
-   app (feature/milestone/first-run progress, roadmap phase counts). Legends and picker hints were
-   already compliant (`--muted` at 11px+, and genuinely decorative respectively) — left alone.
-   Judgment calls, left `--faint`: a bare "—" no-agent placeholder (a null-state glyph, not
-   information), per-log-line timestamps (a "when" annotation secondary to the log line's own
-   `--muted` text), the timeline's axis-tick labels and the subway diagram's dense per-station name
-   labels (both a chart/diagram-chrome convention, and — for the latter — a font-size bump risked
-   overlap in a tightly absolute-positioned layout with many instances per row), and structural
-   nav/palette section dividers (`OPERATE`/`CONFIGURE`, command-palette group headers) — grouping
-   chrome, not content.
-5. [x] **Persist the workspace name server-side** — rides `WorkspaceSettings` (the existing
-   auto-scale settings record) as a `name` field; onboarding writes it via `PATCH
-   /api/settings/fleet`, the sidebar/shell header read it from the live store
-   (`workspaceSettings.name`), not `firstrun.ts`'s old localStorage helper.
+1. [x] **Router + nav-state integrity** — sidebar nav highlighting now derives purely from router state through one function, so highlights can no longer accumulate across views.
+2. [x] **Onboarding step 2 (GitHub) is a PLACEHOLDER** mid-wizard — removed the unfinished GitHub step from the onboarding wizard; Integrations owns that connect flow post-onboarding instead.
+3. [x] **Blocked-CTA / disabled-state system** — unified disabled-button styling app-wide with a shared, visible inline reason instead of hover-only tooltips.
+4. [x] **Legibility floor** — swept `styles.css` for text under the ≥11px/`--muted` legibility floor and fixed every instance carrying meaning, reserving `--faint` for genuine decoration.
+5. [x] **Persist the workspace name server-side** — workspace name now persists via the settings API instead of a client-side `localStorage` helper.
 
 **P1 — core-loop guidance & affordances**
-6. [x] **Continuation after Create project** — land in the project with the task composer
-   focused; keep a live **first-run checklist** on Home (create → task → assign → approve)
-   until the first merge.
-7. [x] **Task composer polish** — `AddTaskCard` already autofocuses the name field, carries the
-   "description (optional — the full brief the agent receives)" placeholder, submits on ⌘↵ (and
-   bare Enter in the name field), and its "Add task" button already renders a visible blocked-reason
-   via `PrimaryButton` (not a hover-only tooltip).
-8. [x] **Assign is a primary affordance** — the button (now labeled "Start →" — "Assign" implied
-   a handoff, but it kicks the run off immediately) lives directly on backlog/todo kanban cards, and
-   `todo → ongoing` is a legal drag transition too.
-9. [x] **Explain the Autonomy toggle** — a visible subtitle now sits under the toggle in both
-   the project header and the create-project form ("Agents triage, auto-pick, and review tasks
-   on their own — off, the board is fully human-driven."), not just the hover title. A
-   workspace's very first project also defaults Autonomy **off** (every project after defaults
-   on, as before) — gated on the client's own project count at the moment the create form opens,
-   not a server-side default change, so every other caller (MCP, API) is unaffected.
-10. [x] **Fleet copy & guardrails** — "1 agent" pluralization fixed; the header CTA is now
-    "+ Add agent" (matched to the form's own "Add to fleet" submit, one verb across the whole
-    flow); Retire now confirms inline via the same danger-styled `useConfirm()` dialog used
-    elsewhere (Stop run, etc.), with copy verified against what `retireRunner` actually does
-    (history preserved, only the agent record removed; a busy agent is already 409-blocked);
-    the provider strip reads "catalog: Claude, Codex, …" instead of implying all five are configured.
-11. [x] **Inbox empty state teaches** — the empty state lists all four gate kinds (approval / plan
-    review / diff review / merge conflict) with a one-line blurb each.
-12. [x] **Prioritize the backlog _and_ todo** — manual promote/demote (reorder) on **todo**
-    cards, not just backlog. A card's rank sets both what surfaces at the top of the column
-    and — with Autonomy on — which todo an idle agent **auto-picks first**. The ↑/↓ control
-    (`moveTask`, same `order` rank field as the backlog drag-reorder) now renders on both
-    backlog and todo cards; `tickAutonomy`'s auto-pick step sorts eligible todo tasks by
-    `order` before firing, so a short-capacity tick grants idle agents to the
-    highest-priority task first instead of array order. (Drag-to-reorder stays the later polish.)
+6. [x] **Continuation after Create project** — creating a project now lands in it with the task composer focused, plus a live first-run checklist on Home until the first merge.
+7. [x] **Task composer polish** — confirmed the composer's autofocus, placeholder copy, ⌘↵ submit, and visible blocked-reason state were already in place.
+8. [x] **Assign is a primary affordance** — relabeled to "Start →" and put it directly on backlog/todo kanban cards, with `todo → ongoing` as a legal drag transition.
+9. [x] **Explain the Autonomy toggle** — added a visible subtitle explaining the toggle, and a workspace's first project now defaults Autonomy off.
+10. [x] **Fleet copy & guardrails** — fixed pluralization and CTA copy, added an inline confirm dialog to Retire, and corrected the provider strip's wording.
+11. [x] **Inbox empty state teaches** — the empty state now lists all four gate kinds with a one-line explanation each.
+12. [x] **Prioritize the backlog _and_ todo** — extended manual reorder to todo cards too, so a card's rank also drives which task Autonomy auto-picks first.
 
 ## v1 — Orchestration completeness & hardening
-- [x] **⭐ Browser tools for coding agents (MCP)** — Equip every runner with a Chrome/Playwright **MCP**
-  server so an agent can drive a real browser *within* a coding task: reproduce a bug, verify a UI change
-  end-to-end, or read live docs before editing. Wrap, don't rebuild — a scoped MCP tool on the existing
-  `runner-sdk` seam, **not** our own browser automation; the existing HITL gate already governs tool
-  approvals, so a nav/click can be gated like any other tool. Opt-in per runner/workspace, off by default.
-  *(Pulls the browser slice of v3's "Tools via MCP" forward — it's the highest-leverage tool for the code
-  loop; verification/repro is where it pays off, and it composes with the live-preview pipeline below.)*
-  **Landed for every vendor except Hermes** (no evidence it supports MCP): the Claude half —
-  `browserMcpServers()` (`runner-sdk/src/claude.ts`) wraps `@playwright/mcp` over stdio, wired into the
-  live query's `mcpServers` when `StartSpec.browser` is set (a per-workspace `browserTools` toggle); tools
-  surface as `mcp__browser__…`, outside the auto-allow set, so every browser action gates through normal
-  HITL approval like any other tool. **The CLI runners: each vendor wires it its own way**, verified live
-  against the real CLI (not memory — several docs were stale) via the shared
-  `browserMcpServerSpec`/`mergeBrowserMcpConfig` helpers (`runner-sdk/src/cli-runner.ts`, same
-  `SKYNET_BROWSER_MCP_COMMAND` override Claude uses):
-  - **Codex** — no project-local config file at all; `-c mcp_servers.browser.*=…` per-invocation
-    overrides (verified against codex-cli 0.147.0) mean zero file writes, ever.
-  - **Gemini** — file-based only (`--help` has no config-override flag); `CliVendor.prepareWorktree`
-    (a new optional hook) writes `.gemini/settings.json` inside the run's own worktree, merged onto
-    whatever the repo itself commits there — never the operator's `~/.gemini/settings.json`.
-  - **Cursor** — file-based (`.cursor/mcp.json`) same as Gemini, but a freshly-added server also needs a
-    one-time approval a headless run can't satisfy interactively; granted via `--approve-mcps` on the
-    invocation (session-scoped) rather than the persistent, global `mcp enable`. Tool calls aren't
-    live-HITL-gated here specifically — matches cursor-agent's existing `--force` full-trust design in
-    this codebase (relies on Skynet's post-run diff review), not a new exception.
-  - **Copilot** — a real per-invocation flag, `--additional-mcp-config <json>` (verified against
-    `@github/copilot` 1.0.80); tool calls fall through the existing generic approval-prompt match, same
-    live gate as any other tool.
+- [x] **⭐ Browser tools for coding agents (MCP)** — every runner (except Hermes) can drive a real Chrome/Playwright browser within a coding task, opt-in per workspace, gated through the normal HITL tool-approval flow.
 - [~] Remaining providers live behind `runner-sdk`: **Codex, Gemini, Cursor, Copilot, OpenCode, Kimi Code**
   all done; then breadth reactively from the candidate list in
   [docs/runner-catalog.md](docs/runner-catalog.md).
@@ -309,9 +201,7 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   wasn't independently live-verified for lack of a Moonshot key in this environment). No `closeStdin` or
   `PWD` workaround needed here — both were verified live to behave correctly out of the box, unlike
   OpenCode. Reactive breadth from the candidate list is still open-ended.
-- [x] **Agent labels / custom grouping** — Fleet already supports both: a "Group" field
-  (`label`) with a known-groups datalist, the fleet grid groups by label with headings, and
-  editing an agent's name is already part of the same Configure form.
+- [x] **Agent labels / custom grouping** — Fleet already supported grouping agents by a labeled "Group" field and editing an agent's name via the Configure form.
 - [~] **Mass inform** — select multiple agents (or a whole project) and attach a note that rides the
   *next* prompt each already receives — **no extra turn, ~free**. **Shipped:** a third interaction
   type (`inform`) alongside chat + resolve, never a HITL gate — `POST /api/runs/inform` (`{note,
@@ -401,45 +291,8 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     live preview is reachable from a phone** (Host-rewrite → Vite allowedHosts, HMR WS bridged, Vite
     `--base` injected). **Still to do:** Phase 2 remainder (service-container runtime + auto-rebuild on
     merge) & Phase 3 (command/artifacts, "any software").
-  - [x] **Perf — warm-worktree dep caching, nested sub-packages.** The root-level path (ensureDeps's
-    symlink/install, reconcileDepsOnRefresh's root reinstall) was already correct — untouched here.
-    The actual gap: a recipe for a nested monorepo can embed its OWN install directly in `recipe.cmd`
-    (`cd apps/web && pnpm install && pnpm dev`) for a sub-package the root-level provisioning never
-    reaches, and that embedded install reran on every single start/restart with nothing to skip it.
-    `project-preview.ts`'s `reconcileEmbeddedInstalls` now detects a `cd <dir> && <pm install> &&`
-    segment (`EMBEDDED_INSTALL_RE`) and strips it when that sub-package's `node_modules` already
-    exists and its lockfile is content-identical (SHA-256, not mtime — the worktree's own
-    `checkout --detach && reset --hard` on every restart touches every tracked file's mtime whether
-    or not it changed, so mtime would always read "stale" here) to the one from the last successful
-    install *in this reused worktree* (`.skynet/preview-installs/<slug>.hash`, written by a step
-    spliced into the command's own `&&` chain — the only way to know the install actually exited 0,
-    since a `cmd` that also starts a long-running dev server never itself exits). The same warm check
-    now also gates `reconcileDepsOnRefresh`'s nested case, so a merge-triggered refresh only re-runs a
-    sub-package's install when the diff actually touched *its* manifest, not any dep-file anywhere.
-    Verified against a real nested-monorepo fixture (real `npm install`, not mocked): cold start
-    installs, warm restart skips it (`▸ cd apps/web && node server.js` — no install segment at all),
-    a dependency bump makes it reinstall again.
-- [x] **Deploy to Fly.io — a real, persistent deployment alongside the ephemeral local preview.** The
-  live preview above is a scratch worktree running a local dev server: torn down on stop/restart, never
-  independently reachable once Skynet itself isn't running. This adds a second, human-triggered option —
-  a genuine `https://<app>.fly.dev` deployment of a project's **integration branch** (or a single **run's
-  branch**, for pre-merge verification) that survives independent of the local Skynet process, and is
-  only ever torn down by an explicit operator action (never automatically, never on a Skynet restart).
-  **Reuses, doesn't replace:** the SAME worktree provisioning as the local preview (`prepareWorktree`/
-  `ensureDeps`, extracted into `preview/worktree.ts` so both engines share one implementation), the
-  existing `.skynet/preview.json` descriptor's previously-unused `build`/`outputDir` fields (a new `fly`
-  sub-block adds only what's genuinely Fly-specific: app name, region, VM sizing — small/free-tier
-  defaults, always operator-overridable), and the same per-project credential-pinning UI pattern as the
-  GitHub PAT (`flyCredentialId`, a `fly` credential in the existing `SecretStore`). Two deploy shapes:
-  a **static site** (descriptor declares `build`) builds locally in the warm worktree and ships a minimal
-  generated `Dockerfile`/`fly.toml`; a **service** (a real backend) skips any local install entirely and
-  defers to `flyctl launch`'s own builder detection — reusing local `node_modules` for a container's
-  shipped artifact would risk shipping macOS-built native deps into a Linux image. Mechanism: shells out
-  to the real `flyctl` CLI (matches this codebase's `git-bin.ts` precedent — wrap a battle-tested binary
-  rather than reimplement the Machines API), with a deterministic app-name collision retry. Explicit
-  operator action only — a "⇪ Deploy to Fly.io" button; never wired into the autonomy loop, the merge
-  queue, or any automatic trigger. Full design: **[docs/live-preview.md](docs/live-preview.md)
-  §"Deploy to Fly.io"**.
+  - [x] **Perf — warm-worktree dep caching, nested sub-packages.** A nested monorepo's own embedded install step now skips re-running when its sub-package's lockfile is unchanged from the last successful install in that worktree.
+- [x] **Deploy to Fly.io — a real, persistent deployment alongside the ephemeral local preview.** A human-triggered, explicit-operator-action deploy of a project's integration branch (or a single run's branch) to a real `https://<app>.fly.dev` app that survives independent of the local Skynet process.
 - [~] **🔁 Task ↔ source-of-truth sync.** Tasks imported from an external source (GitHub issues, repo
   files, a tracker) should update the source when their Skynet status changes. **Approach:** a
   `Task.source` provenance link (set at import) + a `SyncSink` adapter seam (one per source kind),
@@ -647,6 +500,34 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   `escalation.test.ts`: a run parked on a plain (non-escalation) gate whose heartbeat goes stale is reaped,
   and the task is un-stranded to `todo` — the exact scenario that used to leave a done-looking run under a
   mid-pipeline card.
+- [x] **Fix: a fourth stranding path — abandoning a run via a kanban move left its Inbox card dangling.**
+  Reported live: "inbox messages must update if tasks move in kanban." Same invariant family as the fix
+  directly above (an ongoing/review task always has a LIVE run behind it), but the Inbox side of it:
+  `Operations.transitionTask`'s `abandonsRun` branch (ongoing/review → todo, or demoting done →
+  triage/backlog) already stopped the run and marked it archived — but never touched any HITL gate still
+  open for it. Drag a card with an open diff/verifier/approval gate back out of Review, and the Inbox kept
+  showing that gate forever: a pending decision pointing at a run whose worktree was already retired and
+  runner already freed, answerable by nothing. Confirmed this is genuinely the OTHER abandon direction —
+  `transitionTask`'s review→done path (bypassing the diff gate by dragging straight to Done) was already
+  correct, resolving the gate via `approve` before this fix; only the "abandon and start over" direction had
+  the gap. Fix: dismiss every open HITL for the run (`hub.resolveHitl(..., {action:"dismiss"})`, `by:
+  operatorId`) in the same `abandonsRun` branch, right after the existing stop+archive — called directly on
+  the Hub, not via `Operations.resolveHitl` (which calls `orchestrator.deliver`, meaningless for a handle
+  `stopAgent` just tore down), the same lower-level pattern `Orchestrator.settleArchivedRun` already uses for
+  the direct-archive-a-run path. Deliberately does NOT reuse `settleArchivedRun` wholesale here: it keeps the
+  worktree (a reversible soft-hide), while an abandoned kanban move is a genuine "start fresh," correctly
+  retired via the existing `stopAgent` call — reusing it would have quietly stopped retiring worktrees on
+  this path. Also deliberately does NOT force the run's `status` to `"done"` here — an existing test
+  (`task-transitions.test.ts`) already pins that the abandon path leaves the run's OWN status untouched (it's
+  the task's kanban `state` that changes), and the periodic `settleArchivedRuns` self-heal sweep still
+  reconciles that within ~60s regardless; this fix is scoped to exactly the reported symptom (the Inbox),
+  not a re-litigation of that separate, already-decided invariant. The web client needed NO changes — its
+  `queue`/`task` store slices already update reactively off `hitl.resolved`/`task.upserted`; it was
+  faithfully showing what the server told it, which was simply never told the gate got resolved. New tests
+  in `task-transitions.test.ts` (5 cases): ongoing→todo and done→backlog both dismiss the gate; every open
+  gate for the run is dismissed, not just one; a `preserve`-flagged move (pause, not abandon) leaves the gate
+  untouched (still meaningfully answerable once resumed); and the pre-existing review→done "approve" path is
+  confirmed unaffected by the new logic.
 - [x] **Fix: a Telegram merge-conflict card was an unexplained raw diff dump — impossible to act on.**
   Reported live with a screenshot: "A merge needs a look" arrived on the phone as a tail-truncated `diff
   --cc` combined-diff snippet cut off mid-sentence, no title, no explanation, nothing saying which files
@@ -835,110 +716,12 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 - [~] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).** A 6-way
   competitor deep-dive found *none* ship a real safety/policy layer, decision audit, or (bar one) a HITL
   inbox — so this is where we win now:
-  - [x] **Safety = policy-as-code, not a hardcoded denylist** — a versioned, diffable per-workspace policy
-    (allow/gate/deny, path scopes, resource + token-budget caps, network-egress rules); dry-run a policy
-    against historical runs before enabling it. *Landed: `CommandPolicy`/`PolicyVersion` (contracts.ts) —
-    `classifyCommand()` (command-safety.ts) now consults a policy argument instead of hardcoded rule
-    arrays; the shipped classifier is `DEFAULT_COMMAND_POLICY`, the exact same rules expressed as data, so a
-    workspace with no saved version is byte-for-byte unaffected. Versions are per-workspace, git-like
-    (`store.putPolicyVersion` deactivates the prior active version but keeps it — never overwrites), backed
-    by all three Store adapters (memory/file/Postgres). Dry-run (`command-policy.ts#dryRunPolicy`) replays a
-    workspace's real historical commands (drawn from its `hitl_audit` trail) through a proposed-but-unsaved
-    policy and reports exactly which commands would flip decision/risk vs. the currently active policy —
-    verified live against real audit history end-to-end (API + Settings UI). A Settings → Command policy
-    panel edits rules, dry-runs, and browses version history. Resource-cap and network-egress fields are
-    recorded on the policy but inert — no runtime enforcement exists for either yet (network-egress
-    enforcement is explicitly out of scope here; see 🏢 below). Path scopes were scoped out (no per-path
-    command semantics existed to attach them to). Tests: `tests/command-policy.test.ts`.
-  - [x] **Budget ceiling — daily spend rollup + auto-pick gating.** A per-project `dailyBudgetUsd` (USD,
-    null = no limit — today's behavior, unchanged): once the project's KNOWN spend today reaches it, the
-    autonomy loop's auto-pick step stops starting NEW work on that project for the rest of the day —
-    in-flight runs finish, and a human can still assign manually at any time (`assignTask` itself is never
-    gated). The safety floor for "today we develop for $20." A different mechanism from
-    `CommandPolicy.resourceCaps.maxTokenBudget` above (per-command policy, still inert) — this is a
-    per-project daily USD ceiling on real spend. *Landed:* `computeDailySpend`
-    (`packages/shared/src/budget.ts`, pure — sums `TaskRun.usage.costUsd` for a project's runs started in
-    the current local day) is the ONE place "today's spend" is computed, shared by the server gate
-    (`orchestrator.ts#underDailyBudget`, called from `tickAutonomy` step 2) and the web project header, so
-    the number an operator sees is exactly the number the gate acted on. Vendors that don't report cost are
-    tracked as a separate `unknownCostRuns` count and treated as a floor, never silently dropped and never
-    fabricated into the enforcement number (so the gate can't be tripped by spend it can't actually see).
-    Logs the pause transition once via the hub, not every tick (`budgetPausedFlagged`, re-arms silently once
-    spend drops back under budget — which happens on its own at local midnight, since "today" is always
-    recomputed from `now()`, no separate reset). Project settings gets a "Daily budget" field; the project
-    header shows "spent today / budget" once one is set.
-  - [x] **Budget-as-allocation — cost-aware picking + pacing.** The ceiling above is a stop-gate: it halts
-    ALL new work once spend is exhausted, with no sense of what fits along the way. This turns the same
-    budget into an allocator — "$20 today" shapes which tasks the fleet starts, not just when it stops.
-    *Landed:* `tickAutonomy`'s existing triage step already produces `Task.assessmentEffort`
-    (small/medium/large) via a real LLM call — reused as-is, no second estimation call. `costBandFor`
-    (`packages/shared/src/budget.ts`) maps that FREE signal to a static $ band (0.50/2/8); an untriaged task
-    (`null` effort) assumes the MEDIUM band, never zero, so an unclassified task can't look free to the
-    picker. Auto-pick's `pickable` list (already sorted by `order`, the same rank the ↑/↓ column writes)
-    is walked in that SAME order by `orchestrator.ts#selectAffordable`: a task is skipped — never
-    reordered — only when its cost band would exceed what's left, and the walk continues so a cheaper
-    lower-priority task can still fit past an expensive one that didn't. Skips log once per tick (not once
-    per task) naming what was skipped. **Pacing** (`Project.budgetPacing`, off by default): spreads the
-    budget across a working window (`config.budgetPacingWindowMs`, default 8h) instead of committing it all
-    to the first tick — availability grows linearly from $0 at local midnight to the full budget as the
-    window elapses (`orchestrator.ts#pacedAvailableUsd`), and never exceeds the TRUE remaining headroom
-    (real spend already made) regardless of how much of the window has passed — pacing can only make the
-    picker more conservative, never let it overspend a tight budget. `committedUsd` (same file) gives a
-    rough forward-looking $ estimate for tasks already `ongoing` (in flight, not yet cost-reported); the
-    project header's "spent today / budget" gains "(≈$X committed)" when nonzero. A project settings toggle
-    ("Pace spend") only appears once a daily budget is set. Deliberately not built: no scheduler/queue
-    (this is a per-tick greedy filter, not a planner), no auto-adjusting budgets, no calibration of the cost
-    bands against real spend (a static table — tune it by hand from `Usage.costUsd` data if it drifts).
-  - [x] **Context-aware risk** — classify by *blast radius*, not string match: outside the worktree, touching
-    secrets, git-history-destructive, package publish, DB migration, network egress.
-    *Landed: `blastRadiusFlags()` in `command-safety.ts` scans a command's absolute paths against the agent's
-    worktree root and flags any path that falls outside it as `outside-worktree:<path>`. Also flags network-egress
-    commands (curl/wget/ssh/scp/rsync/nc — distinct from the already-denied pipe-to-shell patterns). Both signals
-    are added to the gate's `flags` chips and bump risk to `high` in `orchestrator.ts#raise()`, so auto-approval
-    can never quietly run an outside-worktree or network-egress command regardless of the project's approval level.
-    Tests: `tests/blast-radius.test.ts`.*
-  - [x] **⭐ Prompt-injection / tool-poisoning firewall** — detect when untrusted content the agent read (an
-    issue, a web page, a dependency README) is steering its tool calls, and gate it. No competitor has this.
-    *Landed (v1): a structured LLM consult (`injection-firewall.ts`, same prompt-builder + safe-default-parser
-    pattern as `review-verdict.ts` — the model reads a `{steered, reason, source}` JSON field, never a
-    substring/regex classification of prose) judges whether a command-gate is following an instruction embedded
-    in content the agent read, distinct from `command-safety.ts`'s classifier (which judges a command's own
-    shape, not its origin). The Claude runner tracks a capped buffer of untrusted reads — any `WebFetch`, plus
-    `Read` scoped to `node_modules`/`vendor`/`.git` paths (a scoping heuristic for what's worth remembering;
-    the security judgment itself stays the LLM's job) — and hands it to `orchestrator.ts#raise()`, which runs
-    the check **before** the approval-policy auto-approve block and **forces a human gate on any steered
-    verdict, overriding the project's approval level** (a `trusted` project that would otherwise silently
-    auto-approve a low-risk command still gates it). The gate carries a `prompt-injection-suspected: <source>`
-    flag and a bumped risk floor; every check's outcome is logged — including a benign one — so the firewall's
-    activity is auditable, not just its hits. *Verified live* (not just unit tests): a real Claude agent doing
-    ordinary "get the app running" work read a vendored dependency's README containing a subtly-injected setup
-    instruction (`echo ... > .cache`, framed as ordinary docs, no "ignore your instructions" framing), followed
-    it as part of what it believed was legitimate setup, and the firewall correctly flagged the resulting
-    command as steered and parked it for a human — while a genuinely unrelated command earlier in the same run
-    (`node index.js`) was correctly judged not-steered and auto-approved as normal. Full test suite: pure-parser
-    unit tests + three end-to-end scenario tests (adversarial/benign/no-untrusted-reads) via the `providerOverride`
-    seam, proving the auto-approval-bypass property against a scripted provider, not just mocked JSON.
-    **Known v1 limits, stated plainly rather than overclaimed:** Claude-only — CLI vendors (Codex/Gemini/Cursor/
-    Copilot/Hermes) don't populate the buffer, since their event streams don't expose tool-result bodies today;
-    a task's own imported source text (e.g. a GitHub issue body) is not treated as untrusted, only content read
-    *during* the run; the `node_modules`/`vendor`/`.git` path heuristic is narrow by design and will miss other
-    untrusted local content; a failed/unreadable consult fails open (no extra scrutiny, but `command-safety.ts`'s
-    own gate still applies); and — as the live verification also showed — a sufficiently blunt injection often
-    gets refused by the model's own training before any tool call is even attempted, so this firewall is
-    defense-in-depth for the cases where the model *does* comply, not the only line of defense.*
-  - [x] **Tamper-evident audit** — hash-chained, append-only decision records (who saw which diff/command, what
-    the policy said, what the agent did after); exportable to SIEM.
-    *Landed: every `AuditRecord` now carries a `hash` (SHA-256 of the canonical JSON of its immutable decision
-    fields: workspaceId/hitlId/runId/action/operatorId/at/payload/prevHash) and a `prevHash` linking it to the
-    preceding record in the same workspace's chain — a linked list where any alteration to a field or to the
-    record's position in the trail is immediately detectable offline. Genesis record has `prevHash=null`;
-    pre-chain records (written before this feature landed) have neither field and are skipped by verification.
-    All three Store adapters (memory/file/Postgres) chain records at write time; Postgres adds `hash` and
-    `prev_hash` columns via `ALTER TABLE IF NOT EXISTS`. `verifyAuditChain()` (`audit-chain.ts`) re-computes and
-    verifies the full chain in oldest-first order. SIEM export: `GET /api/audit/export` returns the workspace
-    trail as NDJSON (one record per line, oldest-first, `application/x-ndjson`, `Content-Disposition: attachment`)
-    so a SIEM agent can ingest the stream and verify the chain offline. Optional `?from=<ms>&?to=<ms>` narrow
-    the window. Tests: `tests/audit-chain.test.ts`.*
+  - [x] **Safety = policy-as-code, not a hardcoded denylist** — a versioned, diffable per-workspace command policy (allow/gate/deny) that can be dry-run against historical runs before enabling, edited from a Settings panel.
+  - [x] **Budget ceiling — daily spend rollup + auto-pick gating.** A per-project daily USD spend ceiling stops the autonomy loop from starting new work once reached, while in-flight runs finish and manual assignment stays available.
+  - [x] **Budget-as-allocation — cost-aware picking + pacing.** Turned the flat budget ceiling into an allocator — auto-pick now skips tasks whose estimated cost band won't fit the remaining budget, with optional pacing to spread spend across the working day.
+  - [x] **Context-aware risk** — commands are now flagged and bumped to `high` risk by blast radius (outside-worktree paths, network egress) rather than by string matching alone, so auto-approval can't quietly run them.
+  - [x] **⭐ Prompt-injection / tool-poisoning firewall** — a structured LLM consult now detects when untrusted content the agent read (a web page, a vendored README) is steering its next tool call, and forces a human gate even on an otherwise auto-approving project; Claude-only for now.
+  - [x] **Tamper-evident audit** — every audit record is now hash-chained to the previous one so tampering is detectable offline, with an NDJSON export endpoint for SIEM ingestion.
   - **⭐ Compliance evidence pack** — one-click signed "AI change report" for auditors (EU AI Act tailwind).
     *Landed: a project / run / date-range-scoped report built entirely from the existing tamper-evident
     `AuditRecord` trail — no new decision-recording path. Every approved diff/merge, who approved it (a
@@ -971,9 +754,9 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     enforces it yet — it's a queue of operator intent waiting for either to adopt as a write path. Steward-side
     approve-in-flow and policy-driven gate *batching* still to do.*
   - Secrets at rest (local); 🏢 **observability** (hosted metrics/logging/tracing) + SIEM export of the audit.
-- [x] **Runner session-map cleanup** — `ClaudeRunnerProvider.sessions` (runId→sessionId, kept for fork resume) is now a bounded LRU (cap 500, evict-oldest via re-insertion-on-touch), not evict-on-completion as originally scoped: Fork stays available on ANY run indefinitely (no completion/archival ever disables the Fork button), so there's no lifecycle event that safely marks an entry as "will never be resumed again" — evicting on done/worktree-retire would silently break resume for the ordinary "fork a run I finished a while ago" case. Beyond the cap, a fork just starts a fresh (non-resumed) session — exactly what already happens today after a server restart, since this cache was never persisted. Small RAM/tech-debt fix; no behavior change for realistic single-operator volumes.
+- [x] **Runner session-map cleanup** — the Claude runner's fork-resume session map is now a bounded LRU (cap 500) instead of growing unbounded, with no behavior change for realistic single-operator volumes.
 - [~] **Deeper runner-capability surfacing** — the `runner-sdk` seam normalizes vendors to a subset; pull more native capability through it (each is additive, behind the existing seam). *Landed: real plan steps (Claude task-tracking tools → PLAN panel) + token/cost telemetry (`onUsage` → Agent `usage`, best-effort for the CLIs) + **plan-mode gate (Claude)** — an opt-in per-project `planModeGate` sets `permissionMode: "plan"`; `ExitPlanMode` is intercepted and raised as a real `plan` HITL (the dead `HitlKind` finally has a producer), and everything but read-only investigation is denied outright until the operator approves it — genuinely no writes happen first + token-by-token streaming for Claude (`includePartialMessages` → a bus-only `run.log.delta` event, never persisted per-token → live "typing" in the run log, same finalized `run.log` write as before). **CLI usage fidelity firmed up** (re-verified against each vendor's CURRENT CLI, not assumed): Codex — fixed a real bug, `usageFromJson` scanned for a flat `usage`/`stats`/`tokens` key but codex-cli 0.147.0's `TokenCountEvent` nests real counts two levels deep (`msg.info.total_token_usage`), so usage was silently never reported; now unwrapped correctly. Gemini — `buildArgs` never actually requested JSON output, so text mode was the ONLY mode ever exercised and usage was never parsed despite the JSON-handling code already existing; now defaults to `--output-format stream-json` (verified against gemini-cli's `StreamJsonFormatter`). Cursor — `--output-format stream-json` confirmed current via `cursor-agent --help`; no bug found, left as-is.*
-  - [x] **Token-by-token streaming for the CLI runners** — shipped for the two vendors whose wire protocol actually carries per-chunk deltas; the other two don't and aren't forced. Gemini: `-p` non-interactive `stream-json` mode emits a `message`+`delta:true` event per chunk with no distinct "message complete" event on the wire (verified live against gemini-cli's `nonInteractiveCli.ts`, not just the `MessageEvent` type shape) — `gemini.ts#parseLine` now buffers chunks, previews each via `onLogDelta`, and flushes the buffer as one persisted line the moment the next non-delta event arrives (`CliVendor.parseLine` widened to return `CliEvent | CliEvent[]` so a flush can precede that event's own, in `cli-runner.ts`). Cursor: added `--stream-partial-output`; its wire format reuses the exact same `{type:"assistant"}` shape for both a raw chunk and the consolidated message with no dedicated delta type, so `cursor.ts#isConsolidatedAssistantEvent` tells them apart by field presence (`model_call_id` set, or `timestamp_ms` absent) — verified against the shipped CLI's own bundled source (no public repo to check against, no live `CURSOR_API_KEY` in the verifying environment either), not empirically confirmed against a captured live payload; treat as a good-faith reading worth re-checking if a `cursor-agent` update ever changes this. Codex: checked for real, not assumed — `codex exec --json`'s wire format (`codex-rs/exec/src/exec_events.rs`'s `ThreadEvent`, confirmed at the exact `rust-v0.147.0` tag already used for usage) only has `item.started`/`item.completed` lifecycle events for assistant messages, no delta variant; the raw internal protocol DOES have one (`AgentMessageContentDelta` in `codex-rs/protocol`) but `exec --json` doesn't expose it — not wired, nothing to force. Copilot: still text-mode only (see the item below) — no JSON stream to extract a delta from yet.
+  - [x] **Token-by-token streaming for the CLI runners** — shipped live-typing token streams for Gemini and Cursor, the two CLI vendors whose wire protocol actually carries per-chunk deltas; Codex and Copilot don't expose one to stream.
   Still to do:
   - **Per-runner tool + prompt policy** — surface `allowedTools`/`disallowedTools`, a project system prompt, and `settingSources` (CLAUDE.md) instead of the hardcoded auto-allow set + inline steering. Ties into v4 repo-native memory.
     *Landed: `disallowedTools` (Claude only)* — `Project.disallowedTools` is a per-project deny-list (a
@@ -991,9 +774,9 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
     set via the API/MCP outside the curated list still shows up, removable). Not yet done: a full
     `allowedTools` allow-list (deferred on purpose — land the simpler, safer deny-list primitive first) and
     `settingSources` (CLAUDE.md, scoped as a separate change).
-  - [x] **Structured diffs in gates/review** — shipped: `HitlItem.diff` (stat) is set in `raiseDiffReview` from `WorktreeManager.diffStat`, and the full unified patch is served on-demand by `GET /api/runs/:id/diff` (`orchestrator.ts#runDiff` → `worktrees.ts#patch`, a real `git diff` in the worktree) and rendered by `diff-view.tsx`'s `parseUnifiedDiff`. No vendor-specific patch-event plumbing exists (or is needed) — every runner's changes land in the same worktree, so one `git diff` covers Claude/Codex/Cursor/Gemini/Copilot alike.
+  - [x] **Structured diffs in gates/review** — diff gates now carry a stat summary plus an on-demand full unified patch, rendered in the diff view, working identically across every vendor since all changes land in the same worktree.
   - **Token-by-token streaming for the CLI runners** — Codex/Gemini/Cursor NDJSON deltas → the same `run.log.delta` live-typing path Claude now has (Copilot's JSON mode is per-turn, not per-chunk — see below, nothing to stream yet).
-  - [x] **Copilot usage/event fidelity** — shipped: the Copilot runner now drives `copilot -p ... --output-format json` and dispatches on real structured events instead of regex-matching human-readable text, confirmed live against copilot 1.0.80. The approval gate is a genuine protocol finding, not an assumption: non-interactive `-p` mode has no stdin-driven approval channel at all, so the CLI never emits `permission.requested` there — a tool needing permission is auto-denied immediately (`tool.execution_complete` with `error.code:"denied"`) and the model just adapts inline, all within one continuous turn (verified live: asking the agent to write a file was silently denied twice — the `create` tool, then a `bash > file` fallback — before it gave its own honest "permission denied" answer, no external stimulus). So the gate is keyed off that denial instead: Skynet raises the HITL the CLI itself couldn't, and approving replays the same action as a follow-up turn with that one call's permission scoped in via `--allow-tool` (a specific `shell(cmd)`/`write(path)` pattern, never a blanket `--allow-all-tools`) — verified end-to-end against a real authenticated run, including the file actually landing on the approved retry. Usage: `assistant.message.outputTokens` summed across the run + the terminal `result.usage.totalApiDurationMs`; input tokens and cost stay unreported (0/null) — genuinely absent from this protocol, not a gap (Copilot meters "premium requests"/AI credits, not $/token). Two adjacent bugs fixed along the way: a follow-up turn after a gate decision was missing `--continue` (the condition excluded exactly the turns that needed it, so an approved retry silently lost all prior task context — reproducible in the old text-mode parser too); and turn continuity now uses an explicit per-run `--session-id` instead of `--continue`'s ambient "most recently active session on the host," which would let two concurrent Skynet runs' follow-up turns cross-contaminate each other's conversations.
+  - [x] **Copilot usage/event fidelity** — the Copilot runner now dispatches on real structured JSON events instead of regex-matching text output, with a working approval gate (denied tool calls replay via a scoped `--allow-tool` retry) and per-run session continuity, fixing two adjacent turn-continuity bugs along the way.
 - [~] **Review upgrades (adopted from the competitor sweep):**
   - *Landed: **Verifier gate** (bernstein / MartinLoop-style) — the check-running + rollback-on-failure
     mechanics already existed (`MergeEngine` ran `checkCmd` post-merge and reset the merge commit on
@@ -1360,102 +1143,8 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   your fleet") even with a provider selected, whenever NO provider has a real credential — "Skip setup" on
   step 1 is the only way through a fresh, keyless install today. Not touched here; noted for whoever picks
   it up.
-- [x] **S6 — Deep-explore grounding (optional).** Before an operator approves a `SolutionBrief`, an
-  opt-in `POST /api/projects/:id/briefs/:bid/explore` spins a bounded, READ-ONLY agent run that
-  actually reads the codebase and annotates the draft — wrong assumptions, real touchpoints, blast
-  radius — instead of trusting the brief's prose alone. Built on the `deepReview` template
-  (`Orchestrator.runDeepReview`): a real bounded run behind a private, invisible-on-the-board
-  `RunnerEvents` adapter (no TaskRun, no fleet-runner row, every gate auto-resolves — there's no
-  human watching), `disallowedTools: ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"]` so it's
-  categorically incapable of mutating anything, and a `null`-on-ANY-failure contract (no repo, no
-  usable Claude credential, worktree prep failed, timeout, unreadable output). Two deliberate
-  differences from that template: (1) no live preview/browser — this reads code, it doesn't exercise
-  a running app, so it checks out a DETACHED worktree of the project's base branch via
-  `preview/worktree.ts`'s `prepareWorktree` (the same machinery the local preview and Fly deploy
-  engines already share — reused, not reimplemented); (2) there's no pre-picked reviewer `Agent` (a
-  brief predates any task/run), so the model/provider is a fixed Claude default rather than an
-  existing agent's own. `Orchestrator.exploreBrief` returns the structured verdict; the null-on-
-  failure gets turned into a real thrown `Error` one layer up (`Operations.exploreBrief`) so the
-  failure is VISIBLE at the API boundary (a 400 the caller actually sees) rather than a silent 200 —
-  the brief is written ONLY on a genuine success, `exploration` (new `SolutionBrief` field:
-  `{at, findings, touchpoints} | null`) never touches any operator-authored field or the `status`
-  gate. Test seam note: `config.worktreesDir` is read once at module-import time (not live), so unlike
-  `previewOverride`'s existing injected-manager pattern this needed its own constructor seam
-  (`exploreWorktreesDirOverride`) for a test to point at an isolated temp dir — otherwise every test
-  run would share one `.skynet-worktrees/explore-<id>` directory relative to wherever vitest happens
-  to run from. Verified: a stubbed provider's `StartSpec.disallowedTools` is asserted directly
-  (`tests/explore-brief.test.ts`), and re-running stash→confirm-fails→pop showed all 6 tests fail
-  with `ops.exploreBrief is not a function` before this landed. **Deliberately not built** (the
-  task's own Accept criteria is backend-only, and S4 itself ships with no web UI yet to attach one
-  to): the "status chip while running" mentioned in the task brief — no `SolutionBrief` view exists
-  in `apps/web` to add it to; the POST is synchronous (the client's own in-flight request IS the
-  "running" state) so no server-side polling/async job infra was needed either. **Depends on S4**
-  (`SolutionBrief`) — landed and merged.
-- [x] **S10 — Execution intents: feasibility resolver + composite actions + ONE server executor.**
-  The server-side seam everything else (S11's confirm chip, S12's MCP surface, Telegram) calls into
-  to actually start/queue work — not three separate reimplementations of "which of these tasks can
-  run right now." Two pieces. **`resolveExecutable(project, tasks, runs, opts)`** (new
-  `steward/execution.ts`, PURE) decides, from a caller-scoped candidate list (a feature's tasks, or
-  the project's backlog+triage+todo), which are executable and why not for the rest —
-  `{eligible, excluded: {taskId, reason}[]}`, `reason` one of `unclear | already-running | done |
-  over-budget | not-in-scope`. `done`/`ongoing`/`review` are always excluded (idempotency —
-  re-issuing the same directive never double-starts a task with a live or just-finished run);
-  archived is `not-in-scope`; `unclear` (a task still parked in `triage` — there's no separate
-  boolean, that IS the observable "never came out clear" signal, since the autonomy tick's own
-  triage step auto-promotes triage→todo the moment its clarity read comes back clear) fires only
-  under `opts.feasibleOnly`. The budget half walks the remaining candidates in PRIORITY order
-  (`task.order`, tie-broken by id — the identical sort `tickAutonomy`'s auto-pick already uses)
-  accumulating `costBandFor`, marking the remainder `over-budget` once `pacedAvailableUsd` runs out
-  — never dropped, still reported, since an over-budget task is still queueable (the tick picks it
-  up once budget frees). `pacedAvailableUsd` moved from a private `Orchestrator` method to a pure
-  export on `packages/shared/src/budget.ts` (alongside `computeDailySpend`/`costBandFor`, which were
-  already there) so the resolver and the tick call the EXACT same calculation — a dry-run's "N over
-  budget" can never be a different number than what the tick does moments later.
-  **`Operations.executeStewardAction(ws, projectId, action, operatorId, opts)`** is the one executor,
-  dispatching on 4 new kinds (`StewardExecutionAction`, a strict zod discriminated union,
-  `packages/shared/src/contracts.ts`): `start_task` (direct, single-task `assignTask`, still run
-  through the resolver for the SAME feasibility check every kind gets — not a bypass);
-  `queue_tasks {taskIds}` (explicit ids, `feasibleOnly` never applied — the caller already decided);
-  `start_feature {featureId, execMode: "queue"|"start_now", feasibleOnly}` and `process_backlog
-  {feasibleOnly}` (composite — resolve the scope, then either queue every eligible task or, for
-  `start_now`, assign up to idle capacity — catching `NoCapacityError`/`RunnerNotConfiguredError`
-  specifically to know when to stop assigning and start queuing the rest instead — then queue the
-  remainder). Queuing a task (state→`todo` when backlog/triage, `autoPick: true`, and an
-  `unassigned` eligibility fixed to `any`) writes directly via `hub.upsertTask`, deliberately
-  bypassing `Operations.transitionTask`/`HUMAN_TRANSITIONS` (which has no backlog→todo edge at all —
-  that gate is for a HUMAN kanban drag; this is the identical SYSTEM-initiated write the autonomy
-  tick's own triage step already makes the same way). **Autonomy fold-in:** queuing is pointless
-  with the project's autonomy toggle off — nothing would ever pick the work up — so executing any
-  call that queues at least one task turns autonomy on as part of the SAME operation (reported via
-  `autonomyEnabled`) rather than making the operator separately confirm a `set_autonomy` action for
-  what is conceptually one intent ("start this feature"); chose this over teaching the model to
-  propose the two actions together, since it's deterministic and doesn't depend on LLM behavior.
-  **Dry-run** (`opts.dryRun`) resolves the identical decision and returns it without calling
-  `hub.upsertTask`/`upsertProject`/`assignTask` — `start_now`'s dry-run specifically never acquires a
-  runner (real-time fleet capacity can't be previewed without racing it), so it reports every
-  eligible task as "would queue," the conservative honest answer. New route: `POST
-  /api/projects/:id/steward/actions` (default "author" scope, no auth-guard change needed). The 4
-  kinds are also added to `ProjectActionKind`/`AssistantAction`/`validateProjectAction`
-  (`steward/assistant.ts`) — same id-resolution + confirm-chip-summary treatment every other kind
-  gets — but **deliberately NOT yet in the `SYSTEM` prompt text**: the web dock's `runAction`
-  (`steward-dock.tsx`) has a `const unhandled: never = a.kind` exhaustiveness guard and doesn't
-  execute these four (they run only through the new endpoint), so teaching Steward's LLM to propose
-  one today would let an operator confirm a chip the dock then can't do anything with. Wiring the
-  dock to the endpoint (and only then adding these to `SYSTEM`) is S11's job. Verified: 21 tests
-  (`tests/execution-intents.test.ts`) — the resolver's exclusion reasons individually (including
-  `eligible.length + excluded.length === tasks.length` always holding) and priority-order — plus the
-  executor through a REAL `Operations` + `Orchestrator` + `MemoryStore` + stub provider: `queue_tasks`
-  makes a backlog task pickable and the NEXT `tickAutonomy` genuinely starts it; `start_feature` on a
-  done+ongoing+two-todo feature touches only the two; `start_now` with one idle runner assigns one
-  and queues the rest while folding autonomy on; dry-run mutates nothing (asserted on the task AND
-  the project record); re-issuing the same composite twice is a no-op the second time (already-running
-  / already-queued). Plus 8 new `validateProjectAction` cases (`tests/project-assistant.test.ts`) and
-  confirmed the existing `budget-allocation.test.ts`/`daily-budget.test.ts` suites are unaffected by
-  the `pacedAvailableUsd` extraction. **Deliberately out of scope, per the task's own sizing:** S7's
-  `dependsOnTaskIds` dependency check (the resolver leaves room for it, doesn't implement it); the
-  dock UI wiring + richer confirm-chip rendering (S11); the MCP tools + their `dryRun` param (S12);
-  Telegram's own action vocabulary (`telegram/intent.ts`) still doesn't call this executor — a
-  fourth parallel action path, not touched here, matching "don't churn existing kinds."
+- [x] **S6 — Deep-explore grounding (optional).** Added an opt-in, read-only bounded agent run that actually reads the codebase and annotates a draft `SolutionBrief` with wrong assumptions, real touchpoints, and blast radius before an operator approves it.
+- [x] **S10 — Execution intents: feasibility resolver + composite actions + ONE server executor.** Added one shared server-side feasibility resolver + executor that every future caller (Steward's confirm chip, MCP tools, Telegram) can call into to start/queue work, instead of separate reimplementations of "which tasks can run now."
 - [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)):** *Landed:* **amber
   untangled** — `--accent` (brand/primary) and `--warn` (caution/waiting status) were an accidental
   hex duplicate (`#FFB224` both, not just visually close); `--warn` is now a genuinely distinct
@@ -1493,76 +1182,10 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   CSS-token fix, and belongs in its own PR. A full sweep of the ~90 other `--faint` usages beyond
   the 4 named examples wasn't attempted either — that's the still-separately-tracked v0.5
   "Legibility floor" item (#4 above).
-- [x] **Project header decluttered — Governance popover.** Reported live: the project header's toolbar
-  had grown to ~15 same-weight pills (Approvals, Autonomy, Daily budget, Pace spend, Plan mode, Deep
-  review, Breaker review, GitHub/Fly account, Keys, Tools, Preview app, Deploy to Fly.io, Inform,
-  the gear, Delete) with no hierarchy between primary actions and rarely-touched settings. Seven of
-  those — Approvals, Autonomy, Daily budget (+ Pace spend), Plan mode, and Deep review (+ Breaker
-  review) — are now bundled behind one `ProjectGovernance` popover (`project.tsx`), reusing the exact
-  details/summary idiom the Keys/Tools popovers already established rather than inventing a new
-  pattern. The collapsed summary still surfaces the two facts worth seeing without opening it — the
-  approval level, and an "Autonomy off" flag — and Full autonomy's existing red "danger" treatment
-  stays visible on the collapsed pill itself (`.proj-governance-danger`), not just inside the menu.
-  Preview app / Deploy to Fly.io lead the row as the primary actions; Inform active agents / the gear /
-  Delete are pushed to a `margin-left: auto` cluster at the row's trailing edge (`.projview-head-admin`)
-  so administrative controls read as visually distinct from day-to-day ones, wrapping as one unit on
-  narrow widths instead of interleaving. Net: ~15 top-level controls down to about 7. Verified live —
-  every toggle's real persistence (including the Full-autonomy confirm dialog and the danger styling),
-  the Pace-spend/Breaker-review conditional reveals, and the admin cluster's wrap behavior at mobile
-  width — not just reviewed in source.
+- [x] **Project header decluttered — Governance popover.** Consolidated ~15 same-weight header pills into a single Governance popover (Approvals, Autonomy, Budget, Plan mode, Deep/Breaker review), cutting the toolbar down to about 7 top-level controls.
 - [ ] 🏢 Auth: **SSO/OIDC**.
-- [x] 🏢 **Read-only (viewer) role** — not every operator should be an admin. A role that can observe
-  everything (projects, runs, HITL, audit) but mutate nothing (no assign / resolve / transition /
-  settings / provider keys). Wrapped, not rebuilt: `OperatorRecord.role` (`"admin" | "viewer"`,
-  `auth/operators.ts`) maps to `Principal.scopes: ["observe"]` at login — a viewer rides the exact
-  same `hasScope()` checks a scoped service token already did, no parallel permission system. The
-  real work was the audit: `hasScope()` previously ran ONLY inside the MCP layer (`mcp/tools.ts`),
-  so every REST mutation route a human hits was actually gated by nothing but "has a session." A new
-  classifier, `requiredScope()` (`auth-guard.ts`), now runs in the shared `/api` `onRequest` hook
-  (`api.ts`) and requires `"author"` (default) or `"approver"` (HITL resolve + the four merge-decision
-  routes) on every non-GET `/api` route — `/mcp` is untouched, it's already gated per-tool at finer
-  grain. Web: a `readOnly` flag rides the store (from `GET /api/auth/me`, refreshed across
-  snapshot/reconnect); `client.ts`'s `req()` blocks every mutation call client-side BEFORE it reaches
-  the network (a friendly toast, not a bare 403), and the Inbox's resolve buttons, Home's "Assign
-  work" CTA, and a Settings banner grey out — the server-side gate is the actual boundary, this is
-  UX. Dev/test seeds a demo `viewer@cyberdyne.dev` (pw `skynet`) alongside the existing admin pair;
-  production gets an equivalent `SKYNET_VIEWER_EMAIL`/`_PASSWORD`/`_WORKSPACE` env seed (mirrors the
-  existing admin seed — there's still no invite/user-management UI, so this is the only way to stand
-  one up on a hosted deploy today). *(Multi-user — hosted/team only.)*
-- [x] 🏢 **Time-limited admin promotion** — temporarily elevate a viewer to admin for a bounded,
-  auto-expiring window (break-glass / sudo-style), then revert to their base role automatically; every
-  promotion + expiry is audited. Depends on the read-only role above. **Admin-granted, never
-  self-service**: an existing admin promotes a NAMED viewer (`POST /api/operators/:operatorId/promote`)
-  — there is no "elevate my own session" path at all. Keyed by OPERATOR, not by session token (the
-  granting admin has no access to the target's session, and the target may not even be logged in yet):
-  a new `ElevationStore` (`auth/elevations.ts`, in-memory) tracks the live grant and is checked by
-  `auth.ts`'s `resolvePrincipal()` on EVERY session-resolved request — the same "wherever a Principal
-  is resolved" seam session-TTL sweeping already uses — so an expired grant reverts transparently on
-  the next request, no manual step, and no backend-specific (Postgres/Redis) plumbing at all (dropped
-  entirely from `SessionStore`, which now has no elevation concept — one in-memory store covers every
-  session backend). The route's OWN check is what actually closes the self-service loophole: a
-  currently-elevated viewer's live `scopes` look identical to a real admin's, so it verifies the
-  CALLER's PERSISTED role in the operator directory (`OperatorDirectory.getByIdentity`), not their
-  current scope — an elevated viewer cannot re-grant or self-extend, verified explicitly. Every grant
-  AND every LAZILY-OBSERVED expiry (sweep-on-access, first request past the deadline) is its own
-  audit entry — deliberately NOT folded into the HITL audit trail (`AuditRecord`'s `hitlId`/`runId`
-  are structurally required and every existing consumer is keyed to a resolved HITL decision) — with
-  no delete/archive route, same as before. Bundled a real pre-existing bug fix along the way:
-  `PostgresSessionStore` was silently dropping `scopes` on every resolve (a Postgres-backed viewer
-  login would have resolved as full authority) — independent of this feature, fixed regardless.
-  Web: a "Access" section in Settings (admin-only, hidden from a currently-elevated viewer even
-  though their live scopes would otherwise qualify) lists the workspace's viewer accounts + the
-  grant/expiry history and lets an admin promote one; the sidebar's `· Viewer` → `· Admin (Nm left)`
-  countdown is unchanged (no button — a promoted viewer's OWN session picks it up on its next
-  request, or within ~20s via a light client-side poll while read-only, no reload needed). Verified
-  live end-to-end against a real dev server: a viewer's mutation 403s; the viewer itself attempting
-  `/promote` on any operator (including itself) 403s; an admin promotes the viewer and the SAME
-  viewer token's identical mutation now succeeds mid-window; the now-elevated viewer's OWN attempt to
-  promote a second viewer STILL 403s (the persisted-role check firing, not the live-scope one); after
-  the window lapses with no action taken, the identical token 403s again while `/api/auth/me` still
-  resolves (never logged out); the elevation log showed both the grant and, once observed, its
-  expiry — newest first. The Settings "Access" section was confirmed rendering that exact live
-  grant/expiry data (roster + promotion history, correctly labeled) end to end.
+- [x] 🏢 **Read-only (viewer) role** — added a read-only viewer role that can observe everything but mutate nothing, enforced by a new scope check on every non-GET API route (not just the MCP layer, which was the only place it ran before).
+- [x] 🏢 **Time-limited admin promotion** — admin-granted, auto-expiring elevation of a viewer to admin (break-glass style) that reverts automatically, with every grant and expiry audited.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap, additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
 - [~] 🔗⛓ **Feature-scoped branch hierarchy — branch out from branches.** When a Task has `featureId` set,
   its approved diff now merges into a shared `skynet/feature/<id>` branch (`MergeEngine.targetBranchFor`,
@@ -1587,149 +1210,9 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   work") doesn't need; only the merge *destination* changed. A different axis from **Structural
   agent-hierarchy hooks** just above (that's agent *role* — worker/manager; this is *Feature/task*
   grouping) — complementary, not dependent.
-- [x] **Feature-batch size guardrail.** Feature-scoped batching (above) lets one human approval cover
-  every task under a Feature — but nothing capped how big that batch could grow, so the single gate could
-  quietly become one unreviewable mega-PR. Two layers, both assistive (neither blocks anything): **(1)
-  PR-time** — `checkFeatureBatchSize` (pure, `orchestrator.ts`) checks the aggregate diff against
-  configurable thresholds (`SKYNET_FEATURE_BATCH_MAX_TASKS`/`_LINES`/`_FILES`, defaults 12/5000/60); past
-  any of them the feature PR still opens (blocking it entirely would strand finished work behind nothing)
-  but `buildFeatureMergeBriefing`'s risk floors at `"high"` and its rationale names which threshold(s)
-  tripped and by how much — the card renders this via the existing structured `MergeBriefing` fields, no
-  new UI needed. **(2) Task-link time** — `Operations.updateTask` (the single choke point every "add a
-  task to a feature" path funnels through — the UI, Steward's `set_task_feature`, and Telegram all call
-  it) fires an assistive note the moment the resulting batch crosses the task-count threshold, well before
-  the batch completes, so an operator can split an oversized feature while there's still time. Persisted
-  on `Feature.sizeWarning`, fires once (never re-triggers as more tasks pile on past the threshold).
-- [x] **Make the one human approval reviewable — feature-level brief.** Approving a 30-task batched
-  feature PR off the plain diff card is rubber-stamping or drowning: `Feature.pr.briefing` gains a
-  nullable `featureBrief` (`packages/shared/src/contracts.ts`), composed once in `openPrForFeature` right
-  alongside the existing heuristic. Everything except the narrative is SYSTEM-composed from data already
-  in hand (`composeFeatureBrief`, `apps/server/src/feature-brief.ts`), never asked of the model: a
-  one-liner + recorded review verdict per bundled task, the batch's aggregate spend (every sibling run's
-  `Usage` summed elementwise — a vendor-omitted `costUsd`/`durationMs` on some runs is excluded from the
-  sum, not treated as zero), and an evidence summary (today: the review-verdict tally + whether a verifier
-  gate runs after merge; the extension point once real verifier/breaker runs record their own evidence).
-  The one genuinely new thing is a consult-drafted `narrative` — what the feature now does AS A WHOLE,
-  grounded on the real combined branch diff (`MergeEngine.patch`, mirroring `diffStat`'s no-worktree-
-  needed style) via the batch's anchor run's own provider — same stateless, structured-JSON-only
-  discipline as the diff walkthrough / per-run merge brief (`draftFeatureBrief`). Best-effort throughout:
-  no consult support, no credential, or an unreadable reply all just leave `narrative: null` — the PR
-  still opens with the system-composed half of the brief, never blocked on the model. `FeatureMergeCard`
-  (`apps/web/src/views/merges.tsx`) renders it collapsed by default (a 30-task card shouldn't force a wall
-  of text on everyone) — expand for the narrative, evidence lines, per-task verdict list, and total spend.
-  `featureBrief` is nullable + defaulted so a PR opened before this shipped still parses unchanged
-  (`tests/file-store-migration.test.ts`). Never drafted for a single-run PR — `buildMergeBriefing`
-  hardcodes `featureBrief: null`. Verified with fixture-composed unit coverage
-  (`tests/feature-brief.test.ts`) and an orchestrator-level test driving two real tasks through a real
-  git batch completion, including a forced consult failure proving the PR still opens
-  (`tests/feature-brief-orchestrator.test.ts`).
-- [x] **🔬⭐ Autonomous backlog sweep — the v1 path to the auto dev team.** Point Skynet at a whole
-  backlog/roadmap under an explicit daily budget and let the fleet build it out unattended: humans
-  approve only *completed, working* features, agents test and try to break their own work before a
-  human ever sees it, and the fleet replenishes the backlog from what it finds along the way — every
-  autonomous loop bounded by construction, never by hope. This is the concrete v1 path toward
-  **⭐ North star: the auto dev team** and its **🔗 Product steward & the living Plan** substrate (v2,
-  above): Charter → Blueprint → Plan needs exactly this — a fleet that can run unattended for a whole
-  work session without drifting, overspending, or silently shipping broken work. It **composed existing
-  v1 machinery into five phases — all five now shipped**:
-  1. ~~**Budget ceiling.**~~ — **shipped.** `computeDailySpend` (`packages/shared`) rolls per-run
-     spend (`TaskRun.usage.costUsd`, nullable when a vendor omits it) into a project's daily total;
-     `tickAutonomy`'s auto-pick step (`orchestrator.ts`) checks it before starting another task, so an
-     exhausted `dailyBudgetUsd` pauses auto-pick for the rest of the window — never the project's
-     `autonomy` toggle itself (see the gate philosophy below — a human can always still assign
-     manually). Per-run wall-clock/idle-stall caps (`runtimeCapMs`/`idleCapMs`,
-     `runner-sdk/src/caps.ts`) already bound a single run's worst case; this is the same idea one level
-     up, in dollars instead of minutes. (`tests/daily-budget.test.ts`)
-  2. ~~**Two-lens review: verifier + breaker.**~~ — **shipped, both halves.** Plain `autoReview`
-     (`orchestrator.ts`) was a single reviewer-≠-author `consult` call — stateless, text-in/text-out, the
-     last 30 log lines as context, **no tool use at all** — enough to judge "does this look right on
-     paper" but not to actually RUN the change. The **verifier** lens landed as `Project.deepReview` (see
-     **Landed** above): a bounded second agent RUN (not a `consult`) with browser tools, opening a live
-     preview of the run's own branch and actually clicking through the change before answering. The
-     **breaker** lens landed alongside it as `Project.breakerReview` (see **Landed** above, layered ON
-     `deepReview` — requires it): the opposite brief, run only after the verifier approves — try to make
-     the change fail (malformed input, edge cases, auth boundaries, concurrent actions) against the SAME
-     kind of live preview, reporting only what it actually reproduced. Both compose with (never replace)
-     the existing consult-based verdict; a flag from either lens behaves exactly like today's
-     `reviewVerdict: flag` — parked in review for a human. Not built: neither lens has a settings UI yet
-     (`PATCH /api/projects/:id` only) and breaker findings don't yet auto-create backlog tasks — both
-     natural follow-ups, out of scope for the lenses themselves.
-  2b. ~~**Feature-level verification — a third altitude.**~~ — **shipped.** The verifier/breaker lenses
-     above judge one run's OWN diff; a Feature usually batches several tasks, and nothing checked the
-     FEATURE as a whole against what it was actually supposed to deliver — an intake flow that writes up
-     an epic → sprints → tasks has no way to verify the epic itself once its tasks are all individually
-     done. `Orchestrator.runFeatureVerification` extends the verifier lens one altitude up: same
-     mechanics (a bounded second agent, browser tools, no edit tools, the same field-based verdict
-     contract) but grounded on the Feature's own description + every sibling task's text/description (the
-     "spec"), browsing the live preview of the just-merged integration branch rather than one run's own
-     branch. Fires from `completeFeatureMerged` once every sibling task is `done` and the feature branch
-     has merged (local-only projects; the GitHub-PR feature path — `mergeReadyFeaturePr` — is a
-     deliberate non-goal for now, since a human already reviews that PR before merging), gated on the
-     SAME `Project.deepReview` opt-in — no new project setting. A flag holds `Feature.status` back from
-     `shipped` (the code stays merged either way — only the ship label is gated) and its findings flow
-     through the SAME self-replenishing-backlog path (`processFleetProposals`) a normal review's
-     proposals already use, rather than a dead end. No eligible reviewer / verification couldn't run →
-     ships as before, same honest-degrade discipline as the verifier lens itself (a best-effort extra
-     check, never a new blocking gate). Unlike the per-diff verifier, does NOT exclude the doer as
-     reviewer — a multi-task Feature usually has several doers and no single "the" author to exclude, and
-     a single-agent project would otherwise never get feature-level verification at all. 4 tests
-     (`tests/feature-verification.test.ts`): real git + a real preview process (mirrors
-     `deep-review.test.ts`'s harness) driving two real tasks through a shared feature branch —
-     `deepReview` off leaves shipping untouched, a passing verdict ships + records browser evidence, a
-     flagged verdict withholds shipping and its proposal becomes a real backlog task, and a single-agent
-     project still gets verified.
-  3. **Circuit breakers + right-sized batches.** Three guardrails, one spirit — an autonomous loop must
-     be able to stop *itself*, with no human watching: **(a)** a **session circuit-breaker** — N
-     consecutive flagged/failed TASKS on the same project pauses that project's `autonomy` toggle with
-     ONE summary escalation, not N separate HITL gates — distinct from the existing PER-RUN retry
-     ceiling (`config.runMaxFailures`/`failCounts`, which bounds retries on a single run, never a
-     project's whole unattended session); **(b)** ~~a feature size guardrail~~ — **shipped**, see
-     **Feature-batch size guardrail** above: caps how large a Feature's auto-picked task batch may grow
-     unattended before it forces a human check-in, so a mis-scoped Feature can't silently balloon into a
-     week of unattended spend; **(c)** ~~a
-     feature-altitude merge brief~~ — **shipped**, see **Make the one human approval reviewable** above:
-     one synthesized brief for the whole batched-feature PR, not N per-task ones a human has to mentally
-     reassemble.
-  4. ~~**Self-replenishing backlog, scope-taxonomied.**~~ — **shipped.** GitHub issue import
-     (`Operations.importGithubIssues`) already turned an external backlog into tasks; this closes the
-     loop so the fleet writes back to its OWN backlog from what it learns while building. The verdict
-     reply (plain consult AND the deep-review run — one shared field-based contract, `review-verdict.ts`)
-     may carry an optional `proposals: [{title, why, scope}]` (capped at
-     `MAX_PROPOSALS_PER_REVIEW = 3`, malformed entries dropped, never parsed from prose — same discipline
-     as the verdict field itself). `orchestrator.ts`'s `resolveProposalPlacement` (pure, unit-tested) is
-     the scope-taxonomy valve: **in-scope** (a defect/gap in what the sweep just built) auto-promotes
-     straight to `todo`/auto-pickable under the SAME Feature — but ONLY while that Feature is still
-     `active`, its sibling-task count is under the feature-batch guardrail (Task 4/§3b above), and the
-     project is still under its daily budget (§1 above); any one of those failing degrades it to a parked
-     proposal, same as **new-scope** (anything else) always is, full stop — the fleet can *propose* scope,
-     it can never *grant itself* scope. Bounded four ways at once, by construction: the per-review cap,
-     a `config.fleetProposalMaxPerProjectPerDay` daily ceiling per project (default 10, counts parked
-     proposals too — a flood of parked ones is still human triage load), dedup against the project's own
-     open task titles (normalized, near-exact — "when in doubt, create parked" is the tie-break, never
-     silently drop), and the session circuit-breaker (§3a above) as the last-resort behavioral backstop.
-     A parked proposal carries real provenance (`Task.source: {kind:"fleet", byRun, reason, proposedAt}`)
-     and a "🤖 fleet-proposed" board badge — never silently indistinguishable from a human-authored task.
-     22 tests (`tests/fleet-proposals.test.ts`): field-based parsing (prose ignored, overflow capped,
-     malformed entries dropped), every placement branch as a pure decision, and the full path through a
-     real `tickAutonomy()` — new-scope parked, in-scope promoted, each of the three degradation paths,
-     dedup, and the daily cap.
-  5. ~~**Budget as allocation, not just a ceiling.**~~ — **shipped.** `costBandFor`/`committedUsd`
-     (`packages/shared`) derive a rough $ signal from triage's already-computed `assessmentEffort` (no
-     second estimation call), and `pacedAvailableUsd` spreads the daily budget across
-     `config.budgetPacingWindowMs` — opt-in per project via `Project.budgetPacing` — instead of
-     committing it all to the first tick; `selectAffordable` (`orchestrator.ts`) then greedily picks
-     what fits against the rank-ordered backlog in priority order, without ever reordering it, so
-     auto-pick slows down as the ceiling approaches rather than running at full tilt until it hits a
-     wall. (`tests/budget-allocation.test.ts`)
-
-  **Gate philosophy, stated once:** budget gates *autonomy* only — a human can always assign a task
-  manually regardless of spend; autonomy is a convenience toggle, never the only door. **Scope growth
-  needs a human; quality growth is self-serve within budget** — the fleet can spend its already-approved
-  budget finding and fixing its own bugs without asking, but it can never expand what it's building
-  without asking. Every autonomous loop terminates **by construction** — the budget ceiling (phase 1) is
-  the hard stop that needs no judgment call — **plus one behavioral breaker**, the consecutive-failure
-  circuit-breaker (phase 3a), for the case a loop is technically under budget but visibly going wrong
-  faster than the budget alone would catch.
+- [x] **Feature-batch size guardrail.** Added two assistive guardrails — a merge-risk floor at PR time and an early warning at task-link time — that flag an unattended Feature batch before it grows into one unreviewable mega-PR.
+- [x] **Make the one human approval reviewable — feature-level brief.** A batched Feature PR now carries a system-composed brief (per-task verdicts, aggregate spend, a consult-drafted narrative of what shipped) instead of forcing a rubber-stamp on a 30-task diff.
+- [x] **🔬⭐ Autonomous backlog sweep — the v1 path to the auto dev team.** Composed existing v1 machinery into five shipped phases — budget ceiling, two-lens (verifier + breaker) review plus feature-level verification, circuit breakers with right-sized batches, a self-replenishing scope-taxonomied backlog, and budget-as-allocation — so the fleet can build out a whole backlog unattended under a daily budget, with humans approving only completed, tested work.
 - [ ] **🐛 Task-write atomicity — no optimistic concurrency, confirmed real data loss.** Reported
   live (2026-08): an operator batch-updating 7 tasks lost `description` on all seven (their first
   attempt sent `null` for fields they didn't mean to touch — a genuine PATCH-semantics footgun,
@@ -1754,106 +1237,14 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   `Store.putTask` that every caller routes through. Scope this deliberately rather than bolting a
   fix onto one call site — the race is systemic, not local to triage or to `update_task`.
 
-- [x] **⭐ Scenario coverage — "how well does what we built actually work?" per project.** The
-  recurring failure mode isn't an untested *file*, it's an untested **cell in a small closed set**:
-  both bugs fixed this week were exactly that (escalation `reject` × task-state — [#541](https://github.com/aekdahl/Skynet/pull/541);
-  archive × non-terminal run status — [#550](https://github.com/aekdahl/Skynet/pull/550)). Line coverage
-  reported both files as covered, because it answers *which statements ran*, not *which behaviours are
-  pinned*. New **Coverage** lens on the project page (`apps/web/src/views/project-quality.tsx`) reads the
-  project's checked-out branch and extracts its *enumerable behaviour axes* — TypeScript string-literal
-  unions and zod enums, the closed sets the code branches on — then crosses every case against the test
-  corpus. The analyzer (`apps/server/src/quality/scenarios.ts`) is **pure and string-based**: no
-  TypeScript compiler, no install step, and it **never runs the scanned repo's toolchain** — so it works
-  on *any* branch of *any* repo (447ms across this whole monorepo: 213 source / 191 test files, 44 axes,
-  193 cases) and is safe to point at code an agent just wrote. It picks up a standard
-  `coverage/coverage-summary.json` when one exists and says "not configured" plainly when it doesn't,
-  rather than rendering a misleading 0%. **The panel leads with gaps, not a score, and says why**: the
-  signal is deliberately asymmetric — a case no test *mentions* is strong evidence it's untested, while a
-  case that is mentioned proves only mention, not assertion. Presenting a percentage would overclaim the
-  weak half, so the UI states the limitation next to the numbers instead of burying it. Found 25 real
-  gaps on its first run against Skynet itself (eval `Phase` queued/executing/judging, `BuildStatus`
-  queued/ready, `FlyDeployStatus` deploying, …). **Deferred: mutation testing** (Stryker on the diff) —
-  the strongest direct answer to "does it work", since it verifies assertions actually *hold*, but it
-  needs per-project runner config and real runtime budget, so it's a separate piece of work, not a
-  panel that renders in half a second.
-  **Tree view** (`packages/shared/src/coverage-tree.ts`, `apps/web/src/components/coverage-tree.tsx`):
-  a ranked flat list answers *"what do I fix next"* but dissolves structure — 44 rows can't show that
-  the gaps cluster in `evals/`, `preview/` and `settings/` while `orchestrator.ts`, `command-safety.ts`
-  and `steward/` are fully pinned. That clustering is what says whether an **area** is understood, and
-  it exists only in the hierarchy. Every axis already carries its declaring file, so directory → file →
-  axis → case is derivable with no new server work; un-branching chains collapse to one row
-  (`apps/web/src`), siblings sort by gap count, and branches leading to a gap start expanded. **The
-  roll-ups deliberately fill by GAP and leave "covered" neutral, never green** — a green `38/47` on
-  `apps/server/` would read as "this subsystem is tested" when it only means every case is mentioned
-  somewhere, and a tree that renders reassurance it hasn't earned is worse than no tree at all.
+- [x] **⭐ Scenario coverage — "how well does what we built actually work?" per project.** Added a per-project Coverage lens (plus a tree view) that extracts closed-set behaviour axes from the code and cross-checks them against the test corpus, surfacing untested cells that line coverage's "which statements ran" metric misses.
 
-- [x] **⚠️ CRITICAL — the agent-control loop exists ONLY on the Claude SDK path.** Read this before
-  adding any runner. `apps/…/claude.ts` drives the Claude Agent SDK, and it is the **only** provider
-  with `canUseTool` gating, `question` / `plan` / `escalation` HITL, resume-with-guidance, plan-mode,
-  subagents and per-model cost metering. **Every CLI-backed runner** — `codex`, `gemini`, `cursor`,
-  `copilot`, `hermes`, `opencode` — shells out to a vendor binary and parses stdout: they get an
-  `approval` gate at best, and `hermes.ts` says it outright in its own header: *"there is no live HITL
-  gate here."* Everything that makes a run supervisable — an escalation reaching the operator
-  ([#575](https://github.com/aekdahl/Skynet/pull/575)), a question surfacing as an answerable card, a
-  decision resuming a live run ([#541](https://github.com/aekdahl/Skynet/pull/541)) — is Claude-SDK-only.
-  **Consequence for cost work:** a new native adapter for a cheaper vendor buys cheap tokens and hands
-  back a second-class, *ungovernable* runner. Route cheap models through the SDK via a Claude-compatible
-  endpoint instead (below) — same harness, different biller. Closing this gap for the CLI runners is its
-  own (large) piece of work; until it's done, "which runner" is a supervision decision, not just a price.
-- [x] **Alternative LLM providers, phase 1 — Claude-compatible endpoint per credential.** Claude is the
-  dominant cost line, and the cheapest way off it is *not* a new adapter: `claude.ts` already documented
-  a gateway credential (`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`), it just wasn't reachable from
-  the product — the endpoint lived nowhere in the credential model, and an injected `spec.apiKey`
-  actively **stripped** the gateway (a static `ANTHROPIC_API_KEY` shadows it by design). Now a credential
-  carries an optional `baseUrl` (`SecretMeta.baseUrl`, plaintext — it's a routing target, not a secret,
-  and "which model am I billing" must be answerable at a glance), resolved per-run beside the key and
-  threaded to every runner and side-call site. Point it at any provider speaking the Anthropic wire
-  protocol — Moonshot (Kimi), Z.ai (GLM), MiniMax, or a LiteLLM-style proxy fronting an OpenAI-compatible
-  vendor — and it runs the **full** agent loop, not a degraded one. Because it's per-*credential*, a
-  single fleet mixes tiers: cheap runners on routine work, Claude pinned to the hard tasks, both
-  supervised identically. **Two safety properties are tested, not assumed:** the two auth shapes are
-  strictly exclusive, so an ambient Anthropic key can never be handed to a third-party endpoint *and*
-  can never shadow the endpoint into silently billing the expensive API; and a malformed endpoint is
-  rejected loudly rather than falling back to the vendor (the failure mode there is a month of surprise
-  invoices). A key rotation preserves the endpoint. **Model ids are deliberately not hard-coded** — the
-  catalog is advisory (see `providers.ts`), so a model released after this shipped is typed in, not
-  waited for. **Phase 2 (a native OpenAI-compatible adapter) is explicitly NOT planned**: it would mean
-  rebuilding the agent loop against raw chat-completions — the exact second-class-runner trap the item
-  above warns about — and a translating proxy reaches the same vendors through the harness we already
-  have. Revisit only if a proxy hop proves untenable in practice.
+- [x] **⚠️ CRITICAL — the agent-control loop exists ONLY on the Claude SDK path.** Documented finding: only the Claude SDK runner has real HITL gating, escalation, and resume — every CLI-backed runner (Codex/Gemini/Cursor/Copilot/Hermes/OpenCode) is a comparatively ungovernable, approval-gate-at-best runner.
+- [x] **Alternative LLM providers, phase 1 — Claude-compatible endpoint per credential.** Added a Claude-compatible endpoint per credential (baseUrl + gateway auth token) so a cheaper vendor speaking the Anthropic wire protocol runs the full, fully-governed agent loop instead of a second-class CLI adapter.
 
-- [x] **Compatible endpoints, made usable: presets, real pricing, and a "not Claude" marker.** The
-  endpoint field shipped as a free-text URL box, which worked but wasn't a *setup*. Four parts.
-  **(1) A vendor catalog** (`packages/shared/src/compatible-endpoints.ts`) — DeepSeek, Moonshot (Kimi),
-  Z.ai (GLM), MiniMax: base URL, current model ids, published per-million rates, and each vendor's known
-  compatibility gaps, all verified against vendor docs on 2026-08-27. Advisory exactly like
-  `DEFAULT_PROVIDERS`; a custom endpoint and an unlisted model always work. Settings picks from a
-  dropdown and shows the rate table *with Anthropic Sonnet as the baseline row*, which is how you can
-  see at a glance that `kimi-k3` is at Sonnet parity and therefore not a saving at all — the exact trap
-  someone switching to "the newest Kimi" would fall into. Fleet's model list follows the chosen
-  credential, because several endpoints silently remap an unknown model id, so an Anthropic id there
-  half-works and you cannot tell what actually ran.
-  **(2) Spend is now REAL on a compatible endpoint.** The SDK prices every run from Claude Code's own
-  Anthropic table — meaningless once another vendor served the tokens, and it defeated the only honest
-  way to evaluate the switch (cost per *merged PR*, not per token). `RunnerUsage` now keeps the cache
-  tiers apart and the orchestrator passes the endpoint's published rates down, so cache reads are priced
-  as cache reads. That distinction is the whole ballgame: this repo's own month was ~510M cached input
-  against 3.4M output, so folding cache into fresh input would overstate a cheap endpoint by ~10x and
-  hide the saving it exists to prove.
-  **(3) Verify was broken** — it hardcoded `api.anthropic.com`, so verifying a Kimi credential sent the
-  Moonshot key to Anthropic and always failed. It now checks the credential's own endpoint, and treats a
-  404 on `/v1/models` as inconclusive rather than as a bad key (several endpoints serve only
-  `/v1/messages`).
-  **(4) A "via <vendor>" marker** on the fleet card, the idle row and the run header. A runner on a
-  compatible endpoint still shows the Claude glyph — the Agent SDK really is driving it — so without the
-  marker there is no way to tell which vendor served the tokens or why a run's cost looks unfamiliar.
-  Recorded on the RUN (`TaskRun.endpoint`), not resolved live from the credential, so history stays
-  truthful after a credential is re-pointed.
-  **Also fixes a pre-existing bug that would have made all of this dead on arrival:** Fleet's
-  "Add agent" passed `cloneFrom?.credentialId` to `createAgent`, silently discarding the Key the operator
-  actually picked on every non-clone add — so an agent pinned to a second key (or to a cheap endpoint)
-  quietly ran on the provider's default one instead.
+- [x] **Compatible endpoints, made usable: presets, real pricing, and a "not Claude" marker.** Turned the free-text compatible-endpoint field into a real setup: a vendor rate catalog (Sonnet as the baseline for comparison), accurate cache-aware spend accounting, a working per-endpoint verify check, and a "via <vendor>" marker so it's clear which vendor served a run's tokens.
 
+- [x] **Endpoint smoke test — prove a vendor can actually drive the agent loop, not just authenticate.** Added a per-credential Test button that runs one tiny real task to prove a Claude-compatible endpoint actually drives tool calls, gating, streaming, and usage reporting, not just authentication.
 - [x] **Endpoint smoke test — prove a vendor can actually drive the agent loop, not just authenticate.**
   Verify answers "does this key work". It does not answer the question that decides whether a
   Claude-compatible endpoint is usable *for Skynet*, and that gap is dangerous precisely because it's
@@ -1867,30 +1258,80 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   Auth failing SKIPS the rest rather than printing a wall of red — with no session there's nothing
   truthful to say about tools, and a false "tools failed" sends someone debugging the wrong layer.
   Costs a fraction of a cent, capped at 60s, and is **operator-triggered only** — never automatic, since
-  unlike verify it spends money. Catalog caveats a live probe *can't* see (DeepSeek ignoring MCP, so
-  browser tools vanish) are surfaced alongside the results.
+  unlike verify it spends money. Catalog caveats a live probe can't see (an ignored thinking budget, a
+  shim that misreports its context window) are surfaced alongside the results.
   **Two bugs the first live run against a real endpoint exposed**, both invisible to unit tests: an SDK
   result is a `success|error` union, so a rejected key came back as an error RESULT rather than a thrown
   exception — nothing threw, a zero-filled usage object existed, and `auth` reported a cheerful **pass**
   for a credential that had authenticated with nothing; and `usage` is an object even when every counter
   is zero, so truthiness alone called an entirely empty session "reachable". Both now pinned by tests.
 
-- [x] **Internal surfaces gate on RELEASE, not on "production".** Conflating those two is what hid QA &
-  Testing from the one place it's useful. The gate keyed off `import.meta.env.DEV`, which is false for
-  *any* `vite build` — and the GCP deploy runs the same `pnpm build` a packaged app does, so our own
-  running instance was treated exactly like a shipped product and lost its own tooling. (The Roadmap
-  already needed a hand-written exemption to work around precisely this, with a TEMP comment saying to
-  undo it "before launch" — the workaround was the symptom.) Now `isReleaseBuild()` reads
-  `VITE_SKYNET_RELEASE`, set only by `apps/web`'s `build:release`, which the desktop `dist`/`dist:mac`/
-  `dist:win`/`publish` scripts all run. Internal surfaces are therefore **on everywhere by default and
-  off only in a distributed build**: a release that forgets the flag hides our tooling (annoying, and we
-  notice) rather than shipping it (embarrassing, and we don't). `localStorage.skynet.devtools` overrides
-  both ways — `"1"` to debug a release, `"0"` to preview what a release looks like without cutting one.
-  **Also closes a real hole**: `acceptance`/`simulation` were hidden from the nav but absent from
-  `DEV_ONLY_VIEWS`, so `gateView` never coerced them — in a shipped build both pages stayed reachable by
-  deep link, stale hash, or a PWA/notification nav. A source-scanning test now asserts every view behind
-  the QA nav section is also route-gated, and that the desktop build scripts actually set the release
-  flag, since the gate defaults to ON and a missing flag would silently ship internal tooling.
+- [x] **Internal surfaces gate on RELEASE, not on "production".** Fixed internal QA/dev surfaces gating off a dev-build flag that was false for any production deploy, hiding Skynet's own tooling from its own hosted instance; also closed a route-gating hole that left QA pages reachable by deep link in a shipped build.
+
+- [x] **Repoint an EXISTING runner at another credential (and stop the endpoint chip breaking the row).**
+  The Key picker was create-only — "an existing agent's credential is fixed" was a fair rule when a
+  credential was just a second API key, but it stopped being fair the moment a credential could name a
+  Claude-compatible endpoint: moving a runner to a cheaper vendor then meant delete-and-recreate, which
+  throws away its task history and cost rollup. The picker is now offered when editing too, seeded from
+  the agent's current credential, and says plainly that a switch applies to the runner's NEXT run
+  (anything in flight resolved its credential at start). Server-side, `UpdateRunnerRequest.credentialId`
+  is validated to exist AND to belong to that runner's provider — without the provider check you could
+  point a Claude runner at a GitHub or Fly token, which authenticates nothing and fails only once a real
+  run starts.
+  **Two bugs of mine found while doing it, both by looking at the actual UI rather than the code:**
+  the `via <vendor>` chip was added as a sixth top-level child of `.fleet-idle-row`, which is a FIXED
+  five-column grid (`1fr auto auto auto auto`) — so it landed in an implicit sixth cell and wrapped the
+  row's action buttons onto a line of their own. It's now inside the name cell. (It was visible in my
+  own verification screenshot and I read past it.) And there are TWO inline ConfigForm editors — the
+  card and the idle roster — of which only one was updated, so a vendor switch made from the idle row
+  saved the new MODEL against the OLD credential: a runner configured for `deepseek-v4-flash` while
+  still authenticating to Anthropic, which is worse than not offering the switch at all. Both are now
+  guarded by source-scanning tests (the grid shape, and that every ConfigForm save path carries
+  `credentialId`).
+
+- [x] **Bench a credential — stop every agent on a key, and put them back.** When something is wrong with
+  a key (leaking, rate-limited, compromised, billing surprise) the operator needs one action that takes
+  the whole fleet off it. `SecretMeta.paused` records who/when/why, `providerUsable` refuses a paused
+  key so no runner on it is given work, and pausing HALTS the runs already on it —
+  `haltRunsOnCredential` reuses `haltAgent`, so each run stops, its worktree retires, its runner frees
+  and its task returns to `todo` cleanly re-pickable by a runner on a different key. **Both halves are
+  the feature**: refusing new work alone leaves whatever is already running to keep using the key, which
+  for a leaking key is most of the damage; halting without the durable flag just lets the autonomy loop
+  pick it straight back up next tick. Mark-then-halt, in that order, so a freed task can't be
+  re-assigned to the same key through the gap. Durable ON PURPOSE, unlike the in-memory quota breaker
+  (`depletedKeys`) which SHOULD evaporate on restart because the key may have been topped up — a
+  deliberate pause exists because someone decided the key must not be used, and a deploy is not a
+  decision to resume. A key rotation preserves the pause (replacing the key is a step toward fixing the
+  problem, not a decision to resume); an explicit resume also clears the quota breaker, since that's the
+  operator saying the key is good again. Available to the operator (Settings, with a required reason)
+  and to **Steward** (`pause_key`/`resume_key`, through the same confirm-chip path as every other
+  action).
+- [x] **`maxRunners` caps CONCURRENCY, not roster size.** It used to refuse creation, so idle agents ate
+  the ceiling and configuring a fleet — one runner per cheap endpoint, a spare on a second key — hit a
+  wall for capacity nobody was using. Adding runners is now never blocked; the cap is enforced where
+  runs are actually assigned, counting BUSY runners, so idle and paused-key runners cost nothing. Past
+  the cap tasks simply queue. The Fleet page says so outright ("5 agents configured, 2 work at once")
+  rather than leaving an operator to wonder why their eleventh runner never picks anything up, and names
+  separately how many are on a paused key — those take no work at all, which is a different problem from
+  queueing. Settings and the MCP tool descriptions were corrected too; both still described a fleet-size
+  cap.
+
+- [x] **A run on a compatible endpoint could authenticate with the WRONG vendor's credential.** Found from
+  a live DeepSeek `401 Authentication Fails, Your api key: ****f81f is invalid` on a key that was fine.
+  `applyCredential` stripped `ANTHROPIC_API_KEY` before pointing a run at a third-party endpoint — but
+  not `CLAUDE_CODE_OAUTH_TOKEN`, which `buildRunnerEnv` deliberately PRESERVES as a real standalone
+  credential and which outranks the gateway token. On any host carrying a `claude setup-token`
+  subscription (a developer machine, or a container that inherited one), a run pointed at DeepSeek would
+  therefore authenticate with the **Anthropic subscription token**: the third-party vendor receives the
+  operator's personal token, and the run 401s naming a key that was never the problem — sending whoever
+  debugs it after the wrong thing entirely. This is the exact failure the ANTHROPIC_API_KEY strip was
+  written to prevent; the second credential was simply missed. Both now come off together.
+  **Also: keys are trimmed at the boundary.** A key pasted from a vendor console routinely carries a
+  trailing newline, which rode into `Authorization: Bearer <key>\n` and was rejected as invalid — and
+  because `last4` was fingerprinted from the untrimmed string, the fingerprint shown in Settings
+  disagreed with the vendor's own `****f81f`, destroying the one cheap diagnostic an operator has.
+  Trimmed once in `sealRecord`, so the stored key, its fingerprint, and what a runner sends are the same
+  string. Six of the seven new tests fail on the pre-fix code.
 
 - [x] **⭐ Making Skynet DRIVE projects, not just process tasks — three steps.**
   **(1) Steward proposes work the discussion produced.** Its prompt said *"include it ONLY for change
@@ -1952,47 +1393,9 @@ features below are white space.)
 
 **UX/UI to SOTA (pre-release review — high &amp; polish):**
 - [ ] **Text-contrast ramp** (ink / muted / faint, checked ratios — muted currently sits at the reading floor) + a **systematized button/state token set** (primary / ghost / danger, each with explicit hover · focus-visible · disabled · loading).
-- [x] **Agent picker at Start** + a saved per-task provider/model preference, and always show which agent a run is on. "Always show which agent" was already live (the kanban card surfaces the run's actual runner/provider·model once assigned). New: a compact provider (+ optional model) select on backlog/todo cards, right at the Start action — persists onto `Task.preferredProvider`/`preferredModel` via the existing `updateTask` path. It's a SOFT hint, never a hard requirement: `Orchestrator.acquireAgent` tries an idle, usable runner on the saved provider (preferring an exact model match) before falling back to today's plain first-idle pick — a preference with no matching idle runner never blocks Start.
-- [x] **Structured triage card** (effort pill · full-contrast summary · risks list, not one muted paragraph); **Inbox count badge**; grouped nav (**Operate** / **Configure**).
-  *(Inbox count badge was already shipped. Landed: the triage LLM consult's prompt now requests
-  `effort`/`risks` alongside the existing `estMinutes`/`clarity` tail tag, parsed the same
-  defensive, field-based way as the auto-review verdict (`splitEstMinutesTag`, never regex/
-  keyword-classified) — a malformed or missing field never drops the others. `Task` gained
-  `assessmentEffort`/`assessmentRisks` as additive, defaulted siblings of the existing
-  `assessment` string (which now doubles as the card's summary line), so a task triaged before
-  this shipped keeps rendering fine off `assessment` alone — verified live: a real live-browser
-  run of the actual triage pipeline landed a task with only `assessment` set (the LLM call's own
-  auth failure meant no tag was found) and it rendered as a clean summary-only card, no pill, no
-  risks, nothing broken. The happy path (pill + risks) was verified two ways: exhaustively at the
-  parser level (new unit tests) and through the real `Orchestrator.tickAutonomy()` pipeline with
-  an injected canned reply (new integration tests) — no `ANTHROPIC_API_KEY` was available in the
-  sandbox this landed from to get a genuine model-generated reply, so the visual (pill/summary/
-  risks rendering) was additionally confirmed with a temporary, since-reverted server-side stub
-  of the LLM reply text, screenshotted live in the browser, never committed. `shell.tsx`'s flat
-  nav list is now two labeled groups — Operate (Home/Inbox/Audit/Projects/Fleet/Ready to merge)
-  and Configure (Integrations/Roadmap/Settings) — reusing the existing `.op-navsec` label style;
-  active-item highlighting and routing unchanged (confirmed live).)*
-- [x] **Humanized time** + stale-heartbeat styling (no raw "79062s ago"); honest empty-**PLAN** state; **provider identity** (real marks + names, not abstract glyphs).
-  *(Investigated first — the raw-seconds text itself was already fixed everywhere: every elapsed/heartbeat/
-  waited display in the app (Home's Runs board, task/agent detail, the live-preview freshness label, fleet
-  idle time) already routes through `fmtWait` (`lib/derive.ts`), which single-unit-rounds ("42s"/"15m"/"2h"/
-  "3d"). What was actually missing: **stale-heartbeat styling** — a `running`/`paused` row's elapsed-since-
-  START time keeps growing whether or not the process is still alive, so a silently-hung agent read as
-  healthy. Added `STALE_HEARTBEAT_SEC = 60` (Home's `RunsBoard`): 12x the ~5s heartbeat cadence (so ordinary
-  jitter never false-flags) but a full two minutes' notice before the server's own reaper
-  (`SKYNET_AGENT_REAP_MS`, 180s default) would presume the run dead and escalate it — an amber pulsing dot +
-  chip recolor, distinct from the red "needs you" (an open gate) and blue "running" (healthy) tags. **Empty-
-  PLAN state** — `TaskDetail`'s PLAN panel showed a misleading "0/0" fraction over a blank `<ol>` for any run
-  with `plan: []` (the permanent state for every non-Claude vendor, and the initial state for a fresh Claude
-  run); now an honest "No step-by-step plan for this run." **Provider identity** — most surfaces
-  (`agent-detail.tsx`, `fleet.tsx`, `project.tsx`'s kb-elig-agent chip) already paired a colored glyph with
-  the real vendor name; the one real gap was Home's Runs board, the app's single most prominent live view,
-  whose Agent cell showed a bare runner name with no vendor color/mark at all — added the colored glyph
-  (`providerInfo`) next to it, vendor name in the tooltip. No new logo assets sourced — reused the existing
-  colored-glyph system already used everywhere else rather than risk an unverified trademark usage. Verified
-  live: real `fmtWait` call sites confirmed unaffected; the three fixes confirmed visually (synthetic
-  markup — no run can exist in this sandbox without a live provider credential, confirmed via a real
-  `assignTask` 409 "No credential for any available agent" before any `TaskRun` record is even created).)*
+- [x] **Agent picker at Start** — added a compact provider/model picker at the Start action, saved as a soft preference that never blocks Start if unmatched, alongside the already-live "which agent is this run on" display.
+- [x] **Structured triage card** — triage cards now show a structured effort pill, full-contrast summary, and risks list instead of one muted paragraph, plus a grouped Operate/Configure nav (the Inbox count badge already shipped).
+- [x] **Humanized time** — added stale-heartbeat styling so a silently-hung run no longer reads as healthy, an honest empty state for the PLAN panel, and a provider glyph on Home's Runs board.
 - [ ] **Design tokens published** (type scale, 8px rhythm, motion behind `prefers-reduced-motion`, one focus ring, semantic palette kept separate from the accent); **a11y pass** (icon-button labels, visible focus, keyboard walkthrough of assign→decide→merge); explicit **Inbox-first mobile/PWA shell**.
   *(Partially landed — investigated each clause independently rather than assuming the bundle was all-or-nothing. **Semantic palette** was already separate from the accent (`--ok`/`--warn`/`--danger`/`--info`/`--violet` are distinct hues from `--accent`, per the comment already in `styles.css`) — no action needed. **Inbox-first mobile/PWA shell** was already fully shipped by an earlier, differently-scoped PR (`20b6e91`): standalone/installed launches open straight to the Inbox queue (`pwa/launch.ts`'s `initialView`), the manifest's shortcuts lead with Inbox, and `styles.responsive.css` already restructures the shell for narrow/touch screens with safe-area insets — verified by reading, not re-done.
     **Type scale, published**: `styles.css` had accrued 25 distinct `font-size` values (a deliberate half-pixel ladder for secondary/tertiary text density — e.g. 11.5/12.5/13.5px are the dominant convention, not drift) with zero naming — every occurrence was a bare px literal. Added a `--fz-*` token per distinct value actually in use and mechanically replaced every literal with its token (byte-identical rendering — a lossless catalog, not a renumbering) across `styles.css` and `styles.responsive.css`. New code now has a discoverable set to draw from instead of inventing another one-off size.
@@ -2002,112 +1405,18 @@ features below are white space.)
     **Not done — 8px spacing rhythm**: deliberately scoped out. Unlike font-size, `padding`/`margin`/`gap` values in `styles.css` are not a latent, already-consistent ladder — the file has ~700+ declarations spanning single-digit odd pixel values up to full-panel widths (400px, 288px, …), many clearly fine-tuned per component (icon/text baseline alignment, badge padding) rather than page-rhythm spacing. A faithful "rhythm" pass means actual design consolidation (choosing canonical steps and remapping every declaration onto them), not just token-naming the existing values — and that carries real visual-regression risk across every screen in the app that a single pass can't safely verify: this sandbox has no working browser (Playwright's Chromium is missing system shared libraries — `libglib-2.0.so.0` — and `apt-get update` is blocked here, so no live visual QA was possible this round; verified instead via a full `pnpm -r typecheck` pass and manual diff review). Left as future, deliberately-scoped work rather than guessed at blind.)*
 
 **Easier to use than anyone else:**
-- [x] **Repo-optional / chat-only mode** — a runner with **no worktree and no merge**; try Skynet in 30s,
-  no git literacy. *(Landed: this was already ~90% built as orchestrator.ts's own pre-existing "Phase 0"
-  path — a project with no bound repo (`gitContextFor` resolves `undefined`) already skipped
-  `WorktreeProvisioner` entirely and completed via the no-diff/no-merge branch in `complete()`; project
-  creation and onboarding never hard-required a repo either. What actually shipped: (1) a real safety
-  fix — a chat-only run's `cwd` previously fell through to `config.runnerCwd` (`undefined` by default)
-  → every runner-sdk provider's own fallback to `process.cwd()`, i.e. the **server's own working
-  directory** — replaced with a private per-run scratch tmp dir (`scratchCwdFor`/`LiveAgent.scratchCwd`),
-  minted before start and removed on every teardown path (complete/fail/escalation-reject/stop); (2) an
-  explicit, labeled UI choice — a "No repo — chat only" checkbox on Home's `GetStarted` form and a
-  matching "Chat only" tab on `NewProjectCard` (previously an empty local-folder field silently, silently
-  fell through to no-repo with zero explanation) — plus a "💬 chat only — no repo connected" line on the
-  project header so it's never ambiguous why diff-review/merge never show up. Verified live end-to-end
-  (real browser, real Cursor CLI attempt — auth failure correctly routed through the existing `fail()`
-  path, scratch dir confirmed created then removed) and via `tests/chat-only-run.test.ts`.)*
-- [x] **Task linter v0 (assistive)** — *pulled forward from v5:* "vague task → touches 3 modules, split into
-  3?"; "no 'done' defined?". The ease differentiator **nobody has** — lowers the skill floor, not just setup.
-  *(Landed: a background, fire-and-forget consult right after `createTask`/text-editing `updateTask` — same
-  shape as the existing `maybeAutoClone`, never blocks task creation. `task-linter.ts` mirrors
-  `review-verdict.ts`'s discipline: reads a structured `{concerns:[{kind,note}]}` field, never
-  classifies free text; an unreadable reply parses to `[]`, indistinguishable from a genuinely clean
-  task. Cheap by default (`haiku`, `SKYNET_LINT_MODEL` to override). Dismissible via
-  `Task.lint.dismissed`, mirroring the existing `dismissPr` pattern. Verified live against a real
-  model: a vague task ("fix the thing") surfaced two real concerns; a well-scoped one came back
-  clean; dismiss stuck.)*
+- [x] **Repo-optional / chat-only mode** — added an explicit "no repo — chat only" UI choice and a safety fix so a chat-only run's cwd is a private scratch dir instead of the server's own working directory.
+- [x] **Task linter v0 (assistive)** — added a background, dismissible task linter that flags vague/under-scoped tasks (no "done" defined, touches multiple modules) right after creation.
 - [ ] **Charter-assisted project creation** — creating a project is a short LLM-drafted intake, not a name
   field: goals, non-goals, risks, constraints, definition of done — operator corrects and approves (the
   Charter). Uses the **user's own key** via the existing secret store (one cheap call; metered). The
   Charter is what the auto dev team (v2 north star) later sizes itself from, and what **auto task/milestone
   proposal** plans against. See [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §1.
-- [x] **Parallelism nudge** — "idle runners + deep backlog → spin up more?" turns the fleet's own state into
-  guidance. Server-computed (`derive/parallelism.ts`, on the snapshot — not persisted), reusing the exact same
-  eligibility check the autonomy loop's auto-pick already uses (`assignment.mode !== "unassigned"`, so a task
-  no one's set up yet doesn't count as "waiting work"). Threshold: ≥2 idle runners (one idle agent between runs
-  is normal churn, not spare capacity) AND ≥3 eligible backlog/todo tasks (a real queue, not the last couple of
-  items about to be picked up anyway) — deliberately simple, tune later. Surfaces as a dismissible (session-only,
-  not persisted — a fresh load re-checks live state rather than remembering a stale dismissal), accent-toned
-  hint on Home's Runs board, the one place idle-runner count and backlog depth already show together; the CTA
-  reuses the existing Fleet nav entry point, no new fleet-scaling logic.
-- [x] **Task grouping & per-project roadmap** — a level *above* the task board. **Features** group related tasks (⊞ chip on cards; a lens listing each feature's mini 6-column count + progress bar); **milestones** are planned releases per project (◉ chip; a Roadmap lens with target-date badges and rolled-up features/tasks — "in Nd" / "today" / "Nd late"). Same-project scoping is enforced by the server (cross-project links refuse) and by the Steward/Telegram validators. Drove by: "roadmap formed from items in all stages of kanban marked with planned releases + milestones." Steward + Telegram both speak the seven grouping actions (`create_feature`, `set_task_feature`, `archive_feature`, `create_milestone`, `set_feature_milestone`, `set_task_milestone`, `mark_milestone_shipped`) — same confirm-first envelope task actions use.
-- [x] **Per-project agent instructions (house rules)** — a `Project.instructions` markdown field that rides *every* prompt an agent sees on that project (assignTask, forkAgent, checkpoint restore, decision resume, review-revise, escalation resume, triage consult, auto-review consult) and Steward's grounding, via one shared `withInstructions()` prefix applied to `StartSpec.task` — vendor-neutral, so it reaches CLI runners too without per-vendor code. Motivated by: "build agents in Skynet using a specific subset of packages, pre-written code, and structure" — that's a per-project policy, not a workspace boundary, and it lives on the project record for instant editability. Trims + normalizes empty → null; the read-only header shows a compact "ⓘ Instructions active" chip. *(Re-verified end-to-end — `tests/project-instructions.test.ts` + `tests/instructions-prompt-wiring.test.ts` now pin the orchestrator → StartSpec.task → per-vendor prompt/argv chain, not just the `withInstructions()` primitive.)*
-  *(S1 — one shared agent-context assembler: the 10 ad hoc `withInstructions()` call sites above (assignTask,
-  fork, checkpoint restore, decision resume, review-revise, escalation resume ×2, triage consult, auto-review
-  consult) now all route through one new `buildAgentContext()` (`apps/server/src/agent-context.ts`), which adds
-  `Project.goal` (a `=== PROJECT ===` section, name + goal, omitted when the goal is empty) and — when the task
-  belongs to one — its **Feature**'s name + description (`=== FEATURE ===`), resolved via a `store.getFeature`
-  lookup that tolerates a missing record. Sections emit in a fixed order (project → instructions → primer →
-  feature → solution brief → in-flight → task) and are individually omitted when empty; `withInstructions()`
-  itself is unchanged (kept as the small no-op-when-unset primitive `tests/project-instructions.test.ts` pins
-  directly) and re-exported from `orchestrator.ts` for that test's import path. `primer`/`brief`/`siblings`
-  fields are already on the signature for the not-yet-built S2 (primer doc) / S3 (in-flight siblings) / S8
-  (Solution Brief) sections — those land data-only, no further plumbing. Bounded to a ~6k total-char budget
-  with per-section caps; over budget, in-flight siblings drop first, then the primer's tail is shaved —
-  `Project.instructions` and the task body itself are never truncated. Regression-proofed (stashed the
-  orchestrator wiring, confirmed the new assertions fail, popped it back): `tests/agent-context.test.ts` (pure
-  unit — section order/omission/truncation), `tests/agent-context-wiring.test.ts` (real git worktrees — goal +
-  feature actually reach the relaunch prompt at checkpoint-restore / review-revise / escalation-resume), and
-  new cases in `tests/project-instructions.test.ts` (assignTask/forkAgent goal + feature threading, on top of
-  the existing instructions-threading cases).)*
-  *(S3 — sibling-awareness digest: `buildSiblingDigest()` (`apps/server/src/sibling-digest.ts`) is a pure
-  derivation — no LLM — over the ongoing/review siblings, last-5 recently-merged runs (`mergedAt`, newest
-  first), and top-3 queued-up-next tasks (`order`) on the SAME project, plus a fixed steering line ("prefer
-  building on it over duplicating it; flag genuine conflicts via escalation"). Wired into S1's `siblings`
-  field at the genuine "an agent is starting FRESH" call sites only — `assignTask`, `fork`, and
-  `relaunchEscalated` (covers both reassign and escalation-relaunch via its own `reassign` flag) — via one
-  shared `siblingDigestFor` helper; deliberately NOT wired into continuation paths (checkpoint restore,
-  review-revise) where the agent already has full context of its own prior turns. Snapshot-at-start only,
-  never a live feed (the `inform` seam is the mid-run path — out of scope here). Hard-capped at ~1.2k chars,
-  dropping content in priority order (queued → merged → the ongoing/review tail) while the steering line
-  always survives. Also bumped S1's own per-sibling cap in `agent-context.ts` from 200→1200 chars, since this
-  produces ONE combined digest string rather than many independent one-liners (S1's own `agent-context.test.ts`
-  pins behavior, not the literal cap value — unaffected). `tests/sibling-digest.test.ts` (11 pure unit tests —
-  empty-project, excludes-own-task, cross-project isolation, merged-recency ordering, queued `order` ordering,
-  the ~1.2k cap and its drop priority) + `tests/sibling-digest-wiring.test.ts` (3 orchestrator tests — a busy
-  sibling reaches the real `StartSpec.task` at assign and fork time, and a solo project renders no
-  `=== IN FLIGHT ===` section at all). Regression-proofed (removed the implementation, confirmed all 14 new
-  tests fail, restored it).)*
-- [x] **Project Context — meeting notes/emails/docs, condensed into the S2 primer** — the operator can paste or
-  upload raw context (meeting notes, an email, a doc) on a project's new **Context** tab; Skynet reads it verbatim
-  (`ProjectContextEntry` — never edited by the model, source + date kept, delete + re-add if wrong) and runs one
-  LLM pass (`apps/server/src/steward/context.ts`'s `condenseProjectContext`, mirroring S5 crystallize's
-  stub-injected-`ask` pure-function shape) to distill the accumulated set into `Project.contextSummary` — the
-  short primer `agent-context.ts`'s `buildAgentContext` was already reserved for as "S2" (see S1 above) but never
-  had a data source. Every call site picks it up with **zero extra plumbing**: `buildAgentContext` now falls back
-  to `project.contextSummary` whenever a caller doesn't pass an explicit `primer`, and Steward's own grounding
-  (`steward/assistant.ts`) reads the identical field, so an agent's task prompt and "ask about this project" both
-  ground on the same digest. Upload extracts text server-side by extension (`steward/extract.ts`: `.txt`/`.md`
-  verbatim, `.pdf` via `pdf-parse`, `.docx` via `mammoth` — a first file-upload capability for the app, gated by a
-  new `@fastify/multipart` registration capped at 15MB/1 file) — an unrecognized type throws a clear, user-facing
-  error rather than storing garble. Add/upload/delete all re-condense automatically (deleting the last entry
-  clears the summary back to null, never leaving a stale one); a manual "Regenerate" re-runs it on demand. A real
-  gap found live-testing this against a dev box with no usable provider key: `oneShotText`'s one-shot consult
-  DEGRADES an auth/network failure into yielding its own error text rather than throwing (`streamQueryText`'s
-  by-design "never leave the caller with nothing" contract, shared by `stewardChat`/`crystallizeBrief`) — with no
-  guard, that error text would land in `contextSummary` looking like a real (if useless) summary. Fixed by
-  checking whether a usable key resolves at all BEFORE calling condense (`Operations.refreshProjectContext`) — a
-  structural, non-content check, not the keyword/shape classification of free text the auto-review APPROVE/FLAG
-  bug already burned this codebase on once; skipped only for the real default ask, never an injected test stub.
-  Verified live end-to-end in the browser (paste → raw entry lists correctly; the no-key case leaves the summary
-  cleanly empty instead of showing the degraded text; Regenerate/Delete both clean) and via a real multipart
-  `curl` upload against the running dev server (both a `.txt` success and an unsupported-type rejection).
-  `tests/project-context.test.ts` (15 tests: the pure condensation contract, extraction, and the full
-  Operations-layer add/upload/delete/refresh path against a real store+hub with a stubbed model reply) +
-  `tests/contracts.test.ts` (wire round-trip) + new cases in `tests/agent-context.test.ts` (the S2 fallback:
-  explicit `primer` still wins, omitted falls back to `contextSummary`, both-unset omits the section).
-- [x] **Per-project isolation for credentials & GitHub identity** — a project can pin its own **LLM credential** so runs on that project bill to that key (add-a-key UI + agent pinning), and its own **GitHub PAT** so PRs open under the right account regardless of workspace default. Complements the roadmap's "work spend to the business" story without a new workspace boundary.
+- [x] **Parallelism nudge** — added a dismissible Home nudge that surfaces when idle runners and a deep eligible backlog suggest scaling up the fleet.
+- [x] **Task grouping & per-project roadmap** — added Features (grouping related tasks) and Milestones (planned per-project releases) as a level above the task board, with Steward and Telegram both able to manage them.
+- [x] **Per-project agent instructions (house rules)** — added a per-project instructions field that rides every prompt an agent sees on that project, plus a shared context assembler (project goal, feature, and a sibling-run digest) so a fresh agent starts with relevant project/feature/in-flight context.
+- [x] **Project Context — meeting notes/emails/docs, condensed into the S2 primer** — the operator can now paste or upload raw context (notes, an email, a doc) on a project's Context tab, which Skynet condenses into a short primer that grounds both an agent's task prompt and "ask about this project" chat.
+- [x] **Per-project isolation for credentials & GitHub identity** — a project can now pin its own LLM credential and GitHub PAT, so its runs bill to the right key and its PRs open under the right account regardless of the workspace default.
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.* Also landed: the Roadmap tab's "reads ROADMAP.md" lookup used to dead-end when a repo kept its plan somewhere else — `Project.roadmapPath` now lets the operator (a picker on the tab's empty state) or Steward (`set_roadmap_path`, confirm-first, e.g. "the roadmap is at docs/PLAN.md") point it at any repo-relative file; `resolveRoadmapDoc` is the single place both the tab's API and Steward's own grounding resolve through, so they can't drift.
 - [~] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third
   lane: when a request is better SHOWN than said (review a diff, browse the board, tune the fleet), the
@@ -2223,65 +1532,18 @@ uses the **user's own accounts** (their Sentry, GitHub, LLM key) — Skynet is t
 supervision layer, it doesn't host or resell those services.
 - [x] **The enabling primitive:** an **inbound-trigger** concept — a webhook/event creates a task or agent
   in a workspace. Today the only trigger is "operator assigns a task"; this one primitive unlocks the
-  whole category. (Cheap to design early so we don't foreclose it; build here.)
-  *Landed, first concrete instance:* `POST /webhooks/github` — a GitHub App `issues` webhook
-  (opened/reopened/labeled) creates the linked task immediately via `Operations.handleGithubIssueEvent`,
-  instead of waiting on the next manual "Import issues" click or re-sync. Deliberately outside `/api`
-  (the bearer-token auth guard doesn't apply — GitHub can't carry one); verified instead by an HMAC
-  signature (`X-Hub-Signature-256`) against `GITHUB_WEBHOOK_SECRET`, the same App-wide secret
-  `config.ts` already reserved for this. No workspace context arrives with a GitHub webhook, so it
-  resolves the owning project(s) with a new `Store.listAllProjects()` cross-workspace sweep (mirrors
-  `listAllRuns`/`listAllAgents`), filters to `repo` match + the same opt-in `Project.syncSourceStatus`
-  gate the write-back side already uses, and dedupes on `source.repo`+`source.number` — so a redelivered
-  or already-imported issue is a no-op. Other event types (push, check_run, …) 2xx-ack without acting, so
-  GitHub doesn't disable the webhook. The generic (non-GitHub) shape — any inbound webhook → task, for
-  Sentry/Linear/Slack/etc. — is still open; this proves the primitive end-to-end for the first, highest-
-  frequency source.
+  whole category. (Cheap to design early so we don't foreclose it; build here.) Added a GitHub issues webhook, the first concrete instance, that creates a linked task the moment an issue is opened, reopened, or labeled.
 - [ ] **Tools via MCP:** an agent gets scoped tools (GitHub / Sentry / Slack MCP) to act back into the
   user's services. A "Sentry agent" = a coding agent + Sentry MCP + a Sentry webhook trigger.
 - [x] **Skynet *as* an MCP server (shipped):** the reverse direction — Skynet exposes its own surface
   (projects/tasks/fleet/agents/HITL) as MCP tools so an agent can drive the fleet, incl. a headless
-  bootstrap token for sandbox deploys (e.g. Daytona). See [docs/mcp.md](docs/mcp.md).
-  *(The browser/Chrome MCP tool is pulled forward to v1 — see above — since it serves the core code loop,
-  not inbound triggers; the rest of the tool catalog lands here.)*
-  *Landed: **response-size fix** — `list_agents`/`list_tasks`/`list_audit`/`get_snapshot` were returning
-  full records (a run's entire tool-call log, a task's full assessment/lint text, an audit record's
-  captured diff patch) for every row, so listing scaled with workspace history rather than what the
-  caller asked for — one real deployment's `list_agents`/`list_tasks` became unusable at ~50 runs / 100
-  tasks. Now summary/detail-split like the rest of the product: list_* return compact, paginated
-  (`limit`/`offset`, default 30/cap 200) summaries excluding archived by default; two new tools,
-  `get_task` and `get_audit`, fill the drill-in gap for a single record's full detail (mirroring the
-  existing `get_agent`); `get_agent`'s log itself now defaults to the most recent 100 entries
-  (`logLimit`/`logOffset` to page further back) so even a single long-lived run can't blow the budget.*
+  bootstrap token for sandbox deploys (e.g. Daytona). See [docs/mcp.md](docs/mcp.md). Also fixed list tools to return paginated summaries instead of full records, which had made them unusable at scale.
 - [ ] **Feedback-loop responders (route back to the *originating* run)** — a CI failure, a PR review comment, or a
   merge conflict re-engages the **same** agent that produced the branch (self-healing), not a fresh run.
   *(Agent Orchestrator-style; ties directly to the responders below.)*
 - [ ] **Interop surface (adopted)** — beyond `/mcp`, expose the fleet via an **OpenAI-compatible endpoint + REST**
   so external tools can drive it as a model/service. *(claw-orchestrator-style; broadens who can call Skynet.)*
-- [x] **⭐ GitHub Issues ↔ tasks (two-way sync).** Read issues from a project's connected repo as Skynet
-  tasks, work them through the normal loop, and keep the *issue* updated as they progress — the first
-  concrete instance of the inbound-trigger + tools-back pattern, specialized for the tracker people
-  already live in. **Landed, in three passes — every piece below is done:**
-  - **Read (issue → task):** an "import issues" action (callable anytime, not just at project creation —
-    `POST /api/projects/:id/import/github-issues`) pulls open issues from the connected repo; each becomes
-    a Task linked back via `Task.source` (issue number + URL). *Landed this pass:* the pull is no longer
-    the only path in — `POST /webhooks/github` (the v3 inbound-trigger primitive, above) creates the same
-    linked task the moment an issue is opened/reopened/labeled, gated by the same opt-in.
-  - **Work:** the task runs the standard loop (assign → worktree → diff → PR). *Landed this pass:* the PR
-    body is auto-linked with `Closes #<n>` (`orchestrator.ts`'s `openPrForRun`) whenever the task's
-    `source.kind === "github_issue"`, so merging the PR closes the issue on GitHub even if write-back
-    below hasn't fired yet.
-  - **Update as worked (task → issue):** `task-sync.ts` subscribes to every `task.upserted` (human drag,
-    complete/merge, the autonomy loop — one choke point) and comments/closes/reopens the linked issue on
-    state transitions. *Landed this pass:* it also mirrors the kanban stage as a `skynet:triage|ongoing|
-    review|done` label (replace-all on the issue's label set, preserving any non-`skynet:` labels a human
-    added). Both gated by the same opt-in `Project.syncSourceStatus` — no second toggle. Verified against
-    a real private test repo + issue: PR body carried `Closes #1`, the label tracked triage→ongoing→
-    review→done live (including moves the autonomy loop made, not just human drags), and merging the PR
-    closed the issue for real.
-  - **Reuses:** the GitHub provider's REST client — `getIssueLabels`/`setIssueLabels` added alongside the
-    existing `commentIssue`/`setIssueState` on the same `GitProvider` seam, no second client. Supersedes
-    the bare "GitHub issue → PR" candidate below with the full round-trip.
+- [x] **⭐ GitHub Issues ↔ tasks (two-way sync).** GitHub issues now sync both ways: importing or a webhook creates a linked task worked through the normal loop, and the task's kanban stage and PR post back to the issue as a status label and a "Closes #n" link.
 - [ ] **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
   fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
 - [ ] Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.
@@ -2294,17 +1556,8 @@ User-owned memory that no single vendor can match, because everything streams th
   instructions, etc.**, and project Skynet's portable memory into each vendor's native format.
 - [ ] Injection via the vendor-agnostic `runner-sdk`; sourced from the streams + `hitl_audit` already
   flowing through the `hub`.
-- [x] **⭐ Open the format — openness is the second moat.** Publish a versioned, human-readable, git-committable
-  **open memory spec** (align with / extend `AGENTS.md`-style conventions) so the memory is a *substrate,
-  not a new silo*. Openness is the adoption + trust lever — users only pour knowledge into something they
-  can't be locked out of — which makes Skynet the default hub. The durable moat then shifts to *curation
-  quality + the accumulated personal corpus + being the hub*, not owning the format (the git → GitHub play).
-- [x] **⭐ Memory as an MCP server** — expose the brain over MCP so **any** agent or tool can read/write it, even
-  *Landed: [docs/memory-format.md](docs/memory-format.md) — spec v0.1. `.skynet/memory/` holds Markdown
-  files (workspace/project/area/agent-family scoped), YAML frontmatter for file-level metadata, one `##`
-  section per fact with an inert HTML-comment metadata line (id/source/author/created/confidence/
-  supersedes), append-only editing so `git log` stays a meaningful record. Format-only: no reader/writer,
-  MCP server, or runner-sdk injection ships here — those stay separate, unbuilt roadmap items below.*
+- [x] **⭐ Open the format — openness is the second moat.** Published a versioned, human-readable, git-committable open memory spec (`docs/memory-format.md`) so Skynet's memory is a substrate, not a locked-in silo.
+- [x] **⭐ Memory as an MCP server** — published the memory spec's markdown file format (`docs/memory-format.md` v0.1, format-only); the MCP read/write server itself remains a separate, not-yet-built item below.
 - [ ] **⭐ Memory as an MCP server** — expose the brain over MCP so **any** agent or tool can read/write it, even
   ones never run through Skynet. Your context follows you everywhere; rides the shipped `/mcp` surface.
   *Landed (thin v0): four new MCP tools — `list_memory`/`add_memory`/`delete_memory`/`refresh_memory` — put

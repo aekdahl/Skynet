@@ -113,10 +113,10 @@ export function QueueCard({
         </span>
         <RiskChip risk={item.risk} />
         {agent && <span className="qcard-project" title="Project">{projectName(agent.projectId, projects)}</span>}
-        <button className="qcard-agent" onClick={(e) => { e.stopPropagation(); onOpen(); }}>
+        <h3 className="qcard-title qcard-title-inline">{item.title}</h3>
+        <button className="qcard-agent" title={agentName} onClick={(e) => { e.stopPropagation(); onOpen(); }}>
           {agentName}
         </button>
-        <h3 className="qcard-title qcard-title-inline">{item.title}</h3>
         <span className="qcard-wait">{fmtWait(waitedSecs(item, now))}</span>
       </div>
       {expanded && (

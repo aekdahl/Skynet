@@ -368,6 +368,9 @@ function TaskCard({
   const brief = resolveTaskBrief(task, projBriefs);
   const [editing, setEditing] = useState(false);
   const [detail, setDetail] = useState(false); // full-detail modal for a card with no run
+  // Force Done now runs a completeness consult before it pushes (server-side),
+  // so it can take several real seconds — without this it just looked dead.
+  const [forcingDone, setForcingDone] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const detailCloseRef = useRef<HTMLButtonElement>(null);
   // Keyboard a11y for the detail modal: focus its close button on open (Escape
@@ -580,11 +583,23 @@ function TaskCard({
             {run && run.status !== "done" && (
               <button
                 className="kb-tool"
-                title={`Task is Done but the run's status is "${run.status}" — click to resync.`}
+                title={
+                  forcingDone
+                    ? "Working — committing, checking completeness, and pushing/merging…"
+                    : `Task is Done but the run's status is "${run.status}" — click to resync.`
+                }
                 aria-label="Sync run to done"
-                onClick={() => forceTaskDone(pid, task.id)}
+                disabled={forcingDone}
+                onClick={async () => {
+                  setForcingDone(true);
+                  try {
+                    await forceTaskDone(pid, task.id);
+                  } finally {
+                    setForcingDone(false);
+                  }
+                }}
               >
-                ⚡
+                {forcingDone ? "⏳" : "⚡"}
               </button>
             )}
             <button
@@ -844,10 +859,22 @@ function TaskCard({
           {(s === "ongoing" || s === "review") && (
             <button
               className="kb-move kb-move-force"
-              title="Skip the normal approval path — mark this task done and sync the run's status. Use when the run finished the work out-of-band or is stuck."
-              onClick={() => forceTaskDone(pid, task.id)}
+              title={
+                forcingDone
+                  ? "Working — committing, checking completeness, and pushing/merging…"
+                  : "Skip the normal approval path — mark this task done and sync the run's status. Use when the run finished the work out-of-band or is stuck."
+              }
+              disabled={forcingDone}
+              onClick={async () => {
+                setForcingDone(true);
+                try {
+                  await forceTaskDone(pid, task.id);
+                } finally {
+                  setForcingDone(false);
+                }
+              }}
             >
-              ⚡ Force done
+              {forcingDone ? "⏳ Working…" : "⚡ Force done"}
             </button>
           )}
         </div>

@@ -15,7 +15,7 @@ export function ConfigForm({
   submitLabel,
 }: {
   initial?: Agent;
-  onSave: (r: { name: string; provider: ProviderId; model: string; credentialId?: string; label: string | null }) => void;
+  onSave: (r: { name: string; provider: ProviderId; model: string; credentialId?: string | null; label: string | null }) => void;
   onCancel: () => void;
   // Overrides the submit label. Defaults by mode: editing → "Save changes",
   // new → "Add to fleet". Cloning passes its own (it creates, not edits).
@@ -40,12 +40,13 @@ export function ConfigForm({
   const selected = providerInfo(providers, provider);
   const selectedReq = selected.requirements;
 
-  // Which credential a NEW agent authenticates with. Only offered at create time
-  // (an existing agent's credential is fixed); undefined → the provider's default
-  // key. We fetch the credential list so a provider with a second ("another
-  // account") key can be picked here.
+  // Which credential this agent authenticates with — offered when EDITING as
+  // well as creating, since a credential can name a Claude-compatible endpoint
+  // and is therefore how a runner moves to a cheaper vendor. undefined → the
+  // provider's default key. We fetch the credential list so a provider with a
+  // second ("another account") key can be picked here.
   const [secrets, setSecrets] = useState<SecretMeta[]>([]);
-  const [credentialId, setCredentialId] = useState<string | undefined>(undefined);
+  const [credentialId, setCredentialId] = useState<string | undefined>(initial?.credentialId ?? undefined);
   // A credential pointed at a Claude-compatible endpoint runs a DIFFERENT
   // vendor's models — suggesting Anthropic's ids there would send the operator
   // straight into a wrong-model run (several endpoints silently remap an
@@ -168,9 +169,12 @@ export function ConfigForm({
           </p>
         )}
       </div>
-      {/* Credential picker — only when creating and the provider has more than
-          its default key (a second account/key added in Settings). */}
-      {!initial && extraCreds.length > 0 && (
+      {/* Credential picker — whenever the provider has more than its default key.
+          Offered when EDITING as well as creating: a credential can name a
+          Claude-compatible endpoint, so this is how an existing runner moves to a
+          cheaper vendor. Without it the only route was delete-and-recreate, which
+          throws away the runner's task history. */}
+      {extraCreds.length > 0 && (
         <div className="cfg-row">
           <label className="cfg-label">Key</label>
           <select
@@ -191,6 +195,7 @@ export function ConfigForm({
               This runner will talk to <b>{credVendor.name}</b>, not Anthropic — the models below are theirs.
               It keeps the full agent loop (tool gating, questions, escalations) and meters spend at their
               rates.
+              {initial && " Applies to its next run; anything in flight keeps the credential it started with."}
             </p>
           )}
         </div>
@@ -240,7 +245,7 @@ export function ConfigForm({
         <PrimaryButton
           disabled={!model.trim()}
           reason={custom ? "Enter a model id to continue." : "Pick a model to continue."}
-          onClick={() => onSave({ name: name.trim(), provider, model: model.trim(), credentialId, label: label.trim() || null })}
+          onClick={() => onSave({ name: name.trim(), provider, model: model.trim(), credentialId: credentialId ?? null, label: label.trim() || null })}
         >
           {submitLabel ?? (initial ? "Save changes" : "Add to fleet")}
         </PrimaryButton>
@@ -528,8 +533,11 @@ function AgentRow({
           {p.glyph}
         </span>
         <span className="fleet-rn mono">{r.name}</span>
+        {/* Inside the name, NOT a sibling: the row is a fixed 5-column grid
+            (name/tasks/cost/time/actions), so an extra top-level child lands in
+            an implicit sixth cell and wraps the actions onto their own line. */}
+        <EndpointChip endpoint={endpoint} />
       </button>
-      <EndpointChip endpoint={endpoint} />
       <span className="fleet-idle-tasks mono">
         {count} task{count === 1 ? "" : "s"}
       </span>
@@ -567,7 +575,7 @@ export function FleetView({
   onOpenTask: (id: string) => void;
   onOpenAgent: (id: string) => void;
 }) {
-  const { fleet, runs, providers, createAgent, updateAgent, deleteAgent, informRuns } =
+  const { fleet, runs, providers, workspaceSettings, createAgent, updateAgent, deleteAgent, informRuns } =
     useStore();
   const confirm = useConfirm();
   // Mass inform (roadmap "Mass inform"): pick a set of BUSY agents (only a
@@ -591,6 +599,11 @@ export function FleetView({
   }, []);
   const endpointOf = (a: Agent): string | null =>
     fleetSecrets.find((c) => c.id === (a.credentialId ?? a.provider))?.baseUrl ?? null;
+  // A runner on a benched key takes no work at all — distinct from merely
+  // queueing behind the concurrency cap, and worth saying separately.
+  const pausedKeyOf = (a: Agent) => fleetSecrets.find((c) => c.id === (a.credentialId ?? a.provider))?.paused ?? null;
+  const pausedCount = fleet.filter((a) => !!pausedKeyOf(a)).length;
+  const maxRunners = workspaceSettings?.maxRunners ?? 0;
   const takenNames = new Set(fleet.map((a) => a.name));
 
   const taskCountOf = (r: Agent) => runs.filter((a) => a.agentId === r.id).length;
@@ -653,7 +666,7 @@ export function FleetView({
       <ConfigForm
         initial={r}
         onSave={(u) => {
-          updateAgent(r.id, { model: u.model, name: u.name || undefined, label: u.label });
+          updateAgent(r.id, { model: u.model, name: u.name || undefined, label: u.label, credentialId: u.credentialId ?? null });
           setEditing(null);
         }}
         onCancel={() => setEditing(null)}
@@ -664,6 +677,17 @@ export function FleetView({
   return (
     <section className="vw">
 
+      {/* maxRunners caps CONCURRENCY, not roster size — adding agents is never
+          blocked. So when the roster is larger than the cap, say what will
+          actually happen rather than letting an operator wonder why their
+          eleventh runner never picks anything up. */}
+      {maxRunners > 0 && fleet.length > maxRunners && (
+        <div className="fleet-cap-note">
+          <b>{fleet.length} agents configured, {maxRunners} work at once.</b> The rest wait for a runner to
+          free up — nothing is lost, tasks just queue. Raise <em>max runners</em> in Settings to widen it.
+          {pausedCount > 0 && ` ${pausedCount} agent${pausedCount === 1 ? " is" : "s are"} on a paused key and won't take work at all.`}
+        </div>
+      )}
       <div className="fleet-head">
         <div className="vw-head">
           <h1>Agent fleet</h1>
@@ -803,7 +827,10 @@ export function FleetView({
                         <ConfigForm
                           initial={r}
                           onSave={(u) => {
-                            updateAgent(r.id, { model: u.model, name: u.name || undefined, label: u.label });
+                            // Same patch as renderEditable's — the idle roster has
+                            // its own inline editor, and omitting credentialId here
+                            // silently dropped a vendor switch made from this form.
+                            updateAgent(r.id, { model: u.model, name: u.name || undefined, label: u.label, credentialId: u.credentialId ?? null });
                             setEditing(null);
                           }}
                           onCancel={() => setEditing(null)}

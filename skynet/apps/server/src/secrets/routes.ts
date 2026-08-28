@@ -11,11 +11,12 @@
 // the key itself (see secrets/verify.ts).
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { CreateCredentialRequest, SetSecretRequest } from "@skynet/shared";
+import { CreateCredentialRequest, PauseCredentialRequest, SetSecretRequest } from "@skynet/shared";
 import { now } from "../config.js";
+import type { Operations } from "../operations.js";
 import { SecretsDisabledError, UnknownCredentialError, InvalidEndpointError, secretService, envBackedProviders } from "./service.js";
 
-export async function registerSecretsRoutes(app: FastifyInstance): Promise<void> {
+export async function registerSecretsRoutes(app: FastifyInstance, operations: Operations): Promise<void> {
   // List configured credentials (metadata — never the keys) plus the providers
   // currently backed by a server env var (the fallback a stored default key
   // would override). Lets Settings show "via env" vs "via Settings" vs "not set".
@@ -93,6 +94,39 @@ export async function registerSecretsRoutes(app: FastifyInstance): Promise<void>
       const { workspaceId } = req.principal!;
       try {
         return reply.code(200).send(await secretService.verify(workspaceId, req.params.id));
+      } catch (err) {
+        if (err instanceof SecretsDisabledError) return reply.code(501).send({ error: err.message });
+        if (err instanceof UnknownCredentialError) return reply.code(404).send({ error: err.message });
+        throw err;
+      }
+    },
+  );
+
+  // Bench a credential: no runner on it gets new work, and every run already on
+  // it is stopped and its task released. Both halves matter — see
+  // Operations.pauseCredential.
+  app.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    "/api/credentials/:id/pause",
+    async (req: FastifyRequest<{ Params: { id: string }; Body: { reason?: string } }>, reply: FastifyReply) => {
+      const body = PauseCredentialRequest.safeParse(req.body);
+      if (!body.success) return reply.code(400).send({ error: "a reason is required to pause a credential" });
+      const { workspaceId, operatorId } = req.principal!;
+      try {
+        return reply.code(200).send(await operations.pauseCredential(workspaceId, req.params.id, body.data.reason, operatorId));
+      } catch (err) {
+        if (err instanceof SecretsDisabledError) return reply.code(501).send({ error: err.message });
+        if (err instanceof UnknownCredentialError) return reply.code(404).send({ error: err.message });
+        throw err;
+      }
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/api/credentials/:id/resume",
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { workspaceId, operatorId } = req.principal!;
+      try {
+        return reply.code(200).send({ secret: await operations.resumeCredential(workspaceId, req.params.id, operatorId) });
       } catch (err) {
         if (err instanceof SecretsDisabledError) return reply.code(501).send({ error: err.message });
         if (err instanceof UnknownCredentialError) return reply.code(404).send({ error: err.message });
