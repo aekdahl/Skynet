@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS workspace_secrets (
 -- own API). Added after the table shipped, so it's an idempotent ALTER rather
 -- than a column in the CREATE above.
 ALTER TABLE workspace_secrets ADD COLUMN IF NOT EXISTS base_url text;
+-- A deliberate pause (who/when/why). Durable, unlike the in-memory quota
+-- breaker: a key benched because something is wrong with it must not come back
+-- on its own after a restart.
+ALTER TABLE workspace_secrets ADD COLUMN IF NOT EXISTS paused jsonb;
 -- Backfill the credential id for rows created before named credentials existed:
 -- the default credential's id is its provider.
 UPDATE workspace_secrets SET id = provider WHERE id IS NULL;
@@ -60,6 +64,7 @@ interface Row {
   ciphertext: string;
   last4: string;
   base_url: string | null;
+  paused: { at: number; by: string; reason: string } | null;
   updated_at: string;
   updated_by: string;
 }
@@ -72,6 +77,7 @@ const toRecord = (r: Row): SecretRecord => ({
   ciphertext: r.ciphertext,
   last4: r.last4,
   baseUrl: r.base_url,
+  paused: r.paused,
   updatedAt: Number(r.updated_at),
   updatedBy: r.updated_by,
 });
@@ -97,11 +103,11 @@ export class PostgresSecretStore implements SecretStore {
   async put(r: SecretRecord): Promise<void> {
     const pool = await this.db();
     await pool.query(
-      `INSERT INTO workspace_secrets(workspace_id,id,name,provider,ciphertext,last4,updated_at,updated_by,base_url)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `INSERT INTO workspace_secrets(workspace_id,id,name,provider,ciphertext,last4,updated_at,updated_by,base_url,paused)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT(workspace_id,id)
-       DO UPDATE SET name=$3, provider=$4, ciphertext=$5, last4=$6, updated_at=$7, updated_by=$8, base_url=$9`,
-      [r.workspaceId, r.id, r.name, r.provider, r.ciphertext, r.last4, r.updatedAt, r.updatedBy, r.baseUrl ?? null],
+       DO UPDATE SET name=$3, provider=$4, ciphertext=$5, last4=$6, updated_at=$7, updated_by=$8, base_url=$9, paused=$10`,
+      [r.workspaceId, r.id, r.name, r.provider, r.ciphertext, r.last4, r.updatedAt, r.updatedBy, r.baseUrl ?? null, r.paused ? JSON.stringify(r.paused) : null],
     );
   }
 

@@ -23,7 +23,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EndpointSmokeResult, ModelRates, PlanStep, ProviderId, Resolution, SmokeCheck, SmokeStatus } from "@skynet/shared";
-import { endpointLabel, priceUsage, vendorForBaseUrl } from "@skynet/shared";
+import { endpointLabel, priceUsage, ratesFor, vendorForBaseUrl } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
 import type {
   ConsultSpec,
@@ -183,13 +183,23 @@ const mapModel = (m: string): string | undefined =>
 // them, or when a NESTED Claude Code session's host-managed gateway would 401 a
 // standalone server. CLAUDE_CODE_OAUTH_TOKEN is a real standalone credential, so
 // it is preserved while the other CLAUDE_CODE_* session markers are dropped.
+/** True when THIS process is itself running nested inside a Claude Code
+ *  session (its own CLAUDE_CODE_* markers, other than a deliberately-set
+ *  OAuth token, are inherited from a parent session). Two independent
+ *  consequences flow from this, in different places: buildRunnerEnv strips
+ *  the inherited gateway creds below (a nested session's host-managed
+ *  gateway would 401 a standalone server); oneShotTextStream uses it to
+ *  decide transport (a nested session's sandboxed network policy allows
+ *  egress ONLY through the SDK's own trusted channel — a raw `fetch` to
+ *  api.anthropic.com has none — so the cheaper plain-HTTP path below is only
+ *  safe standalone). */
+export function isNestedClaudeSession(): boolean {
+  return Object.keys(process.env).some((k) => k.startsWith("CLAUDE_CODE_") && k !== "CLAUDE_CODE_OAUTH_TOKEN");
+}
+
 export function buildRunnerEnv(): Record<string, string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  // A nested Claude Code session is signalled by CLAUDE_CODE_* markers *other*
-  // than a deliberately-set OAuth token; its inherited gateway creds 401.
-  const nestedSession = Object.keys(process.env).some(
-    (k) => k.startsWith("CLAUDE_CODE_") && k !== "CLAUDE_CODE_OAUTH_TOKEN",
-  );
+  const nestedSession = isNestedClaudeSession();
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v == null) continue;
@@ -222,12 +232,24 @@ export function applyCredential(
   env: Record<string, string>,
   cred: { apiKey?: string | null; baseUrl?: string | null },
 ): Record<string, string> {
-  if (!cred.apiKey) return env;
+  // A key pasted from a console usually arrives with a trailing newline. It
+  // rides into an `Authorization: Bearer <key>\n` header and the vendor rejects
+  // it as invalid — with an error naming the key, which sends the operator
+  // hunting for a bad key that is actually fine.
+  const apiKey = cred.apiKey?.trim();
+  if (!apiKey) return env;
   if (cred.baseUrl) {
-    const { ANTHROPIC_API_KEY: _shadowed, ...rest } = env;
-    return { ...rest, ANTHROPIC_BASE_URL: cred.baseUrl, ANTHROPIC_AUTH_TOKEN: cred.apiKey };
+    // BOTH Anthropic credentials come off. ANTHROPIC_API_KEY shadows the
+    // gateway, and CLAUDE_CODE_OAUTH_TOKEN — which buildRunnerEnv deliberately
+    // PRESERVES, being a real standalone credential — outranks it too. Left in
+    // place, a run pointed at a third-party endpoint on a host that has a
+    // `claude setup-token` subscription would authenticate with the Anthropic
+    // subscription token instead: the wrong vendor gets the operator's personal
+    // token, and the run 401s citing a key that was never the problem.
+    const { ANTHROPIC_API_KEY: _shadowed, CLAUDE_CODE_OAUTH_TOKEN: _outranks, ...rest } = env;
+    return { ...rest, ANTHROPIC_BASE_URL: cred.baseUrl, ANTHROPIC_AUTH_TOKEN: apiKey };
   }
-  return { ...env, ANTHROPIC_API_KEY: cred.apiKey };
+  return { ...env, ANTHROPIC_API_KEY: apiKey };
 }
 
 // Anthropic streaming: content_block_delta → { delta: { type:"text_delta", text } }.
@@ -601,10 +623,125 @@ async function oneShotConsult(opts: {
 }
 
 /**
+ * Maps a Fleet model slug to what the RAW Anthropic Messages API expects —
+ * distinct from {@link mapModel}'s CLI-alias output ("opus", "sonnet", …),
+ * which the raw API rejects outright. Verified live against the real API: a
+ * bare "opus"/"sonnet" 404s ("model: opus" not found); "claude-opus-4-8",
+ * "claude-sonnet-5", "claude-haiku-4-5" and "claude-fable-5" all 200, and the
+ * API resolves the undated alias to its own latest dated snapshot internally
+ * (a 200 for "claude-haiku-4-5" echoes back "claude-haiku-4-5-20251001").
+ * Any other value — a compatible endpoint's own vendor slug (glm-5.3-flash,
+ * kimi-k3, …), or an operator-typed id that's already fully qualified —
+ * passes through verbatim, same advisory-catalog posture as mapModel.
+ */
+const mapModelForApi = (m: string): string =>
+  m.startsWith("opus") || m.startsWith("sonnet") || m.startsWith("haiku") || m.startsWith("fable")
+    ? `claude-${m.replace(/\./g, "-")}`
+    : m;
+
+/**
+ * A one-shot, tool-less text completion via a PLAIN HTTP call to the Messages
+ * API (real SSE streaming, so callers relying on live token deltas — Steward
+ * chat — see no UX change) — no Agent SDK session, no in-process agent-loop
+ * bookkeeping. A one-shot consult never needs tools (oneShotConsultStream
+ * already denies every tool it's offered), so a plain completion is
+ * behaviorally equivalent for this caller and far cheaper per call — the
+ * difference that matters when a bulk operation fires many of these at once
+ * (see Operations.withLintSlot in apps/server; the incident that prompted
+ * this: a GitHub-issue resync fired dozens of concurrent one-shot calls,
+ * each a full in-process SDK session, and wedged the host, 2026-08-27).
+ * Only reachable when {@link isNestedClaudeSession} is false — see
+ * oneShotTextStream's branch.
+ */
+async function* rawOneShotStream(opts: {
+  prompt: string;
+  model: string;
+  env: Record<string, string>;
+  onUsage?: UsageSink;
+}): AsyncGenerator<string> {
+  const baseUrl = opts.env.ANTHROPIC_BASE_URL || null;
+  const authToken = opts.env.ANTHROPIC_AUTH_TOKEN;
+  const apiKey = opts.env.ANTHROPIC_API_KEY;
+  const apiModel = mapModelForApi(opts.model);
+  let emitted = false;
+  try {
+    const res = await fetch(`${baseUrl ?? "https://api.anthropic.com"}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+        ...(authToken ? { authorization: `Bearer ${authToken}` } : { "x-api-key": apiKey ?? "" }),
+      },
+      body: JSON.stringify({
+        model: apiModel,
+        max_tokens: 8192,
+        stream: true,
+        messages: [{ role: "user", content: opts.prompt }],
+      }),
+    });
+    if (!res.ok || !res.body) {
+      const errBody = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status}${errBody ? `: ${errBody.slice(0, 200)}` : ""}`);
+    }
+    // Manual SSE parse: `data:` lines only — the `event:` line duplicates the
+    // JSON payload's own `type` field, which is simpler to dispatch on.
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    // The final usage is assembled from TWO events: message_start carries the
+    // full input-side breakdown (incl. cache tiers) but a placeholder
+    // output_tokens; message_delta later overwrites output_tokens with the
+    // real cumulative total. Neither alone is the complete picture.
+    let usage: Record<string, unknown> = {};
+    let currentBlockIsText = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? ""; // keep a possibly-partial trailing line buffered
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload) continue;
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse(payload);
+        } catch {
+          continue;
+        }
+        if (msg.type === "message_start") {
+          const m = (msg.message as Record<string, unknown> | undefined)?.usage;
+          if (m) usage = { ...usage, ...(m as Record<string, unknown>) };
+        } else if (msg.type === "content_block_start") {
+          // Adaptive-thinking models (verified live: this includes plain
+          // sonnet/haiku/opus too, not just fable) emit a leading `thinking`
+          // block before the `text` block — only forward text_deltas while
+          // the CURRENT block is type "text".
+          currentBlockIsText = (msg.content_block as Record<string, unknown> | undefined)?.type === "text";
+        } else if (msg.type === "content_block_delta") {
+          const delta = msg.delta as Record<string, unknown> | undefined;
+          if (currentBlockIsText && delta?.type === "text_delta" && typeof delta.text === "string") {
+            emitted = true;
+            yield delta.text;
+          }
+        } else if (msg.type === "content_block_stop") {
+          currentBlockIsText = false;
+        } else if (msg.type === "message_delta") {
+          if (msg.usage) usage = { ...usage, ...(msg.usage as Record<string, unknown>) };
+        }
+      }
+    }
+    if (opts.onUsage) opts.onUsage(readUsage({ usage }, ratesFor(baseUrl, apiModel)));
+  } catch (err) {
+    if (!emitted) yield `couldn't look into that right now (${(err as Error).message}).`;
+  }
+}
+
+/**
  * A one-shot, tool-less text query authenticated exactly like a live runner
  * (via {@link buildRunnerEnv} — so it works standalone AND nested inside a
- * Claude Code session, where a raw `fetch` to the API has no egress). Returns
- * the model's text.
+ * Claude Code session). Returns the model's text.
  *
  * `model` is REQUIRED on purpose. It used to default to `"opus"`, which meant
  * every caller that didn't think about it — Steward chat (both project and
@@ -627,7 +764,16 @@ export async function oneShotText(opts: {
   return out;
 }
 
-/** Streaming variant of {@link oneShotText} — yields the answer as text deltas. */
+/**
+ * Streaming variant of {@link oneShotText} — yields the answer as text
+ * deltas. Standalone (the deployed server, most tests — full network
+ * egress), this goes over a plain HTTP call ({@link rawOneShotStream}), far
+ * cheaper per call than a full Agent SDK session. Nested inside a sandboxed
+ * Claude Code session (a raw `fetch` to the API has no egress there — see
+ * {@link isNestedClaudeSession}), it falls back to the SDK's own query()
+ * transport ({@link oneShotConsultStream}), the only path with egress in
+ * that environment.
+ */
 export function oneShotTextStream(opts: {
   prompt: string;
   model: string;
@@ -637,13 +783,16 @@ export function oneShotTextStream(opts: {
   onUsage?: UsageSink;
 }): AsyncIterable<string> {
   const env = applyCredential(buildRunnerEnv(), opts);
-  return oneShotConsultStream({
-    prompt: opts.prompt,
-    cwd: opts.cwd ?? process.cwd(),
-    model: opts.model,
-    env,
-    onUsage: opts.onUsage,
-  });
+  if (isNestedClaudeSession()) {
+    return oneShotConsultStream({
+      prompt: opts.prompt,
+      cwd: opts.cwd ?? process.cwd(),
+      model: opts.model,
+      env,
+      onUsage: opts.onUsage,
+    });
+  }
+  return rawOneShotStream({ prompt: opts.prompt, model: opts.model, env, onUsage: opts.onUsage });
 }
 
 // Read-only tools a repo-aware assistant may use — inspect the tree/files, never

@@ -91,6 +91,16 @@ export function StewardDock({
       case "set_goal": return updateProject(projectId, { goal: a.goal });
       case "set_autonomy": return updateProject(projectId, { autonomy: a.autonomy });
       case "set_status": return updateProject(projectId, { status: a.status });
+      // Workspace-scoped, unlike every project action here: a key is shared by
+      // the whole fleet, and pausing one stops its live runs.
+      case "pause_key": {
+        await api.pauseCredential(a.credentialId!, a.reason!);
+        return;
+      }
+      case "resume_key": {
+        await api.resumeCredential(a.credentialId!);
+        return;
+      }
       case "set_schedule": {
         const patch: { estimatedDurationMs?: number | null; plannedStartAt?: number | null } = {};
         if (a.estimatedDurationMs !== undefined) patch.estimatedDurationMs = a.estimatedDurationMs;

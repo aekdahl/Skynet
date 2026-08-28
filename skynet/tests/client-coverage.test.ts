@@ -59,6 +59,12 @@ const ALLOW = new Set<string>([
   // probe's own result-shaping is covered by endpoint-smoke.test.ts, which
   // scripts a vendor that authenticates but never emits a tool call.
   "smokeTestCredential",
+  // Bench / un-bench a credential. Pausing STOPS live runs and releases their
+  // tasks — a fleet-wide, destructive-ish action that needs a real credential
+  // and real runs to mean anything, so no offline journey exercises it. The
+  // behaviour (halt + release, refuse new work, survive rotation, clear the
+  // quota breaker on resume) is covered server-side by credential-pause.test.ts.
+  "pauseCredential", "resumeCredential",
   // streaming variant of sendAgentMessage (which IS journey-covered) — same
   // chat surface, just delta-rendered; no separate journey needed.
   "streamAgentMessage",
