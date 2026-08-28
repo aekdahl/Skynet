@@ -647,6 +647,34 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   `escalation.test.ts`: a run parked on a plain (non-escalation) gate whose heartbeat goes stale is reaped,
   and the task is un-stranded to `todo` — the exact scenario that used to leave a done-looking run under a
   mid-pipeline card.
+- [x] **Fix: a fourth stranding path — abandoning a run via a kanban move left its Inbox card dangling.**
+  Reported live: "inbox messages must update if tasks move in kanban." Same invariant family as the fix
+  directly above (an ongoing/review task always has a LIVE run behind it), but the Inbox side of it:
+  `Operations.transitionTask`'s `abandonsRun` branch (ongoing/review → todo, or demoting done →
+  triage/backlog) already stopped the run and marked it archived — but never touched any HITL gate still
+  open for it. Drag a card with an open diff/verifier/approval gate back out of Review, and the Inbox kept
+  showing that gate forever: a pending decision pointing at a run whose worktree was already retired and
+  runner already freed, answerable by nothing. Confirmed this is genuinely the OTHER abandon direction —
+  `transitionTask`'s review→done path (bypassing the diff gate by dragging straight to Done) was already
+  correct, resolving the gate via `approve` before this fix; only the "abandon and start over" direction had
+  the gap. Fix: dismiss every open HITL for the run (`hub.resolveHitl(..., {action:"dismiss"})`, `by:
+  operatorId`) in the same `abandonsRun` branch, right after the existing stop+archive — called directly on
+  the Hub, not via `Operations.resolveHitl` (which calls `orchestrator.deliver`, meaningless for a handle
+  `stopAgent` just tore down), the same lower-level pattern `Orchestrator.settleArchivedRun` already uses for
+  the direct-archive-a-run path. Deliberately does NOT reuse `settleArchivedRun` wholesale here: it keeps the
+  worktree (a reversible soft-hide), while an abandoned kanban move is a genuine "start fresh," correctly
+  retired via the existing `stopAgent` call — reusing it would have quietly stopped retiring worktrees on
+  this path. Also deliberately does NOT force the run's `status` to `"done"` here — an existing test
+  (`task-transitions.test.ts`) already pins that the abandon path leaves the run's OWN status untouched (it's
+  the task's kanban `state` that changes), and the periodic `settleArchivedRuns` self-heal sweep still
+  reconciles that within ~60s regardless; this fix is scoped to exactly the reported symptom (the Inbox),
+  not a re-litigation of that separate, already-decided invariant. The web client needed NO changes — its
+  `queue`/`task` store slices already update reactively off `hitl.resolved`/`task.upserted`; it was
+  faithfully showing what the server told it, which was simply never told the gate got resolved. New tests
+  in `task-transitions.test.ts` (5 cases): ongoing→todo and done→backlog both dismiss the gate; every open
+  gate for the run is dismissed, not just one; a `preserve`-flagged move (pause, not abandon) leaves the gate
+  untouched (still meaningfully answerable once resumed); and the pre-existing review→done "approve" path is
+  confirmed unaffected by the new logic.
 - [x] **Fix: a Telegram merge-conflict card was an unexplained raw diff dump — impossible to act on.**
   Reported live with a screenshot: "A merge needs a look" arrived on the phone as a tail-truncated `diff
   --cc` combined-diff snippet cut off mid-sentence, no title, no explanation, nothing saying which files

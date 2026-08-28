@@ -3756,13 +3756,34 @@ export class Orchestrator {
    *  actually ran and passed BEFORE a human clicks Merge, not just learn it
    *  from `classifyMergeBlock` after GitHub already blocked the attempt.
    *  Best-effort: null on any failure (unreachable, no connection, etc.) — the
-   *  card falls back to showing no check-status affordance, same as today. */
+   *  card falls back to showing no check-status affordance, same as today.
+   *
+   *  Also self-heals a PR merged or closed OUTSIDE Skynet: the card calls this
+   *  on every mount (a page load/reload IS the "check status" moment — there's
+   *  no webhook wired for merge/close events), so a stale `pr.state:"open"`
+   *  left behind by a human merging on GitHub directly gets reconciled right
+   *  here, before the card ever renders it as still-actionable. Merged runs
+   *  the exact same local-completion path mergeReadyPr's own success does
+   *  (completeMerged) — it makes no difference who actually clicked merge;
+   *  closed-without-merging just persists the real state (drops it from the
+   *  ready list) without inventing a "done" the work never earned. */
   async prChecksForRun(workspaceId: string, runId: string): Promise<PrChecksStatus | null> {
     const run = await this.store.getRun(runId);
     if (!run || run.workspaceId !== workspaceId || !run.pr) return null;
     const cred = (await this.store.getProject(run.projectId))?.githubCredentialId ?? null;
     const status = await githubService.prStatus(workspaceId, run.pr.repo, run.pr.number, cred).catch(() => null);
-    return status ? { checks: status.checks, mergeable: status.mergeable, runs: status.runs } : null;
+    if (!status) return null;
+    if (run.pr.state === "open" && status.state !== "open") {
+      if (status.state === "merged") {
+        await this.hub.upsertRun({ ...run, pr: { ...run.pr, state: "merged" } });
+        await this.hub.runLog(runId, `PR #${run.pr.number} was merged outside Skynet — reconciling.`);
+        await this.completeMerged(runId, run.branch);
+      } else {
+        await this.hub.upsertRun({ ...run, pr: { ...run.pr, state: "closed" } });
+        await this.hub.runLog(runId, `PR #${run.pr.number} was closed outside Skynet without merging.`);
+      }
+    }
+    return { checks: status.checks, mergeable: status.mergeable, runs: status.runs, state: status.state };
   }
 
   /** Merge an open PR from the ready list. Success → integrate + settle to done
@@ -3886,13 +3907,28 @@ export class Orchestrator {
   }
 
   /** Live GitHub check-run status for a feature's aggregate ready PR — see
-   *  `prChecksForRun`'s comment; same real-API-call, best-effort contract. */
+   *  `prChecksForRun`'s comment; same real-API-call, best-effort contract, and
+   *  the same self-heal when it was merged/closed outside Skynet. Simpler
+   *  than the per-run case here: every task in the batch already finished its
+   *  own lifecycle when it merged into the feature branch (see the comment
+   *  above listReadyFeaturePrs), so there's no completeMerged-equivalent local
+   *  integration left to do — just the same state flip mergeReadyFeaturePr's
+   *  own success path makes. */
   async prChecksForFeature(workspaceId: string, featureId: string): Promise<PrChecksStatus | null> {
     const feature = await this.store.getFeature(featureId);
     if (!feature || feature.workspaceId !== workspaceId || !feature.pr) return null;
     const cred = (await this.store.getProject(feature.projectId))?.githubCredentialId ?? null;
     const status = await githubService.prStatus(workspaceId, feature.pr.repo, feature.pr.number, cred).catch(() => null);
-    return status ? { checks: status.checks, mergeable: status.mergeable, runs: status.runs } : null;
+    if (!status) return null;
+    if (feature.pr.state === "open" && status.state !== "open") {
+      if (status.state === "merged") {
+        await this.hub.upsertFeature({ ...feature, status: "shipped", pr: { ...feature.pr, state: "merged" } });
+        void projectPreview.refresh(feature.projectId).catch(() => undefined);
+      } else {
+        await this.hub.upsertFeature({ ...feature, pr: { ...feature.pr, state: "closed" } });
+      }
+    }
+    return { checks: status.checks, mergeable: status.mergeable, runs: status.runs, state: status.state };
   }
 
   /** Merge a feature's aggregate PR. Success → mark the feature shipped.

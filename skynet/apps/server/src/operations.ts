@@ -183,6 +183,12 @@ export interface OperationsDeps {
    *  the one it makes for any-agent eligibility (see prioritizeColumn /
    *  suggestAnyAgentEligible's `ask` param). Same rationale as crystallizeAsk. */
   organizeAsk?: (prompt: string) => Promise<string>;
+  /** Test seam: override the call lintTaskNow makes to grade one task (see
+   *  `withLintSlot`'s bulk-import concurrency cap). Defaults to the real
+   *  `lintTask`. Same rationale as decomposeConsult — needed to make the
+   *  throttle's concurrency ceiling deterministically observable in a test,
+   *  without a real LLM call. */
+  lintConsult?: (text: string, description: string | null, siblingTitles: string[]) => ReturnType<typeof lintTask>;
 }
 
 export class Operations {
@@ -194,6 +200,22 @@ export class Operations {
   private readonly crystallizeAsk?: (prompt: string) => Promise<string>;
   private readonly contextAsk?: (prompt: string) => Promise<string>;
   private readonly organizeAsk?: (prompt: string) => Promise<string>;
+  private readonly lintConsult: (text: string, description: string | null, siblingTitles: string[]) => ReturnType<typeof lintTask>;
+  // Bounds concurrent task-linter calls (see `lintTaskNow`). Each is a real
+  // in-process Claude Agent SDK session (`lintTask` -> `oneShotText`), not a
+  // cheap HTTP call, and `maybeLintTask` is fire-and-forget with no caller-
+  // side throttle. A bulk task-creation path — GitHub-issue resync, brief
+  // decomposition, repo-file import — otherwise fires one of these PER task
+  // with zero concurrency limit: found live, a GitHub-issue re-sync that
+  // pulled in a large batch of never-before-seen issues fired dozens of
+  // concurrent SDK sessions inside the app's own process, exhausted host
+  // memory (no swap at the time either — see startup.sh.tftpl), and wedged
+  // the whole VM (2026-08-27 incident) badly enough that even a plain `echo`
+  // over SSH wouldn't run. 3 concurrent lints keeps single-task-create
+  // latency unaffected while capping bulk-import fan-out.
+  private lintInFlight = 0;
+  private readonly lintQueue: Array<() => void> = [];
+  private static readonly MAX_CONCURRENT_LINTS = 3;
 
   constructor(deps: OperationsDeps) {
     this.store = deps.store;
@@ -203,6 +225,7 @@ export class Operations {
     this.crystallizeAsk = deps.crystallizeAsk;
     this.contextAsk = deps.contextAsk;
     this.organizeAsk = deps.organizeAsk;
+    this.lintConsult = deps.lintConsult ?? lintTask;
   }
 
   private uid(prefix: string): string {
@@ -1117,22 +1140,54 @@ export class Operations {
       preferredModel: null,
     };
     const created = await this.hub.upsertTask(task);
-    this.maybeLintTask(ws, created);
+    // Skip the assistive linter for content imported wholesale from an
+    // EXTERNAL source (a GitHub issue someone else already filed, a
+    // repo-file checklist line already written) — it's already someone
+    // else's text, the linter adds little value re-grading it, and these are
+    // exactly the bulk-import paths that can create many tasks in one call
+    // (importGithubIssues, resyncProjectSource, importRepoFile — the
+    // GitHub-issue resync that fired dozens of concurrent lint calls and
+    // wedged the host, 2026-08-27). An AI-decomposed brief task is NOT
+    // skipped here — unlike an import, that's freshly-drafted content, and
+    // linting it "same as any other newly-created task" is deliberate (see
+    // the S7 comment above); its own bulk loop is protected by
+    // withLintSlot's concurrency cap instead. An operator/Steward editing an
+    // imported task's text later still gets relinted normally (updateTask's
+    // `relint`, below) — at that point it's genuinely being human-tuned one
+    // task at a time, not bulk-ingested.
+    if (created.source?.kind !== "github_issue" && created.source?.kind !== "repo_file") {
+      this.maybeLintTask(ws, created);
+    }
     return created;
   }
 
   /**
    * Task linter (assistive): run {@link lintTask} in the BACKGROUND right
-   * after a task is created or its text/description is edited, same
-   * best-effort fire-and-forget shape as `maybeAutoClone`. Never blocks the
-   * caller and never throws into it — a failure just leaves `lint` unset,
-   * which is indistinguishable from "no concerns" in the UI (advisory-only,
-   * so silence is a safe fallback).
+   * after an organically-created task is created or ANY task's text/
+   * description is edited, same best-effort fire-and-forget shape as
+   * `maybeAutoClone`. Never blocks the caller and never throws into it — a
+   * failure just leaves `lint` unset, which is indistinguishable from "no
+   * concerns" in the UI (advisory-only, so silence is a safe fallback).
    */
   private maybeLintTask(ws: string, task: Task): void {
     void this.lintTaskNow(ws, task).catch((err) =>
       console.warn(`[task ${task.id}] linter failed: ${(err as Error).message}`),
     );
+  }
+  /** Runs `fn` once fewer than {@link MAX_CONCURRENT_LINTS} lint calls are
+   *  already in flight, queueing (FIFO) otherwise — the bulk-import throttle
+   *  described on the class fields above. */
+  private async withLintSlot<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.lintInFlight >= Operations.MAX_CONCURRENT_LINTS) {
+      await new Promise<void>((resolve) => this.lintQueue.push(resolve));
+    }
+    this.lintInFlight++;
+    try {
+      return await fn();
+    } finally {
+      this.lintInFlight--;
+      this.lintQueue.shift()?.();
+    }
   }
   private async lintTaskNow(ws: string, task: Task): Promise<void> {
     // v5 coach context: the rest of the project's own open backlog, for the
@@ -1141,7 +1196,7 @@ export class Operations {
     const siblingTitles = (await this.store.listTasks(ws))
       .filter((t) => t.projectId === task.projectId && t.id !== task.id && !t.archived && (t.state === "backlog" || t.state === "todo"))
       .map((t) => t.text);
-    const concerns = await lintTask(task.text, task.description, siblingTitles);
+    const concerns = await this.withLintSlot(() => this.lintConsult(task.text, task.description, siblingTitles));
     const current = await this.store.getTask(task.id);
     if (!current || current.workspaceId !== ws) return; // deleted meanwhile
     // The task may have been edited again while the consult was in flight —
@@ -1662,6 +1717,26 @@ export class Operations {
     } else if (abandonsRun && task.runId) {
       await this.orchestrator.stopAgent(task.runId, "task moved off the run by an operator").catch(() => undefined);
       await this.hub.setRunArchived(task.runId, true).catch(() => undefined);
+      // Any HITL gate still open for this run (e.g. a diff/verifier/approval
+      // gate raised while it was ongoing/review) is now unanswerable — the run
+      // is stopped and the task is starting fresh elsewhere, so leaving the
+      // card would strand it in the Inbox pointing at dead work. Dismissed
+      // directly via the Hub (not Operations.resolveHitl, which calls
+      // orchestrator.deliver — meaningless for a handle stopAgent just tore
+      // down), same lower-level pattern settleArchivedRun uses for the
+      // direct-archive path. This path can't reuse settleArchivedRun wholesale:
+      // it deliberately keeps the worktree (reversible archive), while an
+      // abandoned kanban move is a genuine "start over," correctly retired via
+      // stopAgent above.
+      const open = (await this.store.listQueue(ws)).filter((h) => h.runId === task.runId && !h.resolvedAt);
+      for (const h of open) {
+        await this.hub
+          .resolveHitl(h.id, {
+            action: "dismiss", by: operatorId, at: now(), optionIndex: null, guidance: null,
+            targetBranch: null, memoryNote: null, resetWork: false,
+          })
+          .catch(() => undefined);
+      }
     }
 
     const updated = await this.hub.upsertTask({

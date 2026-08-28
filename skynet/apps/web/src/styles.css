@@ -366,7 +366,7 @@ kbd {
 .qcard-agent {
   background: none; border: none; cursor: pointer; font-family: var(--font-mono);
   font-size: var(--fz-11); color: var(--muted); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line);
-  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
+  max-width: 160px; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
 }
 .qcard-agent:hover { color: var(--text); }
 .qcard-wait { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-12); color: var(--warn); font-variant-numeric: tabular-nums; flex-shrink: 0; }
