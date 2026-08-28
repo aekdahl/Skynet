@@ -1750,28 +1750,18 @@ export class Operations {
     if (preserveWork && task.runId) {
       await this.orchestrator.pauseRun(task.runId).catch(() => undefined);
     } else if (abandonsRun && task.runId) {
-      await this.orchestrator.stopAgent(task.runId, "task moved off the run by an operator").catch(() => undefined);
-      await this.hub.setRunArchived(task.runId, true).catch(() => undefined);
-      // Any HITL gate still open for this run (e.g. a diff/verifier/approval
-      // gate raised while it was ongoing/review) is now unanswerable — the run
+      // Kanban redesign, stage 1: retireRun is the shared "this run is over"
+      // teardown — stop, retire the worktree, archive, mark terminal, and
+      // dismiss every HITL gate still open for it (a diff/verifier/approval
+      // gate raised while it was ongoing/review is now unanswerable — the run
       // is stopped and the task is starting fresh elsewhere, so leaving the
-      // card would strand it in the Inbox pointing at dead work. Dismissed
-      // directly via the Hub (not Operations.resolveHitl, which calls
-      // orchestrator.deliver — meaningless for a handle stopAgent just tore
-      // down), same lower-level pattern settleArchivedRun uses for the
-      // direct-archive path. This path can't reuse settleArchivedRun wholesale:
-      // it deliberately keeps the worktree (reversible archive), while an
-      // abandoned kanban move is a genuine "start over," correctly retired via
-      // stopAgent above.
-      const open = (await this.store.listQueue(ws)).filter((h) => h.runId === task.runId && !h.resolvedAt);
-      for (const h of open) {
-        await this.hub
-          .resolveHitl(h.id, {
-            action: "dismiss", by: operatorId, at: now(), optionIndex: null, guidance: null,
-            targetBranch: null, memoryNote: null, resetWork: false,
-          })
-          .catch(() => undefined);
-      }
+      // card would strand it in the Inbox pointing at dead work). `unstrand:
+      // false` because THIS function already knows the operator's chosen
+      // destination column (`to`, below) — which may not be `todo` (the
+      // done→triage/backlog demotion case) — and writes the task itself.
+      await this.orchestrator
+        .retireRun(task.runId, "task moved off the run by an operator", { by: operatorId, unstrand: false })
+        .catch(() => undefined);
     }
 
     const updated = await this.hub.upsertTask({

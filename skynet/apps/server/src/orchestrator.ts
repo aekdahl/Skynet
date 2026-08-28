@@ -29,6 +29,7 @@ import { parseReviewVerdict, extractJsonObject, REVIEW_OUTPUT_INSTRUCTION, parse
 import { parseBreakerVerdict, BREAKER_OUTPUT_INSTRUCTION, type BreakerVerdictOut } from "./breaker-verdict.js";
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
+import { parseHandoffSummary, HANDOFF_SUMMARY_INSTRUCTION, HANDOFF_SUMMARY_SYSTEM } from "./handoff-summary.js";
 import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./merge-brief.js";
 import { composeFeatureBrief, parseFeatureNarrative, FEATURE_BRIEF_INSTRUCTION, FEATURE_BRIEF_SYSTEM } from "./feature-brief.js";
 import { decisionResumePrompt } from "./decision-resume.js";
@@ -1573,6 +1574,37 @@ export class Orchestrator {
       return parseDiffWalkthrough(reply, files);
     } catch {
       return null; // best-effort — a draft failure never blocks the review
+    }
+  }
+
+  /**
+   * Kanban redesign, stage 1: when a run is REASSIGNED to a different agent,
+   * draft a real summary of the prior agent's log — grounded on the log
+   * itself, same stateless one-shot consult discipline as
+   * draftDiffWalkthrough. Best-effort: an empty log, a provider with no
+   * consult() support, or a failed/unreadable reply all just mean no
+   * summary — relaunchEscalated already has a safe static fallback line, so
+   * this never blocks a reassign.
+   */
+  private async draftHandoffSummary(run: TaskRun, taskText: string): Promise<string | null> {
+    if (!run.log.length) return null;
+    try {
+      const provider = await this.getProvider(run.provider);
+      if (!provider.consult) return null;
+      const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+      const baseUrl = await secretService.resolveEndpoint(run.workspaceId, run.credentialId ?? run.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, run.model);
+      // Recent tail only — enough to ground a handoff summary without
+      // dragging a whole long run's log through the consult.
+      const logTail = run.log.slice(-60).map((l) => l.line).join("\n").slice(-6000);
+      if (!logTail.trim()) return null;
+      const reply = await provider.consult(
+        { task: taskText, model: run.model, cwd: config.runnerCwd, apiKey, baseUrl, rates, context: logTail, system: HANDOFF_SUMMARY_SYSTEM },
+        HANDOFF_SUMMARY_INSTRUCTION,
+      );
+      return parseHandoffSummary(reply);
+    } catch {
+      return null; // best-effort — a draft failure never blocks the reassign
     }
   }
 
@@ -3171,33 +3203,23 @@ export class Orchestrator {
       return;
     }
     if (resolution.action === "reject") {
-      // Stop: abandon the run cleanly and reclaim its worktree.
-      const taskId = this.escalations.get(runId)?.taskId ?? live?.taskId ?? null;
-      if (live) await live.handle.stop().catch(() => undefined);
-      await this.freeRunner(live?.agentId ?? null);
-      this.live.delete(runId);
-      const git = this.escalations.get(runId)?.git ?? live?.git;
-      if (git) await git.worktrees.retire(runId).catch(() => undefined);
-      await this.releaseScratchCwd(live?.scratchCwd);
-      this.escalations.delete(runId);
-      this.failCounts.delete(runId);
-      await this.hub.runStatus(runId, "done");
-      await this.hub.runLog(runId, "escalation resolved — operator stopped the run");
-      // Same invariant haltAgent upholds for a plain (non-escalated) Stop: a
-      // stopped run integrates no change, so its task must not be left
-      // stranded "ongoing"/"review" with no live run behind it — that reads as
+      // Stop: abandon the run cleanly and reclaim its worktree. Same invariant
+      // haltAgent upholds for a plain (non-escalated) Stop: a stopped run
+      // integrates no change, so its task must not be left stranded
+      // "ongoing"/"review" with no live run behind it — that reads as
       // in-progress while nothing is working it. Without this, EVERY
       // escalation stopped via this path (a reap, a stalled runner, an agent
       // escalation the operator declines) orphans its task in the kanban
       // forever — found live, 10 of 11 "ongoing" tasks on a real deployment
       // had already-done runs behind them, none reachable by drag (ongoing's
       // only legal human move is → todo, and nothing was making that move).
-      if (taskId) {
-        const task = await this.store.getTask(taskId).catch(() => undefined);
-        if (task && (task.state === "ongoing" || task.state === "review")) {
-          await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null }).catch(() => undefined);
-        }
-      }
+      // retireRun ALSO dismisses any OTHER HITL still open for this run
+      // (e.g. an approval gate raised alongside the escalation) — the
+      // escalation item itself is already resolved by the time deliver() is
+      // called, so it's not re-touched here.
+      this.escalations.delete(runId);
+      this.failCounts.delete(runId);
+      await this.retireRun(runId, "escalation resolved — operator stopped the run");
       return;
     }
     // A worktree-backed escalation frees its runner + clears `this.live` the
@@ -3222,16 +3244,13 @@ export class Orchestrator {
     if (resolution.action === "reassign" && resolution.resetWork) {
       const run = await this.store.getRun(runId);
       const taskId = this.escalations.get(runId)?.taskId ?? live?.taskId ?? null;
-      if (live) await live.handle.stop().catch(() => undefined);
-      await this.freeRunner(live?.agentId ?? null);
-      this.live.delete(runId);
-      const git = this.escalations.get(runId)?.git ?? live?.git;
-      if (git) await git.worktrees.retire(runId).catch(() => undefined);
-      await this.releaseScratchCwd(live?.scratchCwd);
       this.escalations.delete(runId);
       this.failCounts.delete(runId);
-      await this.hub.runStatus(runId, "done");
-      await this.hub.runLog(runId, "escalation resolved — operator reassigned with a clean slate (previous work discarded)");
+      // unstrand:false — assignTask (below) mints a brand-new run and
+      // overwrites task.runId itself; no need to un-strand to todo first.
+      await this.retireRun(runId, "escalation resolved — operator reassigned with a clean slate (previous work discarded)", {
+        unstrand: false,
+      });
       if (run && taskId) await this.assignTask(run.projectId, taskId).catch(() => undefined);
       return;
     }
@@ -3375,15 +3394,20 @@ export class Orchestrator {
       cleanedGitState.length > 0
         ? `\n\nNote: the previous agent was interrupted mid-\`git ${cleanedGitState.join("/")}\` — it's been aborted for you (no file changes were touched), so the working directory reflects only real committed/uncommitted work, not a half-finished merge. No need to investigate this further.`
         : "";
+    // Kanban redesign, stage 1: brief a reassigned agent with a REAL summary
+    // of what the prior agent tried, not just "the work is in the directory"
+    // — grounded on the actual log, best-effort (see draftHandoffSummary).
+    const handoffSummary = reassign ? await this.draftHandoffSummary(run, task?.text ?? run.name) : null;
+    const handoffNote = handoffSummary ? `\n\nSummary of the prior agent's work so far:\n\n${handoffSummary}` : "";
     const prompt = buildAgentContext({
       project,
       feature,
       brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
       siblings,
       body: targetAgentId
-        ? `An operator manually reassigned this task to you mid-run — the previous agent wasn't stuck, they just chose to switch who's working it. Its work so far is already in the working directory (branch ${run.branch}).${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+        ? `An operator manually reassigned this task to you mid-run — the previous agent wasn't stuck, they just chose to switch who's working it. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you get stuck, escalate (AskUserQuestion with header "ESCALATE").`
         : reassign
-          ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+          ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
           : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}).${gitStateNote} Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
     });
     // Reflect the (re)acquired runner on the persisted run: a reassign moves the
@@ -4561,6 +4585,67 @@ export class Orchestrator {
   }
 
   /**
+   * Kanban redesign, stage 1: the single "this run is over, not reassigned"
+   * teardown. Consolidates what `haltAgent`, `deliverEscalation`'s `reject`
+   * branch, and `reapStaleAgents`' waiting-run branch each hand-rolled
+   * separately — worktree retirement was consistent across them, but HITL
+   * dismissal and `hub.runCompleted` were NOT (audited while building this:
+   * only 2 of the 5 total detach paths in the codebase dismissed dangling
+   * HITL items, which is the "Inbox message doesn't update when a task moves
+   * in kanban" bug class — see the `Operations.transitionTask` fix this
+   * builds on). Always: stops the live handle if any, frees the runner,
+   * retires the worktree, archives the run (a retired run — not reassigned,
+   * not naturally completed — is dead weight for the current work; tucking
+   * it away, reversibly, is more consistent than the old patchwork where
+   * only some paths archived, some only conditionally), marks it terminal
+   * (`status: "done"` + `run.completed`), and dismisses every HITL gate
+   * still open for it — it's now unanswerable.
+   *
+   * `unstrand` (default true) additionally returns the owning task to `todo`
+   * if it was ongoing/review — the invariant "an ongoing/review task always
+   * has a live run" asserted in five places before this. Callers that
+   * already know the operator's chosen destination column (which may not be
+   * `todo` — `Operations.transitionTask`'s done→triage/backlog demotion
+   * case) pass `unstrand: false` and write the task themselves right after.
+   */
+  async retireRun(runId: string, reason: string, opts: { by?: string; unstrand?: boolean } = {}): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (!run) return;
+    await this.stopAgent(runId, reason);
+    await this.hub.setRunArchived(runId, true).catch(() => undefined);
+    if (run.status !== "done") {
+      await this.hub.runStatus(runId, "done");
+      await this.hub.runCompleted(runId, run.branch);
+    }
+    // Any gate still pointing at this run is now unanswerable — it's stopped
+    // and (unless reassigned, a separate path) the task is starting fresh
+    // elsewhere, so leaving the card would strand it in the Inbox pointing
+    // at dead work.
+    const open = (await this.store.listQueue(run.workspaceId).catch(() => [] as HitlItem[])).filter(
+      (q) => q.runId === runId && !q.resolvedAt,
+    );
+    for (const q of open) {
+      await this.hub
+        .resolveHitl(q.id, {
+          action: "dismiss",
+          by: opts.by ?? "system",
+          at: now(),
+          optionIndex: null,
+          guidance: null,
+          targetBranch: null,
+          memoryNote: null,
+          resetWork: false,
+        })
+        .catch(() => undefined);
+    }
+    if (opts.unstrand === false) return;
+    const task = (await this.store.listTasks(run.workspaceId).catch(() => [] as Task[])).find((t) => t.runId === runId);
+    if (task && (task.state === "ongoing" || task.state === "review")) {
+      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
+    }
+  }
+
+  /**
    * Reap presumed-dead runs: a `running`/`waiting` agent whose heartbeat has
    * been silent past `config.agentReapMs` (a live runner beats every few
    * seconds, so prolonged silence means the runner crashed or the server
@@ -4744,22 +4829,13 @@ export class Orchestrator {
         continue;
       }
       // A `waiting` run with a frozen heartbeat that ISN'T an escalation was
-      // parked on a gate whose session died — free its runner + mark it terminal.
-      await this.stopAgent(a.id, reason).catch(() => undefined);
-      await this.hub.runStatus(a.id, "done").catch(() => undefined);
-      await this.hub.runCompleted(a.id, a.branch).catch(() => undefined);
-      // stopAgent retired the worktree — this run integrates no change, so its
-      // owning task must not be left stranded "ongoing" (or "review") showing
-      // a live-looking column next to a run whose chip now reads "done". Same
-      // invariant haltAgent/settleArchivedRun uphold; this sweep was the one
-      // termination path missing it (reported live: a kanban card sitting in
-      // a mid-pipeline column while its status chip showed done).
-      const reapedTask = (await this.store.listTasks(a.workspaceId).catch(() => [] as Task[])).find(
-        (t) => t.runId === a.id,
-      );
-      if (reapedTask && (reapedTask.state === "ongoing" || reapedTask.state === "review")) {
-        await this.hub.upsertTask({ ...reapedTask, state: "todo", runId: null, reviewVerdict: null }).catch(() => undefined);
-      }
+      // parked on a gate whose session died — retireRun frees its runner,
+      // marks it terminal, dismisses that now-unanswerable gate (this sweep
+      // used to leave it dangling in the Inbox — same bug class as the
+      // kanban-move fix), and un-strands its owning task back to `todo` so a
+      // live-looking column doesn't sit next to a run whose chip now reads
+      // "done" (reported live: exactly that kanban symptom).
+      await this.retireRun(a.id, reason).catch(() => undefined);
     }
   }
 
@@ -6350,29 +6426,7 @@ export class Orchestrator {
   async haltAgent(runId: string): Promise<TaskRun | undefined> {
     const agent = await this.store.getRun(runId);
     if (!agent) return undefined;
-    const live = this.live.get(runId);
-    if (live?.agentId) {
-      const runner = await this.store.getAgent(live.agentId);
-      if (runner) await this.hub.upsertAgent({ ...runner, status: "idle", idleSince: now() });
-    }
-    await this.stopAgent(runId); // stop the handle + retire the worktree + drop the session
-    // stopAgent detaches but leaves the status untouched — halt is the terminal
-    // operator action, so mark it done and emit the completion event.
-    if (agent.status !== "done") {
-      await this.hub.runStatus(runId, "done");
-      await this.hub.runCompleted(runId, agent.branch);
-    }
-    // A stopped run integrates no change, so its owning task must not be left
-    // stranded "ongoing" (or "review") with no live run behind it — that reads as
-    // in-progress while nothing is working it. Return the task to `todo` (cleanly
-    // re-pickable) and archive+detach the dead run, mirroring the abandon path
-    // (transitionTask ongoing/review → todo). Invariant: an `ongoing` task always
-    // has a live run.
-    const task = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === runId);
-    if (task && (task.state === "ongoing" || task.state === "review")) {
-      await this.hub.setRunArchived(runId, true).catch(() => undefined);
-      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
-    }
+    await this.retireRun(runId, "stopped by operator");
     return this.store.getRun(runId);
   }
 
