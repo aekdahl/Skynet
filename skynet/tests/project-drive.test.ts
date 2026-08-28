@@ -208,3 +208,49 @@ describe("the tick writes the driver state", () => {
     expect((await drive(p.id))?.state).toBe("no_runners");
   });
 });
+
+describe("the driver only spends when autonomy says it may", () => {
+  it("replenishes a dry board when autonomy is ON, and not when it's off", async () => {
+    // Replenishment is a model call. It sits behind `autonomy` — the workspace's
+    // established consent for "this project may spend on its own", the same gate
+    // auto-pick and auto-review are behind.
+    const store = new MemoryStore();
+    const hub = new Hub(store, new NullBus());
+    const orch = new Orchestrator(store, hub);
+    const ops = new Operations({ store, hub, orchestrator: orch });
+    const calls: string[] = [];
+    orch.onDriveReplenish = async (_ws, projectId) => void calls.push(projectId);
+
+    const off = await ops.createProject(DEFAULT_WORKSPACE, { name: "off", goal: "g", autonomy: false });
+    const on = await ops.createProject(DEFAULT_WORKSPACE, { name: "on", goal: "g" });
+    const step = async () =>
+      (orch as unknown as { updateDriveStates: (w: string, ps: unknown[], t: unknown[]) => Promise<void> }).updateDriveStates(
+        DEFAULT_WORKSPACE,
+        [await store.getProject(off.id)!, await store.getProject(on.id)!],
+        [],
+      );
+
+    await step();
+    expect(calls).toEqual([on.id]);
+  });
+
+  it("does not replenish again on the very next tick", async () => {
+    // A project that just ran dry will still be dry in fifteen minutes; asking
+    // the model again every tick would be pure waste.
+    const store = new MemoryStore();
+    const hub = new Hub(store, new NullBus());
+    const orch = new Orchestrator(store, hub);
+    const ops = new Operations({ store, hub, orchestrator: orch });
+    const calls: string[] = [];
+    orch.onDriveReplenish = async (_ws, projectId) => void calls.push(projectId);
+
+    const p = await ops.createProject(DEFAULT_WORKSPACE, { name: "p", goal: "g" });
+    const step = async () =>
+      (orch as unknown as { updateDriveStates: (w: string, ps: unknown[], t: unknown[]) => Promise<void> })
+        .updateDriveStates(DEFAULT_WORKSPACE, [await store.getProject(p.id)!], []);
+
+    await step();
+    await step();
+    expect(calls).toHaveLength(1);
+  });
+});

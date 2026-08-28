@@ -45,6 +45,10 @@ import { assessProjectDrive } from "./drive.js";
 
 /** How long before a project's board may be re-pulled from its source again. */
 const REFILL_COOLDOWN_MS = 15 * 60 * 1000;
+/** How long before a dry project may propose its own next tasks again. Much
+ *  coarser than the refill: that's a read, this is a model call — and a project
+ *  that just ran dry will still be dry in fifteen minutes. */
+const REPLENISH_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 import { secretService } from "./secrets/index.js";
 import { previewService } from "./preview/index.js";
 import { projectPreview, type ProjectPreviewManager } from "./preview/project-preview.js";
@@ -702,10 +706,15 @@ export class Orchestrator {
   private budgetPausedFlagged = new Set<string>();
   // Last source-refill attempt per project — see updateDriveStates.
   private lastRefill = new Map<string, number>();
+  // Last backlog replenishment per project — see updateDriveStates.
+  private lastReplenish = new Map<string, number>();
   /** Injected by Operations: re-pull a project's bound source (issues / roadmap
    *  doc). Kept as a hook rather than an import so the orchestrator doesn't
    *  depend on the operations layer that constructs it. */
   onDriveRefill?: (ws: string, projectId: string) => Promise<void>;
+  /** Injected by Operations: propose the next tasks for a project whose board
+   *  has run dry and has no source to re-pull from. */
+  onDriveReplenish?: (ws: string, projectId: string) => Promise<void>;
 
   // `providerOverride` is a test seam — inject a runner provider directly instead
   // of resolving the runner's own provider. Production always passes (store, hub) only.
@@ -4674,6 +4683,29 @@ export class Orchestrator {
         this.lastRefill.set(project.id, now());
         await this.onDriveRefill?.(ws, project.id).catch(() => undefined);
       }
+
+      // A board with nothing startable and NO source to re-pull from is the one
+      // case where the project genuinely stops until a human thinks of the next
+      // thing. Propose it instead — grounded in the project's own goal, roadmap
+      // and context, never invented.
+      //
+      // Gated on `autonomy`, the workspace's established consent for "this
+      // project may spend on its own" (the same gate auto-pick and auto-review
+      // sit behind), and rate-limited far more coarsely than the source refill:
+      // a source re-pull is a read, this is a model call, and a project that
+      // just ran dry will still be dry in fifteen minutes.
+      //
+      // What it creates cannot start itself — see replenishBacklog.
+      if (
+        assessment.state === "empty" &&
+        !assessment.refillFromSource &&
+        project.autonomy &&
+        project.status === "active" &&
+        this.replenishOk(project.id)
+      ) {
+        this.lastReplenish.set(project.id, now());
+        await this.onDriveReplenish?.(ws, project.id).catch(() => undefined);
+      }
     }
   }
 
@@ -4681,6 +4713,12 @@ export class Orchestrator {
   private refillOk(projectId: string): boolean {
     const last = this.lastRefill.get(projectId) ?? 0;
     return now() - last >= REFILL_COOLDOWN_MS;
+  }
+
+  /** One replenishment per project per REPLENISH_COOLDOWN_MS. */
+  private replenishOk(projectId: string): boolean {
+    const last = this.lastReplenish.get(projectId) ?? 0;
+    return now() - last >= REPLENISH_COOLDOWN_MS;
   }
 
   async tickAutonomy(): Promise<void> {

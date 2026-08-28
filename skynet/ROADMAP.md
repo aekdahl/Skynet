@@ -1926,6 +1926,25 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   min: a read, not a run. Everything else is surfaced for a human, because a project that has genuinely
   run out of clear work is a decision, not a scheduling problem.
 
+- [x] **The driver ACTS: a dry board proposes its own next steps.** The project driver could already
+  tell when a project had run out of startable work, and re-pull a bound source. A project with **no**
+  source was the case where it genuinely stops until a human thinks of the next thing —
+  `replenishBacklog` is that thinking, grounded in what the project already knows: its goal, its roadmap
+  doc, the operator-supplied context, and **what's already DONE** (the difference between proposing
+  *next* steps and re-proposing the same list). Structured output, zod-validated, ONE retry on an
+  unreadable reply — same discipline as decompose/crystallize — and an empty list is an explicitly
+  VALID answer: a project whose direction isn't written down anywhere should produce nothing rather
+  than a plausible-sounding invented roadmap.
+  **Why this can't run away**, which is the whole reason it's safe to switch on: proposed tasks land in
+  `backlog` with `autoPick: false`, and auto-pick only ever starts tasks flagged `autoPick` — so nothing
+  proposed here can start itself; a human (or an explicit `queue_tasks`) has to pick it up. Without that
+  property this would be a perpetual work generator — invent tasks, run them, empty the board, invent
+  more — the one failure mode a cost-conscious operator would never forgive. Gated additionally on
+  `project.autonomy` (the established consent for "may spend on its own", the same gate auto-pick and
+  auto-review sit behind) and rate-limited to once per project per 6h — far coarser than the source
+  refill, because that's a read and this is a model call, and a project that just ran dry will still be
+  dry in fifteen minutes.
+
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease
