@@ -1316,6 +1316,23 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   queueing. Settings and the MCP tool descriptions were corrected too; both still described a fleet-size
   cap.
 
+- [x] **A run on a compatible endpoint could authenticate with the WRONG vendor's credential.** Found from
+  a live DeepSeek `401 Authentication Fails, Your api key: ****f81f is invalid` on a key that was fine.
+  `applyCredential` stripped `ANTHROPIC_API_KEY` before pointing a run at a third-party endpoint — but
+  not `CLAUDE_CODE_OAUTH_TOKEN`, which `buildRunnerEnv` deliberately PRESERVES as a real standalone
+  credential and which outranks the gateway token. On any host carrying a `claude setup-token`
+  subscription (a developer machine, or a container that inherited one), a run pointed at DeepSeek would
+  therefore authenticate with the **Anthropic subscription token**: the third-party vendor receives the
+  operator's personal token, and the run 401s naming a key that was never the problem — sending whoever
+  debugs it after the wrong thing entirely. This is the exact failure the ANTHROPIC_API_KEY strip was
+  written to prevent; the second credential was simply missed. Both now come off together.
+  **Also: keys are trimmed at the boundary.** A key pasted from a vendor console routinely carries a
+  trailing newline, which rode into `Authorization: Bearer <key>\n` and was rejected as invalid — and
+  because `last4` was fingerprinted from the untrimmed string, the fingerprint shown in Settings
+  disagreed with the vendor's own `****f81f`, destroying the one cheap diagnostic an operator has.
+  Trimmed once in `sealRecord`, so the stored key, its fingerprint, and what a runner sends are the same
+  string. Six of the seven new tests fail on the pre-fix code.
+
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease
