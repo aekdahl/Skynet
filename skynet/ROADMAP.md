@@ -1867,8 +1867,8 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   Auth failing SKIPS the rest rather than printing a wall of red — with no session there's nothing
   truthful to say about tools, and a false "tools failed" sends someone debugging the wrong layer.
   Costs a fraction of a cent, capped at 60s, and is **operator-triggered only** — never automatic, since
-  unlike verify it spends money. Catalog caveats a live probe *can't* see (DeepSeek ignoring MCP, so
-  browser tools vanish) are surfaced alongside the results.
+  unlike verify it spends money. Catalog caveats a live probe can't see (an ignored thinking budget, a
+  shim that misreports its context window) are surfaced alongside the results.
   **Two bugs the first live run against a real endpoint exposed**, both invisible to unit tests: an SDK
   result is a `success|error` union, so a rejected key came back as an error RESULT rather than a thrown
   exception — nothing threw, a zero-filled usage object existed, and `auth` reported a cheerful **pass**
@@ -1891,6 +1891,27 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   deep link, stale hash, or a PWA/notification nav. A source-scanning test now asserts every view behind
   the QA nav section is also route-gated, and that the desktop build scripts actually set the release
   flag, since the gate defaults to ON and a missing flag would silently ship internal tooling.
+
+- [x] **Repoint an EXISTING runner at another credential (and stop the endpoint chip breaking the row).**
+  The Key picker was create-only — "an existing agent's credential is fixed" was a fair rule when a
+  credential was just a second API key, but it stopped being fair the moment a credential could name a
+  Claude-compatible endpoint: moving a runner to a cheaper vendor then meant delete-and-recreate, which
+  throws away its task history and cost rollup. The picker is now offered when editing too, seeded from
+  the agent's current credential, and says plainly that a switch applies to the runner's NEXT run
+  (anything in flight resolved its credential at start). Server-side, `UpdateRunnerRequest.credentialId`
+  is validated to exist AND to belong to that runner's provider — without the provider check you could
+  point a Claude runner at a GitHub or Fly token, which authenticates nothing and fails only once a real
+  run starts.
+  **Two bugs of mine found while doing it, both by looking at the actual UI rather than the code:**
+  the `via <vendor>` chip was added as a sixth top-level child of `.fleet-idle-row`, which is a FIXED
+  five-column grid (`1fr auto auto auto auto`) — so it landed in an implicit sixth cell and wrapped the
+  row's action buttons onto a line of their own. It's now inside the name cell. (It was visible in my
+  own verification screenshot and I read past it.) And there are TWO inline ConfigForm editors — the
+  card and the idle roster — of which only one was updated, so a vendor switch made from the idle row
+  saved the new MODEL against the OLD credential: a runner configured for `deepseek-v4-flash` while
+  still authenticating to Anthropic, which is worse than not offering the switch at all. Both are now
+  guarded by source-scanning tests (the grid shape, and that every ConfigForm save path carries
+  `credentialId`).
 
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
