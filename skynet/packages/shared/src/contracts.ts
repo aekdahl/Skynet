@@ -265,6 +265,13 @@ export const PrChecksStatus = z.object({
   // Per-check-run breakdown backing `checks` — [] when the repo has no CI
   // configured (mirrors `checks:"none"`) or on an older/best-effort read.
   runs: z.array(PrCheckRun).default([]),
+  // The PR's REAL state on GitHub right now — the ready-to-merge card fetches
+  // this live on every mount/reload specifically to catch a PR merged or
+  // closed OUTSIDE Skynet (a human merged it on GitHub directly). The server
+  // self-heals its own stored state + completion the moment this diverges
+  // from "open" (see orchestrator.ts's prChecksForRun/prChecksForFeature), so
+  // the card is really just observing that reconciliation, not driving it.
+  state: z.enum(["open", "closed", "merged"]),
 });
 export type PrChecksStatus = z.infer<typeof PrChecksStatus>;
 

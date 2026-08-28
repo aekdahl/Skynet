@@ -162,7 +162,7 @@ describe("ready-to-merge", () => {
     (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "open", checks: "passing", mergeable: true, runs: [] });
     const { store, orch } = await setup();
     await store.putRun(mkRun());
-    expect(await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1")).toEqual({ checks: "passing", mergeable: true, runs: [] });
+    expect(await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1")).toEqual({ checks: "passing", mergeable: true, runs: [], state: "open" });
     expect(githubService.prStatus).toHaveBeenCalledWith(DEFAULT_WORKSPACE, "acme/app", 42, null);
   });
 
@@ -182,6 +182,7 @@ describe("ready-to-merge", () => {
       checks: "failing",
       mergeable: true,
       runs: [{ name: "lint", state: "pass" }, { name: "typecheck", state: "fail" }, { name: "test", state: "pending" }],
+      state: "open",
     });
   });
 
@@ -197,6 +198,53 @@ describe("ready-to-merge", () => {
     const { store, orch } = await setup();
     await store.putRun(mkRun());
     expect(await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1")).toBeNull();
+  });
+
+  // The whole point: a human can merge (or close) a ready PR directly on
+  // GitHub, bypassing Skynet entirely — the stored `pr.state:"open"` would
+  // otherwise never learn that happened, and the card would sit "ready to
+  // merge" forever. The card's own on-mount status check (this same call) IS
+  // the reconciliation point — no separate poller/webhook needed.
+  it("prChecksForRun self-heals a PR merged OUTSIDE Skynet — same local completion as clicking Merge here would", async () => {
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "merged", checks: "passing", mergeable: true, runs: [] });
+    const { store, orch } = await setup();
+    await store.putRun(mkRun());
+    await store.putTask({ id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do X", state: "review", runId: "r1" } as Task);
+
+    const result = await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1");
+    expect(result?.state).toBe("merged");
+    expect((await store.getRun("r1"))?.pr?.state).toBe("merged");
+    expect((await store.getRun("r1"))?.status).toBe("done");
+    expect((await store.getRun("r1"))?.mergedAt).not.toBeNull();
+    expect((await store.getTask("t1"))?.state).toBe("done");
+    expect(await orch.listReadyPrs(DEFAULT_WORKSPACE)).toEqual([]); // no longer open — self-cleared
+  });
+
+  it("prChecksForRun self-heals a PR closed OUTSIDE Skynet without merging — drops it from the ready list, but never invents a 'done'", async () => {
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "closed", checks: "none", mergeable: null, runs: [] });
+    const { store, orch } = await setup();
+    await store.putRun(mkRun());
+    await store.putTask({ id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do X", state: "review", runId: "r1" } as Task);
+
+    const result = await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1");
+    expect(result?.state).toBe("closed");
+    expect((await store.getRun("r1"))?.pr?.state).toBe("closed");
+    expect((await store.getRun("r1"))?.mergedAt).toBeFalsy(); // never stamped — rejected work never earns a silent "done"
+    expect((await store.getTask("t1"))?.state).toBe("review"); // untouched
+    expect(await orch.listReadyPrs(DEFAULT_WORKSPACE)).toEqual([]); // still drops off the ready list
+  });
+
+  it("prChecksForRun is a no-op reconciliation-wise once already reconciled — a second read doesn't re-run completion", async () => {
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ state: "merged", checks: "passing", mergeable: true, runs: [] });
+    const { store, orch } = await setup();
+    await store.putRun(mkRun());
+    await store.putTask({ id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do X", state: "review", runId: "r1" } as Task);
+
+    await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1");
+    const afterFirst = await store.getRun("r1");
+    await orch.prChecksForRun(DEFAULT_WORKSPACE, "r1"); // a second card mount, e.g. another reload
+    const afterSecond = await store.getRun("r1");
+    expect(afterSecond?.mergedAt).toBe(afterFirst?.mergedAt); // not re-stamped
   });
 });
 
@@ -278,7 +326,7 @@ describe("ready-to-merge — feature-scoped batches", () => {
     (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "open", checks: "failing", mergeable: true });
     const { store, orch } = await setup();
     await store.putFeature(mkFeature());
-    expect(await orch.prChecksForFeature(DEFAULT_WORKSPACE, "f1")).toEqual({ checks: "failing", mergeable: true });
+    expect(await orch.prChecksForFeature(DEFAULT_WORKSPACE, "f1")).toEqual({ checks: "failing", mergeable: true, state: "open" });
     expect(githubService.prStatus).toHaveBeenCalledWith(DEFAULT_WORKSPACE, "acme/app", 43, null);
   });
 
@@ -286,5 +334,35 @@ describe("ready-to-merge — feature-scoped batches", () => {
     const { store, orch } = await setup();
     await store.putFeature(mkFeature({ pr: null }));
     expect(await orch.prChecksForFeature(DEFAULT_WORKSPACE, "f1")).toBeNull();
+  });
+
+  // Same self-heal as the per-run case, simpler here: every task in the batch
+  // already finished its own lifecycle merging into the feature branch, so
+  // there's no local worktree/task reconciliation left to do — just the same
+  // shipped+merged flip mergeReadyFeaturePr's own success path makes.
+  it("prChecksForFeature self-heals an aggregate PR merged OUTSIDE Skynet", async () => {
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "merged", checks: "passing", mergeable: true, runs: [] });
+    const { store, orch } = await setup();
+    await store.putFeature(mkFeature());
+
+    const result = await orch.prChecksForFeature(DEFAULT_WORKSPACE, "f1");
+    expect(result?.state).toBe("merged");
+    const fresh = await store.getFeature("f1");
+    expect(fresh?.pr?.state).toBe("merged");
+    expect(fresh?.status).toBe("shipped");
+    expect(await orch.listReadyFeaturePrs(DEFAULT_WORKSPACE)).toEqual([]); // no longer open
+  });
+
+  it("prChecksForFeature self-heals an aggregate PR closed OUTSIDE Skynet without merging", async () => {
+    (githubService.prStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "closed", checks: "none", mergeable: null, runs: [] });
+    const { store, orch } = await setup();
+    await store.putFeature(mkFeature());
+
+    const result = await orch.prChecksForFeature(DEFAULT_WORKSPACE, "f1");
+    expect(result?.state).toBe("closed");
+    const fresh = await store.getFeature("f1");
+    expect(fresh?.pr?.state).toBe("closed");
+    expect(fresh?.status).toBe("active"); // never silently "shipped" — it wasn't
+    expect(await orch.listReadyFeaturePrs(DEFAULT_WORKSPACE)).toEqual([]);
   });
 });
