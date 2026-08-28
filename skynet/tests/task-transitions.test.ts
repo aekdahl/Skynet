@@ -138,6 +138,102 @@ describe("transitionTask — task.done syncs run.status", () => {
   });
 });
 
+// Bug: "inbox messages must update if tasks move in kanban" — abandoning a
+// run (ongoing/review → todo, or demoting done → triage/backlog) stopped +
+// archived the run but left any open HITL gate for it dangling: the Inbox
+// kept showing a now-meaningless pending decision for a run whose worktree
+// was already retired and runner already freed. Distinct from the
+// review→done path above (which already correctly resolves the gate via
+// approve) — this covers the OTHER abandon direction.
+describe("transitionTask — abandoning a run dismisses its dangling HITL gate", () => {
+  const seedRunTaskAndHitl = async (
+    store: MemoryStore,
+    taskState: Task["state"],
+    hitlId = "q1",
+  ): Promise<void> => {
+    await store.putRun({
+      id: "run-1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "r",
+      taskId: "t1", provider: "claude", model: "opus", branch: "main", status: "review",
+      progress: 1, plan: [], log: [], startedAt: 0, lastHeartbeatAt: 0,
+    } as never);
+    await store.putTask({ ...mkTask(taskState), runId: "run-1" });
+    await store.putHitl({
+      id: hitlId, workspaceId: DEFAULT_WORKSPACE, runId: "run-1", kind: "diff", title: "Review diff",
+      why: "", risk: "medium", raisedAt: 0, expiresAt: null, resolvedAt: null, resolution: null,
+      rationale: null, command: null, options: null, recommended: null, steps: null,
+      diff: { add: 1, del: 0, modules: [] },
+    } as never);
+  };
+
+  const setup = async () => {
+    const store = new MemoryStore();
+    const hub = new Hub(store, new NullBus());
+    const orchestrator = new Orchestrator(store, hub);
+    const ops = new Operations({ store, hub, orchestrator });
+    await store.putProject(project);
+    return { store, ops };
+  };
+
+  it("ongoing → todo dismisses the run's open HITL gate", async () => {
+    const { store, ops } = await setup();
+    await seedRunTaskAndHitl(store, "ongoing");
+
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "todo", "op-1");
+
+    const item = await store.getHitl("q1");
+    expect(item?.resolvedAt).not.toBeNull(); // no longer dangling in the Inbox
+    expect(item?.resolution?.action).toBe("dismiss");
+    expect(item?.resolution?.by).toBe("op-1");
+  });
+
+  it("demoting done → backlog also dismisses the run's open HITL gate", async () => {
+    const { store, ops } = await setup();
+    await seedRunTaskAndHitl(store, "done");
+
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "backlog", "op-1");
+
+    const item = await store.getHitl("q1");
+    expect(item?.resolvedAt).not.toBeNull();
+    expect(item?.resolution?.action).toBe("dismiss");
+  });
+
+  it("dismisses EVERY open gate for the run, not just one", async () => {
+    const { store, ops } = await setup();
+    await seedRunTaskAndHitl(store, "ongoing", "q1");
+    await store.putHitl({
+      id: "q2", workspaceId: DEFAULT_WORKSPACE, runId: "run-1", kind: "verifier", title: "Check failed",
+      why: "", risk: "medium", raisedAt: 0, expiresAt: null, resolvedAt: null, resolution: null,
+      rationale: null, command: null, options: null, recommended: null, steps: null, diff: null,
+    } as never);
+
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "todo", "op-1");
+
+    expect((await store.getHitl("q1"))?.resolvedAt).not.toBeNull();
+    expect((await store.getHitl("q2"))?.resolvedAt).not.toBeNull();
+  });
+
+  it("a preserved move (pause, not abandon) leaves the open HITL untouched", async () => {
+    const { store, ops } = await setup();
+    await seedRunTaskAndHitl(store, "ongoing");
+
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "todo", "op-1", { preserve: true });
+
+    // Paused, not abandoned — the gate may still be answerable once resumed.
+    expect((await store.getHitl("q1"))?.resolvedAt).toBeNull();
+  });
+
+  it("a legal move that does NOT abandon the run (review → done via approve) is unaffected", async () => {
+    const { store, ops } = await setup();
+    await seedRunTaskAndHitl(store, "review");
+
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "done", "op-1");
+    // Resolved via the existing "approve" path (transitionTask's OWN review→done
+    // branch, above `abandonsRun`), not "dismiss" — my new dismissal logic
+    // never fires for this path.
+    expect((await store.getHitl("q1"))?.resolution?.action).toBe("approve");
+  });
+});
+
 // Escape hatch: forceTaskDone bypasses HUMAN_TRANSITIONS and routes through the
 // same integrate-and-sync path a normal Approve uses. These three run with no
 // git backend configured (bare MemoryStore, non-git-backed project, no

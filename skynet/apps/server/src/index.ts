@@ -205,7 +205,7 @@ async function main() {
   await registerOpenAiCompat(app, { operations, bus });
   await registerInteropRest(app, { operations });
   // Workspace-scoped provider keys (encrypted at rest); /api auth hook applies.
-  await registerSecretsRoutes(app);
+  await registerSecretsRoutes(app, operations);
   // GitHub App connection + safety policy (workspace-scoped); /api auth applies.
   await registerGithubRoutes(app);
   // Inbound GitHub webhook (issues → task) — outside /api on purpose; the HMAC

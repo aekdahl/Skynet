@@ -313,21 +313,406 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   runners** — one container per agent, completing the v0 sandbox item's deferred
   half: memory/CPU caps (cgroups) and network egress allowlist (proxy). The
   command-deny, worktree write-confinement, and runtime cap already ship locally.
-- [x] **Guided provider connect** — one-click "Connect Claude / Codex / …" in Settings: in-app key entry plus a live per-vendor verify call confirming a saved key actually authenticates, so onboarding never requires hand-authing a vendor CLI.
-- [x] **Run escalation / hand-off — a stuck run halts for a human.** A run raises a first-class "NEEDS HELP" escalation (agent hand-off, too many failures, or stuck too long) the operator resolves via help & resume, reassign, or stop; several follow-on bugs around dead-end/unresumable/stuck-looking escalations were subsequently found and fixed.
-- [x] **Fix: Stop on an escalation card orphaned its task in "ongoing" forever.** Stopping a run from its escalation card now syncs the task back to `todo`, matching what the plain "Stop run" button already did.
-- [x] **Organize board also unsticks unassigned backlog tasks it's confident about.** Organize board now also auto-assigns unassigned backlog tasks it judges safe for any agent, defaulting to leaving ambiguous ones for a human to route.
-- [x] **Manual "Force to review" on an ongoing card.** New "⚡ Force to review" button lets an operator push a stuck/slow ongoing run into diff review on demand, committing its work first without abandoning it.
-- [x] **Force Done gets a completeness check before it pushes.** Force Done now runs an automated completeness consult before pushing; a flagged run is held back into a real diff review instead of an unconditional push.
-- [x] **Manual "Request re-triage" on a card parked in triage.** New "Re-triage" button lets an operator request a fresh triage assessment on demand instead of waiting for the periodic sweep.
-- [x] **Fix: a third termination path could strand a task "ongoing"/"review" while its run showed "done".** The stale-session reap sweep now also resets its task to `todo`, matching the two other termination paths that already upheld that invariant.
-- [x] **Fix: a Telegram merge-conflict card was an unexplained raw diff dump — impossible to act on.** Rewrote the Telegram notice to match the web card's layout (title, rationale, why, conflicting files) with the raw conflict text as supplementary detail at the bottom, not the whole card.
-- [x] **Fix: answering a triage clarifying question could loop forever — same question, every time.** The re-triage pass now recognizes an already-answered clarification and force-promotes to `todo` if the model still reports "unclear," guaranteeing the loop ends after one round.
-- [x] **Fix: Force Done didn't force anything DONE — it forced the card to say so.** Force Done now routes through the same integration pipeline a real Approve uses (commit, push/merge) instead of only flipping the task's label.
-- [x] **Triage asks — clarifying questions with a Steward-drafted answer.** Triage can now name specific missing details when a task is unclear, with a Steward-drafted proposed answer on the card the operator can send, edit, or replace.
-- [x] **Spend efficiency on Home — how much of what the fleet costs actually ships.** Added a Home dashboard breakdown of what share of fleet spend reached a merge versus stalled, stopped, or unlanded runs.
-- [x] **Fix: Skynet's cost meter under-reported real spend by ~3x, and side-calls silently ran Opus.** Fixed three compounding causes — the wrong usage field, unmetered one-shot LLM calls, and those calls silently defaulting to Opus — and made a model choice required everywhere spend is incurred.
-- [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.** A project's autonomy now pauses itself and raises one summary escalation after too many consecutive bad outcomes in a row, instead of grinding through more tasks unattended.
+- [x] **Guided provider connect** — one-click "Connect Claude / Codex / …": in-app key entry + a live verify,
+  so onboarding never requires hand-authing each vendor CLI (the #1 friction rivals impose). Key entry
+  already worked (`createCredential`/`setSecret`); landed the missing live-verify half — a cheap,
+  read-only, per-vendor call (`secrets/verify.ts`: Anthropic/OpenAI/Google `models` list, OpenRouter
+  auth-key check, Cursor `/v0/me`, GitHub `/user` for both `copilot` and a pinned GitHub PAT) confirms a
+  saved key actually authenticates rather than just being present. Never blocks the save itself (a key
+  can be valid but momentarily rate-limited); Settings shows a spinner → pass/fail badge with the
+  vendor's own error text, on both the main provider row and the "+ Add another key" form. Verified live
+  against real keys (good and deliberately-wrong) through the actual Settings UI.
+- [x] **Run escalation / hand-off — a stuck run halts for a human.** A run enters a first-class
+  `escalation` HITL ("NEEDS HELP") three ways: the **agent hands off** itself when genuinely blocked
+  (AskUserQuestion with header "ESCALATE" → detected by the runner), **too many failures**
+  (`SKYNET_RUN_MAX_FAILURES`, default 3), or **too long** (`SKYNET_RUN_STUCK_MS`, opt-in — below the
+  runner's hard cap). The operator resolves it from the Inbox: **help & resume** (guidance → the agent
+  continues, or a fresh session relaunches in the worktree), **reassign** to a different runner, or
+  **stop**. The halted run frees its runner but keeps its worktree so a resume/reassign can continue the
+  work. *(Verified live: a real agent correctly escalated rather than fabricate a secret; help & resume
+  round-tripped. Foundation for the "escalation SLAs / delegated approval" governance items below.)*
+  *Bug fixed: a "Runner went silent" escalation (raised by `reapStaleAgents` after a server restart
+  orphans a run's heartbeat) could NOT actually be resumed. `resolveHitl` marks the HITL resolved
+  before `relaunchEscalated` attempts the relaunch, so if `provider.start()` then threw for any reason
+  (a transient provider outage, say), the old catch path called `failStartup()` — which retires the
+  run's worktree and drops it into a dead `"review"` state with no HITL left to act on. Every button
+  the operator could still see just re-triggered the same failure into the same dead end — exactly
+  "I tried all buttons." Fixed by re-raising a fresh, actionable escalation on relaunch failure instead
+  (worktree untouched, Resume/Reassign/Stop back on the table) — see `raiseEscalationCard()` in
+  `orchestrator.ts`, factored out of `escalate()` so both the original raise and the retry path share
+  it. Regression-proofed with a real-git test using a provider whose `start()` fails once on demand.*
+  *Follow-up fix: the same dead end also hit ONE step earlier — `acquireOrProvisionRunner` itself
+  throwing (no idle runner within the fleet cap, or the assigned runner removed — "reassign when the
+  runner left") only logged and set the run back to `"waiting"`, with no HITL left to click since the
+  original one was already resolved. Now re-raises a fresh escalation the same way, so Resume/Reassign
+  keep working even when there's genuinely no runner to hand the run to right now.*
+  *Root-cause fix: both bugs above were symptoms of a wider pattern — several code paths dumped a run
+  into `"review"` with NO HITL raised at all (not even one to fail resuming). `fail()`'s generic-failure
+  branch escalated only past `SKYNET_RUN_MAX_FAILURES` (default 3), silently parking every failure below
+  that with no retry loop ever consuming the count — so those "early" failures were exactly as terminal
+  as the 3rd, just invisible. `failStartup()` (no credential, worktree provisioning failed) never
+  escalated either. The result, reported directly: "a lot of tasks being stuck in REVIEW." Fixed two
+  ways — (1) `fail()` now escalates on every failure while the guard is enabled (the count still shapes
+  the reason text an operator sees; `SKYNET_RUN_MAX_FAILURES=0` still opts back into the old silent
+  parking, for operators who deliberately want it); (2) `gcWorktrees`'s existing "limbo" sweep (previously
+  a once-after-`worktreeTtlDays` LOG LINE nobody read) now immediately escalates any `review` run with no
+  open gate, on the very first sweep — a real backstop that also recovers already-stuck runs from before
+  this fix, and any future gap in the same spirit (e.g. `failStartup()`, left otherwise unchanged since
+  its worktree is genuinely empty). `escalate()` also gained a task-lookup fallback for when there's no
+  live handle to read `taskId` off (needed for the sweep to move the task back to `ongoing` on a
+  successful resume). Regression-proofed by stashing the fix and re-running the new tests against old
+  code — all 3 fail exactly as reported.*
+  *UI follow-up: the global Runs dashboard had its OWN version of this bug, reported live — a run
+  reading "starting…" with a growing elapsed clock 20+ hours in. Its per-row classifier only had 3
+  explicit buckets (done / has-an-open-HITL / paused) and dumped everything else — including a `review`
+  run with a frozen heartbeat and no HITL, exactly the dead end above — into the generic "running" bucket,
+  which just shows elapsed-since-start with no regard for whether anything is actually happening. Extracted
+  the classifier into a pure, unit-tested `classifyRun()` (`derive.ts`) and added a branch: a non-`running`
+  status with a stale heartbeat (the dashboard's existing 60s early-warning line) and no open HITL now
+  sorts and labels the same as an open HITL ("stuck in review — no pending decision"), instead of hiding
+  among genuinely active runs.*
+  *Feature added: "Send to Todo" and escalation "Reassign" each used to have exactly ONE hardcoded
+  behavior — the former always discarded the run's in-progress work, the latter always continued in the
+  same worktree — with no way to ask for the other, reported live as a real gap ("work shouldn't be lost
+  when returning to todo due to task is stall or hung — a confirm modal where the user can decide to
+  reset or continue"). Both now offer a real choice via a new `useChoice()` dialog (`confirm.tsx`, a
+  multi-option sibling to the existing yes/no `useConfirm()`): **keep the work, pause it** (the run halts
+  with its worktree + committed work intact, exactly like an escalation — a later "Start →" on the same
+  task, or `assignTask`'s new resume-a-paused-run branch, relaunches it in place) or **start clean**
+  (discards the worktree, same as Stop; Reassign's reset variant then immediately re-assigns a genuinely
+  fresh run for the same task). New `Orchestrator.pauseRun()` mirrors `escalate()` (worktree preserved,
+  no HITL raised — nothing needs the operator's attention, they just chose to come back later) and
+  `Resolution.resetWork` (only meaningful alongside `reassign`) drives the reset path in
+  `deliverEscalation`. Regression-proofed with 4 new real-git tests (`escalation.test.ts`) covering both
+  choices on both flows, and verified live end-to-end (pause → Start → resumes the SAME run id; reset →
+  a brand-new run with its own fresh worktree).*
+- [x] **Fix: Stop on an escalation card orphaned its task in "ongoing" forever.** Found live on a real
+  deployment — 11 of 11 tasks stuck in "ongoing" turned out to have runs that had already reached a
+  terminal state (`done`, mostly via a stall reap or the operator resolving the escalation with Stop), yet
+  the task itself never moved. Root cause: `haltAgent` (the plain "Stop run" button on a live, non-escalated
+  run) correctly upholds the invariant "an ongoing task always has a live run" — it returns the task to
+  `todo` when the run stops. `deliverEscalation`'s `reject` branch (Stop **on an escalation card**
+  specifically) was a separate, parallel implementation of "stop this run" that did the same runner/worktree
+  cleanup but never synced the task, silently violating that invariant every time. Since `ongoing`'s only
+  legal human kanban move is → `todo`, and nothing was ever making that move automatically, the task just
+  sat there — unreachable by drag (nothing to drop it onto) and invisible as "broken" (no error, no card, no
+  escalation left open). Fixed by adding the same sync `haltAgent` does. Regression-proofed: stashed the fix,
+  confirmed `escalation.test.ts`'s reject case now asserts `state → "todo"`/`runId → null`/
+  `reviewVerdict → null` and genuinely fails without it, popped it back.
+- [x] **Organize board also unsticks unassigned backlog tasks it's confident about.** Requested live: "when
+  Steward organize the tasks it should also set the ones that make sense to any agent in backlog so they can
+  be picked up for work." An `unassigned` backlog task never leaves backlog on its own — the eligibility
+  choice is deliberately the operator's (`AssignmentRequiredError`), and the autonomy triage sweep skips it
+  too — so a task created without an explicit "who can work this" choice just sat there until a human
+  noticed and set it. "Organize board" already visits every task's title + description for priority-sorting,
+  so it's a natural second moment to also clear that ONE blocker for the tasks that don't actually need a
+  routing judgment call. A new, independent consult (`suggestAnyAgentEligible`, `steward/organize.ts`) asks
+  which currently-unassigned backlog tasks are self-contained/well-scoped enough that WHICH agent picks them
+  up wouldn't matter — explicitly told to default to leaving a task off the list (for a human to route by
+  hand) whenever unsure, since wrongly declaring a task fine for anyone is the costlier mistake. Same
+  discipline as the existing prioritize consult: one retry on an unreadable reply, degrades to "suggest
+  nothing" (never guesses, never throws) on a persistently bad reply or an ask failure; a reply that parses
+  as valid JSON but simply has no `anyAgent` field reads as "nothing suggested" rather than a parse error, so
+  a differently-shaped-but-valid reply never burns a wasted retry. `organizeBoard`'s result gained an
+  `assigned` count alongside `reordered`/`archived`, surfaced in the button's toast and title.
+  `tests/organize-board.test.ts` (4 new tests): the consult's named ids get `{mode:"any"}` and nothing else
+  is touched; a task that already has an assignment is never even asked about (0 consult calls); an
+  unreadable reply assigns nothing; a made-up id in the reply is discarded. Also updated the one existing
+  retry-count test — the SAME shared mock now also answers the new eligibility consult, so the total call
+  count went from 2 to 3 (the eligibility call's valid-but-field-less reply doesn't itself trigger a retry).
+  Verified live end-to-end: the button's title and the empty-state toast both render the updated copy; the
+  full request/response roundtrip (including the new `assigned` field) works correctly.
+- [x] **Manual "Force to review" on an ongoing card.** Requested live, right after Force Done's own real
+  commit/push/merge fix: `ongoing → review/done` was purely agent-driven — the only human control on an
+  ongoing card was "Send to To-do" (abandon it). No escape hatch existed for the far more common ask: a run
+  that's stuck, slow, or has done enough for a human to want to look now, without abandoning its in-progress
+  work. New `⚡ Force to review` button, next to the existing `⚡ Force done`, runs the EXACT same
+  commit → diff → raise-review path `complete()` already runs on the runner's own natural finish — just
+  triggered by the operator instead of the `onCompleted` event. Deliberately commit-before-stop: the
+  worktree is committed FIRST, and the live session is only stopped once a real commit lands — so clicking
+  this on a run that hasn't produced anything yet can never kill real in-progress work for nothing; it fails
+  honestly with `NothingToReviewError` instead ("nothing has changed yet") and leaves the session running
+  untouched. Also throws honestly (not a silent no-op) when the run isn't live right now — an `ongoing` task
+  is supposed to always have a live run behind it, so this only fires for a genuinely dead/already-reaped
+  edge case. `tests/force-review.test.ts` (3 tests) drives
+  the real Orchestrator against a real throwaway git repo: a live run with real uncommitted work is
+  committed + stopped + raises a genuine diff review (task flips to `review`, the commit is verifiably on
+  the branch); a live run with a CLEAN worktree throws and leaves the session running (nothing torn down);
+  a non-`ongoing` task 404s before ever touching the orchestrator. New `Orchestrator.forceReviewRun` /
+  `Operations.forceReview`, `POST /api/projects/:id/tasks/:tid/force-review`, and an MCP `force_review` tool.
+  Live interactive verification of the success path needs a real provider credential this sandbox doesn't
+  have (an `ongoing` task can only be reached through a genuinely live run — no mock runner exists in the
+  real server binary, only in test harnesses); confirmed instead that the new button renders cleanly with
+  no console errors and the app typechecks end to end, backed by the real-git integration tests above for
+  the correctness-critical path.
+- [x] **Force Done gets a completeness check before it pushes.** Requested live as a direct follow-up to
+  Force Done committing + pushing/opening a PR (the entry three below): skipping the normal review gate
+  shouldn't ALSO skip judgment on whether the work is actually done — an operator hitting Force Done on a
+  run that stalled halfway through would previously get the same unconditional push as one that genuinely
+  finished. Now, whenever `forceIntegrateRun` is about to push/merge with no open HITL to approve (the only
+  branch that never went through a human-endorsed diff review), it first runs the SAME "does this run
+  satisfy the task" consult `autoReview`'s plain-consult path already uses — same prompt
+  (`REVIEW_OUTPUT_INSTRUCTION`), same field-based `parseReviewVerdict` (never classifying the model's
+  prose) — on the run's OWN provider, so it still works on a single-agent fleet (unlike `requestReview`,
+  which needs a second, non-doer agent). An "approve" (or no signal at all — no linked task, no `consult`
+  support, nothing to diff, a failed consult) pushes exactly as before. A "flag" holds the push back
+  entirely and raises a REAL diff review instead — deliberately bypassing `raiseDiffReview`'s own
+  `full`-autonomy fast path (a new `skipFullAutonomy` option), since a `full`-approval-level project
+  auto-merging straight past this finding would silently undo the whole point of checking. The task lands
+  in `review` (not `done`) with `reviewVerdict: {decision:"flag", reason, by:"force-done-check"}` stamped
+  immediately, so the "⚠ flagged for you" banner shows without waiting for a later autonomy tick. Raising
+  the gate IS the notification: Telegram/push already fires the moment any HITL is raised, so the operator
+  hears about it the instant it happens — no new notification plumbing needed. `tests/force-done-
+  integration.test.ts` (2 new tests, against a real throwaway git repo) pin both outcomes: a flag verdict
+  holds back the push (the file never lands on the integration branch) and raises an actionable diff gate
+  carrying the real changed files; an approve verdict still pushes through exactly as before.
+- [x] **Manual "Request re-triage" on a card parked in triage.** Requested live: the only way back into
+  triage's assessment was to wait for the task to cycle through `backlog` on the periodic sweep — no way to
+  ask for a fresh read on demand once project context changed (goal, instructions, a newly added feature)
+  or the description was edited after the original "unclear" verdict. Mirrors the existing "Request review"
+  button exactly: a new `Re-triage` action on any card sitting in the Triage column, alongside a "Parked in
+  triage" label (same `kb-unreviewed`/`kb-unreviewed-btn` styling `requestReview` already uses — no new
+  CSS). Server-side, `Orchestrator.tickAutonomy`'s own triage-write logic (assessment + duration + clarity +
+  grouping + the clarification loop breaker) was extracted into a shared `triageOne(ws, agent, task)` so the
+  periodic sweep and the new eager `requestRetriage(ws, taskId)` entry point run the IDENTICAL write path
+  rather than two copies that could drift — the loop-breaker fix directly above this one automatically
+  covers the manual path too. Throws honest, specific errors instead of a silent no-op: `NoTriageTargetError`
+  when the task isn't in `triage` right now, `NoCapacityError` (reused — the same error every other manual
+  on-demand action already throws) when no agent is idle. `tests/request-retriage.test.ts` (5 tests) covers
+  both outcomes (clear → promotes to `todo`, unclear → fresh clarification) plus both failure modes and the
+  404 case; the write-logic itself (including the loop breaker) stays covered by `autonomy.test.ts` since
+  `triageOne` is now the one implementation both paths share. Verified live: seeded a task into Triage with
+  no idle agent — clicking Re-triage surfaced "No idle runner available" as a toast (not a silent no-op);
+  adding an idle runner and clicking again returned 204 and the card's assessment updated in place.
+- [x] **Fix: a third termination path could strand a task "ongoing"/"review" while its run showed "done".**
+  Reported live: "Task status should of course match the column in kanban it is in" — a card sitting in a
+  mid-pipeline column (Ongoing/Review) whose own status chip (driven by the linked run's `status`, a
+  SEPARATE state machine from the task's kanban `state` — see `apps/web/src/views/project.tsx`'s per-card
+  chip) read "done". The invariant "an ongoing/review task always has a live run behind it" already has two
+  enforcers — `haltAgent` (the plain Stop button, and the fix directly above this one for its escalation-card
+  twin) and `settleArchivedRun` — both of which return the task to `todo` + detach it when their run goes
+  terminal. `reapStaleAgents`'s OWN third termination path — the sweep that frees a runner whose session died
+  silently while its run sat `waiting` on an open gate (not yet an escalation) — never got this fix: it
+  called `stopAgent` + `runStatus(..., "done")` + `runCompleted(...)` but never touched the owning task, so a
+  run reaped this way left its task permanently stranded in whatever column it was in, now showing a "done"
+  run underneath it. Added the identical task-reset (`state → "todo"`, `runId → null`, `reviewVerdict →
+  null`) this sweep was missing, matching `haltAgent`/`settleArchivedRun` byte-for-byte. New test in
+  `escalation.test.ts`: a run parked on a plain (non-escalation) gate whose heartbeat goes stale is reaped,
+  and the task is un-stranded to `todo` — the exact scenario that used to leave a done-looking run under a
+  mid-pipeline card.
+- [x] **Fix: a fourth stranding path — abandoning a run via a kanban move left its Inbox card dangling.**
+  Reported live: "inbox messages must update if tasks move in kanban." Same invariant family as the fix
+  directly above (an ongoing/review task always has a LIVE run behind it), but the Inbox side of it:
+  `Operations.transitionTask`'s `abandonsRun` branch (ongoing/review → todo, or demoting done →
+  triage/backlog) already stopped the run and marked it archived — but never touched any HITL gate still
+  open for it. Drag a card with an open diff/verifier/approval gate back out of Review, and the Inbox kept
+  showing that gate forever: a pending decision pointing at a run whose worktree was already retired and
+  runner already freed, answerable by nothing. Confirmed this is genuinely the OTHER abandon direction —
+  `transitionTask`'s review→done path (bypassing the diff gate by dragging straight to Done) was already
+  correct, resolving the gate via `approve` before this fix; only the "abandon and start over" direction had
+  the gap. Fix: dismiss every open HITL for the run (`hub.resolveHitl(..., {action:"dismiss"})`, `by:
+  operatorId`) in the same `abandonsRun` branch, right after the existing stop+archive — called directly on
+  the Hub, not via `Operations.resolveHitl` (which calls `orchestrator.deliver`, meaningless for a handle
+  `stopAgent` just tore down), the same lower-level pattern `Orchestrator.settleArchivedRun` already uses for
+  the direct-archive-a-run path. Deliberately does NOT reuse `settleArchivedRun` wholesale here: it keeps the
+  worktree (a reversible soft-hide), while an abandoned kanban move is a genuine "start fresh," correctly
+  retired via the existing `stopAgent` call — reusing it would have quietly stopped retiring worktrees on
+  this path. Also deliberately does NOT force the run's `status` to `"done"` here — an existing test
+  (`task-transitions.test.ts`) already pins that the abandon path leaves the run's OWN status untouched (it's
+  the task's kanban `state` that changes), and the periodic `settleArchivedRuns` self-heal sweep still
+  reconciles that within ~60s regardless; this fix is scoped to exactly the reported symptom (the Inbox),
+  not a re-litigation of that separate, already-decided invariant. The web client needed NO changes — its
+  `queue`/`task` store slices already update reactively off `hitl.resolved`/`task.upserted`; it was
+  faithfully showing what the server told it, which was simply never told the gate got resolved. New tests
+  in `task-transitions.test.ts` (5 cases): ongoing→todo and done→backlog both dismiss the gate; every open
+  gate for the run is dismissed, not just one; a `preserve`-flagged move (pause, not abandon) leaves the gate
+  untouched (still meaningfully answerable once resumed); and the pre-existing review→done "approve" path is
+  confirmed unaffected by the new logic.
+- [x] **Fix: a Telegram merge-conflict card was an unexplained raw diff dump — impossible to act on.**
+  Reported live with a screenshot: "A merge needs a look" arrived on the phone as a tail-truncated `diff
+  --cc` combined-diff snippet cut off mid-sentence, no title, no explanation, nothing saying which files
+  conflicted or what Approve/Reject/Modify would actually do. Root cause: `decisionCardHtml`/`gateNotice`
+  (`telegram/notices.ts`) picked exactly ONE content block per gate via an if/else-if chain — for a `diff`
+  gate that's the stats+file list, but a `merge` gate isn't a `diff` gate, so it fell through to the
+  captured-output branch and rendered the raw `<<<<<<<`/`=======`/`>>>>>>>` conflict text (or a
+  `diff --cc` combined diff for the feature-branch-batch case) as the ENTIRE card. Worse: `HitlItem.why` —
+  the system-authored explanation of what happened and what the buttons do, which the web queue card
+  (`queue.tsx`) has always shown unconditionally — was never read by either Telegram function at all, and
+  the conflicting files already carried on `flags` (rendered as chips on web) were never shown either.
+  Rewrote both to match the web card's own ordering (title → rationale → why → kind-specific content →
+  captured output → conflicting files): the raw conflict text now rides at the BOTTOM as clearly-labeled
+  supplementary detail ("Conflict (captured before the merge was aborted) — Modify sends this to the agent
+  as-is"), preceded by the actual explanation and a `Conflicts in: <files>` line — so the operator can
+  decide from the card alone, with the raw diff only as backup context (or the existing "View diff" /
+  "Open in the app" for full detail). Added to `tests/telegram-notices.test.ts` (2 new tests) covering a
+  realistic merge-conflict item: title, why, and conflicting files all present and ordered BEFORE the raw
+  (HTML-escaped) conflict text, not instead of it. All prior diff/command/question card tests unaffected —
+  `title`/`why` are additive lines, never replacing the existing kind-specific content.
+- [x] **Fix: answering a triage clarifying question could loop forever — same question, every time.**
+  Reported live right after clarifying questions shipped: answer the question → task returns to `backlog`
+  for re-triage (by design, since the answer can change the effort/risk/grouping read) → triage runs again
+  → the model comes back "unclear" with the SAME question → asked again → answer again → ... The re-triage
+  prompt had zero awareness that this was a SECOND pass: it re-read the (now-answered) task from scratch
+  with no signal that an answer already sat right there in the description, so a model that stayed
+  unconvinced by its own earlier ambiguity — or simply wasn't confident — had nothing steering it toward
+  "clear" the second time, and nothing stopped a third, fourth, or hundredth lap either. Each lap silently
+  burned a triage consult AND a Steward clarification-draft consult, for a question the operator had already
+  answered.
+  Two layers, since a prompt instruction alone is advisory, not a guarantee: (1) the triage prompt now
+  explicitly says so when `task.description` carries `CLARIFICATION_ANSWERED_MARKER` — the exact heading
+  `Operations.answerClarification` stamps above the operator's answer — telling the model to treat that
+  answer as authoritative and never re-ask the same or a rephrased version of it, reporting "clear" unless
+  the answer reveals a genuinely NEW gap. (2) A code-level breaker backs that up regardless of whether the
+  model complies: `tickAutonomy`'s triage step checks for that same marker (grepping for OUR OWN literal
+  string, never classifying the model's free text — same discipline as every other triage signal) and, if
+  the model still says "unclear" on a task that's already been through one answered round, FORCES a promote
+  to `todo` instead of opening a second `clarification` — the model's continued doubt gets folded into
+  `assessmentRisks` as a flagged risk instead of another question. Guarantees the loop terminates after
+  exactly one ask-and-answer round no matter what the model does on the second pass.
+  New test in `tests/autonomy.test.ts` drives a provider that always replies "unclear" against a task
+  already carrying an answered clarification and asserts the forced promote + risk note; the existing
+  first-time-unclear case (no marker yet) is unchanged — it still parks in `triage` with a fresh ask.
+- [x] **Fix: Force Done didn't force anything DONE — it forced the card to say so.** The escape hatch's own
+  doc comment said it out loud: *"Never merges the branch — this is a 'call it done' operator override, not
+  a work-completion signal."* That's exactly the trap — an operator reaching for Force Done (a wedged HITL,
+  a stuck merge queue, a run that finished but never advanced the card) got a green "Done" label over an
+  agent's real work that was still sitting uncommitted or unmerged in its worktree, one `retire()` away from
+  being silently lost the next time that worktree got reclaimed. "Done" has to mean the work actually landed.
+  Now Force Done routes through the SAME integration pipeline a normal Approve click uses, not a label flip:
+  an open diff/merge/verifier gate gets approved for real (`resolveHitl` → `deliver`, unchanged); with no
+  gate open, the new `Orchestrator.forceIntegrateRun` commits whatever's uncommitted in the run's worktree —
+  live or not — via `WorktreeProvisioner.commitAll` (idempotent, a no-op on an already-clean tree), cleanly
+  detaches a still-live run first (stop the handle, free the runner — the same sequence
+  `restoreCheckpoint`'s live-detach already used, just with a commit added before it), then hands the branch
+  to a new shared `Orchestrator.integrateRun` — `deliver()`'s old inline approve-branch logic, extracted
+  byte-for-byte so both callers get the identical feature-branch-batch / GitHub-PR / local-merge-queue
+  routing rather than a second, drifting copy of it. Only falls back to the old cosmetic-only flip when
+  there's genuinely nothing to integrate (no run, or no git backend at all) — everything else waits for the
+  real result: a GitHub push marks the task done synchronously as part of that same call; a local merge
+  enqueue marks it done asynchronously once the merge actually lands, or raises a real conflict gate instead
+  of lying about "done", exactly like any other approve. So the endpoint can now legitimately return a task
+  still sitting in `review` — that's honest in-flight state, not a regression.
+  `tests/force-done-integration.test.ts` (new, 2 tests) runs this against a REAL throwaway git repo (same
+  harness as `guided-merge-orchestrator.test.ts`, not a mocked backend): a still-live run with uncommitted
+  work gets its file committed, its runner freed, and the branch landed on the project's integration branch
+  before the task flips done; a run with an open diff gate gets that gate genuinely approved (not bypassed)
+  and lands the same way. `tests/task-transitions.test.ts`'s existing 3 cases (no git backend configured)
+  now pin that the `!git` guard falls all the way through to the unchanged cosmetic tail.
+- [x] **Triage asks — clarifying questions with a Steward-drafted answer.** Triage could already decide a
+  task was `unclear`, but had nowhere to say WHAT was unclear and no way to get it resolved: the task parked
+  in `triage` indefinitely with nobody told what was missing. The expensive consequence showed up live —
+  agents later picked those tasks up, burned their whole turn budget rediscovering the same ambiguity, and
+  escalated verbatim with *"no acceptance criteria to aim at"* / *"the project has no goal set"*. Asking
+  costs one cheap consult; discovering it at agent prices costs orders of magnitude more.
+  Now: when triage reports `clarity: "unclear"` it must also name 1-3 SHORT, SPECIFIC, ANSWERABLE things it
+  needs (the prompt rejects a generic "please clarify" — a vague question wastes the exchange), parsed with
+  the same defensive per-field discipline as every other triage signal (`splitEstMinutesTag`: missing stays
+  missing, a malformed `questions` never drops the other fields, capped 5 × 200 chars). Steward then drafts
+  a PROPOSED answer grounded in the project's goal/instructions + the task — cheap and tool-less, and
+  degrading to `null` (ask without a draft) rather than failing the tick when no credential resolves.
+  Surfaced on the task card itself, not the Inbox: the question is about THIS task and the context needed to
+  answer it is already right there. The operator sends the draft, edits it, or writes their own —
+  `Operations.answerClarification` APPENDS their words verbatim (never model-rewritten, never replacing the
+  original brief) along with the questions they answer, clears the clarification, and returns the task to
+  `backlog` for a genuine RE-triage rather than promoting straight to `todo`, since the answer may change
+  the effort/risk/grouping read too. The draft is never applied on its own: a model guessing at operator
+  intent is precisely what produced the ambiguity being asked about.
+  `tests/triage-clarification.test.ts` (11 tests) covers the tag parsing (incl. caps, malformed values, and
+  missing-vs-empty) and the full Operations path (append-not-replace, no-prior-description, re-triage state,
+  refusal when nothing is open, 404, and the published delta). Verified live end-to-end in the browser: a
+  seeded unclear task rendered its questions + draft, and sending an edited answer appended it to the brief
+  and moved the task back to backlog.
+- [x] **Spend efficiency on Home — how much of what the fleet costs actually ships.** Reconciling a month of
+  real provider spend surfaced the number that mattered most and appeared NOWHERE in the UI: only ~19% of it
+  reached a merge; the rest went to runs that stalled, were stopped, or finished without landing. A ratio
+  that decides whether the fleet is worth its bill shouldn't need an ad-hoc query over the store to see.
+  `spendEfficiency()` / `spendOutcomeOf()` (`apps/web/src/lib/derive.ts`) are a PURE derivation over runs
+  already in the snapshot — no new endpoint, no new storage: a merge (`mergedAt`) is the only evidence of
+  delivery; `running`/`waiting`/`review` AND not archived is in-flight (a reaped run keeps a live-looking
+  status while being archived, so checking status alone would hide real waste as "still working");
+  everything else was paid for and didn't land. Rendered on Home as a proportional bar + per-outcome
+  run/dollar breakdown. Deliberately honest about its own limits: a run the provider never priced
+  contributes $0, so `pricedShare` is tracked and, below 99%, the card says outright that the totals are a
+  floor rather than rendering a confidently wrong number. `tests/spend-efficiency.test.ts` (11 tests) covers
+  the outcome rules (including archived-vs-status and merged-stays-delivered), unpriced-run accounting, and
+  the empty / all-unpriced no-NaN edges. Verified live against a seeded store mirroring the real
+  deployment's shape — rendered "19% of $141.67 delivered" against its actual 18.8%.
+- [x] **Fix: Skynet's cost meter under-reported real spend by ~3x, and side-calls silently ran Opus.**
+  Reported live as "we burnt through $100 in 8h" — Skynet's own numbers said its busiest day EVER was $25
+  and that whole month was $119, so the first (wrong) conclusion drawn from them was "it isn't us."
+  Reconciling against the provider console proved the meter itself was the problem: console said
+  **515.2M input / 3.45M output** for August, Skynet had recorded **189.1M / 1.22M** — **63% of all token
+  spend was invisible**. Three independent causes, all fixed here:
+  *(1) The runner read the WRONG field, and dropped every prior query segment.* Two compounding errors, both
+  settled against the SDK's own field docs rather than guessed at. First, it read `result.usage`, documented
+  as **"MAIN AGENT LOOP ONLY — excludes Task subagent, sidechain, and auxiliary model calls"** — and Skynet's
+  agents spawn subagents routinely (an Explore/research subagent is a normal move), so all of that work was
+  billed and none of it recorded. `modelUsage` — "the correct field for token/cost accounting", covering
+  "main loop, Task subagents, sidechains, and internal calls such as compaction" — is now the source, summed
+  across its per-model entries. Second, a run spans SEVERAL `query()` calls (turn-budget continues up to
+  `MAX_TURN_CONTINUES` = 3, plus transient relaunches) and only the current one was ever reported. The
+  subtlety that makes this easy to "fix" into a much worse bug: these readings are **cumulative within a
+  query** ("each result carries the running total so far, so read the latest result rather than summing
+  across results") but **reset on resume** ("resumed sessions start fresh"). So the runner now keeps
+  `priorSegments` + the live segment's latest total and emits their sum, and `Hub.runUsage` deliberately
+  stays a REPLACE — accumulating there on top of an already-cumulative reading would multiply a long run's
+  recorded cost by roughly its turn count. (An earlier pass of this fix did exactly that; the corrected
+  design is pinned by tests that fail in BOTH directions.)
+  *(2) Every non-run LLM call was unmetered.* `streamQueryText` hit `msg.type === "result"` and `break`—
+  discarding `total_cost_usd` — which covered Steward chat (both surfaces, sync + streaming), triage,
+  auto-review, deep/breaker review, merge briefs, diff walkthroughs, the task linter, crystallize, brief
+  decomposition, and project-context condensation. Added a `UsageSink` threaded through every one-shot
+  helper, plus one shared `readUsage()` the live-run path and the one-shots both read through so they can't
+  drift (it folds `cache_read`/`cache_creation` into `inputTokens` — a cache read is ~10x cheaper but still
+  billed, and omitting it under-reports).
+  *(3) Those same unmetered calls DEFAULTED TO OPUS.* Both `oneShotText`/`oneShotTextStream` and
+  `oneShotRepoAssistant(Stream)` did `?? "opus"` — so on a workspace whose entire fleet is Sonnet, every
+  caller that didn't think about a model got the priciest one in the catalog, unmetered. Worst offender:
+  repo-grounded Steward chat runs up to **14 tool-using turns with the full `claude_code` preset**, per
+  question. `model` is now REQUIRED on all four helpers, turning "what does this cost me?" into a compile
+  error — which immediately surfaced **9** such call sites (grep had found 5). All now pass a new shared
+  `ASSISTANT_MODEL` ("sonnet"); measured blended rates on this very deployment put Opus at $1.04/Mtok vs
+  Sonnet at $0.50/Mtok, so ~2.1x cheaper in practice on the affected paths.
+  Regression-proofed in every direction: `tests/usage-accounting.test.ts` (12 pure tests — subagent/sidechain
+  capture, cache-tier folding, the cost fallbacks, `addUsage` across segments, and Hub staying a replace) plus
+  3 new end-to-end cases in `tests/claude-runner-retry.test.ts` driving the real runner through both relaunch
+  paths (turn-exhaustion and a 529 storm, whose pre-retry spend must still count). Verified by injection:
+  making `readUsage` ignore `modelUsage` fails 8 tests; dropping the cross-relaunch carry-forward fails 2;
+  re-adding a `?? "opus"` fallback or an optional `model?` trips the source-level guards (same scanning style
+  as `client-coverage.test.ts`, so neither can quietly return).
+- [x] **Session circuit-breaker — a stuck autonomous SWEEP halts for a human, not just a stuck run.**
+  Every guardrail above (turn caps, runtime/idle caps, the per-run 3-strikes escalation just above, the
+  credential circuit-breaker) is scoped to ONE run. Nothing stopped a project's autonomous sweep itself
+  from grinding through task after task while each one individually failed or got flagged — financially
+  bounded by a spend budget (see the budget guard elsewhere on this roadmap), but not stopped
+  *behaviorally*. Now: `config.autonomyMaxConsecutiveFailures` (`SKYNET_AUTONOMY_MAX_CONSECUTIVE_FAILURES`,
+  default 3) consecutive BAD autonomy outcomes for the SAME project — a flagged auto-review verdict, or a
+  run that failed — with no good outcome in between, turns that project's own `autonomy` toggle off
+  (persisted, the existing UI switch reflects it) and raises ONE summary `escalation` HITL naming which
+  tasks and why, instead of letting the sweep grind through more. Composes the two EXISTING outcome
+  signals rather than adding a new one: `autoReview`'s verdict (approve resets the streak, flag extends
+  it) and `fail()`'s run failures — counted ONCE per run (the first `fail()` call for a runId), not once
+  per internal retry attempt, so a single flaky run's own 3-strikes retry loop can't also trip this on top
+  of (and racing) its own dedicated escalation. Only tracks outcomes produced WHILE the project is
+  autonomous — a manually-supervised project isn't "sweeping". In-memory, keyed by project id (a restart
+  resets it to 0 — fails OPEN, one more attempt is allowed before it can trip again; an accepted trade-off
+  given the layered guardrails above and the spend budget still bound the actual damage). Re-enabling the
+  toggle (the operator's own action, or a future auto-resume) resumes the sweep and resets the streak
+  (`Orchestrator.resetAutonomyStreak`, wired from `operations.ts#updateProject`). The summary escalation
+  reuses the existing `escalation` HITL kind/UI rather than adding a new surface, but is purely
+  informational — resolving it (any action) just dismisses the notice; deliver() special-cases its
+  `flags: ["autonomy-paused"]` marker to skip the real escalation's run-lifecycle resolution (help &
+  resume / reassign / stop don't apply — there's no single run to act on, and the actual "resume" lever is
+  the toggle, not this item). Manual "Start now" assignment is untouched and still works on a paused
+  project (`assignTask` never gated on `autonomy` to begin with — only the autonomy tick's own auto-pick
+  step is). Known gap, flagged rather than silently missing: a `full`-approval-level project's own
+  unattended diff auto-merges (`raiseDiffReview`'s `policy:full-autonomy` path) don't feed the streak's
+  good-outcome signal — only `autoReview`'s approve does, per this feature's explicit scope (composing the
+  two named mechanisms, not every path that can succeed). Tests: `tests/autonomy-circuit-breaker.test.ts`
+  — 3 flags trip + exactly one escalation (not three); a 4th bad outcome after tripping doesn't raise a
+  second; an approve in between resets the streak; a failed run composes into the same streak as flags
+  without double-counting its own retries; manual assignment while paused; pause is per-project, not
+  per-workspace; re-enabling resets; resolving the escalation has no run-lifecycle side effect.
 - [~] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).** A 6-way
   competitor deep-dive found *none* ship a real safety/policy layer, decision audit, or (bar one) a HITL
   inbox — so this is where we win now:
@@ -860,8 +1245,76 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
 - [x] **Compatible endpoints, made usable: presets, real pricing, and a "not Claude" marker.** Turned the free-text compatible-endpoint field into a real setup: a vendor rate catalog (Sonnet as the baseline for comparison), accurate cache-aware spend accounting, a working per-endpoint verify check, and a "via <vendor>" marker so it's clear which vendor served a run's tokens.
 
 - [x] **Endpoint smoke test — prove a vendor can actually drive the agent loop, not just authenticate.** Added a per-credential Test button that runs one tiny real task to prove a Claude-compatible endpoint actually drives tool calls, gating, streaming, and usage reporting, not just authentication.
+- [x] **Endpoint smoke test — prove a vendor can actually drive the agent loop, not just authenticate.**
+  Verify answers "does this key work". It does not answer the question that decides whether a
+  Claude-compatible endpoint is usable *for Skynet*, and that gap is dangerous precisely because it's
+  invisible: a compatibility shim can authenticate perfectly and never emit a tool call, which silently
+  kills every approval, question and escalation — and nobody would attribute the symptom to the endpoint.
+  New **Test** button per credential (Settings) runs ONE tiny real task — read a scratch file, echo its
+  contents — and reports a checklist rather than a verdict: endpoint reachable · emits tool calls *and
+  Skynet's gate intercepts them* · tool results feed back · streams partial output · reports usage ·
+  separates cache tiers · has published rates. Critical checks gate the verdict; streaming and cache
+  tiers report without blocking (Skynet works without token-level deltas, just less liveliness).
+  Auth failing SKIPS the rest rather than printing a wall of red — with no session there's nothing
+  truthful to say about tools, and a false "tools failed" sends someone debugging the wrong layer.
+  Costs a fraction of a cent, capped at 60s, and is **operator-triggered only** — never automatic, since
+  unlike verify it spends money. Catalog caveats a live probe can't see (an ignored thinking budget, a
+  shim that misreports its context window) are surfaced alongside the results.
+  **Two bugs the first live run against a real endpoint exposed**, both invisible to unit tests: an SDK
+  result is a `success|error` union, so a rejected key came back as an error RESULT rather than a thrown
+  exception — nothing threw, a zero-filled usage object existed, and `auth` reported a cheerful **pass**
+  for a credential that had authenticated with nothing; and `usage` is an object even when every counter
+  is zero, so truthiness alone called an entirely empty session "reachable". Both now pinned by tests.
 
 - [x] **Internal surfaces gate on RELEASE, not on "production".** Fixed internal QA/dev surfaces gating off a dev-build flag that was false for any production deploy, hiding Skynet's own tooling from its own hosted instance; also closed a route-gating hole that left QA pages reachable by deep link in a shipped build.
+
+- [x] **Repoint an EXISTING runner at another credential (and stop the endpoint chip breaking the row).**
+  The Key picker was create-only — "an existing agent's credential is fixed" was a fair rule when a
+  credential was just a second API key, but it stopped being fair the moment a credential could name a
+  Claude-compatible endpoint: moving a runner to a cheaper vendor then meant delete-and-recreate, which
+  throws away its task history and cost rollup. The picker is now offered when editing too, seeded from
+  the agent's current credential, and says plainly that a switch applies to the runner's NEXT run
+  (anything in flight resolved its credential at start). Server-side, `UpdateRunnerRequest.credentialId`
+  is validated to exist AND to belong to that runner's provider — without the provider check you could
+  point a Claude runner at a GitHub or Fly token, which authenticates nothing and fails only once a real
+  run starts.
+  **Two bugs of mine found while doing it, both by looking at the actual UI rather than the code:**
+  the `via <vendor>` chip was added as a sixth top-level child of `.fleet-idle-row`, which is a FIXED
+  five-column grid (`1fr auto auto auto auto`) — so it landed in an implicit sixth cell and wrapped the
+  row's action buttons onto a line of their own. It's now inside the name cell. (It was visible in my
+  own verification screenshot and I read past it.) And there are TWO inline ConfigForm editors — the
+  card and the idle roster — of which only one was updated, so a vendor switch made from the idle row
+  saved the new MODEL against the OLD credential: a runner configured for `deepseek-v4-flash` while
+  still authenticating to Anthropic, which is worse than not offering the switch at all. Both are now
+  guarded by source-scanning tests (the grid shape, and that every ConfigForm save path carries
+  `credentialId`).
+
+- [x] **Bench a credential — stop every agent on a key, and put them back.** When something is wrong with
+  a key (leaking, rate-limited, compromised, billing surprise) the operator needs one action that takes
+  the whole fleet off it. `SecretMeta.paused` records who/when/why, `providerUsable` refuses a paused
+  key so no runner on it is given work, and pausing HALTS the runs already on it —
+  `haltRunsOnCredential` reuses `haltAgent`, so each run stops, its worktree retires, its runner frees
+  and its task returns to `todo` cleanly re-pickable by a runner on a different key. **Both halves are
+  the feature**: refusing new work alone leaves whatever is already running to keep using the key, which
+  for a leaking key is most of the damage; halting without the durable flag just lets the autonomy loop
+  pick it straight back up next tick. Mark-then-halt, in that order, so a freed task can't be
+  re-assigned to the same key through the gap. Durable ON PURPOSE, unlike the in-memory quota breaker
+  (`depletedKeys`) which SHOULD evaporate on restart because the key may have been topped up — a
+  deliberate pause exists because someone decided the key must not be used, and a deploy is not a
+  decision to resume. A key rotation preserves the pause (replacing the key is a step toward fixing the
+  problem, not a decision to resume); an explicit resume also clears the quota breaker, since that's the
+  operator saying the key is good again. Available to the operator (Settings, with a required reason)
+  and to **Steward** (`pause_key`/`resume_key`, through the same confirm-chip path as every other
+  action).
+- [x] **`maxRunners` caps CONCURRENCY, not roster size.** It used to refuse creation, so idle agents ate
+  the ceiling and configuring a fleet — one runner per cheap endpoint, a spare on a second key — hit a
+  wall for capacity nobody was using. Adding runners is now never blocked; the cap is enforced where
+  runs are actually assigned, counting BUSY runners, so idle and paused-key runners cost nothing. Past
+  the cap tasks simply queue. The Fleet page says so outright ("5 agents configured, 2 work at once")
+  rather than leaving an operator to wonder why their eleventh runner never picks anything up, and names
+  separately how many are on a paused key — those take no work at all, which is a different problem from
+  queueing. Settings and the MCP tool descriptions were corrected too; both still described a fleet-size
+  cap.
 
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
