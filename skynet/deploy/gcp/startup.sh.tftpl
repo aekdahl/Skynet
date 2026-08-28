@@ -28,14 +28,39 @@ mkdir -p /data /data/worktrees /data/repos /data/.npm
 
 # ── 1b. Swap — headroom so a memory spike (a heavy agent or a preview build) on a
 #      small VM (e2-small = 2GB) spills to swap instead of OOM-killing the HOST
-#      (which takes the whole site down). Idempotent across reboots. ───────────
-if [ ! -f /swapfile ]; then
-  echo "[skynet] creating 2G swapfile"
-  fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048
+#      (which takes the whole site down). Idempotent across reboots — but
+#      idempotent must mean "a VALID 2G swapfile exists," not just "a file
+#      exists at that path": a boot that dies mid-`dd` (e.g. the VM itself
+#      OOM-killing the swapfile-creation process it's trying to protect
+#      against — a real bootstrapping trap under memory pressure) leaves a
+#      truncated, wrong-permission file behind. The old check (`[ ! -f
+#      /swapfile ]`) treated that debris as "already done" and every later
+#      boot silently no-op'd `swapon` against it (`2>/dev/null || true`
+#      swallowed the failure), so the box ran with ZERO swap — and thus zero
+#      cushion against a memory spike — for weeks with nothing to show it.
+#      Found live: a 2026-08-27 incident where the host wedged hard enough
+#      that even a plain `echo` over SSH wouldn't run, requiring a manual
+#      `gcloud compute instances reset`. Validate the file is actually a
+#      working swap device (size ≥ 2G AND swapon succeeds); rebuild from
+#      scratch if not. ─────────────────────────────────────────────────────
+SWAPFILE_VALID=0
+if [ -f /swapfile ]; then
+  SWAPFILE_BYTES=$(stat -c%s /swapfile 2>/dev/null || echo 0)
+  if [ "$SWAPFILE_BYTES" -ge 2000000000 ] && swapon /swapfile 2>/dev/null; then
+    SWAPFILE_VALID=1
+  fi
+fi
+if [ "$SWAPFILE_VALID" -eq 0 ]; then
+  echo "[skynet] (re)creating 2G swapfile — existing one missing or invalid"
+  swapoff /swapfile 2>/dev/null || true
+  rm -f /swapfile
+  fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
   chmod 600 /swapfile
   mkswap /swapfile
+  if ! swapon /swapfile; then
+    echo "[skynet] WARNING: swapon failed even after rebuilding /swapfile — continuing without swap this boot" >&2
+  fi
 fi
-swapon /swapfile 2>/dev/null || true
 grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >>/etc/fstab
 
 # ── 2. Docker ────────────────────────────────────────────────────────────────
