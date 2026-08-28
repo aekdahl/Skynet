@@ -91,6 +91,7 @@ const toMeta = (r: SecretRecord): SecretMeta => ({
   isDefault: isDefaultCredential(r.id, r.provider),
   last4: r.last4,
   baseUrl: r.baseUrl ?? null,
+  paused: r.paused ?? null,
   updatedAt: r.updatedAt,
   updatedBy: r.updatedBy,
 });
@@ -103,7 +104,7 @@ export class SecretService {
     return masterKey() !== null;
   }
 
-  private sealRecord(workspaceId: string, id: string, name: string, provider: CredentialProvider, apiKey: string, operatorId: string, at: number, baseUrl?: string | null): SecretRecord {
+  private sealRecord(workspaceId: string, id: string, name: string, provider: CredentialProvider, apiKey: string, operatorId: string, at: number, baseUrl?: string | null, paused?: SecretRecord["paused"]): SecretRecord {
     const key = masterKey();
     if (!key) throw new SecretsDisabledError();
     return {
@@ -114,6 +115,7 @@ export class SecretService {
       ciphertext: seal(apiKey, key),
       last4: fingerprint(apiKey),
       baseUrl: normalizeBaseUrl(baseUrl),
+      paused: paused ?? null,
       updatedAt: at,
       updatedBy: operatorId,
     };
@@ -158,7 +160,10 @@ export class SecretService {
     // `undefined` = a plain key rotation, which must not silently re-point an
     // endpoint-backed credential at the vendor. Explicit `null` clears it.
     const endpoint = baseUrl === undefined ? existing?.baseUrl : baseUrl;
-    const record = this.sealRecord(workspaceId, id, existing?.name ?? "", provider, apiKey, operatorId, at, endpoint);
+    // A rotation must NOT silently un-pause. If a key was benched because
+    // something was wrong with it, replacing the key is a step toward fixing
+    // that — not a decision to put it back to work, which stays explicit.
+    const record = this.sealRecord(workspaceId, id, existing?.name ?? "", provider, apiKey, operatorId, at, endpoint, existing?.paused ?? null);
     await this.store.put(record);
     await this.audit(record, existing ? "rotated" : "created", operatorId, at);
     return toMeta(record);
@@ -226,6 +231,39 @@ export class SecretService {
     // Env fallback applies only to a provider's DEFAULT credential (id === provider).
     const parsed = ProviderId.safeParse(credentialId);
     return parsed.success ? process.env[PROVIDER_ENV_VAR[parsed.data]] || undefined : undefined;
+  }
+
+  /**
+   * Bench or un-bench a credential.
+   *
+   * Durable on purpose. The in-memory quota breaker (`depletedKeys` in the
+   * orchestrator) is auto-learned and SHOULD evaporate on restart, because the
+   * key may have been topped up. A deliberate pause is the opposite: it exists
+   * because a human or Steward decided this key must not be used, and a deploy
+   * is not a decision to resume.
+   *
+   * Stopping the runs already on the key is the CALLER's job (see
+   * Operations.pauseCredential) — this layer owns the secret, not the fleet.
+   */
+  async setPaused(
+    workspaceId: string,
+    credentialId: string,
+    paused: { by: string; reason: string } | null,
+    at: number,
+  ): Promise<SecretMeta> {
+    const record = await this.store.get(workspaceId, credentialId);
+    if (!record) throw new UnknownCredentialError(credentialId);
+    const next: SecretRecord = { ...record, paused: paused ? { at, by: paused.by, reason: paused.reason } : null };
+    await this.store.put(next);
+    await this.audit(next, paused ? "paused" : "resumed", paused?.by ?? "operator", at);
+    return toMeta(next);
+  }
+
+  /** Is this credential benched? Consulted on every assignment decision, so it
+   *  reads through the store rather than a cache that could go stale mid-run. */
+  async isPaused(workspaceId: string, credentialId: string): Promise<boolean> {
+    const record = await this.store.get(workspaceId, credentialId);
+    return !!record?.paused;
   }
 
   /**

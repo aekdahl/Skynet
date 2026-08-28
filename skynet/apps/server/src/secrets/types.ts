@@ -28,6 +28,10 @@ export interface SecretRecord {
    *  PLAINTEXT deliberately — it's a routing target, not a secret, and the
    *  operator must be able to see where a runner's traffic is going. */
   baseUrl?: string | null;
+  /** Set while the credential is benched — see SecretMeta.paused. Durable: a
+   *  key paused because something is wrong with it must not come back on its
+   *  own after a restart. */
+  paused?: { at: number; by: string; reason: string } | null;
   updatedAt: number;
   updatedBy: string;
 }

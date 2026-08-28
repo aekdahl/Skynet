@@ -1941,6 +1941,33 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   guarded by source-scanning tests (the grid shape, and that every ConfigForm save path carries
   `credentialId`).
 
+- [x] **Bench a credential — stop every agent on a key, and put them back.** When something is wrong with
+  a key (leaking, rate-limited, compromised, billing surprise) the operator needs one action that takes
+  the whole fleet off it. `SecretMeta.paused` records who/when/why, `providerUsable` refuses a paused
+  key so no runner on it is given work, and pausing HALTS the runs already on it —
+  `haltRunsOnCredential` reuses `haltAgent`, so each run stops, its worktree retires, its runner frees
+  and its task returns to `todo` cleanly re-pickable by a runner on a different key. **Both halves are
+  the feature**: refusing new work alone leaves whatever is already running to keep using the key, which
+  for a leaking key is most of the damage; halting without the durable flag just lets the autonomy loop
+  pick it straight back up next tick. Mark-then-halt, in that order, so a freed task can't be
+  re-assigned to the same key through the gap. Durable ON PURPOSE, unlike the in-memory quota breaker
+  (`depletedKeys`) which SHOULD evaporate on restart because the key may have been topped up — a
+  deliberate pause exists because someone decided the key must not be used, and a deploy is not a
+  decision to resume. A key rotation preserves the pause (replacing the key is a step toward fixing the
+  problem, not a decision to resume); an explicit resume also clears the quota breaker, since that's the
+  operator saying the key is good again. Available to the operator (Settings, with a required reason)
+  and to **Steward** (`pause_key`/`resume_key`, through the same confirm-chip path as every other
+  action).
+- [x] **`maxRunners` caps CONCURRENCY, not roster size.** It used to refuse creation, so idle agents ate
+  the ceiling and configuring a fleet — one runner per cheap endpoint, a spare on a second key — hit a
+  wall for capacity nobody was using. Adding runners is now never blocked; the cap is enforced where
+  runs are actually assigned, counting BUSY runners, so idle and paused-key runners cost nothing. Past
+  the cap tasks simply queue. The Fleet page says so outright ("5 agents configured, 2 work at once")
+  rather than leaving an operator to wonder why their eleventh runner never picks anything up, and names
+  separately how many are on a paused key — those take no work at all, which is a different problem from
+  queueing. Settings and the MCP tool descriptions were corrected too; both still described a fleet-size
+  cap.
+
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease

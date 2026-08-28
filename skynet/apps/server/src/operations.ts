@@ -56,6 +56,8 @@ import type {
   UpdateSolutionBriefRequest,
   UpdateTaskRequest,
   UpdateWorkspaceSettingsRequest,
+  PauseCredentialResult,
+  SecretMeta,
 } from "@skynet/shared";
 import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
 import { existsSync } from "node:fs";
@@ -2510,13 +2512,13 @@ export class Operations {
     // an unknown provider or an empty model is a 400 (fail() maps Error → 400).
     const invalid = modelValidForProvider(await this.store.listProviders(), input.provider, input.model);
     if (invalid) throw new Error(invalid);
-    // Honor the workspace fleet cap — the safety valve against runaway creation
-    // (a project-scoped MCP token, an over-eager script). 0 = no cap.
-    const { maxRunners } = await this.getWorkspaceSettings(ws);
+    // maxRunners caps how many runners work AT ONCE, not how many may exist.
+    // Blocking creation here was the wrong lever: an operator configuring a
+    // fleet (a cheap-endpoint runner per vendor, a spare on a second key) is
+    // not the runaway case the cap defends against — starting them all at once
+    // is, and that's gated where runs are actually assigned. Fleet page shows a
+    // notice when the roster is larger than the cap.
     const fleet = await this.store.listAgents(ws);
-    if (maxRunners > 0 && fleet.length >= maxRunners) {
-      throw new Error(`Fleet is at its maximum of ${maxRunners} runner${maxRunners === 1 ? "" : "s"} — raise the limit in settings or retire an idle runner.`);
-    }
     // The id is a stable, opaque handle (runs reference it as agentId); the name
     // is the human-facing label shown on the board. Keeping them separate means
     // a rename never moves the id, and two agents can share a display name
@@ -2564,6 +2566,34 @@ export class Operations {
       patch.label !== undefined ? { ...patch, label: patch.label?.trim() || null } : patch;
     return this.hub.upsertAgent({ ...existing, ...normalized });
   }
+  /**
+   * Bench a credential: no runner authenticating with it gets new work, and
+   * every run already on it is stopped and its task released back to `todo`.
+   *
+   * Both halves matter. Refusing new work alone would leave whatever is already
+   * running to keep using a key the operator just declared unsafe — for a
+   * leaking or rate-limited key that's most of the damage. And stopping runs
+   * without the durable flag would just let the autonomy loop pick them straight
+   * back up on the next tick.
+   *
+   * Order is deliberate: mark FIRST, then halt. The reverse leaves a window
+   * where a freed task is re-assigned to the same key before the flag lands.
+   */
+  async pauseCredential(ws: string, id: string, reason: string, by: string): Promise<PauseCredentialResult> {
+    const secret = await secretService.setPaused(ws, id, { by, reason }, now());
+    const haltedRunIds = await this.orchestrator.haltRunsOnCredential(ws, id);
+    return { secret, haltedRunIds };
+  }
+
+  /** Un-bench a credential. Also clears the in-memory quota breaker: an explicit
+   *  resume is the operator saying this key is good again, so a stale
+   *  auto-learned "depleted" mark must not keep refusing it. */
+  async resumeCredential(ws: string, id: string, by: string): Promise<SecretMeta> {
+    const secret = await secretService.setPaused(ws, id, null, now());
+    this.orchestrator.clearKeyBreaker(ws, id);
+    return secret;
+  }
+
   async retireRunner(ws: string, id: string): Promise<void> {
     const existing = await this.store.getAgent(id);
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Agent");
