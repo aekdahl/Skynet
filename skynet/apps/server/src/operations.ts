@@ -1419,7 +1419,7 @@ export class Operations {
       }
       const wantDescription = iss.body || null;
       if (linked.text !== iss.title || (linked.description ?? null) !== wantDescription) {
-        await this.updateTask(ws, linked.id, { text: iss.title, description: wantDescription })
+        await this.updateTask(ws, linked.id, { text: iss.title, description: wantDescription }, { skipRelint: true })
           .then(() => updated++)
           .catch(() => undefined);
       }
@@ -1447,7 +1447,17 @@ export class Operations {
     return { imported, updated, pushed };
   }
 
-  async updateTask(ws: string, tid: string, patch: UpdateTaskRequest): Promise<Task> {
+  async updateTask(
+    ws: string,
+    tid: string,
+    patch: UpdateTaskRequest,
+    // Internal (not exposed through the API body): resyncProjectSource's
+    // drift pass sets skipRelint because the new text is GitHub's, not a
+    // human's — same reasoning as createTask's import skip above, and the
+    // same bulk path behind the 2026-08-27 lint-fan-out incident. A stale
+    // lint is still cleared; it just isn't re-run.
+    opts?: { skipRelint?: boolean },
+  ): Promise<Task> {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
     // Enforce that a referenced feature/milestone exists and belongs to the
@@ -1500,7 +1510,7 @@ export class Operations {
       ...autoPickPatch,
       ...(relint ? { lint: null } : {}),
     });
-    if (relint) this.maybeLintTask(ws, updated);
+    if (relint && !opts?.skipRelint) this.maybeLintTask(ws, updated);
     return updated;
   }
   /**

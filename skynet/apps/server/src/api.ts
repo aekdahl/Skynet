@@ -697,6 +697,14 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
         "cache-control": "no-cache, no-transform",
         "x-accel-buffering": "no",
       });
+      // Send the headers NOW rather than letting Node hold them until the
+      // first write(). The first model token can be tens of seconds away
+      // (repo-grounded questions run a multi-turn agent session first), and
+      // a connection cut during that zero-byte window reaches the browser as
+      // a bare "Failed to fetch" with no way to tell it apart from the
+      // server dying. With headers flushed, the client has a live response
+      // and a mid-stream failure surfaces as the inline [stream error] text.
+      raw.flushHeaders();
       try {
         const gen = ops.stewardChatStream(ws(req), question, history, focus);
         let result: { reply: string; actions: unknown; projectId: string | null } | undefined;
