@@ -515,12 +515,16 @@ export const Project = z.object({
   // Evidence-gated auto-merge (see apps/server/src/merge-policy.ts). Distinct
   // from `approvalLevel: "full"`, which merges anything non-high-risk with NO
   // review at all: this merges only when the evidence is actually there, and
-  // when it isn't, the gate says WHICH condition failed. Off by default —
-  // handing a project's merges to evidence is a deliberate decision, never an
-  // inherited default.
+  // when it isn't, the gate says WHICH condition failed.
+  //
+  // ON by default, including for projects that predate the field (zod fills it
+  // on read). That's safe rather than reckless because of how it FAILS: with no
+  // independent review to point at, a diff gets `no-review` and gates exactly
+  // as it does today. It can only make a merge unattended when something
+  // actually checked it.
   autoMerge: z
     .object({
-      enabled: z.boolean().default(false),
+      enabled: z.boolean().default(true),
       requireReviewApproval: z.boolean().default(true),
       requireDeepReviewWhenConfigured: z.boolean().default(true),
       requireBreakerCleanWhenConfigured: z.boolean().default(true),

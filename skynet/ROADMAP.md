@@ -1433,8 +1433,13 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   high risk gate unconditionally (a policy able to switch those off would defeat the reason the list is
   fixed); review approval, deep-review evidence and a clean breaker are demanded only when the project
   actually opted into that lens, since holding a project to a bar it never chose just means nothing ever
-  merges. Off by default. An unattended merge logs WHAT the evidence was, so "who approved this?" has a
-  better answer than "the machine did".
+  merges. **ON by default**, including for projects predating the field — safe rather than reckless
+  because of how it FAILS: with no independent review to point at, a diff gets `no-review` and gates
+  exactly as it does today, so the default can only make a merge unattended when something actually
+  checked it, and a single-agent project's behaviour is unchanged. (The bar is already stricter than the
+  `approvalLevel: "full"` path beside it, which merges non-high-risk diffs with no review at all.) An
+  unattended merge logs WHAT the evidence was, so "who approved this?" has a better answer than "the
+  machine did".
   **One-click undo is what makes any of it tolerable** — it converts approval-before into review-after,
   and if undo costs one click, most merges don't need pre-clearance at all. `MergeEngine.revert` records
   the merge commit at merge time and undoes it with a **revert commit, never a history rewrite** (the

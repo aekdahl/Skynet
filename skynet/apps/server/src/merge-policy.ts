@@ -87,9 +87,17 @@ export interface MergeDecision {
 }
 
 export const DEFAULT_AUTO_MERGE_POLICY: AutoMergePolicyInput = {
-  // OFF by default. Turning a project's merges over to evidence is a decision
-  // its operator makes deliberately, never one inherited from a default.
-  enabled: false,
+  // ON by default. The bar it enforces is already stricter than the
+  // `approvalLevel: "full"` fast-path it sits beside — that one merges anything
+  // non-high-risk with NO review at all, while this requires an independent
+  // agent to have reviewed AND approved.
+  //
+  // The reason on-by-default is safe rather than reckless is what happens when
+  // the evidence ISN'T there: a project with no second agent to review gets
+  // `no-review` and gates exactly as it does today. So this can only ever make
+  // a merge unattended when something actually checked it — it never lowers the
+  // bar for a project that wasn't already clearing it.
+  enabled: true,
   requireReviewApproval: true,
   requireDeepReviewWhenConfigured: true,
   requireBreakerCleanWhenConfigured: true,

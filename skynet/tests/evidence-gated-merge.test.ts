@@ -50,11 +50,30 @@ describe("merges unattended only when the evidence is actually there", () => {
     expect(d.explain).toContain("the breaker tried to break it and couldn't");
   });
 
-  it("is OFF unless the operator turned it on", () => {
-    // Handing a project's merges to evidence is a deliberate decision, never
-    // one inherited from a default.
-    expect(DEFAULT_AUTO_MERGE_POLICY.enabled).toBe(false);
-    expect(reasons({ policy: DEFAULT_AUTO_MERGE_POLICY })).toContain("policy-off");
+  it("is ON by default — and that is safe because of how it FAILS", () => {
+    // The bar is already stricter than the `approvalLevel: "full"` fast-path
+    // beside it (which merges non-high-risk diffs with NO review at all). And
+    // with no independent review to point at, a diff gets `no-review` and gates
+    // exactly as it does today — so the default can only make a merge
+    // unattended when something actually checked it.
+    expect(DEFAULT_AUTO_MERGE_POLICY.enabled).toBe(true);
+    expect(DEFAULT_AUTO_MERGE_POLICY.requireReviewApproval).toBe(true);
+    expect(reasons({ policy: DEFAULT_AUTO_MERGE_POLICY, review: null })).toContain("no-review");
+  });
+
+  it("an operator can still switch it off, and then nothing merges unattended", () => {
+    const off = { ...DEFAULT_AUTO_MERGE_POLICY, enabled: false };
+    expect(reasons({ policy: off })).toContain("policy-off");
+    expect(decideAutoMerge(clean({ policy: off })).autoMerge).toBe(false);
+  });
+
+  it("a project with no reviewer keeps behaving exactly as it does today", () => {
+    // The migration property: turning this on by default must not change what
+    // happens for a single-agent project that never had a second agent to
+    // review its work.
+    const d = decideAutoMerge(clean({ review: null }));
+    expect(d.autoMerge).toBe(false);
+    expect(d.reasons).toEqual(["no-review"]);
   });
 
   it("respects the project's master autonomy switch", () => {
