@@ -66,6 +66,11 @@ const ALLOW = new Set<string>([
   // executor through a real Operations + Orchestrator), and the dock/client
   // wiring is pinned by steward-execution-wiring.test.ts.
   "executeStewardAction",
+  // Undo a merged run — needs a real git backend and an actually-merged commit,
+  // so no offline journey can exercise it. The revert itself is covered against
+  // REAL repos in merge.test.ts (revert commit not rewrite, double-revert
+  // refused, conflicting revert reported honestly).
+  "revertRun",
   // Bench / un-bench a credential. Pausing STOPS live runs and releases their
   // tasks — a fleet-wide, destructive-ish action that needs a real credential
   // and real runs to mean anything, so no offline journey exercises it. The

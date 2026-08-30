@@ -924,6 +924,11 @@ export async function streamStewardChat(
 // process_backlog). Unlike every other Steward action these start real work, so
 // they run through their own endpoint, which resolves feasibility honestly and
 // reports what it actually did — see Operations.executeStewardAction.
+// Undo a merged run. One click, because reversibility is what lets an operator
+// stop pre-clearing every merge — see Operations.revertRun.
+export function revertRun(runId: string) {
+  return req<TaskRun>("POST", `/api/runs/${runId}/revert`);
+}
 export function executeStewardAction(projectId: string, action: unknown, dryRun?: boolean) {
   return req<StewardActionOutcome>("POST", `/api/projects/${projectId}/steward/actions`, { action, ...(dryRun ? { dryRun } : {}) });
 }

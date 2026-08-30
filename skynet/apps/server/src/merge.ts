@@ -61,8 +61,10 @@ export interface MergeRequest {
 }
 
 export interface MergeCallbacks {
-  /** Merge committed onto the integration branch. */
-  onMerged(req: MergeRequest, integrationBranch: string): Promise<void>;
+  /** Merge committed onto the integration branch. `commit` is the merge
+   *  commit's SHA (null if git wouldn't report it), recorded so the merge can
+   *  be reverted later — see MergeEngine.revert. */
+  onMerged(req: MergeRequest, integrationBranch: string, commit: string | null): Promise<void>;
   /** Textual conflict — raise a `merge` HITL with the contested files.
    *  `conflictDiff` is `git diff`'s conflict-marker output (`<<<<<<<`/`=======`/
    *  `>>>>>>>` hunks), captured in the scratch worktree BEFORE `merge --abort`
@@ -119,6 +121,45 @@ export class MergeEngine {
   private async git(cwd: string, ...args: string[]): Promise<string> {
     const { stdout } = await exec(gitBin(), ["-C", cwd, ...args]);
     return stdout.trim();
+  }
+
+  /**
+   * Undo a merge by its commit, on the branch it landed on.
+   *
+   * A REVERT COMMIT, never a history rewrite: the branch may already be pushed
+   * or built on, and rewriting it would break everyone else's checkout to undo
+   * one change. `-m 1` picks the first parent — the integration branch's own
+   * history — which is what "undo this merge, keep everything else" means.
+   *
+   * Returns the revert commit's SHA. Throws with git's own first line when the
+   * revert conflicts (the change has been built on since), because that's a
+   * real decision for a human, not something to paper over.
+   */
+  async revert(commit: string, branch: string): Promise<string> {
+    // Same disposable checkout the merge path uses — a revert must never touch
+    // the shared repo's own working tree (see scratchFor / process).
+    const scratch = this.scratchFor(`revert-${branch}`);
+    await this.git(this.repo, "worktree", "remove", "--force", scratch).catch(() => undefined);
+    await this.git(this.repo, "worktree", "add", "--force", scratch, branch);
+    try {
+      // Already reverted? A second `git revert` conflicts or produces an empty
+      // commit — either way an operator reads it as "it worked" twice. Git
+      // records the reverted SHA in the commit BODY ("This reverts commit
+      // <sha>."), never in the subject, so the body is what has to be searched.
+      const log = await this.git(scratch, "log", "--format=%B", "-n", "100").catch(() => "");
+      if (log.includes(`This reverts commit ${commit}`)) {
+        throw new Error(`that merge was already reverted on ${branch}`);
+      }
+      try {
+        await this.git(scratch, "revert", "--no-edit", "-m", "1", commit);
+      } catch (err) {
+        await this.git(scratch, "revert", "--abort").catch(() => undefined);
+        throw new Error(`revert conflicted on ${branch} — the change has been built on since: ${gitReason(err)}`);
+      }
+      return await this.git(scratch, "rev-parse", "HEAD");
+    } finally {
+      await this.git(this.repo, "worktree", "remove", "--force", scratch).catch(() => undefined);
+    }
   }
 
   integrationBranch(projectId: string): string {
@@ -286,8 +327,13 @@ export class MergeEngine {
         }
       }
 
+      // The merge commit's SHA, captured while the scratch worktree still
+      // exists. Recorded on the run so a merge can be UNDONE later with one
+      // click — which is what makes unattended merging tolerable: approval
+      // stops being final, so it stops needing to be perfect.
+      const commit = await this.git(scratch, "rev-parse", "HEAD").catch(() => "");
       this.cb.onLog(req.runId, `merged ${req.agentBranch} into ${branch}`);
-      await this.cb.onMerged(req, branch);
+      await this.cb.onMerged(req, branch, commit || null);
     } finally {
       // The commit lives on the branch ref; the scratch checkout is disposable.
       await this.git(this.repo, "worktree", "remove", "--force", scratch).catch(() => undefined);

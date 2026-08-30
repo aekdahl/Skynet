@@ -40,13 +40,14 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
   rmSync(`${repo}-wt`, { recursive: true, force: true }); // the engine's scratch worktrees
+  rmSync(`${repo}-buildon`, { recursive: true, force: true });
 });
 
 // Build an engine whose callbacks record outcomes and signal completion, so the
 // fire-and-forget enqueue() can be awaited deterministically.
 function harness(checkCmd?: string) {
   const calls = {
-    merged: [] as { req: MergeRequest; branch: string }[],
+    merged: [] as { req: MergeRequest; branch: string; commit: string | null }[],
     conflict: [] as { req: MergeRequest; files: string[]; conflictDiff: string }[],
     checksFailed: [] as { req: MergeRequest; out: string }[],
     mergeFailed: [] as { req: MergeRequest; reason: string }[],
@@ -54,7 +55,7 @@ function harness(checkCmd?: string) {
   };
   let settle: (() => void) | null = null;
   const cb: MergeCallbacks = {
-    onMerged: async (req, branch) => { calls.merged.push({ req, branch }); settle?.(); },
+    onMerged: async (req, branch, commit) => { calls.merged.push({ req, branch, commit }); settle?.(); },
     onConflict: async (req, files, conflictDiff) => { calls.conflict.push({ req, files, conflictDiff }); settle?.(); },
     onChecksFailed: async (req, out) => { calls.checksFailed.push({ req, out }); settle?.(); },
     onMergeFailed: async (req, reason) => { calls.mergeFailed.push({ req, reason }); settle?.(); },
@@ -362,5 +363,80 @@ describe("MergeEngine — feature-scoped branch batching", () => {
     expect(calls.mergeFailed).toHaveLength(0);
     expect(git("cat-file", "-t", "skynet/feature/f-alpha:x.ts").trim()).toBe("blob");
     expect(git("cat-file", "-t", "skynet/feature/f-beta:y.ts").trim()).toBe("blob");
+  });
+});
+
+// ─── Undo a merge ───────────────────────────────────────────────────────────
+// Reversibility is what makes unattended merging tolerable: it converts
+// approval-before into review-after. If undo costs one click, most merges don't
+// need pre-clearance at all. So the undo has to actually work — against real
+// git, on a branch that may already have been built on.
+describe("MergeEngine.revert", () => {
+  it("reports the merge commit, so there is something to undo later", async () => {
+    const { calls, enqueueAndWait } = harness();
+    git("checkout", "-b", "agent/a");
+    commit("a.txt", "a\n", "a");
+    git("checkout", "main");
+    await enqueueAndWait(req("r1", "agent/a"));
+    expect(calls.merged).toHaveLength(1);
+    expect(calls.merged[0]!.commit).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it("undoes the change with a REVERT COMMIT, never a rewrite", async () => {
+    // The branch may already be pushed or built on; rewriting it would break
+    // everyone else's checkout to undo one change.
+    const { engine, calls, enqueueAndWait } = harness();
+    git("checkout", "-b", "agent/a");
+    commit("a.txt", "hello\n", "add a");
+    git("checkout", "main");
+    await enqueueAndWait(req("r1", "agent/a"));
+    const branch = calls.merged[0]!.branch;
+    const before = git("rev-parse", branch).trim();
+
+    const revertSha = await engine.revert(calls.merged[0]!.commit!, branch);
+    expect(revertSha).toMatch(/^[0-9a-f]{40}$/);
+
+    // History preserved: the old tip is still an ancestor.
+    expect(git("merge-base", "--is-ancestor", before, branch)).toBe("");
+    // And the file the merge introduced is gone again.
+    const tree = git("ls-tree", "--name-only", "-r", branch);
+    expect(tree).not.toContain("a.txt");
+  });
+
+  it("refuses a second revert instead of stacking an empty one", async () => {
+    // `git revert` would happily produce another commit, which reads to an
+    // operator as "it worked" twice.
+    const { engine, calls, enqueueAndWait } = harness();
+    git("checkout", "-b", "agent/a");
+    commit("a.txt", "x\n", "add a");
+    git("checkout", "main");
+    await enqueueAndWait(req("r1", "agent/a"));
+    const { commit: sha, branch } = calls.merged[0]!;
+    await engine.revert(sha!, branch);
+    await expect(engine.revert(sha!, branch)).rejects.toThrow(/already reverted/i);
+  });
+
+  it("reports a conflicting revert honestly rather than forcing it", async () => {
+    // "This has been built on since" is a real decision for a human, not
+    // something to paper over.
+    const { engine, calls, enqueueAndWait } = harness();
+    git("checkout", "-b", "agent/a");
+    commit("a.txt", "first\n", "add a");
+    git("checkout", "main");
+    await enqueueAndWait(req("r1", "agent/a"));
+    const { commit: sha, branch } = calls.merged[0]!;
+
+    // Someone builds on the merged file. Done through its own worktree rather
+    // than checking the branch out in the shared repo — which is how the real
+    // system touches integration branches, and avoids fighting whatever else
+    // has that branch checked out.
+    const wt = `${repo}-buildon`;
+    git("worktree", "add", "--force", wt, branch);
+    writeFileSync(join(wt, "a.txt"), "first, then changed\n");
+    execFileSync("git", ["-C", wt, "add", "-A"], { env: GIT_ENV, stdio: "ignore" });
+    execFileSync("git", ["-C", wt, "commit", "-m", "build on it"], { env: GIT_ENV, stdio: "ignore" });
+    git("worktree", "remove", "--force", wt);
+
+    await expect(engine.revert(sha!, branch)).rejects.toThrow(/built on since|conflict/i);
   });
 });
