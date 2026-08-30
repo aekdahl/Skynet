@@ -19,6 +19,8 @@ import {
 import { StatusDot } from "../components/common";
 import { Blocked } from "../components/empty";
 import { useChoice, useConfirm } from "../components/confirm";
+import { toast } from "../components/toast";
+import * as api from "../lib/client";
 import { Markdown } from "../components/markdown";
 import { HitlContext, RiskChip } from "../components/hitl-context";
 import { LivePreviewModal } from "./project";
@@ -351,6 +353,34 @@ export function TaskDetail({
           {/* Which vendor actually served this run. Recorded on the run itself,
               so it stays true even if the credential is later re-pointed — and
               so a non-Anthropic run is never read as a Claude one. */}
+          {/* Undo — the reversibility that lets an operator stop pre-clearing
+              every merge. Only ever shown for a run that actually landed. */}
+          {agent.merge && !agent.merge.revertedAt && (
+            <button
+              className="btn btn-ghost btn-sm run-revert"
+              title={`Revert this merge on ${agent.merge.branch}. Creates a revert commit — never rewrites history.`}
+              onClick={async () => {
+                if (!(await confirm({
+                  title: "Undo this merge?",
+                  body: `Reverts ${agent.merge!.commit.slice(0, 7)} on ${agent.merge!.branch}. This adds a revert commit — it never rewrites history, so anything built on top stays intact.`,
+                  confirmLabel: "Undo the merge",
+                }))) return;
+                try {
+                  await api.revertRun(agent.id);
+                  toast("Merge reverted.");
+                } catch (e) {
+                  toast(`Couldn't revert: ${(e as Error).message}`);
+                }
+              }}
+            >
+              ↩ Undo merge
+            </button>
+          )}
+          {agent.merge?.revertedAt && (
+            <span className="run-reverted" title={`Reverted by ${agent.merge.revertedBy ?? "someone"}`}>
+              ↩ merge reverted
+            </span>
+          )}
           {endpointLabel(agent.endpoint) && (
             <span className="run-endpoint" title={`Not Anthropic — this run went to ${agent.endpoint}`}>
               via {endpointLabel(agent.endpoint)}

@@ -697,6 +697,14 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
         "cache-control": "no-cache, no-transform",
         "x-accel-buffering": "no",
       });
+      // Send the headers NOW rather than letting Node hold them until the
+      // first write(). The first model token can be tens of seconds away
+      // (repo-grounded questions run a multi-turn agent session first), and
+      // a connection cut during that zero-byte window reaches the browser as
+      // a bare "Failed to fetch" with no way to tell it apart from the
+      // server dying. With headers flushed, the client has a live response
+      // and a mid-stream failure surfaces as the inline [stream error] text.
+      raw.flushHeaders();
       try {
         const gen = ops.stewardChatStream(ws(req), question, history, focus);
         let result: { reply: string; actions: unknown; projectId: string | null } | undefined;
@@ -893,6 +901,16 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   // Every other Steward-proposed action kind keeps its own existing route
   // (steward-dock.tsx's runAction); these four are the only ones a client
   // calls through here.
+  // Undo a merged run — the reversibility that makes unattended merging
+  // tolerable (see Operations.revertRun).
+  app.post<{ Params: { id: string } }>("/api/runs/:id/revert", async (req, reply) => {
+    try {
+      return await ops.revertRun(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/projects/:id/steward/actions", async (req, reply) => {
     const body = ExecuteStewardActionRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });

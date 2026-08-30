@@ -263,6 +263,91 @@ docker run -d --restart=always --name caddy \
 echo "[skynet] Caddy up on :443 — https://${mcp_domain}"
 %{ endif ~}
 
+# ─── Liveness watchdog ─────────────────────────────────────────────────────
+# `--restart=always` is not enough, and the reason is worth stating: it trusts
+# Docker's own view of the container. Observed in production — the container's
+# task died while dockerd kept reporting `running` with a PID that no longer
+# existed on the host. `docker ps` said "Up 24 hours", the restart policy never
+# fired because Docker didn't believe anything had exited, and the app was
+# simply unreachable until a human noticed. `docker exec` gave the game away
+# with "cannot exec in a stopped state" while `docker inspect` still said
+# running.
+#
+# So this watchdog asks the APPLICATION, not Docker: if :${app_port} does not
+# answer, the container is recreated regardless of what dockerd believes.
+#
+# Deliberately conservative, because a watchdog that recovers too eagerly is
+# worse than none:
+#   • 3 consecutive failures before acting — a single blip during a
+#     deploy, a slow GC pause, or a restart in progress must not trigger it.
+#   • at most one recovery per 600s — a genuinely broken image
+#     would otherwise be recreated every minute forever.
+#   • recovery re-runs THIS script, the canonical definition of how the
+#     container is built, rather than a second copy of the run command that
+#     could drift out of sync with it.
+cat >/usr/local/bin/skynet-watchdog <<'WDEOF'
+#!/usr/bin/env bash
+# Probe the app; recreate the container after repeated failures. See the
+# startup script for why this can't rely on Docker's own restart policy.
+set -uo pipefail
+PORT="__APP_PORT__"
+NEEDED=__WATCHDOG_FAILS__
+COOLDOWN=__WATCHDOG_COOLDOWN__
+STATE=/run/skynet-watchdog.fails
+LAST=/run/skynet-watchdog.last-recovery
+
+if curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:$PORT/"; then
+  # Healthy: clear the streak so failures must be CONSECUTIVE to count.
+  [ -f "$STATE" ] && rm -f "$STATE"
+  exit 0
+fi
+
+fails=$(( $( [ -f "$STATE" ] && cat "$STATE" || echo 0 ) + 1 ))
+echo "$fails" >"$STATE"
+logger -t skynet-watchdog "app on :$PORT did not answer ($fails/$NEEDED)"
+[ "$fails" -lt "$NEEDED" ] && exit 0
+
+now=$(date +%s)
+last=$( [ -f "$LAST" ] && cat "$LAST" || echo 0 )
+if [ $(( now - last )) -lt "$COOLDOWN" ]; then
+  logger -t skynet-watchdog "still down, but a recovery ran $(( now - last ))s ago — waiting out the $${COOLDOWN}s cooldown"
+  exit 0
+fi
+
+echo "$now" >"$LAST"
+rm -f "$STATE"
+logger -t skynet-watchdog "RECOVERING: removing the container and re-running the startup script"
+docker rm -f skynet >/dev/null 2>&1 || true
+google_metadata_script_runner startup >/dev/null 2>&1 || true
+logger -t skynet-watchdog "recovery finished; app returns $(curl -s -o /dev/null -w '%%{http_code}' --max-time 5 "http://127.0.0.1:$PORT/" || echo 000)"
+WDEOF
+sed -i "s/__APP_PORT__/${app_port}/; s/__WATCHDOG_FAILS__/3/; s/__WATCHDOG_COOLDOWN__/600/" /usr/local/bin/skynet-watchdog
+chmod +x /usr/local/bin/skynet-watchdog
+
+cat >/etc/systemd/system/skynet-watchdog.service <<'WDSVC'
+[Unit]
+Description=Skynet liveness watchdog (probes the app, not Docker)
+After=docker.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/skynet-watchdog
+WDSVC
+
+cat >/etc/systemd/system/skynet-watchdog.timer <<'WDTMR'
+[Unit]
+Description=Run the Skynet liveness watchdog every minute
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1min
+AccuracySec=10s
+[Install]
+WantedBy=timers.target
+WDTMR
+
+systemctl daemon-reload
+systemctl enable --now skynet-watchdog.timer
+echo "[skynet] watchdog armed — probes :${app_port} every 60s, recovers after 3 consecutive failures"
+
 # Reclaim boot-disk space. Every :latest re-pull leaves the previous image
 # behind, and those pile up on the small (20 GB) boot disk until it fills — which
 # wedges Caddy and breaks the next pull. Drop images not used by a running

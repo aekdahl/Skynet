@@ -3403,3 +3403,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 /* Fleet roster larger than the concurrency cap — a notice, never a blocker. */
 .fleet-cap-note { font-size: var(--fz-11-5); color: var(--muted); line-height: 1.55; background: var(--bg2);
   border-radius: 8px; padding: 9px 12px; max-width: 80ch; margin-bottom: var(--sp); }
+/* Undo a merge — reversibility is what makes unattended merging tolerable. */
+.run-revert { color: var(--warn); }
+.run-reverted { font-size: var(--fz-10-5); color: var(--muted); border: 1px solid var(--line-soft);
+  border-radius: 999px; padding: 1px 8px; }

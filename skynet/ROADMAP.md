@@ -48,11 +48,12 @@ Items are ranked PMF > Platform > Product within each batch:
 
 | Batch | # | Item | Track |
 |-------|---|------|-------|
-| **N (now)** | 1 | deep-review / breaker-review settings UI toggle | PMF |
-| | 2 | Memory v0 — operator-authored facts, injected per project | Platform |
-| | 3 | Reactive runner breadth (Kimi Code landed) | Product |
-| | 4 | First-run onboarding telemetry (anonymous install events) | PMF |
-| | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
+| **N (now)** | 1 | 🔒 Security hardening — Aug 2026 audit remediation (7 findings, see v1 section) | Security |
+| | 2 | deep-review / breaker-review settings UI toggle | PMF |
+| | 3 | Memory v0 — operator-authored facts, injected per project | Platform |
+| | 4 | Reactive runner breadth (Kimi Code landed) | Product |
+| | 5 | First-run onboarding telemetry (anonymous install events) | PMF |
+| | 6 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
 | **N+1** | 1 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
 | | 2 | Desktop code-signing (macOS + Windows) | GTM |
 | | 3 | Cross-vendor consensus runs (same task, two agents, auto-diff) | Platform |
@@ -1418,6 +1419,131 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   refill, because that's a read and this is a model call, and a project that just ran dry will still be
   dry in fifteen minutes.
 
+- [x] **⭐ Merging you can comprehend: evidence-gated auto-merge + one-click undo.** Approving a finished
+  diff is the worst moment to ask a human for judgement — they didn't write the code, may not remember
+  the task, and by then all the leverage is gone: rejecting discards hours of work, so the honest
+  options are rubber-stamp or feel bad. Skynet already gathered real evidence about every change (an
+  independent agent's review verdict, a browser-driven deep review, an adversarial breaker pass, a fixed
+  sensitive-path list, the diff's own size) and then **ignored all of it at the gate**: every merge asked
+  a human, except `approvalLevel: "full"`, which jumped to merging anything non-high-risk with **no
+  review required at all**. There was nothing between "judge every diff yourself" and "trust
+  everything".
+  **`decideAutoMerge` (pure, `merge-policy.ts`) is that middle**, and the thing that makes it
+  comprehensible is that it always says WHICH condition sent a diff to a person — every failing
+  condition, not just the first, so fixing one doesn't reveal the next on a re-run. Sensitive paths and
+  high risk gate unconditionally (a policy able to switch those off would defeat the reason the list is
+  fixed); review approval, deep-review evidence and a clean breaker are demanded only when the project
+  actually opted into that lens, since holding a project to a bar it never chose just means nothing ever
+  merges. Off by default. An unattended merge logs WHAT the evidence was, so "who approved this?" has a
+  better answer than "the machine did".
+  **One-click undo is what makes any of it tolerable** — it converts approval-before into review-after,
+  and if undo costs one click, most merges don't need pre-clearance at all. `MergeEngine.revert` records
+  the merge commit at merge time and undoes it with a **revert commit, never a history rewrite** (the
+  branch may already be pushed or built on; rewriting it would break everyone's checkout to undo one
+  change). A second revert is refused rather than stacking an empty commit, and a revert that conflicts
+  because the change has been built on since is **reported honestly rather than forced** — that's a real
+  decision for a human. Verified against REAL git repos, not mocks.
+### 🔒 Security hardening — Aug 2026 audit remediation
+Full-codebase security audit of `main` (8 finder agents by area + a skeptical filtering pass per
+candidate finding, confidence ≥ 8/10 kept) surfaced 7 real, independently-confirmed vulnerabilities —
+none introduced by any in-flight PR, all pre-existing on `main` today. Grouped as one epic because they
+share urgency (credential exposure, path traversal, auth escalation — governance-track trust, not
+feature work), but the 7 tasks have no ordering dependency on each other and can be picked up and
+shipped in parallel.
+
+- [ ] **Redact GitHub token from push/sync error logs** — `pushBranch`/`syncBase`
+  (`apps/server/src/github/provider.ts`) build the git remote with the token embedded
+  (`https://x-access-token:<token>@github.com/...`) and run it with no try/catch, unlike the sibling
+  `cloneRepo` which already redacts. Node's own `Command failed: <argv>` error format embeds the
+  token-bearing URL in `.message` on *any* push/fetch failure (branch protection, stale
+  `--force-with-lease`, revoked installation, a network blip) — that raw message reaches
+  `hub.runLog()`, which persists it and broadcasts it live to the operator's UI. Fix: wrap both in the
+  same `redactToken()` pattern `cloneRepo` already uses; consider generic scrubbing at the `runLog`
+  layer as defense-in-depth. *Severity: High. `apps/server/src/github/provider.ts:258-264,348-352`.*
+- [ ] **Contain `roadmapPath`/`repoPath` reads to the project's own repo** — an "author"-scoped
+  `PATCH /api/projects/:id` can set `roadmapPath` (or `repoPath` itself) to an arbitrary filesystem
+  path with zero containment check; `GET /api/projects/:id/roadmap` (no elevated scope required) then
+  returns that file's raw content in the response. Fix: resolve the joined path in `readProjectDoc` and
+  reject unless it stays within `repoPath` (the codebase already uses this exact pattern in
+  `preview/route.ts` — reuse it); also constrain `repoPath` updates the same way.
+  *Severity: High. `apps/server/src/steward/docs.ts:50`, `apps/server/src/operations.ts:2351-2422`.*
+- [ ] **Strip secrets from the Fly static-site build environment** — `FlyDeployManager.start()` runs a
+  repo-declared `.skynet/preview.json` `install`/`build` command with the server's full `process.env`
+  (every provider API key, `SKYNET_MASTER_KEY`, the GitHub App private key, the Telegram bot token),
+  reachable pre-merge via a normal "Deploy to Fly.io" click on a run's own branch. The sibling
+  live-preview path already solved this exact problem (`PREVIEW_ENV_DENYLIST`/`previewEnv()` in
+  `project-preview.ts`) — the Fly path reuses the same `worktree.ts` helpers but never adopted the
+  wrapper. Fix: pass `previewEnv()` into both the `ensureDeps` and `runToCompletion` calls in
+  `deploy.ts`. *Severity: High. `apps/server/src/fly/deploy.ts:233,235`.*
+- [ ] **Stop same-origin preview iframes from exposing the session token** — both preview surfaces
+  (`apps/web/src/components/preview.tsx`, `apps/web/src/views/project.tsx`) set
+  `sandbox="allow-scripts allow-same-origin ..."` while serving agent-built app content on Skynet's own
+  origin by default (the live-preview proxy has no separate-origin option at all; the artifact-preview
+  base URL defaults to the app's own port unless an operator manually opts into a separate subdomain,
+  which nothing nudges them toward). Same-origin + those two flags means injected/malicious in-preview
+  JS can read `localStorage`'s `skynet_token` — the same token driving both REST and WS — for a full
+  session hijack. Fix: drop `allow-same-origin`, or refuse to boot the preview proxy without a
+  genuinely distinct configured origin; longer-term, move the session token out of `localStorage`.
+  *Severity: High. `apps/web/src/components/preview.tsx:47`, `apps/web/src/views/project.tsx:2275`.*
+- [ ] **Bring `.skynet/preview.json` build/install commands under the command-safety gate** — the
+  live-preview `install` step always runs unsandboxed via `/bin/sh -c` regardless of configuration, and
+  the `dev`/`start` step only sandboxes behind an off-by-default `SKYNET_RUNNER_SANDBOX` (and even then
+  the sandbox is write-confinement only, not a real security boundary — reads/network stay open). This
+  executes agent-branch content (plausibly prompt-injected) via the explicitly pre-merge "preview this
+  change before approving it" path, entirely outside the `command-safety.ts`/`injection-firewall.ts`
+  gates already applied to agent tool calls elsewhere in this codebase. Fix: route these commands
+  through the same bounded-execution/scrubbed-env discipline, and make the sandbox mandatory (not
+  opt-in) for the `install` step specifically. *Severity: High. `apps/server/src/preview/worktree.ts:39-45,71-76`.*
+- [ ] **Close the elevated-viewer permanent-token loophole** — `POST /api/service-tokens`'s
+  `requireHuman()` checks only the live, elevation-inflated `scopes` value, not the caller's *persisted*
+  role the way `requireAdmin()` deliberately does (with an existing doc comment explaining exactly why —
+  to stop "elevated viewer re-grants/self-extends"). A viewer temporarily elevated to full authority
+  (15min–1hr) can mint a standalone, independently-stored bearer token with a high scope set and no
+  forced expiry, which survives long after the elevation lapses. Fix: gate service-token routes with
+  the same persisted-role check `requireAdmin` uses, and enforce a mandatory TTL ceiling on tokens
+  minted by a non-persisted-admin caller. *Severity: High. `apps/server/src/auth/routes.ts:216-252`.*
+- [ ] **Validate `path` against traversal in the GitHub Contents API calls** — `getFile`/`putFile`
+  build the Contents API URL by raw string concatenation with no `..`-segment rejection before
+  `fetch()`; WHATWG URL normalization collapses `../` segments client-side, so a crafted `path` can
+  retarget the request at a completely different repo. `import_repo_file` (an MCP tool, `"author"`
+  scope, nominally project-confined) exposes this `path` unvalidated — `project-scope.ts`'s confinement
+  only checks the `projectId` argument, not the semantic target of `path` — and the same traversal
+  string is later replayed by `resync_source`/`commitRepoFile` (the identically-vulnerable `putFile`),
+  giving a write leg into the out-of-scope repo too. Fix: reject any `path` containing a `.`/`..`
+  segment before it reaches `getFile`/`putFile` (and the same-pattern `readRepoFile`/`listRepoRoot` in
+  `github/service.ts`), and percent-encode each remaining segment individually rather than
+  concatenating raw strings into the URL. *Severity: High. `apps/server/src/github/provider.ts:211-231`,
+  `apps/server/src/mcp/tools.ts:514`.*
+
+Two related findings came in just under the report's confidence bar (≥8 kept; these landed at 7) and
+are tracked as **follow-ups**, not blocking this epic: unescaped `.skynet/preview.json` fields
+(`outputDir`/`region`/etc.) interpolated into the generated Fly `Dockerfile`/`fly.toml` with no
+sanitization (a config/instruction-injection primitive into Fly's remote builder — needs a
+crafted-not-naive payload to actually work, per the filtering pass); and the review-verdict auto-merge
+prompt splicing unsanitized synced-GitHub-issue-title text into the reviewer LLM's prompt with no
+source-trust gate, reachable only when a project has both public issue sync and `project.autonomy` on.
+- [x] **MCP kept going down, and `--restart=always` could not save it.** Diagnosed live: the app was
+  unreachable while `docker ps` reported *"Up 24 hours"*. `docker inspect` said `running` with
+  `RestartCount=0`, but the PID it named **did not exist on the host**, and `docker exec` gave the game
+  away — *"cannot exec in a stopped state"* — against a container `inspect` still called running. The
+  container's task had died while dockerd kept stale metadata, so the restart policy **never fired**:
+  Docker didn't believe anything had exited. Nothing recovered it, no alert distinguished it from a
+  healthy idle box, and it stayed down until a human noticed — which is the whole shape of the recurring
+  annoyance.
+  Restored by removing the zombie and re-running the startup script (the canonical container definition,
+  rather than a hand-rebuilt `docker run` that could drift). **The durable fix is a liveness watchdog
+  that asks the APPLICATION, not Docker** (`deploy/gcp/startup.sh.tftpl`): a systemd timer curls
+  `:8080` every 60s and, after **3 consecutive** failures, force-recreates the container regardless of
+  what dockerd believes. Deliberately conservative, because an over-eager watchdog is worse than none —
+  consecutive failures only (a blip during a deploy or a GC pause must not trigger it), and at most one
+  recovery per 10 min so a genuinely broken image isn't recreated every minute forever. Recovery
+  re-runs the startup script rather than duplicating the run command, so the two can't drift apart.
+  Verified three ways: the Terraform template renders (`%%{http_code}` and `$${COOLDOWN}` needed
+  escaping — `%{` and `${` are template syntax, and an unescaped one would have broken the next deploy
+  outright); the timer is active on the box; and the decision logic was exercised against a dead port
+  with recovery stubbed — streak 1 → 2 → fires at 3 → clears → cooldown blocks the next — **without
+  taking the live app down to test it**.
+
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease
@@ -1448,7 +1574,7 @@ features below are white space.)
 - [x] **Task grouping & per-project roadmap** — added Features (grouping related tasks) and Milestones (planned per-project releases) as a level above the task board, with Steward and Telegram both able to manage them.
 - [x] **Per-project agent instructions (house rules)** — added a per-project instructions field that rides every prompt an agent sees on that project, plus a shared context assembler (project goal, feature, and a sibling-run digest) so a fresh agent starts with relevant project/feature/in-flight context.
 - [x] **Project Context — meeting notes/emails/docs, condensed into the S2 primer** — the operator can now paste or upload raw context (notes, an email, a doc) on a project's Context tab, which Skynet condenses into a short primer that grounds both an agent's task prompt and "ask about this project" chat.
-- [x] **Per-project isolation for credentials & GitHub identity** — a project can now pin its own LLM credential and GitHub PAT, so its runs bill to the right key and its PRs open under the right account regardless of the workspace default.
+- [x] **Per-project isolation for credentials & GitHub identity** — a project can now pin its own LLM credential and GitHub PAT, so its runs bill to the right key and its PRs open under the right account regardless of the workspace default. *Bug fix: `Project.enabledRunnerCredentialIds` (the "Keys" panel's checkbox allowlist — confine a project to specific fleet runner keys) was only enforced by the three sites that ACQUIRE a runner for new work (`acquireAgent`/`acquireOrProvisionRunner`/`acquireSpecificAgent` in `apps/server/src/orchestrator.ts`) — a project restricted to one key was still triaged and auto-reviewed on ANY idle runner in the workspace, because `tickAutonomy`'s triage/periodic-review picks, `requestReview` (manual "Request review"), and `verifyFeatureBeforeShip` (feature-level deep review) each filtered `listAgents` by `status === "idle"` alone, never against the project's allowlist. Root-caused via `keyAllowedForProject`, a single shared helper now used by all seven picking sites (the 3 correct ones refactored onto it too, so a future picking site can't silently reintroduce the gap); a project with no allowed idle runner right now simply skips that tick's triage/review rather than falling back to a disallowed key. Regression-proofed in `tests/project-runner-keys.test.ts` (triage / periodic auto-review / manual request-review, each with the disallowed-key runner as the ONLY idle one) and `tests/feature-verification.test.ts` (feature-level verification correctly skips a disallowed-key idle agent even when it's earlier in store order than the allowed one).*
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.* Also landed: the Roadmap tab's "reads ROADMAP.md" lookup used to dead-end when a repo kept its plan somewhere else — `Project.roadmapPath` now lets the operator (a picker on the tab's empty state) or Steward (`set_roadmap_path`, confirm-first, e.g. "the roadmap is at docs/PLAN.md") point it at any repo-relative file; `resolveRoadmapDoc` is the single place both the tab's API and Steward's own grounding resolve through, so they can't drift.
 - [~] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third
   lane: when a request is better SHOWN than said (review a diff, browse the board, tune the fleet), the
