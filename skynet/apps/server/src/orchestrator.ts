@@ -626,6 +626,36 @@ export function computeFeatureMergeBriefing(input: {
  *  "ESCALATE") and is set directly in `raise()`, never via `escalate()`. */
 type EscalationSource = "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing" | "agent" | "stuck-review" | "paused";
 
+/**
+ * A model-ALIAS resolution failure — mapModel (claude.ts) hands the bundled
+ * CLI a bare alias ("sonnet") and trusts it to resolve to a real, current
+ * model id (its own doc comment says as much); that trust has now broken
+ * HARD rather than just drifting (see the versioned-vs-drifted distinction in
+ * claude.ts's modelMismatchWarning) — the CLI resolved to something the API
+ * flatly 404s on, before any session even starts, so there's no init message
+ * for the drift-warning mechanism to compare against. Found live: an operator
+ * chatting a finished agent got a raw
+ * `HTTP 404: {"type":"error","error":{"type":"not_found_error","message":"model: claude-sonnet"},...}`
+ * blob instead of anything actionable.
+ */
+const MODEL_NOT_FOUND_RE = /"type":"not_found_error"[^}]*"message":"model:\s*([^"}]+)/;
+
+/**
+ * Give that ONE recognized error shape a plain, actionable message; any other
+ * error keeps its original text verbatim — never invent an explanation for a
+ * failure we haven't actually diagnosed.
+ */
+export function friendlyConsultError(err: Error): string {
+  const match = err.message.match(MODEL_NOT_FOUND_RE);
+  if (!match) return err.message;
+  const model = match[1]!.trim();
+  return (
+    `the model "${model}" isn't recognized by the provider right now — this usually means the server is ` +
+    `running an out-of-date build (redeploying with the latest code picks up a fixed model alias) or the ` +
+    `agent's model was set to something invalid in Fleet.`
+  );
+}
+
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   // Global kill switch. When paused, the autonomy loop is a no-op (no new work is
@@ -4529,7 +4559,7 @@ export class Orchestrator {
         yield await provider.consult!(spec, question);
       }
     } catch (err) {
-      yield `couldn't look into that right now (${(err as Error).message}).`;
+      yield `couldn't look into that right now (${friendlyConsultError(err as Error)}).`;
     }
   }
 
@@ -5306,7 +5336,7 @@ export class Orchestrator {
       };
     } catch (err) {
       return {
-        assessment: `Auto-triaged — "${task.text}" (assessment unavailable: ${(err as Error).message}).`,
+        assessment: `Auto-triaged — "${task.text}" (assessment unavailable: ${friendlyConsultError(err as Error)}).`,
         assessmentEffort: null,
         assessmentRisks: [],
         estimatedDurationMs: null,
@@ -6068,7 +6098,7 @@ export class Orchestrator {
       }
     } catch (err) {
       decision = "flag";
-      reason = `review consult failed: ${(err as Error).message}`;
+      reason = `review consult failed: ${friendlyConsultError(err as Error)}`;
     }
     // The consult above is slow (an LLM round-trip); meanwhile an operator — or
     // another actor — may have resolved this same gate and driven the run to
