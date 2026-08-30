@@ -61,6 +61,7 @@ import type {
 } from "@skynet/shared";
 import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
 import { buildReplenishPrompt, parseProposedTasks } from "./steward/replenish.js";
+import { DEFAULT_AUTO_MERGE_POLICY } from "./merge-policy.js";
 import { sameTaskText } from "./steward/assistant.js";
 
 // Cheap mid-tier model for backlog replenishment — one short, tool-less call
@@ -948,6 +949,8 @@ export class Operations {
       // Null until the first autonomy tick has looked at this project — the
       // driver writes it, nothing seeds it.
       drive: null,
+      // Evidence-gated auto-merge starts OFF — see Project.autoMerge.
+      autoMerge: DEFAULT_AUTO_MERGE_POLICY,
       workspaceId: ws,
       name: input.name,
       goal: input.goal,
@@ -2708,6 +2711,34 @@ Your previous reply could not be parsed as the required JSON. Reply with ONLY th
     const secret = await secretService.setPaused(ws, id, null, now());
     this.orchestrator.clearKeyBreaker(ws, id);
     return secret;
+  }
+
+  /**
+   * Undo a merged run — one click, on the branch it landed on.
+   *
+   * This is what makes evidence-gated auto-merge tolerable: it converts
+   * approval-before into review-after. If undo costs one click, most merges
+   * don't need pre-clearance at all — and the ones that do can be waved through
+   * knowing the tail is reversible.
+   *
+   * A revert COMMIT, never a history rewrite (see MergeEngine.revert): the
+   * branch may already be pushed or built on. A conflicting revert is reported,
+   * not forced — "this has been built on since" is a real decision for a human.
+   */
+  async revertRun(ws: string, runId: string, by: string): Promise<TaskRun> {
+    const run = await this.store.getRun(runId);
+    if (!run || run.workspaceId !== ws) throw new NotFoundError("Run");
+    if (!run.merge) throw new Error("This run never merged, so there's nothing to undo.");
+    if (run.merge.revertedAt) throw new Error("This merge was already reverted.");
+
+    const project = await this.store.getProject(run.projectId);
+    const revertCommit = await this.orchestrator.revertMerge(project, run.merge.commit, run.merge.branch);
+    const updated = await this.hub.upsertRun({
+      ...run,
+      merge: { ...run.merge, revertedAt: now(), revertCommit, revertedBy: by },
+    });
+    await this.hub.runLog(runId, `merge reverted by ${by} — ${run.merge.commit.slice(0, 7)} undone on ${run.merge.branch} (${revertCommit.slice(0, 7)})`);
+    return updated;
   }
 
   async retireRunner(ws: string, id: string): Promise<void> {

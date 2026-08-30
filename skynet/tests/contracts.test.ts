@@ -30,6 +30,7 @@ const agent: TaskRun = {
   credentialId: null,
   model: "opus-4.5",
   endpoint: null,
+  merge: null,
   branch: "agent/billing-hooks",
   modules: ["api/billing", "db/migrations"],
   progress: 0.45,

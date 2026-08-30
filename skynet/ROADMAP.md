@@ -1419,6 +1419,30 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   refill, because that's a read and this is a model call, and a project that just ran dry will still be
   dry in fifteen minutes.
 
+- [x] **⭐ Merging you can comprehend: evidence-gated auto-merge + one-click undo.** Approving a finished
+  diff is the worst moment to ask a human for judgement — they didn't write the code, may not remember
+  the task, and by then all the leverage is gone: rejecting discards hours of work, so the honest
+  options are rubber-stamp or feel bad. Skynet already gathered real evidence about every change (an
+  independent agent's review verdict, a browser-driven deep review, an adversarial breaker pass, a fixed
+  sensitive-path list, the diff's own size) and then **ignored all of it at the gate**: every merge asked
+  a human, except `approvalLevel: "full"`, which jumped to merging anything non-high-risk with **no
+  review required at all**. There was nothing between "judge every diff yourself" and "trust
+  everything".
+  **`decideAutoMerge` (pure, `merge-policy.ts`) is that middle**, and the thing that makes it
+  comprehensible is that it always says WHICH condition sent a diff to a person — every failing
+  condition, not just the first, so fixing one doesn't reveal the next on a re-run. Sensitive paths and
+  high risk gate unconditionally (a policy able to switch those off would defeat the reason the list is
+  fixed); review approval, deep-review evidence and a clean breaker are demanded only when the project
+  actually opted into that lens, since holding a project to a bar it never chose just means nothing ever
+  merges. Off by default. An unattended merge logs WHAT the evidence was, so "who approved this?" has a
+  better answer than "the machine did".
+  **One-click undo is what makes any of it tolerable** — it converts approval-before into review-after,
+  and if undo costs one click, most merges don't need pre-clearance at all. `MergeEngine.revert` records
+  the merge commit at merge time and undoes it with a **revert commit, never a history rewrite** (the
+  branch may already be pushed or built on; rewriting it would break everyone's checkout to undo one
+  change). A second revert is refused rather than stacking an empty commit, and a revert that conflicts
+  because the change has been built on since is **reported honestly rather than forced** — that's a real
+  decision for a human. Verified against REAL git repos, not mocks.
 ### 🔒 Security hardening — Aug 2026 audit remediation
 Full-codebase security audit of `main` (8 finder agents by area + a skeptical filtering pass per
 candidate finding, confidence ≥ 8/10 kept) surfaced 7 real, independently-confirmed vulnerabilities —

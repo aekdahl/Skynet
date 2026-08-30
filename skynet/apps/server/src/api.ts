@@ -901,6 +901,16 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   // Every other Steward-proposed action kind keeps its own existing route
   // (steward-dock.tsx's runAction); these four are the only ones a client
   // calls through here.
+  // Undo a merged run — the reversibility that makes unattended merging
+  // tolerable (see Operations.revertRun).
+  app.post<{ Params: { id: string } }>("/api/runs/:id/revert", async (req, reply) => {
+    try {
+      return await ops.revertRun(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/projects/:id/steward/actions", async (req, reply) => {
     const body = ExecuteStewardActionRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });

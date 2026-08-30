@@ -339,6 +339,20 @@ export const TaskRun = z.object({
   // GitHub PR merely opened (not yet merged), this is the one field that means a
   // real merge happened. Null → never merged.
   mergedAt: Timestamp.nullable().default(null),
+  // Where the merge landed and what commit it made — recorded so a merge can be
+  // UNDONE with one click. That reversibility is what makes unattended merging
+  // tolerable: approval stops being final, so it stops needing to be perfect.
+  // Null for a run that never merged, or (legacy) merged before this was kept.
+  merge: z
+    .object({
+      commit: z.string(),
+      branch: z.string(),
+      revertedAt: Timestamp.nullable().default(null),
+      revertCommit: z.string().nullable().default(null),
+      revertedBy: z.string().nullable().default(null),
+    })
+    .nullable()
+    .default(null),
   // A REAL, persistent Fly.io deployment of THIS run's own branch — pre-merge
   // verification with a real shareable URL, distinct from `previewUrl` (the
   // static built-artifact preview) and from the project-level Fly deployment
@@ -498,6 +512,22 @@ export const Project = z.object({
   // preview fails to start, or the reviewer times out / returns no readable
   // verdict — deep review never blocks the pipeline, it only strengthens it.
   deepReview: z.boolean().default(false),
+  // Evidence-gated auto-merge (see apps/server/src/merge-policy.ts). Distinct
+  // from `approvalLevel: "full"`, which merges anything non-high-risk with NO
+  // review at all: this merges only when the evidence is actually there, and
+  // when it isn't, the gate says WHICH condition failed. Off by default —
+  // handing a project's merges to evidence is a deliberate decision, never an
+  // inherited default.
+  autoMerge: z
+    .object({
+      enabled: z.boolean().default(false),
+      requireReviewApproval: z.boolean().default(true),
+      requireDeepReviewWhenConfigured: z.boolean().default(true),
+      requireBreakerCleanWhenConfigured: z.boolean().default(true),
+      maxFilesChanged: z.number().int().positive().default(20),
+      maxLinesChanged: z.number().int().positive().default(400),
+    })
+    .default({}),
   // The project driver's latest read of "what stands between this project and
   // done?" (see apps/server/src/drive.ts). Written by the autonomy tick only
   // when the answer CHANGES, so it's a state, not a log — and so the UI can

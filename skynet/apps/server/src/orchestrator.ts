@@ -42,6 +42,7 @@ import { MergeEngine, FEATURE_BRANCH_PREFIX, type MergeRequest } from "./merge.j
 import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { providerUsableFromEnv } from "./provider-env.js";
 import { assessProjectDrive } from "./drive.js";
+import { decideAutoMerge, DEFAULT_AUTO_MERGE_POLICY, GATE_REASON_TEXT } from "./merge-policy.js";
 
 /** How long before a project's board may be re-pulled from its source again. */
 const REFILL_COOLDOWN_MS = 15 * 60 * 1000;
@@ -755,7 +756,8 @@ export class Orchestrator {
           // corrupt an unrelated (already-done) run's state. Step 1 (a task
           // merging INTO its feature branch) is a normal per-run merge in every
           // other respect and needs no special-casing here.
-          onMerged: (req) => (isFeatureUpMerge(req) ? this.completeFeatureMerged(req) : this.completeMerged(req.runId, req.agentBranch)),
+          onMerged: (req, _branch, commit) =>
+            isFeatureUpMerge(req) ? this.completeFeatureMerged(req) : this.completeMerged(req.runId, req.agentBranch, { commit, branch: _branch }),
           onConflict: (req, files, conflictDiff, targetBranch) => this.raiseMergeHitl(req, files, conflictDiff, targetBranch),
           onChecksFailed: async (req, out) => {
             if (isFeatureUpMerge(req)) {
@@ -805,6 +807,15 @@ export class Orchestrator {
   /** Resolve the git backend for a project: its own local repo when git-backed,
    *  else the server-global integration repo, else none (Phase 0 → runnerCwd).
    *  Built on the project's effective base branch. */
+  /** Undo a merge commit on the branch it landed on. Narrow on purpose: the
+   *  caller (Operations.revertRun) owns the validation and the record-keeping;
+   *  this owns resolving the project's git backend, which stays private. */
+  async revertMerge(project: Project | null | undefined, commit: string, branch: string): Promise<string> {
+    const git = this.gitContextFor(project);
+    if (!git) throw new Error("This project has no git backend, so a merge can't be reverted here.");
+    return git.merge.revert(commit, branch);
+  }
+
   private gitContextFor(project?: Project | null): GitContext | undefined {
     const repo = project?.gitBacked && project.repoPath ? project.repoPath : config.integrationRepo;
     return repo ? this.gitContextForRepo(repo, this.baseBranchFor(project)) : undefined;
@@ -1400,6 +1411,29 @@ export class Orchestrator {
       : git
         ? git.merge.integrationBranch(agent.projectId)
         : null;
+    // Evidence-gated auto-merge. Assembled BEFORE the item so the same decision
+    // both routes the diff and explains itself on the card — one computation,
+    // never a UI approximation of a server rule.
+    const reviewTask = (await this.store.listTasks(agent.workspaceId).catch(() => [] as Task[])).find((t) => t.runId === runId);
+    const verdict = reviewTask?.reviewVerdict ?? null;
+    const mergeDecision = decideAutoMerge({
+      policy: project?.autoMerge ?? DEFAULT_AUTO_MERGE_POLICY,
+      autonomy: !!project?.autonomy,
+      risk,
+      requiresHumanGlobs,
+      review: verdict ? { decision: verdict.decision } : null,
+      deepReviewConfigured: !!project?.deepReview,
+      hasDeepReviewEvidence: !!verdict?.evidence?.length,
+      breakerConfigured: !!project?.breakerReview,
+      breakerClean: verdict?.breaker ? verdict.breaker.verdict === "clean" : null,
+      stat: { add: stat.add, del: stat.del, files: stat.files.length },
+    });
+    // Only the conditions worth a chip: "policy-off"/"autonomy-off" describe the
+    // project's settings, not this diff, and would appear on every single card.
+    const gateChips = (project?.autoMerge?.enabled ? mergeDecision.reasons : [])
+      .filter((r) => r !== "policy-off" && r !== "autonomy-off" && r !== "sensitive-paths")
+      .map((r) => GATE_REASON_TEXT[r]);
+
     const item: HitlItem = {
       id: `q-diff-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
@@ -1427,7 +1461,10 @@ export class Orchestrator {
       // The fixed path-policy hits, as scannable chips — the evidence behind a
       // "high" risk on an otherwise-small diff. Empty when nothing in the
       // policy list matched, same as every other gate kind's `flags`.
-      flags: requiresHumanGlobs,
+      // When evidence-gated auto-merge is on and DIDN'T fire, the failing
+      // conditions ride here too, so the card answers "why am I looking at
+      // this?" instead of leaving an operator to infer it from the diff.
+      flags: [...requiresHumanGlobs, ...gateChips],
       sourceBranchOverride: null,
     };
     // `full` autonomy (see ApprovalLevel in @skynet/shared) skips even a diff's
@@ -1456,6 +1493,17 @@ export class Orchestrator {
     if (!opts.skipFullAutonomy && project?.approvalLevel === "full" && project.autonomy && risk !== "high") {
       const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "policy:full-autonomy", at: now() };
       await this.hub.runLog(runId, `auto-merged (policy:full-autonomy): ${item.title}`);
+      await this.hub.raiseAndAutoResolveHitl(item, resolution);
+      await this.deliver(item, resolution);
+      return;
+    }
+    // Evidence-gated auto-merge: the middle ground between "judge every diff
+    // yourself" and `full`'s "merge anything that isn't high-risk". The audit
+    // line records WHAT the evidence was, so "who approved this?" has a better
+    // answer than "the machine did".
+    if (!opts.skipFullAutonomy && mergeDecision.autoMerge) {
+      const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "policy:evidence", at: now() };
+      await this.hub.runLog(runId, `auto-merged (policy:evidence) — ${mergeDecision.explain}`);
       await this.hub.raiseAndAutoResolveHitl(item, resolution);
       await this.deliver(item, resolution);
       return;
@@ -2153,6 +2201,7 @@ export class Orchestrator {
     const agent: TaskRun = {
       id: runId,
       endpoint: runEndpoint,
+      merge: null, // set when (and if) this run's diff actually lands — see completeMerged
       workspaceId: project.workspaceId,
       projectId,
       name: task.text,
@@ -3402,10 +3451,22 @@ export class Orchestrator {
   }
 
   /** Merge committed: free the runner, mark the owning task done, finish the agent. */
-  private async completeMerged(runId: string, branch: string): Promise<void> {
+  private async completeMerged(
+    runId: string,
+    branch: string,
+    landed?: { commit: string | null; branch: string },
+  ): Promise<void> {
     const review = this.reviews.get(runId);
     this.reviews.delete(runId); // integrated — no longer awaiting a revise
     const agent = await this.store.getRun(runId);
+    // Where it landed — the handle a one-click revert needs later. Best-effort:
+    // a merge whose SHA git wouldn't report still completes, it just can't be
+    // undone from the UI (the operator still has git).
+    if (agent && landed?.commit) {
+      await this.hub
+        .upsertRun({ ...agent, merge: { commit: landed.commit, branch: landed.branch, revertedAt: null, revertCommit: null, revertedBy: null } })
+        .catch(() => undefined);
+    }
     await this.freeRunner(agent?.agentId ?? null);
     // Advance the owning task to done alongside the run. Resolve it by the EXACT
     // taskId we stashed when the review was raised (reliable), falling back to a
