@@ -45,9 +45,13 @@ async function setup(projectOver: Partial<Project> = {}) {
   const store = new MemoryStore({ seed: false });
   const hub = new Hub(store, new NullBus());
   const orch = new Orchestrator(store, hub, provider);
-  const ops = new Operations({ store, hub, orchestrator: orch });
+  // Spy on the lint consult so tests can assert which paths kick a
+  // background lint — resync's drift pass must NOT (2026-08-27 incident:
+  // a big re-sync fanning out lint model calls OOM'd the host).
+  const lintConsult = vi.fn(async () => []);
+  const ops = new Operations({ store, hub, orchestrator: orch, lintConsult });
   await store.putProject(mk(projectOver));
-  return { store, ops };
+  return { store, ops, lintConsult };
 }
 
 const fn = <T,>(m: T) => m as unknown as ReturnType<typeof vi.fn>;
@@ -89,6 +93,28 @@ describe("resyncProjectSource", () => {
     const tasks = await store.listTasks(DEFAULT_WORKSPACE);
     expect(tasks).toHaveLength(1); // no duplicate
     expect(tasks[0]).toMatchObject({ text: "New title", description: "new body" });
+  });
+
+  it("a drift update clears any stale lint but does NOT kick a re-lint (bulk path), while a manual edit still does", async () => {
+    const { store, ops, lintConsult } = await setup();
+    const task = await ops.createTask(DEFAULT_WORKSPACE, "p1", { text: "Old title", description: "old body", source: { kind: "github_issue", repo: "acme/app", number: 7, url: "https://x/7" } });
+    // Imported tasks skip the create-time lint too — precondition, not the
+    // thing under test here.
+    expect(lintConsult).not.toHaveBeenCalled();
+    // Give it a stale lint result to prove the drift update clears it.
+    const fresh = await store.getTask(task.id);
+    await store.putTask({ ...fresh!, lint: { concerns: [{ kind: "vague", note: "stale" }], at: new Date().toISOString(), dismissed: false } });
+    fn(githubService.listIssues).mockResolvedValue([{ number: 7, title: "New title", body: "new body", url: "https://x/7", state: "open" }]);
+
+    await ops.resyncProjectSource(DEFAULT_WORKSPACE, "p1");
+    await new Promise((r) => setTimeout(r, 0)); // fire-and-forget lint would land here
+    expect(lintConsult).not.toHaveBeenCalled(); // GitHub's text, bulk path — no lint fan-out
+    expect((await store.getTask(task.id))?.lint).toBeNull(); // stale verdict cleared, not left against new text
+
+    // A human editing the same imported task afterwards still gets the linter.
+    await ops.updateTask(DEFAULT_WORKSPACE, task.id, { text: "Human-tuned title" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(lintConsult).toHaveBeenCalledTimes(1);
   });
 
   it("leaves an already-imported issue alone when nothing changed", async () => {

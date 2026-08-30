@@ -109,7 +109,17 @@ async function runTaskToDone(
   await waitFor(async () => (await store.getTask(taskId))?.state === "done");
 }
 
-async function setup(opts: { deepReview: boolean; verdictReply?: string; secondAgent?: boolean }) {
+async function setup(opts: {
+  deepReview: boolean;
+  verdictReply?: string;
+  secondAgent?: boolean;
+  enabledRunnerCredentialIds?: string[];
+  // A THIRD agent, on a key the project does NOT allow, seeded idle from the
+  // start and never assigned any task — present only to prove
+  // verifyFeatureBeforeShip's reviewer pick honors confinement too, the same
+  // way assignTask's own doer pick already did.
+  disallowedAgent?: { credentialId: string; model: string };
+}) {
   freshRepo();
   const store = new MemoryStore({ seed: false });
   const hub = new Hub(store, new NullBus());
@@ -119,11 +129,27 @@ async function setup(opts: { deepReview: boolean; verdictReply?: string; secondA
   const project: Project = {
     id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [],
     status: "active", repoPath: repo, gitBacked: true, deepReview: opts.deepReview,
+    enabledRunnerCredentialIds: opts.enabledRunnerCredentialIds,
   } as Project;
   await store.putProject(project);
-  await store.putAgent({ id: "a1", workspaceId: DEFAULT_WORKSPACE, name: "a1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 } as Agent);
+  // Inserted BEFORE the allowed agents so a naive `idle[0]` (the pre-fix
+  // behavior) would pick it first — the regression this proves is that the
+  // FILTER, not array order, decides eligibility.
+  if (opts.disallowedAgent) {
+    await store.putAgent({
+      id: "a-disallowed", workspaceId: DEFAULT_WORKSPACE, name: "a-disallowed", provider: "claude",
+      credentialId: opts.disallowedAgent.credentialId, model: opts.disallowedAgent.model, status: "idle", idleSince: 0, canReview: true,
+    } as Agent);
+  }
+  await store.putAgent({
+    id: "a1", workspaceId: DEFAULT_WORKSPACE, name: "a1", provider: "claude",
+    credentialId: opts.enabledRunnerCredentialIds?.[0] ?? null, model: "opus-4.8", status: "idle", idleSince: 0,
+  } as Agent);
   if (opts.secondAgent !== false) {
-    await store.putAgent({ id: "a2", workspaceId: DEFAULT_WORKSPACE, name: "a2", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0, canReview: true } as Agent);
+    await store.putAgent({
+      id: "a2", workspaceId: DEFAULT_WORKSPACE, name: "a2", provider: "claude",
+      credentialId: opts.enabledRunnerCredentialIds?.[0] ?? null, model: "opus-4.8", status: "idle", idleSince: 0, canReview: true,
+    } as Agent);
   }
   const feature: Feature = {
     id: "f1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", name: "Rate limiting",
@@ -204,5 +230,24 @@ describe("feature verification — deepReview on", () => {
     const feature = (await store.getFeature("f1"))!;
     expect(feature.verification?.decision).toBe("pass");
     expect(provider.starts.some((s) => s.runId.startsWith("review-feature-verify-"))).toBe(true);
+  }, 20_000);
+});
+
+describe("feature verification — project runner-key confinement", () => {
+  it("picks the allowed-key agent for verification, skipping past a disallowed one earlier in store order", async () => {
+    const { store, orch, provider } = await setup({
+      deepReview: true,
+      secondAgent: false, // only a1 (allowed) can do the work — proves the pick, not just availability
+      enabledRunnerCredentialIds: ["cred-a"],
+      disallowedAgent: { credentialId: "cred-b", model: "disallowed-model" },
+    });
+    await completeBothTasks(store, orch);
+    await waitFor(async () => (await store.getFeature("f1"))?.status === "shipped");
+
+    const feature = (await store.getFeature("f1"))!;
+    expect(feature.verification?.decision).toBe("pass"); // ran, and against the allowed agent
+    const verifyRun = provider.starts.find((s) => s.runId.startsWith("review-feature-verify-"));
+    expect(verifyRun).toBeDefined();
+    expect(verifyRun!.model).toBe("opus-4.8"); // a1's model — never "disallowed-model"
   }, 20_000);
 });

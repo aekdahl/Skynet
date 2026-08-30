@@ -1498,6 +1498,27 @@ sanitization (a config/instruction-injection primitive into Fly's remote builder
 crafted-not-naive payload to actually work, per the filtering pass); and the review-verdict auto-merge
 prompt splicing unsanitized synced-GitHub-issue-title text into the reviewer LLM's prompt with no
 source-trust gate, reachable only when a project has both public issue sync and `project.autonomy` on.
+- [x] **MCP kept going down, and `--restart=always` could not save it.** Diagnosed live: the app was
+  unreachable while `docker ps` reported *"Up 24 hours"*. `docker inspect` said `running` with
+  `RestartCount=0`, but the PID it named **did not exist on the host**, and `docker exec` gave the game
+  away — *"cannot exec in a stopped state"* — against a container `inspect` still called running. The
+  container's task had died while dockerd kept stale metadata, so the restart policy **never fired**:
+  Docker didn't believe anything had exited. Nothing recovered it, no alert distinguished it from a
+  healthy idle box, and it stayed down until a human noticed — which is the whole shape of the recurring
+  annoyance.
+  Restored by removing the zombie and re-running the startup script (the canonical container definition,
+  rather than a hand-rebuilt `docker run` that could drift). **The durable fix is a liveness watchdog
+  that asks the APPLICATION, not Docker** (`deploy/gcp/startup.sh.tftpl`): a systemd timer curls
+  `:8080` every 60s and, after **3 consecutive** failures, force-recreates the container regardless of
+  what dockerd believes. Deliberately conservative, because an over-eager watchdog is worse than none —
+  consecutive failures only (a blip during a deploy or a GC pause must not trigger it), and at most one
+  recovery per 10 min so a genuinely broken image isn't recreated every minute forever. Recovery
+  re-runs the startup script rather than duplicating the run command, so the two can't drift apart.
+  Verified three ways: the Terraform template renders (`%%{http_code}` and `$${COOLDOWN}` needed
+  escaping — `%{` and `${` are template syntax, and an unescaped one would have broken the next deploy
+  outright); the timer is active on the box; and the decision logic was exercised against a dead port
+  with recovery stubbed — streak 1 → 2 → fires at 3 → clears → cooldown blocks the next — **without
+  taking the live app down to test it**.
 
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
@@ -1529,7 +1550,7 @@ features below are white space.)
 - [x] **Task grouping & per-project roadmap** — added Features (grouping related tasks) and Milestones (planned per-project releases) as a level above the task board, with Steward and Telegram both able to manage them.
 - [x] **Per-project agent instructions (house rules)** — added a per-project instructions field that rides every prompt an agent sees on that project, plus a shared context assembler (project goal, feature, and a sibling-run digest) so a fresh agent starts with relevant project/feature/in-flight context.
 - [x] **Project Context — meeting notes/emails/docs, condensed into the S2 primer** — the operator can now paste or upload raw context (notes, an email, a doc) on a project's Context tab, which Skynet condenses into a short primer that grounds both an agent's task prompt and "ask about this project" chat.
-- [x] **Per-project isolation for credentials & GitHub identity** — a project can now pin its own LLM credential and GitHub PAT, so its runs bill to the right key and its PRs open under the right account regardless of the workspace default.
+- [x] **Per-project isolation for credentials & GitHub identity** — a project can now pin its own LLM credential and GitHub PAT, so its runs bill to the right key and its PRs open under the right account regardless of the workspace default. *Bug fix: `Project.enabledRunnerCredentialIds` (the "Keys" panel's checkbox allowlist — confine a project to specific fleet runner keys) was only enforced by the three sites that ACQUIRE a runner for new work (`acquireAgent`/`acquireOrProvisionRunner`/`acquireSpecificAgent` in `apps/server/src/orchestrator.ts`) — a project restricted to one key was still triaged and auto-reviewed on ANY idle runner in the workspace, because `tickAutonomy`'s triage/periodic-review picks, `requestReview` (manual "Request review"), and `verifyFeatureBeforeShip` (feature-level deep review) each filtered `listAgents` by `status === "idle"` alone, never against the project's allowlist. Root-caused via `keyAllowedForProject`, a single shared helper now used by all seven picking sites (the 3 correct ones refactored onto it too, so a future picking site can't silently reintroduce the gap); a project with no allowed idle runner right now simply skips that tick's triage/review rather than falling back to a disallowed key. Regression-proofed in `tests/project-runner-keys.test.ts` (triage / periodic auto-review / manual request-review, each with the disallowed-key runner as the ONLY idle one) and `tests/feature-verification.test.ts` (feature-level verification correctly skips a disallowed-key idle agent even when it's earlier in store order than the allowed one).*
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.* Also landed: the Roadmap tab's "reads ROADMAP.md" lookup used to dead-end when a repo kept its plan somewhere else — `Project.roadmapPath` now lets the operator (a picker on the tab's empty state) or Steward (`set_roadmap_path`, confirm-first, e.g. "the roadmap is at docs/PLAN.md") point it at any repo-relative file; `resolveRoadmapDoc` is the single place both the tab's API and Steward's own grounding resolve through, so they can't drift.
 - [~] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third
   lane: when a request is better SHOWN than said (review a diff, browse the board, tune the fleet), the
