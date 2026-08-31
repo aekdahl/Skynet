@@ -408,3 +408,87 @@ describe("live events via the rule engine", () => {
     expect(events.filter((e) => e.type === "proposal.upserted")).toEqual([]);
   });
 });
+
+// ── pending rule actions: HTTP read + undo (Phase 6b / TASK 08) ───────────
+// The Activity Feed's "undo · Xm left" chip is powered by these two routes —
+// GET .../pending-actions (Operations.listPendingActionsForProject) and
+// POST /api/pending-actions/:id/undo (Operations.undoRuleAction) — both of
+// which pre-existed at the store/rule-engine layer but had no HTTP surface
+// until this task. Needs a real RuleEngine wired into Operations (the main
+// describe block's `ops` above is built without one, by design).
+describe("HTTP: pending rule actions (Activity Feed)", () => {
+  const PROJECT_ID = "p1";
+
+  async function setup(undoWindowMin: number) {
+    const store = new MemoryStore({ seed: false });
+    const bus = new InProcessBus();
+    const hub = new Hub(store, bus);
+    const engine = new RuleEngine({ store, hub, bus });
+    const orchestrator = new Orchestrator(store, hub, new NullProvider());
+    const ops = new Operations({ store, hub, orchestrator, ruleEngine: engine });
+    const app = Fastify();
+    await registerApi(app, { operations: ops, orchestrator });
+    app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: "Not found" }));
+    await app.ready();
+    await store.putProject({ id: PROJECT_ID, workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" } as Project);
+    await engine.start();
+    await store.putTask({
+      id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: PROJECT_ID, text: "do X", state: "ongoing",
+      runId: null, autoPick: false, assessment: null, reviewVerdict: null, lint: null, priority: null,
+      assignment: { mode: "any", agentIds: [] }, archived: false,
+    } as Task);
+    await seedStarterRules(store, DEFAULT_WORKSPACE, PROJECT_ID, { undoWindowMin });
+    return { store, bus, engine, app };
+  }
+
+  const prMerged = (): ServerEvent => ({
+    type: "github.signal", taskId: "t1", kind: "pr_merged",
+    payload: { prNumber: 1, prUrl: "https://github.com/acme/app/pull/1", branch: "agent/x" },
+  });
+
+  it("only surfaces finalized actions, and undo reverts the task + writes a Transition", async () => {
+    const { store, bus, engine, app } = await setup(1); // real grace window, forced ready below
+
+    bus.publish(DEFAULT_WORKSPACE, prMerged());
+    await waitFor(async () => (await store.listPendingActionsForProject(PROJECT_ID)).length > 0);
+    const pending = (await store.listPendingActionsForProject(PROJECT_ID))[0]!;
+
+    // still "pending" — not finalized yet, so the feed's read endpoint must not surface it
+    const beforeFinalize = await app.inject({
+      method: "GET", url: `/api/projects/${PROJECT_ID}/pending-actions?status=finalized`, headers: AUTH,
+    });
+    expect(beforeFinalize.json()).toEqual([]);
+
+    await store.putPendingRuleAction({ ...pending, readyAt: Date.now() });
+    await engine.sweepPendingActions();
+
+    const listed = await app.inject({
+      method: "GET", url: `/api/projects/${PROJECT_ID}/pending-actions?status=finalized`, headers: AUTH,
+    });
+    expect(listed.statusCode).toBe(200);
+    const finalized = listed.json();
+    expect(finalized).toHaveLength(1);
+    expect(finalized[0].status).toBe("finalized");
+    expect(finalized[0].transitionId).toBeTruthy();
+    expect((await store.getTask("t1"))?.state).toBe("review");
+
+    const undone = await app.inject({
+      method: "POST", url: `/api/pending-actions/${finalized[0].id}/undo`, headers: AUTH,
+    });
+    expect(undone.statusCode).toBe(200);
+    expect(undone.json().status).toBe("undone");
+    expect((await store.getTask("t1"))?.state).toBe("ongoing");
+  });
+
+  it("400s an invalid status filter, and 404s undoing an unknown pending action id", async () => {
+    const { app } = await setup(0);
+
+    const badFilter = await app.inject({
+      method: "GET", url: `/api/projects/${PROJECT_ID}/pending-actions?status=bogus`, headers: AUTH,
+    });
+    expect(badFilter.statusCode).toBe(400);
+
+    const res = await app.inject({ method: "POST", url: `/api/pending-actions/nope/undo`, headers: AUTH });
+    expect(res.statusCode).toBe(404);
+  });
+});
