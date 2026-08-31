@@ -4,6 +4,7 @@ import * as api from "../lib/client";
 import type { StewardActionOutcome } from "@skynet/shared";
 import { Markdown } from "./markdown";
 import { DiffView } from "./diff-view";
+import { AgentChatPanel, runNeedsYou } from "./agent-chat";
 
 // Steward as a right-hand dock available on every page. Workspace-wide by default;
 // when a project is in focus (the page you're on) it's the full project assistant
@@ -33,7 +34,7 @@ const SUGGESTIONS = [
   "Which projects need attention?",
 ];
 
-export function StewardDock({
+function StewardPanel({
   focusProjectId,
   focusProjectName,
   onClose,
@@ -307,13 +308,8 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
   };
 
   return (
-    <aside className="steward-dock" aria-label="Steward">
-      <div className="steward-head">
-        <span className="steward-title mono">✦ STEWARD</span>
-        <span className="steward-scope mono">{effFocusName ? `focused · ${effFocusName}` : "workspace"}</span>
-        <span className="steward-spacer" />
-        <button className="btn btn-ghost btn-sm" onClick={onClose} title="Close Steward" aria-label="Close Steward">✕</button>
-      </div>
+    <>
+      <div className="steward-scopeline mono">{effFocusName ? `focused · ${effFocusName}` : "workspace"}</div>
       <div className="steward-thread" ref={threadRef}>
         {msgs.length === 0 && (
           <div className="asst-welcome">
@@ -400,6 +396,112 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
         />
         <button className="btn btn-primary" type="submit" disabled={busy || !input.trim()}>Ask</button>
       </form>
+    </>
+  );
+}
+
+// ─── The dock shell ────────────────────────────────────────────────────────
+// One persistent surface, tabbed: Steward plus any agent conversations the
+// operator opened. Chats used to live on the run-detail page, so browsing away
+// mid-conversation threw the thread (and a half-typed reply) away — enough of a
+// tax that people stop asking agents things, which is the opposite of what the
+// chat is for.
+//
+// Tabs rather than separate floating widgets: Steward and an agent chat are the
+// same interaction shape, and N independent windows is N things to arrange.
+// Every agent tab closes; the Steward tab is permanent (it IS the dock).
+
+export function StewardDock({
+  focusProjectId,
+  focusProjectName,
+  onClose,
+  seedText,
+  seedNonce,
+  agentTabs,
+  activeTab,
+  onActivateTab,
+  onCloseTab,
+}: {
+  focusProjectId: string | null;
+  focusProjectName: string | null;
+  onClose: () => void;
+  seedText?: string;
+  seedNonce?: number;
+  /** Run ids with an open chat tab, oldest first. */
+  agentTabs: string[];
+  /** "steward", or a runId. */
+  activeTab: string;
+  onActivateTab: (tab: string) => void;
+  onCloseTab: (runId: string) => void;
+}) {
+  const { runs, queue } = useStore();
+  const openGateRunIds = new Set(queue.filter((q) => !q.resolvedAt).map((q) => q.runId));
+  const active = activeTab === "steward" || agentTabs.includes(activeTab) ? activeTab : "steward";
+
+  return (
+    <aside className="steward-dock" aria-label="Assistant dock">
+      <div className="steward-head">
+        <div className="dock-tabs" role="tablist">
+          <button
+            role="tab"
+            aria-selected={active === "steward"}
+            className={"dock-tab" + (active === "steward" ? " on" : "")}
+            onClick={() => onActivateTab("steward")}
+          >
+            ✦ Steward
+          </button>
+          {agentTabs.map((runId) => {
+            const run = runs.find((r) => r.id === runId);
+            // A blocked agent must be visible from wherever the operator is —
+            // that's most of the point of the chat following them around.
+            const needsYou = runNeedsYou(run, openGateRunIds);
+            return (
+              <button
+                key={runId}
+                role="tab"
+                aria-selected={active === runId}
+                className={"dock-tab" + (active === runId ? " on" : "") + (needsYou ? " needsyou" : "")}
+                onClick={() => onActivateTab(runId)}
+                title={run?.name ?? runId}
+              >
+                {needsYou && <span className="dock-tab-dot" aria-label="waiting on you" />}
+                <span className="dock-tab-name">{run?.name ?? "run"}</span>
+                <span
+                  className="dock-tab-x"
+                  role="button"
+                  aria-label={`Close ${run?.name ?? "chat"}`}
+                  onClick={(e) => {
+                    e.stopPropagation(); // closing a tab must never also select it
+                    onCloseTab(runId);
+                  }}
+                >
+                  ✕
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <span className="steward-spacer" />
+        <button className="btn btn-ghost btn-sm" onClick={onClose} title="Close the dock" aria-label="Close the dock">✕</button>
+      </div>
+      {/* Steward stays MOUNTED behind an agent tab rather than unmounting: its
+          thread and half-typed input live in component state, and remounting on
+          every tab switch would throw both away — the exact loss this feature
+          exists to fix. */}
+      <div className={"dock-pane" + (active === "steward" ? "" : " hidden")}>
+        <StewardPanel
+          focusProjectId={focusProjectId}
+          focusProjectName={focusProjectName}
+          onClose={onClose}
+          seedText={seedText}
+          seedNonce={seedNonce}
+        />
+      </div>
+      {agentTabs.map((runId) => (
+        <div key={runId} className={"dock-pane" + (active === runId ? "" : " hidden")}>
+          <AgentChatPanel runId={runId} />
+        </div>
+      ))}
     </aside>
   );
 }
