@@ -358,6 +358,23 @@ async function main() {
     setInterval(sweepStall, Math.max(60_000, config.stallSweepMs)).unref();
   }
 
+  // TASK 10 — pattern-spotted automation onboarding: scans human Transitions
+  // for a repeated manual move and proposes it as a rule (same reaper
+  // pattern as the sweeps above). Separately, a watch-state rule left
+  // unmodified for a week auto-promotes to live. Both 0 disables.
+  if (config.patternDetectSweepMs > 0) {
+    const sweepPatterns = () =>
+      ruleEngine.sweepPatternDetection().catch((err) => app.log.warn(`pattern detection: ${(err as Error).message}`));
+    await sweepPatterns();
+    setInterval(sweepPatterns, Math.max(60_000, config.patternDetectSweepMs)).unref();
+  }
+  if (config.watchPromoteSweepMs > 0) {
+    const sweepWatchPromotion = () =>
+      ruleEngine.sweepWatchPromotion().catch((err) => app.log.warn(`watch promotion: ${(err as Error).message}`));
+    await sweepWatchPromotion();
+    setInterval(sweepWatchPromotion, Math.max(60_000, config.watchPromoteSweepMs)).unref();
+  }
+
   // Telegram messaging bridge + remote kill switch: connects OUT to Telegram
   // (long-poll, no open ports), pushes gate/run notifications to the owner, and
   // accepts owner-only slash-commands (/status, /stop, /quit, …). Fire-and-forget

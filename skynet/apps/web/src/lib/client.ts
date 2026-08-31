@@ -40,6 +40,7 @@ import {
   type RuleLifecycleState,
   type PendingRuleAction,
   type PendingRuleActionStatus,
+  type Proposal,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -550,6 +551,19 @@ export function fetchPendingActions(projectId: string, opts?: { status?: Pending
 
 export function undoRuleAction(pendingId: string) {
   return req<PendingRuleAction>("POST", `/api/pending-actions/${pendingId}/undo`);
+}
+
+// ─── Proposals (Momentum Rollout Phase 1c) — accept / dismiss ──────────────
+// Generic across every ProposalKind; TASK 10's "pattern spotted" card is the
+// first UI to actually call these (`stall_nudge` stays read-only elsewhere —
+// see board.tsx). `activate` only affects a `suggested_rule` proposal (the
+// onboarding card's "TURN IT ON" vs "WATCH FIRST") and is ignored server-side
+// for every other kind.
+export function acceptProposal(projectId: string, proposalId: string, opts?: { activate?: boolean }) {
+  return req<Proposal>("POST", `/api/projects/${projectId}/proposals/${proposalId}/accept`, opts?.activate ? { activate: true } : undefined);
+}
+export function dismissProposal(projectId: string, proposalId: string) {
+  return req<Proposal>("POST", `/api/projects/${projectId}/proposals/${proposalId}/dismiss`);
 }
 
 // ─── Advanced env settings (desktop) ───────────────────────────────────────

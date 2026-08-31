@@ -1451,13 +1451,20 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   });
 
   // ── proposals (Momentum Rollout Phase 1c — accept / dismiss) ────────────
-  app.post<{ Params: { id: string; pid: string } }>("/api/projects/:id/proposals/:pid/accept", async (req, reply) => {
-    try {
-      return await ops.acceptProposal(ws(req), req.params.id, req.params.pid);
-    } catch (err) {
-      return fail(reply, err);
-    }
-  });
+  // `activate` only matters for a suggested_rule proposal — TASK 10's
+  // "TURN IT ON" onboarding action; omitted/false is a plain accept (creates
+  // the rule into "watch", the long-standing default — see acceptProposal's
+  // own doc comment).
+  app.post<{ Params: { id: string; pid: string }; Body: { activate?: boolean } | undefined }>(
+    "/api/projects/:id/proposals/:pid/accept",
+    async (req, reply) => {
+      try {
+        return await ops.acceptProposal(ws(req), req.params.id, req.params.pid, { activate: req.body?.activate === true });
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
   app.post<{ Params: { id: string; pid: string } }>("/api/projects/:id/proposals/:pid/dismiss", async (req, reply) => {
     try {
       return await ops.dismissProposal(ws(req), req.params.id, req.params.pid);

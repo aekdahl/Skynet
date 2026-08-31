@@ -18,6 +18,7 @@ import { config } from "../config.js";
 import { now } from "../config.js";
 import {
   ProposalKind,
+  SuggestedRulePayload,
   TaskState,
   type PendingRuleAction,
   type Project,
@@ -202,16 +203,29 @@ export class RuleEngine {
     if (this.inFlight.has(ctx.taskId)) return; // reentrancy guard — see the field's own doc comment
     this.inFlight.add(ctx.taskId);
     try {
+      const all = await this.store.listRulesForProject(ctx.projectId);
+      const liveRules = all.filter((r) => r.state === "live");
+      const watchRules = all.filter((r) => r.state === "watch");
       // Inert until the project has opted in — no behavior change otherwise.
-      const rules = (await this.store.listRulesForProject(ctx.projectId)).filter((r) => r.state === "live");
-      if (rules.length === 0) return;
+      if (liveRules.length === 0 && watchRules.length === 0) return;
       let task = await this.store.getTask(ctx.taskId);
       if (!task) return;
       const lastSignalAt = await this.lastSignalAt(task);
-      for (const rule of rules) {
+      for (const rule of liveRules) {
         const evalCtx: EvalContext = { task, event, now: now(), lastSignalAt };
         if (rule.conditions.every((c) => matchCondition(c, evalCtx))) {
           task = await this.dispatch(rule, task, [describeTrigger(event)]);
+        }
+      }
+      // TASK 10 — "watch = evaluated and logged, never acts" (RuleLifecycleState's
+      // own doc comment, previously unimplemented — see the sweepPatternDetection
+      // header comment for the fuller history). A match here bumps
+      // stats.watchMatches only: no dispatch, no PendingRuleAction, no Transition,
+      // task itself never re-read since a watch rule can never mutate it.
+      for (const rule of watchRules) {
+        const evalCtx: EvalContext = { task, event, now: now(), lastSignalAt };
+        if (rule.conditions.every((c) => matchCondition(c, evalCtx))) {
+          await this.hub.upsertRule({ ...rule, stats: { ...rule.stats, watchMatches: rule.stats.watchMatches + 1 } });
         }
       }
     } finally {
@@ -520,6 +534,157 @@ export class RuleEngine {
       resolvedAt: null,
     });
   }
+
+  // ── pattern-spotted automation onboarding (TASK 10, Phase 8) ─────────────
+  // Closes the loop: a repeated MANUAL move becomes a proposed rule instead of
+  // staying tribal knowledge. Deliberately scoped down from the original
+  // brief in one honest way — "similar triggering condition (e.g. same label
+  // present)" has no backing data anywhere in this codebase (no `Task.labels`
+  // field, no label webhook parsing — confirmed by reading the whole model
+  // before writing this) and the engine's condition vocabulary
+  // (RULE_CONDITION_OPS above) has no label/priority-equals operator to
+  // express one even if it did. Rather than fabricate a "similar condition"
+  // signal, the detector groups purely on {from,to} — the one dimension it
+  // can honestly support end-to-end through the SAME `state_equals` operator
+  // the engine already evaluates for real.
+  private static readonly ASSUMED_MINUTES_PER_MANUAL_MOVE = 2;
+
+  /** The pattern a draft/saved suggested_rule's conditions+actions encode —
+   *  `state_equals` condition value → `move_task` action's toState. Null if
+   *  the rule isn't shaped like a pattern-detector proposal (defensive: a
+   *  hand-authored suggested_rule with a different shape shouldn't crash the
+   *  dedup check, just never match one). Shared between the detector (to
+   *  build a fresh proposal's key) and its own dedup check (to compare
+   *  against every existing one) so they can never disagree. */
+  private patternKeyOf(conditions: RuleCondition[], actions: RuleAction[]): string | null {
+    const stateCond = conditions.find((c) => c.op === "state_equals");
+    const toState = moveTargetState(actions.find((a) => a.type === "move_task") ?? { type: "", params: null });
+    if (!stateCond || !toState) return null;
+    return `${String(stateCond.value)}->${toState}`;
+  }
+
+  async sweepPatternDetection(): Promise<void> {
+    const nowMs = now();
+    const windowMs = Math.max(1, config.patternDetectWindowDays) * 24 * 60 * 60 * 1000;
+    const threshold = Math.max(1, config.patternDetectThreshold);
+    const projects = await this.store.listAllProjects().catch(() => [] as Project[]);
+    for (const project of projects) await this.detectPatternsForProject(project, nowMs, windowMs, threshold).catch(() => undefined);
+  }
+
+  private async detectPatternsForProject(project: Project, nowMs: number, windowMs: number, threshold: number): Promise<void> {
+    const since = nowMs - windowMs;
+    // actor:"human" + ruleId:null is exactly "a human manually moved this
+    // card" (see Transition's own doc comment) — a rule-driven move, even one
+    // an operator later approved via the announce window, is never tribal
+    // knowledge to rediscover.
+    const manual = (await this.store.listTransitionsForProject(project.id))
+      .filter((t) => t.actor === "human" && t.ruleId === null && t.at >= since);
+    if (manual.length === 0) return;
+
+    // Group by the exact {from,to} move. Distinct TASK count (not raw
+    // transition count) is what has to clear the threshold — one task
+    // bounced back and forth several times is noise, not a workflow pattern.
+    const groups = new Map<string, Transition[]>();
+    for (const t of manual) {
+      const key = `${t.from}->${t.to}`;
+      const g = groups.get(key);
+      if (g) g.push(t);
+      else groups.set(key, [t]);
+    }
+
+    // Suppression covers three cases, all keyed by the SAME {from,to} pattern
+    // signature: (1) already pending — don't propose it twice; (2) explicitly
+    // dismissed ("Never") — the dismissed row itself IS the suppression
+    // record (see dismissProposal's own doc comment); (3) already ACCEPTED
+    // into a real Rule — the historical Transitions that earned it a
+    // proposal never expire from the window on their own, so without this
+    // case every subsequent sweep would re-propose the exact pattern an
+    // operator already turned on or is watching (caught live: "Turn it on"
+    // a pattern, run the sweep again, get the identical proposal back).
+    const existingProposals = await this.store.listProposalsForProject(project.id);
+    const existingRules = await this.store.listRulesForProject(project.id);
+    const suppressedKeys = new Set([
+      ...existingProposals
+        .filter((p) => p.kind === "suggested_rule" && (p.status === "pending" || p.status === "dismissed"))
+        .map((p) => {
+          const parsed = SuggestedRulePayload.safeParse(p.payload);
+          return parsed.success ? this.patternKeyOf(parsed.data.conditions, parsed.data.actions) : null;
+        }),
+      ...existingRules.filter((r) => !r.archived).map((r) => this.patternKeyOf(r.conditions, r.actions)),
+    ].filter((k): k is string => k !== null));
+
+    for (const [key, transitions] of groups) {
+      const distinctTaskIds = new Set(transitions.map((t) => t.taskId));
+      if (distinctTaskIds.size < threshold) continue;
+      if (suppressedKeys.has(key)) continue; // already proposed, dismissed, or already a real rule — don't re-propose
+
+      const [from, to] = key.split("->") as [TaskState, TaskState];
+      const matchCount = transitions.length;
+      // Denominator: every human move OUT of `from` in the window, to ANY
+      // destination — matchRate answers "of the times a task left `from`
+      // under human control, how often did it land specifically on `to`."
+      const leftFrom = manual.filter((t) => t.from === from).length;
+      const matchRate = leftFrom > 0 ? matchCount / leftFrom : 0;
+      const monthlyRate = matchCount * (30 / (windowMs / (24 * 60 * 60 * 1000)));
+      const estimatedMinutesSavedPerMonth = Math.round(monthlyRate * RuleEngine.ASSUMED_MINUTES_PER_MANUAL_MOVE);
+
+      const fromLabel = titleCase(from);
+      const toLabel = titleCase(to);
+      const conditions: RuleCondition[] = [{ field: "state", op: "state_equals", value: from }];
+      const actions: RuleAction[] = [{ type: "move_task", params: { toState: to } }];
+      const payload: SuggestedRulePayload = {
+        name: `Auto: ${fromLabel} → ${toLabel}`,
+        when: `WHEN task state is ${fromLabel} THEN move task to ${toLabel}`,
+        conditions,
+        actions,
+        safety: { announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
+        detected: {
+          sampleSize: matchCount,
+          matchCount,
+          matchRate,
+          windowDays: config.patternDetectWindowDays,
+          estimatedMinutesSavedPerMonth,
+        },
+      };
+      await this.hub.upsertProposal({
+        id: `prop-pattern-${project.id}-${++this.seq}`,
+        workspaceId: project.workspaceId,
+        projectId: project.id,
+        kind: "suggested_rule",
+        payload,
+        status: "pending",
+        createdAt: nowMs,
+        resolvedAt: null,
+      });
+    }
+  }
+
+  /** A watch-state rule sitting unmodified for `config.watchPromoteAfterMs`
+   *  since it last entered watch auto-promotes to live — the "WATCH FIRST"
+   *  onboarding action's own promise. "Unmodified" = `updatedAt` (falling
+   *  back to `createdAt` for a rule persisted before that field existed)
+   *  never moved past `watchStartedAt` — an operator editing conditions/
+   *  actions/safety/name/state during the week is read as active tuning,
+   *  not silent approval, so it's left alone rather than flipped live behind
+   *  their back. */
+  async sweepWatchPromotion(): Promise<void> {
+    const nowMs = now();
+    const ageThreshold = Math.max(0, config.watchPromoteAfterMs);
+    const projects = await this.store.listAllProjects().catch(() => [] as Project[]);
+    for (const project of projects) {
+      const watching = (await this.store.listRulesForProject(project.id))
+        .filter((r) => r.state === "watch" && r.watchStartedAt != null && nowMs - r.watchStartedAt >= ageThreshold);
+      for (const rule of watching) {
+        const lastTouched = rule.updatedAt ?? rule.createdAt;
+        if (lastTouched > rule.watchStartedAt!) continue; // edited during the watch week — leave it to the operator
+        await this.hub.upsertRule({ ...rule, state: "live", watchStartedAt: null }).catch(() => undefined);
+      }
+    }
+  }
+}
+
+function titleCase(s: string): string {
+  return s.length === 0 ? s : s[0]!.toUpperCase() + s.slice(1);
 }
 
 function paramString(action: RuleAction, field: string): string {

@@ -2225,6 +2225,8 @@ export class Operations {
 
   async createRule(ws: string, projectId: string, req: CreateRuleRequest): Promise<Rule> {
     await this.getProject(ws, projectId);
+    const createdAt = now();
+    const state = req.state ?? "live";
     const rule: Rule = {
       id: this.uid("rule"),
       workspaceId: ws,
@@ -2234,10 +2236,14 @@ export class Operations {
       conditions: req.conditions,
       actions: req.actions,
       safety: req.safety ?? { announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
-      stats: { moves: 0, undos: 0 },
-      state: req.state ?? "live",
+      stats: { moves: 0, undos: 0, watchMatches: 0 },
+      state,
       pausedReason: null,
-      createdAt: now(),
+      createdAt,
+      // TASK 10 — a rule created straight into watch starts its promotion
+      // clock immediately, same as one that enters watch via updateRule.
+      watchStartedAt: state === "watch" ? createdAt : null,
+      updatedAt: createdAt,
       archived: false,
     };
     return this.hub.upsertRule(rule);
@@ -2245,6 +2251,8 @@ export class Operations {
 
   async updateRule(ws: string, ruleId: string, req: UpdateRuleRequest): Promise<Rule> {
     const rule = await this.getRule(ws, ruleId);
+    const enteringWatch = req.state === "watch" && rule.state !== "watch";
+    const leavingWatch = req.state !== undefined && req.state !== "watch" && rule.state === "watch";
     return this.hub.upsertRule({
       ...rule,
       ...(req.name !== undefined ? { name: req.name } : {}),
@@ -2258,6 +2266,15 @@ export class Operations {
       // supersedes whatever tripped it before.
       ...(req.state !== undefined ? { state: req.state, pausedReason: null } : {}),
       ...(req.archived !== undefined ? { archived: req.archived } : {}),
+      // TASK 10 — restart the promotion clock on every fresh entry into
+      // watch, clear it the moment the rule leaves watch either direction.
+      ...(enteringWatch ? { watchStartedAt: now() } : {}),
+      ...(leavingWatch ? { watchStartedAt: null } : {}),
+      // Any explicit edit counts as "touched" for sweepWatchPromotion's
+      // unmodified-for-a-week check — including a state-only change (an
+      // operator manually flipping watch→live IS a deliberate decision, so
+      // there's nothing left for the auto-promotion sweep to do anyway).
+      updatedAt: now(),
     });
   }
 
@@ -2314,11 +2331,18 @@ export class Operations {
     return proposal;
   }
 
-  async acceptProposal(ws: string, projectId: string, proposalId: string): Promise<Proposal> {
+  /** `opts.activate` only matters for a `suggested_rule` proposal (every
+   *  other kind ignores it): true is the pattern-onboarding card's "TURN IT
+   *  ON" action — creates the Rule straight into `state:"live"` instead of
+   *  the default `"watch"` (the onboarding card's "WATCH FIRST" action is
+   *  just a plain accept, `activate` omitted/false). Defaulting to false
+   *  keeps every existing caller's behavior — including SuggestedRulePayload's
+   *  own doc comment ("watch, never live") — unchanged. */
+  async acceptProposal(ws: string, projectId: string, proposalId: string, opts: { activate?: boolean } = {}): Promise<Proposal> {
     const proposal = await this.getProposal(ws, proposalId);
     if (proposal.projectId !== projectId) throw new NotFoundError("Proposal");
     if (proposal.status !== "pending") throw new ProposalAlreadyResolvedError(proposal.status);
-    const { proposal: resolved } = await this.applyProposalAccept(proposal);
+    const { proposal: resolved } = await this.applyProposalAccept(proposal, opts);
     return resolved;
   }
 
@@ -2339,7 +2363,7 @@ export class Operations {
    *  subtask-specific accept/accept-all below. Always marks the proposal
    *  accepted; returns whichever new entity (if any) it created so callers
    *  that care (acceptSubtask) can hand it back. */
-  private async applyProposalAccept(proposal: Proposal): Promise<{ proposal: Proposal; task?: Task; rule?: Rule }> {
+  private async applyProposalAccept(proposal: Proposal, opts: { activate?: boolean } = {}): Promise<{ proposal: Proposal; task?: Task; rule?: Rule }> {
     let task: Task | undefined;
     let rule: Rule | undefined;
     switch (proposal.kind) {
@@ -2365,8 +2389,13 @@ export class Operations {
       case "suggested_rule": {
         const parsed = SuggestedRulePayload.safeParse(proposal.payload);
         if (!parsed.success) throw new Error(`This proposal's payload doesn't match the expected shape for "suggested_rule".`);
-        // "watch", never "live" — see SuggestedRulePayload's own doc comment.
-        rule = await this.createRule(proposal.workspaceId, proposal.projectId, { ...parsed.data, state: "watch" });
+        // Default "watch", never "live" — see SuggestedRulePayload's own doc
+        // comment. `opts.activate` (TASK 10's "TURN IT ON" onboarding action)
+        // is the one deliberate, explicit override of that default.
+        rule = await this.createRule(proposal.workspaceId, proposal.projectId, {
+          ...parsed.data,
+          state: opts.activate ? "live" : "watch",
+        });
         break;
       }
       case "suggested_reassignment":

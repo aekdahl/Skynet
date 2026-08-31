@@ -417,4 +417,35 @@ export const SCENARIOS: Scenario[] = [
       return steps;
     },
   },
+  {
+    id: "pattern-onboarding-accept-dismiss",
+    name: "Pattern-spotted onboarding's accept/dismiss endpoints",
+    desc: "Waiting for the real pattern detector to fire needs weeks of genuine manual-move history (by design — see sweepPatternDetection's own doc comment), so this exercises the generic accept/dismiss refusal path against a nonexistent proposal id — control-plane only, no seeded detector trigger needed.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: pattern onboarding ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      const s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+
+      try {
+        await api.acceptProposal(p.id, "nonexistent-proposal-id");
+        steps.push(step("accepting an unknown proposal is refused", false, "did not throw"));
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : 0;
+        steps.push(step("accepting an unknown proposal is refused", status === 404, `status ${status}`));
+      }
+
+      try {
+        await api.dismissProposal(p.id, "nonexistent-proposal-id");
+        steps.push(step("dismissing an unknown proposal is refused", false, "did not throw"));
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : 0;
+        steps.push(step("dismissing an unknown proposal is refused", status === 404, `status ${status}`));
+      }
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
 ];

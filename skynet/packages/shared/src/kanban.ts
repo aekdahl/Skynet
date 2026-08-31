@@ -77,6 +77,11 @@ export type RuleSafety = z.infer<typeof RuleSafety>;
 export const RuleStats = z.object({
   moves: z.number().default(0),
   undos: z.number().default(0),
+  // TASK 10 — a watch-state rule's conditions matching a live signal without
+  // acting ("evaluated and logged", per RuleLifecycleState's own comment).
+  // Bumped by the SAME handleEvent pass that dispatches live rules, never by
+  // the pattern detector itself (that only ever writes a Proposal).
+  watchMatches: z.number().default(0),
 });
 export type RuleStats = z.infer<typeof RuleStats>;
 
@@ -98,7 +103,7 @@ export const Rule = z.object({
   conditions: z.array(RuleCondition).default([]),
   actions: z.array(RuleAction).default([]),
   safety: RuleSafety.default({ announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] }),
-  stats: RuleStats.default({ moves: 0, undos: 0 }),
+  stats: RuleStats.default({ moves: 0, undos: 0, watchMatches: 0 }),
   state: RuleLifecycleState.default("live"),
   // Set only when the auto-pause breaker flips `state` to "paused" on its
   // own (undo count crossed `safety.pauseAfterUndos` within a rolling
@@ -106,6 +111,18 @@ export const Rule = z.object({
   // null. Null whenever `state !== "paused"` or a human paused it.
   pausedReason: z.string().nullable().default(null),
   createdAt: Timestamp,
+  // TASK 10 — when this rule most recently entered "watch" (set on create
+  // with state:"watch" and on every updateRule that flips INTO watch; cleared
+  // back to null the moment it leaves watch, whichever direction). Distinct
+  // from `createdAt` since a rule can cycle live→watch→live more than once;
+  // the auto-promotion sweep needs to know when the CURRENT watch stint
+  // began, not when the rule was first created.
+  watchStartedAt: Timestamp.nullable().default(null),
+  // TASK 10 — bumped on every updateRule call (any field). Rows persisted
+  // before this field existed read back as `undefined` (JSONB storage isn't
+  // re-validated through this schema's defaults on read) — always compare
+  // via `rule.updatedAt ?? rule.createdAt`, never this field bare.
+  updatedAt: Timestamp.optional(),
   archived: z.boolean().default(false),
 });
 export type Rule = z.infer<typeof Rule>;
@@ -168,12 +185,31 @@ export type SuggestedSubtaskPayload = z.infer<typeof SuggestedSubtaskPayload>;
 // see RuleLifecycleState's own doc comment: a suggestion hasn't earned an
 // operator's trust to act yet, only to be evaluated and logged. Promoting it
 // to live is a deliberate, separate updateRule call.
+// TASK 10 — populated only when a suggested_rule Proposal came from the
+// automated pattern detector (rules/engine.ts's sweepPatternDetection), not a
+// hand-authored suggestion (none exists yet, but the field stays optional so
+// one could exist later without this shape lying). Powers the "pattern
+// spotted" card's stats row — computed once at detection time, not live.
+export const DetectedPatternStats = z.object({
+  sampleSize: z.number(),
+  matchCount: z.number(),
+  // 0..1 — of every human move OUT of the trigger state in the detection
+  // window, the fraction that landed specifically on this pattern's target
+  // state. Not "how many times we saw this" (that's matchCount) — how
+  // RELIABLY this exact move is what a human does next.
+  matchRate: z.number(),
+  windowDays: z.number(),
+  estimatedMinutesSavedPerMonth: z.number(),
+});
+export type DetectedPatternStats = z.infer<typeof DetectedPatternStats>;
+
 export const SuggestedRulePayload = z.object({
   name: z.string().min(1),
   when: z.string(),
   conditions: z.array(RuleCondition).default([]),
   actions: z.array(RuleAction).default([]),
   safety: RuleSafety.optional(),
+  detected: DetectedPatternStats.optional(),
 });
 export type SuggestedRulePayload = z.infer<typeof SuggestedRulePayload>;
 

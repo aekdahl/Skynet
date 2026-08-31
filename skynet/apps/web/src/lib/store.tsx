@@ -294,6 +294,12 @@ export interface Store extends StoreState {
   // feed can optimistically update the row immediately — no WS event exists
   // for a pending action's own lifecycle, only the Transition it produces.
   undoRuleAction: (pendingId: string) => Promise<PendingRuleAction | null>;
+  // Generic proposal accept/dismiss (Phase 1c) — TASK 10's pattern-spotted
+  // card is the first UI to call these. `activate` only matters for a
+  // suggested_rule proposal (see client.ts's acceptProposal doc comment).
+  // Both resolved states ride back on the `proposal.upserted` WS echo.
+  acceptProposal: (projectId: string, proposalId: string, opts?: { activate?: boolean }) => Promise<Proposal | null>;
+  dismissProposal: (projectId: string, proposalId: string) => Promise<void>;
   createAgent: (provider: string, model: string, name?: string, credentialId?: string, label?: string | null) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string; canReview?: boolean; label?: string | null; credentialId?: string | null }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
@@ -909,6 +915,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         } catch (e) {
           toast(serverMessage(e, "Couldn't undo that action — the window may have passed."));
           return null;
+        }
+      },
+      acceptProposal: async (projectId, proposalId, opts) => {
+        try {
+          return await api.acceptProposal(projectId, proposalId, opts);
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't accept that proposal."));
+          return null;
+        }
+      },
+      dismissProposal: async (projectId, proposalId) => {
+        try {
+          await api.dismissProposal(projectId, proposalId);
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't dismiss that proposal."));
         }
       },
       createAgent: async (provider, model, name, credentialId, label) => {
