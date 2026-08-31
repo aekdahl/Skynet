@@ -33,6 +33,7 @@ import { InformComposer, toastInformResult } from "./fleet";
 import { toast } from "../components/toast";
 import { MomentumBoard } from "../kanban/board";
 import { RulesTab } from "../kanban/rules";
+import { ActivityFeed } from "../kanban/feed";
 import { BoardHealth } from "../kanban/health";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -1673,10 +1674,10 @@ export function ProjectView({
   // Per-project lens (Kanban is the default; Archived shows soft-hidden tasks +
   // restore; Roadmap renders ROADMAP.md from the repo). Persisted per-project in
   // sessionStorage so switching back restores the last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "coverage" | "rules" | "archived" | "health">(() => {
+  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "coverage" | "rules" | "feed" | "archived" | "health">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "roadmap" || v === "context" || v === "coverage" || v === "rules" || v === "archived" || v === "health" ? v : "kanban";
+    return v === "roadmap" || v === "context" || v === "coverage" || v === "rules" || v === "feed" || v === "archived" || v === "health" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -2103,6 +2104,7 @@ export function ProjectView({
               "roadmap",
               "context",
               "coverage",
+              "feed",
               "health",
               "archived",
             ] as const
@@ -2112,7 +2114,7 @@ export function ProjectView({
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : id === "rules" ? "Rules" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "health" ? "Health" : "Archived"}
+              {id === "kanban" ? "Kanban" : id === "rules" ? "Rules" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "feed" ? "Feed" : id === "health" ? "Health" : "Archived"}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
@@ -2142,8 +2144,11 @@ export function ProjectView({
         <ProjectQualityView project={project} />
       ) : lens === "context" ? (
         <ProjectContextView project={project} />
+      ) : lens === "feed" ? (
+        <ActivityFeed project={project} tasks={tasks} now={now} onOpenTask={onOpenTask} />
       ) : lens === "health" ? (
         <BoardHealth project={project} tasks={tasks} now={now} onOpenTask={onOpenTask} />
+
       ) : lens === "archived" ? (
         <div className="projview-archived">
           {archivedTasks.length === 0 ? (

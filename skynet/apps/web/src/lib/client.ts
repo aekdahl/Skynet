@@ -38,6 +38,8 @@ import {
   type RuleAction,
   type RuleSafety,
   type RuleLifecycleState,
+  type PendingRuleAction,
+  type PendingRuleActionStatus,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -518,6 +520,20 @@ export interface BacktestResult {
  *  doc comment on BacktestRuleRequest). */
 export function backtestRule(projectId: string, body: { conditions: RuleCondition[]; actions?: RuleAction[]; safety?: RuleSafety }) {
   return req<BacktestResult>("POST", `/api/projects/${projectId}/rules/backtest`, body);
+}
+
+// ─── Activity Feed (Phase 6b) — undo window ─────────────────────────────────
+// Which rule-engine actions are still cancellable, and the undo call itself.
+// No WS event exists for a PendingRuleAction's own lifecycle (only the
+// Transition it eventually produces is live) — the feed refetches this
+// periodically and updates the acted-on row optimistically on a successful undo.
+export function fetchPendingActions(projectId: string, opts?: { status?: PendingRuleActionStatus }) {
+  const qs = opts?.status ? `?status=${opts.status}` : "";
+  return req<PendingRuleAction[]>("GET", `/api/projects/${projectId}/pending-actions${qs}`);
+}
+
+export function undoRuleAction(pendingId: string) {
+  return req<PendingRuleAction>("POST", `/api/pending-actions/${pendingId}/undo`);
 }
 
 // ─── Advanced env settings (desktop) ───────────────────────────────────────

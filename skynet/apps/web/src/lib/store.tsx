@@ -17,6 +17,7 @@ import type {
   Milestone,
   Module,
   ParallelismNudge,
+  PendingRuleAction,
   Project,
   ProjectCharter,
   ProviderId,
@@ -282,6 +283,11 @@ export interface Store extends StoreState {
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
   answerClarification: (projectId: string, taskId: string, answer: string) => Promise<void>;
+  // Activity Feed (Phase 6b) — cancel a rule-engine action within its undo
+  // window. Returns the updated PendingRuleAction (status "undone") so the
+  // feed can optimistically update the row immediately — no WS event exists
+  // for a pending action's own lifecycle, only the Transition it produces.
+  undoRuleAction: (pendingId: string) => Promise<PendingRuleAction | null>;
   createAgent: (provider: string, model: string, name?: string, credentialId?: string, label?: string | null) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string; canReview?: boolean; label?: string | null; credentialId?: string | null }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
@@ -884,6 +890,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // every other task mutation here — nothing to apply locally.
       answerClarification: async (projectId, taskId, answer) => {
         await api.answerClarification(projectId, taskId, answer);
+      },
+      undoRuleAction: async (pendingId) => {
+        try {
+          return await api.undoRuleAction(pendingId);
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't undo that action — the window may have passed."));
+          return null;
+        }
       },
       createAgent: async (provider, model, name, credentialId, label) => {
         await api.createAgent({ provider, model, name, credentialId, label });
