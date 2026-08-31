@@ -49,6 +49,7 @@ export function devToolsEnabled(): boolean {
 export const DEV_ONLY_VIEWS: ReadonlySet<ViewName> = new Set<ViewName>([
   "acceptance",
   "simulation",
+  "designTokens",
 ]);
 
 /** Coerce a dev-only view to "home" when internal tooling is off — so a release

@@ -75,6 +75,78 @@
      rules with one silent drift (a translucent accent) and one with no visible
      cue at all. */
   --input-focus-border:     var(--accent);
+
+  /* ─── "Automated Kanban" design tokens (Momentum Rollout Phase 3) ─────────
+     The exact token set from an external design handoff for the new kanban
+     board — treat these VALUES as fixed, not a starting point to improvise
+     from. Prefixed `--ak-` (distinct from the app's EXISTING `.kb-*`/task-
+     board classes above, which predate this handoff and mean something
+     different — a shared `kb-` prefix would silently collide with those).
+     Extends this SAME token system (this file, this `:root`) rather than
+     forking a second one; a handoff value that's a near-duplicate of an
+     existing neutral reuses that token below instead of adding another. */
+
+  /* Colors — dark, this board's native theme. */
+  --ak-canvas: #08090B;
+  --ak-surface-0: #0B0C0F;
+  --ak-surface-1: #0D0E11;
+  --ak-surface-2: #101319;
+  --ak-surface-3: #14161B;
+  --ak-border: #1D2027;
+  --ak-border-strong: #23262D;
+  --ak-border-subtle: #14161B;
+  --ak-hairline: #1A1D23;
+  --ak-track: #2A2F37;
+  --ak-text-primary: #ECEEF1;
+  --ak-text-secondary: #B9BEC6;
+  --ak-text-muted: #8A9099;
+  --ak-text-faint: #5E656F;
+  --ak-epic-purple: #C79BFF;
+  /* Semantic colors — HARD RULE: never use these decoratively, only for the
+     provenance/status meaning named. */
+  --ak-machine: #D3F26A; /* lime — a rule/automation did this */
+  --ak-machine-deep: #7FD16A; /* completed/closed by machine */
+  --ak-human: #6AA8FF; /* blue — a person did this */
+  --ak-warn: #F2B45C; /* amber — nothing is happening and that's a problem.
+    Deliberately its OWN token, not this file's existing --warn (#E8C64A):
+    same role, but a different fixed value from the handoff — aliasing it to
+    --warn would silently shift the app's existing caution color everywhere
+    else --warn is already used. */
+
+  /* Type — Space Grotesk is already this file's --font-ui (self-hosted below,
+     fonts.css); reused as-is rather than adding a duplicate token. JetBrains
+     Mono is a NEW mono face for this board's metadata/labels/numbers,
+     distinct from the rest of the app's --font-mono (IBM Plex Mono). */
+  --ak-font-mono: 'JetBrains Mono', monospace;
+
+  /* Spacing steps (px) — flex/grid `gap` only; no margin-based spacing
+     between siblings in any "Automated Kanban" component. */
+  --ak-sp-3: 3px;   --ak-sp-5: 5px;   --ak-sp-6: 6px;   --ak-sp-7: 7px;
+  --ak-sp-8: 8px;   --ak-sp-9: 9px;   --ak-sp-10: 10px; --ak-sp-11: 11px;
+  --ak-sp-12: 12px; --ak-sp-13: 13px; --ak-sp-14: 14px; --ak-sp-16: 16px;
+  --ak-sp-18: 18px; --ak-sp-20: 20px; --ak-sp-22: 22px; --ak-sp-24: 24px;
+  --ak-pad-screen: var(--ak-sp-18);  /* 18–20px — pick the tighter end, cards opt up to 20 as needed */
+  --ak-pad-column: var(--ak-sp-16);
+  --ak-pad-card: var(--ak-sp-12);    /* 12–13px */
+  --ak-gap-card: var(--ak-sp-12);    /* 12–13px */
+
+  /* Radii (px). */
+  --ak-radius-bar: 4px;      /* chips/bars */
+  --ak-radius-sm: 6px;       /* buttons/small chips, 5–7 */
+  --ak-radius-row: 8px;      /* list rows */
+  --ak-radius-card: 9px;     /* cards, 9–10 */
+  --ak-radius-panel: 12px;   /* panels/screens, 11–12 */
+  --ak-radius-pill: 16px;    /* pills, 14–20 */
+  --ak-radius-round: 50%;    /* avatars/nodes/rings */
+
+  /* Shadows — dark-theme soft. */
+  --ak-shadow-focus-card: 0 1px 2px rgba(0, 0, 0, .4);
+  --ak-shadow-orbit-ready: 0 8px 24px rgba(0, 0, 0, .35);
+
+  /* Focus ring + node/dot halo (lime; amber variant at a lower alpha). */
+  --ak-focus-ring: 0 0 0 2px rgba(211, 242, 106, .5);
+  --ak-halo-lime: 0 0 0 4px rgba(211, 242, 106, .15);
+  --ak-halo-amber: 0 0 0 4px rgba(211, 242, 106, .14);
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 /* Baseline keyboard-focus ring for every interactive element — previously only
