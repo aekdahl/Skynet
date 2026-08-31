@@ -39,10 +39,19 @@ export type RuleConditionOp = (typeof RULE_CONDITION_OPS)[number];
 export const RULE_ACTION_TYPES = ["move_task", "add_label", "post_slack_nudge", "create_proposal"] as const;
 export type RuleActionType = (typeof RULE_ACTION_TYPES)[number];
 
-interface EvalContext {
+// Exported for the backtest endpoint (operations.ts's backtestRule) — a
+// draft, not-yet-saved Rule's conditions replayed against the project's
+// historical Transition log, reusing the exact same per-condition matcher
+// the live engine dispatches through, so a backtest result can never
+// disagree with what the real engine would have done for the same input.
+export interface EvalContext {
   task: Task;
   /** null for a periodic sweep tick (e.g. time_since_signal_gt) — every other
-   *  condition needs a live event to have anything to check. */
+   *  condition needs a live event to have anything to check. Also null for a
+   *  backtest replay: a historical Transition's `evidence` strings aren't a
+   *  reconstructable ServerEvent, so event-shaped ops (label_contains,
+   *  pr_merged, checks_green) honestly never match in a backtest — see
+   *  matchCondition's own switch below, not a backtest-specific carve-out. */
   event: ServerEvent | null;
   now: number;
   lastSignalAt: number;
@@ -57,7 +66,7 @@ interface ActionResult {
   evidence: string[];
 }
 
-function matchCondition(cond: RuleCondition, ctx: EvalContext): boolean {
+export function matchCondition(cond: RuleCondition, ctx: EvalContext): boolean {
   switch (cond.op) {
     case "state_equals":
       return ctx.task.state === cond.value;
@@ -172,7 +181,12 @@ export class RuleEngine {
     this.unsub.clear();
   }
 
-  private ensureSubscribed(workspaceId: string): void {
+  /** Public so a workspace's FIRST-EVER project (created after boot, so
+   *  `start()`'s own listAllProjects() scan never saw it) still gets live
+   *  rule-engine reactivity — see Operations.createProject's call site.
+   *  Idempotent, safe to call on every project creation regardless of
+   *  whether the workspace is already subscribed. */
+  ensureSubscribed(workspaceId: string): void {
     if (this.unsub.has(workspaceId)) return;
     const off = this.bus.subscribe(workspaceId, (event) => {
       void this.handleEvent(workspaceId, event).catch(() => undefined);
@@ -275,7 +289,7 @@ export class RuleEngine {
       evidence: [...evidence, ...result.evidence],
       at: now(),
     };
-    await this.store.createTransition(transition);
+    await this.hub.recordTransition(transition);
     await this.bumpRuleMoves(rule.id);
     if (result.toState && result.toState !== task.state) return this.hub.upsertTask({ ...task, state: result.toState });
     return task;
@@ -283,7 +297,7 @@ export class RuleEngine {
 
   private async bumpRuleMoves(ruleId: string): Promise<void> {
     const rule = await this.store.getRule(ruleId);
-    if (rule) await this.store.putRule({ ...rule, stats: { ...rule.stats, moves: rule.stats.moves + 1 } });
+    if (rule) await this.hub.upsertRule({ ...rule, stats: { ...rule.stats, moves: rule.stats.moves + 1 } });
   }
 
   /** The v1 action vocabulary. `add_label`/`post_slack_nudge` have no real
@@ -313,7 +327,7 @@ export class RuleEngine {
         const params = (action.params ?? {}) as Record<string, unknown>;
         const kindParsed = ProposalKind.safeParse(params.kind);
         if (!kindParsed.success) return { toState: null, evidence: [`create_proposal: invalid kind "${String(params.kind)}"`] };
-        await this.store.putProposal({
+        await this.hub.upsertProposal({
           id: `prop-${task.id}-${++this.seq}`,
           workspaceId,
           projectId,
@@ -380,7 +394,7 @@ export class RuleEngine {
       evidence: [...pending.evidence, ...result.evidence],
       at: now(),
     };
-    await this.store.createTransition(transition);
+    await this.hub.recordTransition(transition);
     if (result.toState && result.toState !== task.state) await this.hub.upsertTask({ ...task, state: result.toState });
     if (rule) await this.bumpRuleMoves(rule.id);
     await this.store.putPendingRuleAction({ ...pending, status: "finalized", undoableUntil: now() + windowMs, transitionId });
@@ -411,7 +425,7 @@ export class RuleEngine {
       // that later change, so we mark undone without touching task state.
       if (task && task.state === pending.toState) {
         await this.hub.upsertTask({ ...task, state: pending.fromState });
-        await this.store.createTransition({
+        await this.hub.recordTransition({
           id: `tr-undo-${pending.id}`,
           workspaceId: pending.workspaceId,
           projectId: pending.projectId,
@@ -443,7 +457,7 @@ export class RuleEngine {
     history.push(at);
     this.undoHistory.set(ruleId, history);
     const shouldPause = rule.state === "live" && history.length >= rule.safety.pauseAfterUndos;
-    await this.store.putRule({
+    await this.hub.upsertRule({
       ...rule,
       stats: { ...rule.stats, undos: rule.stats.undos + 1 },
       state: shouldPause ? "paused" : rule.state,
@@ -482,7 +496,7 @@ export class RuleEngine {
 
     if (staleHours >= config.stallEscalateHours) {
       if (hasKind("suggested_reassignment")) return;
-      await this.store.putProposal({
+      await this.hub.upsertProposal({
         id: `prop-stall-esc-${task.id}-${++this.seq}`,
         workspaceId: task.workspaceId,
         projectId: project.id,
@@ -495,7 +509,7 @@ export class RuleEngine {
       return;
     }
     if (hasKind("stall_nudge")) return;
-    await this.store.putProposal({
+    await this.hub.upsertProposal({
       id: `prop-stall-nudge-${task.id}-${++this.seq}`,
       workspaceId: task.workspaceId,
       projectId: project.id,

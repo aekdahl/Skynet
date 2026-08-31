@@ -82,6 +82,8 @@ export class MemoryStore implements Store {
       modules: this.modules,
       deps: this.deps,
       providers: this.providers,
+      rules: await this.listRulesForWorkspace(workspaceId),
+      proposals: await this.listProposalsForWorkspace(workspaceId),
       serverTime: now(),
     };
   }
@@ -153,6 +155,7 @@ export class MemoryStore implements Store {
   async putRule(rule: Rule) { this.rules.set(rule.id, rule); this.persist(); return rule; }
   async deleteRule(id: string) { this.rules.delete(id); this.persist(); }
   async listRulesForProject(projectId: string) { return [...this.rules.values()].filter((r) => r.projectId === projectId); }
+  async listRulesForWorkspace(ws: string) { return [...this.rules.values()].filter((r) => r.workspaceId === ws); }
 
   async getProposal(id: string) { return this.proposals.get(id); }
   async putProposal(proposal: Proposal) { this.proposals.set(proposal.id, proposal); this.persist(); return proposal; }
@@ -162,6 +165,7 @@ export class MemoryStore implements Store {
     if (opts.status != null) list = list.filter((p) => p.status === opts.status);
     return list;
   }
+  async listProposalsForWorkspace(ws: string) { return [...this.proposals.values()].filter((p) => p.workspaceId === ws); }
 
   async getPendingRuleAction(id: string) { return this.pendingRuleActions.get(id); }
   async putPendingRuleAction(action: PendingRuleAction) { this.pendingRuleActions.set(action.id, action); this.persist(); return action; }

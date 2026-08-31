@@ -1657,6 +1657,12 @@ export const CreateTaskRequest = z.object({
   text: z.string().min(1),
   description: z.string().optional(),
   source: TaskSource.optional(), // set when importing from a source of truth
+  // Momentum Rollout kanban rebuild — set only when this task is being
+  // created AS a subtask (e.g. accepting a suggested_subtask Proposal), so
+  // the relation lands atomically with the task's other defaults instead of
+  // a separate updateTask follow-up. Omitted/undefined for every ordinary
+  // task creation, which stays top-level exactly as before.
+  parentTaskId: z.string().nullable().optional(),
 });
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequest>;
 

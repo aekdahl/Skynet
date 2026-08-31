@@ -8,11 +8,14 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
+  AcceptSubtaskRequest,
+  BacktestRuleRequest,
   ConfigureRunnerRequest,
   CreateFeatureRequest,
   CreateMilestoneRequest,
   CreateProjectContextEntryRequest,
   CreateProjectRequest,
+  CreateRuleRequest,
   CreateSolutionBriefRequest,
   CreateTaskRequest,
   AnswerClarificationRequest,
@@ -29,6 +32,7 @@ import {
   UpdateProjectRoadmapRequest,
   UpdateWorkspaceSettingsRequest,
   UpdateRunnerRequest,
+  UpdateRuleRequest,
   UpdateSolutionBriefRequest,
   UpdateTaskRequest,
   MoveTaskRequest,
@@ -63,7 +67,7 @@ import {
   NoTriageTargetError,
   type Orchestrator,
 } from "./orchestrator.js";
-import { NotFoundError, type Operations, RoadmapConflictError, RunnerBusyError } from "./operations.js";
+import { NotFoundError, type Operations, ProposalAlreadyResolvedError, RoadmapConflictError, RunnerBusyError } from "./operations.js";
 import { CrystallizeParseError } from "./steward/crystallize.js";
 import type { ChatTurn } from "./project-assistant.js";
 import { simulateConversational } from "./telegram/index.js";
@@ -101,7 +105,8 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
     err instanceof AlreadyReviewedError ||
     err instanceof NoReviewerAvailableError ||
     err instanceof NothingToReviewError ||
-    err instanceof NoTriageTargetError
+    err instanceof NoTriageTargetError ||
+    err instanceof ProposalAlreadyResolvedError
   ) {
     return reply.code(409).send({ error: (err as Error).message });
   }
@@ -1347,6 +1352,108 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string } }>("/api/rules/pending-actions/:id/undo", async (req, reply) => {
     try {
       return await ops.undoRuleAction(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── rules (Momentum Rollout Phase 1c — CRUD) ─────────────────────────────
+  app.get<{ Params: { id: string } }>("/api/projects/:id/rules", async (req, reply) => {
+    try {
+      return await ops.listRules(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/projects/:id/rules", async (req, reply) => {
+    const body = CreateRuleRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.createRule(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.patch<{ Params: { id: string; ruleId: string } }>("/api/projects/:id/rules/:ruleId", async (req, reply) => {
+    const body = UpdateRuleRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateRule(ws(req), req.params.ruleId, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.delete<{ Params: { id: string; ruleId: string } }>("/api/projects/:id/rules/:ruleId", async (req, reply) => {
+    try {
+      await ops.deleteRule(ws(req), req.params.ruleId);
+      return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  // A draft (not-yet-saved) rule's conditions replayed against this
+  // project's historical Transition log — powers the Automation Builder's
+  // backtest card before an operator commits to actually saving the rule.
+  app.post<{ Params: { id: string } }>("/api/projects/:id/rules/backtest", async (req, reply) => {
+    const body = BacktestRuleRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.backtestRule(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── transitions (Momentum Rollout Phase 1c — read) ───────────────────────
+  app.get<{ Params: { id: string } }>("/api/tasks/:id/transitions", async (req, reply) => {
+    try {
+      return await ops.listTransitionsForTask(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.get<{ Params: { id: string }; Querystring: { since?: string; limit?: string } }>(
+    "/api/projects/:id/transitions",
+    async (req, reply) => {
+      const since = req.query.since ? Number(req.query.since) : undefined;
+      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      try {
+        return await ops.listTransitionsForProject(ws(req), req.params.id, { since, limit });
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
+  // ── proposals (Momentum Rollout Phase 1c — accept / dismiss) ────────────
+  app.post<{ Params: { id: string; pid: string } }>("/api/projects/:id/proposals/:pid/accept", async (req, reply) => {
+    try {
+      return await ops.acceptProposal(ws(req), req.params.id, req.params.pid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string; pid: string } }>("/api/projects/:id/proposals/:pid/dismiss", async (req, reply) => {
+    try {
+      return await ops.dismissProposal(ws(req), req.params.id, req.params.pid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── suggested subtasks (Momentum Rollout Phase 1c) ───────────────────────
+  app.post<{ Params: { id: string } }>("/api/tasks/:id/subtasks/accept", async (req, reply) => {
+    const body = AcceptSubtaskRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.acceptSubtask(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/tasks/:id/subtasks/accept-all", async (req, reply) => {
+    try {
+      return await ops.acceptAllSubtasks(ws(req), req.params.id);
     } catch (err) {
       return fail(reply, err);
     }

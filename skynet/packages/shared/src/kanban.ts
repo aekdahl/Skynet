@@ -144,6 +144,78 @@ export const Proposal = z.object({
 });
 export type Proposal = z.infer<typeof Proposal>;
 
+// ─── Proposal.payload shapes, per kind (Phase 1c — API surface) ─────────────
+// `Proposal.payload` stays z.unknown() on the entity itself (see its comment
+// above — the shape is owned by whichever phase produces/consumes it, not the
+// foundation), but accepting a proposal DOES need to know what it's holding.
+// These are that per-kind contract, safe-parsed at accept time so a
+// corrupt/hand-crafted payload fails with a clear error rather than a raw
+// destructure crash.
+export const DraftTaskPayload = z.object({
+  text: z.string().min(1),
+  description: z.string().nullable().optional(),
+});
+export type DraftTaskPayload = z.infer<typeof DraftTaskPayload>;
+
+export const SuggestedSubtaskPayload = z.object({
+  parentTaskId: z.string(),
+  text: z.string().min(1),
+  description: z.string().nullable().optional(),
+});
+export type SuggestedSubtaskPayload = z.infer<typeof SuggestedSubtaskPayload>;
+
+// Accepting a SUGGESTED rule lands it in `state: "watch"` (never "live") —
+// see RuleLifecycleState's own doc comment: a suggestion hasn't earned an
+// operator's trust to act yet, only to be evaluated and logged. Promoting it
+// to live is a deliberate, separate updateRule call.
+export const SuggestedRulePayload = z.object({
+  name: z.string().min(1),
+  when: z.string(),
+  conditions: z.array(RuleCondition).default([]),
+  actions: z.array(RuleAction).default([]),
+  safety: RuleSafety.optional(),
+});
+export type SuggestedRulePayload = z.infer<typeof SuggestedRulePayload>;
+
+// ─── Rule CRUD requests ──────────────────────────────────────────────────────
+export const CreateRuleRequest = z.object({
+  name: z.string().min(1),
+  when: z.string(),
+  conditions: z.array(RuleCondition).default([]),
+  actions: z.array(RuleAction).default([]),
+  safety: RuleSafety.optional(),
+  state: RuleLifecycleState.optional(),
+});
+export type CreateRuleRequest = z.infer<typeof CreateRuleRequest>;
+
+export const UpdateRuleRequest = z.object({
+  name: z.string().min(1).optional(),
+  when: z.string().optional(),
+  conditions: z.array(RuleCondition).optional(),
+  actions: z.array(RuleAction).optional(),
+  safety: RuleSafety.optional(),
+  state: RuleLifecycleState.optional(),
+  archived: z.boolean().optional(),
+});
+export type UpdateRuleRequest = z.infer<typeof UpdateRuleRequest>;
+
+// A DRAFT rule's matchable half — not yet saved, so no id/workspaceId/
+// projectId/stats/createdAt exist yet. `actions`/`safety` are accepted (a
+// future Automation Builder naturally has a full draft in hand) but ignored
+// by the backtest itself, which only ever checks whether `conditions` would
+// have matched — it never applies an action.
+export const BacktestRuleRequest = z.object({
+  conditions: z.array(RuleCondition).default([]),
+  actions: z.array(RuleAction).default([]),
+  safety: RuleSafety.optional(),
+});
+export type BacktestRuleRequest = z.infer<typeof BacktestRuleRequest>;
+
+export const AcceptSubtaskRequest = z.object({
+  proposalId: z.string(),
+});
+export type AcceptSubtaskRequest = z.infer<typeof AcceptSubtaskRequest>;
+
 // ─── PendingRuleAction: the announce-before-acting hold (Phase 1b's rule
 // engine) ─────────────────────────────────────────────────────────────────
 // A Rule action deferred by `safety.announceBeforeActing` — recorded the

@@ -14,10 +14,13 @@ import type {
   PlanStep,
   Project,
   ProjectContextEntry,
+  Proposal,
   Resolution,
+  Rule,
   Agent,
   SolutionBrief,
   Task,
+  Transition,
   Usage,
 } from "@skynet/shared";
 import { now } from "./config.js";
@@ -410,6 +413,35 @@ export class Hub {
     const existing = await this.store.getSolutionBrief(id);
     await this.store.deleteSolutionBrief(id);
     if (existing) this.bus.publish(existing.workspaceId, { type: "solutionBrief.deleted", id });
+  }
+
+  // Momentum Rollout kanban rebuild, Phase 1c — Rule/Proposal follow the
+  // same persist-then-publish upsert shape as every collection above;
+  // Transition is append-only (see @skynet/shared's Transition), so it only
+  // ever gets a "created" publish, never "upserted"/"deleted". The RuleEngine
+  // (rules/engine.ts) routes its own mutations through these too, so a
+  // rule-driven move is exactly as WS-live as an API-driven one.
+  async upsertRule(rule: Rule): Promise<Rule> {
+    await this.store.putRule(rule);
+    this.bus.publish(rule.workspaceId, { type: "rule.upserted", rule });
+    return rule;
+  }
+  async deleteRule(id: string): Promise<void> {
+    const existing = await this.store.getRule(id);
+    await this.store.deleteRule(id);
+    if (existing) this.bus.publish(existing.workspaceId, { type: "rule.deleted", id });
+  }
+
+  async upsertProposal(proposal: Proposal): Promise<Proposal> {
+    await this.store.putProposal(proposal);
+    this.bus.publish(proposal.workspaceId, { type: "proposal.upserted", proposal });
+    return proposal;
+  }
+
+  async recordTransition(transition: Transition): Promise<Transition> {
+    await this.store.createTransition(transition);
+    this.bus.publish(transition.workspaceId, { type: "transition.created", transition });
+    return transition;
   }
 
   async upsertAgent(agent: Agent): Promise<Agent> {
