@@ -10,6 +10,8 @@ import {
   ApprovalLevel,
   Dependency,
   Feature,
+  GithubSignalKind,
+  GithubSignalPayload,
   HitlItem,
   Milestone,
   Module,
@@ -92,6 +94,12 @@ export const ServerEvent = z.discriminatedUnion("type", [
   // HITL round-trip
   z.object({ type: z.literal("hitl.raised"), item: HitlItem }),
   z.object({ type: z.literal("hitl.resolved"), id: z.string(), resolution: Resolution }),
+
+  // Momentum Rollout, phase 1a — a GitHub PR/review/check/deploy webhook
+  // resolved to one of our own tasks. Bus-only (see Hub.publishGithubSignal):
+  // this phase only verifies, parses, resolves, and publishes — the later
+  // rule-engine phase is what turns a signal into a persisted Transition.
+  z.object({ type: z.literal("github.signal"), taskId: z.string(), kind: GithubSignalKind, payload: GithubSignalPayload }),
 
   // derived intelligence
   z.object({ type: z.literal("conflict.detected"), moduleId: z.string(), runIds: z.array(z.string()) }),
