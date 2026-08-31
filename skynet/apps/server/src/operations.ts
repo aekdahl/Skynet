@@ -1158,6 +1158,8 @@ export class Operations {
       // Ordering intent starts empty — only a brief decomposition (S7) sets
       // this, at creation time, directly (bypassing this generic constructor).
       dependsOnTaskIds: [],
+      // No subtask relation at creation — set later, if ever, via updateTask.
+      parentTaskId: null,
       lint: null,
       // Start-picker preference starts unset — plain auto-pick until an operator
       // saves one via updateTask.
@@ -2085,6 +2087,7 @@ export class Operations {
       status: "active",
       milestoneId: input.milestoneId ?? null,
       order: inProject.length,
+      color: null,
       archived: false,
       createdAt: now(),
       pr: null,
@@ -2391,6 +2394,7 @@ export class Operations {
       status: "active",
       milestoneId: null,
       order: inFeatures.length,
+      color: null,
       archived: false,
       createdAt: at,
       pr: null,
@@ -2433,6 +2437,7 @@ export class Operations {
         milestoneId: null,
         source: { kind: "brief", briefId: brief.id },
         dependsOnTaskIds: t.dependsOnIndex.map((idx) => ids[idx]!),
+        parentTaskId: null,
         lint: null,
         preferredProvider: null,
         preferredModel: null,

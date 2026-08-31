@@ -6277,6 +6277,7 @@ export class Orchestrator {
       milestoneId: null,
       source,
       dependsOnTaskIds: [],
+      parentTaskId: null,
       lint: null,
       preferredProvider: null,
       preferredModel: null,
