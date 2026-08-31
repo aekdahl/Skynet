@@ -281,6 +281,20 @@ const ALLOW = new Set<string>([
   // and the refusal when nothing is open) is covered server-side in
   // triage-clarification.test.ts, and the round trip was verified live.
   "answerClarification",
+  // Automation Builder (Momentum Rollout Phase 6a, TASK 07) — rule CRUD +
+  // live backtest. No offline journey builds/edits a rule (there's no
+  // fleet-journey shape for "author an automation"), so these are
+  // allowlisted here rather than dropped into a Simulation journey. The full
+  // HTTP surface (create/update/delete, backtest against real Transition
+  // history, workspace scoping) is exercised directly against a real
+  // Fastify app + store in tests/kanban-api-surface.test.ts's "rules CRUD" /
+  // "rules/backtest" suites, and the engine semantics they wrap
+  // (matchCondition/applyAction, the undo→auto-pause breaker) in
+  // tests/rule-engine.test.ts. Verified live end-to-end too: a rule built
+  // through the Automation Builder UI matched a real triggered signal and
+  // moved the task, and 3 real undos auto-paused it with the live rules
+  // list reflecting "Paused" with no reload.
+  "createRule", "updateRule", "deleteRule", "backtestRule",
 ]);
 
 describe("client API coverage", () => {
