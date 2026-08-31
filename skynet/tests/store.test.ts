@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Snapshot, DEFAULT_WORKSPACE, SAFETY_DEFAULTS, type TaskRun, type AuditRecord, type GithubConnection, type Project, type SolutionBrief } from "@skynet/shared";
+import { Snapshot, DEFAULT_WORKSPACE, SAFETY_DEFAULTS, type TaskRun, type AuditRecord, type GithubConnection, type Project, type Proposal, type Rule, type SolutionBrief, type Transition } from "@skynet/shared";
 import type { Store } from "../apps/server/src/store/store.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
 import { FileStore } from "../apps/server/src/store/file.js";
@@ -150,6 +150,89 @@ function storeContract(name: string, make: () => Promise<Store>) {
       expect(await store.getSolutionBrief("sb-test-1")).toBeUndefined();
     });
 
+    // ── Momentum Rollout kanban rebuild, Phase 0 ──────────────────────────
+    it("createTransition → listTransitionsForTask / listTransitionsForProject round-trip, task-scoped and project-scoped", async () => {
+      const base: Omit<Transition, "id" | "taskId" | "from" | "to" | "at"> = {
+        workspaceId: DEFAULT_WORKSPACE, projectId: "seed-proj",
+        actor: "human", actorId: "op-1", ruleId: null, evidence: [],
+      };
+      await store.createTransition({ ...base, id: "tr-1", taskId: "task-a", from: "backlog", to: "triage", at: 1_000 });
+      await store.createTransition({ ...base, id: "tr-2", taskId: "task-a", from: "triage", to: "todo", at: 2_000 });
+      await store.createTransition({ ...base, id: "tr-3", taskId: "task-b", from: "backlog", to: "triage", at: 3_000 });
+      // A different project's transition must never leak into this project's list.
+      await store.createTransition({ ...base, id: "tr-4", taskId: "task-c", projectId: "other-proj", from: "backlog", to: "triage", at: 4_000 });
+
+      const forTaskA = await store.listTransitionsForTask("task-a");
+      expect(forTaskA.map((t) => t.id)).toEqual(["tr-1", "tr-2"]); // oldest first
+      expect(forTaskA[0]).toEqual({ ...base, id: "tr-1", taskId: "task-a", from: "backlog", to: "triage", at: 1_000 });
+
+      const forProject = await store.listTransitionsForProject("seed-proj");
+      expect(forProject.map((t) => t.id)).toEqual(["tr-3", "tr-2", "tr-1"]); // newest first
+      expect(forProject.some((t) => t.id === "tr-4")).toBe(false); // scoped to seed-proj only
+
+      const since = await store.listTransitionsForProject("seed-proj", { since: 2_000 });
+      expect(since.map((t) => t.id)).toEqual(["tr-3", "tr-2"]);
+
+      const limited = await store.listTransitionsForProject("seed-proj", { limit: 1 });
+      expect(limited.map((t) => t.id)).toEqual(["tr-3"]); // newest one only
+    });
+
+    it("a machine transition with ruleId:null means the orchestrator itself acted — distinct from a rule-driven move", async () => {
+      const orchestratorMove: Transition = {
+        id: "tr-orch", workspaceId: DEFAULT_WORKSPACE, projectId: "seed-proj", taskId: "task-d",
+        from: "triage", to: "todo", actor: "machine", actorId: null, ruleId: null, evidence: [], at: 5_000,
+      };
+      const ruleMove: Transition = {
+        id: "tr-rule", workspaceId: DEFAULT_WORKSPACE, projectId: "seed-proj", taskId: "task-d",
+        from: "todo", to: "ongoing", actor: "machine", actorId: "run-1", ruleId: "rule-1", evidence: ["PR #42 opened"], at: 6_000,
+      };
+      await store.createTransition(orchestratorMove);
+      await store.createTransition(ruleMove);
+      const forTask = await store.listTransitionsForTask("task-d");
+      expect(forTask.find((t) => t.id === "tr-orch")?.ruleId).toBeNull();
+      expect(forTask.find((t) => t.id === "tr-rule")?.ruleId).toBe("rule-1");
+    });
+
+    it("put → get → list → delete round-trips a rule, project-scoped", async () => {
+      const rule: Rule = {
+        id: "rule-test-1", workspaceId: DEFAULT_WORKSPACE, projectId: "seed-proj",
+        name: "Auto-advance clean reviews", when: "review approved with no flags",
+        conditions: [{ field: "reviewVerdict.decision", op: "eq", value: "approve" }],
+        actions: [{ type: "move", params: { to: "done" } }],
+        safety: { announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
+        stats: { moves: 0, undos: 0 },
+        state: "live", createdAt: 1, archived: false,
+      };
+      await store.putRule(rule);
+      expect(await store.getRule("rule-test-1")).toEqual(rule);
+      expect((await store.listRulesForProject("seed-proj")).some((r) => r.id === "rule-test-1")).toBe(true);
+      expect(await store.listRulesForProject("no-such-project")).toEqual([]);
+      // Upsert: a second put with a changed field replaces, not duplicates.
+      await store.putRule({ ...rule, state: "paused" });
+      expect((await store.getRule("rule-test-1"))?.state).toBe("paused");
+      await store.deleteRule("rule-test-1");
+      expect(await store.getRule("rule-test-1")).toBeUndefined();
+    });
+
+    it("put → get → list (status-filtered) → delete round-trips a proposal, project-scoped", async () => {
+      const proposal: Proposal = {
+        id: "prop-test-1", workspaceId: DEFAULT_WORKSPACE, projectId: "seed-proj",
+        kind: "suggested_subtask", payload: { text: "add a regression test" },
+        status: "pending", createdAt: 1, resolvedAt: null,
+      };
+      await store.putProposal(proposal);
+      expect(await store.getProposal("prop-test-1")).toEqual(proposal);
+      expect((await store.listProposalsForProject("seed-proj")).some((p) => p.id === "prop-test-1")).toBe(true);
+      expect(await store.listProposalsForProject("seed-proj", { status: "accepted" })).toEqual([]);
+      expect((await store.listProposalsForProject("seed-proj", { status: "pending" })).some((p) => p.id === "prop-test-1")).toBe(true);
+      // Upsert: accepting a proposal replaces it in place, not duplicates.
+      await store.putProposal({ ...proposal, status: "accepted", resolvedAt: 2 });
+      expect((await store.getProposal("prop-test-1"))?.status).toBe("accepted");
+      expect(await store.listProposalsForProject("seed-proj", { status: "pending" })).toEqual([]);
+      await store.deleteProposal("prop-test-1");
+      expect(await store.getProposal("prop-test-1")).toBeUndefined();
+    });
+
     it("put → get → delete round-trips a GitHub connection (one per workspace)", async () => {
       expect(await store.getGithubConnection("ws-gh")).toBeUndefined();
       const conn: GithubConnection = {
@@ -249,5 +332,64 @@ describePg("Store contract — postgres (DATABASE_URL set)", () => {
     const trail = await store.listAudit(DEFAULT_WORKSPACE);
     const ours = trail.filter((e) => e.hitlId.startsWith("pg-audit-"));
     expect(ours.map((e) => e.hitlId)).toEqual(["pg-audit-b", "pg-audit-a"]);
+  });
+
+  // ── Momentum Rollout kanban rebuild, Phase 0 ────────────────────────────
+  it("createTransition → listTransitionsForTask / listTransitionsForProject round-trip, task-scoped and project-scoped", async () => {
+    const base: Omit<Transition, "id" | "taskId" | "from" | "to" | "at"> = {
+      workspaceId: DEFAULT_WORKSPACE, projectId: "pg-test-proj",
+      actor: "human", actorId: "op-1", ruleId: null, evidence: [],
+    };
+    await store.createTransition({ ...base, id: "pg-tr-1", taskId: "pg-task-a", from: "backlog", to: "triage", at: 1_000 });
+    await store.createTransition({ ...base, id: "pg-tr-2", taskId: "pg-task-a", from: "triage", to: "todo", at: 2_000 });
+    await store.createTransition({ ...base, id: "pg-tr-3", taskId: "pg-task-b", from: "backlog", to: "triage", at: 3_000 });
+
+    const forTaskA = await store.listTransitionsForTask("pg-task-a");
+    expect(forTaskA.map((t) => t.id)).toEqual(["pg-tr-1", "pg-tr-2"]); // oldest first
+    expect(forTaskA[0]).toEqual({ ...base, id: "pg-tr-1", taskId: "pg-task-a", from: "backlog", to: "triage", at: 1_000 });
+
+    const forProject = await store.listTransitionsForProject("pg-test-proj");
+    expect(forProject.map((t) => t.id)).toEqual(["pg-tr-3", "pg-tr-2", "pg-tr-1"]); // newest first
+
+    const since = await store.listTransitionsForProject("pg-test-proj", { since: 2_000 });
+    expect(since.map((t) => t.id)).toEqual(["pg-tr-3", "pg-tr-2"]);
+
+    const limited = await store.listTransitionsForProject("pg-test-proj", { limit: 1 });
+    expect(limited.map((t) => t.id)).toEqual(["pg-tr-3"]);
+  });
+
+  it("put → get → list → delete round-trips a rule, project-scoped", async () => {
+    const rule: Rule = {
+      id: "pg-rule-1", workspaceId: DEFAULT_WORKSPACE, projectId: "pg-test-proj",
+      name: "Auto-advance clean reviews", when: "review approved with no flags",
+      conditions: [{ field: "reviewVerdict.decision", op: "eq", value: "approve" }],
+      actions: [{ type: "move", params: { to: "done" } }],
+      safety: { announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
+      stats: { moves: 0, undos: 0 },
+      state: "live", createdAt: 1, archived: false,
+    };
+    await store.putRule(rule);
+    expect(await store.getRule("pg-rule-1")).toEqual(rule);
+    expect((await store.listRulesForProject("pg-test-proj")).some((r) => r.id === "pg-rule-1")).toBe(true);
+    await store.putRule({ ...rule, state: "paused" });
+    expect((await store.getRule("pg-rule-1"))?.state).toBe("paused");
+    await store.deleteRule("pg-rule-1");
+    expect(await store.getRule("pg-rule-1")).toBeUndefined();
+  });
+
+  it("put → get → list (status-filtered) → delete round-trips a proposal, project-scoped", async () => {
+    const proposal: Proposal = {
+      id: "pg-prop-1", workspaceId: DEFAULT_WORKSPACE, projectId: "pg-test-proj",
+      kind: "suggested_subtask", payload: { text: "add a regression test" },
+      status: "pending", createdAt: 1, resolvedAt: null,
+    };
+    await store.putProposal(proposal);
+    expect(await store.getProposal("pg-prop-1")).toEqual(proposal);
+    expect((await store.listProposalsForProject("pg-test-proj", { status: "pending" })).some((p) => p.id === "pg-prop-1")).toBe(true);
+    expect(await store.listProposalsForProject("pg-test-proj", { status: "accepted" })).toEqual([]);
+    await store.putProposal({ ...proposal, status: "accepted", resolvedAt: 2 });
+    expect((await store.getProposal("pg-prop-1"))?.status).toBe("accepted");
+    await store.deleteProposal("pg-prop-1");
+    expect(await store.getProposal("pg-prop-1")).toBeUndefined();
   });
 });

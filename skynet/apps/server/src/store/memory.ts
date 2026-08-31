@@ -15,11 +15,15 @@ import type {
   PolicyVersion,
   Project,
   ProjectContextEntry,
+  Proposal,
+  ProposalStatus,
   ProviderInfo,
   Agent,
+  Rule,
   Snapshot,
   SolutionBrief,
   Task,
+  Transition,
   WorkspaceSettings,
 } from "@skynet/shared";
 import type { AuditRecord } from "@skynet/shared";
@@ -40,6 +44,9 @@ export class MemoryStore implements Store {
   protected milestones = new Map<string, Milestone>();
   protected contextEntries = new Map<string, ProjectContextEntry>();
   protected solutionBriefs = new Map<string, SolutionBrief>();
+  protected transitions = new Map<string, Transition>();
+  protected rules = new Map<string, Rule>();
+  protected proposals = new Map<string, Proposal>();
   protected fleet = new Map<string, Agent>();
   protected modules: Module[] = [];
   protected deps: Dependency[] = [];
@@ -125,6 +132,33 @@ export class MemoryStore implements Store {
   async getSolutionBrief(id: string) { return this.solutionBriefs.get(id); }
   async putSolutionBrief(b: SolutionBrief) { this.solutionBriefs.set(b.id, b); this.persist(); return b; }
   async deleteSolutionBrief(id: string) { this.solutionBriefs.delete(id); this.persist(); }
+
+  async createTransition(t: Transition) { this.transitions.set(t.id, t); this.persist(); return t; }
+  async listTransitionsForTask(taskId: string) {
+    return [...this.transitions.values()].filter((t) => t.taskId === taskId).sort((a, b) => a.at - b.at);
+  }
+  async listTransitionsForProject(projectId: string, opts: { since?: number; limit?: number } = {}) {
+    let list = [...this.transitions.values()]
+      .filter((t) => t.projectId === projectId)
+      .sort((a, b) => b.at - a.at); // newest first, matching listAudit's convention
+    if (opts.since != null) list = list.filter((t) => t.at >= opts.since!);
+    if (opts.limit != null) list = list.slice(0, opts.limit);
+    return list;
+  }
+
+  async getRule(id: string) { return this.rules.get(id); }
+  async putRule(rule: Rule) { this.rules.set(rule.id, rule); this.persist(); return rule; }
+  async deleteRule(id: string) { this.rules.delete(id); this.persist(); }
+  async listRulesForProject(projectId: string) { return [...this.rules.values()].filter((r) => r.projectId === projectId); }
+
+  async getProposal(id: string) { return this.proposals.get(id); }
+  async putProposal(proposal: Proposal) { this.proposals.set(proposal.id, proposal); this.persist(); return proposal; }
+  async deleteProposal(id: string) { this.proposals.delete(id); this.persist(); }
+  async listProposalsForProject(projectId: string, opts: { status?: ProposalStatus } = {}) {
+    let list = [...this.proposals.values()].filter((p) => p.projectId === projectId);
+    if (opts.status != null) list = list.filter((p) => p.status === opts.status);
+    return list;
+  }
 
   async listAgents(ws: string) { return [...this.fleet.values()].filter((r) => r.workspaceId === ws); }
   async listAllAgents() { return [...this.fleet.values()]; }

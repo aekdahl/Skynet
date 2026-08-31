@@ -18,11 +18,15 @@ import type {
   PolicyVersion,
   Project,
   ProjectContextEntry,
+  Proposal,
+  ProposalStatus,
   ProviderInfo,
   Agent,
+  Rule,
   Snapshot,
   SolutionBrief,
   Task,
+  Transition,
   WorkspaceSettings,
 } from "@skynet/shared";
 import { chainAuditRecord } from "../audit-chain.js";
@@ -41,6 +45,10 @@ CREATE TABLE IF NOT EXISTS features   (id text PRIMARY KEY, workspace_id text NO
 CREATE TABLE IF NOT EXISTS milestones (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS context_entries (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS solution_briefs (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+-- Momentum Rollout kanban rebuild, Phase 0 (see @skynet/shared's Transition/Rule/Proposal).
+CREATE TABLE IF NOT EXISTS transitions (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, task_id text NOT NULL, at bigint NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS rules      (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS proposals  (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, status text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS agents    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS modules    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS deps       (id bigserial PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
@@ -69,6 +77,10 @@ CREATE INDEX IF NOT EXISTS features_ws   ON features(workspace_id);
 CREATE INDEX IF NOT EXISTS milestones_ws ON milestones(workspace_id);
 CREATE INDEX IF NOT EXISTS context_entries_ws ON context_entries(workspace_id);
 CREATE INDEX IF NOT EXISTS solution_briefs_ws ON solution_briefs(workspace_id);
+CREATE INDEX IF NOT EXISTS transitions_task    ON transitions(task_id);
+CREATE INDEX IF NOT EXISTS transitions_project ON transitions(project_id, at DESC);
+CREATE INDEX IF NOT EXISTS rules_project        ON rules(project_id);
+CREATE INDEX IF NOT EXISTS proposals_project    ON proposals(project_id, status);
 CREATE INDEX IF NOT EXISTS agents_ws  ON agents(workspace_id);
 CREATE INDEX IF NOT EXISTS log_run   ON run_log(run_id);
 `;
@@ -214,6 +226,73 @@ export class PostgresStore implements Store {
   getSolutionBrief(id: string) { return this.get<SolutionBrief>("solution_briefs", id); }
   async putSolutionBrief(b: SolutionBrief) { await this.put("solution_briefs", b.id, b.workspaceId, b); return b; }
   deleteSolutionBrief(id: string) { return this.del("solution_briefs", id); }
+
+  // ── transitions (Momentum Rollout kanban rebuild, Phase 0 — append-only) ──
+  async createTransition(t: Transition): Promise<Transition> {
+    await this.pool.query(
+      "INSERT INTO transitions(id,workspace_id,project_id,task_id,at,data) VALUES($1,$2,$3,$4,$5,$6::jsonb) " +
+        "ON CONFLICT(id) DO UPDATE SET workspace_id=$2, project_id=$3, task_id=$4, at=$5, data=$6::jsonb",
+      [t.id, t.workspaceId, t.projectId, t.taskId, t.at, J(t)],
+    );
+    return t;
+  }
+  async listTransitionsForTask(taskId: string): Promise<Transition[]> {
+    const { rows } = await this.pool.query<{ data: Transition }>(
+      "SELECT data FROM transitions WHERE task_id=$1 ORDER BY at ASC",
+      [taskId],
+    );
+    return rows.map((r) => r.data);
+  }
+  async listTransitionsForProject(projectId: string, opts: { since?: number; limit?: number } = {}): Promise<Transition[]> {
+    const params: unknown[] = [projectId];
+    let sql = "SELECT data FROM transitions WHERE project_id=$1";
+    if (opts.since != null) { params.push(opts.since); sql += ` AND at >= $${params.length}`; }
+    sql += " ORDER BY at DESC"; // newest first, matching listAudit's convention
+    if (opts.limit != null) { params.push(opts.limit); sql += ` LIMIT $${params.length}`; }
+    const { rows } = await this.pool.query<{ data: Transition }>(sql, params);
+    return rows.map((r) => r.data);
+  }
+
+  // ── rules (Momentum Rollout kanban rebuild, Phase 0 — project-scoped) ─────
+  async getRule(id: string): Promise<Rule | undefined> {
+    const { rows } = await this.pool.query<{ data: Rule }>("SELECT data FROM rules WHERE id=$1", [id]);
+    return rows[0]?.data;
+  }
+  async putRule(rule: Rule): Promise<Rule> {
+    await this.pool.query(
+      "INSERT INTO rules(id,workspace_id,project_id,data) VALUES($1,$2,$3,$4::jsonb) " +
+        "ON CONFLICT(id) DO UPDATE SET workspace_id=$2, project_id=$3, data=$4::jsonb",
+      [rule.id, rule.workspaceId, rule.projectId, J(rule)],
+    );
+    return rule;
+  }
+  async deleteRule(id: string): Promise<void> { await this.pool.query("DELETE FROM rules WHERE id=$1", [id]); }
+  async listRulesForProject(projectId: string): Promise<Rule[]> {
+    const { rows } = await this.pool.query<{ data: Rule }>("SELECT data FROM rules WHERE project_id=$1", [projectId]);
+    return rows.map((r) => r.data);
+  }
+
+  // ── proposals (Momentum Rollout kanban rebuild, Phase 0 — project-scoped) ─
+  async getProposal(id: string): Promise<Proposal | undefined> {
+    const { rows } = await this.pool.query<{ data: Proposal }>("SELECT data FROM proposals WHERE id=$1", [id]);
+    return rows[0]?.data;
+  }
+  async putProposal(proposal: Proposal): Promise<Proposal> {
+    await this.pool.query(
+      "INSERT INTO proposals(id,workspace_id,project_id,status,data) VALUES($1,$2,$3,$4,$5::jsonb) " +
+        "ON CONFLICT(id) DO UPDATE SET workspace_id=$2, project_id=$3, status=$4, data=$5::jsonb",
+      [proposal.id, proposal.workspaceId, proposal.projectId, proposal.status, J(proposal)],
+    );
+    return proposal;
+  }
+  async deleteProposal(id: string): Promise<void> { await this.pool.query("DELETE FROM proposals WHERE id=$1", [id]); }
+  async listProposalsForProject(projectId: string, opts: { status?: ProposalStatus } = {}): Promise<Proposal[]> {
+    const params: unknown[] = [projectId];
+    let sql = "SELECT data FROM proposals WHERE project_id=$1";
+    if (opts.status != null) { params.push(opts.status); sql += ` AND status=$${params.length}`; }
+    const { rows } = await this.pool.query<{ data: Proposal }>(sql, params);
+    return rows.map((r) => r.data);
+  }
 
   listAgents(ws: string) { return this.list<Agent>("agents", ws); }
   async listAllAgents(): Promise<Agent[]> {

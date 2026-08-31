@@ -16,11 +16,15 @@ import type {
   PolicyVersion,
   Project,
   ProjectContextEntry,
+  Proposal,
+  ProposalStatus,
   ProviderInfo,
   Agent,
+  Rule,
   Snapshot,
   SolutionBrief,
   Task,
+  Transition,
   WorkspaceSettings,
 } from "@skynet/shared";
 import type { StoredServiceToken } from "../auth/service-tokens.js";
@@ -90,6 +94,29 @@ export interface Store {
   getSolutionBrief(id: string): Promise<SolutionBrief | undefined>;
   putSolutionBrief(brief: SolutionBrief): Promise<SolutionBrief>;
   deleteSolutionBrief(id: string): Promise<void>;
+
+  // transitions (Momentum Rollout kanban rebuild, Phase 0 — append-only move
+  // history; see @skynet/shared's Transition). Never updated in place, only
+  // created — same idiom as appendLog/recordAudit.
+  createTransition(t: Transition): Promise<Transition>;
+  listTransitionsForTask(taskId: string): Promise<Transition[]>;
+  listTransitionsForProject(projectId: string, opts?: { since?: number; limit?: number }): Promise<Transition[]>;
+
+  // rules (Momentum Rollout kanban rebuild, Phase 0 — project-scoped kanban
+  // automation; see @skynet/shared's Rule). Project-scoped only (no
+  // workspace-wide list) — a rule always belongs to exactly one project.
+  getRule(id: string): Promise<Rule | undefined>;
+  putRule(rule: Rule): Promise<Rule>;
+  deleteRule(id: string): Promise<void>;
+  listRulesForProject(projectId: string): Promise<Rule[]>;
+
+  // proposals (Momentum Rollout kanban rebuild, Phase 0 — drafts / suggested
+  // subtasks / suggested rules / suggested reassignments; see @skynet/shared's
+  // Proposal). Project-scoped only, same reasoning as Rule above.
+  getProposal(id: string): Promise<Proposal | undefined>;
+  putProposal(proposal: Proposal): Promise<Proposal>;
+  deleteProposal(id: string): Promise<void>;
+  listProposalsForProject(projectId: string, opts?: { status?: ProposalStatus }): Promise<Proposal[]>;
 
   // fleet
   listAgents(workspaceId: string): Promise<Agent[]>;

@@ -932,6 +932,13 @@ export const Task = z.object({
   // orchestrator/derive/conflicts.ts) — this is task-to-task ordering of
   // not-yet-started work. Default [] = no dependency, today's behavior.
   dependsOnTaskIds: z.array(z.string()).default([]),
+  // The subtask relation (Momentum Rollout kanban rebuild, Phase 0 — see
+  // docs/momentum-rollout.md): a task's PARENT task, if it's a subtask of one.
+  // Distinct from dependsOnTaskIds (ordering between siblings, doesn't imply
+  // containment) — Skynet has no subtask hierarchy today; this is purely
+  // additive scaffolding for a later phase's UI. Null = a top-level task
+  // (today's only shape).
+  parentTaskId: z.string().nullable().default(null),
   // Operator-saved provider/model preference for auto-pick — set via the Start
   // picker. Null (the default) leaves acquisition exactly as it's always been:
   // the first idle, usable runner in fleet order. When set, acquireAgent tries
@@ -962,6 +969,11 @@ export const Feature = z.object({
   milestoneId: z.string().nullable().default(null),
   // Manual order within the project (lower = higher). Unset sorts as 0.
   order: z.number().int().optional(),
+  // Epic color for the new kanban board (Momentum Rollout, Phase 0) — a lane/
+  // chip accent later UI can key off. Optional and unvalidated beyond being a
+  // string (no hex/named-color format check here — the picker owns that);
+  // null = no color assigned, today's only shape.
+  color: z.string().nullable().default(null),
   archived: z.boolean().default(false),
   createdAt: Timestamp,
   // The aggregate PR for this feature's batched tasks — feature-scoped branch
