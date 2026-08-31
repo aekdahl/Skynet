@@ -5,6 +5,7 @@ import "./styles.css";
 import "./styles.responsive.css";
 import "./kanban/kanban.css";
 import "./kanban/board.css";
+import "./kanban/rules.css";
 import "./kanban/feed.css";
 import "./kanban/health.css";
 import { App } from "./App";
