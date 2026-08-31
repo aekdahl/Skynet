@@ -32,6 +32,7 @@ import { ProjectContextView } from "./project-context";
 import { InformComposer, toastInformResult } from "./fleet";
 import { toast } from "../components/toast";
 import { MomentumBoard } from "../kanban/board";
+import { ActivityFeed } from "../kanban/feed";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -1657,10 +1658,10 @@ export function ProjectView({
   // Per-project lens (Kanban is the default; Archived shows soft-hidden tasks +
   // restore; Roadmap renders ROADMAP.md from the repo). Persisted per-project in
   // sessionStorage so switching back restores the last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "coverage" | "archived">(() => {
+  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "coverage" | "feed" | "archived">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "roadmap" || v === "context" || v === "coverage" || v === "archived" ? v : "kanban";
+    return v === "roadmap" || v === "context" || v === "coverage" || v === "feed" || v === "archived" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -2077,13 +2078,13 @@ export function ProjectView({
 
       <div className="projview-lens">
         <div className="lens-switch">
-          {(["kanban", "roadmap", "context", "coverage", "archived"] as const).map((id) => (
+          {(["kanban", "roadmap", "context", "coverage", "feed", "archived"] as const).map((id) => (
             <button
               key={id}
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : "Archived"}
+              {id === "kanban" ? "Kanban" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "feed" ? "Feed" : "Archived"}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
@@ -2111,6 +2112,8 @@ export function ProjectView({
         <ProjectQualityView project={project} />
       ) : lens === "context" ? (
         <ProjectContextView project={project} />
+      ) : lens === "feed" ? (
+        <ActivityFeed project={project} tasks={tasks} now={now} onOpenTask={onOpenTask} />
       ) : lens === "archived" ? (
         <div className="projview-archived">
           {archivedTasks.length === 0 ? (

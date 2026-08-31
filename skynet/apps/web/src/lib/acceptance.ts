@@ -358,4 +358,31 @@ export const SCENARIOS: Scenario[] = [
       return steps;
     },
   },
+  {
+    id: "activity-feed-undo",
+    name: "Activity Feed's pending-actions + undo endpoints",
+    desc: "A fresh project has no pending rule actions yet; undoing a nonexistent one is refused — control-plane only, no seeded rule trigger needed.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: activity feed ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      const s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+
+      const pending = await api.fetchPendingActions(p.id, { status: "finalized" });
+      steps.push(step("pending-actions endpoint returns an array", Array.isArray(pending), `${pending.length} pending`));
+      steps.push(step("a fresh project has no pending actions yet", pending.length === 0));
+
+      try {
+        await api.undoRuleAction("nonexistent-pending-id");
+        steps.push(step("undoing an unknown pending action is refused", false, "did not throw"));
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : 0;
+        steps.push(step("undoing an unknown pending action is refused", status === 404, `status ${status}`));
+      }
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
 ];
