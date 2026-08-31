@@ -7,6 +7,8 @@
 import type {
   TaskRun,
   Feature,
+  GithubSignalKind,
+  GithubSignalPayload,
   HitlItem,
   Milestone,
   PlanStep,
@@ -111,6 +113,16 @@ export class Hub {
   async runLogDelta(runId: string, delta: string): Promise<void> {
     const ws = await this.wsOf(runId);
     if (ws) this.bus.publish(ws, { type: "run.log.delta", runId, delta });
+  }
+
+  /**
+   * Momentum Rollout, phase 1a — bus-only, deliberately no store write: this
+   * phase's job is verify → parse → resolve → publish, nothing more. The
+   * later rule-engine phase is what turns a signal into a persisted
+   * Transition (see kanban.ts); this call is that phase's subscription point.
+   */
+  publishGithubSignal(workspaceId: string, taskId: string, kind: GithubSignalKind, payload: GithubSignalPayload): void {
+    this.bus.publish(workspaceId, { type: "github.signal", taskId, kind, payload });
   }
 
   async runProgress(runId: string, progress: number, plan: PlanStep[]): Promise<void> {

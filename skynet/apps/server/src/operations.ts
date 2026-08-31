@@ -27,6 +27,8 @@ import type {
   Feature,
   FlyDeployment,
   GenerateComplianceReportRequest,
+  GithubSignalKind,
+  GithubSignalPayload,
   HitlItem,
   InformRequest,
   Milestone,
@@ -1346,6 +1348,53 @@ export class Operations {
       created++;
     }
     return { created };
+  }
+
+  /**
+   * Momentum Rollout, phase 1a: resolve an already-parsed PR/review/check/
+   * deploy webhook signal (github/webhook.ts's `parseGithubSignal`) to the
+   * task it's about and publish it onto that task's workspace bus. This
+   * phase's job stops at verify → parse → resolve → publish — TASK 02's rule
+   * engine subscribes to `github.signal` and is the one that turns it into a
+   * persisted Transition; nothing here writes one.
+   *
+   * No workspace context arrives with a webhook (same shape as
+   * handleGithubIssueEvent above), so resolution fans out:
+   *   - PR-keyed signals (pull_request, pull_request_review, a check_run with
+   *     a linked PR) look up the TaskRun whose OWN `pr.repo`+`pr.number`
+   *     matches — that linkage is already established the moment a run's
+   *     diff is approved and its PR opens (TaskRun.pr), so this reuses it
+   *     rather than inventing a second one.
+   *   - deployment_status carries no PR number, only a ref — resolved by
+   *     repo+branch instead (Project.repo to find candidate projects, then
+   *     TaskRun.branch within them).
+   * A signal that can't be resolved to a task (a PR/branch Skynet never
+   * opened, or the owning task's run was later detached) is a silent no-op —
+   * the caller acks 202 either way, matching the route's "never error a
+   * webhook GitHub might disable" contract.
+   */
+  async publishGithubSignal(input: {
+    repo: string;
+    kind: GithubSignalKind;
+    payload: GithubSignalPayload;
+    prNumber?: number;
+    branch?: string;
+  }): Promise<{ published: boolean }> {
+    let run: TaskRun | undefined;
+    if (input.prNumber != null) {
+      run = (await this.store.listAllRuns()).find((r) => r.pr?.repo === input.repo && r.pr.number === input.prNumber);
+    } else if (input.branch != null) {
+      const projects = (await this.store.listAllProjects()).filter((p) => p.repo === input.repo);
+      for (const project of projects) {
+        run = (await this.store.listRuns(project.workspaceId)).find((r) => r.projectId === project.id && r.branch === input.branch);
+        if (run) break;
+      }
+    }
+    if (!run) return { published: false };
+    const task = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === run!.id);
+    if (!task) return { published: false };
+    this.hub.publishGithubSignal(run.workspaceId, task.id, input.kind, input.payload);
+    return { published: true };
   }
 
   /** Import a repo file's OPEN checklist items (`- [ ] …`) as backlog tasks, each
