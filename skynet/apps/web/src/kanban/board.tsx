@@ -23,7 +23,9 @@ import { MomentumTaskDetail } from "./task-detail";
 // choice for a live countdown; if an operator overrides the env var this
 // drifts out of sync with the real threshold — acceptable for a Phase 4
 // display-only countdown, not worth a new endpoint for one constant.
-const STALL_ESCALATE_HOURS_DEFAULT = 96;
+// Exported: the Activity Feed (Phase 6b) needs the exact same countdown math
+// for its own "escalates in Xh" chip — one constant, not two copies to drift.
+export const STALL_ESCALATE_HOURS_DEFAULT = 96;
 
 const COLUMN_META: Record<ColumnBucket, { label: string; hint: string }> = {
   intake: { label: "Intake", hint: "Backlog + triage — not yet queued." },

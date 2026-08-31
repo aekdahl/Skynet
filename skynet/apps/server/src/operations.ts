@@ -116,7 +116,7 @@ import { secretService, withSecretAvailability } from "./secrets/index.js";
 import type { Store } from "./store/store.js";
 import type { RuleEngine } from "./rules/engine.js";
 import { matchCondition, type EvalContext } from "./rules/engine.js";
-import type { PendingRuleAction } from "@skynet/shared";
+import type { PendingRuleAction, PendingRuleActionStatus } from "@skynet/shared";
 
 /** A referenced entity does not exist (or isn't in the caller's workspace). 404. */
 export class NotFoundError extends Error {
@@ -2197,6 +2197,17 @@ export class Operations {
     const pending = await this.store.getPendingRuleAction(pendingId);
     if (!pending || pending.workspaceId !== ws) throw new NotFoundError("Pending rule action");
     return this.ruleEngine.undo(pendingId, operatorId);
+  }
+
+  /** Activity Feed (Phase 6b): which of a project's rule-engine actions are
+   *  still cancellable — a row's "undo · Xm left" is only rendered for a
+   *  FINALIZED action (it has a real Transition to show), matched back to
+   *  its Transition via `PendingRuleAction.transitionId`. Workspace-scoped
+   *  read, same shape as listTransitionsForProject. */
+  async listPendingActionsForProject(ws: string, projectId: string, opts: { status?: PendingRuleActionStatus } = {}): Promise<PendingRuleAction[]> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return this.store.listPendingActionsForProject(projectId, opts);
   }
 
   // ── rules (Momentum Rollout Phase 1c — CRUD) ─────────────────────────────

@@ -33,6 +33,8 @@ import {
   type Task,
   type ProjectQualityResult,
   type Transition,
+  type PendingRuleAction,
+  type PendingRuleActionStatus,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -484,6 +486,20 @@ export function acceptSubtask(taskId: string, proposalId: string) {
 /** Accept every PENDING suggested_subtask Proposal for this task in one call. */
 export function acceptAllSubtasks(taskId: string) {
   return req<Task[]>("POST", `/api/tasks/${taskId}/subtasks/accept-all`);
+}
+
+// ─── Activity Feed (Phase 6b) — undo window ─────────────────────────────────
+// Which rule-engine actions are still cancellable, and the undo call itself.
+// No WS event exists for a PendingRuleAction's own lifecycle (only the
+// Transition it eventually produces is live) — the feed refetches this
+// periodically and updates the acted-on row optimistically on a successful undo.
+export function fetchPendingActions(projectId: string, opts?: { status?: PendingRuleActionStatus }) {
+  const qs = opts?.status ? `?status=${opts.status}` : "";
+  return req<PendingRuleAction[]>("GET", `/api/projects/${projectId}/pending-actions${qs}`);
+}
+
+export function undoRuleAction(pendingId: string) {
+  return req<PendingRuleAction>("POST", `/api/pending-actions/${pendingId}/undo`);
 }
 
 // ─── Advanced env settings (desktop) ───────────────────────────────────────

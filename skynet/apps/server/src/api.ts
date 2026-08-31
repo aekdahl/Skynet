@@ -40,6 +40,7 @@ import {
   MergePrRequest,
   ReworkPrRequest,
   ExecuteStewardActionRequest,
+  PendingRuleActionStatus,
 } from "@skynet/shared";
 import { installProviderCli } from "./provider-install.js";
 import { installCommandFor } from "./provider-requirements.js";
@@ -1424,6 +1425,30 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       }
     },
   );
+
+  // ── pending rule actions (Activity Feed, Phase 6b) ───────────────────────
+  // Which rule-engine actions are still within their announce/undo window —
+  // the Activity Feed's "undo · Xm left" chip reads this, matched to a
+  // Transition row via PendingRuleAction.transitionId.
+  app.get<{ Params: { id: string }; Querystring: { status?: string } }>(
+    "/api/projects/:id/pending-actions",
+    async (req, reply) => {
+      const status = req.query.status ? PendingRuleActionStatus.safeParse(req.query.status) : undefined;
+      if (status && !status.success) return reply.code(400).send({ error: "invalid status" });
+      try {
+        return await ops.listPendingActionsForProject(ws(req), req.params.id, { status: status?.data });
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+  app.post<{ Params: { id: string } }>("/api/pending-actions/:id/undo", async (req, reply) => {
+    try {
+      return await ops.undoRuleAction(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
 
   // ── proposals (Momentum Rollout Phase 1c — accept / dismiss) ────────────
   app.post<{ Params: { id: string; pid: string } }>("/api/projects/:id/proposals/:pid/accept", async (req, reply) => {
