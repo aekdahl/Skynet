@@ -33,6 +33,11 @@ import {
   type Task,
   type ProjectQualityResult,
   type Transition,
+  type Rule,
+  type RuleCondition,
+  type RuleAction,
+  type RuleSafety,
+  type RuleLifecycleState,
   type PendingRuleAction,
   type PendingRuleActionStatus,
 } from "@skynet/shared";
@@ -486,6 +491,51 @@ export function acceptSubtask(taskId: string, proposalId: string) {
 /** Accept every PENDING suggested_subtask Proposal for this task in one call. */
 export function acceptAllSubtasks(taskId: string) {
   return req<Task[]>("POST", `/api/tasks/${taskId}/subtasks/accept-all`);
+}
+
+// ─── Momentum Board (Phase 6a) — rules (Automation Builder) ─────────────────
+// Reads ride the Snapshot + `rule.upserted`/`rule.deleted` WS deltas (see
+// store.tsx) — no fetchRules() here, same as features/milestones. Mutations
+// + the live backtest replay (a pure read with no state to keep in sync,
+// called directly by the component like fetchProjectTransitions above) are
+// the REST surface this file owns.
+export interface CreateRuleBody {
+  name: string;
+  when: string;
+  conditions: RuleCondition[];
+  actions: RuleAction[];
+  safety?: RuleSafety;
+  state?: RuleLifecycleState;
+}
+export function createRule(projectId: string, body: CreateRuleBody) {
+  return req<Rule>("POST", `/api/projects/${projectId}/rules`, body);
+}
+export interface UpdateRuleBody {
+  name?: string;
+  when?: string;
+  conditions?: RuleCondition[];
+  actions?: RuleAction[];
+  safety?: RuleSafety;
+  state?: RuleLifecycleState;
+  archived?: boolean;
+}
+export function updateRule(projectId: string, ruleId: string, body: UpdateRuleBody) {
+  return req<Rule>("PATCH", `/api/projects/${projectId}/rules/${ruleId}`, body);
+}
+export function deleteRule(projectId: string, ruleId: string) {
+  return req<unknown>("DELETE", `/api/projects/${projectId}/rules/${ruleId}`);
+}
+export interface BacktestResult {
+  wouldHaveMoved: number;
+  sample: Transition[];
+}
+/** Replay a DRAFT (not-yet-saved) rule's conditions against this project's
+ *  historical Transition log — the Automation Builder's live backtest card.
+ *  `actions`/`safety` ride along for a forward-compatible request shape but
+ *  the backtest itself only ever checks `conditions` (see the server's own
+ *  doc comment on BacktestRuleRequest). */
+export function backtestRule(projectId: string, body: { conditions: RuleCondition[]; actions?: RuleAction[]; safety?: RuleSafety }) {
+  return req<BacktestResult>("POST", `/api/projects/${projectId}/rules/backtest`, body);
 }
 
 // ─── Activity Feed (Phase 6b) — undo window ─────────────────────────────────
