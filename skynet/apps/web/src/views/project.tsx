@@ -31,6 +31,7 @@ import { ProjectQualityView } from "./project-quality";
 import { ProjectContextView } from "./project-context";
 import { InformComposer, toastInformResult } from "./fleet";
 import { toast } from "../components/toast";
+import { MomentumBoard } from "../kanban/board";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -1396,6 +1397,42 @@ function ProjectGovernance({
             </span>
           </label>
         )}
+        <label
+          className="proj-autonomy"
+          title="Renders the new 4-column Momentum Board (intake / queued / in flight / landed) instead of the current board, for this project only. Off by default — the old board keeps working unchanged either way."
+        >
+          <input
+            type="checkbox"
+            className="proj-autonomy-cb"
+            checked={project.newBoardEnabled}
+            onChange={(e) => onChange({ newBoardEnabled: e.target.checked })}
+          />
+          <span className="proj-autonomy-switch" aria-hidden="true" />
+          <span className="proj-autonomy-text">
+            <span className="proj-autonomy-label">Momentum Board</span>
+            <span className="proj-autonomy-hint">Try the new 4-column board (intake / queued / in flight / landed) for this project.</span>
+          </span>
+        </label>
+        {project.newBoardEnabled && (
+          <label
+            className="proj-approval"
+            title="Once this many tasks are queued, further incoming tasks render as held (not silently queued) until a slot frees. Blank = no limit."
+          >
+            <span className="proj-approval-label mono">Queued WIP limit</span>
+            <input
+              type="number"
+              min={1}
+              className="qx-input"
+              style={{ width: 80 }}
+              placeholder="none"
+              value={project.queuedWipLimit ?? ""}
+              onChange={(e) => {
+                const n = e.target.value.trim() ? Number(e.target.value) : null;
+                onChange({ queuedWipLimit: n != null && n > 0 ? n : null });
+              }}
+            />
+          </label>
+        )}
       </div>
     </details>
   );
@@ -1534,6 +1571,7 @@ export function ProjectView({
     runs,
     queue,
     tasks,
+    features,
     fleet,
     updateProject,
     removeApprovalRule,
@@ -2106,6 +2144,8 @@ export function ProjectView({
         <div className="projview-timeline">
           <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
         </div>
+      ) : project.newBoardEnabled ? (
+        <MomentumBoard project={project} tasks={tasks} runs={runs} queue={queue} features={features} now={now} onOpenTask={onOpenTask} />
       ) : (
       <BoardDnd.Provider value={{ drag, begin: setDrag, end: () => { setDrag(null); setDropBeforeId(null); }, dropBeforeId }}>
       <div className={"kb-cols kb-cols-6" + (drag ? " kb-dragging" : "")}>

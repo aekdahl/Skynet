@@ -21,13 +21,16 @@ import type {
   ProjectCharter,
   ProviderId,
   ProviderInfo,
+  Proposal,
   ResolveAction,
+  Rule,
   Agent,
   ServerEvent,
   Snapshot,
   SolutionBrief,
   Task,
   TaskAssignment,
+  Transition,
   WorkspaceSettings,
 } from "@skynet/shared";
 import * as api from "./client";
@@ -62,6 +65,15 @@ export interface StoreState {
   modules: Module[];
   deps: Dependency[];
   providers: ProviderInfo[];
+  // Momentum Board (Phase 4) data — Rules/Proposals ride the Snapshot + WS
+  // deltas like everything else above. Transitions don't (it's an append-only
+  // feed, not current state, so Snapshot never carries a backlog of them) —
+  // this only ever holds what's arrived LIVE via `transition.created` since
+  // this session connected; a board fetches its own project's history over
+  // REST (client.ts's fetchProjectTransitions) and merges it in locally.
+  rules: Rule[];
+  proposals: Proposal[];
+  transitions: Transition[];
   connected: boolean;
   loaded: boolean;
   // Live socket lifecycle, so the shell can show connect→connected and a retry
@@ -187,6 +199,10 @@ export interface Store extends StoreState {
       checkCmd?: string | null;
       deepReview?: boolean;
       breakerReview?: boolean;
+      // Momentum Board opt-in; see Project.newBoardEnabled.
+      newBoardEnabled?: boolean;
+      // Momentum Board's Queued-column WIP limit; null clears back to no limit.
+      queuedWipLimit?: number | null;
     },
   ) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;
@@ -394,6 +410,17 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
       return { ...state, fleet: upsert(state.fleet, ev.agent) };
     case "agent.deleted":
       return { ...state, fleet: state.fleet.filter((r) => r.id !== ev.id) };
+    case "rule.upserted":
+      return { ...state, rules: upsert(state.rules, ev.rule) };
+    case "rule.deleted":
+      return { ...state, rules: state.rules.filter((r) => r.id !== ev.id) };
+    case "proposal.upserted":
+      return { ...state, proposals: upsert(state.proposals, ev.proposal) };
+    case "transition.created":
+      // Unbounded growth guard: keep the most recent 500 — plenty for a live
+      // board session (moves-today counts, a landed sparkline, a task's own
+      // trail); a board's own initial history still comes from the REST fetch.
+      return { ...state, transitions: [...state.transitions, ev.transition].slice(-500) };
     case "audit.archived":
     case "audit.deleted":
     case "audit.archived-all":
@@ -417,6 +444,9 @@ const EMPTY: StoreState = {
   modules: [],
   deps: [],
   providers: [],
+  rules: [],
+  proposals: [],
+  transitions: [],
   connected: false,
   loaded: false,
   wsPhase: "connecting",
@@ -437,6 +467,11 @@ function fromSnapshot(snap: Snapshot): StoreState {
     modules: snap.modules,
     deps: snap.deps,
     providers: snap.providers,
+    rules: snap.rules,
+    proposals: snap.proposals,
+    // A fresh snapshot has no transition backlog to seed from (see StoreState's
+    // own comment) — a mounted board re-fetches its project's history itself.
+    transitions: [],
     defaultApprovalLevel: snap.defaultApprovalLevel,
     workspaceSettings: snap.workspaceSettings,
     parallelismNudge: snap.parallelismNudge,

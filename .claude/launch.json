@@ -1,7 +1,7 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "skynet", "runtimeExecutable": "sh", "runtimeArgs": ["-c", "pnpm -C skynet --filter @skynet/server dev"], "port": 8080, "autoPort": false },
-    { "name": "skynet-web", "runtimeExecutable": "pnpm", "runtimeArgs": ["-C", "skynet", "--filter", "@skynet/web", "dev"], "port": 5173, "autoPort": true }
+    { "name": "skynet", "runtimeExecutable": "sh", "runtimeArgs": ["-c", "NODE_ENV=development PORT=8091 pnpm -C skynet --filter @skynet/server dev"], "port": 8091, "autoPort": false },
+    { "name": "skynet-web", "runtimeExecutable": "sh", "runtimeArgs": ["-c", "SKYNET_SERVER_PORT=8091 pnpm -C skynet --filter @skynet/web dev"], "port": 5173, "autoPort": true }
   ]
 }

@@ -1038,6 +1038,10 @@ export class Operations {
       // the operator pastes/uploads something.
       contextSummary: null,
       contextSummaryUpdatedAt: null,
+      // Momentum Board is opt-in, set later in project settings — never on at
+      // creation (see Project.newBoardEnabled).
+      newBoardEnabled: false,
+      queuedWipLimit: null,
     };
     const created = await this.hub.upsertProject(project);
     // A brand-new workspace's first-ever project isn't covered by the rule
@@ -1819,6 +1823,7 @@ export class Operations {
       );
       if (open) {
         await this.resolveHitl(ws, open.id, { action: "approve" }, operatorId);
+        await this.recordHumanTransition(ws, task, to, operatorId);
         return (await this.store.getTask(tid)) ?? task;
       }
     }
@@ -1878,7 +1883,34 @@ export class Operations {
     if (to === "done" && !abandonsRun && updated.runId) {
       await this.hub.runStatus(updated.runId, "done").catch(() => undefined);
     }
+    await this.recordHumanTransition(ws, task, to, operatorId);
     return updated;
+  }
+
+  /** Append-only Transition record (kanban.ts) for a HUMAN-driven kanban
+   *  move — transitionTask's own `task.state === to` no-op guard means this
+   *  is only ever called on a genuine move. Mirrors the rule engine's own
+   *  recordTransition calls (rules/engine.ts) but with `actor: "human"` and
+   *  `ruleId: null`, so a project's Transition feed — and anything reading
+   *  it (the Momentum Board's automation pill "% touched by hand", a task's
+   *  own trail) — actually reflects human moves, not just rule/orchestrator
+   *  ones. Best-effort: never blocks the move itself. */
+  private async recordHumanTransition(ws: string, task: Task, to: Task["state"], operatorId: string): Promise<void> {
+    await this.hub
+      .recordTransition({
+        id: this.uid("tr"),
+        workspaceId: ws,
+        projectId: task.projectId,
+        taskId: task.id,
+        from: task.state,
+        to,
+        actor: "human",
+        actorId: operatorId,
+        ruleId: null,
+        evidence: [],
+        at: now(),
+      })
+      .catch(() => undefined);
   }
 
   /**
