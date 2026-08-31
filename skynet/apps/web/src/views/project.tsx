@@ -32,6 +32,7 @@ import { ProjectContextView } from "./project-context";
 import { InformComposer, toastInformResult } from "./fleet";
 import { toast } from "../components/toast";
 import { MomentumBoard } from "../kanban/board";
+import { BoardHealth } from "../kanban/health";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -374,6 +375,12 @@ function TaskCard({
   // Force Done now runs a completeness consult before it pushes (server-side),
   // so it can take several real seconds — without this it just looked dead.
   const [forcingDone, setForcingDone] = useState(false);
+  // Re-triage runs a real consult too (server-side, synchronously within the
+  // request) — same "looked dead" problem without a busy indicator. Also
+  // gates the clarification card below: a stale question is about to be
+  // replaced (or removed, if the fresh pass comes back clear), so it's
+  // hidden for the duration rather than sitting there answerable mid-retriage.
+  const [retriaging, setRetriaging] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const detailCloseRef = useRef<HTMLButtonElement>(null);
   // Keyboard a11y for the detail modal: focus its close button on open (Escape
@@ -646,9 +653,17 @@ function TaskCard({
           <button
             className="kb-unreviewed-btn"
             title="Re-run triage now — useful after project context changed or the description was edited, instead of waiting for it to cycle back through Backlog"
-            onClick={() => void requestRetriage(pid, task.id)}
+            disabled={retriaging}
+            onClick={async () => {
+              setRetriaging(true);
+              try {
+                await requestRetriage(pid, task.id);
+              } finally {
+                setRetriaging(false);
+              }
+            }}
           >
-            Re-triage
+            {retriaging ? "Re-triaging…" : "Re-triage"}
           </button>
         </div>
       )}
@@ -675,7 +690,7 @@ function TaskCard({
           </div>
         )}
       {/* Triage needs something before this can start — ask right on the card. */}
-      {task.clarification && <ClarificationCard pid={pid} task={task} />}
+      {task.clarification && !retriaging && <ClarificationCard pid={pid} task={task} />}
 
       {s === "review" && (
         task.reviewVerdict ? (
@@ -1657,10 +1672,10 @@ export function ProjectView({
   // Per-project lens (Kanban is the default; Archived shows soft-hidden tasks +
   // restore; Roadmap renders ROADMAP.md from the repo). Persisted per-project in
   // sessionStorage so switching back restores the last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "coverage" | "archived">(() => {
+  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "coverage" | "archived" | "health">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "roadmap" || v === "context" || v === "coverage" || v === "archived" ? v : "kanban";
+    return v === "roadmap" || v === "context" || v === "coverage" || v === "archived" || v === "health" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -2077,13 +2092,13 @@ export function ProjectView({
 
       <div className="projview-lens">
         <div className="lens-switch">
-          {(["kanban", "roadmap", "context", "coverage", "archived"] as const).map((id) => (
+          {(["kanban", "roadmap", "context", "coverage", "health", "archived"] as const).map((id) => (
             <button
               key={id}
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : "Archived"}
+              {id === "kanban" ? "Kanban" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "health" ? "Health" : "Archived"}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
@@ -2111,6 +2126,8 @@ export function ProjectView({
         <ProjectQualityView project={project} />
       ) : lens === "context" ? (
         <ProjectContextView project={project} />
+      ) : lens === "health" ? (
+        <BoardHealth project={project} tasks={tasks} now={now} onOpenTask={onOpenTask} />
       ) : lens === "archived" ? (
         <div className="projview-archived">
           {archivedTasks.length === 0 ? (
