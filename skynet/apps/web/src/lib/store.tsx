@@ -264,6 +264,12 @@ export interface Store extends StoreState {
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
   answerClarification: (projectId: string, taskId: string, answer: string) => Promise<void>;
+  // Momentum Board (Phase 5) — accept a suggested_subtask Proposal into a real
+  // Task (parentTaskId set) individually, or every pending one for this task
+  // at once. The echoed task.upserted / proposal.upserted WS deltas update
+  // state — same "call the API, let the delta land" pattern as everything else.
+  acceptSubtask: (taskId: string, proposalId: string) => Promise<void>;
+  acceptAllSubtasks: (taskId: string) => Promise<void>;
   createAgent: (provider: string, model: string, name?: string, credentialId?: string, label?: string | null) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string; canReview?: boolean; label?: string | null; credentialId?: string | null }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
@@ -848,6 +854,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // every other task mutation here — nothing to apply locally.
       answerClarification: async (projectId, taskId, answer) => {
         await api.answerClarification(projectId, taskId, answer);
+      },
+      acceptSubtask: async (taskId, proposalId) => {
+        await api.acceptSubtask(taskId, proposalId);
+      },
+      acceptAllSubtasks: async (taskId) => {
+        await api.acceptAllSubtasks(taskId);
       },
       createAgent: async (provider, model, name, credentialId, label) => {
         await api.createAgent({ provider, model, name, credentialId, label });

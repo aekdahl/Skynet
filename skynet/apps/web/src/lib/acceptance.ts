@@ -358,4 +358,36 @@ export const SCENARIOS: Scenario[] = [
       return steps;
     },
   },
+  {
+    id: "task-detail-panel",
+    name: "Task Detail panel's own endpoints — trail + subtask accept",
+    desc: "A fresh task's transition trail is empty; accepting all (zero) suggested subtasks is a clean no-op; accepting a specific but nonexistent one is refused — control-plane only, no seeded Proposal needed.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: task detail ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      let s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+      await api.createTask(p.id, "acceptance: subtasks + trail");
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+
+      const trail = await api.fetchTaskTransitions(task.id);
+      steps.push(step("a fresh task's trail is empty", Array.isArray(trail) && trail.length === 0, `${trail.length} transitions`));
+
+      const acceptedAll = await api.acceptAllSubtasks(task.id);
+      steps.push(step("accept-all with nothing pending is a clean no-op", Array.isArray(acceptedAll) && acceptedAll.length === 0));
+
+      try {
+        await api.acceptSubtask(task.id, "nonexistent-proposal-id");
+        steps.push(step("accepting an unknown proposal id is refused", false, "did not throw"));
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : 0;
+        steps.push(step("accepting an unknown proposal id is refused", status === 404, `status ${status}`));
+      }
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
 ];

@@ -1,0 +1,150 @@
+/* ─── Momentum Board — Task Detail panel (Phase 5 — TASK 06) ────────────────
+   A 760px-wide right-side drawer. Tokens only (see board.css's own header
+   comment) — no new one-off colors.
+*/
+
+.mb-detail-backdrop {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in oklch, var(--ak-canvas), transparent 30%);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 60;
+}
+.mb-detail-panel {
+  position: relative;
+  width: 760px;
+  max-width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--ak-surface-0);
+  border-left: 1px solid var(--ak-border);
+  padding: var(--ak-pad-screen);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-16);
+}
+
+.mb-detail-header { position: relative; display: flex; flex-direction: column; gap: var(--ak-sp-6); padding-right: var(--ak-sp-24); }
+.mb-detail-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: var(--ak-sp-6);
+  font-size: 11px;
+  color: var(--ak-text-faint);
+}
+.mb-detail-crumb-sep { color: var(--ak-text-faint); }
+.mb-detail-crumb-current { color: var(--ak-text-secondary); }
+.mb-detail-head-row { display: flex; align-items: center; gap: var(--ak-sp-8); }
+.mb-detail-title { font-size: 17px; font-weight: 600; color: var(--ak-text-primary); margin: 0; }
+.mb-detail-close { position: absolute; top: 0; right: 0; }
+.mb-detail-desc { font-size: 13px; color: var(--ak-text-muted); margin: 0; }
+.mb-detail-parent-link {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: var(--ak-text-faint);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+.mb-detail-parent-link:hover { color: var(--ak-text-secondary); }
+
+.mb-detail-body { display: grid; grid-template-columns: 1fr 260px; gap: var(--ak-sp-24); align-items: start; }
+.mb-detail-main, .mb-detail-rail { display: flex; flex-direction: column; gap: var(--ak-sp-16); min-width: 0; }
+
+.mb-detail-section { display: flex; flex-direction: column; gap: var(--ak-sp-6); }
+.mb-detail-section h3 {
+  margin: 0;
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ak-text-faint);
+}
+.mb-detail-section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ak-sp-8); }
+.mb-detail-empty { font-size: 12px; color: var(--ak-text-faint); }
+
+/* Subtasks */
+.mb-detail-subtask {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ak-sp-8);
+  padding: var(--ak-sp-8) var(--ak-sp-10);
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-row);
+  background: var(--ak-surface-1);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.mb-detail-subtask:hover { border-color: var(--ak-border-strong); }
+.mb-detail-subtask-text { font-size: 12.5px; color: var(--ak-text-primary); }
+/* Suggested-but-not-accepted: dashed lime outline, distinct from a real row. */
+.mb-detail-subtask-suggested {
+  border-style: dashed;
+  border-color: color-mix(in oklch, var(--ak-machine), transparent 45%);
+  background: transparent;
+  cursor: default;
+}
+.mb-detail-subtask-suggested .mb-detail-subtask-text { color: var(--ak-machine); }
+
+/* Checkpoints (full-detail rail) */
+.mb-detail-checkpoint {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: var(--ak-sp-8);
+  padding: var(--ak-sp-6) 0;
+}
+.mb-detail-checkpoint-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--ak-radius-round);
+  background: var(--ak-track);
+  border: 1px solid var(--ak-border-strong);
+}
+.mb-detail-checkpoint-dot-done { background: var(--ak-machine-deep); border-color: var(--ak-machine-deep); }
+.mb-detail-checkpoint-dot-active { background: var(--ak-machine); border-color: var(--ak-machine); box-shadow: var(--ak-halo-lime); }
+.mb-detail-checkpoint-dot-blocked { background: var(--ak-warn); border-color: var(--ak-warn); box-shadow: var(--ak-halo-amber); }
+.mb-detail-checkpoint-label {
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ak-text-secondary);
+}
+.mb-detail-checkpoint-signal {
+  font-size: 11px;
+  color: var(--ak-text-faint);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Owner */
+.mb-detail-owner-line { font-size: 12.5px; color: var(--ak-text-secondary); }
+.mb-detail-owner-running { color: var(--ak-machine); }
+
+/* Decision block */
+.mb-detail-decision {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-10);
+  padding: var(--ak-pad-card);
+  background: var(--ak-surface-2);
+  border: 1px solid color-mix(in oklch, var(--ak-machine), transparent 55%);
+  border-radius: var(--ak-radius-card);
+}
+.mb-detail-decision-copy { font-size: 12.5px; color: var(--ak-text-primary); }
+.mb-detail-decision-actions { display: flex; gap: var(--ak-sp-8); }
+.mb-detail-merge {
+  background: var(--ak-machine);
+  color: var(--ak-surface-0);
+  border: none;
+  font-weight: 600;
+}
+.mb-detail-merge:hover { filter: brightness(1.08); }
