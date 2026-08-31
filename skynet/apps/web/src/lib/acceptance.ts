@@ -341,4 +341,21 @@ export const SCENARIOS: Scenario[] = [
       return steps;
     },
   },
+  {
+    id: "momentum-board-transitions",
+    name: "Momentum Board transitions feed reads clean for a fresh project",
+    desc: "A brand-new project (no kanban moves yet) reports an empty transition feed, not an error — control-plane only.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: momentum ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      const s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+      const transitions = await api.fetchProjectTransitions(p.id, { limit: 50 });
+      steps.push(step("transitions endpoint returns an array", Array.isArray(transitions), `${transitions.length} transitions`));
+      steps.push(step("a fresh project has no transitions yet", transitions.length === 0));
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
 ];

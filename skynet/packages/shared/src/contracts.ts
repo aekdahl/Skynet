@@ -661,6 +661,18 @@ export const Project = z.object({
   // directly via UpdateProjectRequest.
   contextSummary: z.string().nullable().default(null),
   contextSummaryUpdatedAt: Timestamp.nullable().default(null),
+  // Momentum Board (Phase 4 — see apps/web/src/kanban/board.tsx): opt-in to
+  // the new 4-column board (intake/queued/in-flight/landed) driven by
+  // Transition/Rule/Proposal data, replacing the current six-state kanban
+  // view for this project only. Off by default — mirrors the existing
+  // per-project opt-in shape (Project.autoMerge.enabled): the old board
+  // keeps working unchanged for every project that hasn't flipped this.
+  newBoardEnabled: z.boolean().default(false),
+  // Momentum Board's Queued-column WIP limit: once that many tasks are
+  // queued, further incoming tasks render as "held" instead of silently
+  // queuing, and auto-promote when a slot frees. null = no limit (today's
+  // behavior). Only meaningful when newBoardEnabled is on.
+  queuedWipLimit: z.number().int().positive().nullable().default(null),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -1650,6 +1662,8 @@ export const UpdateProjectRequest = z.object({
   enabledRunnerCredentialIds: z.array(z.string()).optional(),
   syncSourceStatus: z.boolean().optional(), // write status changes back to the source of truth
   roadmapPath: z.string().nullable().optional(), // see Project.roadmapPath; null clears → default candidates
+  newBoardEnabled: z.boolean().optional(), // see Project.newBoardEnabled
+  queuedWipLimit: z.number().int().positive().nullable().optional(), // see Project.queuedWipLimit; null clears → no limit
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 

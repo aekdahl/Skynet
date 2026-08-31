@@ -4,6 +4,7 @@ import "./fonts.css";
 import "./styles.css";
 import "./styles.responsive.css";
 import "./kanban/kanban.css";
+import "./kanban/board.css";
 import { App } from "./App";
 import { StoreProvider } from "./lib/store";
 import { AcceptanceProvider } from "./lib/acceptance-store";

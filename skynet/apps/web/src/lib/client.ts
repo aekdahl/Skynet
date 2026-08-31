@@ -32,6 +32,7 @@ import {
   type SolutionBrief,
   type Task,
   type ProjectQualityResult,
+  type Transition,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -457,6 +458,18 @@ export function commitProjectRoadmap(
   return req<ProjectRoadmapResult>("POST", `/api/projects/${projectId}/roadmap`, body);
 }
 
+// ─── Momentum Board (Phase 4) — transitions ─────────────────────────────────
+// Rules/Proposals ride the Snapshot + WS deltas (see store.tsx); Transition[]
+// doesn't (it's an append-only feed, not current state), so the board fetches
+// it directly and stays live via the `transition.created` WS event instead.
+export function fetchProjectTransitions(projectId: string, opts?: { since?: number; limit?: number }) {
+  const qs = new URLSearchParams();
+  if (opts?.since != null) qs.set("since", String(opts.since));
+  if (opts?.limit != null) qs.set("limit", String(opts.limit));
+  const q = qs.toString();
+  return req<Transition[]>("GET", `/api/projects/${projectId}/transitions${q ? `?${q}` : ""}`);
+}
+
 // ─── Advanced env settings (desktop) ───────────────────────────────────────
 export type EnvFieldType = "text" | "number" | "toggle" | "secret";
 export interface EnvSettingField {
@@ -668,6 +681,10 @@ export function updateProject(
     checkCmd?: string | null;
     deepReview?: boolean;
     breakerReview?: boolean;
+    // Momentum Board opt-in; see Project.newBoardEnabled.
+    newBoardEnabled?: boolean;
+    // Momentum Board's Queued-column WIP limit; null clears back to no limit.
+    queuedWipLimit?: number | null;
   },
 ) {
   return req<Project>("PATCH", `/api/projects/${id}`, body);
