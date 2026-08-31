@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Snapshot, DEFAULT_WORKSPACE, SAFETY_DEFAULTS, type TaskRun, type AuditRecord, type GithubConnection, type Project, type Proposal, type Rule, type SolutionBrief, type Transition } from "@skynet/shared";
+import { Snapshot, DEFAULT_WORKSPACE, SAFETY_DEFAULTS, type TaskRun, type AuditRecord, type GithubConnection, type PendingRuleAction, type Project, type Proposal, type Rule, type SolutionBrief, type Transition } from "@skynet/shared";
 import type { Store } from "../apps/server/src/store/store.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
 import { FileStore } from "../apps/server/src/store/file.js";
@@ -233,6 +233,26 @@ function storeContract(name: string, make: () => Promise<Store>) {
       expect(await store.getProposal("prop-test-1")).toBeUndefined();
     });
 
+    it("put → get → list (status-filtered) → delete round-trips a pending rule action, project-scoped, plus the all-workspaces sweep list", async () => {
+      const pending: PendingRuleAction = {
+        id: "pra-test-1", workspaceId: DEFAULT_WORKSPACE, projectId: "seed-proj", taskId: "task-x", ruleId: "rule-x",
+        action: { type: "move_task", params: { toState: "review" } },
+        fromState: "ongoing", toState: "review", evidence: ["pr_merged"],
+        status: "pending", createdAt: 1, readyAt: 601, undoableUntil: null, transitionId: null,
+      };
+      await store.putPendingRuleAction(pending);
+      expect(await store.getPendingRuleAction("pra-test-1")).toEqual(pending);
+      expect((await store.listPendingActionsForProject("seed-proj")).some((a) => a.id === "pra-test-1")).toBe(true);
+      expect(await store.listPendingActionsForProject("seed-proj", { status: "finalized" })).toEqual([]);
+      expect((await store.listAllPendingActions()).some((a) => a.id === "pra-test-1")).toBe(true);
+      // Finalize: upsert replaces, not duplicates.
+      await store.putPendingRuleAction({ ...pending, status: "finalized", undoableUntil: 1200, transitionId: "tr-1" });
+      expect((await store.getPendingRuleAction("pra-test-1"))?.status).toBe("finalized");
+      expect(await store.listPendingActionsForProject("seed-proj", { status: "pending" })).toEqual([]);
+      await store.deletePendingRuleAction("pra-test-1");
+      expect(await store.getPendingRuleAction("pra-test-1")).toBeUndefined();
+    });
+
     it("put → get → delete round-trips a GitHub connection (one per workspace)", async () => {
       expect(await store.getGithubConnection("ws-gh")).toBeUndefined();
       const conn: GithubConnection = {
@@ -391,5 +411,22 @@ describePg("Store contract — postgres (DATABASE_URL set)", () => {
     expect((await store.getProposal("pg-prop-1"))?.status).toBe("accepted");
     await store.deleteProposal("pg-prop-1");
     expect(await store.getProposal("pg-prop-1")).toBeUndefined();
+  });
+
+  it("put → get → list (status-filtered) → delete round-trips a pending rule action, plus the all-workspaces sweep list", async () => {
+    const pending: PendingRuleAction = {
+      id: "pg-pra-1", workspaceId: DEFAULT_WORKSPACE, projectId: "pg-test-proj", taskId: "pg-task-x", ruleId: "pg-rule-x",
+      action: { type: "move_task", params: { toState: "review" } },
+      fromState: "ongoing", toState: "review", evidence: ["pr_merged"],
+      status: "pending", createdAt: 1, readyAt: 601, undoableUntil: null, transitionId: null,
+    };
+    await store.putPendingRuleAction(pending);
+    expect(await store.getPendingRuleAction("pg-pra-1")).toEqual(pending);
+    expect((await store.listPendingActionsForProject("pg-test-proj", { status: "pending" })).some((a) => a.id === "pg-pra-1")).toBe(true);
+    expect((await store.listAllPendingActions()).some((a) => a.id === "pg-pra-1")).toBe(true);
+    await store.putPendingRuleAction({ ...pending, status: "finalized", undoableUntil: 1200, transitionId: "pg-tr-1" });
+    expect((await store.getPendingRuleAction("pg-pra-1"))?.status).toBe("finalized");
+    await store.deletePendingRuleAction("pg-pra-1");
+    expect(await store.getPendingRuleAction("pg-pra-1")).toBeUndefined();
   });
 });

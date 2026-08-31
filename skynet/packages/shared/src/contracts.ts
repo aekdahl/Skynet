@@ -939,6 +939,12 @@ export const Task = z.object({
   // additive scaffolding for a later phase's UI. Null = a top-level task
   // (today's only shape).
   parentTaskId: z.string().nullable().default(null),
+  // Freeform priority label (e.g. "P0"/"P1"/"P2") — Momentum Rollout Phase 1b's
+  // rule engine needs a concrete task attribute to check its `excludePriorities`
+  // safety rail ("never touch P0") against; nothing in Task named this before.
+  // Unvalidated beyond being a string (no fixed vocabulary enforced here) —
+  // null = no priority set, today's only shape.
+  priority: z.string().nullable().default(null),
   // Operator-saved provider/model preference for auto-pick — set via the Start
   // picker. Null (the default) leaves acquisition exactly as it's always been:
   // the first idle, usable runner in fleet order. When set, acquireAgent tries

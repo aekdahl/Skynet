@@ -63,6 +63,25 @@ export const Snapshot = z.object({
 });
 export type Snapshot = z.infer<typeof Snapshot>;
 
+// ─── GitHub signal (Momentum Rollout — TASK 01's ingestion, consumed by the
+// rule engine, TASK 02) ─────────────────────────────────────────────────────
+// A normalized GitHub webhook fact, published on the SAME workspace bus every
+// other ServerEvent rides — the contract TASK 01's webhook ingestion is
+// expected to publish and the rule engine's `pr_merged`/`checks_green`/
+// `label_contains` conditions react to. Defined here (not invented ad hoc in
+// the rule engine) so both sides agree on one shape.
+export const GithubSignalKind = z.enum([
+  "pr_opened",
+  "pr_merged",
+  "pr_closed",
+  "checks_passed",
+  "checks_failed",
+  "review_approved",
+  "label_added",
+  "label_removed",
+]);
+export type GithubSignalKind = z.infer<typeof GithubSignalKind>;
+
 // ─── Server → client deltas ───────────────────────────────────────────────
 
 export const ServerEvent = z.discriminatedUnion("type", [
@@ -95,6 +114,21 @@ export const ServerEvent = z.discriminatedUnion("type", [
 
   // derived intelligence
   z.object({ type: z.literal("conflict.detected"), moduleId: z.string(), runIds: z.array(z.string()) }),
+
+  // A normalized GitHub webhook fact (Momentum Rollout — see GithubSignalKind
+  // above). `taskId` is null when the signal couldn't be resolved to a
+  // specific task (e.g. a PR not opened by an agent branch).
+  z.object({
+    type: z.literal("github.signal"),
+    projectId: z.string(),
+    taskId: z.string().nullable(),
+    kind: GithubSignalKind,
+    repo: z.string().nullable(),
+    prNumber: z.number().int().nullable(),
+    // Set for label_added/label_removed; null for every other kind.
+    label: z.string().nullable(),
+    at: Timestamp,
+  }),
 
   // collection CRUD deltas — keep every operator's view consistent
   z.object({ type: z.literal("project.upserted"), project: Project }),

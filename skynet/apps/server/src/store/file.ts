@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import type { GithubConnection, WorkspaceSettings } from "@skynet/shared";
-import { Agent, AuditRecord, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, PolicyVersion, Project, ProjectContextEntry, Proposal, Rule, SolutionBrief, Task, TaskRun, Transition } from "@skynet/shared";
+import { Agent, AuditRecord, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, PendingRuleAction, PolicyVersion, Project, ProjectContextEntry, Proposal, Rule, SolutionBrief, Task, TaskRun, Transition } from "@skynet/shared";
 import type { z } from "zod";
 import { MemoryStore } from "./memory.js";
 
@@ -84,6 +84,7 @@ export class FileStore extends MemoryStore {
       fill(this.transitions, d.transitions, Transition, "transition");
       fill(this.rules, d.rules, Rule, "rule");
       fill(this.proposals, d.proposals, Proposal, "proposal");
+      fill(this.pendingRuleActions, d.pendingRuleActions, PendingRuleAction, "pending rule action");
       fill(this.fleet, d.fleet, Agent, "agent");
       this.modules = fillArray(d.modules, Module, "module");
       this.deps = fillArray(d.deps, Dependency, "dependency");
@@ -134,6 +135,7 @@ export class FileStore extends MemoryStore {
       transitions: [...this.transitions.values()],
       rules: [...this.rules.values()],
       proposals: [...this.proposals.values()],
+      pendingRuleActions: [...this.pendingRuleActions.values()],
       fleet: [...this.fleet.values()],
       modules: this.modules,
       deps: this.deps,

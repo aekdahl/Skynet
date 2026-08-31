@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
+import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, TaskState, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
 import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow, pacedAvailableUsd, ratesFor, resolveTaskBrief } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -5020,7 +5020,11 @@ export class Orchestrator {
             const backlog = mine.find(
               (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") !== "unassigned",
             );
-            if (backlog && projectIdle.length > 0) await this.triageOne(ws, projectIdle[0]!, backlog);
+            if (backlog && projectIdle.length > 0) {
+              const before = backlog.state;
+              const triaged = await this.triageOne(ws, projectIdle[0]!, backlog);
+              await this.writeMachineTransition(triaged, before, triaged.state, ["autonomy triage sweep"]);
+            }
             // 2) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
             //    Gated by `p.autonomy` — this is where money/time actually gets
             //    spent, so it stays under the project autonomy toggle. Also
@@ -5055,7 +5059,14 @@ export class Orchestrator {
               // selectAffordable's own comment) — a no-op list transform when
               // no budget is set.
               const affordable = await this.selectAffordable(p, runs, pickable);
-              await Promise.allSettled(affordable.map((t) => this.assignTask(p.id, t.id)));
+              const results = await Promise.allSettled(affordable.map((t) => this.assignTask(p.id, t.id)));
+              await Promise.all(
+                results.map((r, i) =>
+                  r.status === "fulfilled"
+                    ? this.writeMachineTransition(affordable[i]!, "todo", "ongoing", ["autonomy auto-pick"])
+                    : Promise.resolve(),
+                ),
+              );
             }
             // 3) Review a finished run — runs REGARDLESS of `p.autonomy`.
             //    Recording a verdict is diagnostic (an LLM consult), not a
@@ -5101,7 +5112,7 @@ export class Orchestrator {
    * through the EXACT same write logic — including the clarification loop
    * breaker below — rather than two copies that can drift.
    */
-  private async triageOne(ws: string, agent: Agent, task: Task): Promise<void> {
+  private async triageOne(ws: string, agent: Agent, task: Task): Promise<Task> {
     const { assessment, assessmentEffort, assessmentRisks, estimatedDurationMs, clarity, featureId, milestoneId, questions } =
       await this.assessTask(ws, agent, task);
     // Only OVERWRITE an existing estimate when triage produced a new one —
@@ -5146,7 +5157,7 @@ export class Orchestrator {
           "Triage still flagged this unclear after the operator's answer — proceeding anyway; confirm scope before/while working it.",
         ]
       : assessmentRisks;
-    await this.hub.upsertTask({
+    return this.hub.upsertTask({
       ...task,
       state: nextState,
       assessment,
@@ -5157,6 +5168,32 @@ export class Orchestrator {
       featureId: nextFeatureId,
       milestoneId: nextMilestoneId,
     });
+  }
+
+  /** Momentum Rollout Phase 1b: record the orchestrator's OWN autonomous task
+   *  moves (not a human action, not a Rule) into the same Transition log the
+   *  rule engine writes to — so "what moved and why" has a single source of
+   *  truth regardless of which system did it. `actor:"machine"` +
+   *  `ruleId:null` is the documented signal for exactly this case (see
+   *  Transition's own doc comment in kanban.ts). Best-effort: a failure here
+   *  must never block the actual task move it's recording. */
+  private async writeMachineTransition(task: Task, from: TaskState, to: TaskState, evidence: string[]): Promise<void> {
+    if (from === to) return; // nothing actually moved — no-op, don't pollute the log
+    await this.store
+      .createTransition({
+        id: `tr-${task.id}-${++this.seq}`,
+        workspaceId: task.workspaceId,
+        projectId: task.projectId,
+        taskId: task.id,
+        from,
+        to,
+        actor: "machine",
+        actorId: null,
+        ruleId: null,
+        evidence,
+        at: now(),
+      })
+      .catch(() => undefined);
   }
 
   /**
@@ -6278,6 +6315,7 @@ export class Orchestrator {
       source,
       dependsOnTaskIds: [],
       parentTaskId: null,
+      priority: null,
       lint: null,
       preferredProvider: null,
       preferredModel: null,

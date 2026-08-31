@@ -104,6 +104,8 @@ import { CLARIFICATION_ANSWERED_MARKER, NoCapacityError, NothingToReviewError, R
 import { resolveExecutable } from "./steward/execution.js";
 import { secretService, withSecretAvailability } from "./secrets/index.js";
 import type { Store } from "./store/store.js";
+import type { RuleEngine } from "./rules/engine.js";
+import type { PendingRuleAction } from "@skynet/shared";
 
 /** A referenced entity does not exist (or isn't in the caller's workspace). 404. */
 export class NotFoundError extends Error {
@@ -170,6 +172,11 @@ export interface OperationsDeps {
   store: Store;
   hub: Hub;
   orchestrator: Orchestrator;
+  /** Momentum Rollout Phase 1b — undoRuleAction delegates here. Optional so
+   *  existing test fakes (which construct Operations without a RuleEngine)
+   *  keep working; undoRuleAction throws a clear error if it's ever called
+   *  without one wired. */
+  ruleEngine?: RuleEngine;
   // Test seam, mirroring Orchestrator's providerOverride/previewOverride: the
   // one-shot consult decomposeBrief uses to turn a brief into a plan. Defaults
   // to the real oneShotText. Injectable because it's a module-level function
@@ -205,6 +212,7 @@ export class Operations {
   private readonly store: Store;
   private readonly hub: Hub;
   private readonly orchestrator: Orchestrator;
+  private readonly ruleEngine?: RuleEngine;
   private readonly decomposeConsult: (opts: { prompt: string; model: string; apiKey?: string | null }) => Promise<string>;
   private readonly crystallizeAsk?: (prompt: string) => Promise<string>;
   private readonly contextAsk?: (prompt: string) => Promise<string>;
@@ -231,6 +239,7 @@ export class Operations {
     this.store = deps.store;
     this.hub = deps.hub;
     this.orchestrator = deps.orchestrator;
+    this.ruleEngine = deps.ruleEngine;
     // The project driver may re-pull a bound source when a board runs dry. It
     // lives on the orchestrator (which ticks) but the pull lives here, so it's
     // injected rather than imported — the orchestrator must not depend on this
@@ -1160,6 +1169,7 @@ export class Operations {
       dependsOnTaskIds: [],
       // No subtask relation at creation — set later, if ever, via updateTask.
       parentTaskId: null,
+      priority: null,
       lint: null,
       // Start-picker preference starts unset — plain auto-pick until an operator
       // saves one via updateTask.
@@ -2069,6 +2079,19 @@ export class Operations {
     await this.orchestrator.reassignRunToAgent(task.runId, targetAgentId);
   }
 
+  /** Momentum Rollout Phase 1b — cancel a rule engine action within its
+   *  undo window: a still-pending (announce-before-acting) action simply
+   *  never applies; a just-finalized one has its task move reverted.
+   *  Either way bumps the rule's undo count and may auto-pause it. Throws
+   *  NotFoundError (workspace-scoped) or the RuleEngine's own honest reason
+   *  (already undone / window passed). */
+  async undoRuleAction(ws: string, pendingId: string, operatorId: string): Promise<PendingRuleAction> {
+    if (!this.ruleEngine) throw new Error("The rule engine isn't enabled on this server.");
+    const pending = await this.store.getPendingRuleAction(pendingId);
+    if (!pending || pending.workspaceId !== ws) throw new NotFoundError("Pending rule action");
+    return this.ruleEngine.undo(pendingId, operatorId);
+  }
+
   // ── features (task grouping) ───────────────────────────────────────────
   async createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature> {
     const project = await this.store.getProject(projectId);
@@ -2438,6 +2461,7 @@ export class Operations {
         source: { kind: "brief", briefId: brief.id },
         dependsOnTaskIds: t.dependsOnIndex.map((idx) => ids[idx]!),
         parentTaskId: null,
+        priority: null,
         lint: null,
         preferredProvider: null,
         preferredModel: null,

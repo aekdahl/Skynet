@@ -100,6 +100,11 @@ export const Rule = z.object({
   safety: RuleSafety.default({ announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] }),
   stats: RuleStats.default({ moves: 0, undos: 0 }),
   state: RuleLifecycleState.default("live"),
+  // Set only when the auto-pause breaker flips `state` to "paused" on its
+  // own (undo count crossed `safety.pauseAfterUndos` within a rolling
+  // window) — distinct from an operator manually pausing, which leaves this
+  // null. Null whenever `state !== "paused"` or a human paused it.
+  pausedReason: z.string().nullable().default(null),
   createdAt: Timestamp,
   archived: z.boolean().default(false),
 });
@@ -115,6 +120,12 @@ export const ProposalKind = z.enum([
   "suggested_subtask",
   "suggested_rule",
   "suggested_reassignment",
+  // Phase 1b's stall-detection sweep (see RuleEngine): a lighter-weight, non-
+  // escalating heads-up that a task has sat with no signal for a while —
+  // distinct from `suggested_reassignment`, which is reserved for the LATER,
+  // more urgent escalation step once a stalled task has gone unaddressed even
+  // longer. Additive — existing Proposal rows are unaffected.
+  "stall_nudge",
 ]);
 export type ProposalKind = z.infer<typeof ProposalKind>;
 
@@ -132,6 +143,48 @@ export const Proposal = z.object({
   resolvedAt: Timestamp.nullable().default(null),
 });
 export type Proposal = z.infer<typeof Proposal>;
+
+// ─── PendingRuleAction: the announce-before-acting hold (Phase 1b's rule
+// engine) ─────────────────────────────────────────────────────────────────
+// A Rule action deferred by `safety.announceBeforeActing` — recorded the
+// moment a rule matches, BEFORE the task actually moves, so an operator has
+// `undoWindowMin` minutes to cancel it. A scheduled resolver sweep (mirroring
+// orchestrator.ts's `reapStaleAgents`) finalizes it once `readyAt` passes
+// with no undo — at which point the action actually executes, a Transition
+// is written, and the SAME action stays undoable for one more
+// `undoWindowMin`-long grace window (`undoableUntil`) in case the operator
+// only notices after the fact. Persisted (not an in-memory map like the
+// orchestrator's own live-run bookkeeping) so a deferred action genuinely
+// survives a restart rather than silently vanishing mid-window.
+export const PendingRuleActionStatus = z.enum(["pending", "finalized", "undone"]);
+export type PendingRuleActionStatus = z.infer<typeof PendingRuleActionStatus>;
+
+export const PendingRuleAction = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  projectId: z.string(),
+  taskId: z.string(),
+  ruleId: z.string(),
+  action: RuleAction,
+  fromState: TaskState,
+  // Null for a non-move action (add_label / post_slack_nudge / create_proposal)
+  // — there's no target TaskState to apply once the window elapses.
+  toState: TaskState.nullable(),
+  // Evidence captured at match time (the event/signal that triggered this) —
+  // carried onto the eventual Transition once finalized.
+  evidence: z.array(z.string()).default([]),
+  status: PendingRuleActionStatus.default("pending"),
+  createdAt: Timestamp,
+  /** `createdAt` + `safety.undoWindowMin` — when the resolver sweep finalizes this. */
+  readyAt: Timestamp,
+  /** Set once finalized: `finalizedAt` + `safety.undoWindowMin` — the SAME
+   *  window length, extended past finalization so a still-fresh move stays
+   *  undoable a little longer. Null while still pending. */
+  undoableUntil: Timestamp.nullable().default(null),
+  /** The Transition this action produced once finalized. Null while pending. */
+  transitionId: z.string().nullable().default(null),
+});
+export type PendingRuleAction = z.infer<typeof PendingRuleAction>;
 
 // ─── readiness() / columnBucket(): pure board-presentation functions ────────
 // Neither reads nor writes anything — callers (a later phase's API/UI layer)

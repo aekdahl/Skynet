@@ -12,6 +12,8 @@ import type {
   HitlItem,
   Milestone,
   Module,
+  PendingRuleAction,
+  PendingRuleActionStatus,
   PolicyVersion,
   Project,
   ProjectContextEntry,
@@ -47,6 +49,7 @@ export class MemoryStore implements Store {
   protected transitions = new Map<string, Transition>();
   protected rules = new Map<string, Rule>();
   protected proposals = new Map<string, Proposal>();
+  protected pendingRuleActions = new Map<string, PendingRuleAction>();
   protected fleet = new Map<string, Agent>();
   protected modules: Module[] = [];
   protected deps: Dependency[] = [];
@@ -159,6 +162,16 @@ export class MemoryStore implements Store {
     if (opts.status != null) list = list.filter((p) => p.status === opts.status);
     return list;
   }
+
+  async getPendingRuleAction(id: string) { return this.pendingRuleActions.get(id); }
+  async putPendingRuleAction(action: PendingRuleAction) { this.pendingRuleActions.set(action.id, action); this.persist(); return action; }
+  async deletePendingRuleAction(id: string) { this.pendingRuleActions.delete(id); this.persist(); }
+  async listPendingActionsForProject(projectId: string, opts: { status?: PendingRuleActionStatus } = {}) {
+    let list = [...this.pendingRuleActions.values()].filter((a) => a.projectId === projectId);
+    if (opts.status != null) list = list.filter((a) => a.status === opts.status);
+    return list;
+  }
+  async listAllPendingActions() { return [...this.pendingRuleActions.values()]; }
 
   async listAgents(ws: string) { return [...this.fleet.values()].filter((r) => r.workspaceId === ws); }
   async listAllAgents() { return [...this.fleet.values()]; }
