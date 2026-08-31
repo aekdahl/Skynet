@@ -102,8 +102,12 @@ export function MomentumBoard({
   now,
   onOpenTask,
 }: MomentumBoardProps) {
-  const { rules, proposals, transitions: liveTransitions } = useStore();
+  const { rules, proposals, transitions: liveTransitions, wsPhase } = useStore();
   void onOpenTask; // reserved — a card's PRIMARY click opens the local detail panel below
+  // TASK 13 hardening — the automation pill's numbers are only as fresh as
+  // the WS stream; if it's not open, say so instead of silently continuing
+  // to show whatever was last known.
+  const signalsStale = wsPhase !== "open";
 
   // TASK 06: the task detail panel every card opens into. Local state, not
   // the app's global "task" route — this panel is task-CENTRIC (works for a
@@ -122,11 +126,17 @@ export function MomentumBoard({
   // (see store.tsx), so fetch once per project and merge with whatever's
   // arrived live since (dedup by id; a live one may also appear in a refetch).
   const [fetchedTransitions, setFetchedTransitions] = useState<Transition[]>([]);
+  // TASK 13 hardening — without this, "still loading" and "genuinely zero
+  // transitions" both render as "0 MOVES TODAY", which quietly overstates
+  // confidence in a number that hasn't actually arrived yet.
+  const [transitionsLoading, setTransitionsLoading] = useState(true);
   useEffect(() => {
     let live = true;
-    api.fetchProjectTransitions(project.id, { limit: 500 }).then((t) => {
-      if (live) setFetchedTransitions(t);
-    }).catch(() => undefined);
+    setTransitionsLoading(true);
+    api.fetchProjectTransitions(project.id, { limit: 500 })
+      .then((t) => { if (live) setFetchedTransitions(t); })
+      .catch(() => undefined)
+      .finally(() => { if (live) setTransitionsLoading(false); });
     return () => {
       live = false;
     };
@@ -190,17 +200,31 @@ export function MomentumBoard({
 
   return (
     <div className="mb-board">
-      <div className="mb-pill">
-        <span className="mb-pill-stat">{rulesLive} RULES LIVE</span>
-        <span className="mb-pill-sep">·</span>
-        <span className="mb-pill-stat">{movesToday.length} MOVES TODAY</span>
-        {pctHand != null && (
-          <>
-            <span className="mb-pill-sep">·</span>
-            <span className="mb-pill-stat mb-pill-hand">{pctHand}% touched by hand</span>
-          </>
-        )}
-      </div>
+      {transitionsLoading ? (
+        <div className="mb-pill" aria-busy="true">
+          <span className="ak-skel-row mb-pill-skel" />
+        </div>
+      ) : (
+        <div className="mb-pill">
+          <span className="mb-pill-stat">{rulesLive} RULES LIVE</span>
+          <span className="mb-pill-sep">·</span>
+          <span className="mb-pill-stat">{movesToday.length} MOVES TODAY</span>
+          {pctHand != null && (
+            <>
+              <span className="mb-pill-sep">·</span>
+              <span className="mb-pill-stat mb-pill-hand">{pctHand}% touched by hand</span>
+            </>
+          )}
+          {signalsStale && (
+            <>
+              <span className="mb-pill-sep">·</span>
+              <span className="mb-pill-stat ak-stale-marker" title="The live update stream isn't connected — these numbers may be out of date.">
+                ⚠ signals stale
+              </span>
+            </>
+          )}
+        </div>
+      )}
       <div className="mb-cols">
         {(["intake", "queued", "in_flight", "landed"] as ColumnBucket[]).map((bucket) => (
           <MomentumColumn

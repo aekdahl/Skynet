@@ -1450,6 +1450,20 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // TASK 13 hardening — the Activity Feed's "retry" action on a
+  // status:"failed" row: re-runs the rule's current dispatch for this task.
+  app.post<{ Params: { ruleId: string }; Body: { taskId: string } }>(
+    "/api/rules/:ruleId/retry",
+    async (req, reply) => {
+      if (!req.body?.taskId) return reply.code(400).send({ error: "taskId is required" });
+      try {
+        return await ops.retryFailedAction(ws(req), req.params.ruleId, req.body.taskId);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
   // ── proposals (Momentum Rollout Phase 1c — accept / dismiss) ────────────
   // `activate` only matters for a suggested_rule proposal — TASK 10's
   // "TURN IT ON" onboarding action; omitted/false is a plain accept (creates

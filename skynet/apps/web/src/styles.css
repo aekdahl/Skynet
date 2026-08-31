@@ -142,6 +142,10 @@
   /* Shadows — dark-theme soft. */
   --ak-shadow-focus-card: 0 1px 2px rgba(0, 0, 0, .4);
   --ak-shadow-orbit-ready: 0 8px 24px rgba(0, 0, 0, .35);
+  /* TASK 13 hardening — the card-hover "lift" shadow (distinct from the two
+     above: those are a static resting shadow and the Gravity merge-ready
+     glow, neither is a hover-elevation effect). */
+  --ak-shadow-lift: 0 6px 20px rgba(0, 0, 0, .3);
 
   /* Focus ring + node/dot halo (lime; amber variant at a lower alpha). */
   --ak-focus-ring: 0 0 0 2px rgba(211, 242, 106, .5);

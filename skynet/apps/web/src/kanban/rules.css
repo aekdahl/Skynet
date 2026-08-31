@@ -21,6 +21,16 @@
 }
 .rb-panel-actions { display: flex; gap: var(--ak-sp-8); }
 .rb-name-input { font-size: 14px; font-weight: 500; }
+/* TASK 13 hardening — every action button in this tab uses a plain .btn
+   variant (styles.css); scope the ak-focus-ring override to this tab's own
+   containers rather than touching the app-wide .btn rule other, non-kanban
+   screens also use. */
+.rb-panel-actions .btn:focus-visible,
+.rb-list-head .btn:focus-visible,
+.rb-rule-actions .btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ak-focus-ring);
+}
 
 /* ── Card (trigger/conditions · actions · backtest · safety · lifecycle) ── */
 .rb-card {
@@ -51,6 +61,7 @@
   background: var(--ak-surface-2); color: var(--ak-text-primary);
 }
 .rb-chip-select { cursor: pointer; }
+.rb-chip-select:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 .rb-chip-input { flex: 1; min-width: 100px; }
 .rb-chip-input-num { flex: none; width: 70px; }
 .rb-chip-input-wide { min-width: 220px; }
@@ -60,12 +71,14 @@
   background: transparent; color: var(--ak-text-faint); font-size: 15px; line-height: 1; cursor: pointer;
 }
 .rb-chip-remove:hover { color: var(--ak-warn); background: color-mix(in oklch, var(--ak-warn), transparent 90%); }
+.rb-chip-remove:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 .rb-add-chip {
   align-self: flex-start; margin-top: var(--ak-sp-3); padding: var(--ak-sp-6) var(--ak-sp-10);
   border: 1px dashed var(--ak-border-strong); border-radius: var(--ak-radius-sm);
   background: transparent; color: var(--ak-text-secondary); font-size: 12px; cursor: pointer;
 }
 .rb-add-chip:hover { border-color: var(--ak-machine); color: var(--ak-machine); }
+.rb-add-chip:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 
 .rb-sentence {
   margin: 0; padding: var(--ak-sp-10) var(--ak-sp-12); font-size: 12px; line-height: 1.6;
@@ -88,12 +101,14 @@
 .rb-priority-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ak-sp-6); }
 .rb-priority-chip { display: inline-flex; align-items: center; gap: var(--ak-sp-5); }
 .rb-priority-remove { border: none; background: none; color: inherit; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; }
+.rb-priority-remove:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 .rb-priority-suggest {
   padding: var(--ak-sp-3) var(--ak-sp-8); font-size: 11px; font-family: var(--ak-font-mono);
   border: 1px dashed var(--ak-border-strong); border-radius: var(--ak-radius-bar);
   background: transparent; color: var(--ak-text-faint); cursor: pointer;
 }
 .rb-priority-suggest:hover { color: var(--ak-warn); border-color: var(--ak-warn); }
+.rb-priority-suggest:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 .rb-priority-input { height: 26px; width: 110px; font-size: 11.5px; padding: 0 var(--ak-sp-6); }
 
 /* ── Lifecycle state picker ─────────────────────────────────────────────── */
@@ -102,10 +117,18 @@
   padding: var(--ak-sp-6) var(--ak-sp-12); font-size: 12px; font-weight: 500;
   border: 1px solid var(--ak-border); border-radius: var(--ak-radius-pill);
   background: var(--ak-surface-2); color: var(--ak-text-secondary); cursor: pointer;
+  transition: border-color var(--motion-fast), color var(--motion-fast);
 }
+/* Ghost-flavored toggle: border brightens toward --ak-track on hover — this
+   had no hover state at all before (found by audit). */
+.rb-state-btn:hover:not(.on):not(:disabled) { border-color: var(--ak-track); color: var(--ak-text-primary); }
 .rb-state-btn.on { border-color: var(--ak-machine); color: var(--ak-machine); background: color-mix(in oklch, var(--ak-machine), transparent 90%); }
 .rb-state-btn-sm { padding: var(--ak-sp-3) var(--ak-sp-8); font-size: 11px; }
 .rb-state-btn:disabled { cursor: default; }
+.rb-state-btn:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+@media (prefers-reduced-motion: reduce) {
+  .rb-state-btn { transition: none; }
+}
 
 /* ── Live rules list ────────────────────────────────────────────────────── */
 .rb-rule-list { display: flex; flex-direction: column; gap: var(--ak-sp-8); }
@@ -121,4 +144,5 @@
 .rb-rule-when { margin: 0; font-size: 12px; color: var(--ak-text-muted); line-height: 1.5; }
 .rb-rule-stats { font-size: 10.5px; color: var(--ak-text-faint); }
 .rb-rule-actions { flex: none; display: flex; align-items: center; gap: var(--ak-sp-5); flex-wrap: wrap; }
-.rb-del:hover { color: var(--ak-warn); }
+/* Plain-text ghost action (no border/fill): underline on hover. */
+.rb-del:hover { color: var(--ak-warn); text-decoration: underline; }

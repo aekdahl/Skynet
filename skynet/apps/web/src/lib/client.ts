@@ -553,6 +553,12 @@ export function undoRuleAction(pendingId: string) {
   return req<PendingRuleAction>("POST", `/api/pending-actions/${pendingId}/undo`);
 }
 
+/** TASK 13 hardening — the Activity Feed's "retry" action on a
+ *  `status:"failed"` row: re-runs the rule's current dispatch for this task. */
+export function retryRuleAction(ruleId: string, taskId: string) {
+  return req<Task>("POST", `/api/rules/${ruleId}/retry`, { taskId });
+}
+
 // ─── Proposals (Momentum Rollout Phase 1c) — accept / dismiss ──────────────
 // Generic across every ProposalKind; TASK 10's "pattern spotted" card is the
 // first UI to actually call these (`stall_nudge` stays read-only elsewhere —

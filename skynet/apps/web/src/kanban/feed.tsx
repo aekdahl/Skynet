@@ -57,27 +57,34 @@ interface FeedRowProps {
   onOpenTask: (id: string) => void;
   onUndo: (pendingId: string) => void;
   undoing: boolean;
+  onRetry: (ruleId: string, taskId: string) => void;
+  retrying: boolean;
 }
 
-function FeedRow({ transition, task, rule, pending, stalled, now, onOpenTask, onUndo, undoing }: FeedRowProps) {
+function FeedRow({ transition, task, rule, pending, stalled, now, onOpenTask, onUndo, undoing, onRetry, retrying }: FeedRowProps) {
+  const failed = transition.status === "failed";
   const { subject, rest } = describe(transition, task?.text ?? "a task");
   const ruleLabel = rule ? rule.name : transition.ruleId ? "rule" : "Skynet";
   const ago = fmtDurMs(Math.max(0, now - transition.at));
 
-  const undoable = pending && pending.status === "finalized" && pending.undoableUntil != null && pending.undoableUntil > now;
+  const undoable = !failed && pending && pending.status === "finalized" && pending.undoableUntil != null && pending.undoableUntil > now;
   const undoLeft = undoable ? fmtDurMs(Math.max(0, pending!.undoableUntil! - now)) : null;
-  const escalateIn = !undoable && stalled ? STALL_ESCALATE_HOURS_DEFAULT - stalled.staleHours : null;
+  const escalateIn = !failed && !undoable && stalled ? STALL_ESCALATE_HOURS_DEFAULT - stalled.staleHours : null;
 
   return (
-    <div className="feed-row">
+    <div className={"feed-row" + (failed ? " feed-row-failed" : "")}>
       <div className="feed-row-sentence">
-        <strong>{subject}</strong> {rest}
+        <strong>{subject}</strong> {failed ? <span className="feed-row-failtext">{rest}</span> : rest}
       </div>
       <div className="feed-row-meta mono">
         {ruleLabel} · {ago}
       </div>
       <div className="feed-row-action">
-        {undoable ? (
+        {failed && transition.ruleId ? (
+          <button className="feed-retry" disabled={retrying} onClick={() => onRetry(transition.ruleId!, transition.taskId)}>
+            {retrying ? "retrying…" : "retry"}
+          </button>
+        ) : undoable ? (
           <button className="feed-undo" disabled={undoing} onClick={() => onUndo(pending!.id)}>
             {undoing ? "undoing…" : `undo · ${undoLeft} left`}
           </button>
@@ -104,19 +111,23 @@ export function ActivityFeed({
   now: number;
   onOpenTask: (id: string) => void;
 }) {
-  const { rules, proposals, transitions: liveTransitions, undoRuleAction } = useStore();
+  const { rules, proposals, transitions: liveTransitions, undoRuleAction, retryRuleAction, wsPhase } = useStore();
   const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
   const ruleById = useMemo(() => new Map(rules.map((r) => [r.id, r])), [rules]);
+  const signalsStale = wsPhase !== "open";
 
   // Every transition for this project (both actors — the footer needs the
   // human count too), fetched once + merged with whatever's arrived live
   // since. Same shape as board.tsx's own fetch+merge.
   const [fetchedTransitions, setFetchedTransitions] = useState<Transition[]>([]);
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
     let live = true;
-    api.fetchProjectTransitions(project.id, { limit: 500 }).then((t) => {
-      if (live) setFetchedTransitions(t);
-    }).catch(() => undefined);
+    setLoading(true);
+    api.fetchProjectTransitions(project.id, { limit: 500 })
+      .then((t) => { if (live) setFetchedTransitions(t); })
+      .catch(() => undefined)
+      .finally(() => { if (live) setLoading(false); });
     return () => {
       live = false;
     };
@@ -177,6 +188,21 @@ export function ActivityFeed({
     }
   };
 
+  // TASK 13 hardening — retrying a failed row re-dispatches the rule; the
+  // outcome (success or another failure) rides back on the SAME real
+  // transition.created WS event every other rule action does, so there's
+  // nothing to apply locally here beyond the busy indicator.
+  const [retryingKey, setRetryingKey] = useState<string | null>(null);
+  const handleRetry = async (ruleId: string, taskId: string) => {
+    const key = `${ruleId}:${taskId}`;
+    setRetryingKey(key);
+    try {
+      await retryRuleAction(ruleId, taskId);
+    } finally {
+      setRetryingKey(null);
+    }
+  };
+
   const machineTransitions = transitions.filter((t) => t.actor === "machine");
   const grouped = useMemo(() => {
     const groups: Record<"Today" | "Yesterday" | "Earlier", Transition[]> = { Today: [], Yesterday: [], Earlier: [] };
@@ -192,32 +218,47 @@ export function ActivityFeed({
   return (
     <div className="feed-panel">
       <div className="feed-list">
-        {(["Today", "Yesterday", "Earlier"] as const).map(
-          (group) =>
-            grouped[group].length > 0 && (
-              <div className="feed-group" key={group}>
-                <div className="feed-group-head mono">{group}</div>
-                {grouped[group].map((t) => (
-                  <FeedRow
-                    key={t.id}
-                    transition={t}
-                    task={taskById.get(t.taskId)}
-                    rule={t.ruleId ? ruleById.get(t.ruleId) : undefined}
-                    pending={pendingByTransitionId.get(t.id)}
-                    stalled={stallByTaskId.get(t.taskId)}
-                    now={now}
-                    onOpenTask={onOpenTask}
-                    onUndo={handleUndo}
-                    undoing={undoingId === pendingByTransitionId.get(t.id)?.id}
-                  />
-                ))}
-              </div>
-            ),
+        {loading ? (
+          <div className="feed-skel" aria-busy="true">
+            <span className="ak-skel-row" />
+            <span className="ak-skel-row" style={{ width: "80%" }} />
+            <span className="ak-skel-row" style={{ width: "65%" }} />
+          </div>
+        ) : (
+          <>
+            {(["Today", "Yesterday", "Earlier"] as const).map(
+              (group) =>
+                grouped[group].length > 0 && (
+                  <div className="feed-group" key={group}>
+                    <div className="feed-group-head mono">{group}</div>
+                    {grouped[group].map((t) => (
+                      <FeedRow
+                        key={t.id}
+                        transition={t}
+                        task={taskById.get(t.taskId)}
+                        rule={t.ruleId ? ruleById.get(t.ruleId) : undefined}
+                        pending={pendingByTransitionId.get(t.id)}
+                        stalled={stallByTaskId.get(t.taskId)}
+                        now={now}
+                        onOpenTask={onOpenTask}
+                        onUndo={handleUndo}
+                        undoing={undoingId === pendingByTransitionId.get(t.id)?.id}
+                        onRetry={handleRetry}
+                        retrying={t.ruleId != null && retryingKey === `${t.ruleId}:${t.taskId}`}
+                      />
+                    ))}
+                  </div>
+                ),
+            )}
+            {machineTransitions.length === 0 && <div className="kb-empty">No machine actions yet.</div>}
+          </>
         )}
-        {machineTransitions.length === 0 && <div className="kb-empty">No machine actions yet.</div>}
       </div>
       <div className="feed-footer mono">
         {machineToday} machine · {humanToday} human today
+        {signalsStale && (
+          <span className="ak-stale-marker" title="The live update stream isn't connected — these counts may be out of date."> · ⚠ stale</span>
+        )}
       </div>
     </div>
   );

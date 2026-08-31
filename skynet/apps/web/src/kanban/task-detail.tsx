@@ -233,7 +233,12 @@ export function MomentumTaskDetail({
 
             <section className="mb-detail-section">
               <h3>Trail</h3>
-              {transitions == null && <div className="mb-detail-empty">Loading…</div>}
+              {transitions == null && (
+                <div className="mb-detail-skel" aria-busy="true">
+                  <span className="ak-skel-row" style={{ width: "85%" }} />
+                  <span className="ak-skel-row" style={{ width: "60%" }} />
+                </div>
+              )}
               {transitions != null && transitions.length === 0 && <div className="mb-detail-empty">No moves recorded yet.</div>}
               {transitions?.map((t) => (
                 <TrailRow
