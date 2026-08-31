@@ -15,6 +15,8 @@ import type {
   HitlItem,
   Milestone,
   Module,
+  PendingRuleAction,
+  PendingRuleActionStatus,
   PolicyVersion,
   Project,
   ProjectContextEntry,
@@ -49,6 +51,7 @@ CREATE TABLE IF NOT EXISTS solution_briefs (id text PRIMARY KEY, workspace_id te
 CREATE TABLE IF NOT EXISTS transitions (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, task_id text NOT NULL, at bigint NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS rules      (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS proposals  (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, status text NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS pending_rule_actions (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, status text NOT NULL, ready_at bigint NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS agents    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS modules    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS deps       (id bigserial PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
@@ -81,6 +84,8 @@ CREATE INDEX IF NOT EXISTS transitions_task    ON transitions(task_id);
 CREATE INDEX IF NOT EXISTS transitions_project ON transitions(project_id, at DESC);
 CREATE INDEX IF NOT EXISTS rules_project        ON rules(project_id);
 CREATE INDEX IF NOT EXISTS proposals_project    ON proposals(project_id, status);
+CREATE INDEX IF NOT EXISTS pending_actions_project ON pending_rule_actions(project_id, status);
+CREATE INDEX IF NOT EXISTS pending_actions_ready   ON pending_rule_actions(status, ready_at);
 CREATE INDEX IF NOT EXISTS agents_ws  ON agents(workspace_id);
 CREATE INDEX IF NOT EXISTS log_run   ON run_log(run_id);
 `;
@@ -291,6 +296,34 @@ export class PostgresStore implements Store {
     let sql = "SELECT data FROM proposals WHERE project_id=$1";
     if (opts.status != null) { params.push(opts.status); sql += ` AND status=$${params.length}`; }
     const { rows } = await this.pool.query<{ data: Proposal }>(sql, params);
+    return rows.map((r) => r.data);
+  }
+
+  // ── pending rule actions (Momentum Rollout Phase 1b, project-scoped) ──────
+  async getPendingRuleAction(id: string): Promise<PendingRuleAction | undefined> {
+    const { rows } = await this.pool.query<{ data: PendingRuleAction }>("SELECT data FROM pending_rule_actions WHERE id=$1", [id]);
+    return rows[0]?.data;
+  }
+  async putPendingRuleAction(action: PendingRuleAction): Promise<PendingRuleAction> {
+    await this.pool.query(
+      "INSERT INTO pending_rule_actions(id,workspace_id,project_id,status,ready_at,data) VALUES($1,$2,$3,$4,$5,$6::jsonb) " +
+        "ON CONFLICT(id) DO UPDATE SET workspace_id=$2, project_id=$3, status=$4, ready_at=$5, data=$6::jsonb",
+      [action.id, action.workspaceId, action.projectId, action.status, action.readyAt, J(action)],
+    );
+    return action;
+  }
+  async deletePendingRuleAction(id: string): Promise<void> {
+    await this.pool.query("DELETE FROM pending_rule_actions WHERE id=$1", [id]);
+  }
+  async listPendingActionsForProject(projectId: string, opts: { status?: PendingRuleActionStatus } = {}): Promise<PendingRuleAction[]> {
+    const params: unknown[] = [projectId];
+    let sql = "SELECT data FROM pending_rule_actions WHERE project_id=$1";
+    if (opts.status != null) { params.push(opts.status); sql += ` AND status=$${params.length}`; }
+    const { rows } = await this.pool.query<{ data: PendingRuleAction }>(sql, params);
+    return rows.map((r) => r.data);
+  }
+  async listAllPendingActions(): Promise<PendingRuleAction[]> {
+    const { rows } = await this.pool.query<{ data: PendingRuleAction }>("SELECT data FROM pending_rule_actions");
     return rows.map((r) => r.data);
   }
 

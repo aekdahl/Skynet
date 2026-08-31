@@ -13,6 +13,8 @@ import type {
   HitlItem,
   Milestone,
   Module,
+  PendingRuleAction,
+  PendingRuleActionStatus,
   PolicyVersion,
   Project,
   ProjectContextEntry,
@@ -117,6 +119,16 @@ export interface Store {
   putProposal(proposal: Proposal): Promise<Proposal>;
   deleteProposal(id: string): Promise<void>;
   listProposalsForProject(projectId: string, opts?: { status?: ProposalStatus }): Promise<Proposal[]>;
+
+  // pending rule actions (Momentum Rollout Phase 1b — the RuleEngine's
+  // announce-before-acting hold; see @skynet/shared's PendingRuleAction).
+  // `listAllPendingActions` (no scoping — like listAllRuns/listAllProjects)
+  // is what the resolver sweep scans every tick.
+  getPendingRuleAction(id: string): Promise<PendingRuleAction | undefined>;
+  putPendingRuleAction(action: PendingRuleAction): Promise<PendingRuleAction>;
+  deletePendingRuleAction(id: string): Promise<void>;
+  listPendingActionsForProject(projectId: string, opts?: { status?: PendingRuleActionStatus }): Promise<PendingRuleAction[]>;
+  listAllPendingActions(): Promise<PendingRuleAction[]>;
 
   // fleet
   listAgents(workspaceId: string): Promise<Agent[]>;

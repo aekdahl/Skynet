@@ -1338,4 +1338,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return fail(reply, err);
     }
   });
+
+  // Momentum Rollout Phase 1b — cancel a rule engine action within its undo
+  // window (still-pending: never applies; just-finalized: reverts the
+  // task's move). 404s if the pending action isn't found in this workspace;
+  // otherwise surfaces the RuleEngine's own honest reason (already undone /
+  // window passed) via `fail`.
+  app.post<{ Params: { id: string } }>("/api/rules/pending-actions/:id/undo", async (req, reply) => {
+    try {
+      return await ops.undoRuleAction(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
 }

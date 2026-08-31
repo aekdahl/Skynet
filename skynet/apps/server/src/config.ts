@@ -169,6 +169,22 @@ export const config = {
   // runs. 0 disables it entirely (fully human-driven). Per-project autonomy
   // flag still gates each project.
   autonomyMs: Number(process.env.SKYNET_AUTONOMY_MS ?? 15_000),
+  // Momentum Rollout Phase 1b — the rule engine's own scheduled sweeps
+  // (mirrors the reaper/autonomy sweeps above). ruleEngineSweepMs finalizes
+  // announce-before-acting PendingRuleActions once their window elapses (kept
+  // short by default — an operator's undo window is usually short too, and a
+  // sweep only DOES anything once a pending action's readyAt has passed, so a
+  // frequent tick is cheap). stallSweepMs is the slower, separate stall-
+  // detection job (same cadence class as the worktree GC above). Both 0 disables.
+  ruleEngineSweepMs: Number(process.env.SKYNET_RULE_ENGINE_SWEEP_MS ?? 30_000),
+  stallSweepMs: Number(process.env.SKYNET_STALL_SWEEP_MS ?? 1_800_000),
+  // Stall-detection thresholds (hours): an ongoing/review task with no
+  // Transition since stallNudgeHours gets a lightweight nudge (a
+  // stall_nudge Proposal); still no signal by stallEscalateHours (measured
+  // from the SAME last-signal point, not from the nudge) escalates to a
+  // suggested_reassignment Proposal.
+  stallNudgeHours: Number(process.env.SKYNET_STALL_NUDGE_HOURS ?? 48),
+  stallEscalateHours: Number(process.env.SKYNET_STALL_ESCALATE_HOURS ?? 96),
   // Budget-as-allocation pacing window (ms): with `Project.budgetPacing` on,
   // auto-pick treats the daily budget as available in proportion to how much
   // of this window has elapsed since local midnight, instead of all at once.
