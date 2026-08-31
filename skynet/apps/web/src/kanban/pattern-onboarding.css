@@ -1,0 +1,41 @@
+/* ─── Pattern-spotted automation onboarding (Phase 8 — TASK 10) ─────────────
+   Tokens only (see rules.css's own header convention) — no new one-off
+   colors. Each card is 480px, one per pending suggested_rule Proposal.
+*/
+
+.pso-section { display: flex; flex-direction: column; gap: var(--ak-sp-16); margin-bottom: var(--ak-sp-16); }
+
+.pso-card {
+  width: 480px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-10);
+  padding: var(--ak-sp-12);
+  border: 1px solid color-mix(in oklch, var(--ak-machine), transparent 55%);
+  border-radius: var(--ak-radius-row);
+  background: color-mix(in oklch, var(--ak-machine), transparent 95%);
+}
+
+.pso-card-head { display: flex; align-items: center; justify-content: space-between; }
+.pso-card-title { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--ak-machine); }
+
+.pso-name { margin: 0; font-size: 14px; font-weight: 600; color: var(--ak-text-primary); }
+
+.pso-chips { display: flex; flex-wrap: wrap; gap: var(--ak-sp-6); }
+.pso-chip {
+  font-size: 11.5px;
+  padding: var(--ak-sp-3) var(--ak-sp-8);
+  border-radius: var(--ak-radius-bar);
+  border: 1px solid var(--ak-border);
+  color: var(--ak-text-secondary);
+  background: var(--ak-surface-1);
+}
+.pso-chip-condition { border-color: color-mix(in oklch, var(--ak-human), transparent 55%); }
+.pso-chip-action { border-color: color-mix(in oklch, var(--ak-machine), transparent 45%); color: var(--ak-machine); }
+
+.pso-stats { font-size: 11px; color: var(--ak-text-faint); }
+
+.pso-actions { display: flex; gap: var(--ak-sp-8); margin-top: var(--ak-sp-4); }
+.pso-never { color: var(--ak-text-muted); }
+.pso-never:hover { color: var(--ak-warn); }

@@ -13,6 +13,7 @@ import { fmtDurMs } from "../lib/derive";
 import * as api from "../lib/client";
 import { useStore, useNow } from "../lib/store";
 import { Chip, type ChipTone } from "./primitives";
+import { PatternSpottedSection } from "./pattern-onboarding";
 
 // ── v1 vocabulary — mirrors apps/server/src/rules/engine.ts's
 // RULE_CONDITION_OPS / RULE_ACTION_TYPES exactly. Do NOT add an operator or
@@ -42,7 +43,7 @@ const TASK_STATE_LABEL: Record<TaskState, string> = {
 
 const DEFAULT_SAFETY: RuleSafety = { announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] };
 
-const RULE_STATE_META: Record<RuleLifecycleState, { label: string; tone: ChipTone }> = {
+export const RULE_STATE_META: Record<RuleLifecycleState, { label: string; tone: ChipTone }> = {
   live: { label: "Live", tone: "machine" },
   watch: { label: "Watch", tone: "neutral" },
   paused: { label: "Paused", tone: "warn" },
@@ -66,7 +67,11 @@ function moveTargetOf(actions: RuleAction[]): TaskState | null {
   return TASK_STATE_LIST.includes(p.toState as TaskState) ? (p.toState as TaskState) : null;
 }
 
-function describeCondition(cond: RuleCondition): string {
+// Exported: TASK 10's pattern-spotted card reuses these as a read-only
+// "rule in full" summary — there's no separate componentized chip display
+// anywhere else in the app, only this tab's editable ConditionChip/ActionChip
+// rows, so the plain-sentence describers are the actual reuse surface.
+export function describeCondition(cond: RuleCondition): string {
   switch (cond.op) {
     case "state_equals":
       return `task state is ${TASK_STATE_LABEL[cond.value as TaskState] ?? String(cond.value)}`;
@@ -83,7 +88,7 @@ function describeCondition(cond: RuleCondition): string {
   }
 }
 
-function describeAction(action: RuleAction): string {
+export function describeAction(action: RuleAction): string {
   switch (action.type) {
     case "move_task":
       return `move task to ${TASK_STATE_LABEL[(action.params as { toState?: TaskState } | null)?.toState as TaskState] ?? "…"}`;
@@ -103,7 +108,7 @@ function describeAction(action: RuleAction): string {
  *  chip UI is the source of truth for the actual conditions/actions arrays —
  *  this sentence is a readable label derived FROM them, never typed by hand,
  *  so it can never drift out of sync with what the rule actually does. */
-function composeWhen(conditions: RuleCondition[], actions: RuleAction[]): string {
+export function composeWhen(conditions: RuleCondition[], actions: RuleAction[]): string {
   if (conditions.length === 0 && actions.length === 0) return "";
   const when = conditions.length > 0
     ? "WHEN " + conditions.map(describeCondition).join(" AND ")
@@ -244,7 +249,7 @@ function ActionChip({
 // Board's own .mb-sparkline — see board.tsx) + a false-positive callout when
 // the visible sample looks noisy (>30% of matches were already in the
 // move_task action's own target state — i.e. the action would be a no-op).
-function BacktestCard({ project, conditions, actions }: { project: Project; conditions: RuleCondition[]; actions: RuleAction[] }) {
+export function BacktestCard({ project, conditions, actions }: { project: Project; conditions: RuleCondition[]; actions: RuleAction[] }) {
   const [result, setResult] = useState<{ wouldHaveMoved: number; sample: Transition[] } | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -527,7 +532,14 @@ function RuleRow({ rule, project, onEdit }: { rule: Rule; project: Project; onEd
         </div>
         <p className="rb-rule-when">{rule.when || "(no conditions)"}</p>
         <div className="rb-rule-stats mono">
-          {rule.stats.moves} move{rule.stats.moves === 1 ? "" : "s"} · {rule.stats.undos} undo{rule.stats.undos === 1 ? "" : "s"} · created {fmtDurMs(now - rule.createdAt)} ago
+          {rule.state === "watch" ? (
+            // TASK 10 — "evaluated and logged, never acts" (RuleLifecycleState's
+            // own doc comment) means nothing to show as moves/undos yet; show
+            // the ONE stat that IS real for a watch rule instead.
+            <>{rule.stats.watchMatches} match{rule.stats.watchMatches === 1 ? "" : "es"} while watching · created {fmtDurMs(now - rule.createdAt)} ago</>
+          ) : (
+            <>{rule.stats.moves} move{rule.stats.moves === 1 ? "" : "s"} · {rule.stats.undos} undo{rule.stats.undos === 1 ? "" : "s"} · created {fmtDurMs(now - rule.createdAt)} ago</>
+          )}
         </div>
       </div>
       <div className="rb-rule-actions">
@@ -580,6 +592,7 @@ export function RulesTab({ project }: { project: Project }) {
 
   return (
     <div className="rb-wrap">
+      <PatternSpottedSection project={project} />
       <div className="rb-list-head">
         <h3 className="rb-panel-title">Rules</h3>
         <button className="btn btn-primary btn-sm" onClick={() => setMode({ kind: "new" })}>+ New rule</button>

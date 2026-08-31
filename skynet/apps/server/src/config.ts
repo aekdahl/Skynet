@@ -185,6 +185,19 @@ export const config = {
   // suggested_reassignment Proposal.
   stallNudgeHours: Number(process.env.SKYNET_STALL_NUDGE_HOURS ?? 48),
   stallEscalateHours: Number(process.env.SKYNET_STALL_ESCALATE_HOURS ?? 96),
+  // TASK 10 — pattern-spotted automation onboarding. patternDetectSweepMs is
+  // the scan cadence (cheap — a no-op scan unless a project actually has
+  // patternDetectThreshold+ matching manual moves); patternDetectWindowDays
+  // bounds how far back a pattern search looks; patternDetectThreshold is the
+  // minimum DISTINCT tasks a repeated {from,to} manual move needs before it's
+  // proposed as a rule. watchPromoteSweepMs/watchPromoteAfterMs govern a
+  // watch-state rule's "unmodified after a week → auto-promote to live" clock
+  // (see RuleEngine.sweepWatchPromotion). All 0/negative disables that sweep.
+  patternDetectSweepMs: Number(process.env.SKYNET_PATTERN_DETECT_SWEEP_MS ?? 3_600_000),
+  patternDetectWindowDays: Number(process.env.SKYNET_PATTERN_DETECT_WINDOW_DAYS ?? 30),
+  patternDetectThreshold: Number(process.env.SKYNET_PATTERN_DETECT_THRESHOLD ?? 3),
+  watchPromoteSweepMs: Number(process.env.SKYNET_WATCH_PROMOTE_SWEEP_MS ?? 3_600_000),
+  watchPromoteAfterMs: Number(process.env.SKYNET_WATCH_PROMOTE_AFTER_MS ?? 7 * 24 * 60 * 60 * 1000),
   // Budget-as-allocation pacing window (ms): with `Project.budgetPacing` on,
   // auto-pick treats the daily budget as available in proportion to how much
   // of this window has elapsed since local midnight, instead of all at once.

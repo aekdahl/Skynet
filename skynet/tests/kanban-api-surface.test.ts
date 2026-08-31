@@ -244,6 +244,22 @@ describe("HTTP: rules / transitions / proposals / subtasks", () => {
       const rules = await store.listRulesForProject(project.id);
       expect(rules).toHaveLength(1);
       expect(rules[0]!.state).toBe("watch");
+      expect(rules[0]!.watchStartedAt).toBeTruthy(); // TASK 10's promotion clock started
+    });
+
+    it("TASK 10 — {activate:true} creates the rule LIVE instead ('Turn it on')", async () => {
+      await putProposal({
+        kind: "suggested_rule",
+        payload: { name: "Suggested", when: "x", conditions: [], actions: [] },
+      });
+      const res = await app.inject({
+        method: "POST", url: `/api/projects/${project.id}/proposals/prop1/accept`, headers: AUTH, payload: { activate: true },
+      });
+      expect(res.statusCode).toBe(200);
+      const rules = await store.listRulesForProject(project.id);
+      expect(rules).toHaveLength(1);
+      expect(rules[0]!.state).toBe("live");
+      expect(rules[0]!.watchStartedAt).toBeNull(); // never entered watch
     });
 
     it("accepting a stall_nudge / suggested_reassignment proposal just marks it accepted (advisory-only)", async () => {

@@ -6,7 +6,7 @@
 // no git, no worktrees, no live agent: the engine never touches any of that.
 import { describe, it, expect } from "vitest";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
-import type { Project, Task, TaskRun, ServerEvent } from "@skynet/shared";
+import type { Project, Task, TaskRun, ServerEvent, Rule, Transition } from "@skynet/shared";
 import { InProcessBus } from "../apps/server/src/bus.js";
 import { Hub } from "../apps/server/src/hub.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
@@ -320,5 +320,189 @@ describe("rule engine — stall detection sweep", () => {
     await store.putTask(mkTask({ id: "t-live-run", state: "ongoing", runId: "r1" })); // no Transition at all
     await engine.sweepStallDetection();
     expect(await store.listProposalsForProject(PROJECT_ID)).toEqual([]); // 10 minutes ago is fresh, not stale
+  });
+});
+
+describe("rule engine — pattern-spotted automation onboarding (TASK 10)", () => {
+  const humanMove = (over: Partial<Transition>): Transition => ({
+    id: `tr-${Math.random()}`, workspaceId: DEFAULT_WORKSPACE, projectId: PROJECT_ID,
+    taskId: "t1", from: "todo", to: "ongoing", actor: "human", actorId: "op-1", ruleId: null,
+    evidence: [], at: Date.now() - 60_000, ...over,
+  });
+
+  it("below the threshold (3 distinct tasks), nothing is proposed", async () => {
+    const { store, engine } = await setup();
+    await store.createTransition(humanMove({ id: "tr1", taskId: "ta" }));
+    await store.createTransition(humanMove({ id: "tr2", taskId: "tb" }));
+    await engine.sweepPatternDetection();
+    expect(await store.listProposalsForProject(PROJECT_ID)).toEqual([]);
+  });
+
+  it("3 distinct tasks sharing the same manual {from,to} move → a suggested_rule proposal with detector stats", async () => {
+    const { store, engine } = await setup();
+    await store.createTransition(humanMove({ id: "tr1", taskId: "ta" }));
+    await store.createTransition(humanMove({ id: "tr2", taskId: "tb" }));
+    await store.createTransition(humanMove({ id: "tr3", taskId: "tc" }));
+
+    await engine.sweepPatternDetection();
+
+    const proposals = await store.listProposalsForProject(PROJECT_ID, { status: "pending" });
+    const proposal = proposals.find((p) => p.kind === "suggested_rule");
+    expect(proposal).toBeDefined();
+    const payload = proposal!.payload as {
+      conditions: { op: string; value: unknown }[];
+      actions: { type: string; params: unknown }[];
+      detected?: { sampleSize: number; matchCount: number; matchRate: number; windowDays: number; estimatedMinutesSavedPerMonth: number };
+    };
+    expect(payload.conditions).toEqual([{ field: "state", op: "state_equals", value: "todo" }]);
+    expect(payload.actions).toEqual([{ type: "move_task", params: { toState: "ongoing" } }]);
+    expect(payload.detected?.matchCount).toBe(3);
+    expect(payload.detected?.sampleSize).toBe(3);
+    expect(payload.detected?.matchRate).toBe(1); // every human move OUT of "todo" in this test went to "ongoing"
+    expect(payload.detected?.estimatedMinutesSavedPerMonth).toBeGreaterThan(0);
+
+    // A second sweep doesn't duplicate the same pattern (it's already pending).
+    await engine.sweepPatternDetection();
+    const again = (await store.listProposalsForProject(PROJECT_ID, { status: "pending" })).filter((p) => p.kind === "suggested_rule");
+    expect(again).toHaveLength(1);
+  });
+
+  it("one task moved 3 times is noise, not a pattern — requires DISTINCT tasks", async () => {
+    const { store, engine } = await setup();
+    await store.createTransition(humanMove({ id: "tr1", taskId: "ta" }));
+    await store.createTransition(humanMove({ id: "tr2", taskId: "ta" }));
+    await store.createTransition(humanMove({ id: "tr3", taskId: "ta" }));
+    await engine.sweepPatternDetection();
+    expect(await store.listProposalsForProject(PROJECT_ID)).toEqual([]);
+  });
+
+  it("ignores machine-actor and rule-driven moves — only actor:'human', ruleId:null counts", async () => {
+    const { store, engine } = await setup();
+    await store.createTransition(humanMove({ id: "tr1", taskId: "ta" }));
+    await store.createTransition(humanMove({ id: "tr2", taskId: "tb" }));
+    await store.createTransition(humanMove({ id: "tr3", taskId: "tc", actor: "machine", actorId: null }));
+    await store.createTransition(humanMove({ id: "tr4", taskId: "td", ruleId: "some-rule" }));
+    await engine.sweepPatternDetection();
+    expect(await store.listProposalsForProject(PROJECT_ID)).toEqual([]);
+  });
+
+  it("ignores transitions outside the detection window", async () => {
+    const { store, engine } = await setup();
+    const old = Date.now() - 40 * 24 * 60 * 60 * 1000; // 40 days ago — past the 30-day default window
+    await store.createTransition(humanMove({ id: "tr1", taskId: "ta", at: old }));
+    await store.createTransition(humanMove({ id: "tr2", taskId: "tb", at: old }));
+    await store.createTransition(humanMove({ id: "tr3", taskId: "tc", at: old }));
+    await engine.sweepPatternDetection();
+    expect(await store.listProposalsForProject(PROJECT_ID)).toEqual([]);
+  });
+
+  it("a pattern the operator already dismissed ('Never') is not re-proposed", async () => {
+    const { store, engine } = await setup();
+    await store.createTransition(humanMove({ id: "tr1", taskId: "ta" }));
+    await store.createTransition(humanMove({ id: "tr2", taskId: "tb" }));
+    await store.createTransition(humanMove({ id: "tr3", taskId: "tc" }));
+    await engine.sweepPatternDetection();
+
+    const [proposal] = await store.listProposalsForProject(PROJECT_ID, { status: "pending" });
+    await store.putProposal({ ...proposal!, status: "dismissed", resolvedAt: Date.now() });
+
+    await engine.sweepPatternDetection();
+    const suggested = (await store.listProposalsForProject(PROJECT_ID)).filter((p) => p.kind === "suggested_rule");
+    expect(suggested).toHaveLength(1); // still just the one dismissed row — no fresh duplicate
+    expect(suggested[0]!.status).toBe("dismissed");
+  });
+
+  it("a pattern already accepted into a real Rule is not re-proposed — the underlying Transitions never expire from the window on their own", async () => {
+    const { store, engine } = await setup();
+    await store.createTransition(humanMove({ id: "tr1", taskId: "ta" }));
+    await store.createTransition(humanMove({ id: "tr2", taskId: "tb" }));
+    await store.createTransition(humanMove({ id: "tr3", taskId: "tc" }));
+    await engine.sweepPatternDetection();
+
+    // Simulate "Turn it on": accept the proposal into a real, live Rule —
+    // the SAME conditions/actions the detector generated.
+    const [proposal] = await store.listProposalsForProject(PROJECT_ID, { status: "pending" });
+    const payload = proposal!.payload as { conditions: unknown; actions: unknown };
+    await store.putProposal({ ...proposal!, status: "accepted", resolvedAt: Date.now() });
+    await store.putRule({
+      id: "rule-from-proposal", workspaceId: DEFAULT_WORKSPACE, projectId: PROJECT_ID, name: "Auto: Todo → Ongoing",
+      when: "x", conditions: payload.conditions as never, actions: payload.actions as never,
+      safety: { announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
+      stats: { moves: 0, undos: 0, watchMatches: 0 }, state: "live", pausedReason: null,
+      createdAt: Date.now(), watchStartedAt: null, updatedAt: Date.now(), archived: false,
+    });
+
+    await engine.sweepPatternDetection(); // the same 3 historical Transitions are still well within the window
+    const suggested = (await store.listProposalsForProject(PROJECT_ID, { status: "pending" })).filter((p) => p.kind === "suggested_rule");
+    expect(suggested).toHaveLength(0); // no duplicate proposal for a pattern that's already a real rule
+  });
+});
+
+describe("rule engine — watch-state rules (TASK 10)", () => {
+  const watchRule = (over: Partial<Rule> = {}): Rule => ({
+    id: "rule-watch", workspaceId: DEFAULT_WORKSPACE, projectId: PROJECT_ID, name: "Watching",
+    when: "x", conditions: [{ field: "state", op: "state_equals", value: "ongoing" }],
+    actions: [{ type: "move_task", params: { toState: "review" } }],
+    safety: { announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
+    stats: { moves: 0, undos: 0, watchMatches: 0 }, state: "watch", pausedReason: null,
+    createdAt: Date.now(), watchStartedAt: Date.now(), updatedAt: Date.now(), archived: false, ...over,
+  });
+
+  it("a matching watch rule bumps stats.watchMatches — evaluated and logged, never acts", async () => {
+    const { store, bus } = await setup();
+    await store.putTask(mkTask({ state: "ongoing" }));
+    await store.putRule(watchRule());
+
+    bus.publish(DEFAULT_WORKSPACE, { type: "task.upserted", task: mkTask({ state: "ongoing" }) });
+    await waitFor(async () => ((await store.getRule("rule-watch"))?.stats.watchMatches ?? 0) > 0);
+
+    expect((await store.getRule("rule-watch"))?.stats.watchMatches).toBe(1);
+    expect((await store.getTask("t1"))?.state).toBe("ongoing"); // never moved
+    expect(await store.listTransitionsForTask("t1")).toEqual([]); // never a Transition
+  });
+
+  it("a non-matching watch rule does nothing", async () => {
+    const { store, bus } = await setup();
+    await store.putTask(mkTask({ state: "todo" }));
+    await store.putRule(watchRule());
+    bus.publish(DEFAULT_WORKSPACE, { type: "task.upserted", task: mkTask({ state: "todo" }) });
+    await new Promise((r) => setTimeout(r, 30));
+    expect((await store.getRule("rule-watch"))?.stats.watchMatches).toBe(0);
+  });
+});
+
+describe("rule engine — watch-promotion sweep (TASK 10)", () => {
+  const watchRule = (over: Partial<Rule> = {}): Rule => ({
+    id: "rule-watch", workspaceId: DEFAULT_WORKSPACE, projectId: PROJECT_ID, name: "Watching",
+    when: "x", conditions: [], actions: [],
+    safety: { announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
+    stats: { moves: 0, undos: 0, watchMatches: 0 }, state: "watch", pausedReason: null,
+    createdAt: Date.now() - 8 * 24 * 60 * 60 * 1000, watchStartedAt: Date.now() - 8 * 24 * 60 * 60 * 1000,
+    updatedAt: Date.now() - 8 * 24 * 60 * 60 * 1000, archived: false, ...over,
+  });
+
+  it("promotes an unmodified watch rule to live once the promotion window has elapsed", async () => {
+    const { store, engine } = await setup();
+    await store.putRule(watchRule());
+    await engine.sweepWatchPromotion();
+    const rule = await store.getRule("rule-watch");
+    expect(rule?.state).toBe("live");
+    expect(rule?.watchStartedAt).toBeNull();
+  });
+
+  it("does not promote before the promotion window elapses", async () => {
+    const { store, engine } = await setup();
+    const recent = Date.now() - 60_000; // 1 minute ago — nowhere near the 7-day default
+    await store.putRule(watchRule({ watchStartedAt: recent, createdAt: recent, updatedAt: recent }));
+    await engine.sweepWatchPromotion();
+    expect((await store.getRule("rule-watch"))?.state).toBe("watch");
+  });
+
+  it("does not promote a rule the operator edited during its watch week", async () => {
+    const { store, engine } = await setup();
+    const watchStartedAt = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    await store.putRule(watchRule({ watchStartedAt, createdAt: watchStartedAt, updatedAt: Date.now() - 60_000 })); // touched 1 minute ago
+    await engine.sweepWatchPromotion();
+    expect((await store.getRule("rule-watch"))?.state).toBe("watch"); // left alone for the operator
   });
 });

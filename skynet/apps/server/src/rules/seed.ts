@@ -26,7 +26,10 @@ export async function seedStarterRules(
 ): Promise<Rule[]> {
   const undoWindowMin = overrides.undoWindowMin ?? 10;
   const at = now();
-  const base = { workspaceId, projectId, stats: { moves: 0, undos: 0 }, state: "live", pausedReason: null, createdAt: at, archived: false } as const;
+  const base = {
+    workspaceId, projectId, stats: { moves: 0, undos: 0, watchMatches: 0 }, state: "live", pausedReason: null,
+    createdAt: at, watchStartedAt: null, updatedAt: at, archived: false,
+  } as const;
   const safety = { announceBeforeActing: true, undoWindowMin, pauseAfterUndos: 3, excludePriorities: [] };
 
   const rules: Rule[] = [
