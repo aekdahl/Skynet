@@ -290,6 +290,33 @@ export const PullRequest = z.object({
 });
 export type PullRequest = z.infer<typeof PullRequest>;
 
+// Momentum Rollout, phase 1a — the semantic signal a GitHub PR/review/check/
+// deploy webhook resolves to, NOT the raw event+action pair (a `pull_request`
+// event's `action` alone is ambiguous — "closed" means merged or abandoned
+// depending on `pull_request.merged` — so the parser already collapses that
+// here, once, rather than making every downstream consumer re-derive it).
+// The rule engine (a later phase) matches on these; this vocabulary is the
+// stable contract between the webhook parser and everything that reacts to it.
+export const GithubSignalKind = z.enum([
+  "pr_opened",
+  "pr_closed",
+  "pr_merged",
+  "pr_ready_for_review",
+  "review_approved",
+  "review_changes_requested",
+  "check_succeeded",
+  "check_failed",
+  "deploy_succeeded",
+  "deploy_failed",
+]);
+export type GithubSignalKind = z.infer<typeof GithubSignalKind>;
+
+// JSON-safe scalar bag of whatever the parsed webhook payload had worth
+// keeping (PR number/url, check name, sha, environment, …) — evidence for
+// later UI/rules, not meant to be exhaustively typed per signal kind.
+export const GithubSignalPayload = z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]));
+export type GithubSignalPayload = z.infer<typeof GithubSignalPayload>;
+
 // ─── TaskRun ──────────────────────────────────────────────────────────────────
 
 export const TaskRun = z.object({
