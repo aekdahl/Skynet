@@ -50,6 +50,7 @@ import {
   gateHead,
   digestText,
   shippedCardHtml,
+  resolvedCardHtml,
   reviewNotice,
   completedNotice,
   inQuietHours,
@@ -1252,6 +1253,14 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
   // A run's live decision card (message id), so completion edits it in place into
   // "✅ Shipped" instead of stacking a separate line under it.
   const runCard = new Map<string, number>();
+  // A GATE's own live decision card — keyed by gate id (not run id: a run can
+  // carry several gates over its life, and runCard above only ever remembers
+  // the latest). Lets ANY resolution (web, desktop, a /approve slash command,
+  // even a tap on this very card) edit the exact card that asked, in place —
+  // see the `hitl.resolved` handler below. Reported live: a gate resolved in
+  // the web app or desktop stayed sitting in Telegram looking just as
+  // tappable as before, with nothing showing it had already been decided.
+  const gateCard = new Map<string, { messageId: number; runId: string }>();
 
   // ── Outbound: push workspace events to the owner ──────────────────────────
   // Notifications lead with human names — a run's task title + its project — not
@@ -1303,6 +1312,7 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
       // A reply to this card → "request changes"; completion edits it in place.
       if (config.telegramControl) control.noteCard(sent.messageId, it.id, it.runId);
       runCard.set(it.runId, sent.messageId);
+      gateCard.set(it.id, { messageId: sent.messageId, runId: it.runId });
     }
   };
 
@@ -1344,6 +1354,22 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
         // quiet hours (the /inbox digest still reflects it whenever you look).
         if (inQuietHours(new Date(), quiet)) return;
         await notify(completedNotice(names, linkFor(event.runId)));
+      })();
+    } else if (event.type === "hitl.resolved") {
+      const card = gateCard.get(event.id);
+      if (!card) return; // no card was ever sent for this gate — nothing to edit
+      gateCard.delete(event.id);
+      // Fires for EVERY resolution channel, including a tap on this very
+      // card — control.handleCallback already clears that card's keyboard
+      // immediately for a snappy tap, and this follow-up edit (same
+      // messageId) turns the card into a proper "here's what was decided"
+      // summary instead of just going bare. The case this exists for: a gate
+      // resolved in the web app, desktop, or a /approve slash command used to
+      // leave this card sitting untouched, looking exactly as tappable as
+      // before the decision was already made.
+      void (async () => {
+        const names = await nameOf(card.runId);
+        await editText(card.messageId, resolvedCardHtml(names, event.resolution.action, linkFor(card.runId)));
       })();
     }
   };

@@ -5,7 +5,7 @@
 // ("Gate q-diff-pin-the-node-docker-image-to-a-d-1-20 …", "Run pin-the-node-
 // docker-image-to-a-d-1 needs attention").
 
-import type { HitlItem } from "@skynet/shared";
+import type { HitlItem, ResolveAction } from "@skynet/shared";
 import type { InlineKeyboardMarkup } from "./client.js";
 
 export type Names = { run: string; project: string };
@@ -239,6 +239,32 @@ export function completedNotice(names: Names, link?: string): string {
  *  so the card you decided on becomes the result, in place. */
 export function shippedCardHtml(names: Names): string {
   return `✅ <b>Shipped</b>${names.project ? ` · ${esc(names.project)}` : ""}\n${esc(names.run)}`;
+}
+
+const RESOLUTION_META: Record<ResolveAction, { glyph: string; label: string }> = {
+  approve: { glyph: "✅", label: "Approved" },
+  reject: { glyph: "⛔", label: "Rejected" },
+  modify: { glyph: "✏️", label: "Changes requested" },
+  option: { glyph: "👉", label: "Answered" },
+  reassign: { glyph: "🔁", label: "Reassigned" },
+  dismiss: { glyph: "🚫", label: "Dismissed" },
+  push: { glyph: "🔀", label: "Pushed" },
+};
+
+/**
+ * HTML "resolved" state a live decision card is edited into once its gate is
+ * resolved by ANY channel — the web app, desktop, a /approve slash command, or
+ * a tapped button on this very card. Reported live: a gate handled in the web
+ * app or desktop kept sitting in Telegram looking exactly as tappable as
+ * before, with nothing showing it had already been decided. Mirrors
+ * shippedCardHtml's in-place-edit shape, minus the run/project head baked into
+ * the resolution glyph+label instead of a generic "Shipped".
+ */
+export function resolvedCardHtml(names: Names, action: ResolveAction, link?: string): string {
+  const { glyph, label } = RESOLUTION_META[action] ?? { glyph: "✓", label: "Resolved" };
+  const lines = [`${glyph} <b>${esc(label)}</b>${names.project ? ` · ${esc(names.project)}` : ""}`, esc(names.run)];
+  if (link) lines.push(`<a href="${esc(link)}">Open in the app ↗</a>`);
+  return lines.join("\n");
 }
 
 /**
