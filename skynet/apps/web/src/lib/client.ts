@@ -477,6 +477,22 @@ export function fetchProjectTransitions(projectId: string, opts?: { since?: numb
   return req<Transition[]>("GET", `/api/projects/${projectId}/transitions${q ? `?${q}` : ""}`);
 }
 
+// ─── Momentum Board (Phase 5) — task detail: trail + suggested subtasks ────
+export function fetchTaskTransitions(taskId: string) {
+  return req<Transition[]>("GET", `/api/tasks/${taskId}/transitions`);
+}
+
+/** Accept ONE suggested subtask Proposal — creates the real Task (parentTaskId
+ *  set) and flips the Proposal to accepted; see Operations.acceptSubtask. */
+export function acceptSubtask(taskId: string, proposalId: string) {
+  return req<Task>("POST", `/api/tasks/${taskId}/subtasks/accept`, { proposalId });
+}
+
+/** Accept every PENDING suggested_subtask Proposal for this task in one call. */
+export function acceptAllSubtasks(taskId: string) {
+  return req<Task[]>("POST", `/api/tasks/${taskId}/subtasks/accept-all`);
+}
+
 // ─── Momentum Board (Phase 6a) — rules (Automation Builder) ─────────────────
 // Reads ride the Snapshot + `rule.upserted`/`rule.deleted` WS deltas (see
 // store.tsx) — no fetchRules() here, same as features/milestones. Mutations

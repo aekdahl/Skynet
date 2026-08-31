@@ -6,13 +6,14 @@
 // here writes a new state machine. Gated behind Project.newBoardEnabled —
 // project.tsx renders this INSTEAD of the old board only when that flag is on.
 import { useEffect, useMemo, useState } from "react";
-import type { Feature, HitlItem, Project, Task, TaskRun, Transition } from "@skynet/shared";
+import type { Agent, Feature, HitlItem, Project, Task, TaskRun, Transition } from "@skynet/shared";
 import { columnBucket, type ColumnBucket, type TaskCheckpoints } from "@skynet/shared";
 import * as api from "../lib/client";
 import { useStore } from "../lib/store";
 import type { CheckpointState, CheckpointStep } from "./primitives";
 import { CHECKPOINT_RAIL_KEYS } from "./primitives";
 import { DraftCard, HeldCard, InFlightCard, LandedCard, QueuedCard, StalledCard } from "./cards";
+import { MomentumTaskDetail } from "./task-detail";
 
 // The rule engine's stall-escalate threshold (apps/server/src/rules/engine.ts,
 // SKYNET_STALL_ESCALATE_HOURS, default 96) isn't exposed over the API — the
@@ -86,6 +87,7 @@ export interface MomentumBoardProps {
   runs: TaskRun[];
   queue: HitlItem[];
   features: Feature[];
+  fleet: Agent[];
   now: number;
   onOpenTask: (id: string) => void;
 }
@@ -96,11 +98,17 @@ export function MomentumBoard({
   runs,
   queue,
   features,
+  fleet,
   now,
   onOpenTask,
 }: MomentumBoardProps) {
   const { rules, proposals, transitions: liveTransitions } = useStore();
-  void queue; // reserved for a later phase's inline HITL status on the focus card
+  void onOpenTask; // reserved — a card's PRIMARY click opens the local detail panel below
+
+  // TASK 06: the task detail panel every card opens into. Local state, not
+  // the app's global "task" route — this panel is task-CENTRIC (works for a
+  // queued task with no run yet), unlike the existing run-centric detail view.
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
   const runById = useMemo(() => new Map(runs.map((r) => [r.id, r])), [runs]);
   const featureById = useMemo(() => new Map(features.map((f) => [f.id, f])), [features]);
@@ -205,12 +213,12 @@ export function MomentumBoard({
           >
             {bucket === "intake" &&
               byBucket.intake.map((t) => (
-                <DraftCard key={t.id} task={t} feature={t.featureId ? featureById.get(t.featureId) : undefined} onOpen={() => onOpenTask(t.id)} />
+                <DraftCard key={t.id} task={t} feature={t.featureId ? featureById.get(t.featureId) : undefined} onOpen={() => setSelectedTaskId(t.id)} />
               ))}
             {bucket === "queued" && (
               <>
                 {queuedVisible.map((t) => (
-                  <QueuedCard key={t.id} task={t} feature={t.featureId ? featureById.get(t.featureId) : undefined} onOpen={() => onOpenTask(t.id)} />
+                  <QueuedCard key={t.id} task={t} feature={t.featureId ? featureById.get(t.featureId) : undefined} onOpen={() => setSelectedTaskId(t.id)} />
                 ))}
                 {queuedHeld.map((t, i) => (
                   <HeldCard
@@ -219,7 +227,7 @@ export function MomentumBoard({
                     feature={t.featureId ? featureById.get(t.featureId) : undefined}
                     position={i + 1}
                     limit={wipLimit ?? 0}
-                    onOpen={() => onOpenTask(t.id)}
+                    onOpen={() => setSelectedTaskId(t.id)}
                   />
                 ))}
               </>
@@ -237,11 +245,11 @@ export function MomentumBoard({
                       feature={feature}
                       staleHours={stall.staleHours}
                       hoursToEscalate={STALL_ESCALATE_HOURS_DEFAULT - stall.staleHours}
-                      onOpen={() => onOpenTask(t.id)}
+                      onOpen={() => setSelectedTaskId(t.id)}
                     />
                   );
                 }
-                return <InFlightCard key={t.id} task={t} run={run} feature={feature} steps={deriveCheckpointSteps(run, t)} onOpen={() => onOpenTask(t.id)} />;
+                return <InFlightCard key={t.id} task={t} run={run} feature={feature} steps={deriveCheckpointSteps(run, t)} onOpen={() => setSelectedTaskId(t.id)} />;
               })}
             {bucket === "landed" &&
               byBucket.landed.map((t) => {
@@ -253,13 +261,33 @@ export function MomentumBoard({
                     feature={t.featureId ? featureById.get(t.featureId) : undefined}
                     mergedAt={run?.mergedAt ?? null}
                     now={now}
-                    onOpen={() => onOpenTask(t.id)}
+                    onOpen={() => setSelectedTaskId(t.id)}
                   />
                 );
               })}
           </MomentumColumn>
         ))}
       </div>
+      {selectedTaskId && (() => {
+        const selected = projectTasks.find((t) => t.id === selectedTaskId);
+        if (!selected) return null;
+        return (
+          <MomentumTaskDetail
+            task={selected}
+            project={project}
+            tasks={projectTasks}
+            runs={runs}
+            queue={queue}
+            features={features}
+            fleet={fleet}
+            rules={rules}
+            proposals={proposals}
+            now={now}
+            onClose={() => setSelectedTaskId(null)}
+            onOpenTask={setSelectedTaskId}
+          />
+        );
+      })()}
     </div>
   );
 }
