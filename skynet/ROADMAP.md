@@ -581,6 +581,26 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   realistic merge-conflict item: title, why, and conflicting files all present and ordered BEFORE the raw
   (HTML-escaped) conflict text, not instead of it. All prior diff/command/question card tests unaffected —
   `title`/`why` are additive lines, never replacing the existing kind-specific content.
+- [x] **Fix: a diff-review card said "Approve to integrate" on a 0+/0- (0 files) diff — no hint that approving would be a no-op.**
+  Reported live with a real card: an agent's run genuinely committed (`commitAll` saw real working-tree
+  changes and made a commit) for a one-line comment fix, but the diff-review gate's own stat, computed by
+  `diffStat` as `git diff --numstat baseRef...HEAD`, came back `0+/0- (0 files)` — confirmed the project's
+  base branch already had the exact same fix applied by the time this run finished (a duplicate/already-
+  landed change, not data loss — a real commit whose NET content vs. base is empty is a legitimate git
+  state, not a bug in `diffStat` itself). The card's generic `why` text — "Finished on `<branch>` —
+  0+/0- across 0 file(s). Approve to integrate." — read exactly like a normal pending change with nothing
+  to review, giving no hint that clicking Approve would be a harmless no-op merge rather than landing real
+  work. First ruled out the user's own live hypothesis — "do we skip hidden files in diff review?" — by
+  reading `commitAll`/`diffStat`/`patch` directly: `git status --porcelain` / `git add -A` / `git diff
+  --numstat` / `git diff` are all unfiltered, no dotfile/gitignore-aware exclusion exists anywhere in the
+  pipeline. Extracted the `why`-text construction into a new pure `diffReviewWhy` helper (`orchestrator.ts`,
+  alongside `mergeRequiresHumanGlobs`) so a `stat.files.length === 0` result gets its own honest copy
+  ("a real commit landed, but it's IDENTICAL to the current base... Approving is a harmless no-op merge;
+  Reject if this task still needs real work") instead of silently reusing the misleading normal-diff
+  phrasing. Regression-proofed in `tests/diff-review-requires-human.test.ts` (3 new pure unit tests): the
+  zero-file case gets the honest copy and never the `0+/0-` stat phrasing; a non-empty diff is unaffected
+  (exact string match against the pre-existing phrasing); the requires-human-look suffix still appends
+  correctly regardless of which body it follows.
 - [x] **Fix: answering a triage clarifying question could loop forever — same question, every time.**
   Reported live right after clarifying questions shipped: answer the question → task returns to `backlog`
   for re-triage (by design, since the answer can change the effort/risk/grouping read) → triage runs again
