@@ -28,6 +28,7 @@ import {
   ChevronRightIcon,
   AcceptanceIcon,
   SimulationIcon,
+  SwatchIcon,
 } from "./icons";
 
 // The single source of truth for the sidebar highlight. Exactly one primary nav
@@ -46,7 +47,8 @@ type NavKey =
   | "roadmap"
   | "settings"
   | "acceptance"
-  | "simulation";
+  | "simulation"
+  | "designTokens";
 
 function activeNav(view: ViewName): NavKey | null {
   switch (view) {
@@ -74,6 +76,8 @@ function activeNav(view: ViewName): NavKey | null {
       return "acceptance";
     case "simulation":
       return "simulation";
+    case "designTokens":
+      return "designTokens";
     // task detail has no home in the primary nav
     default:
       return null;
@@ -233,7 +237,7 @@ export function OpSidebar({
   // opted in on any build via localStorage `skynet.devtools=1`, or when one of
   // their views is already active (a deep link) so the highlight is never
   // orphaned. Auto-expanded when active.
-  const qaActive = active === "acceptance" || active === "simulation";
+  const qaActive = active === "acceptance" || active === "simulation" || active === "designTokens";
   const devTools = devToolsEnabled();
   const showQa = devTools || qaActive;
   const [qaOpen, setQaOpen] = useState(qaActive);
@@ -306,6 +310,7 @@ export function OpSidebar({
             <nav className="op-nav op-nav-sub">
               {item("Acceptance", AcceptanceIcon, () => setView("acceptance"), active === "acceptance")}
               {item("Simulation", SimulationIcon, () => setView("simulation"), active === "simulation")}
+              {item("Design tokens", SwatchIcon, () => setView("designTokens"), active === "designTokens")}
             </nav>
           )}
         </>

@@ -32,6 +32,8 @@ export function parseHash(): RoutePatch | null {
     case "acceptance":
     case "simulation":
       return { view: seg };
+    case "design-tokens":
+      return { view: "designTokens" };
     case "fleet":
       return arg ? { view: "agentDetail", agentId: arg } : { view: "fleet" };
     case "project":
@@ -60,6 +62,8 @@ export function toHash(r: {
       return r.projectId ? `#/project/${r.projectId}` : "#/projects";
     case "task":
       return r.runId ? `#/agent/${r.runId}` : "#/home";
+    case "designTokens":
+      return "#/design-tokens";
     default:
       return `#/${r.view}`;
   }
