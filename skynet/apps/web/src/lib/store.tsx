@@ -283,6 +283,12 @@ export interface Store extends StoreState {
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
   answerClarification: (projectId: string, taskId: string, answer: string) => Promise<void>;
+  // Momentum Board (Phase 5) — accept a suggested_subtask Proposal into a real
+  // Task (parentTaskId set) individually, or every pending one for this task
+  // at once. The echoed task.upserted / proposal.upserted WS deltas update
+  // state — same "call the API, let the delta land" pattern as everything else.
+  acceptSubtask: (taskId: string, proposalId: string) => Promise<void>;
+  acceptAllSubtasks: (taskId: string) => Promise<void>;
   // Activity Feed (Phase 6b) — cancel a rule-engine action within its undo
   // window. Returns the updated PendingRuleAction (status "undone") so the
   // feed can optimistically update the row immediately — no WS event exists
@@ -890,6 +896,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // every other task mutation here — nothing to apply locally.
       answerClarification: async (projectId, taskId, answer) => {
         await api.answerClarification(projectId, taskId, answer);
+      },
+      acceptSubtask: async (taskId, proposalId) => {
+        await api.acceptSubtask(taskId, proposalId);
+      },
+      acceptAllSubtasks: async (taskId) => {
+        await api.acceptAllSubtasks(taskId);
       },
       undoRuleAction: async (pendingId) => {
         try {
