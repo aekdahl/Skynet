@@ -1319,6 +1319,7 @@ button.kb-done:hover { opacity: 1; }
   cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 2px;
 }
 .kb-unreviewed-btn:hover { color: var(--text); }
+.kb-unreviewed-btn:disabled { color: var(--muted); cursor: default; text-decoration: none; }
 .kb-verdict-flag { color: var(--warn); }
 .kb-verdict-approve { color: var(--ok, var(--muted)); }
 /* Task linter v0 (assistive) — a dismissible hint, never a blocker. */
