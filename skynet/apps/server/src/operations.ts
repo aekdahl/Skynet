@@ -13,6 +13,8 @@
 import type {
   TaskRun,
   AuditRecord,
+  AcceptSubtaskRequest,
+  BacktestRuleRequest,
   Checkpoint,
   CommandPolicy,
   ConfigureRunnerRequest,
@@ -20,6 +22,7 @@ import type {
   CreateMilestoneRequest,
   CreateProjectContextEntryRequest,
   CreateProjectRequest,
+  CreateRuleRequest,
   CreateSolutionBriefRequest,
   CreateTaskRequest,
   DraftCharterRequest,
@@ -39,9 +42,11 @@ import type {
   ProjectCharter,
   ProjectQualityResult,
   ProjectContextEntry,
+  Proposal,
   ProviderInfo,
   ResolveRequest,
   Resolution,
+  Rule,
   SavePolicyVersionRequest,
   Agent,
   SignedComplianceReport,
@@ -50,11 +55,13 @@ import type {
   StewardActionOutcome,
   StewardExecutionAction,
   Task,
+  Transition,
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
   UpdateProjectRoadmapRequest,
   UpdateRunnerRequest,
+  UpdateRuleRequest,
   UpdateSolutionBriefRequest,
   UpdateTaskRequest,
   UpdateWorkspaceSettingsRequest,
@@ -62,6 +69,7 @@ import type {
   SecretMeta,
 } from "@skynet/shared";
 import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
+import { DraftTaskPayload, SuggestedRulePayload, SuggestedSubtaskPayload } from "@skynet/shared";
 import { buildReplenishPrompt, parseProposedTasks } from "./steward/replenish.js";
 import { DEFAULT_AUTO_MERGE_POLICY } from "./merge-policy.js";
 import { sameTaskText } from "./steward/assistant.js";
@@ -107,6 +115,7 @@ import { resolveExecutable } from "./steward/execution.js";
 import { secretService, withSecretAvailability } from "./secrets/index.js";
 import type { Store } from "./store/store.js";
 import type { RuleEngine } from "./rules/engine.js";
+import { matchCondition, type EvalContext } from "./rules/engine.js";
 import type { PendingRuleAction } from "@skynet/shared";
 
 /** A referenced entity does not exist (or isn't in the caller's workspace). 404. */
@@ -147,6 +156,15 @@ export class AssignmentRequiredError extends Error {
   constructor() {
     super("Set an agent (any, or specific agents) before moving this task out of backlog.");
     this.name = "AssignmentRequiredError";
+  }
+}
+
+/** A Proposal that's already been accepted or dismissed can't be resolved
+ *  again — the SAME failure mode as re-clicking a stale HITL card. 409. */
+export class ProposalAlreadyResolvedError extends Error {
+  constructor(status: string) {
+    super(`This proposal was already ${status} — nothing left to resolve.`);
+    this.name = "ProposalAlreadyResolvedError";
   }
 }
 
@@ -1022,6 +1040,12 @@ export class Operations {
       contextSummaryUpdatedAt: null,
     };
     const created = await this.hub.upsertProject(project);
+    // A brand-new workspace's first-ever project isn't covered by the rule
+    // engine's boot-time scan (RuleEngine.start() only saw whatever projects
+    // already existed at server start) — without this, that workspace's
+    // rules/proposals/transitions would silently never react to anything
+    // until the next restart. Safe no-op if already subscribed.
+    this.ruleEngine?.ensureSubscribed(ws);
     this.maybeAutoClone(ws, created);
     this.maybeAutoImportIssues(ws, created, input.importGithubIssues);
     return created;
@@ -1169,8 +1193,10 @@ export class Operations {
       // Ordering intent starts empty — only a brief decomposition (S7) sets
       // this, at creation time, directly (bypassing this generic constructor).
       dependsOnTaskIds: [],
-      // No subtask relation at creation — set later, if ever, via updateTask.
-      parentTaskId: null,
+      // No subtask relation at creation, UNLESS this task is being created AS
+      // a subtask (see CreateTaskRequest.parentTaskId's own comment) — the
+      // ordinary case still sets this later, if ever, via updateTask.
+      parentTaskId: input.parentTaskId ?? null,
       priority: null,
       lint: null,
       // Start-picker preference starts unset — plain auto-pick until an operator
@@ -2139,6 +2165,210 @@ export class Operations {
     const pending = await this.store.getPendingRuleAction(pendingId);
     if (!pending || pending.workspaceId !== ws) throw new NotFoundError("Pending rule action");
     return this.ruleEngine.undo(pendingId, operatorId);
+  }
+
+  // ── rules (Momentum Rollout Phase 1c — CRUD) ─────────────────────────────
+  /** Fetch one rule scoped to the workspace, or throw NotFoundError (404). */
+  async getRule(ws: string, ruleId: string): Promise<Rule> {
+    const rule = await this.store.getRule(ruleId);
+    if (!rule || rule.workspaceId !== ws) throw new NotFoundError("Rule");
+    return rule;
+  }
+
+  async listRules(ws: string, projectId: string): Promise<Rule[]> {
+    await this.getProject(ws, projectId);
+    return this.store.listRulesForProject(projectId);
+  }
+
+  async createRule(ws: string, projectId: string, req: CreateRuleRequest): Promise<Rule> {
+    await this.getProject(ws, projectId);
+    const rule: Rule = {
+      id: this.uid("rule"),
+      workspaceId: ws,
+      projectId,
+      name: req.name,
+      when: req.when,
+      conditions: req.conditions,
+      actions: req.actions,
+      safety: req.safety ?? { announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
+      stats: { moves: 0, undos: 0 },
+      state: req.state ?? "live",
+      pausedReason: null,
+      createdAt: now(),
+      archived: false,
+    };
+    return this.hub.upsertRule(rule);
+  }
+
+  async updateRule(ws: string, ruleId: string, req: UpdateRuleRequest): Promise<Rule> {
+    const rule = await this.getRule(ws, ruleId);
+    return this.hub.upsertRule({
+      ...rule,
+      ...(req.name !== undefined ? { name: req.name } : {}),
+      ...(req.when !== undefined ? { when: req.when } : {}),
+      ...(req.conditions !== undefined ? { conditions: req.conditions } : {}),
+      ...(req.actions !== undefined ? { actions: req.actions } : {}),
+      ...(req.safety !== undefined ? { safety: req.safety } : {}),
+      // A human explicitly choosing a new state here always clears
+      // `pausedReason` — that field only ever means "the auto-breaker did
+      // this", per Rule's own doc comment, and a fresh human decision
+      // supersedes whatever tripped it before.
+      ...(req.state !== undefined ? { state: req.state, pausedReason: null } : {}),
+      ...(req.archived !== undefined ? { archived: req.archived } : {}),
+    });
+  }
+
+  async deleteRule(ws: string, ruleId: string): Promise<void> {
+    await this.getRule(ws, ruleId); // scope check
+    await this.hub.deleteRule(ruleId);
+  }
+
+  /** Replay a DRAFT (not-yet-saved) rule's conditions against the project's
+   *  historical Transition log — reuses the exact `matchCondition` the live
+   *  engine dispatches through (rules/engine.ts), so this can never disagree
+   *  with what the real engine would do for the same conditions. Per-task
+   *  `lastSignalAt` is the previous transition on that same task (or the
+   *  transition's own time, for a task's first recorded transition) — a
+   *  reasonable historical stand-in for the live engine's own
+   *  last-real-signal lookup, not an exact replay of it (see EvalContext's
+   *  own doc comment on why `event` is always null here). */
+  async backtestRule(ws: string, projectId: string, req: BacktestRuleRequest): Promise<{ wouldHaveMoved: number; sample: Transition[] }> {
+    await this.getProject(ws, projectId);
+    const transitions = await this.store.listTransitionsForProject(projectId);
+    const tasks = await this.store.listTasks(ws);
+    const taskById = new Map(tasks.map((t) => [t.id, t]));
+    const chronological = [...transitions].sort((a, b) => a.at - b.at);
+    const lastSeenByTask = new Map<string, number>();
+    const matched: Transition[] = [];
+    for (const t of chronological) {
+      const lastSignalAt = lastSeenByTask.get(t.taskId) ?? t.at;
+      lastSeenByTask.set(t.taskId, t.at);
+      const task = taskById.get(t.taskId);
+      if (!task) continue; // task since deleted — nothing left to evaluate against
+      const ctx: EvalContext = { task: { ...task, state: t.to }, event: null, now: t.at, lastSignalAt };
+      if (req.conditions.every((c) => matchCondition(c, ctx))) matched.push(t);
+    }
+    matched.reverse(); // newest-first, matching listTransitionsForProject's own convention
+    return { wouldHaveMoved: matched.length, sample: matched.slice(0, 20) };
+  }
+
+  // ── transitions (Momentum Rollout Phase 1c — read) ───────────────────────
+  async listTransitionsForTask(ws: string, taskId: string): Promise<Transition[]> {
+    await this.getTask(ws, taskId);
+    return this.store.listTransitionsForTask(taskId);
+  }
+
+  async listTransitionsForProject(ws: string, projectId: string, opts: { since?: number; limit?: number } = {}): Promise<Transition[]> {
+    await this.getProject(ws, projectId);
+    return this.store.listTransitionsForProject(projectId, opts);
+  }
+
+  // ── proposals (Momentum Rollout Phase 1c — accept / dismiss) ────────────
+  /** Fetch one proposal scoped to the workspace, or throw NotFoundError (404). */
+  async getProposal(ws: string, proposalId: string): Promise<Proposal> {
+    const proposal = await this.store.getProposal(proposalId);
+    if (!proposal || proposal.workspaceId !== ws) throw new NotFoundError("Proposal");
+    return proposal;
+  }
+
+  async acceptProposal(ws: string, projectId: string, proposalId: string): Promise<Proposal> {
+    const proposal = await this.getProposal(ws, proposalId);
+    if (proposal.projectId !== projectId) throw new NotFoundError("Proposal");
+    if (proposal.status !== "pending") throw new ProposalAlreadyResolvedError(proposal.status);
+    const { proposal: resolved } = await this.applyProposalAccept(proposal);
+    return resolved;
+  }
+
+  async dismissProposal(ws: string, projectId: string, proposalId: string): Promise<Proposal> {
+    const proposal = await this.getProposal(ws, proposalId);
+    if (proposal.projectId !== projectId) throw new NotFoundError("Proposal");
+    if (proposal.status !== "pending") throw new ProposalAlreadyResolvedError(proposal.status);
+    // Marked dismissed, never deleted — for a suggested_rule specifically,
+    // this dismissed row is what a future pattern-detector should check
+    // before re-proposing the same rule (see ProposalKind's own doc
+    // comment). Every other kind gets identical treatment for consistency,
+    // not because anything reads it back yet.
+    return this.hub.upsertProposal({ ...proposal, status: "dismissed", resolvedAt: now() });
+  }
+
+  /** The kind-specific "implied action" behind accepting a Proposal — the
+   *  ONE place that logic lives, shared by acceptProposal and the
+   *  subtask-specific accept/accept-all below. Always marks the proposal
+   *  accepted; returns whichever new entity (if any) it created so callers
+   *  that care (acceptSubtask) can hand it back. */
+  private async applyProposalAccept(proposal: Proposal): Promise<{ proposal: Proposal; task?: Task; rule?: Rule }> {
+    let task: Task | undefined;
+    let rule: Rule | undefined;
+    switch (proposal.kind) {
+      case "draft_task": {
+        const parsed = DraftTaskPayload.safeParse(proposal.payload);
+        if (!parsed.success) throw new Error(`This proposal's payload doesn't match the expected shape for "draft_task".`);
+        task = await this.createTask(proposal.workspaceId, proposal.projectId, {
+          text: parsed.data.text,
+          description: parsed.data.description ?? undefined,
+        });
+        break;
+      }
+      case "suggested_subtask": {
+        const parsed = SuggestedSubtaskPayload.safeParse(proposal.payload);
+        if (!parsed.success) throw new Error(`This proposal's payload doesn't match the expected shape for "suggested_subtask".`);
+        task = await this.createTask(proposal.workspaceId, proposal.projectId, {
+          text: parsed.data.text,
+          description: parsed.data.description ?? undefined,
+          parentTaskId: parsed.data.parentTaskId,
+        });
+        break;
+      }
+      case "suggested_rule": {
+        const parsed = SuggestedRulePayload.safeParse(proposal.payload);
+        if (!parsed.success) throw new Error(`This proposal's payload doesn't match the expected shape for "suggested_rule".`);
+        // "watch", never "live" — see SuggestedRulePayload's own doc comment.
+        rule = await this.createRule(proposal.workspaceId, proposal.projectId, { ...parsed.data, state: "watch" });
+        break;
+      }
+      case "suggested_reassignment":
+      case "stall_nudge":
+        // Advisory-only heads-up — nothing structural to create; accepting
+        // just acknowledges the operator saw it.
+        break;
+    }
+    const resolved = await this.hub.upsertProposal({ ...proposal, status: "accepted", resolvedAt: now() });
+    return { proposal: resolved, task, rule };
+  }
+
+  // ── suggested subtasks (Momentum Rollout Phase 1c) ───────────────────────
+  /** Every PENDING suggested_subtask proposal whose payload targets this
+   *  parent task — the shared lookup behind both acceptSubtask (one) and
+   *  acceptAllSubtasks (every). Filters in application code, not a store
+   *  query, since `parentTaskId` lives inside the untyped `payload`, not a
+   *  column/field the store can filter on. */
+  private async pendingSubtaskProposals(projectId: string, parentTaskId: string): Promise<Proposal[]> {
+    const pending = await this.store.listProposalsForProject(projectId, { status: "pending" });
+    return pending.filter((p) => {
+      if (p.kind !== "suggested_subtask") return false;
+      const parsed = SuggestedSubtaskPayload.safeParse(p.payload);
+      return parsed.success && parsed.data.parentTaskId === parentTaskId;
+    });
+  }
+
+  async acceptSubtask(ws: string, taskId: string, req: AcceptSubtaskRequest): Promise<Task> {
+    const parent = await this.getTask(ws, taskId);
+    const candidates = await this.pendingSubtaskProposals(parent.projectId, taskId);
+    const proposal = candidates.find((p) => p.id === req.proposalId);
+    if (!proposal) throw new NotFoundError("Suggested subtask proposal");
+    const { task } = await this.applyProposalAccept(proposal);
+    return task!; // always set for a suggested_subtask accept — see applyProposalAccept
+  }
+
+  async acceptAllSubtasks(ws: string, taskId: string): Promise<Task[]> {
+    const parent = await this.getTask(ws, taskId);
+    const candidates = await this.pendingSubtaskProposals(parent.projectId, taskId);
+    const created: Task[] = [];
+    for (const proposal of candidates) {
+      const { task } = await this.applyProposalAccept(proposal);
+      if (task) created.push(task);
+    }
+    return created;
   }
 
   // ── features (task grouping) ───────────────────────────────────────────

@@ -27,6 +27,7 @@ import {
   Usage,
   WorkspaceSettings,
 } from "./contracts.js";
+import { Proposal, Rule, Transition } from "./kanban.js";
 
 // ─── Connect-time snapshot ────────────────────────────────────────────────
 
@@ -52,6 +53,11 @@ export const Snapshot = z.object({
   modules: z.array(Module),
   deps: z.array(Dependency),
   providers: z.array(ProviderInfo),
+  // Momentum Rollout kanban rebuild — project-scoped in the store (Rule/
+  // Proposal have no natural workspace-wide list of their own), fanned out to
+  // the whole workspace here same as every other snapshot collection.
+  rules: z.array(Rule).default([]),
+  proposals: z.array(Proposal).default([]),
   serverTime: Timestamp, // lets clients correct for clock skew when ticking
   // The server's default approval level (SKYNET_APPROVAL_LEVEL), so the
   // create-project form can pre-select what a new project would otherwise get.
@@ -103,6 +109,15 @@ export const ServerEvent = z.discriminatedUnion("type", [
 
   // derived intelligence
   z.object({ type: z.literal("conflict.detected"), moduleId: z.string(), runIds: z.array(z.string()) }),
+
+  // Momentum Rollout kanban rebuild, Phase 1c — rule engine + API-surface
+  // mutations. Rule/Proposal follow the same upsert-only shape as every other
+  // collection delta below; a Transition is append-only (never updated), so
+  // it only ever gets a "created" event, never "upserted"/"deleted".
+  z.object({ type: z.literal("transition.created"), transition: Transition }),
+  z.object({ type: z.literal("rule.upserted"), rule: Rule }),
+  z.object({ type: z.literal("rule.deleted"), id: z.string() }),
+  z.object({ type: z.literal("proposal.upserted"), proposal: Proposal }),
 
   // collection CRUD deltas — keep every operator's view consistent
   z.object({ type: z.literal("project.upserted"), project: Project }),

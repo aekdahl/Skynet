@@ -83,7 +83,9 @@ CREATE INDEX IF NOT EXISTS solution_briefs_ws ON solution_briefs(workspace_id);
 CREATE INDEX IF NOT EXISTS transitions_task    ON transitions(task_id);
 CREATE INDEX IF NOT EXISTS transitions_project ON transitions(project_id, at DESC);
 CREATE INDEX IF NOT EXISTS rules_project        ON rules(project_id);
+CREATE INDEX IF NOT EXISTS rules_ws             ON rules(workspace_id);
 CREATE INDEX IF NOT EXISTS proposals_project    ON proposals(project_id, status);
+CREATE INDEX IF NOT EXISTS proposals_ws         ON proposals(workspace_id);
 CREATE INDEX IF NOT EXISTS pending_actions_project ON pending_rule_actions(project_id, status);
 CREATE INDEX IF NOT EXISTS pending_actions_ready   ON pending_rule_actions(status, ready_at);
 CREATE INDEX IF NOT EXISTS agents_ws  ON agents(workspace_id);
@@ -276,6 +278,7 @@ export class PostgresStore implements Store {
     const { rows } = await this.pool.query<{ data: Rule }>("SELECT data FROM rules WHERE project_id=$1", [projectId]);
     return rows.map((r) => r.data);
   }
+  listRulesForWorkspace(ws: string) { return this.list<Rule>("rules", ws); }
 
   // ── proposals (Momentum Rollout kanban rebuild, Phase 0 — project-scoped) ─
   async getProposal(id: string): Promise<Proposal | undefined> {
@@ -298,6 +301,7 @@ export class PostgresStore implements Store {
     const { rows } = await this.pool.query<{ data: Proposal }>(sql, params);
     return rows.map((r) => r.data);
   }
+  listProposalsForWorkspace(ws: string) { return this.list<Proposal>("proposals", ws); }
 
   // ── pending rule actions (Momentum Rollout Phase 1b, project-scoped) ──────
   async getPendingRuleAction(id: string): Promise<PendingRuleAction | undefined> {
@@ -494,7 +498,7 @@ export class PostgresStore implements Store {
   }
 
   async snapshot(ws: string): Promise<Snapshot> {
-    const [runs, queue, projects, tasks, features, milestones, solutionBriefs, fleet, modules, deps] = await Promise.all([
+    const [runs, queue, projects, tasks, features, milestones, solutionBriefs, fleet, modules, deps, rules, proposals] = await Promise.all([
       this.listRuns(ws),
       this.listQueue(ws),
       this.listProjects(ws),
@@ -505,7 +509,9 @@ export class PostgresStore implements Store {
       this.listAgents(ws),
       this.listModules(ws),
       this.listDeps(ws),
+      this.listRulesForWorkspace(ws),
+      this.listProposalsForWorkspace(ws),
     ]);
-    return { runs, queue, projects, tasks, features, milestones, solutionBriefs, fleet, modules, deps, providers: PROVIDERS, serverTime: now() };
+    return { runs, queue, projects, tasks, features, milestones, solutionBriefs, fleet, modules, deps, rules, proposals, providers: PROVIDERS, serverTime: now() };
   }
 }

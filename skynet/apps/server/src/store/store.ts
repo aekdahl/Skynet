@@ -111,6 +111,10 @@ export interface Store {
   putRule(rule: Rule): Promise<Rule>;
   deleteRule(id: string): Promise<void>;
   listRulesForProject(projectId: string): Promise<Rule[]>;
+  // Phase 1c — the Snapshot's own workspace-wide read (a rule's entity itself
+  // stays project-scoped above; this just fans that out across the caller's
+  // whole workspace, same relationship listRuns has to a per-project filter).
+  listRulesForWorkspace(workspaceId: string): Promise<Rule[]>;
 
   // proposals (Momentum Rollout kanban rebuild, Phase 0 — drafts / suggested
   // subtasks / suggested rules / suggested reassignments; see @skynet/shared's
@@ -119,6 +123,9 @@ export interface Store {
   putProposal(proposal: Proposal): Promise<Proposal>;
   deleteProposal(id: string): Promise<void>;
   listProposalsForProject(projectId: string, opts?: { status?: ProposalStatus }): Promise<Proposal[]>;
+  // Phase 1c — workspace-wide read for the Snapshot, same reasoning as
+  // listRulesForWorkspace above.
+  listProposalsForWorkspace(workspaceId: string): Promise<Proposal[]>;
 
   // pending rule actions (Momentum Rollout Phase 1b — the RuleEngine's
   // announce-before-acting hold; see @skynet/shared's PendingRuleAction).
