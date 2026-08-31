@@ -31,7 +31,7 @@ import { ProjectQualityView } from "./project-quality";
 import { ProjectContextView } from "./project-context";
 import { InformComposer, toastInformResult } from "./fleet";
 import { toast } from "../components/toast";
-import { MomentumBoard } from "../kanban/board";
+import { NewBoardView } from "../kanban/gravity";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -2145,7 +2145,7 @@ export function ProjectView({
           <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
         </div>
       ) : project.newBoardEnabled ? (
-        <MomentumBoard project={project} tasks={tasks} runs={runs} queue={queue} features={features} now={now} onOpenTask={onOpenTask} />
+        <NewBoardView project={project} tasks={tasks} runs={runs} queue={queue} features={features} now={now} onOpenTask={onOpenTask} />
       ) : (
       <BoardDnd.Provider value={{ drag, begin: setDrag, end: () => { setDrag(null); setDropBeforeId(null); }, dropBeforeId }}>
       <div className={"kb-cols kb-cols-6" + (drag ? " kb-dragging" : "")}>

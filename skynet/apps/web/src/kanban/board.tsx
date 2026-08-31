@@ -75,6 +75,19 @@ function startOfTodayMs(now: number): number {
   return d.getTime();
 }
 
+// Named + exported so the Gravity view (gravity.tsx, TASK 11) — an alternate
+// presentation over the SAME data — can share this shape instead of
+// redeclaring it.
+export interface MomentumBoardProps {
+  project: Project;
+  tasks: Task[];
+  runs: TaskRun[];
+  queue: HitlItem[];
+  features: Feature[];
+  now: number;
+  onOpenTask: (id: string) => void;
+}
+
 export function MomentumBoard({
   project,
   tasks,
@@ -83,15 +96,7 @@ export function MomentumBoard({
   features,
   now,
   onOpenTask,
-}: {
-  project: Project;
-  tasks: Task[];
-  runs: TaskRun[];
-  queue: HitlItem[];
-  features: Feature[];
-  now: number;
-  onOpenTask: (id: string) => void;
-}) {
+}: MomentumBoardProps) {
   const { rules, proposals, transitions: liveTransitions } = useStore();
   void queue; // reserved for a later phase's inline HITL status on the focus card
 
