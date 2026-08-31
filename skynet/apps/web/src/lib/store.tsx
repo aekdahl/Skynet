@@ -25,6 +25,10 @@ import type {
   Proposal,
   ResolveAction,
   Rule,
+  RuleAction,
+  RuleCondition,
+  RuleLifecycleState,
+  RuleSafety,
   Agent,
   ServerEvent,
   Snapshot,
@@ -238,6 +242,20 @@ export interface Store extends StoreState {
     },
   ) => Promise<void>;
   deleteFeature: (featureId: string) => Promise<void>;
+  // Automation Builder (Phase 6a) — mutations only; reads ride the Snapshot +
+  // rule.upserted/rule.deleted WS deltas (see the reducer below), same as
+  // features/milestones. createRule RETURNS the created Rule so the builder
+  // can switch straight from "new" to "editing" without a re-fetch.
+  createRule: (
+    projectId: string,
+    req: { name: string; when: string; conditions: RuleCondition[]; actions: RuleAction[]; safety?: RuleSafety; state?: RuleLifecycleState },
+  ) => Promise<Rule | null>;
+  updateRule: (
+    projectId: string,
+    ruleId: string,
+    patch: { name?: string; when?: string; conditions?: RuleCondition[]; actions?: RuleAction[]; safety?: RuleSafety; state?: RuleLifecycleState; archived?: boolean },
+  ) => Promise<void>;
+  deleteRule: (projectId: string, ruleId: string) => Promise<void>;
   createMilestone: (projectId: string, name: string, description?: string, targetAt?: number | null) => Promise<void>;
   updateMilestone: (
     milestoneId: string,
@@ -822,6 +840,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       deleteFeature: async (featureId) => {
         await api.deleteFeature(featureId);
+      },
+      createRule: async (projectId, req) => {
+        try {
+          return await api.createRule(projectId, req);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't save the rule."));
+          return null;
+        }
+      },
+      updateRule: async (projectId, ruleId, patch) => {
+        try {
+          await api.updateRule(projectId, ruleId, patch);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't update the rule."));
+        }
+      },
+      deleteRule: async (projectId, ruleId) => {
+        await api.deleteRule(projectId, ruleId);
       },
       createMilestone: async (projectId, name, description, targetAt) => {
         await api.createMilestone(projectId, { name, ...(description ? { description } : {}), ...(targetAt !== undefined ? { targetAt } : {}) });
