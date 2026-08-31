@@ -44,7 +44,8 @@ const mkTask = (over: Partial<Task> = {}): Task =>
   }) as Task;
 
 const prMerged = (over: Partial<Extract<ServerEvent, { type: "github.signal" }>> = {}): ServerEvent => ({
-  type: "github.signal", projectId: PROJECT_ID, taskId: "t1", kind: "pr_merged", repo: "acme/app", prNumber: 42, label: null, at: Date.now(),
+  type: "github.signal", taskId: "t1", kind: "pr_merged",
+  payload: { prNumber: 42, prUrl: "https://github.com/acme/app/pull/42", branch: "agent/x" },
   ...over,
 });
 

@@ -64,8 +64,10 @@ function matchCondition(cond: RuleCondition, ctx: EvalContext): boolean {
     case "label_contains":
       // Stateless by design (v1 has no persisted label set — see add_label's
       // own note below): matches only when the TRIGGERING event itself is a
-      // label signal carrying this exact label.
-      return ctx.event?.type === "github.signal" && ctx.event.label === cond.value;
+      // label signal carrying this exact label. TASK 01's webhook ingestion
+      // doesn't parse label events yet, so `payload.label` never appears
+      // today — this stays forward-compatible for when it does.
+      return ctx.event?.type === "github.signal" && ctx.event.payload.label === cond.value;
     case "time_since_signal_gt": {
       const hours = Number(cond.value);
       if (!Number.isFinite(hours)) return false;
@@ -74,7 +76,7 @@ function matchCondition(cond: RuleCondition, ctx: EvalContext): boolean {
     case "pr_merged":
       return ctx.event?.type === "github.signal" && ctx.event.kind === "pr_merged";
     case "checks_green":
-      return ctx.event?.type === "github.signal" && ctx.event.kind === "checks_passed";
+      return ctx.event?.type === "github.signal" && ctx.event.kind === "check_succeeded";
     default:
       return false; // unknown operator — never silently match
   }
@@ -92,8 +94,13 @@ async function resolveEventContext(
   switch (event.type) {
     case "task.upserted":
       return { projectId: event.task.projectId, taskId: event.task.id };
-    case "github.signal":
-      return event.taskId ? { projectId: event.projectId, taskId: event.taskId } : null;
+    case "github.signal": {
+      // The real event (TASK 01's webhook ingestion) carries only `taskId` —
+      // resolve `projectId` off the task itself, same as the run-keyed cases
+      // below.
+      const task = await store.getTask(event.taskId);
+      return task ? { projectId: task.projectId, taskId: task.id } : null;
+    }
     case "run.status":
     case "run.completed":
     case "run.updated": {
@@ -516,8 +523,10 @@ function moveTargetState(action: RuleAction): TaskState | null {
 
 function describeTrigger(event: ServerEvent): string {
   switch (event.type) {
-    case "github.signal":
-      return `github.signal:${event.kind}${event.prNumber != null ? ` (PR #${event.prNumber})` : ""}`;
+    case "github.signal": {
+      const prNumber = event.payload.prNumber;
+      return `github.signal:${event.kind}${prNumber != null ? ` (PR #${prNumber})` : ""}`;
+    }
     case "task.upserted":
       return `task.upserted → ${event.task.state}`;
     default:
