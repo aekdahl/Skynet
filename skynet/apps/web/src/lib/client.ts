@@ -672,6 +672,12 @@ export function resumeCredential(id: string) {
 export function smokeTestCredential(id: string, model?: string) {
   return req<EndpointSmokeResult>("POST", `/api/credentials/${id}/smoke`, model ? { model } : {});
 }
+// Governance flag: is this key the workspace's own, or a personal key running
+// agent work? An operator's explicit correction — never auto-detected. See
+// SecretMeta.orgOwned.
+export function setCredentialOrgOwned(id: string, orgOwned: boolean) {
+  return req<{ secret: SecretMeta }>("POST", `/api/credentials/${id}/org-owned`, { orgOwned });
+}
 // Credential lifecycle log (created/rotated/removed, who + when — never the
 // key) — answers "why did this provider suddenly show not connected".
 export function fetchSecretAudit() {
@@ -793,9 +799,19 @@ export function updateProject(
     newBoardEnabled?: boolean;
     // Momentum Board's Queued-column WIP limit; null clears back to no limit.
     queuedWipLimit?: number | null;
+    // Exact commands that must ALWAYS gate for a human — see Project.alwaysGateCommands.
+    alwaysGateCommands?: string[];
+    // Project-level default for a NEW automation rule's safety rails — see
+    // Project.ruleSafetyDefaults.
+    ruleSafetyDefaults?: RuleSafety;
   },
 ) {
   return req<Project>("PATCH", `/api/projects/${id}`, body);
+}
+/** Add a standing "approve always" rule directly (Keys & Budget panel's
+ *  "+ add pattern" — the risk cap is derived server-side). */
+export function addApprovalRule(projectId: string, command: string) {
+  return req<Project>("POST", `/api/projects/${projectId}/approval-rules`, { command });
 }
 /** Revoke one standing "approve always" rule from a project's approval policy. */
 export function removeApprovalRule(projectId: string, ruleId: string) {

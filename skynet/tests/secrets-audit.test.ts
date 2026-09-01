@@ -76,3 +76,51 @@ describe("SecretService audit trail", () => {
     expect(await service.listAudit("ws-2")).toHaveLength(1);
   });
 });
+
+// Keys & Budget panel (TASK 20) — the org-owned governance flag. Never
+// inferred: no credential-provisioning path in this codebase hands Skynet a
+// key without the operator typing/pasting it, so every credential defaults
+// to NOT org-owned, and the operator corrects it explicitly when it IS a
+// shared/company key.
+describe("SecretService orgOwned", () => {
+  const masterKey = randomBytes(32).toString("base64");
+  let prevKey: string | undefined;
+  let service: SecretService;
+
+  beforeEach(() => {
+    prevKey = process.env.SKYNET_MASTER_KEY;
+    process.env.SKYNET_MASTER_KEY = masterKey;
+    service = new SecretService(new MemorySecretStore());
+  });
+  afterEach(() => {
+    if (prevKey === undefined) delete process.env.SKYNET_MASTER_KEY;
+    else process.env.SKYNET_MASTER_KEY = prevKey;
+  });
+
+  it("defaults false on a brand-new default credential AND a named one", async () => {
+    const def = await service.setKey("ws-1", "claude", "sk-ant-a", "alex", 100);
+    expect(def.orgOwned).toBe(false);
+    const named = await service.createCredential("ws-1", "claude", "second acct", "sk-ant-b", "alex", 100);
+    expect(named.orgOwned).toBe(false);
+  });
+
+  it("can be set true, comes back true on a fresh list, and is recorded in the audit trail", async () => {
+    await service.setKey("ws-1", "claude", "sk-ant-a", "alex", 100);
+    const updated = await service.setOrgOwned("ws-1", "claude", true, "sam", 200);
+    expect(updated.orgOwned).toBe(true);
+    expect((await service.list("ws-1"))[0]!.orgOwned).toBe(true);
+    const audit = await service.listAudit("ws-1");
+    expect(audit[0]).toMatchObject({ action: "org-owned-changed", credentialId: "claude", operatorId: "sam", at: 200 });
+  });
+
+  it("rotating the key does NOT reset orgOwned — a rotation isn't a decision about who owns it", async () => {
+    await service.setKey("ws-1", "claude", "sk-ant-a", "alex", 100);
+    await service.setOrgOwned("ws-1", "claude", true, "alex", 150);
+    const rotated = await service.setKey("ws-1", "claude", "sk-ant-NEW", "alex", 200);
+    expect(rotated.orgOwned).toBe(true);
+  });
+
+  it("throws for an unknown credential id", async () => {
+    await expect(service.setOrgOwned("ws-1", "claude", true, "alex", 100)).rejects.toThrow();
+  });
+});

@@ -79,6 +79,39 @@ describe("decideAutoApproval — standing rules", () => {
   });
 });
 
+// Keys & Budget panel (TASK 20) — Project.alwaysGateCommands, the counterpart
+// to a standing rule: an operator's explicit "no, never this one".
+describe("decideAutoApproval — always-gate override", () => {
+  it("gates a command that would otherwise auto-approve under the risk tier alone", () => {
+    const d = decideAutoApproval({ command: "npm install x", level: "trusted", rules: [], alwaysGate: ["npm install x"] });
+    expect(d).toBeNull();
+  });
+
+  it("overrides — and is checked BEFORE — a standing rule that also matches the same command", () => {
+    const rules = [rule("npm test", "medium")];
+    // Without alwaysGate, this exact setup auto-approves (see the standing-rules
+    // suite above) — proving the override actually takes precedence, not that
+    // the command was ungated to begin with.
+    expect(decideAutoApproval({ command: "npm test", level: "manual", rules })).not.toBeNull();
+    expect(decideAutoApproval({ command: "npm test", level: "manual", rules, alwaysGate: ["npm test"] })).toBeNull();
+  });
+
+  it("matches regardless of whitespace, same normalization as a standing rule", () => {
+    const d = decideAutoApproval({ command: "npm   test", level: "trusted", rules: [], alwaysGate: ["npm test"] });
+    expect(d).toBeNull();
+  });
+
+  it("only gates the EXACT listed command — a different command is unaffected", () => {
+    const d = decideAutoApproval({ command: "ls -la", level: "trusted", rules: [], alwaysGate: ["npm test"] });
+    expect(d).not.toBeNull();
+  });
+
+  it("an empty/absent alwaysGate list changes nothing (byte-for-byte today's behavior)", () => {
+    expect(decideAutoApproval({ command: "ls -la", level: "assisted", rules: [] })).not.toBeNull();
+    expect(decideAutoApproval({ command: "ls -la", level: "assisted", rules: [], alwaysGate: [] })).not.toBeNull();
+  });
+});
+
 describe("rememberableRisk", () => {
   it("returns the risk for low/medium commands", () => {
     expect(rememberableRisk("ls")).toBe("low");

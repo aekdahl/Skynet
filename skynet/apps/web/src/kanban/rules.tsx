@@ -332,7 +332,11 @@ export function BacktestCard({ project, conditions, actions }: { project: Projec
 }
 
 // ── Safety-rails card ────────────────────────────────────────────────────
-function SafetyRailsCard({ safety, onChange }: { safety: RuleSafety; onChange: (next: RuleSafety) => void }) {
+// Exported: reused as-is by the Keys & Budget panel (keys-budget.tsx) to edit
+// Project.ruleSafetyDefaults — same 4 controls, same shape, so a rule's own
+// safety rails and the project-level default that seeds new ones look and
+// behave identically.
+export function SafetyRailsCard({ safety, onChange }: { safety: RuleSafety; onChange: (next: RuleSafety) => void }) {
   const [priorityDraft, setPriorityDraft] = useState("");
   const addPriority = (p: string) => {
     const v = p.trim();
@@ -414,7 +418,12 @@ export function RuleBuilder({ project, existing, onDone, onCancel }: { project: 
   const [name, setName] = useState(existing?.name ?? "");
   const [conditions, setConditions] = useState<RuleCondition[]>(existing?.conditions ?? []);
   const [actions, setActions] = useState<RuleAction[]>(existing?.actions ?? []);
-  const [safety, setSafety] = useState<RuleSafety>(existing?.safety ?? DEFAULT_SAFETY);
+  // A NEW rule starts from the project's "boundaries set once" default (Keys &
+  // Budget panel, Project.ruleSafetyDefaults) instead of a hardcoded constant,
+  // so an operator doesn't re-type the same undo-window/pause-count on every
+  // rule they build — DEFAULT_SAFETY is only the last-resort fallback for a
+  // project fetched before this field existed.
+  const [safety, setSafety] = useState<RuleSafety>(existing?.safety ?? project.ruleSafetyDefaults ?? DEFAULT_SAFETY);
   const [state, setState] = useState<RuleLifecycleState>(existing?.state ?? "watch");
   const [saving, setSaving] = useState(false);
 

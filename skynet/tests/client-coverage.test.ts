@@ -297,6 +297,13 @@ const ALLOW = new Set<string>([
   // createRule is exercised directly by the "hardening-retry-rule-action"
   // acceptance scenario now (TASK 13) — dropped from this list.
   "updateRule", "deleteRule", "backtestRule",
+  // Keys & Budget panel (TASK 20) — org-owned governance flag and the panel's
+  // direct "+ add pattern" write. No offline journey sets a credential's
+  // provenance or hand-adds a standing rule outside the HITL "remember"
+  // checkbox flow; both are exercised against a real store + hub in
+  // secrets-audit.test.ts's "SecretService orgOwned" suite and
+  // approval-rules-ops.test.ts respectively.
+  "setCredentialOrgOwned", "addApprovalRule",
 ]);
 
 describe("client API coverage", () => {

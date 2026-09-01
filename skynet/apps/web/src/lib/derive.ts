@@ -282,19 +282,37 @@ function addRun(roll: UsageRollup, r: TaskRun): void {
   if (u.durationMs != null) roll.durationMs = (roll.durationMs ?? 0) + u.durationMs;
 }
 
-/** Sums token/cost/duration usage across runs, grouped by project and by agent. Archived runs are excluded, matching the rest of the UI's roll-ups. */
+/** The credential a run actually billed against — a named credential id when
+ *  set, else the provider's own default credential (id === provider). Mirrors
+ *  the convention documented on Project.enabledRunnerCredentialIds ("a
+ *  runner's effective id is credentialId ?? provider"), so a Keys & Budget
+ *  view and the fleet-assignment gate agree on what "this credential" means. */
+export const effectiveCredentialId = (r: TaskRun): string => r.credentialId ?? r.provider;
+
+/** Sums token/cost/duration usage across runs, grouped by project, agent,
+ *  provider, and credential (byCredential keyed by {@link effectiveCredentialId}
+ *  — a named credential when the run used one, else the provider's own
+ *  default). Archived runs are excluded, matching the rest of the UI's
+ *  roll-ups. Pure derivation over data already recorded on every TaskRun
+ *  (`provider`/`credentialId`) — no new collection. */
 export function computeUsageRollup(runs: TaskRun[]): {
   byProject: Record<string, UsageRollup>;
   byAgent: Record<string, UsageRollup>;
+  byProvider: Record<string, UsageRollup>;
+  byCredential: Record<string, UsageRollup>;
 } {
   const byProject: Record<string, UsageRollup> = {};
   const byAgent: Record<string, UsageRollup> = {};
+  const byProvider: Record<string, UsageRollup> = {};
+  const byCredential: Record<string, UsageRollup> = {};
   for (const r of runs) {
     if (r.archived) continue;
     addRun((byProject[r.projectId] ??= emptyRollup()), r);
     if (r.agentId) addRun((byAgent[r.agentId] ??= emptyRollup()), r);
+    addRun((byProvider[r.provider] ??= emptyRollup()), r);
+    addRun((byCredential[effectiveCredentialId(r)] ??= emptyRollup()), r);
   }
-  return { byProject, byAgent };
+  return { byProject, byAgent, byProvider, byCredential };
 }
 
 export function fmtNum(n: number): string {

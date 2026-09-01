@@ -1019,6 +1019,7 @@ export class Orchestrator {
         command: raise.command,
         level: project?.approvalLevel ?? "trusted",
         rules: project?.approvalRules ?? [],
+        alwaysGate: project?.alwaysGateCommands ?? [],
         policy,
       });
       if (auto) {
@@ -5831,7 +5832,7 @@ export class Orchestrator {
               // command", since it has no explicit tool-name field.
               const isBash = /^Run a shell command:/.test(raise.title);
               if (raise.kind === "approval" && isBash) {
-                const auto = decideAutoApproval({ command: raise.command, level: project.approvalLevel, rules: project.approvalRules, policy });
+                const auto = decideAutoApproval({ command: raise.command, level: project.approvalLevel, rules: project.approvalRules, alwaysGate: project.alwaysGateCommands, policy });
                 resolution = auto
                   ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: auto.by, at: now() }
                   : {

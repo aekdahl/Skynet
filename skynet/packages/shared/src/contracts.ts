@@ -457,6 +457,22 @@ export const ApprovalRule = z.object({
 });
 export type ApprovalRule = z.infer<typeof ApprovalRule>;
 
+// Guardrails a rule (see kanban.ts's Rule.safety) or a project's DEFAULT for
+// new rules carries, so an automated move is never a silent surprise:
+// announce before acting, a window to undo it, and a circuit breaker that
+// pauses after too many undos in a row. `excludePriorities` carves out e.g.
+// "never touch P0" without disabling the rule entirely. Lives here (not
+// kanban.ts, which imports it) because Project.ruleSafetyDefaults needs it
+// too and contracts.ts is the base module kanban.ts already depends on —
+// the other direction would be circular.
+export const RuleSafety = z.object({
+  announceBeforeActing: z.boolean().default(true),
+  undoWindowMin: z.number().default(10),
+  pauseAfterUndos: z.number().default(3),
+  excludePriorities: z.array(z.string()).default([]),
+});
+export type RuleSafety = z.infer<typeof RuleSafety>;
+
 // ─── Project Charter ──────────────────────────────────────────────────────
 // LLM-drafted at project creation (Gate G-1). The operator corrects/approves
 // before the project is created. Source of truth the whole auto-dev team plans
@@ -510,6 +526,22 @@ export const Project = z.object({
   // "approve always" exact-command allowances (see ApprovalRule).
   approvalLevel: ApprovalLevel.default("trusted"),
   approvalRules: z.array(ApprovalRule).default([]),
+  // The counterpart to approvalRules: exact (normalized) commands that must
+  // ALWAYS gate for a human, overriding whatever the approval LEVEL or a
+  // standing approvalRules entry would otherwise auto-approve (see
+  // approval-policy.ts's decideAutoApproval — checked before any standing
+  // rule, so a rule can never silently outrun it). An operator's explicit
+  // "no, never this one" — distinct from the safety FLOOR's own always-gated
+  // high-risk/deny commands (command-safety.ts), which no project can widen
+  // in the other direction either.
+  alwaysGateCommands: z.array(z.string()).default([]),
+  // Project-level DEFAULT for a NEW automation rule's safety rails (see
+  // kanban.ts's Rule.safety) — "boundaries set once" instead of re-typing the
+  // same undo-window/pause-count/excluded-priorities on every rule built in
+  // the Automation Builder. Purely a default for rule CREATION: an existing
+  // rule's own `safety` is independent once set, and editing this later never
+  // retroactively changes rules already built.
+  ruleSafetyDefaults: RuleSafety.default({ announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] }),
   // Opt-in: start each run in the Claude Agent SDK's plan mode
   // (`permissionMode: "plan"`) — the agent must propose a plan and call
   // ExitPlanMode before making any edits; that call is intercepted and raised
@@ -1684,8 +1716,24 @@ export const UpdateProjectRequest = z.object({
   roadmapPath: z.string().nullable().optional(), // see Project.roadmapPath; null clears → default candidates
   newBoardEnabled: z.boolean().optional(), // see Project.newBoardEnabled
   queuedWipLimit: z.number().int().positive().nullable().optional(), // see Project.queuedWipLimit; null clears → no limit
+  // See Project.alwaysGateCommands — whole-array replace, same as disallowedTools.
+  alwaysGateCommands: z.array(z.string()).optional(),
+  // See Project.ruleSafetyDefaults — whole-object replace.
+  ruleSafetyDefaults: RuleSafety.optional(),
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
+
+// Add a standing "approve always" allowance directly (not via a live HITL's
+// "remember" checkbox — see operations.ts's addApprovalRule / rememberApproval).
+// The risk cap is DERIVED server-side from the live classifier
+// (rememberableRisk), never client-supplied — a client that could name its
+// own riskCap could smuggle a high-risk command in as "approved".
+export const AddApprovalRuleRequest = z.object({ command: z.string().min(1) });
+export type AddApprovalRuleRequest = z.infer<typeof AddApprovalRuleRequest>;
+
+// Toggle a credential's org-owned governance flag (see SecretMeta.orgOwned).
+export const SetOrgOwnedRequest = z.object({ orgOwned: z.boolean() });
+export type SetOrgOwnedRequest = z.infer<typeof SetOrgOwnedRequest>;
 
 export const CreateTaskRequest = z.object({
   text: z.string().min(1),
@@ -1951,6 +1999,17 @@ export const SecretMeta = z.object({
     })
     .nullable()
     .default(null),
+  // Governance flag, never inferred: is this key the workspace's OWN (a
+  // company/team-issued key an operator would want flagged if it silently
+  // stopped being org-owned), or someone's personal key running agent work
+  // that bills to them? No credential-provisioning path in this codebase
+  // hands Skynet a key without the operator typing/pasting it (there's no
+  // OAuth-brokered "connect" flow for LLM/GitHub/Fly credentials today,
+  // cliLogin providers like Cursor/Copilot authenticate outside the secret
+  // store entirely) — so this defaults false uniformly at creation rather
+  // than being auto-detected from a signal that doesn't exist, and the
+  // operator sets it explicitly when it IS a shared/org key.
+  orgOwned: z.boolean().default(false),
   updatedAt: Timestamp,
   updatedBy: z.string(), // operator id — audit trail
 });
@@ -1981,7 +2040,7 @@ export const SecretAuditEntry = z.object({
   credentialId: z.string(),
   provider: CredentialProvider,
   label: z.string(), // display name at the time of the event ("" = default)
-  action: z.enum(["created", "rotated", "removed", "paused", "resumed"]),
+  action: z.enum(["created", "rotated", "removed", "paused", "resumed", "org-owned-changed"]),
   operatorId: z.string(),
   at: Timestamp,
 });

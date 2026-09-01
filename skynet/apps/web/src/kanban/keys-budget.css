@@ -1,0 +1,110 @@
+/* ─── Keys & Budget panel — "Boundaries" (Momentum Rollout Phase 17, TASK 20) ──
+   Tokens only — every color/spacing/radius value here is one of styles.css's
+   --ak-* tokens (see kanban.css's own header comment). Classes are prefixed
+   `kbb-` (Keys & Budget) to stay distinct from `.rb-*` (Rule Builder),
+   `.mb-*` (Momentum Board), and `.ak-*` (shared primitives) — token-driven
+   duplication of the sibling cards' look (not literal class reuse) is the
+   established convention across these kanban/*.css files; `.ak-chip` IS
+   reused directly for the allowlist/always-gated chips, same as rules.css
+   reuses `.mb-sparkline`.
+*/
+
+.kbb-wrap { max-width: 760px; display: flex; flex-direction: column; gap: var(--ak-sp-16); }
+
+.kbb-header { display: flex; flex-direction: column; gap: var(--ak-sp-3); }
+.kbb-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--ak-text-primary); }
+.kbb-sub { margin: 0; font-size: 11px; font-family: var(--ak-font-mono); color: var(--ak-text-faint); }
+
+/* ── Card ─────────────────────────────────────────────────────────────── */
+.kbb-card {
+  display: flex; flex-direction: column; gap: var(--ak-sp-8);
+  padding: var(--ak-pad-card); border: 1px solid var(--ak-border-subtle); border-radius: var(--ak-radius-card);
+  background: var(--ak-surface-1);
+}
+.kbb-card-head {
+  font-family: var(--ak-font-mono); font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ak-text-faint);
+}
+.kbb-card-hint { text-transform: none; letter-spacing: normal; font-weight: 400; color: var(--ak-text-muted); }
+.kbb-card-hint-text { margin: 0; font-size: 12px; color: var(--ak-text-muted); line-height: 1.5; }
+
+/* ── Provider key rows ────────────────────────────────────────────────── */
+.kbb-key-list { display: flex; flex-direction: column; gap: var(--ak-sp-6); }
+.kbb-key-row {
+  display: flex; align-items: center; gap: var(--ak-sp-8); flex-wrap: wrap;
+  padding: var(--ak-sp-8) var(--ak-sp-10); border-radius: var(--ak-radius-row);
+  background: var(--ak-surface-2); border: 1px solid transparent;
+}
+.kbb-key-row-warn { border-color: color-mix(in oklch, var(--ak-warn), transparent 65%); }
+.kbb-dot { width: 7px; height: 7px; border-radius: var(--ak-radius-round); flex: none; }
+.kbb-dot-active { background: var(--ak-machine); box-shadow: var(--ak-halo-lime); }
+.kbb-dot-paused { background: var(--ak-warn); box-shadow: var(--ak-halo-amber); }
+.kbb-key-glyph { font-family: var(--ak-font-mono); flex: none; }
+.kbb-key-label { color: var(--ak-text-primary); font-size: 13px; }
+.kbb-key-fp { color: var(--ak-text-faint); font-size: 11px; }
+.kbb-key-spend { margin-left: auto; color: var(--ak-text-secondary); font-size: 12px; }
+.kbb-key-warn-label {
+  font-family: var(--ak-font-mono); font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--ak-warn); padding: 1px var(--ak-sp-6); border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
+  border-radius: var(--ak-radius-bar);
+}
+.kbb-key-org-toggle {
+  display: inline-flex; align-items: center; gap: var(--ak-sp-5); font-size: 11px; color: var(--ak-text-muted);
+  cursor: pointer; white-space: nowrap;
+}
+.kbb-key-env-note { font-size: 11px; color: var(--ak-text-faint); white-space: nowrap; }
+
+/* ── Chip rows (allowlist / always-gated) ────────────────────────────────── */
+.kbb-chip-row { display: flex; align-items: center; gap: var(--ak-sp-8); flex-wrap: wrap; }
+.kbb-chip { display: inline-flex; align-items: center; gap: var(--ak-sp-5); font-family: var(--ak-font-mono); }
+.kbb-chip-remove { border: none; background: none; color: inherit; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; }
+.kbb-chip-remove:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+.kbb-chip-add-wrap {
+  display: inline-flex; align-items: center;
+  padding: var(--ak-sp-3) var(--ak-sp-8);
+  border: 1px dashed var(--ak-border-strong); border-radius: var(--ak-radius-bar);
+  background: transparent;
+}
+.kbb-chip-add-input {
+  border: none; background: none; outline: none; color: var(--ak-text-secondary);
+  font-family: var(--ak-font-mono); font-size: 11px; width: 110px;
+}
+.kbb-chip-add-input::placeholder { color: var(--ak-text-faint); }
+.kbb-chip-add-input:focus-visible { box-shadow: none; }
+
+/* ── Daily budget ─────────────────────────────────────────────────────── */
+.kbb-budget-headline { display: flex; align-items: baseline; gap: var(--ak-sp-8); flex-wrap: wrap; }
+.kbb-budget-amount { font-size: 22px; font-weight: 700; color: var(--ak-text-primary); }
+.kbb-budget-of { font-size: 12px; color: var(--ak-text-muted); display: inline-flex; align-items: baseline; gap: var(--ak-sp-5); }
+.kbb-budget-input-wrap { display: inline-flex; align-items: baseline; gap: 2px; color: var(--ak-text-secondary); }
+.kbb-budget-input {
+  border: none; border-bottom: 1px solid var(--ak-border-strong); background: none; outline: none;
+  color: var(--ak-text-secondary); font-size: 12px; width: 64px; padding: 0 0 1px;
+}
+.kbb-budget-input:focus-visible { border-bottom-color: var(--ak-machine); }
+.kbb-budget-exhausted { font-size: 11px; color: var(--ak-warn); font-family: var(--ak-font-mono); }
+
+/* 26px meter: a lime gradient fill up to current spend, a canvas-colored tick
+   at the fill's own edge (a crisp boundary instead of a soft fade), and a
+   fixed amber tick at the warn threshold — visible even before spend reaches
+   it, so the operator sees the warning line coming. */
+.kbb-meter {
+  position: relative; height: 26px; border-radius: var(--ak-radius-sm);
+  background: var(--ak-track); border: 1px solid var(--ak-border); overflow: hidden;
+}
+.kbb-meter-fill {
+  position: absolute; inset: 0 auto 0 0; height: 100%;
+  background: linear-gradient(90deg, color-mix(in oklch, var(--ak-machine), transparent 40%), var(--ak-machine));
+  transition: width var(--ak-spring-duration, 400ms) var(--ak-ease-spring, ease);
+}
+.kbb-meter-tick { position: absolute; top: 0; bottom: 0; width: 2px; transform: translateX(-1px); }
+.kbb-meter-tick-current { background: var(--ak-canvas); }
+.kbb-meter-tick-warn { background: var(--ak-warn); box-shadow: var(--ak-halo-amber); }
+
+.kbb-budget-breakdown { display: flex; flex-direction: column; gap: var(--ak-sp-5); }
+.kbb-budget-row { display: flex; align-items: center; gap: var(--ak-sp-8); font-size: 12px; }
+.kbb-budget-row-label { color: var(--ak-text-secondary); }
+.kbb-budget-row-cost { margin-left: auto; color: var(--ak-text-primary); }
+.kbb-budget-row-runs { color: var(--ak-text-faint); font-size: 11px; }
+
+.kbb-cap-sentence { margin: 0; font-size: 12px; line-height: 1.6; color: var(--ak-text-muted); }
