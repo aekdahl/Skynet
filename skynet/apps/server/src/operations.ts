@@ -1190,6 +1190,15 @@ export class Operations {
     return this.updateProject(ws, id, fieldsForDetent(detent), operatorId);
   }
 
+  /** The project's local merge queue (Review & Merge, Phase 15) — see
+   *  Orchestrator.mergeQueueSnapshot's own doc comment. Empty array (not an
+   *  error) for a project with no local git backend. */
+  async getMergeQueue(ws: string, id: string): Promise<Array<{ runId: string; position: number; mode: "human" | "auto"; reason: string | null }>> {
+    const project = await this.store.getProject(id);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return this.orchestrator.mergeQueueSnapshot(project);
+  }
+
   /** "OVERRIDE — I'LL WATCH IT": a temporary manual bypass of a tripped
    *  breaker. Turns autonomy back on immediately; sweepAutonomyOverrides
    *  (orchestrator.ts) reverts it at expiry unless a real lift already

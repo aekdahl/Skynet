@@ -9,6 +9,7 @@ import "./kanban/gravity.css";
 import "./kanban/rail-graph.css";
 import "./kanban/task-detail.css";
 import "./kanban/run-detail.css";
+import "./kanban/review-merge.css";
 import "./kanban/rules.css";
 import "./kanban/feed.css";
 import "./kanban/pattern-onboarding.css";

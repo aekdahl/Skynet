@@ -1230,8 +1230,25 @@ export type DiffWalkthroughComment = z.infer<typeof DiffWalkthroughComment>;
 export const DiffWalkthrough = z.object({
   summary: z.string(),
   comments: z.array(DiffWalkthroughComment).default([]),
+  // Required part of the walkthrough prompt (Review & Merge, Phase 15): what
+  // the agent itself is least confident is correct — never omitted going
+  // forward. Nullable only for backward-compat with a walkthrough drafted
+  // before this field existed.
+  uncertainty: z.string().nullable().default(null),
 });
 export type DiffWalkthrough = z.infer<typeof DiffWalkthrough>;
+
+// A diff grouped by likely INTENT rather than by file — a mechanical
+// derivation over the diff hunks (per-file +/- parsed from the patch,
+// files bucketed by the project's own module map), not an LLM semantic
+// grouper. See apps/server/src/diff-groups.ts.
+export const DiffGroup = z.object({
+  title: z.string(),
+  files: z.array(z.string()),
+  add: z.number().int().nonnegative(),
+  del: z.number().int().nonnegative(),
+});
+export type DiffGroup = z.infer<typeof DiffGroup>;
 
 // Guided merge (see Orchestrator.raiseDiffReview / draftMergeBrief): a
 // plain-English risk/mitigation read of the diff, drafted once alongside the
@@ -1261,6 +1278,9 @@ export const DiffSummary = z.object({
   files: z.array(z.string()).default([]),
   walkthrough: DiffWalkthrough.nullable().default(null),
   mergeBrief: MergeBrief.nullable().default(null),
+  // Files grouped by likely intent (see DiffGroup) — empty for a gate raised
+  // before this existed, or when the patch was empty/unparseable.
+  groups: z.array(DiffGroup).default([]),
   // The branch a diff/merge APPROVAL integrates into if the operator doesn't
   // choose a different one — the project's local integration branch
   // (`skynet/integration/<projectId>`), or, when GitHub-connected, the PR

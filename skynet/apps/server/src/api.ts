@@ -686,6 +686,13 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return fail(reply, err);
     }
   });
+  app.get<{ Params: { id: string } }>("/api/projects/:id/merge-queue", async (req, reply) => {
+    try {
+      return await ops.getMergeQueue(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
   app.post<{ Params: { id: string } }>("/api/projects/:id/autonomy-detent", async (req, reply) => {
     const body = SetAutonomyDetentRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });

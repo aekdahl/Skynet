@@ -368,6 +368,20 @@ export function fileCollisionsForAgent(agent: TaskRun, runs: TaskRun[]): string[
   );
 }
 
+/** Which OTHER run also touched `file` — the run behind a fileCollisionsForAgent
+ *  entry, for a "· also edited by run #X" annotation (Review & Merge, Phase 15).
+ *  Same family-aware rule; first match when more than one other run collides. */
+export function contendedFileOwner(file: string, agent: TaskRun, runs: TaskRun[]): TaskRun | undefined {
+  return runs.find(
+    (other) =>
+      other.id !== agent.id &&
+      other.status !== "done" &&
+      other.projectId === agent.projectId &&
+      familyOf(other) !== familyOf(agent) &&
+      other.modifiedFiles.includes(file),
+  );
+}
+
 export function conflicts(runs: TaskRun[]): Array<[string, TaskRun[]]> {
   const byMod: Record<string, TaskRun[]> = {};
   runs
