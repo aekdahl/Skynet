@@ -6,6 +6,8 @@
 
 import type {
   TaskRun,
+  AutonomyBreaker,
+  AutonomyOverride,
   Feature,
   GithubSignalKind,
   GithubSignalPayload,
@@ -474,5 +476,26 @@ export class Hub {
   async clearAudit(workspaceId: string): Promise<void> {
     await this.store.clearAudit(workspaceId);
     this.bus.publish(workspaceId, { type: "audit.cleared" });
+  }
+
+  // ── autonomy breaker/override (TASK 19) ─────────────────────────────────
+  // Neither is part of the snapshot (same reasoning as the audit trail above)
+  // — the event carries only identity, and a project-scoped client re-fetches
+  // GET /api/projects/:id/autonomy-detent on it.
+  async putAutonomyBreaker(workspaceId: string, breaker: AutonomyBreaker): Promise<void> {
+    await this.store.putAutonomyBreaker(breaker);
+    this.bus.publish(workspaceId, { type: "autonomyBreaker.updated", projectId: breaker.projectId });
+  }
+  async deleteAutonomyBreaker(workspaceId: string, projectId: string): Promise<void> {
+    await this.store.deleteAutonomyBreaker(projectId);
+    this.bus.publish(workspaceId, { type: "autonomyBreaker.updated", projectId });
+  }
+  async putAutonomyOverride(workspaceId: string, override: AutonomyOverride): Promise<void> {
+    await this.store.putAutonomyOverride(override);
+    this.bus.publish(workspaceId, { type: "autonomyBreaker.updated", projectId: override.projectId });
+  }
+  async deleteAutonomyOverride(workspaceId: string, projectId: string): Promise<void> {
+    await this.store.deleteAutonomyOverride(projectId);
+    this.bus.publish(workspaceId, { type: "autonomyBreaker.updated", projectId });
   }
 }

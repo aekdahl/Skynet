@@ -13,6 +13,8 @@
 import type {
   TaskRun,
   AuditRecord,
+  AutonomyDetentState,
+  AutonomyOverride,
   AcceptSubtaskRequest,
   BacktestRuleRequest,
   Checkpoint,
@@ -70,6 +72,7 @@ import type {
   SecretMeta,
 } from "@skynet/shared";
 import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
+import { type AutonomyDetent, AUTONOMY_DETENT_COST_WEIGHT, detentFor, fieldsForDetent } from "@skynet/shared";
 import { DraftTaskPayload, SuggestedRulePayload, SuggestedSubtaskPayload } from "@skynet/shared";
 import { buildReplenishPrompt, parseProposedTasks } from "./steward/replenish.js";
 import { DEFAULT_AUTO_MERGE_POLICY } from "./merge-policy.js";
@@ -434,10 +437,10 @@ export class Operations {
       const run = runById.get(item.runId);
       const project = run ? projectById.get(run.projectId) : undefined;
       if (!run || !project) continue;
-      // TODO(TASK 19): weight by the project's composed autonomy detent
-      // (shadow/assisted ×1, earned ×1.5, unattended ×2) — every project
-      // defaults to ×1 until that lands.
-      const weight = 1;
+      // TASK 19 — weight by the project's composed autonomy detent: a
+      // higher notch means less human attention is already in the loop, so
+      // an open decision idling there costs more, not less.
+      const weight = AUTONOMY_DETENT_COST_WEIGHT[detentFor(project)];
       decisions.push({
         ...item,
         projectId: project.id,
@@ -1101,7 +1104,7 @@ export class Operations {
     this.maybeAutoImportIssues(ws, created, input.importGithubIssues);
     return created;
   }
-  async updateProject(ws: string, id: string, patch: UpdateProjectRequest): Promise<Project> {
+  async updateProject(ws: string, id: string, patch: UpdateProjectRequest, operatorId: string): Promise<Project> {
     const existing = await this.store.getProject(id);
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
     // Rebinding the local folder recomputes git-backing (null clears it).
@@ -1135,11 +1138,71 @@ export class Operations {
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     // Re-enabling autonomy (whether the operator turned it off themselves, or
     // the session circuit-breaker did) starts the streak fresh — otherwise an
-    // already-at-threshold in-memory count could re-trip on the very next bad
-    // outcome instead of giving the project a clean run.
-    if (patch.autonomy === true) this.orchestrator.resetAutonomyStreak(id);
+    // already-tripped persisted breaker could re-trip on the very next bad
+    // outcome instead of giving the project a clean run. Also cancels any
+    // pending override (see Orchestrator.clearAutonomyBreaker) — a fresh
+    // manual "on" decision supersedes an earlier bypass either way.
+    if (patch.autonomy === true) await this.orchestrator.resetAutonomyStreak(updated, operatorId);
     return updated;
   }
+  /** TASK 19 — the composite autonomy dial: notch + underlying fields +
+   *  persisted breaker/override, everything the dial + breaker panel render
+   *  in one round trip. */
+  async getAutonomyDetent(ws: string, id: string): Promise<AutonomyDetentState> {
+    const project = await this.store.getProject(id);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const [breaker, override] = await Promise.all([
+      this.store.getAutonomyBreaker(id),
+      this.store.getAutonomyOverride(id),
+    ]);
+    return {
+      detent: detentFor(project),
+      autonomy: project.autonomy,
+      approvalLevel: project.approvalLevel,
+      maxConsecutiveFailures: config.autonomyMaxConsecutiveFailures,
+      breaker: breaker ?? null,
+      override: override ?? null,
+    };
+  }
+
+  /** Set the dial to a target notch — atomically writes both underlying
+   *  fields (see fieldsForDetent) through the same path a manual PATCH does,
+   *  so it gets the same streak-reset-on-re-enable + override-cancel
+   *  behavior for free (see updateProject). */
+  async setAutonomyDetent(ws: string, id: string, detent: AutonomyDetent, operatorId: string): Promise<Project> {
+    return this.updateProject(ws, id, fieldsForDetent(detent), operatorId);
+  }
+
+  /** "OVERRIDE — I'LL WATCH IT": a temporary manual bypass of a tripped
+   *  breaker. Turns autonomy back on immediately; sweepAutonomyOverrides
+   *  (orchestrator.ts) reverts it at expiry unless a real lift already
+   *  cleared the breaker by then. */
+  async createAutonomyOverride(ws: string, id: string, operatorId: string): Promise<AutonomyOverride> {
+    const project = await this.store.getProject(id);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const at = now();
+    const override: AutonomyOverride = {
+      projectId: id,
+      overriddenBy: operatorId,
+      overriddenAt: at,
+      expiresAt: at + config.autonomyOverrideDurationMs,
+    };
+    await this.hub.putAutonomyOverride(ws, override);
+    if (!project.autonomy) await this.hub.upsertProject({ ...project, autonomy: true });
+    await this.store
+      .recordAudit({
+        workspaceId: ws,
+        hitlId: this.uid("q-autonomy-override"),
+        runId: "none",
+        action: "autonomy-override-created",
+        operatorId,
+        at,
+        payload: { expiresAt: override.expiresAt },
+      })
+      .catch(() => undefined);
+    return override;
+  }
+
   /** Remove one standing "approve always" rule from a project (the operator
    *  revoking a previously-remembered auto-approval). No-op if it's already gone. */
   async removeApprovalRule(ws: string, id: string, ruleId: string): Promise<Project> {

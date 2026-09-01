@@ -41,6 +41,9 @@ import {
   type PendingRuleAction,
   type PendingRuleActionStatus,
   type Proposal,
+  type AutonomyDetent,
+  type AutonomyDetentState,
+  type AutonomyOverride,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -808,6 +811,17 @@ export function deleteProject(id: string) {
  *  (headless/GCP), so agents can work on it. Sets repoPath + gitBacked. */
 export function cloneProjectRepo(id: string) {
   return req<unknown>("POST", `/api/projects/${id}/clone`);
+}
+// TASK 19 — autonomy dial: composite notch + persisted breaker/override state.
+export function getAutonomyDetent(projectId: string) {
+  return req<AutonomyDetentState>("GET", `/api/projects/${projectId}/autonomy-detent`);
+}
+export function setAutonomyDetent(projectId: string, detent: AutonomyDetent) {
+  return req<Project>("POST", `/api/projects/${projectId}/autonomy-detent`, { detent });
+}
+/** "OVERRIDE — I'LL WATCH IT": bypass a tripped breaker for a bounded window. */
+export function createAutonomyOverride(projectId: string) {
+  return req<AutonomyOverride>("POST", `/api/projects/${projectId}/autonomy-override`);
 }
 // Import the project's open GitHub issues as tasks (linked back via Task.source).
 export function importGithubIssues(projectId: string) {

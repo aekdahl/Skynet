@@ -8,6 +8,8 @@ import { Pool } from "pg";
 import type {
   TaskRun,
   AuditRecord,
+  AutonomyBreaker,
+  AutonomyOverride,
   Checkpoint,
   Dependency,
   Feature,
@@ -71,6 +73,10 @@ CREATE TABLE IF NOT EXISTS github_tokens      (workspace_id text PRIMARY KEY, ci
 CREATE TABLE IF NOT EXISTS service_tokens     (id text PRIMARY KEY, token_hash text NOT NULL, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE INDEX IF NOT EXISTS service_tokens_hash ON service_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS service_tokens_ws   ON service_tokens(workspace_id);
+-- Autonomy breaker/override (TASK 19) — one row per project, replacing the
+-- old in-memory autonomyStreaks Map so a restart mid-streak doesn't reset it.
+CREATE TABLE IF NOT EXISTS autonomy_breakers  (project_id text PRIMARY KEY, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS autonomy_overrides (project_id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE INDEX IF NOT EXISTS runs_ws   ON runs(workspace_id);
 CREATE INDEX IF NOT EXISTS checkpoints_run ON checkpoints(run_id);
 CREATE INDEX IF NOT EXISTS hitl_ws     ON hitl_queue(workspace_id);
@@ -419,6 +425,40 @@ export class PostgresStore implements Store {
       "INSERT INTO workspace_settings(workspace_id,data) VALUES($1,$2::jsonb) ON CONFLICT(workspace_id) DO UPDATE SET data=$2::jsonb",
       [settings.workspaceId, J(settings)],
     );
+  }
+
+  async getAutonomyBreaker(projectId: string): Promise<AutonomyBreaker | undefined> {
+    const { rows } = await this.pool.query<{ data: AutonomyBreaker }>(
+      "SELECT data FROM autonomy_breakers WHERE project_id=$1",
+      [projectId],
+    );
+    return rows[0]?.data;
+  }
+  async putAutonomyBreaker(breaker: AutonomyBreaker): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO autonomy_breakers(project_id,data) VALUES($1,$2::jsonb) ON CONFLICT(project_id) DO UPDATE SET data=$2::jsonb",
+      [breaker.projectId, J(breaker)],
+    );
+  }
+  async deleteAutonomyBreaker(projectId: string): Promise<void> {
+    await this.pool.query("DELETE FROM autonomy_breakers WHERE project_id=$1", [projectId]);
+  }
+
+  async getAutonomyOverride(projectId: string): Promise<AutonomyOverride | undefined> {
+    const { rows } = await this.pool.query<{ data: AutonomyOverride }>(
+      "SELECT data FROM autonomy_overrides WHERE project_id=$1",
+      [projectId],
+    );
+    return rows[0]?.data;
+  }
+  async putAutonomyOverride(override: AutonomyOverride): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO autonomy_overrides(project_id,data) VALUES($1,$2::jsonb) ON CONFLICT(project_id) DO UPDATE SET data=$2::jsonb",
+      [override.projectId, J(override)],
+    );
+  }
+  async deleteAutonomyOverride(projectId: string): Promise<void> {
+    await this.pool.query("DELETE FROM autonomy_overrides WHERE project_id=$1", [projectId]);
   }
 
   // ── command policy versions (workspace-scoped, versioned — see store.ts) ──

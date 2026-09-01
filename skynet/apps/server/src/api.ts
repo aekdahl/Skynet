@@ -41,6 +41,7 @@ import {
   ReworkPrRequest,
   ExecuteStewardActionRequest,
   PendingRuleActionStatus,
+  SetAutonomyDetentRequest,
 } from "@skynet/shared";
 import { installProviderCli } from "./provider-install.js";
 import { installCommandFor } from "./provider-requirements.js";
@@ -633,7 +634,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     const body = UpdateProjectRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
-      return await ops.updateProject(ws(req), req.params.id, body.data);
+      return await ops.updateProject(ws(req), req.params.id, body.data, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }
@@ -659,6 +660,33 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       }
     },
   );
+
+  // TASK 19 — autonomy dial: GET the composite notch + persisted breaker/
+  // override state, POST to set a target notch (atomically writes both
+  // underlying fields), POST to bypass a tripped breaker for a bounded window.
+  app.get<{ Params: { id: string } }>("/api/projects/:id/autonomy-detent", async (req, reply) => {
+    try {
+      return await ops.getAutonomyDetent(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/projects/:id/autonomy-detent", async (req, reply) => {
+    const body = SetAutonomyDetentRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.setAutonomyDetent(ws(req), req.params.id, body.data.detent, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/projects/:id/autonomy-override", async (req, reply) => {
+    try {
+      return await ops.createAutonomyOverride(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
 
   // Clone a GitHub-connected project's repo into a managed local checkout (for a
   // headless server with no folder to point at). Sets repoPath + gitBacked.

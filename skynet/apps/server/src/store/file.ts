@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import type { GithubConnection, WorkspaceSettings } from "@skynet/shared";
-import { Agent, AuditRecord, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, PendingRuleAction, PolicyVersion, Project, ProjectContextEntry, Proposal, Rule, SolutionBrief, Task, TaskRun, Transition } from "@skynet/shared";
+import { Agent, AuditRecord, AutonomyBreaker, AutonomyOverride, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, PendingRuleAction, PolicyVersion, Project, ProjectContextEntry, Proposal, Rule, SolutionBrief, Task, TaskRun, Transition } from "@skynet/shared";
 import type { z } from "zod";
 import { MemoryStore } from "./memory.js";
 
@@ -106,6 +106,11 @@ export class FileStore extends MemoryStore {
       if (Array.isArray(d.serviceTokens))
         for (const t of d.serviceTokens as import("../auth/service-tokens.js").StoredServiceToken[])
           if (t && typeof t.id === "string" && typeof t.tokenHash === "string" && t.principal) this.serviceTokens.set(t.id, t);
+      // Autonomy breaker/override (TASK 19) — keyed by projectId (not id), same
+      // reasoning as github/workspaceSettings above, but schema-validated like
+      // every other collection (see the audit-record note above this block).
+      for (const b of fillArray(d.autonomyBreakers, AutonomyBreaker, "autonomy breaker")) this.autonomyBreakers.set(b.projectId, b);
+      for (const o of fillArray(d.autonomyOverrides, AutonomyOverride, "autonomy override")) this.autonomyOverrides.set(o.projectId, o);
     } catch {
       // Corrupt or empty file → start fresh; the next flush rewrites it cleanly.
     }
@@ -145,6 +150,8 @@ export class FileStore extends MemoryStore {
       workspaceSettings: [...this.workspaceSettings.values()],
       githubTokens: Object.fromEntries(this.githubTokens),
       serviceTokens: [...this.serviceTokens.values()],
+      autonomyBreakers: [...this.autonomyBreakers.values()],
+      autonomyOverrides: [...this.autonomyOverrides.values()],
     };
     try {
       const tmp = `${this.path}.tmp`;

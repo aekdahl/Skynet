@@ -959,6 +959,45 @@ export const JOURNEYS: Journey[] = [
     },
   },
   {
+    id: "autonomy-dial",
+    name: "Autonomy dial — set every notch, then bypass with an override",
+    desc: "Operator dials a project through all 4 autonomy notches, then bypasses via the manual override — all offline, no agent run needed.",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: autonomy ${tag}`;
+      await api.createProject({ name: pname, goal: "" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+
+      const initial = await api.getAutonomyDetent(p.id);
+      steps.push(step(
+        "dial reads a live notch matching the project's own autonomy flag",
+        initial.autonomy === p.autonomy && (initial.autonomy ? initial.detent !== "shadow" : initial.detent === "shadow"),
+        initial.detent,
+      ));
+
+      for (const [detent, wantAutonomy, wantLevel] of [
+        ["shadow", false, undefined],
+        ["assisted", true, "assisted"],
+        ["unattended", true, "full"],
+        ["earned", true, "trusted"],
+      ] as const) {
+        const updated = await api.setAutonomyDetent(p.id, detent);
+        const okAutonomy = updated.autonomy === wantAutonomy;
+        const okLevel = wantLevel === undefined || updated.approvalLevel === wantLevel;
+        steps.push(step(`dial → ${detent} writes {autonomy:${wantAutonomy}${wantLevel ? `, approvalLevel:${wantLevel}` : ""}}`, okAutonomy && okLevel, `autonomy=${updated.autonomy} approvalLevel=${updated.approvalLevel}`));
+      }
+
+      const bypass = await api.createAutonomyOverride(p.id);
+      steps.push(step("override created (overriddenBy set, expires in the future)", bypass.overriddenBy != null && bypass.expiresAt > Date.now()));
+      const afterOverride = await api.getAutonomyDetent(p.id);
+      steps.push(step("dial reflects the active override", afterOverride.override?.overriddenBy === bypass.overriddenBy));
+      return steps;
+    },
+  },
+  {
     id: "provider-key-removal",
     name: "Remove a provider key — vendor reverts",
     desc: "Operator removes a stored provider key; the vendor flips back to unavailable (unless an env var still supplies it).",

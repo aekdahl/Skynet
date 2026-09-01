@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, TaskState, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
+import type { TaskRun, AutonomyBreaker, AutonomyOverride, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, TaskState, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
 import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow, pacedAvailableUsd, ratesFor, resolveTaskBrief } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -680,16 +680,15 @@ export class Orchestrator {
   private failCounts = new Map<string, number>();
   // Session circuit-breaker: consecutive BAD autonomy outcomes (a flagged
   // auto-review verdict, or a failed run) for the SAME project, with no good
-  // outcome in between. Keyed by projectId. In-memory: a restart resets it to
-  // 0, which fails OPEN (one more attempt is allowed before the breaker can
-  // trip again) — an accepted trade-off, not a safety gap: this breaker is a
-  // BEHAVIORAL stop (don't keep grinding through tasks on a project that's
-  // clearly stuck), layered on top of the per-run/per-key breakers above and
-  // whatever spend budget the operator has configured, not the only guard.
-  // Cleared on any good outcome, or when the operator re-enables the
-  // project's `autonomy` toggle (see resetAutonomyStreak, called from
-  // operations.ts#updateProject).
-  private autonomyStreaks = new Map<string, { count: number; entries: string[] }>();
+  // outcome in between. TASK 19 — persisted via store.{get,put}AutonomyBreaker
+  // (project-scoped `autonomyBreaker` record) so a restart mid-streak no
+  // longer resets it (used to be an in-memory Map here, which failed OPEN on
+  // every restart). This breaker is a BEHAVIORAL stop (don't keep grinding
+  // through tasks on a project that's clearly stuck), layered on top of the
+  // per-run/per-key breakers above and whatever spend budget the operator has
+  // configured, not the only guard. Cleared on any good outcome, or when the
+  // operator re-enables the project's `autonomy` toggle (see
+  // resetAutonomyStreak, called from operations.ts#updateProject).
   // Key-health circuit breaker: credentials (`${ws}:${credentialId ?? provider}`)
   // known to be out of credits/quota. `providerUsable` refuses a depleted key so
   // NO new run is assigned to it (and auto-provision skips it) — stopping the
@@ -3093,17 +3092,28 @@ export class Orchestrator {
   private async noteAutonomyBadOutcome(project: Project, runId: string, entry: string): Promise<void> {
     const max = config.autonomyMaxConsecutiveFailures;
     if (!project.autonomy || max <= 0) return;
-    const streak = this.autonomyStreaks.get(project.id) ?? { count: 0, entries: [] };
+    const existing = await this.store.getAutonomyBreaker(project.id);
+    // A fresh empty streak — used as the starting point both when there's no
+    // record yet, and when the existing one is an already-tripped leftover
+    // from a race (a bad outcome landing after the trip already fired).
+    const fresh: AutonomyBreaker = { projectId: project.id, count: 0, entries: [], trippedAt: null, trippedByRunId: null };
+    const streak: AutonomyBreaker = existing?.trippedAt ? fresh : (existing ?? fresh);
     streak.count += 1;
     streak.entries.push(entry);
+    streak.trippedByRunId = runId;
     if (streak.count < max) {
-      this.autonomyStreaks.set(project.id, streak);
+      await this.hub.putAutonomyBreaker(project.workspaceId, streak);
       return;
     }
-    // Tripped. Reset the streak BEFORE anything async can race a fresh bad
-    // outcome in (e.g. a review verdict for a run already in flight) into
-    // re-tripping on top of an already-paused project.
-    this.autonomyStreaks.delete(project.id);
+    // Tripped. Persist the FULL record (count/entries/trippedAt) rather than
+    // clearing it — the operator's "SEE THE THREE REVERTS" read on the dial
+    // (and the lift audit below, once it's cleared) needs exactly what
+    // tripped it. A fresh bad outcome landing on an already-tripped record
+    // (a race — e.g. a review verdict for a run already in flight) is
+    // absorbed by the `existing?.trippedAt` reset above, so it can't
+    // re-trip an already-paused project.
+    streak.trippedAt = now();
+    await this.hub.putAutonomyBreaker(project.workspaceId, streak);
     await this.hub.upsertProject({ ...project, autonomy: false });
     const list = streak.entries.map((e, i) => `${i + 1}) ${e}`).join(" ");
     const item: HitlItem = {
@@ -3137,19 +3147,81 @@ export class Orchestrator {
     };
     await this.hub.raiseHitl(item);
     await this.hub.runLog(runId, `project autonomy paused — ${streak.count} consecutive bad outcomes`).catch(() => undefined);
+    // Explicit audit row for the trip itself (TASK 19) — same tamper-evident
+    // AuditRecord path every HITL resolution uses (see hub.ts), so the trip
+    // shows up in the workspace's audit trail, not just the HITL queue.
+    await this.store
+      .recordAudit({
+        workspaceId: project.workspaceId,
+        hitlId: item.id,
+        runId,
+        action: "autonomy-breaker-tripped",
+        operatorId: "system",
+        at: streak.trippedAt,
+        payload: { count: streak.count, entries: streak.entries },
+      })
+      .catch(() => undefined);
   }
 
   /** A good autonomy outcome (an auto-review approve) — clears any accumulated
    *  bad streak for the project, same as an operator re-enabling autonomy. */
-  private noteAutonomyGoodOutcome(projectId: string): void {
-    this.autonomyStreaks.delete(projectId);
+  private async noteAutonomyGoodOutcome(project: Project): Promise<void> {
+    await this.clearAutonomyBreaker(project, "system");
   }
 
   /** Operator re-enabled a project's `autonomy` toggle (operations.ts#updateProject)
    *  — clear any accumulated circuit-breaker streak so it starts fresh instead of
    *  being able to re-trip on the very next bad outcome. */
-  resetAutonomyStreak(projectId: string): void {
-    this.autonomyStreaks.delete(projectId);
+  async resetAutonomyStreak(project: Project, operatorId: string): Promise<void> {
+    await this.clearAutonomyBreaker(project, operatorId);
+  }
+
+  /** Shared by both "clear" paths above: drop the persisted breaker record
+   *  (and any pending override — a real lift makes a scheduled "revert to
+   *  whatever the breaker says" moot, and a fresh autonomy decision
+   *  supersedes any earlier bypass either way). Audits + notifies a LIFT only
+   *  when the breaker had actually TRIPPED (`trippedAt` set) — clearing a
+   *  streak that never reached threshold isn't audit-worthy, same as it was
+   *  silently absorbed before TASK 19 persisted this at all. */
+  private async clearAutonomyBreaker(project: Project, operatorId: string): Promise<void> {
+    const existing = await this.store.getAutonomyBreaker(project.id);
+    await this.hub.deleteAutonomyBreaker(project.workspaceId, project.id);
+    await this.hub.deleteAutonomyOverride(project.workspaceId, project.id);
+    if (!existing?.trippedAt) return;
+    await this.store
+      .recordAudit({
+        workspaceId: project.workspaceId,
+        hitlId: `q-autonomy-lift-${project.id}-${++this.seq}`,
+        runId: existing.trippedByRunId ?? "none",
+        action: "autonomy-breaker-lifted",
+        operatorId,
+        at: now(),
+        payload: { trippedAt: existing.trippedAt, entries: existing.entries },
+      })
+      .catch(() => undefined);
+  }
+
+  /**
+   * TASK 19 — sweep every project's active autonomy override for expiry:
+   * once `expiresAt` passes, revert to whatever the breaker's CURRENT trip
+   * state says (still tripped → force `autonomy` back off; already cleared
+   * by a real lift in the meantime → this is a no-op, the project is
+   * already correctly on). Runs on the same cadence as tickAutonomy (see
+   * index.ts) — cheap, and a no-op for every project with no active override.
+   */
+  private async sweepAutonomyOverrides(ws: string, projects: Project[]): Promise<void> {
+    for (const project of projects) {
+      const override = await this.store.getAutonomyOverride(project.id).catch(() => undefined);
+      if (!override || now() < override.expiresAt) continue;
+      await this.hub.deleteAutonomyOverride(ws, project.id);
+      const breaker = await this.store.getAutonomyBreaker(project.id).catch(() => undefined);
+      if (breaker?.trippedAt && project.autonomy) {
+        await this.hub.upsertProject({ ...project, autonomy: false });
+        await this.hub
+          .runLog(breaker.trippedByRunId ?? "", `autonomy override expired — breaker is still tripped, autonomy is off again`)
+          .catch(() => undefined);
+      }
+    }
   }
 
   /** Resolve an `escalation`: help & resume (modify), reassign, stop (reject), or
@@ -4997,6 +5069,10 @@ export class Orchestrator {
         // is exactly the one that most needs its state written down, so it must
         // not be skipped by the very condition it's reporting on.
         await this.updateDriveStates(ws, projects, tasks).catch(() => undefined);
+        // TASK 19 — expire any manual autonomy-breaker overrides. Runs
+        // regardless of capacity (like the drive read above): it's a project
+        // settings/state maintenance step, not autonomous work.
+        await this.sweepAutonomyOverrides(ws, projects).catch(() => undefined);
         for (const p of projects) {
           // Re-read idle capacity per project (an earlier project may have used it).
           const idle = (await this.store.listAgents(ws)).filter((a) => a.status === "idle");
@@ -6150,7 +6226,7 @@ export class Orchestrator {
       if (decision === "flag") {
         await this.noteAutonomyBadOutcome(breakerProject, hitl.runId, `"${freshTask.text}" flagged — ${reason}`);
       } else {
-        this.noteAutonomyGoodOutcome(breakerProject.id);
+        await this.noteAutonomyGoodOutcome(breakerProject);
       }
       // Self-replenishing backlog: independent of the verdict itself — a
       // flagged run's reviewer can still have noticed something worth a task,
