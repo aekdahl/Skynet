@@ -1038,9 +1038,14 @@ export class Operations {
       // the operator pastes/uploads something.
       contextSummary: null,
       contextSummaryUpdatedAt: null,
-      // Momentum Board is opt-in, set later in project settings — never on at
-      // creation (see Project.newBoardEnabled).
-      newBoardEnabled: false,
+      // TASK 14 (Phase 11) — the new board is now the default for every
+      // freshly-created project (see Project.newBoardEnabled's own comment
+      // for the documented rollout/removal criteria). Still per-project, not
+      // global: an operator can flip it off in settings for a project that
+      // genuinely needs the old board, and every EXISTING project keeps
+      // whatever value it already had — this only changes what a NEW project
+      // starts with.
+      newBoardEnabled: true,
       queuedWipLimit: null,
     };
     const created = await this.hub.upsertProject(project);

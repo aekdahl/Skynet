@@ -1416,7 +1416,7 @@ function ProjectGovernance({
         )}
         <label
           className="proj-autonomy"
-          title="Renders the new 4-column Momentum Board (intake / queued / in flight / landed) instead of the current board, for this project only. Off by default — the old board keeps working unchanged either way."
+          title="Renders the new 4-column Momentum Board (intake / queued / in flight / landed) instead of the old six-column board, for this project only. On by default for new projects (TASK 14) — switch it off here to fall back to the old board for this project specifically."
         >
           <input
             type="checkbox"
@@ -1427,7 +1427,7 @@ function ProjectGovernance({
           <span className="proj-autonomy-switch" aria-hidden="true" />
           <span className="proj-autonomy-text">
             <span className="proj-autonomy-label">Momentum Board</span>
-            <span className="proj-autonomy-hint">Try the new 4-column board (intake / queued / in flight / landed) for this project.</span>
+            <span className="proj-autonomy-hint">The 4-column board (intake / queued / in flight / landed), with automation rules, activity feed, and health metrics. Off falls back to the old board.</span>
           </span>
         </label>
         {project.newBoardEnabled && (
