@@ -25,6 +25,7 @@ import type {
   CreateRuleRequest,
   CreateSolutionBriefRequest,
   CreateTaskRequest,
+  Decision,
   DraftCharterRequest,
   DryRunPolicyRequest,
   Feature,
@@ -406,6 +407,47 @@ export class Operations {
   }
   listHitl(ws: string): Promise<HitlItem[]> {
     return this.store.listQueue(ws);
+  }
+
+  /** TASK 15 — every open (unresolved) decision across every project in the
+   *  workspace, joined with the project/task it belongs to and sorted by
+   *  cost-of-waiting (highest first). `store.listQueue`/the bus are already
+   *  workspace-scoped, not project-scoped, so this is a join + sort over data
+   *  that already exists — no new storage. */
+  async listDecisions(ws: string): Promise<Decision[]> {
+    const [queue, tasks, projects, runs] = await Promise.all([
+      this.store.listQueue(ws),
+      this.store.listTasks(ws),
+      this.store.listProjects(ws),
+      this.store.listRuns(ws),
+    ]);
+    const projectById = new Map(projects.map((p) => [p.id, p]));
+    const runById = new Map(runs.map((r) => [r.id, r]));
+    const taskByRunId = new Map(tasks.filter((t): t is Task & { runId: string } => !!t.runId).map((t) => [t.runId, t]));
+    const nowTs = now();
+    const decisions: Decision[] = [];
+    for (const item of queue) {
+      if (item.resolution !== null) continue; // only open decisions belong on this list
+      // An open HITL always has a real run (HitlItem.runId is required, never
+      // null) — skip defensively rather than throw if the run/project it
+      // pointed to was since deleted, so one dangling item can't 500 the list.
+      const run = runById.get(item.runId);
+      const project = run ? projectById.get(run.projectId) : undefined;
+      if (!run || !project) continue;
+      // TODO(TASK 19): weight by the project's composed autonomy detent
+      // (shadow/assisted ×1, earned ×1.5, unattended ×2) — every project
+      // defaults to ×1 until that lands.
+      const weight = 1;
+      decisions.push({
+        ...item,
+        projectId: project.id,
+        projectName: project.name,
+        taskTitle: taskByRunId.get(item.runId)?.text ?? null,
+        costOfWaiting: (nowTs - item.raisedAt) * weight,
+      });
+    }
+    decisions.sort((a, b) => b.costOfWaiting - a.costOfWaiting);
+    return decisions;
   }
   /** Fetch ONE HITL item scoped to the workspace, or throw NotFoundError (404)
    *  — the full-record counterpart to a summarized queue listing (the MCP

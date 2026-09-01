@@ -322,6 +322,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   );
 
   // ── HITL ───────────────────────────────────────────────────────────────
+  // TASK 15 — every open decision across every project in the workspace
+  // (today's per-project HITL surfaces all filter the same underlying
+  // workspace-scoped queue down to one project). Sorted by cost-of-waiting.
+  app.get("/api/decisions", async (req, reply) => {
+    try {
+      return await ops.listDecisions(ws(req));
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/hitl/:id/resolve", async (req, reply) => {
     const body = ResolveRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
