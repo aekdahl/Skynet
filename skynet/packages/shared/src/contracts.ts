@@ -1306,6 +1306,21 @@ export const HitlItem = z.object({
 });
 export type HitlItem = z.infer<typeof HitlItem>;
 
+// A HitlItem is per-run and carries no projectId of its own (TASK 15,
+// Decision backbone) — `GET /api/decisions` joins it against the run/task/
+// project it actually belongs to so a cross-project decision list doesn't
+// need a second round-trip per item. `costOfWaiting` is `idleMs` (since
+// `raisedAt`) weighted by the project's autonomy detent — every project
+// weighs ×1 until TASK 19 lands the composed detent value (see
+// Operations.listDecisions).
+export const Decision = HitlItem.extend({
+  projectId: z.string(),
+  projectName: z.string(),
+  taskTitle: z.string().nullable(),
+  costOfWaiting: z.number(),
+});
+export type Decision = z.infer<typeof Decision>;
+
 // ─── Fleet runner · Module · Dependency · Provider catalog ──────────────────
 
 export const Agent = z.object({

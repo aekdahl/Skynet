@@ -4245,7 +4245,13 @@ export class Orchestrator {
       output: conflictDiff
         ? `Target branch: ${targetBranch}\n\n${conflictDiff}`.slice(0, Orchestrator.VERIFIER_OUTPUT_CAP)
         : null,
-      flags: files, // the conflicting files — shown as chips
+      // The conflicting files as chips, plus a literal tag (TASK 15) marking
+      // this as a REAL same-file collision — flags is already a generic tag
+      // bag (escalation mixes semantic tags into its own reason list the same
+      // way, e.g. `[...flags, "agent"]` above), so no new schema field. Its
+      // absence on another `kind:"merge"` item (e.g. raiseMergeFailedHitl,
+      // a non-conflict git failure) is what lets a caller tell the two apart.
+      flags: [...files, "file_collision"],
       sourceBranchOverride: featureUp ? req.agentBranch : null,
     });
   }
