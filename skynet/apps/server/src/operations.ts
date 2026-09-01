@@ -2294,6 +2294,21 @@ export class Operations {
     await this.hub.deleteRule(ruleId);
   }
 
+  /** Rail Graph's "pause rules" action (TASK 12, Phase 11): bulk-pauses every
+   *  LIVE rule for a project in one call, rather than the client looping N
+   *  individual PATCHes (N separate confirmations of the same intent, N
+   *  separate live WS events for what is really one operator decision).
+   *  Watch/already-paused rules are left untouched — nothing for this action
+   *  to do to them. `pausedReason: null` matches updateRule's own convention:
+   *  that field means "the auto-breaker did this", never a human's own
+   *  explicit pause (see Rule's doc comment). Returns exactly the rules this
+   *  call actually paused, so the caller can report a real count. */
+  async pauseAllRules(ws: string, projectId: string): Promise<Rule[]> {
+    await this.getProject(ws, projectId);
+    const live = (await this.store.listRulesForProject(projectId)).filter((r) => r.state === "live");
+    return Promise.all(live.map((r) => this.hub.upsertRule({ ...r, state: "paused", pausedReason: null, updatedAt: now() })));
+  }
+
   /** Replay a DRAFT (not-yet-saved) rule's conditions against the project's
    *  historical Transition log — reuses the exact `matchCondition` the live
    *  engine dispatches through (rules/engine.ts), so this can never disagree

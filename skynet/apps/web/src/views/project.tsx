@@ -2183,7 +2183,17 @@ export function ProjectView({
           <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
         </div>
       ) : project.newBoardEnabled ? (
-        <NewBoardView project={project} tasks={tasks} runs={runs} queue={queue} features={features} fleet={fleet} now={now} onOpenTask={onOpenTask} />
+        <NewBoardView
+          project={project}
+          tasks={tasks}
+          runs={runs}
+          queue={queue}
+          features={features}
+          fleet={fleet}
+          now={now}
+          onOpenTask={onOpenTask}
+          onOpenFeed={() => setLens("feed")}
+        />
       ) : (
       <BoardDnd.Provider value={{ drag, begin: setDrag, end: () => { setDrag(null); setDropBeforeId(null); }, dropBeforeId }}>
       <div className={"kb-cols kb-cols-6" + (drag ? " kb-dragging" : "")}>

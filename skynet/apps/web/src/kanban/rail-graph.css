@@ -1,0 +1,196 @@
+/* ─── Rail Graph (Phase 11 — TASK 12) ────────────────────────────────────────
+   Tokens only (see board.css's own header comment) — no new one-off colors
+   or spacing values outside the --ak-* scale. Layout per the design handoff:
+   120px | 1fr | 300px.
+*/
+
+.rg-wrap { display: flex; flex-direction: column; gap: var(--ak-sp-16); }
+
+.rg-grid {
+  display: grid;
+  grid-template-columns: 120px 1fr 300px;
+  gap: 0 var(--ak-sp-16);
+  align-items: start;
+}
+
+.rg-skel, .rg-empty { grid-column: 1 / 3; }
+.rg-skel { display: flex; flex-direction: column; gap: var(--ak-sp-10); padding: var(--ak-sp-8) 0; }
+
+/* Each day-group is its own 120px|1fr sub-grid spanning columns 1-2 of the
+   outer grid — the date label's `position: sticky` then sticks correctly
+   bounded by ITS OWN group's height (its containing block), unsticking
+   naturally once that day's entries scroll past. No scroll-sync JS. */
+.rg-day-group {
+  grid-column: 1 / 3;
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 0 var(--ak-sp-16);
+}
+.rg-rail-date {
+  position: sticky;
+  top: var(--ak-sp-16);
+  align-self: start;
+  padding-top: var(--ak-sp-6);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ak-text-faint);
+}
+.rg-stream { display: flex; flex-direction: column; padding-bottom: var(--ak-sp-16); }
+
+/* ── one row per Transition (or synthetic auto-split row) ── */
+.rg-entry { display: flex; gap: var(--ak-sp-10); }
+
+/* Every row renders every lane's line at the SAME x-offset — stacked rows'
+   border-left segments touch, reading as one continuous trunk per epic down
+   the page, pure CSS, no absolute-positioned line-drawing needed. */
+.rg-lanes { flex: none; display: flex; }
+.rg-lane-line {
+  flex: none;
+  width: 20px;
+  border-left: 2px solid var(--ak-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.rg-lane-node {
+  width: 9px;
+  height: 9px;
+  border-radius: var(--ak-radius-round);
+  box-shadow: 0 0 0 3px var(--ak-surface-0);
+}
+
+.rg-card {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-5);
+  padding: var(--ak-sp-8) var(--ak-sp-10);
+  margin-bottom: var(--ak-sp-8);
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-row);
+  background: var(--ak-surface-1);
+}
+/* Normal advance: lime-bordered. */
+.rg-card-advance { border-color: color-mix(in oklch, var(--ak-machine), transparent 55%); }
+/* Stall: warn-bordered, warn-tinted background. */
+.rg-card-stall {
+  border-color: color-mix(in oklch, var(--ak-warn), transparent 45%);
+  background: color-mix(in oklch, var(--ak-warn), transparent 92%);
+}
+/* A failed rule action (TASK 13's Transition.status) — same warn treatment
+   as the Activity Feed's own failed row. */
+.rg-card-failed { border-color: color-mix(in oklch, var(--ak-warn), transparent 45%); }
+/* Epic auto-split: dashed lime, distinct from a real move — same convention
+   as task-detail.css's suggested-subtask row. */
+.rg-card-split { border-style: dashed; border-color: color-mix(in oklch, var(--ak-machine), transparent 45%); }
+
+.rg-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ak-sp-8); }
+.rg-card-kind { font-size: 10px; font-weight: 700; letter-spacing: .05em; color: var(--ak-text-faint); }
+.rg-card-kind-warn { color: var(--ak-warn); }
+.rg-card-time { font-size: 10px; color: var(--ak-text-faint); }
+
+.rg-card-sentence { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--ak-text-secondary); }
+.rg-card-sentence strong { color: var(--ak-text-primary); font-weight: 600; }
+.rg-card-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rg-card-link:hover { color: var(--ak-text-primary); text-decoration: underline; }
+.rg-card-link:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); border-radius: var(--ak-radius-bar); }
+
+.rg-card-fail-reason { margin: 0; font-family: var(--ak-font-mono); font-size: 11px; color: var(--ak-warn); }
+
+.rg-reassign-btn {
+  align-self: flex-start;
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ak-warn);
+  background: color-mix(in oklch, var(--ak-warn), transparent 88%);
+  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
+  border-radius: var(--ak-radius-bar);
+  padding: var(--ak-sp-3) var(--ak-sp-8);
+  cursor: pointer;
+  transition: background-color var(--motion-fast);
+}
+.rg-reassign-btn:hover { background: color-mix(in oklch, var(--ak-warn), transparent 76%); }
+.rg-reassign-btn:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+/* No run started yet — nothing for REASSIGN? to navigate to (see rail-graph.tsx's own doc comment on onOpenTask/runId). */
+.rg-reassign-btn:disabled { opacity: .55; cursor: default; }
+.rg-reassign-btn:disabled:hover { background: color-mix(in oklch, var(--ak-warn), transparent 88%); }
+
+.rg-split-pills { display: flex; flex-wrap: wrap; gap: var(--ak-sp-6); }
+.rg-split-pill {
+  font-size: 11px;
+  color: var(--ak-machine);
+  background: color-mix(in oklch, var(--ak-machine), transparent 90%);
+  border: 1px solid color-mix(in oklch, var(--ak-machine), transparent 55%);
+  border-radius: var(--ak-radius-pill);
+  padding: var(--ak-sp-3) var(--ak-sp-10);
+  cursor: pointer;
+  transition: background-color var(--motion-fast);
+}
+.rg-split-pill:hover { background: color-mix(in oklch, var(--ak-machine), transparent 78%); }
+/* Same "no run yet" case as .rg-reassign-btn:disabled — a plain <span>, not
+   a button, so this just mutes the same visual treatment. */
+.rg-split-pill-static { cursor: default; opacity: .55; }
+.rg-split-pill:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+
+@media (prefers-reduced-motion: reduce) {
+  .rg-reassign-btn, .rg-split-pill { transition: none; }
+}
+
+/* ── right rail: spans the full grid height, sticks while the center
+   stream scrolls — same pattern as styles.css's own docked-panel precedent. */
+.rg-side {
+  grid-column: 3;
+  grid-row: 1 / -1;
+  position: sticky;
+  top: var(--ak-sp-16);
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-16);
+}
+.rg-side-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-8);
+  padding: var(--ak-pad-card);
+  border: 1px solid var(--ak-border-subtle);
+  border-radius: var(--ak-radius-panel);
+  background: var(--ak-surface-0);
+}
+.rg-side-head {
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ak-text-faint);
+}
+.rg-side-hint { margin: 0; font-size: 12px; color: var(--ak-text-muted); }
+
+.rg-health-row { display: flex; align-items: center; gap: var(--ak-sp-8); }
+.rg-health-label { flex: none; width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.rg-health-track { flex: 1; height: 6px; border-radius: var(--ak-radius-bar); background: var(--ak-surface-2); overflow: hidden; }
+.rg-health-fill { height: 100%; border-radius: var(--ak-radius-bar); transition: width var(--motion-base, 200ms ease-out); }
+.rg-health-pct { flex: none; width: 34px; text-align: right; font-size: 11px; color: var(--ak-text-faint); }
+@media (prefers-reduced-motion: reduce) {
+  .rg-health-fill { transition: none; }
+}
+
+.rg-side-summary { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--ak-text-secondary); }
+.rg-side-summary strong { color: var(--ak-text-primary); }
+
+.rg-side-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ak-sp-8); }
+.rg-pause-confirm { display: flex; align-items: center; gap: var(--ak-sp-6); flex-wrap: wrap; }
+.rg-pause-confirm-copy { font-size: 11.5px; color: var(--ak-warn); }

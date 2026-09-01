@@ -256,6 +256,10 @@ export interface Store extends StoreState {
     patch: { name?: string; when?: string; conditions?: RuleCondition[]; actions?: RuleAction[]; safety?: RuleSafety; state?: RuleLifecycleState; archived?: boolean },
   ) => Promise<void>;
   deleteRule: (projectId: string, ruleId: string) => Promise<void>;
+  // Rail Graph (Phase 11, TASK 12) — bulk-pauses every live rule for a
+  // project in one call. Returns the rules actually paused so the caller can
+  // report a real count; each one also rides back live via rule.upserted.
+  pauseAllRules: (projectId: string) => Promise<Rule[]>;
   createMilestone: (projectId: string, name: string, description?: string, targetAt?: number | null) => Promise<void>;
   updateMilestone: (
     milestoneId: string,
@@ -877,6 +881,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       deleteRule: async (projectId, ruleId) => {
         await api.deleteRule(projectId, ruleId);
+      },
+      pauseAllRules: async (projectId) => {
+        try {
+          return await api.pauseAllRules(projectId);
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't pause the rules."));
+          return [];
+        }
       },
       createMilestone: async (projectId, name, description, targetAt) => {
         await api.createMilestone(projectId, { name, ...(description ? { description } : {}), ...(targetAt !== undefined ? { targetAt } : {}) });
