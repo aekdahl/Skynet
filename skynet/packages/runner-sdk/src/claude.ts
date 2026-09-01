@@ -22,7 +22,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EndpointSmokeResult, ModelRates, PlanStep, ProviderId, Resolution, SmokeCheck, SmokeStatus } from "@skynet/shared";
+import type { EndpointSmokeResult, LogVerb, ModelRates, PlanStep, ProviderId, Resolution, SmokeCheck, SmokeStatus } from "@skynet/shared";
 import { endpointLabel, priceUsage, ratesFor, vendorForBaseUrl } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
 import type {
@@ -922,6 +922,19 @@ function describeTool(name: string, input: Record<string, unknown>): string {
   return name;
 }
 
+// Coarse structured verb for the Run Detail live log's fixed verb column —
+// additive alongside describeTool's free-text line, which stays the fallback
+// rendering. "gate"/"idle" aren't produced here: "gate" is logged where a
+// HITL actually raises (Orchestrator.raise), "idle" is a synthetic UI-only
+// trailing row.
+function toolVerb(name: string): LogVerb {
+  if (name === "Bash") return "shell";
+  if (/^(Glob|Grep)$/.test(name)) return "grep";
+  if (/^(Read|NotebookRead)$/.test(name)) return "read";
+  if (/^(Write|Edit|NotebookEdit)$/.test(name)) return "edit";
+  return "think";
+}
+
 // A specific, human title for the gate — what the operator is being asked to
 // allow — instead of a generic "Approve: Bash".
 function actionTitle(name: string, input: Record<string, unknown>): string {
@@ -1797,7 +1810,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
             // classified as transient even if its subtype is generic.
             if (isTransientApiError(text)) this.lastApiError = text;
             if (this.pendingChat) { this.pendingChat = false; this.events.onChatReply(this.runId, text); }
-            else { this.lastRationale = text; this.events.onLog(this.runId, text); }
+            else { this.lastRationale = text; this.events.onLog(this.runId, text, undefined, { verb: "think" }); }
           }
           for (const t of tools) {
             if (t.id) this.pendingTools.set(t.id, { name: t.name, input: t.input });
@@ -1809,7 +1822,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
               continue;
             }
             // Log line carries the call's full input as expandable detail.
-            this.events.onLog(this.runId, `▸ ${describeTool(t.name, t.input)}`, approvalText(t.name, t.input));
+            this.events.onLog(this.runId, `▸ ${describeTool(t.name, t.input)}`, approvalText(t.name, t.input), { verb: toolVerb(t.name) });
             this.bump();
           }
         } else if (msg.type === "user") {
@@ -1833,7 +1846,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
             // ..." line resume() already logged. Not a real failure — skip the
             // redundant, misleading duplicate rather than mislabel it.
             if (name !== "AskUserQuestion") {
-              this.events.onLog(this.runId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)");
+              this.events.onLog(this.runId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)", {
+                verb: toolVerb(name),
+                resultKind: b.is_error ? "error" : "ok",
+              });
             }
             if (pending && !b.is_error) {
               const src = untrustedReadSource(pending.name, pending.input);

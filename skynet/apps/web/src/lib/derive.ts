@@ -331,6 +331,25 @@ export function conflictModulesForAgent(agent: TaskRun, runs: TaskRun[]): string
   );
 }
 
+// File-level companion to conflictModulesForAgent — same family-aware rule,
+// but compares TaskRun.modifiedFiles paths directly (mirrors the server's
+// computeFileCollisions in apps/server/src/derive/conflicts.ts) instead of
+// architectural module ids, and is scoped to the SAME PROJECT since a bare
+// path is only comparable within one repo.
+export function fileCollisionsForAgent(agent: TaskRun, runs: TaskRun[]): string[] {
+  if (agent.status === "done") return [];
+  return agent.modifiedFiles.filter((file) =>
+    runs.some(
+      (other) =>
+        other.id !== agent.id &&
+        other.status !== "done" &&
+        other.projectId === agent.projectId &&
+        familyOf(other) !== familyOf(agent) &&
+        other.modifiedFiles.includes(file),
+    ),
+  );
+}
+
 export function conflicts(runs: TaskRun[]): Array<[string, TaskRun[]]> {
   const byMod: Record<string, TaskRun[]> = {};
   runs

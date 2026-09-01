@@ -2,6 +2,7 @@ import type {
   ModelRates,
   TaskRunStatus,
   HitlItem,
+  LogVerb,
   PlanStep,
   ProviderId,
   Resolution,
@@ -115,8 +116,13 @@ export interface UntrustedRead {
  * `ServerEvent` union and persists as it goes.
  */
 export interface RunnerEvents {
-  /** A log line. `detail` is optional expandable content (e.g. a tool's full input/output). */
-  onLog(runId: string, line: string, detail?: string): void;
+  /**
+   * A log line. `detail` is optional expandable content (e.g. a tool's full
+   * input/output). `meta` is additive structured info for the Run Detail
+   * view's fixed verb column — `line` stays the source of truth and every
+   * provider that doesn't populate `meta` still renders correctly from it.
+   */
+  onLog(runId: string, line: string, detail?: string, meta?: { verb?: LogVerb; resultKind?: "ok" | "error" }): void;
   /**
    * Token-level text delta for the line currently being generated — live
    * "typing" only, called far more often than onLog (once per streamed chunk,
