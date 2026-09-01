@@ -8,7 +8,8 @@
 // backlog/triage/todo/ongoing/review/done.
 
 import { z } from "zod";
-import { TaskState, Timestamp, type Task } from "./contracts.js";
+import { RuleSafety, TaskState, Timestamp, type Task } from "./contracts.js";
+export type { RuleSafety } from "./contracts.js";
 
 // ─── Transition: kanban move history ────────────────────────────────────────
 // One record per state change — the append-only feed the new board reads for
@@ -71,18 +72,10 @@ export const RuleAction = z.object({
 });
 export type RuleAction = z.infer<typeof RuleAction>;
 
-// Guardrails every rule carries so an automated move is never a silent
-// surprise: announce before acting, a window to undo it, and a circuit
-// breaker that pauses the rule after too many undos in a row (later phase
-// reads `stats.undos` against this). `excludePriorities` lets an operator
-// carve out e.g. "never touch P0" without disabling the rule entirely.
-export const RuleSafety = z.object({
-  announceBeforeActing: z.boolean().default(true),
-  undoWindowMin: z.number().default(10),
-  pauseAfterUndos: z.number().default(3),
-  excludePriorities: z.array(z.string()).default([]),
-});
-export type RuleSafety = z.infer<typeof RuleSafety>;
+// RuleSafety (guardrails every rule carries — announce before acting, an undo
+// window, an undo-count circuit breaker, `excludePriorities`) now lives in
+// contracts.ts, imported above — Project.ruleSafetyDefaults needs the same
+// shape, and contracts.ts is the base module this file already depends on.
 
 export const RuleStats = z.object({
   moves: z.number().default(0),

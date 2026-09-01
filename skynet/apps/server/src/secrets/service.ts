@@ -92,6 +92,7 @@ const toMeta = (r: SecretRecord): SecretMeta => ({
   last4: r.last4,
   baseUrl: r.baseUrl ?? null,
   paused: r.paused ?? null,
+  orgOwned: r.orgOwned ?? false,
   updatedAt: r.updatedAt,
   updatedBy: r.updatedBy,
 });
@@ -104,7 +105,7 @@ export class SecretService {
     return masterKey() !== null;
   }
 
-  private sealRecord(workspaceId: string, id: string, name: string, provider: CredentialProvider, apiKey: string, operatorId: string, at: number, baseUrl?: string | null, paused?: SecretRecord["paused"]): SecretRecord {
+  private sealRecord(workspaceId: string, id: string, name: string, provider: CredentialProvider, apiKey: string, operatorId: string, at: number, baseUrl?: string | null, paused?: SecretRecord["paused"], orgOwned?: boolean): SecretRecord {
     const key = masterKey();
     if (!key) throw new SecretsDisabledError();
     return {
@@ -121,6 +122,10 @@ export class SecretService {
       last4: fingerprint(apiKey.trim()),
       baseUrl: normalizeBaseUrl(baseUrl),
       paused: paused ?? null,
+      // Governance flag never re-derived on rotation (a key rotation isn't a
+      // decision about WHO owns it) — defaults false only for a brand-new
+      // record, same "never inferred" stance as SecretMeta.orgOwned's own doc.
+      orgOwned: orgOwned ?? false,
       updatedAt: at,
       updatedBy: operatorId,
     };
@@ -168,7 +173,8 @@ export class SecretService {
     // A rotation must NOT silently un-pause. If a key was benched because
     // something was wrong with it, replacing the key is a step toward fixing
     // that — not a decision to put it back to work, which stays explicit.
-    const record = this.sealRecord(workspaceId, id, existing?.name ?? "", provider, apiKey, operatorId, at, endpoint, existing?.paused ?? null);
+    // Same carry-forward for orgOwned: rotating the key doesn't change who owns it.
+    const record = this.sealRecord(workspaceId, id, existing?.name ?? "", provider, apiKey, operatorId, at, endpoint, existing?.paused ?? null, existing?.orgOwned ?? false);
     await this.store.put(record);
     await this.audit(record, existing ? "rotated" : "created", operatorId, at);
     return toMeta(record);
@@ -269,6 +275,18 @@ export class SecretService {
   async isPaused(workspaceId: string, credentialId: string): Promise<boolean> {
     const record = await this.store.get(workspaceId, credentialId);
     return !!record?.paused;
+  }
+
+  /** Set the org-owned governance flag (see SecretMeta.orgOwned) — an
+   *  operator's explicit correction, never auto-detected. Audited like every
+   *  other credential lifecycle change. */
+  async setOrgOwned(workspaceId: string, credentialId: string, orgOwned: boolean, operatorId: string, at: number): Promise<SecretMeta> {
+    const record = await this.store.get(workspaceId, credentialId);
+    if (!record) throw new UnknownCredentialError(credentialId);
+    const next: SecretRecord = { ...record, orgOwned };
+    await this.store.put(next);
+    await this.audit(next, "org-owned-changed", operatorId, at);
+    return toMeta(next);
   }
 
   /**

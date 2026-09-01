@@ -11,7 +11,7 @@
 // the key itself (see secrets/verify.ts).
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { CreateCredentialRequest, PauseCredentialRequest, SetSecretRequest } from "@skynet/shared";
+import { CreateCredentialRequest, PauseCredentialRequest, SetOrgOwnedRequest, SetSecretRequest } from "@skynet/shared";
 import { now } from "../config.js";
 import type { Operations } from "../operations.js";
 import { SecretsDisabledError, UnknownCredentialError, InvalidEndpointError, secretService, envBackedProviders } from "./service.js";
@@ -82,6 +82,24 @@ export async function registerSecretsRoutes(app: FastifyInstance, operations: Op
       const { workspaceId, operatorId } = req.principal!;
       await secretService.delete(workspaceId, req.params.id, operatorId, now());
       return reply.code(204).send();
+    },
+  );
+
+  // Set/clear the org-owned governance flag (Keys & Budget panel) — an
+  // operator's explicit correction, never auto-detected (see SecretMeta.orgOwned).
+  app.post<{ Params: { id: string } }>(
+    "/api/credentials/:id/org-owned",
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const body = SetOrgOwnedRequest.safeParse(req.body);
+      if (!body.success) return reply.code(400).send({ error: "orgOwned (boolean) is required" });
+      const { workspaceId, operatorId } = req.principal!;
+      try {
+        return reply.code(200).send({ secret: await secretService.setOrgOwned(workspaceId, req.params.id, body.data.orgOwned, operatorId, now()) });
+      } catch (err) {
+        if (err instanceof SecretsDisabledError) return reply.code(501).send({ error: err.message });
+        if (err instanceof UnknownCredentialError) return reply.code(404).send({ error: err.message });
+        throw err;
+      }
     },
   );
 

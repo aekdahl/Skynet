@@ -208,8 +208,13 @@ export interface Store extends StoreState {
       newBoardEnabled?: boolean;
       // Momentum Board's Queued-column WIP limit; null clears back to no limit.
       queuedWipLimit?: number | null;
+      // Exact commands that must ALWAYS gate for a human. See Project.alwaysGateCommands.
+      alwaysGateCommands?: string[];
+      // Project-level default for a NEW automation rule's safety rails.
+      ruleSafetyDefaults?: RuleSafety;
     },
   ) => Promise<void>;
+  addApprovalRule: (projectId: string, command: string) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   cloneProjectRepo: (id: string) => Promise<void>;
@@ -756,6 +761,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           setState((s) => ({ ...s, projects: upsert(s.projects, updated) }));
         } catch (e) {
           if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't save the project settings."));
+          else throw e;
+        }
+      },
+      addApprovalRule: async (projectId, command) => {
+        try {
+          const updated = await api.addApprovalRule(projectId, command);
+          setState((s) => ({ ...s, projects: upsert(s.projects, updated) }));
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't add that pattern."));
           else throw e;
         }
       },

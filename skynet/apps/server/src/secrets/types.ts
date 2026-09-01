@@ -32,6 +32,11 @@ export interface SecretRecord {
    *  key paused because something is wrong with it must not come back on its
    *  own after a restart. */
   paused?: { at: number; by: string; reason: string } | null;
+  /** See SecretMeta.orgOwned. Defaults false (never inferred — no
+   *  provisioning path in this codebase hands Skynet a key without the
+   *  operator typing/pasting it). Optional so pre-existing rows read back as
+   *  undefined, not a schema break; callers treat `undefined` as `false`. */
+  orgOwned?: boolean;
   updatedAt: number;
   updatedBy: string;
 }

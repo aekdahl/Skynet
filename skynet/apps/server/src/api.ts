@@ -9,6 +9,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   AcceptSubtaskRequest,
+  AddApprovalRuleRequest,
   BacktestRuleRequest,
   ConfigureRunnerRequest,
   CreateFeatureRequest,
@@ -68,7 +69,7 @@ import {
   NoTriageTargetError,
   type Orchestrator,
 } from "./orchestrator.js";
-import { NotFoundError, type Operations, ProposalAlreadyResolvedError, RoadmapConflictError, RunnerBusyError } from "./operations.js";
+import { CommandNotRememberableError, NotFoundError, type Operations, ProposalAlreadyResolvedError, RoadmapConflictError, RunnerBusyError } from "./operations.js";
 import { CrystallizeParseError } from "./steward/crystallize.js";
 import type { ChatTurn } from "./project-assistant.js";
 import { simulateConversational } from "./telegram/index.js";
@@ -93,6 +94,8 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
   if (err instanceof NotFoundError) return reply.code(404).send({ error: err.message });
   // A denylisted command can never be approved — policy refusal, not a bad request.
   if (err instanceof CommandDeniedError) return reply.code(422).send({ error: err.message });
+  // A high-risk/deny command can never become a standing auto-approval either.
+  if (err instanceof CommandNotRememberableError) return reply.code(422).send({ error: err.message });
   // The request was well-formed, but the model couldn't produce a valid draft
   // even after a retry — semantically unprocessable, not a malformed request.
   if (err instanceof CrystallizeParseError) return reply.code(422).send({ error: err.message });
@@ -643,6 +646,18 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     try {
       await ops.deleteProject(ws(req), req.params.id);
       return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Add a standing "approve always" rule directly (Keys & Budget panel's
+  // "+ add pattern" — the risk cap is derived server-side, never client-supplied).
+  app.post<{ Params: { id: string } }>("/api/projects/:id/approval-rules", async (req, reply) => {
+    const body = AddApprovalRuleRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.addApprovalRule(ws(req), req.params.id, body.data.command, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }

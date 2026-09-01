@@ -169,6 +169,17 @@ export class ProposalAlreadyResolvedError extends Error {
   }
 }
 
+/** A command classifies as high-risk/deny and can never become a standing
+ *  "approve always" rule — the same floor rememberApproval's best-effort path
+ *  silently respects, surfaced loudly here since this is an explicit operator
+ *  action (the Keys & Budget panel's "+ add pattern"), not a background write. 422. */
+export class CommandNotRememberableError extends Error {
+  constructor() {
+    super("That command classifies as high-risk (or is denylisted) and can never become a standing auto-approval — it will always gate for a human.");
+    this.name = "CommandNotRememberableError";
+  }
+}
+
 /** A project's roadmap doc, or why it couldn't be read. */
 export type ProjectRoadmapResult =
   | { state: "ok"; path: string; content: string; source: "local" | "github"; sha?: string }
@@ -1037,6 +1048,12 @@ export class Operations {
       budgetPacing: input.budgetPacing ?? false,
       approvalLevel: input.approvalLevel ?? config.defaultApprovalLevel,
       approvalRules: [],
+      // No standing "always gate" overrides at creation — set later. See
+      // Project.alwaysGateCommands.
+      alwaysGateCommands: [],
+      // "Boundaries set once" default for a NEW automation rule's safety
+      // rails — set later. See Project.ruleSafetyDefaults.
+      ruleSafetyDefaults: { announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
       // Plan-mode gating is off by default — set later in project settings.
       planModeGate: false,
       // No tool restriction at creation — set later in project settings.
@@ -1147,6 +1164,28 @@ export class Operations {
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
     const approvalRules = (existing.approvalRules ?? []).filter((r) => r.id !== ruleId);
     return this.hub.upsertProject({ ...existing, approvalRules });
+  }
+  /**
+   * Add a standing "approve always" rule directly (the Keys & Budget panel's
+   * "+ add pattern" — not the HITL "remember" checkbox, see rememberApproval,
+   * though both read/write the identical `Project.approvalRules` field, so a
+   * pattern added either way shows up in both places with no reload). The
+   * risk cap is DERIVED from the live classifier (rememberableRisk), never
+   * client-supplied. Throws (rather than rememberApproval's silent no-op)
+   * since this is an explicit operator action, not a best-effort background
+   * write — the operator should know immediately if what they typed can
+   * never be remembered. Idempotent: re-adding an already-standing command
+   * is a no-op, not a duplicate row.
+   */
+  async addApprovalRule(ws: string, id: string, command: string, operatorId: string): Promise<Project> {
+    const existing = await this.store.getProject(id);
+    if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
+    const cap = rememberableRisk(command, await resolveActivePolicy(this.store, ws));
+    if (!cap) throw new CommandNotRememberableError();
+    const norm = normalizeCommand(command);
+    if (existing.approvalRules.some((r) => normalizeCommand(r.command) === norm)) return existing; // already standing
+    const rule = { id: this.uid("ar"), command: norm, riskCap: cap, createdBy: operatorId, createdAt: now() };
+    return this.hub.upsertProject({ ...existing, approvalRules: [...existing.approvalRules, rule] });
   }
   /**
    * A repo-bound project with no local checkout is cloned in the BACKGROUND so
