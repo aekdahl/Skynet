@@ -5,6 +5,7 @@
 // (takes an async iterable of decoded string chunks) so it's unit-testable.
 
 import type { AssistantAction } from "./client";
+import type { SourceRef } from "@skynet/shared";
 
 export const STEWARD_SENTINEL = "\x1e";
 
@@ -12,6 +13,7 @@ export interface StewardReply {
   reply: string;
   actions?: AssistantAction[];
   projectId?: string | null;
+  sources?: SourceRef[];
 }
 
 /**
@@ -40,7 +42,12 @@ export async function parseStewardStream(
   if (sentinel < 0) return { reply: streamed };
   try {
     const ctrl = JSON.parse(acc.slice(sentinel + 1)) as StewardReply;
-    return { reply: ctrl.reply ?? streamed, actions: ctrl.actions ?? [], projectId: ctrl.projectId ?? null };
+    return {
+      reply: ctrl.reply ?? streamed,
+      actions: ctrl.actions ?? [],
+      projectId: ctrl.projectId ?? null,
+      sources: ctrl.sources ?? [],
+    };
   } catch {
     // Malformed trailer — keep the streamed prose as the reply.
     return { reply: streamed };

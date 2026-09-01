@@ -1,5 +1,5 @@
 import {
-  AuditRecord,
+  AuditRecordWithActor,
   GithubConnection,
   Snapshot,
   WsMessage,
@@ -44,6 +44,7 @@ import {
   type AutonomyDetent,
   type AutonomyDetentState,
   type AutonomyOverride,
+  type SourceRef,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -231,12 +232,12 @@ export async function fetchSnapshot(): Promise<Snapshot> {
 // the entire audit page — so one legacy record from an older schema (or from a
 // half-applied migration) makes it look like every approval was lost. Per-row
 // parse keeps the good rows visible; drops are logged so we can diagnose.
-export async function fetchAudit(): Promise<AuditRecord[]> {
+export async function fetchAudit(): Promise<AuditRecordWithActor[]> {
   const raw = await req<unknown>("GET", "/api/audit");
   if (!Array.isArray(raw)) return [];
-  const out: AuditRecord[] = [];
+  const out: AuditRecordWithActor[] = [];
   for (const row of raw) {
-    const parsed = AuditRecord.safeParse(row);
+    const parsed = AuditRecordWithActor.safeParse(row);
     if (parsed.success) out.push(parsed.data);
     else {
       const id = row && typeof row === "object" ? (row as { hitlId?: unknown }).hitlId : undefined;
@@ -245,6 +246,18 @@ export async function fetchAudit(): Promise<AuditRecord[]> {
     }
   }
   return out;
+}
+// TASK 21 — the audit trail export (NDJSON, for SIEM ingestion — see
+// api.ts's /api/audit/export). Bearer-token auth means a plain `<a href>`
+// download won't authenticate (browsers don't attach a custom Authorization
+// header to a link click), so this fetches the text through the same
+// authenticated path `req()` uses and hands the caller the raw body to
+// download as a Blob (see compliance-export.tsx's downloadFile for the
+// same pattern with the compliance report).
+export async function exportAudit(): Promise<string> {
+  const res = await fetch("/api/audit/export", { headers: { authorization: `Bearer ${token()}` } });
+  if (!res.ok) throw new ApiError(res.status, (await res.text().catch(() => "")) || res.statusText);
+  return res.text();
 }
 // Audit maintenance — archive/restore + delete, per-record and bulk.
 export function archiveAudit(hitlId: string, archived: boolean) {
@@ -1022,7 +1035,7 @@ export function stewardChat(
   history: { role: "user" | "assistant"; content: string }[],
   projectId?: string,
 ) {
-  return req<{ reply: string; actions?: AssistantAction[]; projectId?: string | null }>(
+  return req<{ reply: string; actions?: AssistantAction[]; projectId?: string | null; sources?: SourceRef[] }>(
     "POST",
     "/api/steward/chat",
     { question, history, projectId },
@@ -1084,8 +1097,14 @@ export async function streamStewardChat(
 export function revertRun(runId: string) {
   return req<TaskRun>("POST", `/api/runs/${runId}/revert`);
 }
-export function executeStewardAction(projectId: string, action: unknown, dryRun?: boolean) {
-  return req<StewardActionOutcome>("POST", `/api/projects/${projectId}/steward/actions`, { action, ...(dryRun ? { dryRun } : {}) });
+// `onlyIndices` — TASK 21's "JUST #01"-style partial acceptance: 0-indexed
+// positions into the action's own batch (see ExecuteStewardActionRequest).
+export function executeStewardAction(projectId: string, action: unknown, dryRun?: boolean, onlyIndices?: number[]) {
+  return req<StewardActionOutcome>("POST", `/api/projects/${projectId}/steward/actions`, {
+    action,
+    ...(dryRun ? { dryRun } : {}),
+    ...(onlyIndices && onlyIndices.length > 0 ? { onlyIndices } : {}),
+  });
 }
 export function crystallizeBrief(
   projectId: string,

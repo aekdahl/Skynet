@@ -18,8 +18,25 @@ function fmtWhen(at: number): string {
   return new Date(at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-export function AutonomyDialButton({ project }: { project: Project }) {
-  const [open, setOpen] = useState(false);
+export function AutonomyDialButton({
+  project,
+  autoOpen = false,
+  onAutoOpenConsumed,
+}: {
+  project: Project;
+  // TASK 21 — a breaker-event source chip lands here already wanting the
+  // dial open, not just the Governance menu it lives in.
+  autoOpen?: boolean;
+  onAutoOpenConsumed?: () => void;
+}) {
+  const [open, setOpen] = useState(autoOpen);
+  useEffect(() => {
+    if (autoOpen) {
+      setOpen(true);
+      onAutoOpenConsumed?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per autoOpen pulse, not on every onAutoOpenConsumed identity change
+  }, [autoOpen]);
   return (
     <>
       <button type="button" className="btn btn-ghost btn-sm" onClick={() => setOpen(true)}>
