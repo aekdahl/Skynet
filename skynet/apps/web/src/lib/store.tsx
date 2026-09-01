@@ -294,6 +294,13 @@ export interface Store extends StoreState {
   // feed can optimistically update the row immediately — no WS event exists
   // for a pending action's own lifecycle, only the Transition it produces.
   undoRuleAction: (pendingId: string) => Promise<PendingRuleAction | null>;
+  // TASK 13 hardening — the Activity Feed's "retry" action on a
+  // status:"failed" row: re-runs the rule's own current dispatch (respecting
+  // its live announceBeforeActing setting, same as any fresh signal would),
+  // so the outcome shows up live through whichever normal path that implies
+  // — a new transition.created event, or a new PendingRuleAction the Feed's
+  // own periodic refetch picks up. Nothing to apply optimistically here.
+  retryRuleAction: (ruleId: string, taskId: string) => Promise<void>;
   // Generic proposal accept/dismiss (Phase 1c) — TASK 10's pattern-spotted
   // card is the first UI to call these. `activate` only matters for a
   // suggested_rule proposal (see client.ts's acceptProposal doc comment).
@@ -915,6 +922,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         } catch (e) {
           toast(serverMessage(e, "Couldn't undo that action — the window may have passed."));
           return null;
+        }
+      },
+      retryRuleAction: async (ruleId, taskId) => {
+        try {
+          await api.retryRuleAction(ruleId, taskId);
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't retry that action."));
         }
       },
       acceptProposal: async (projectId, proposalId, opts) => {

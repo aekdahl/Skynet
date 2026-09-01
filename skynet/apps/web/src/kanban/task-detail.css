@@ -24,6 +24,14 @@
   flex-direction: column;
   gap: var(--ak-sp-16);
 }
+/* TASK 13 hardening — same full-screen-sheet pattern as feed.css below
+   720px: a fixed-width drawer just clamping via max-width: 100% keeps its
+   drawer framing (border, padding) even with no room for it. The matching
+   .mb-detail-body override lives after that rule's own definition below —
+   same specificity, source order decides, so it has to come after. */
+@media (max-width: 720px) {
+  .mb-detail-panel { width: 100%; border-left: none; }
+}
 
 .mb-detail-header { position: relative; display: flex; flex-direction: column; gap: var(--ak-sp-6); padding-right: var(--ak-sp-24); }
 .mb-detail-breadcrumb {
@@ -48,9 +56,13 @@
   cursor: pointer;
   padding: 0;
 }
-.mb-detail-parent-link:hover { color: var(--ak-text-secondary); }
+.mb-detail-parent-link:hover { color: var(--ak-text-secondary); text-decoration: underline; }
+.mb-detail-parent-link:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 
 .mb-detail-body { display: grid; grid-template-columns: 1fr 260px; gap: var(--ak-sp-24); align-items: start; }
+@media (max-width: 720px) {
+  .mb-detail-body { grid-template-columns: 1fr; }
+}
 .mb-detail-main, .mb-detail-rail { display: flex; flex-direction: column; gap: var(--ak-sp-16); min-width: 0; }
 
 .mb-detail-section { display: flex; flex-direction: column; gap: var(--ak-sp-6); }
@@ -65,6 +77,16 @@
 }
 .mb-detail-section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ak-sp-8); }
 .mb-detail-empty { font-size: 12px; color: var(--ak-text-faint); }
+.mb-detail-skel { display: flex; flex-direction: column; gap: var(--ak-sp-8); padding: var(--ak-sp-4) 0; }
+/* TASK 13 hardening — every accept/merge/hold/close button in this panel
+   uses a plain .btn variant (styles.css); scope the ak-focus-ring override
+   to this panel's own containers rather than touching the app-wide .btn
+   rule other, non-kanban screens also use. */
+.mb-detail-section .btn:focus-visible,
+.mb-detail-close:focus-visible {
+  outline: none;
+  box-shadow: var(--ak-focus-ring);
+}
 
 /* Subtasks */
 .mb-detail-subtask {
@@ -80,8 +102,19 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition: border-color var(--motion-fast), background-color var(--motion-fast), box-shadow var(--motion-fast);
 }
-.mb-detail-subtask:hover { border-color: var(--ak-border-strong); }
+/* Same shared card-hover treatment as .mb-card (board.css) / .gv-card
+   (gravity.css). */
+.mb-detail-subtask:hover {
+  border-color: color-mix(in oklch, var(--ak-machine), transparent 55%);
+  background-color: color-mix(in oklch, white, transparent 98%);
+  box-shadow: var(--ak-shadow-lift);
+}
+.mb-detail-subtask:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+@media (prefers-reduced-motion: reduce) {
+  .mb-detail-subtask { transition: none; }
+}
 .mb-detail-subtask-text { font-size: 12.5px; color: var(--ak-text-primary); }
 /* Suggested-but-not-accepted: dashed lime outline, distinct from a real row. */
 .mb-detail-subtask-suggested {
@@ -91,6 +124,12 @@
   cursor: default;
 }
 .mb-detail-subtask-suggested .mb-detail-subtask-text { color: var(--ak-machine); }
+/* Not itself clickable (only its inner Accept button is) — no hover feedback. */
+.mb-detail-subtask-suggested:hover {
+  border-color: color-mix(in oklch, var(--ak-machine), transparent 45%);
+  background-color: transparent;
+  box-shadow: none;
+}
 
 /* Checkpoints (full-detail rail) */
 .mb-detail-checkpoint {
@@ -141,6 +180,7 @@
 }
 .mb-detail-decision-copy { font-size: 12.5px; color: var(--ak-text-primary); }
 .mb-detail-decision-actions { display: flex; gap: var(--ak-sp-8); }
+.mb-detail-decision-actions .btn:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 .mb-detail-merge {
   background: var(--ak-machine);
   color: var(--ak-surface-0);

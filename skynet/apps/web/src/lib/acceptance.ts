@@ -448,4 +448,47 @@ export const SCENARIOS: Scenario[] = [
       return steps;
     },
   },
+  {
+    id: "hardening-retry-rule-action",
+    name: "TASK 13 hardening — retry a rule action",
+    desc: "Retrying re-dispatches a rule's CURRENT actions for a task, regardless of prior failure — no seeded failure needed to exercise the endpoint. Confirms a real retry moves the task, and that retrying an unknown rule/task pair is refused.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: retry action ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      let s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+
+      await api.createTask(p.id, "acceptance: retry target");
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      steps.push(step("task created in backlog", task.state === "backlog", task.state));
+
+      const rule = await api.createRule(p.id, {
+        name: "Acceptance: backlog -> triage",
+        when: "WHEN task state is Backlog THEN move task to Triage",
+        conditions: [{ field: "state", op: "state_equals", value: "backlog" }],
+        actions: [{ type: "move_task", params: { toState: "triage" } }],
+        safety: { announceBeforeActing: false, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
+      });
+
+      // retryRuleAction's whole dispatch (applyAction → recordTransition →
+      // upsertTask) is one awaited chain server-side, so the Transition it
+      // produces already exists by the time this call resolves — no polling.
+      await api.retryRuleAction(rule.id, task.id);
+      const transitions = await api.fetchTaskTransitions(task.id);
+      steps.push(step("retry re-dispatched the rule and moved the task", transitions.some((t) => t.to === "triage" && t.ruleId === rule.id)));
+
+      try {
+        await api.retryRuleAction("nonexistent-rule-id", task.id);
+        steps.push(step("retrying an unknown rule is refused", false, "did not throw"));
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : 0;
+        steps.push(step("retrying an unknown rule is refused", status === 404, `status ${status}`));
+      }
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
 ];

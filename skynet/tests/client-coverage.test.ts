@@ -294,7 +294,9 @@ const ALLOW = new Set<string>([
   // through the Automation Builder UI matched a real triggered signal and
   // moved the task, and 3 real undos auto-paused it with the live rules
   // list reflecting "Paused" with no reload.
-  "createRule", "updateRule", "deleteRule", "backtestRule",
+  // createRule is exercised directly by the "hardening-retry-rule-action"
+  // acceptance scenario now (TASK 13) — dropped from this list.
+  "updateRule", "deleteRule", "backtestRule",
 ]);
 
 describe("client API coverage", () => {

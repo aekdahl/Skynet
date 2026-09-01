@@ -37,5 +37,11 @@
 .pso-stats { font-size: 11px; color: var(--ak-text-faint); }
 
 .pso-actions { display: flex; gap: var(--ak-sp-8); margin-top: var(--ak-sp-4); }
+/* TASK 13 hardening — these are plain .btn variants (styles.css); scope the
+   ak-focus-ring override to this section rather than touching the app-wide
+   .btn rule other, non-kanban screens also use. */
+.pso-actions .btn:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 .pso-never { color: var(--ak-text-muted); }
-.pso-never:hover { color: var(--ak-warn); }
+/* Same dismiss-action treatment as .rb-del (rules.css) — warn color + an
+   underline, same reasoning as any plain-text ghost action in this area. */
+.pso-never:hover { color: var(--ak-warn); border-color: var(--ak-track); text-decoration: underline; }

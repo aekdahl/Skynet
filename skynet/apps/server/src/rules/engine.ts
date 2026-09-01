@@ -288,25 +288,78 @@ export class RuleEngine {
     await this.store.putPendingRuleAction(pending);
   }
 
+  /** TASK 13 hardening — previously a throw anywhere in here (most realistically
+   *  `applyAction`'s create_proposal → `hub.upsertProposal`, or any of the
+   *  persistence calls below it) propagated straight out to `handleEvent`'s
+   *  bus-callback `.catch(() => undefined)` (see `ensureSubscribed`) — silently
+   *  discarded, no Transition, no log, no operator-visible trace, AND it
+   *  aborted evaluation of every remaining rule for that same event. Now every
+   *  failure is caught here and recorded as its own `status:"failed"`
+   *  Transition (same `from===to` no-op shape the non-move actions already
+   *  use) so it's Feed-visible with a reason and retryable — see
+   *  `retryFailedAction`. A failure this late (after `recordTransition`
+   *  itself succeeded) can leave both the real Transition and a failure
+   *  Transition on record — an honest double-entry rather than a silently
+   *  swallowed one. */
   private async executeAction(rule: Rule, task: Task, action: RuleAction, evidence: string[]): Promise<Task> {
-    const result = await this.applyAction(action, task, task.projectId, task.workspaceId);
-    const transition: Transition = {
-      id: `tr-${task.id}-${++this.seq}`,
+    try {
+      const result = await this.applyAction(action, task, task.projectId, task.workspaceId);
+      const transition: Transition = {
+        id: `tr-${task.id}-${++this.seq}`,
+        workspaceId: task.workspaceId,
+        projectId: task.projectId,
+        taskId: task.id,
+        from: task.state,
+        to: result.toState ?? task.state,
+        actor: "machine",
+        actorId: null,
+        ruleId: rule.id,
+        evidence: [...evidence, ...result.evidence],
+        at: now(),
+      };
+      await this.hub.recordTransition(transition);
+      await this.bumpRuleMoves(rule.id);
+      if (result.toState && result.toState !== task.state) return this.hub.upsertTask({ ...task, state: result.toState });
+      return task;
+    } catch (err) {
+      await this.recordActionFailure(rule, task, evidence, err);
+      return task;
+    }
+  }
+
+  private async recordActionFailure(rule: Rule, task: Task, evidence: string[], err: unknown): Promise<void> {
+    const reason = (err as Error)?.message || String(err);
+    const failure: Transition = {
+      id: `tr-${task.id}-failed-${++this.seq}`,
       workspaceId: task.workspaceId,
       projectId: task.projectId,
       taskId: task.id,
       from: task.state,
-      to: result.toState ?? task.state,
+      to: task.state,
       actor: "machine",
       actorId: null,
       ruleId: rule.id,
-      evidence: [...evidence, ...result.evidence],
+      evidence: [...evidence, `action failed: ${reason}`],
       at: now(),
+      status: "failed",
+      failureReason: reason,
     };
-    await this.hub.recordTransition(transition);
-    await this.bumpRuleMoves(rule.id);
-    if (result.toState && result.toState !== task.state) return this.hub.upsertTask({ ...task, state: result.toState });
-    return task;
+    await this.hub.recordTransition(failure).catch(() => undefined); // last-resort: don't let the FAILURE record itself throw away the failure
+  }
+
+  /** The Activity Feed's "retry" action on a failed row — re-runs the SAME
+   *  dispatch a fresh matching signal would have triggered (respects the
+   *  rule's current announceBeforeActing/actions, not whatever they were at
+   *  failure time — a retry should use today's rule, not a stale snapshot of
+   *  it). Produces a normal success Transition/PendingRuleAction, or another
+   *  `status:"failed"` one if the underlying problem persists — same path,
+   *  no special-cased "retry" Transition shape. */
+  async retryFailedAction(ruleId: string, taskId: string): Promise<Task> {
+    const rule = await this.store.getRule(ruleId);
+    if (!rule) throw new Error("This rule no longer exists.");
+    const task = await this.store.getTask(taskId);
+    if (!task) throw new Error("This task no longer exists.");
+    return this.dispatch(rule, task, ["retried after a failed action"]);
   }
 
   private async bumpRuleMoves(ruleId: string): Promise<void> {
@@ -393,25 +446,64 @@ export class RuleEngine {
       });
       return;
     }
-    const result = await this.applyAction(pending.action, task, pending.projectId, task.workspaceId);
-    const transitionId = `tr-${pending.id}`;
-    const transition: Transition = {
-      id: transitionId,
-      workspaceId: task.workspaceId,
-      projectId: pending.projectId,
-      taskId: task.id,
-      from: pending.fromState,
-      to: result.toState ?? pending.fromState,
-      actor: "machine",
-      actorId: null,
-      ruleId: pending.ruleId,
-      evidence: [...pending.evidence, ...result.evidence],
-      at: now(),
-    };
-    await this.hub.recordTransition(transition);
-    if (result.toState && result.toState !== task.state) await this.hub.upsertTask({ ...task, state: result.toState });
-    if (rule) await this.bumpRuleMoves(rule.id);
-    await this.store.putPendingRuleAction({ ...pending, status: "finalized", undoableUntil: now() + windowMs, transitionId });
+    // TASK 13 hardening — this used to be a bare `await` chain: any throw here
+    // propagated to sweepPendingActions()'s `.catch(() => undefined)`, leaving
+    // this PendingRuleAction stuck at status:"pending" with its `readyAt`
+    // already past — the NEXT sweep tick would pick it up and retry it again,
+    // silently and forever, invisible to any operator. For create_proposal
+    // specifically that also meant a duplicate proposal on every retry if the
+    // first attempt got as far as `upsertProposal` before a later step threw.
+    // Now a failure is caught, recorded as a `status:"failed"` Transition (so
+    // it's Feed-visible with a reason + retry action), and the pending action
+    // is finalized (not left dangling) — auto-retry becomes an explicit,
+    // operator-triggered "retry" instead of an accidental side effect of
+    // readyAt staying in the past.
+    try {
+      const result = await this.applyAction(pending.action, task, pending.projectId, task.workspaceId);
+      const transitionId = `tr-${pending.id}`;
+      const transition: Transition = {
+        id: transitionId,
+        workspaceId: task.workspaceId,
+        projectId: pending.projectId,
+        taskId: task.id,
+        from: pending.fromState,
+        to: result.toState ?? pending.fromState,
+        actor: "machine",
+        actorId: null,
+        ruleId: pending.ruleId,
+        evidence: [...pending.evidence, ...result.evidence],
+        at: now(),
+      };
+      await this.hub.recordTransition(transition);
+      if (result.toState && result.toState !== task.state) await this.hub.upsertTask({ ...task, state: result.toState });
+      if (rule) await this.bumpRuleMoves(rule.id);
+      await this.store.putPendingRuleAction({ ...pending, status: "finalized", undoableUntil: now() + windowMs, transitionId });
+    } catch (err) {
+      const reason = (err as Error)?.message || String(err);
+      const failureId = `tr-${pending.id}-failed-${++this.seq}`;
+      await this.hub.recordTransition({
+        id: failureId,
+        workspaceId: task.workspaceId,
+        projectId: pending.projectId,
+        taskId: task.id,
+        from: pending.fromState,
+        to: pending.fromState,
+        actor: "machine",
+        actorId: null,
+        ruleId: pending.ruleId,
+        evidence: [...pending.evidence, `action failed: ${reason}`],
+        at: now(),
+        status: "failed",
+        failureReason: reason,
+      }).catch(() => undefined);
+      await this.store.putPendingRuleAction({
+        ...pending,
+        status: "finalized",
+        undoableUntil: null,
+        transitionId: failureId,
+        evidence: [...pending.evidence, `action failed: ${reason}`],
+      });
+    }
   }
 
   // ── undo ───────────────────────────────────────────────────────────────

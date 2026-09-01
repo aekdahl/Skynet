@@ -508,3 +508,56 @@ describe("HTTP: pending rule actions (Activity Feed)", () => {
     expect(res.statusCode).toBe(404);
   });
 });
+
+// ── retry a failed rule action (TASK 13 hardening) ─────────────────────────
+describe("HTTP: retry a failed rule action", () => {
+  const PROJECT_ID = "p1";
+
+  async function setup() {
+    const store = new MemoryStore({ seed: false });
+    const bus = new InProcessBus();
+    const hub = new Hub(store, bus);
+    const engine = new RuleEngine({ store, hub, bus });
+    const orchestrator = new Orchestrator(store, hub, new NullProvider());
+    const ops = new Operations({ store, hub, orchestrator, ruleEngine: engine });
+    const app = Fastify();
+    await registerApi(app, { operations: ops, orchestrator });
+    app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: "Not found" }));
+    await app.ready();
+    await store.putProject({ id: PROJECT_ID, workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" } as Project);
+    await engine.start();
+    await store.putTask({
+      id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: PROJECT_ID, text: "do X", state: "backlog",
+      runId: null, autoPick: false, assessment: null, reviewVerdict: null, lint: null, priority: null,
+      assignment: { mode: "any", agentIds: [] }, archived: false,
+    } as Task);
+    const rule = await ops.createRule(DEFAULT_WORKSPACE, PROJECT_ID, {
+      name: "backlog -> triage", when: "x",
+      conditions: [{ field: "state", op: "state_equals", value: "backlog" }],
+      actions: [{ type: "move_task", params: { toState: "triage" } }],
+      safety: { announceBeforeActing: false, undoWindowMin: 0, pauseAfterUndos: 3, excludePriorities: [] },
+    });
+    return { store, app, ruleId: rule.id };
+  }
+
+  it("re-dispatches the rule for this task and moves it", async () => {
+    const { store, app, ruleId } = await setup();
+    const res = await app.inject({ method: "POST", url: `/api/rules/${ruleId}/retry`, headers: AUTH, payload: { taskId: "t1" } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().state).toBe("triage");
+    expect((await store.getTask("t1"))?.state).toBe("triage");
+  });
+
+  it("400s a missing taskId, 404s an unknown rule, 404s an unknown task", async () => {
+    const { app, ruleId } = await setup();
+
+    const noBody = await app.inject({ method: "POST", url: `/api/rules/${ruleId}/retry`, headers: AUTH, payload: {} });
+    expect(noBody.statusCode).toBe(400);
+
+    const badRule = await app.inject({ method: "POST", url: `/api/rules/nope/retry`, headers: AUTH, payload: { taskId: "t1" } });
+    expect(badRule.statusCode).toBe(404);
+
+    const badTask = await app.inject({ method: "POST", url: `/api/rules/${ruleId}/retry`, headers: AUTH, payload: { taskId: "nope" } });
+    expect(badTask.statusCode).toBe(404);
+  });
+});

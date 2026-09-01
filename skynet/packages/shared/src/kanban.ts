@@ -41,6 +41,16 @@ export const Transition = z.object({
   // quoted rule condition) — surfaced later for "why did this move" UI.
   evidence: z.array(z.string()).default([]),
   at: Timestamp,
+  // TASK 13 hardening — a rule action that errored instead of completing
+  // (previously silently swallowed by the engine's own catch-and-discard
+  // sweeps; see rules/engine.ts). Every OTHER Transition is a real,
+  // successful move/no-op — `status` stays undefined for those rather than
+  // an explicit "ok", so every row persisted before this field existed reads
+  // back as "not failed" with no migration needed. `from === to` on a failed
+  // row (nothing moved) mirrors the existing convention for a non-move
+  // action's no-op Transition (add_label/post_slack_nudge).
+  status: z.enum(["failed"]).optional(),
+  failureReason: z.string().nullable().optional(),
 });
 export type Transition = z.infer<typeof Transition>;
 

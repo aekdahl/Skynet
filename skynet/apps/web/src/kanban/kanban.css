@@ -35,6 +35,36 @@
   .ak-pulse-dot, .ak-sweep-bar, .ak-drift-card { animation: none; }
 }
 
+/* ── Loading skeleton (TASK 13 hardening) ──────────────────────────────────
+   Reused by every Momentum Rollout screen's initial-fetch loading state — a
+   few rows at --ak-surface-2 with a subtle sweep, instead of an empty/blank
+   render (or worse, stats silently computed over a still-loading dataset). */
+@keyframes ak-skel-sweep {
+  0% { background-position: -60% 0; }
+  100% { background-position: 160% 0; }
+}
+.ak-skel-row {
+  height: 14px;
+  border-radius: var(--ak-radius-sm);
+  background-color: var(--ak-surface-2);
+  background-image: linear-gradient(90deg, transparent, color-mix(in oklch, var(--ak-text-faint), transparent 65%), transparent);
+  background-size: 60% 100%;
+  background-repeat: no-repeat;
+  animation: ak-skel-sweep 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ak-skel-row { animation: none; }
+}
+
+/* ── Live-signal staleness (TASK 13 hardening) ──────────────────────────────
+   A small amber marker any stat-bearing pill/footer can append when the WS
+   stream isn't open — "the numbers next to this are real" is a promise that
+   silently breaks the moment the socket drops, so it needs its own visible
+   tell rather than just quietly showing the last-known values forever. */
+.ak-stale-marker {
+  color: var(--ak-warn);
+}
+
 /* ── Foundational utility patterns (hard rules from the handoff, established
    here so a later screen doesn't reinvent them) ────────────────────────── */
 /* Intake cards get a left accent. */

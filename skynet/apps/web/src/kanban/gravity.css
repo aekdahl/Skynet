@@ -28,9 +28,13 @@
   letter-spacing: .03em;
   cursor: pointer;
 }
-.gv-mode-btn:hover { color: var(--ak-text-primary); }
+.gv-mode-btn { transition: color var(--motion-fast); }
+.gv-mode-btn:hover { color: var(--ak-text-primary); text-decoration: underline; }
 .gv-mode-btn.on { background: var(--ak-surface-3); color: var(--ak-machine); }
 .gv-mode-btn:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+@media (prefers-reduced-motion: reduce) {
+  .gv-mode-btn { transition: none; }
+}
 
 /* ── field ─────────────────────────────────────────────────────────────── */
 /* 900px comfortably holds the 800px-diameter outer ring inside .projview's
@@ -129,9 +133,21 @@
   font: inherit;
   color: inherit;
   cursor: pointer;
+  transition: border-color var(--motion-fast), background-color var(--motion-fast), box-shadow var(--motion-fast);
 }
-.gv-card:hover { border-color: var(--ak-border-strong); }
+/* Same shared treatment as .mb-card (board.css) — border machine-tinted,
+   surface lightens ~2%, a lift shadow. The card's own resting shadow
+   (--ak-shadow-focus-card, set above) stays; the lift shadow layers on top
+   via a second box-shadow, not a replacement. */
+.gv-card:hover {
+  border-color: color-mix(in oklch, var(--ak-machine), transparent 55%);
+  background-color: color-mix(in oklch, white, transparent 98%);
+  box-shadow: var(--ak-shadow-focus-card), var(--ak-shadow-lift);
+}
 .gv-card:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+@media (prefers-reduced-motion: reduce) {
+  .gv-card { transition: none; }
+}
 .gv-card-title {
   font-size: 11.5px;
   font-weight: 500;
@@ -153,3 +169,7 @@
   box-shadow: var(--ak-shadow-orbit-ready);
 }
 .gv-card-merge-ready .gv-card-score { color: var(--ak-machine); font-weight: 600; }
+/* Same specificity as .gv-card:hover — without this, hovering a merge-ready
+   card would clobber its orbit-ready glow with the plain hover shadow
+   instead of layering the lift on top of it. */
+.gv-card-merge-ready:hover { box-shadow: var(--ak-shadow-orbit-ready), var(--ak-shadow-lift); }

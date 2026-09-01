@@ -2210,6 +2210,17 @@ export class Operations {
     return this.store.listPendingActionsForProject(projectId, opts);
   }
 
+  /** TASK 13 hardening — the Activity Feed's "retry" action on a
+   *  `status:"failed"` row. Scope-checks both the rule and task belong to
+   *  this workspace before delegating to the engine (getRule/getTask already
+   *  throw NotFoundError on a workspace mismatch — nothing extra needed here). */
+  async retryFailedAction(ws: string, ruleId: string, taskId: string): Promise<Task> {
+    if (!this.ruleEngine) throw new Error("The rule engine isn't enabled on this server.");
+    await this.getRule(ws, ruleId);
+    await this.getTask(ws, taskId);
+    return this.ruleEngine.retryFailedAction(ruleId, taskId);
+  }
+
   // ── rules (Momentum Rollout Phase 1c — CRUD) ─────────────────────────────
   /** Fetch one rule scoped to the workspace, or throw NotFoundError (404). */
   async getRule(ws: string, ruleId: string): Promise<Rule> {

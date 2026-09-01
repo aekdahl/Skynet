@@ -55,11 +55,18 @@ export function BoardHealth({
   // all reach back further than the live session has been connected), so a
   // generous limit, not board.tsx's 500.
   const [fetchedTransitions, setFetchedTransitions] = useState<Transition[]>([]);
+  // TASK 13 hardening — every stat below is computed over `transitions`;
+  // without this, "still loading" and "genuinely no history" both rendered
+  // identically (a confident-looking 0%/— set of stats), silently
+  // understating a project that just hasn't finished its initial fetch yet.
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
     let live = true;
-    api.fetchProjectTransitions(project.id, { limit: 5000 }).then((t) => {
-      if (live) setFetchedTransitions(t);
-    }).catch(() => undefined);
+    setLoading(true);
+    api.fetchProjectTransitions(project.id, { limit: 5000 })
+      .then((t) => { if (live) setFetchedTransitions(t); })
+      .catch(() => undefined)
+      .finally(() => { if (live) setLoading(false); });
     return () => {
       live = false;
     };
@@ -79,6 +86,20 @@ export function BoardHealth({
   const forecast = useMemo(() => forecastBacklogClear(projectTasks, transitions, now), [projectTasks, transitions, now]);
   const perBucket = useMemo(() => medianTimePerBucket(transitions), [transitions]);
   const rulesPerf = useMemo(() => rulePerformance(projectRules), [projectRules]);
+
+  if (loading) {
+    return (
+      <div className="hd-health" aria-busy="true">
+        <div className="hd-grid">
+          {Array.from({ length: 4 }, (_, i) => <HealthCardSkeleton key={i} />)}
+        </div>
+        <div className="hd-grid hd-second-row">
+          <HealthCardSkeleton wide />
+          <HealthCardSkeleton wide />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="hd-health">
@@ -103,6 +124,16 @@ export function BoardHealth({
         <BucketTimeChart perBucket={perBucket} />
         <RuleTable rulesPerf={rulesPerf} />
       </div>
+    </div>
+  );
+}
+
+function HealthCardSkeleton({ wide }: { wide?: boolean }) {
+  return (
+    <div className={"hd-card" + (wide ? " hd-span-2" : "")}>
+      <span className="ak-skel-row" style={{ width: "50%", height: 11 }} />
+      <span className="ak-skel-row" style={{ width: "35%", height: 28 }} />
+      <span className="ak-skel-row" style={{ width: "70%" }} />
     </div>
   );
 }

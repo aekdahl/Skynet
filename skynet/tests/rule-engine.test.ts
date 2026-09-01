@@ -506,3 +506,84 @@ describe("rule engine — watch-promotion sweep (TASK 10)", () => {
     expect((await store.getRule("rule-watch"))?.state).toBe("watch"); // left alone for the operator
   });
 });
+
+describe("rule engine — failed action visibility + retry (TASK 13 hardening)", () => {
+  const failRule = (over: Partial<Rule> = {}): Rule => ({
+    id: "rule-fail", workspaceId: DEFAULT_WORKSPACE, projectId: PROJECT_ID, name: "Failable",
+    when: "x", conditions: [{ field: "state", op: "state_equals", value: "ongoing" }],
+    actions: [{ type: "create_proposal", params: { kind: "stall_nudge", payload: {} } }],
+    safety: { announceBeforeActing: true, undoWindowMin: 0, pauseAfterUndos: 3, excludePriorities: [] },
+    stats: { moves: 0, undos: 0, watchMatches: 0 }, state: "live", pausedReason: null,
+    createdAt: Date.now(), watchStartedAt: null, updatedAt: Date.now(), archived: false, ...over,
+  });
+
+  /** Makes the NEXT `store.putProposal` call throw once — the real,
+   *  genuinely throw-capable persistence call inside applyAction's
+   *  create_proposal case (see engine.ts's own audit comment). */
+  function failNextPutProposal(store: MemoryStore): void {
+    const original = store.putProposal.bind(store);
+    store.putProposal = (async (p) => {
+      store.putProposal = original;
+      throw new Error("simulated store failure");
+    }) as typeof store.putProposal;
+  }
+
+  it("immediate path (announceBeforeActing:false): a failed action records a status:'failed' Transition, never throws out to the caller", async () => {
+    const { store, bus } = await setup();
+    await store.putTask(mkTask({ state: "ongoing" }));
+    await store.putRule(failRule({ safety: { announceBeforeActing: false, undoWindowMin: 0, pauseAfterUndos: 3, excludePriorities: [] } }));
+    failNextPutProposal(store);
+
+    bus.publish(DEFAULT_WORKSPACE, { type: "task.upserted", task: mkTask({ state: "ongoing" }) });
+    await waitFor(async () => (await store.listTransitionsForTask("t1")).length > 0);
+
+    const [transition] = await store.listTransitionsForTask("t1");
+    expect(transition?.status).toBe("failed");
+    expect(transition?.failureReason).toContain("simulated store failure");
+    expect(transition?.from).toBe(transition?.to); // no real move — nothing to move for create_proposal anyway
+    expect(transition?.ruleId).toBe("rule-fail");
+    expect((await store.getTask("t1"))?.state).toBe("ongoing"); // task itself untouched by the failure
+  });
+
+  it("announce path: a failure at finalize is recorded as status:'failed' and the pending action is finalized, not left dangling for silent infinite retry", async () => {
+    const { store, bus, engine } = await setup();
+    await store.putTask(mkTask({ state: "ongoing" }));
+    await store.putRule(failRule()); // announceBeforeActing:true, undoWindowMin:0 — ready immediately
+
+    bus.publish(DEFAULT_WORKSPACE, { type: "task.upserted", task: mkTask({ state: "ongoing" }) });
+    await waitFor(async () => (await store.listPendingActionsForProject(PROJECT_ID)).length > 0);
+    const pending = (await store.listPendingActionsForProject(PROJECT_ID))[0]!;
+    expect(pending.status).toBe("pending");
+
+    failNextPutProposal(store); // arm it right before the sweep actually calls applyAction
+    await engine.sweepPendingActions();
+
+    const finalized = await store.getPendingRuleAction(pending.id);
+    expect(finalized?.status).toBe("finalized"); // NOT stuck at "pending" — see the audit's own finding
+    expect(finalized?.transitionId).toBeTruthy();
+    const failedTransition = (await store.listTransitionsForTask("t1")).find((t) => t.id === finalized!.transitionId);
+    expect(failedTransition?.status).toBe("failed");
+    expect(failedTransition?.failureReason).toContain("simulated store failure");
+
+    // A second sweep does NOT retry it again — no silent infinite-retry, no
+    // duplicate proposal (the exact bug the audit flagged in the old design).
+    await engine.sweepPendingActions();
+    expect(await store.listTransitionsForTask("t1")).toHaveLength(1);
+
+    // Retry, this time letting it actually succeed — the operator-triggered
+    // path replacing the old accidental auto-retry.
+    await engine.retryFailedAction("rule-fail", "t1");
+    const afterRetry = await store.listPendingActionsForProject(PROJECT_ID);
+    expect(afterRetry).toHaveLength(2); // the original failed hold + a fresh one from the retry
+    const fresh = afterRetry.find((p) => p.id !== pending.id)!;
+    expect(fresh.status).toBe("pending");
+    await engine.sweepPendingActions();
+    const proposals = await store.listProposalsForProject(PROJECT_ID, { status: "pending" });
+    expect(proposals.some((p) => p.kind === "stall_nudge")).toBe(true); // the retry's action actually completed this time
+  });
+
+  it("retryFailedAction throws a clear error for a rule/task that no longer exists", async () => {
+    const { engine } = await setup();
+    await expect(engine.retryFailedAction("nope", "also-nope")).rejects.toThrow(/no longer exists/);
+  });
+});

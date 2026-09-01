@@ -41,6 +41,7 @@
 .mb-pill-stat { color: var(--ak-text-primary); }
 .mb-pill-sep { color: var(--ak-text-faint); }
 .mb-pill-hand { color: var(--ak-human); }
+.mb-pill-skel { width: 220px; }
 
 /* ── Board / columns ────────────────────────────────────────────────────── */
 .mb-board { display: flex; flex-direction: column; gap: var(--ak-sp-16); }
@@ -58,6 +59,23 @@
   border: 1px solid var(--ak-border-subtle);
   border-radius: var(--ak-radius-panel);
   overflow: hidden;
+}
+
+/* TASK 13 hardening — below ~1100px the 4-up grid has no room to breathe
+   (each column was squishing toward 0 width, per .mb-col's own min-width: 0).
+   Switch to a horizontally-scrolling row holding 3 columns' worth of width;
+   the 4th is one swipe/scroll away instead of illegibly squeezed in. */
+@media (max-width: 1100px) {
+  .mb-cols {
+    display: flex;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    padding-bottom: var(--ak-sp-6);
+  }
+  .mb-col {
+    flex: 0 0 calc((100% - 2 * var(--ak-gap-card)) / 3);
+    scroll-snap-align: start;
+  }
 }
 
 /* Column indicator bars — one visual language per bucket. */
@@ -132,8 +150,24 @@
   cursor: pointer;
 }
 button.mb-card { width: 100%; }
-.mb-card:hover { border-color: var(--ak-border-strong); }
+/* TASK 13 hardening — the shared card-hover treatment: border goes
+   machine-tinted, the surface lightens ~2%, a lift shadow, 120ms. Same
+   values as gv-card's (gravity.css) and mb-detail-subtask's
+   (task-detail.css) — one hard rule from the design handoff, not a reusable
+   class, so it stays inline per file the same way every other :hover/
+   :focus-visible override in this feature area already does. */
+.mb-card {
+  transition: border-color var(--motion-fast), background-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+.mb-card:hover {
+  border-color: color-mix(in oklch, var(--ak-machine), transparent 55%);
+  background-color: color-mix(in oklch, white, transparent 98%);
+  box-shadow: var(--ak-shadow-lift);
+}
 .mb-card:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+@media (prefers-reduced-motion: reduce) {
+  .mb-card { transition: none; }
+}
 .mb-card-title { font-size: 13px; font-weight: 500; color: var(--ak-text-primary); }
 .mb-card-desc {
   font-size: 12px;
@@ -162,8 +196,10 @@ button.mb-card { width: 100%; }
 /* In-flight focus: slightly raised, lime-tinted border. */
 .mb-card-inflight { border-color: color-mix(in oklch, var(--ak-machine), transparent 65%); }
 
-/* Stalled: amber inset panel below the card body. */
+/* Stalled: amber inset panel below the card body. The OUTER .mb-card isn't
+   itself clickable here (the clickzone below is) — no hover feedback on it. */
 .mb-card-stalled { cursor: default; padding: 0; overflow: hidden; }
+.mb-card-stalled:hover { border-color: var(--ak-border); background-color: transparent; box-shadow: none; }
 .mb-card-clickzone {
   display: flex;
   flex-direction: column;
@@ -176,8 +212,13 @@ button.mb-card { width: 100%; }
   font: inherit;
   color: inherit;
   cursor: pointer;
+  transition: background-color var(--motion-fast);
 }
+.mb-card-clickzone:hover { background-color: color-mix(in oklch, var(--ak-machine), transparent 96%); }
 .mb-card-clickzone:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+@media (prefers-reduced-motion: reduce) {
+  .mb-card-clickzone { transition: none; }
+}
 .mb-stall-panel {
   display: flex;
   align-items: center;
