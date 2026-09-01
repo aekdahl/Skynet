@@ -364,7 +364,7 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
         ...state,
         runs: state.runs.map((a) =>
           a.id === ev.runId
-            ? { ...a, log: [...a.log, { at: ev.at, line: ev.line, detail: ev.detail }] }
+            ? { ...a, log: [...a.log, { at: ev.at, line: ev.line, detail: ev.detail, verb: ev.verb, resultKind: ev.resultKind }] }
             : a,
         ),
         // The finalized line just landed — whatever was typing for it is now
@@ -438,6 +438,8 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
       };
     case "conflict.detected":
       return state; // conflicts are derived from agent.modules on the client
+    case "file-collision.detected":
+      return state; // ditto, from agent.modifiedFiles — see fileCollisionsForAgent
     case "project.upserted":
       return { ...state, projects: upsert(state.projects, ev.project) };
     case "project.deleted":

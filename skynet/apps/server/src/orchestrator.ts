@@ -888,7 +888,7 @@ export class Orchestrator {
 
   private events(): RunnerEvents {
     return {
-      onLog: (runId, line, detail) => void this.hub.runLog(runId, line, detail),
+      onLog: (runId, line, detail, meta) => void this.hub.runLog(runId, line, detail, meta),
       onLogDelta: (runId, delta) => void this.hub.runLogDelta(runId, delta),
       onProgress: (runId, progress, plan) => void this.hub.runProgress(runId, progress, plan),
       onUsage: (runId, usage) => void this.hub.runUsage(runId, usage),
@@ -1055,6 +1055,11 @@ export class Orchestrator {
       await this.hub.runStatus(runId, "waiting"); // an escalation gate always blocks the run
       await this.hub.runLog(runId, `escalated by the agent${live?.git ? " — freed its runner" : ""} — ${raise.title}`);
     }
+    // A real, structured "gate" row for the Run Detail live log — distinct
+    // from the escalation-kind free-text line above (still logged when that
+    // branch also ran), so the log always carries one unambiguous marker of
+    // the exact moment this run actually stalled waiting on a human.
+    await this.hub.runLog(runId, `⛔ awaiting approval: ${item.title}`, undefined, { verb: "gate" });
     await this.hub.raiseHitl(item);
     if (expiresAt != null) {
       this.questionTimers.set(item.id, setTimeout(() => void this.expireQuestion(item), timeout));

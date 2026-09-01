@@ -61,6 +61,43 @@ export function computeConflicts(runs: TaskRun[]): Conflict[] {
   return out;
 }
 
+export interface FileCollision {
+  file: string;
+  runIds: string[];
+}
+
+/**
+ * File-level companion to computeConflicts: two ACTIVE, unrelated runs (not
+ * fork-family — see familyOf) on the SAME PROJECT that have both actually
+ * touched the identical file path (TaskRun.modifiedFiles), not just the same
+ * architectural module. Grouped by projectId first (via a nested Map, not a
+ * joined string key) — a bare file path is only comparable within the same
+ * repo, so two different projects that happen to share a path (e.g.
+ * "src/index.ts") must never read as a collision.
+ */
+export function computeFileCollisions(runs: TaskRun[]): FileCollision[] {
+  const byId = new Map(runs.map((r) => [r.id, r]));
+  const active = runs.filter((a) => a.status !== "done");
+  const byProject = new Map<string, Map<string, TaskRun[]>>();
+  for (const a of active) {
+    const byFile = byProject.get(a.projectId) ?? new Map<string, TaskRun[]>();
+    for (const f of a.modifiedFiles) {
+      const list = byFile.get(f) ?? [];
+      list.push(a);
+      byFile.set(f, list);
+    }
+    byProject.set(a.projectId, byFile);
+  }
+  const out: FileCollision[] = [];
+  for (const byFile of byProject.values()) {
+    for (const [file, list] of byFile) {
+      const families = new Set(list.map((a) => familyOf(a, byId)));
+      if (families.size > 1) out.push({ file, runIds: list.map((a) => a.id) });
+    }
+  }
+  return out;
+}
+
 /**
  * Dependency edges derived from explicit `dependsOn` (upstream → downstream).
  * Only edges to known active runs are kept.

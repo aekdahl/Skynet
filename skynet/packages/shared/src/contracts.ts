@@ -133,8 +133,20 @@ export type FlyDeployment = z.infer<typeof FlyDeployment>;
 export const PlanStep = z.object({
   text: z.string(),
   state: PlanStepState,
+  // Best-effort UI hint: this step's text looks like it will hit an existing
+  // gate (off-allowlist command / merge / data-infra) — see Hub.annotateApproval
+  // in apps/server. Never itself gates, blocks, or auto-approves anything; the
+  // real gate is classifyCommand at Orchestrator.raise() time against the
+  // actual tool call. Omitted (not false) when not yet derived.
+  requiresApproval: z.boolean().optional(),
 });
 export type PlanStep = z.infer<typeof PlanStep>;
+
+// A tool call's coarse shape, for the Run Detail live log's fixed verb column.
+// "gate" = the call itself raised a HITL approval; "idle" = a synthetic
+// trailing row, not a real tool call.
+export const LogVerb = z.enum(["read", "grep", "edit", "shell", "think", "gate", "idle"]);
+export type LogVerb = z.infer<typeof LogVerb>;
 
 // ─── Token usage & cost ─────────────────────────────────────────────────────
 // What a runner has spent so far, reported by the vendor (Claude's result
@@ -189,6 +201,11 @@ export const LogLine = z.object({
   // Optional expandable detail (e.g. a tool call's full input or output). When
   // present, the UI renders the line as a fold/unfold entry.
   detail: z.string().optional(),
+  // Additive structured fields alongside `line` (kept intact as the fallback
+  // rendering for any line these aren't derived for). See LogVerb above.
+  verb: LogVerb.optional(),
+  // Set only on a tool-result ("↳") line, once the call has actually finished.
+  resultKind: z.enum(["ok", "error"]).optional(),
 });
 export type LogLine = z.infer<typeof LogLine>;
 

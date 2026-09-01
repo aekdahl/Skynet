@@ -11,6 +11,7 @@ import type {
   Feature,
   GithubConnection,
   HitlItem,
+  LogVerb,
   Milestone,
   Module,
   PendingRuleAction,
@@ -43,7 +44,7 @@ export interface Store {
   listAllRuns(): Promise<TaskRun[]>;
   getRun(id: string): Promise<TaskRun | undefined>;
   putRun(agent: TaskRun): Promise<TaskRun>;
-  appendLog(runId: string, at: number, line: string, detail?: string): Promise<void>;
+  appendLog(runId: string, at: number, line: string, detail?: string, meta?: { verb?: LogVerb; resultKind?: "ok" | "error" }): Promise<void>;
 
   // checkpoints — snapshot/restore for a run (extends fork/resume). Scoped by
   // runId rather than workspaceId: always fetched through a run whose

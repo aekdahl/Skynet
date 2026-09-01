@@ -5,11 +5,15 @@
 // real-agent simulation journey (agent modules come from real edits).
 import { describe, it, expect } from "vitest";
 import type { TaskRun } from "@skynet/shared";
-import { computeConflicts, familyOf } from "../apps/server/src/derive/conflicts.js";
+import { computeConflicts, computeFileCollisions, familyOf } from "../apps/server/src/derive/conflicts.js";
 
 // computeConflicts only reads id/status/modules/parentId — a partial run is enough.
 const run = (id: string, modules: string[], extra: Partial<TaskRun> = {}): TaskRun =>
-  ({ id, status: "running", modules, parentId: null, ...extra }) as unknown as TaskRun;
+  ({ id, status: "running", modules, parentId: null, projectId: "p1", modifiedFiles: [], ...extra }) as unknown as TaskRun;
+
+// computeFileCollisions additionally reads projectId/modifiedFiles.
+const runF = (id: string, files: string[], extra: Partial<TaskRun> = {}): TaskRun =>
+  run(id, [], { modifiedFiles: files, ...extra });
 
 describe("computeConflicts", () => {
   it("flags a module two different families both touch", () => {
@@ -114,5 +118,36 @@ describe("computeConflicts", () => {
         run("other", ["billing"]),
       ]),
     ).toHaveLength(1); // child vs other — parent is done, doesn't contend itself
+  });
+});
+
+describe("computeFileCollisions", () => {
+  it("flags a file two different families on the SAME project both touched", () => {
+    const c = computeFileCollisions([runF("a", ["src/x.ts"]), runF("b", ["src/x.ts"])]);
+    expect(c).toHaveLength(1);
+    expect(c[0]).toMatchObject({ file: "src/x.ts" });
+    expect(c[0]!.runIds.slice().sort()).toEqual(["a", "b"]);
+  });
+
+  it("does not flag non-overlapping files", () => {
+    expect(computeFileCollisions([runF("a", ["src/x.ts"]), runF("b", ["src/y.ts"])])).toHaveLength(0);
+  });
+
+  it("excludes done runs", () => {
+    expect(
+      computeFileCollisions([runF("a", ["src/x.ts"]), runF("b", ["src/x.ts"], { status: "done" })]),
+    ).toHaveLength(0);
+  });
+
+  it("a fork and its parent are one family — never flag each other", () => {
+    expect(
+      computeFileCollisions([runF("parent", ["src/x.ts"]), runF("fork", ["src/x.ts"], { parentId: "parent" })]),
+    ).toHaveLength(0);
+  });
+
+  it("never flags the same path across two DIFFERENT projects", () => {
+    expect(
+      computeFileCollisions([runF("a", ["src/x.ts"], { projectId: "p1" }), runF("b", ["src/x.ts"], { projectId: "p2" })]),
+    ).toHaveLength(0);
   });
 });
