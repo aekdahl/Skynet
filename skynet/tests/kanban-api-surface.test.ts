@@ -126,6 +126,43 @@ describe("HTTP: rules / transitions / proposals / subtasks", () => {
       });
       expect(res.statusCode).toBe(404);
     });
+
+    // TASK 12 — Rail Graph's "pause rules" bulk action.
+    it("pause-all pauses only live rules, publishes rule.upserted for each, and a repeat call is a no-op", async () => {
+      const mk = (name: string, state?: "live" | "watch" | "paused") =>
+        app.inject({
+          method: "POST",
+          url: `/api/projects/${project.id}/rules`,
+          headers: AUTH,
+          payload: { name, when: "x", conditions: [], actions: [], ...(state ? { state } : {}) },
+        }).then((r) => r.json());
+      const live1 = await mk("live 1");
+      const live2 = await mk("live 2");
+      const watching = await mk("watching", "watch");
+      const alreadyPaused = await mk("already paused", "paused");
+
+      const res = await app.inject({ method: "POST", url: `/api/projects/${project.id}/rules/pause-all`, headers: AUTH });
+      expect(res.statusCode).toBe(200);
+      const paused = res.json();
+      expect(paused).toHaveLength(2);
+      expect(new Set(paused.map((r: { id: string }) => r.id))).toEqual(new Set([live1.id, live2.id]));
+      expect(paused.every((r: { state: string; pausedReason: string | null }) => r.state === "paused" && r.pausedReason === null)).toBe(true);
+      expect(events.filter((e) => e.type === "rule.upserted" && [live1.id, live2.id].includes((e as { rule: { id: string } }).rule.id)).length).toBeGreaterThanOrEqual(2);
+
+      // The watch and already-paused rules were never touched.
+      const listed = await app.inject({ method: "GET", url: `/api/projects/${project.id}/rules`, headers: AUTH });
+      const byId = new Map(listed.json().map((r: { id: string; state: string }) => [r.id, r.state]));
+      expect(byId.get(watching.id)).toBe("watch");
+      expect(byId.get(alreadyPaused.id)).toBe("paused");
+
+      const again = await app.inject({ method: "POST", url: `/api/projects/${project.id}/rules/pause-all`, headers: AUTH });
+      expect(again.json()).toEqual([]);
+    });
+
+    it("404s pause-all for an unknown project", async () => {
+      const res = await app.inject({ method: "POST", url: `/api/projects/nonexistent-project-id/rules/pause-all`, headers: AUTH });
+      expect(res.statusCode).toBe(404);
+    });
   });
 
   // ── backtest ──────────────────────────────────────────────────────────

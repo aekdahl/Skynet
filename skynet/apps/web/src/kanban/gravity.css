@@ -32,6 +32,11 @@
 .gv-mode-btn:hover { color: var(--ak-text-primary); text-decoration: underline; }
 .gv-mode-btn.on { background: var(--ak-surface-3); color: var(--ak-machine); }
 .gv-mode-btn:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+/* TASK 12 — Gravity keeps the >=1100px requirement the other two tabs don't;
+   below that width the tab itself reads as clearly non-interactive rather
+   than just silently doing nothing on click. */
+.gv-mode-btn:disabled { color: var(--ak-text-faint); cursor: default; }
+.gv-mode-btn:disabled:hover { text-decoration: none; }
 @media (prefers-reduced-motion: reduce) {
   .gv-mode-btn { transition: none; }
 }

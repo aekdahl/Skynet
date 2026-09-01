@@ -491,4 +491,39 @@ export const SCENARIOS: Scenario[] = [
       return steps;
     },
   },
+  {
+    id: "rail-graph-pause-all-rules",
+    name: "Rail Graph's 'pause rules' bulk endpoint",
+    desc: "Creates two live rules and one already-watch rule, confirms pauseAllRules pauses only the two live ones in a single call, and leaves the watch rule untouched.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: pause all rules ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      const s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+
+      const ruleBody = (n: number) => ({
+        name: `Acceptance rule ${n}`,
+        when: "x",
+        conditions: [{ field: "state" as const, op: "state_equals", value: "backlog" }],
+        actions: [{ type: "move_task", params: { toState: "triage" } }],
+      });
+      const live1 = await api.createRule(p.id, ruleBody(1));
+      const live2 = await api.createRule(p.id, ruleBody(2));
+      const watch = await api.createRule(p.id, { ...ruleBody(3), state: "watch" });
+
+      const paused = await api.pauseAllRules(p.id);
+      steps.push(step("pauses exactly the 2 live rules, not the watch one", paused.length === 2 && paused.every((r) => r.state === "paused")));
+      steps.push(step("the correct rule ids were paused", new Set(paused.map((r) => r.id)).size === 2 && [live1.id, live2.id].every((id) => paused.some((r) => r.id === id))));
+
+      // A second call is a genuine no-op (nothing left in "live" to pause) —
+      // confirms this isn't accidentally re-pausing/duplicating on repeat.
+      const secondCall = await api.pauseAllRules(p.id);
+      steps.push(step("a second call pauses nothing further — no live rules left", secondCall.length === 0));
+      void watch; // its id is never in `paused` above — that IS the "left alone" evidence
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
 ];

@@ -538,6 +538,12 @@ export interface BacktestResult {
 export function backtestRule(projectId: string, body: { conditions: RuleCondition[]; actions?: RuleAction[]; safety?: RuleSafety }) {
   return req<BacktestResult>("POST", `/api/projects/${projectId}/rules/backtest`, body);
 }
+/** Rail Graph's "pause rules" action (Phase 11, TASK 12) — bulk-pauses every
+ *  live rule for this project in one call. Returns exactly the rules that
+ *  were actually paused (watch/already-paused rules are left untouched). */
+export function pauseAllRules(projectId: string) {
+  return req<Rule[]>("POST", `/api/projects/${projectId}/rules/pause-all`);
+}
 
 // ─── Activity Feed (Phase 6b) — undo window ─────────────────────────────────
 // Which rule-engine actions are still cancellable, and the undo call itself.
