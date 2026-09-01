@@ -151,6 +151,9 @@
   --ak-focus-ring: 0 0 0 2px rgba(211, 242, 106, .5);
   --ak-halo-lime: 0 0 0 4px rgba(211, 242, 106, .15);
   --ak-halo-amber: 0 0 0 4px rgba(211, 242, 106, .14);
+  /* TASK 19 — blue variant (--ak-human's rgb) for the autonomy dial's current-
+     notch card glow; no existing halo used the human/blue token yet. */
+  --ak-halo-blue: 0 0 0 4px rgba(106, 168, 255, .16);
 
   /* Gravity view (TASK 11) — a physical, overshooting spring curve for
      readiness-driven position changes. Deliberately NOT the 200-260ms linear

@@ -5,6 +5,8 @@
 
 import type {
   TaskRun,
+  AutonomyBreaker,
+  AutonomyOverride,
   Checkpoint,
   Dependency,
   Feature,
@@ -60,6 +62,8 @@ export class MemoryStore implements Store {
   protected policyVersions = new Map<string, PolicyVersion>(); // keyed by id
   protected githubTokens = new Map<string, string>(); // workspaceId → sealed PAT ciphertext
   protected serviceTokens = new Map<string, StoredServiceToken>(); // keyed by id (holds a hash, never the raw token)
+  protected autonomyBreakers = new Map<string, AutonomyBreaker>(); // keyed by projectId
+  protected autonomyOverrides = new Map<string, AutonomyOverride>(); // keyed by projectId
   private providers: ProviderInfo[] = PROVIDERS;
 
   /** Hook called after every mutation. No-op in memory; FileStore overrides it
@@ -253,4 +257,12 @@ export class MemoryStore implements Store {
     return [...this.serviceTokens.values()].filter((t) => t.principal.workspaceId === ws);
   }
   async deleteServiceToken(id: string) { const had = this.serviceTokens.delete(id); if (had) this.persist(); return had; }
+
+  async getAutonomyBreaker(projectId: string) { return this.autonomyBreakers.get(projectId); }
+  async putAutonomyBreaker(breaker: AutonomyBreaker) { this.autonomyBreakers.set(breaker.projectId, breaker); this.persist(); }
+  async deleteAutonomyBreaker(projectId: string) { this.autonomyBreakers.delete(projectId); this.persist(); }
+
+  async getAutonomyOverride(projectId: string) { return this.autonomyOverrides.get(projectId); }
+  async putAutonomyOverride(override: AutonomyOverride) { this.autonomyOverrides.set(override.projectId, override); this.persist(); }
+  async deleteAutonomyOverride(projectId: string) { this.autonomyOverrides.delete(projectId); this.persist(); }
 }

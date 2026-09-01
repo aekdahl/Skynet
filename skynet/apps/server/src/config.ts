@@ -259,6 +259,12 @@ export const config = {
   // streak. >0 enables (default 3); 0 disables. See orchestrator.ts
   // noteAutonomyOutcome / noteAutonomyBadOutcome.
   autonomyMaxConsecutiveFailures: Number(process.env.SKYNET_AUTONOMY_MAX_CONSECUTIVE_FAILURES ?? 3),
+  // TASK 19 — "OVERRIDE — I'LL WATCH IT": how long a manual bypass of a
+  // tripped breaker lasts before automatically reverting to whatever the
+  // breaker's CURRENT trip state says (see orchestrator.ts's
+  // sweepAutonomyOverrides). Deliberately short — this is a supervised
+  // window, not a way to permanently silence the breaker. Default 2h.
+  autonomyOverrideDurationMs: Number(process.env.SKYNET_AUTONOMY_OVERRIDE_DURATION_MS ?? 2 * 60 * 60_000),
   // Self-replenishing backlog: hard backstop on the fastest possible growth
   // rate of a project's backlog from fleet-authored proposals (see
   // review-verdict.ts's ProposedTask / orchestrator.ts's

@@ -6,6 +6,8 @@
 import type {
   TaskRun,
   AuditRecord,
+  AutonomyBreaker,
+  AutonomyOverride,
   Checkpoint,
   Dependency,
   Feature,
@@ -198,4 +200,17 @@ export interface Store {
   getServiceTokenByHash(tokenHash: string): Promise<StoredServiceToken | undefined>;
   listServiceTokens(workspaceId: string): Promise<StoredServiceToken[]>;
   deleteServiceToken(id: string): Promise<boolean>;
+
+  // Autonomy breaker (TASK 19) — one persisted record per project, replacing
+  // the old in-memory autonomyStreaks Map (orchestrator.ts) so a restart
+  // mid-streak doesn't reset progress. Undefined = no accumulated streak.
+  getAutonomyBreaker(projectId: string): Promise<AutonomyBreaker | undefined>;
+  putAutonomyBreaker(breaker: AutonomyBreaker): Promise<void>;
+  deleteAutonomyBreaker(projectId: string): Promise<void>;
+
+  // Autonomy override (TASK 19) — a temporary manual bypass of a tripped
+  // breaker, one per project. Undefined = no active override.
+  getAutonomyOverride(projectId: string): Promise<AutonomyOverride | undefined>;
+  putAutonomyOverride(override: AutonomyOverride): Promise<void>;
+  deleteAutonomyOverride(projectId: string): Promise<void>;
 }

@@ -13,6 +13,7 @@ import "./kanban/rules.css";
 import "./kanban/feed.css";
 import "./kanban/pattern-onboarding.css";
 import "./kanban/health.css";
+import "./kanban/autonomy-dial.css";
 import "./kanban/keys-budget.css";
 import { App } from "./App";
 import { StoreProvider } from "./lib/store";

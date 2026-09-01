@@ -155,6 +155,11 @@ export const ServerEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("audit.deleted"), hitlId: z.string() }),
   z.object({ type: z.literal("audit.archived-all") }),
   z.object({ type: z.literal("audit.cleared") }),
+
+  // Autonomy breaker/override (TASK 19) — like the audit deltas above, neither
+  // is part of the snapshot; carries only identity, clients re-fetch
+  // GET /api/projects/:id/autonomy-detent on it.
+  z.object({ type: z.literal("autonomyBreaker.updated"), projectId: z.string() }),
 ]);
 export type ServerEvent = z.infer<typeof ServerEvent>;
 

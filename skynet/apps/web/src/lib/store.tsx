@@ -10,6 +10,8 @@ import {
 import type {
   TaskRun,
   ApprovalLevel,
+  AutonomyDetent,
+  AutonomyOverride,
   Checkpoint,
   Dependency,
   Feature,
@@ -88,6 +90,11 @@ export interface StoreState {
   // over HTTP by the Audit view), so this is the signal the view watches to
   // re-pull after an archive/delete/clear lands — from any operator or tab.
   auditRev: number;
+  // Bumps on any autonomyBreaker.updated delta (TASK 19) — same reasoning as
+  // auditRev: the breaker/override records aren't held in the store, so this
+  // is what an open autonomy dial watches to re-pull after a trip/lift/
+  // override lands, from any operator or tab.
+  autonomyRev: number;
   // The server's default approval level, so the create-project form can
   // pre-select what a new project would otherwise get. Undefined until the first
   // snapshot lands (or an older server that doesn't send it).
@@ -324,6 +331,11 @@ export interface Store extends StoreState {
   deleteAudit: (hitlId: string) => Promise<void>;
   archiveAllAudit: () => Promise<void>;
   clearAudit: () => Promise<void>;
+  // TASK 19 — autonomy dial mutations. GET (getAutonomyDetent) is called
+  // directly from the dial component (same convention as the Audit view's
+  // own api.fetchAudit) — only mutations get a store wrapper.
+  setAutonomyDetent: (projectId: string, detent: AutonomyDetent) => Promise<Project>;
+  createAutonomyOverride: (projectId: string) => Promise<AutonomyOverride>;
   // Persist the workspace display name. No WS delta announces this (settings
   // aren't part of the live event stream), so echo the response into local
   // state directly rather than waiting on the next snapshot.
@@ -481,6 +493,10 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
     case "audit.cleared":
       // The trail lives outside the store — nudge the Audit view to re-fetch.
       return { ...state, auditRev: state.auditRev + 1 };
+    case "autonomyBreaker.updated":
+      // The breaker/override records live outside the store too — nudge an
+      // open autonomy dial to re-fetch (see client.ts's getAutonomyDetent).
+      return { ...state, autonomyRev: state.autonomyRev + 1 };
     default:
       return state;
   }
@@ -505,6 +521,7 @@ const EMPTY: StoreState = {
   loaded: false,
   wsPhase: "connecting",
   auditRev: 0,
+  autonomyRev: 0,
   logDeltas: {},
 };
 
@@ -537,6 +554,7 @@ function fromSnapshot(snap: Snapshot): StoreState {
     // A fresh snapshot supersedes any prior trail state; the Audit view re-pulls
     // on mount anyway, so reset the revision rather than carrying it across.
     auditRev: 0,
+    autonomyRev: 0,
     // Any in-flight typing preview predates this snapshot — drop it rather than
     // carry stale partial text across a reconnect.
     logDeltas: {},
@@ -1002,6 +1020,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       clearAudit: async () => {
         await api.clearAudit();
+      },
+      setAutonomyDetent: async (projectId, detent) => {
+        return api.setAutonomyDetent(projectId, detent);
+      },
+      createAutonomyOverride: async (projectId) => {
+        return api.createAutonomyOverride(projectId);
       },
       updateWorkspaceName: async (name) => {
         const settings = await api.updateWorkspaceSettings({ name });

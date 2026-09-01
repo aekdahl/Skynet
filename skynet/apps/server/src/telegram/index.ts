@@ -157,7 +157,7 @@ export interface ControlOps {
   // confirmed before they run). Optional so minimal test fakes needn't stub them.
   transitionTask?(ws: string, taskId: string, to: Task["state"], operatorId: string): Promise<Task>;
   updateTask?(ws: string, taskId: string, patch: UpdateTaskRequest): Promise<Task>;
-  updateProject?(ws: string, id: string, patch: UpdateProjectRequest): Promise<Project>;
+  updateProject?(ws: string, id: string, patch: UpdateProjectRequest, operatorId: string): Promise<Project>;
   // Grouping / roadmap ops — mirror the shape Steward uses.
   createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature>;
   updateFeature(ws: string, featureId: string, patch: UpdateFeatureRequest): Promise<Feature>;
@@ -474,7 +474,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           summary,
           run: async () => {
             if (!operations.updateProject) throw new Error("editing projects isn't available here");
-            await operations.updateProject(ws, action.projectId!, { name: action.projectName! });
+            await operations.updateProject(ws, action.projectId!, { name: action.projectName! }, operatorId);
             return `✏️ Renamed project to "${action.projectName}".`;
           },
         };
@@ -487,7 +487,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           summary,
           run: async () => {
             if (!operations.updateProject) throw new Error("editing projects isn't available here");
-            await operations.updateProject(ws, action.projectId!, { goal: action.projectGoal ?? "" });
+            await operations.updateProject(ws, action.projectId!, { goal: action.projectGoal ?? "" }, operatorId);
             return `🎯 Updated ${project?.name ?? action.projectId}'s goal.`;
           },
         };
@@ -500,7 +500,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           summary,
           run: async () => {
             if (!operations.updateProject) throw new Error("editing projects isn't available here");
-            await operations.updateProject(ws, action.projectId!, { autonomy: action.autonomy! });
+            await operations.updateProject(ws, action.projectId!, { autonomy: action.autonomy! }, operatorId);
             return `⚙️ Autonomy ${action.autonomy ? "on" : "off"} for ${project?.name ?? action.projectId}.`;
           },
         };
@@ -513,7 +513,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           summary,
           run: async () => {
             if (!operations.updateProject) throw new Error("editing projects isn't available here");
-            await operations.updateProject(ws, action.projectId!, { status: action.projectStatus as UpdateProjectRequest["status"] });
+            await operations.updateProject(ws, action.projectId!, { status: action.projectStatus as UpdateProjectRequest["status"] }, operatorId);
             return `🏷 ${project?.name ?? action.projectId} is now ${action.projectStatus}.`;
           },
         };

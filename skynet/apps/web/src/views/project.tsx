@@ -36,6 +36,7 @@ import { RulesTab } from "../kanban/rules";
 import { KeysBudgetPanel } from "../kanban/keys-budget";
 import { ActivityFeed } from "../kanban/feed";
 import { BoardHealth } from "../kanban/health";
+import { AutonomyDialButton } from "../kanban/autonomy-dial";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -1338,6 +1339,7 @@ function ProjectGovernance({
         <span className="proj-keys-value">{summary}</span>
       </summary>
       <div className="proj-keys-menu proj-governance-menu">
+        <AutonomyDialButton project={project} />
         <label
           className={"proj-approval" + (danger ? " proj-approval-danger" : "")}
           title="How much an agent may run commands without asking. Diff review needs a human unless Autonomy lets another fleet agent LLM-review and merge it — Full autonomy skips even that: every run's own diff merges immediately, no second opinion."
