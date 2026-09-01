@@ -12,6 +12,7 @@ import type {
   Feature,
   GithubConnection,
   HitlItem,
+  LogVerb,
   Milestone,
   Module,
   PendingRuleAction,
@@ -96,9 +97,12 @@ export class MemoryStore implements Store {
   async listAllRuns() { return [...this.runs.values()]; }
   async getRun(id: string) { return this.runs.get(id); }
   async putRun(agent: TaskRun) { this.runs.set(agent.id, agent); this.persist(); return agent; }
-  async appendLog(runId: string, at: number, line: string, detail?: string) {
+  async appendLog(runId: string, at: number, line: string, detail?: string, meta?: { verb?: LogVerb; resultKind?: "ok" | "error" }) {
     const a = this.runs.get(runId);
-    if (a) { a.log.push(detail ? { at, line, detail } : { at, line }); this.persist(); }
+    if (a) {
+      a.log.push({ at, line, ...(detail ? { detail } : {}), ...(meta?.verb ? { verb: meta.verb } : {}), ...(meta?.resultKind ? { resultKind: meta.resultKind } : {}) });
+      this.persist();
+    }
   }
 
   async listCheckpoints(runId: string) {

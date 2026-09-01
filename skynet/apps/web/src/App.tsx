@@ -17,6 +17,7 @@ import { ProjectView } from "./views/project";
 import { QueueView } from "./views/queue";
 import { AuditView } from "./views/audit";
 import { TaskDetail } from "./views/task";
+import { RunDetailView } from "./kanban/run-detail";
 import { IntegrationsView } from "./views/integrations";
 import { MergesView } from "./views/merges";
 import { Onboarding } from "./views/onboarding";
@@ -362,12 +363,21 @@ export function App() {
             {store.loaded && view === "roadmap" && <RoadmapView />}
             {store.loaded && view === "designTokens" && <DesignTokensPreview />}
             {store.loaded && view === "task" && agent && (
-              <TaskDetail
-                agent={agent}
-                now={now}
-                onBack={() => setView(from === "task" ? "home" : from)}
-                backLabel={VIEW_LABEL[from] || "Back"}
-              />
+              store.projects.find((p) => p.id === agent.projectId)?.newBoardEnabled ? (
+                <RunDetailView
+                  agent={agent}
+                  now={now}
+                  onBack={() => setView(from === "task" ? "home" : from)}
+                  backLabel={VIEW_LABEL[from] || "Back"}
+                />
+              ) : (
+                <TaskDetail
+                  agent={agent}
+                  now={now}
+                  onBack={() => setView(from === "task" ? "home" : from)}
+                  backLabel={VIEW_LABEL[from] || "Back"}
+                />
+              )
             )}
             {store.loaded && view === "task" && !agent && (
               <div className="vw">

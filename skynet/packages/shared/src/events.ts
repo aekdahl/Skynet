@@ -14,6 +14,7 @@ import {
   GithubSignalPayload,
   HitlItem,
   Milestone,
+  LogVerb,
   Module,
   PlanStep,
   Project,
@@ -76,7 +77,15 @@ export type Snapshot = z.infer<typeof Snapshot>;
 export const ServerEvent = z.discriminatedUnion("type", [
   // task-run lifecycle
   z.object({ type: z.literal("run.started"), run: TaskRun }),
-  z.object({ type: z.literal("run.log"), runId: z.string(), at: Timestamp, line: z.string(), detail: z.string().optional() }),
+  z.object({
+    type: z.literal("run.log"),
+    runId: z.string(),
+    at: Timestamp,
+    line: z.string(),
+    detail: z.string().optional(),
+    verb: LogVerb.optional(),
+    resultKind: z.enum(["ok", "error"]).optional(),
+  }),
   // Token-level "typing" preview of the line currently being generated — NOT
   // persisted (no store write, see Hub.runLogDelta): a real `run.log` still
   // lands once the message is complete. Clients hold this in a transient
@@ -109,6 +118,11 @@ export const ServerEvent = z.discriminatedUnion("type", [
 
   // derived intelligence
   z.object({ type: z.literal("conflict.detected"), moduleId: z.string(), runIds: z.array(z.string()) }),
+  // File-level companion to conflict.detected (module-level): two concurrent,
+  // unrelated runs on the same project that have both actually touched the
+  // identical path (TaskRun.modifiedFiles), not just the same architectural
+  // module. See derive/conflicts.ts's computeFileCollisions.
+  z.object({ type: z.literal("file-collision.detected"), file: z.string(), runIds: z.array(z.string()) }),
 
   // Momentum Rollout kanban rebuild, Phase 1c — rule engine + API-surface
   // mutations. Rule/Proposal follow the same upsert-only shape as every other

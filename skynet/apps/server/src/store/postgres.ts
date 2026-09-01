@@ -15,6 +15,8 @@ import type {
   Feature,
   GithubConnection,
   HitlItem,
+  LogLine,
+  LogVerb,
   Milestone,
   Module,
   PendingRuleAction,
@@ -59,6 +61,8 @@ CREATE TABLE IF NOT EXISTS modules    (id text PRIMARY KEY, workspace_id text NO
 CREATE TABLE IF NOT EXISTS deps       (id bigserial PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS run_log  (id bigserial PRIMARY KEY, run_id text NOT NULL, at bigint NOT NULL, line text NOT NULL, detail text);
 ALTER TABLE run_log ADD COLUMN IF NOT EXISTS detail text;
+ALTER TABLE run_log ADD COLUMN IF NOT EXISTS verb text;
+ALTER TABLE run_log ADD COLUMN IF NOT EXISTS result_kind text;
 CREATE TABLE IF NOT EXISTS hitl_audit (id bigserial PRIMARY KEY, workspace_id text NOT NULL, hitl_id text NOT NULL,
                                        run_id text NOT NULL, action text NOT NULL, operator_id text NOT NULL,
                                        at bigint NOT NULL, payload jsonb);
@@ -111,16 +115,29 @@ export class PostgresStore implements Store {
   }
 
   // ── runs (log lives in the append-only run_log table) ─────────────────
-  private async logsFor(runIds: string[]): Promise<Map<string, { at: number; line: string; detail?: string }[]>> {
-    const map = new Map<string, { at: number; line: string; detail?: string }[]>();
+  private async logsFor(runIds: string[]): Promise<Map<string, LogLine[]>> {
+    const map = new Map<string, LogLine[]>();
     if (!runIds.length) return map;
-    const { rows } = await this.pool.query<{ run_id: string; at: string; line: string; detail: string | null }>(
-      "SELECT run_id, at, line, detail FROM run_log WHERE run_id = ANY($1) ORDER BY at ASC, id ASC",
+    const { rows } = await this.pool.query<{
+      run_id: string;
+      at: string;
+      line: string;
+      detail: string | null;
+      verb: string | null;
+      result_kind: string | null;
+    }>(
+      "SELECT run_id, at, line, detail, verb, result_kind FROM run_log WHERE run_id = ANY($1) ORDER BY at ASC, id ASC",
       [runIds],
     );
     for (const r of rows) {
       const list = map.get(r.run_id) ?? [];
-      list.push(r.detail != null ? { at: Number(r.at), line: r.line, detail: r.detail } : { at: Number(r.at), line: r.line });
+      list.push({
+        at: Number(r.at),
+        line: r.line,
+        ...(r.detail != null ? { detail: r.detail } : {}),
+        ...(r.verb != null ? { verb: r.verb as LogVerb } : {}),
+        ...(r.result_kind != null ? { resultKind: r.result_kind as "ok" | "error" } : {}),
+      });
       map.set(r.run_id, list);
     }
     return map;
@@ -157,8 +174,15 @@ export class PostgresStore implements Store {
     for (const l of log) await this.appendLog(agent.id, l.at, l.line);
     return agent;
   }
-  async appendLog(runId: string, at: number, line: string, detail?: string): Promise<void> {
-    await this.pool.query("INSERT INTO run_log(run_id,at,line,detail) VALUES($1,$2,$3,$4)", [runId, at, line, detail ?? null]);
+  async appendLog(runId: string, at: number, line: string, detail?: string, meta?: { verb?: LogVerb; resultKind?: "ok" | "error" }): Promise<void> {
+    await this.pool.query("INSERT INTO run_log(run_id,at,line,detail,verb,result_kind) VALUES($1,$2,$3,$4,$5,$6)", [
+      runId,
+      at,
+      line,
+      detail ?? null,
+      meta?.verb ?? null,
+      meta?.resultKind ?? null,
+    ]);
   }
 
   // ── checkpoints (run-scoped, not workspace-scoped — the generic list/get/put
