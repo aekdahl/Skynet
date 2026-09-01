@@ -1080,9 +1080,14 @@ export class Operations {
       // the operator pastes/uploads something.
       contextSummary: null,
       contextSummaryUpdatedAt: null,
-      // Momentum Board is opt-in, set later in project settings — never on at
-      // creation (see Project.newBoardEnabled).
-      newBoardEnabled: false,
+      // TASK 14 (Phase 11) — the new board is now the default for every
+      // freshly-created project (see Project.newBoardEnabled's own comment
+      // for the documented rollout/removal criteria). Still per-project, not
+      // global: an operator can flip it off in settings for a project that
+      // genuinely needs the old board, and every EXISTING project keeps
+      // whatever value it already had — this only changes what a NEW project
+      // starts with.
+      newBoardEnabled: true,
       queuedWipLimit: null,
     };
     const created = await this.hub.upsertProject(project);
@@ -2334,6 +2339,21 @@ export class Operations {
   async deleteRule(ws: string, ruleId: string): Promise<void> {
     await this.getRule(ws, ruleId); // scope check
     await this.hub.deleteRule(ruleId);
+  }
+
+  /** Rail Graph's "pause rules" action (TASK 12, Phase 11): bulk-pauses every
+   *  LIVE rule for a project in one call, rather than the client looping N
+   *  individual PATCHes (N separate confirmations of the same intent, N
+   *  separate live WS events for what is really one operator decision).
+   *  Watch/already-paused rules are left untouched — nothing for this action
+   *  to do to them. `pausedReason: null` matches updateRule's own convention:
+   *  that field means "the auto-breaker did this", never a human's own
+   *  explicit pause (see Rule's doc comment). Returns exactly the rules this
+   *  call actually paused, so the caller can report a real count. */
+  async pauseAllRules(ws: string, projectId: string): Promise<Rule[]> {
+    await this.getProject(ws, projectId);
+    const live = (await this.store.listRulesForProject(projectId)).filter((r) => r.state === "live");
+    return Promise.all(live.map((r) => this.hub.upsertRule({ ...r, state: "paused", pausedReason: null, updatedAt: now() })));
   }
 
   /** Replay a DRAFT (not-yet-saved) rule's conditions against the project's

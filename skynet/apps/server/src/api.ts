@@ -1403,6 +1403,15 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return fail(reply, err);
     }
   });
+  // Rail Graph's "pause rules" action (TASK 12) — bulk-pauses every live rule
+  // for this project in one call rather than N individual PATCHes.
+  app.post<{ Params: { id: string } }>("/api/projects/:id/rules/pause-all", async (req, reply) => {
+    try {
+      return await ops.pauseAllRules(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
   // A draft (not-yet-saved) rule's conditions replayed against this
   // project's historical Transition log — powers the Automation Builder's
   // backtest card before an operator commits to actually saving the rule.

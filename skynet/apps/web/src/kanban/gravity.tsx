@@ -1,9 +1,11 @@
 // ─── Gravity Board (Phase 9a — TASK 11) ────────────────────────────────────
-// The first of two alternate board metaphors: no columns, card position
-// reflects readiness. A pure PRESENTATION layer over the same Task/TaskRun
-// data Momentum reads (board.tsx) — readiness() (packages/shared/src/kanban.ts)
-// scores each task from real checkpoint signals; nothing here writes a new
-// state machine or persists anything new.
+// The second of three board metaphors (Momentum, Gravity, and Rail Graph —
+// see this file's own NewBoardView, the 3-way switcher all of them render
+// through): no columns, card position reflects readiness. A pure
+// PRESENTATION layer over the same Task/TaskRun data Momentum reads
+// (board.tsx) — readiness() (packages/shared/src/kanban.ts) scores each task
+// from real checkpoint signals; nothing here writes a new state machine or
+// persists anything new.
 //
 // Radius reconciles two requirements that look contradictory at first read:
 // "closer to center = more ready" AND "the OUTERMOST ring is merge-ready".
@@ -20,6 +22,7 @@ import * as api from "../lib/client";
 import { useStore } from "../lib/store";
 import { Chip } from "./primitives";
 import { MomentumBoard, type MomentumBoardProps } from "./board";
+import { RailGraphBoard } from "./rail-graph";
 
 // ── position math (pure — no I/O, no store/context reads) ──────────────────
 
@@ -209,38 +212,56 @@ function useViewportWidth(): number {
 }
 
 /** What project.tsx renders instead of <MomentumBoard> directly once the new
- *  board is enabled — owns the Momentum/Gravity view-mode choice and the
- *  width-gated fallback ("silently fall back to rendering Momentum below
- *  1100px — don't show a broken/cramped radial layout on a narrow screen").
- *  Below the threshold there's only one real option, so the switcher itself
- *  hides rather than offering a choice that would just bounce back. */
-export function NewBoardView(props: MomentumBoardProps) {
-  const [mode, setMode] = useState<"momentum" | "gravity">("momentum");
+ *  board is enabled — owns the Momentum/Gravity/Rail view-mode choice and
+ *  Gravity's own width-gated fallback ("silently fall back to rendering
+ *  Momentum below 1100px — don't show a broken/cramped radial layout on a
+ *  narrow screen"). Rail Graph has no documented minimum width of its own
+ *  (TASK 12) — only Gravity keeps the >=1100px requirement, so the switcher
+ *  itself always shows (Momentum/Rail are both available at any width); the
+ *  Gravity tab specifically disables below the threshold, and picking it
+ *  back up above the threshold restores whichever mode was last chosen. */
+export function NewBoardView({ onOpenFeed, ...boardProps }: MomentumBoardProps & { onOpenFeed: () => void }) {
+  const [mode, setMode] = useState<"momentum" | "gravity" | "rail">("momentum");
   const wide = useViewportWidth() >= GRAVITY_MIN_WIDTH;
-  const effectiveMode = wide ? mode : "momentum";
+  const effectiveMode = mode === "gravity" && !wide ? "momentum" : mode;
   return (
     <div className="gv-wrap">
-      {wide && (
-        <div className="gv-mode-switch" role="tablist" aria-label="Board view">
-          <button
-            role="tab"
-            aria-selected={effectiveMode === "momentum"}
-            className={"gv-mode-btn" + (effectiveMode === "momentum" ? " on" : "")}
-            onClick={() => setMode("momentum")}
-          >
-            Momentum
-          </button>
-          <button
-            role="tab"
-            aria-selected={effectiveMode === "gravity"}
-            className={"gv-mode-btn" + (effectiveMode === "gravity" ? " on" : "")}
-            onClick={() => setMode("gravity")}
-          >
-            Gravity
-          </button>
-        </div>
+      <div className="gv-mode-switch" role="tablist" aria-label="Board view">
+        <button
+          role="tab"
+          aria-selected={effectiveMode === "momentum"}
+          className={"gv-mode-btn" + (effectiveMode === "momentum" ? " on" : "")}
+          onClick={() => setMode("momentum")}
+        >
+          Momentum
+        </button>
+        <button
+          role="tab"
+          aria-selected={effectiveMode === "gravity"}
+          aria-disabled={!wide}
+          disabled={!wide}
+          title={wide ? undefined : `Gravity needs a viewport at least ${GRAVITY_MIN_WIDTH}px wide`}
+          className={"gv-mode-btn" + (effectiveMode === "gravity" ? " on" : "")}
+          onClick={() => wide && setMode("gravity")}
+        >
+          Gravity
+        </button>
+        <button
+          role="tab"
+          aria-selected={effectiveMode === "rail"}
+          className={"gv-mode-btn" + (effectiveMode === "rail" ? " on" : "")}
+          onClick={() => setMode("rail")}
+        >
+          Rail
+        </button>
+      </div>
+      {effectiveMode === "gravity" ? (
+        <GravityBoard {...boardProps} />
+      ) : effectiveMode === "rail" ? (
+        <RailGraphBoard {...boardProps} onOpenFeed={onOpenFeed} />
+      ) : (
+        <MomentumBoard {...boardProps} />
       )}
-      {effectiveMode === "gravity" ? <GravityBoard {...props} /> : <MomentumBoard {...props} />}
     </div>
   );
 }

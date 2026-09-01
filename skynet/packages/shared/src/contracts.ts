@@ -664,10 +664,15 @@ export const Project = z.object({
   // Momentum Board (Phase 4 — see apps/web/src/kanban/board.tsx): opt-in to
   // the new 4-column board (intake/queued/in-flight/landed) driven by
   // Transition/Rule/Proposal data, replacing the current six-state kanban
-  // view for this project only. Off by default — mirrors the existing
-  // per-project opt-in shape (Project.autoMerge.enabled): the old board
-  // keeps working unchanged for every project that hasn't flipped this.
-  newBoardEnabled: z.boolean().default(false),
+  // view for this project only. TASK 14 (Phase 11) flips this to ON by
+  // default for newly-created projects — the new board has run clean on a
+  // real project for the required window (see ROADMAP.md's TASK 14 entry
+  // for the documented removal criteria for the old board + this flag).
+  // Every EXISTING project keeps whatever value it already has; this
+  // default only takes effect via `.default(true)` for a row that omits
+  // the field entirely, and — the value that actually matters for a fresh
+  // project — Operations.createProject now sets it explicitly (see there).
+  newBoardEnabled: z.boolean().default(true),
   // Momentum Board's Queued-column WIP limit: once that many tasks are
   // queued, further incoming tasks render as "held" instead of silently
   // queuing, and auto-promote when a slot frees. null = no limit (today's
