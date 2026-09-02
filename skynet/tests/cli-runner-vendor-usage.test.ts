@@ -65,7 +65,15 @@ describe("Codex usage parsing (real TokenCountEvent shape)", () => {
     });
     expect(codex.parseLine(line, {})).toEqual({
       kind: "usage",
-      usage: { inputTokens: 1200, outputTokens: 340, costUsd: null, turns: 0, durationMs: null },
+      usage: {
+        inputTokens: 1200,
+        outputTokens: 340,
+        cacheReadTokens: 400,
+        cacheWriteTokens: 0,
+        costUsd: null,
+        turns: 0,
+        durationMs: null,
+      },
     });
   });
 
@@ -76,7 +84,15 @@ describe("Codex usage parsing (real TokenCountEvent shape)", () => {
     });
     expect(codex.parseLine(line, {})).toEqual({
       kind: "usage",
-      usage: { inputTokens: 50, outputTokens: 10, costUsd: null, turns: 0, durationMs: null },
+      usage: {
+        inputTokens: 50,
+        outputTokens: 10,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsd: null,
+        turns: 0,
+        durationMs: null,
+      },
     });
   });
 
@@ -116,7 +132,15 @@ describe("Gemini usage parsing (real stream-json result shape)", () => {
     });
     expect(gemini.parseLine(line, {})).toEqual({
       kind: "usage",
-      usage: { inputTokens: 1500, outputTokens: 340, costUsd: null, turns: 0, durationMs: 4521 },
+      usage: {
+        inputTokens: 1500,
+        outputTokens: 340,
+        cacheReadTokens: 200,
+        cacheWriteTokens: 0,
+        costUsd: null,
+        turns: 0,
+        durationMs: 4521,
+      },
     });
   });
 
@@ -131,7 +155,15 @@ describe("Gemini usage parsing (real stream-json result shape)", () => {
 describe("Cursor usage shape (standard Claude-Code-SDK-style result.usage — see file header)", () => {
   it("the existing extraction (ev.usage ?? ev) reads a nested result.usage block", () => {
     const usage = usageFromJson({ input_tokens: 900, output_tokens: 210, total_cost_usd: 0.12 });
-    expect(usage).toEqual({ inputTokens: 900, outputTokens: 210, costUsd: 0.12, turns: 0, durationMs: null });
+    expect(usage).toEqual({
+      inputTokens: 900,
+      outputTokens: 210,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd: 0.12,
+      turns: 0,
+      durationMs: null,
+    });
   });
 });
 
@@ -170,7 +202,15 @@ describe("Copilot usage (real --output-format json shapes — see file header)",
   it("combines the summed outputTokens with the result's duration (real captured shape)", () => {
     const durationMs = durationFromResultUsage(result.usage);
     const usage = buildUsage(assistantMessage.data.outputTokens, 1, durationMs);
-    expect(usage).toEqual({ inputTokens: 0, outputTokens: 238, costUsd: null, turns: 1, durationMs: 3907 });
+    expect(usage).toEqual({
+      inputTokens: 0,
+      outputTokens: 238,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd: null,
+      turns: 1,
+      durationMs: 3907,
+    });
   });
 
   it("prefers totalApiDurationMs over sessionDurationMs when both are present", () => {
@@ -257,7 +297,15 @@ describe("OpenCode event parsing (real --format json shapes, see file header)", 
     });
     expect(opencode.parseLine(step1, ctx)).toEqual({
       kind: "usage",
-      usage: { inputTokens: 3, outputTokens: 58, costUsd: 0.0014973, turns: 1, durationMs: null },
+      usage: {
+        inputTokens: 3,
+        outputTokens: 58,
+        cacheReadTokens: 7868,
+        cacheWriteTokens: 334,
+        costUsd: 0.0014973,
+        turns: 1,
+        durationMs: null,
+      },
     });
 
     // A second step in the SAME run (same ctx) — its own small delta, but the
@@ -269,7 +317,15 @@ describe("OpenCode event parsing (real --format json shapes, see file header)", 
     });
     expect(opencode.parseLine(step2, ctx)).toEqual({
       kind: "usage",
-      usage: { inputTokens: 9, outputTokens: 78, costUsd: 0.002516, turns: 2, durationMs: null },
+      usage: {
+        inputTokens: 9,
+        outputTokens: 78,
+        cacheReadTokens: 16070,
+        cacheWriteTokens: 408,
+        costUsd: 0.002516,
+        turns: 2,
+        durationMs: null,
+      },
     });
   });
 
