@@ -29,6 +29,7 @@ import type {
   ProviderInfo,
   Agent,
   RoadmapDoc,
+  RoadmapLineClaim,
   RoadmapProposal,
   RoadmapProposalState,
   Rule,
@@ -92,6 +93,9 @@ CREATE TABLE IF NOT EXISTS roadmap_docs (project_id text PRIMARY KEY, workspace_
 -- a distinct collection (see @skynet/shared's RoadmapProposal).
 CREATE TABLE IF NOT EXISTS roadmap_proposals (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, state text NOT NULL, data jsonb NOT NULL);
 CREATE INDEX IF NOT EXISTS roadmap_proposals_project ON roadmap_proposals(project_id, state);
+-- Roadmap line claims (Phase 26 — TASK 29) — one row per (project, line),
+-- "claim as mine" upserts by that pair, never keyed by the claim's own id.
+CREATE TABLE IF NOT EXISTS roadmap_line_claims (project_id text NOT NULL, line_id text NOT NULL, workspace_id text NOT NULL, data jsonb NOT NULL, PRIMARY KEY (project_id, line_id));
 CREATE INDEX IF NOT EXISTS runs_ws   ON runs(workspace_id);
 CREATE INDEX IF NOT EXISTS checkpoints_run ON checkpoints(run_id);
 CREATE INDEX IF NOT EXISTS hitl_ws     ON hitl_queue(workspace_id);
@@ -522,6 +526,30 @@ export class PostgresStore implements Store {
     let sql = "SELECT data FROM roadmap_proposals WHERE project_id=$1";
     if (opts.state != null) { params.push(opts.state); sql += ` AND state=$${params.length}`; }
     const { rows } = await this.pool.query<{ data: RoadmapProposal }>(sql, params);
+    return rows.map((r) => r.data);
+  }
+
+  // ── roadmap line claims (Phase 26 — TASK 29, one per project+line) ────────
+  async getRoadmapLineClaim(projectId: string, lineId: string): Promise<RoadmapLineClaim | undefined> {
+    const { rows } = await this.pool.query<{ data: RoadmapLineClaim }>(
+      "SELECT data FROM roadmap_line_claims WHERE project_id=$1 AND line_id=$2",
+      [projectId, lineId],
+    );
+    return rows[0]?.data;
+  }
+  async putRoadmapLineClaim(claim: RoadmapLineClaim): Promise<RoadmapLineClaim> {
+    await this.pool.query(
+      "INSERT INTO roadmap_line_claims(project_id,line_id,workspace_id,data) VALUES($1,$2,$3,$4::jsonb) " +
+        "ON CONFLICT(project_id,line_id) DO UPDATE SET workspace_id=$3, data=$4::jsonb",
+      [claim.projectId, claim.lineId, claim.workspaceId, J(claim)],
+    );
+    return claim;
+  }
+  async listRoadmapLineClaimsForProject(projectId: string): Promise<RoadmapLineClaim[]> {
+    const { rows } = await this.pool.query<{ data: RoadmapLineClaim }>(
+      "SELECT data FROM roadmap_line_claims WHERE project_id=$1",
+      [projectId],
+    );
     return rows.map((r) => r.data);
   }
 

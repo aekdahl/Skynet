@@ -161,6 +161,7 @@ export function parseRoadmapAst(raw: string): RoadmapAstNode[] {
         promisedDate: null,
         forecast: null,
         questionIds: [],
+        blameSha: null,
         raw: line,
       };
       nodes.push(node);

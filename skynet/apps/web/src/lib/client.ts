@@ -46,8 +46,10 @@ import {
   type AutonomyOverride,
   type SourceRef,
   type Decision,
-  type HitlItem,
+  type RoadmapDoc,
+  type RoadmapLineClaim,
   type RoadmapProposal,
+  type HitlItem,
   type RoadmapConflictResolveRequest,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
@@ -518,6 +520,50 @@ export function commitProjectRoadmap(
   body: { path: string; content: string; baselineHash: string; baselineSha?: string },
 ) {
   return req<ProjectRoadmapResult>("POST", `/api/projects/${projectId}/roadmap`, body);
+}
+
+// ─── Roadmap document view (Phase 26 — TASK 29) ─────────────────────────────
+// The parsed RoadmapDoc (real per-line state, blame-derived provenance,
+// "claim as mine" overrides already applied server-side) — distinct from
+// fetchProjectRoadmap above, which only ever returns raw markdown text.
+export function fetchProjectRoadmapDoc(projectId: string) {
+  return req<RoadmapDoc>("GET", `/api/projects/${projectId}/roadmap/doc`);
+}
+
+export function fetchRoadmapProposals(projectId: string) {
+  return req<RoadmapProposal[]>("GET", `/api/projects/${projectId}/roadmap/proposals`);
+}
+
+export function applyRoadmapProposal(projectId: string, proposalId: string) {
+  return req<{ proposal: RoadmapProposal; committed: boolean; sha?: string }>(
+    "POST",
+    `/api/projects/${projectId}/roadmap/proposals/${proposalId}/apply`,
+  );
+}
+
+/** "KEEP · CLAIM AS MINE" on an agent-added line — see RoadmapLineClaim's own
+ *  doc comment: a display-layer override, never a git operation. */
+export function claimRoadmapLine(projectId: string, lineId: string) {
+  return req<RoadmapLineClaim>("POST", `/api/projects/${projectId}/roadmap/lines/${lineId}/claim`);
+}
+
+/** "REVERT THE COMMIT" on an agent-added line — a real `git revert` of
+ *  whatever commit git-blame attributes that line to. Local-repo-bound
+ *  projects only; throws with a clear message otherwise. */
+export function revertRoadmapLine(projectId: string, lineId: string) {
+  return req<{ committed: boolean; sha?: string }>("POST", `/api/projects/${projectId}/roadmap/lines/${lineId}/revert`);
+}
+
+export interface RoadmapHistoryEntry {
+  sha: string;
+  authorName: string;
+  authorEmail: string;
+  at: number;
+  subject: string;
+}
+export function fetchRoadmapHistory(projectId: string, opts?: { limit?: number }) {
+  const qs = opts?.limit != null ? `?limit=${opts.limit}` : "";
+  return req<RoadmapHistoryEntry[]>("GET", `/api/projects/${projectId}/roadmap/history${qs}`);
 }
 
 // ── roadmap proposal governance (TASK 30) ────────────────────────────────

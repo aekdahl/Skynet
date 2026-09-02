@@ -117,12 +117,12 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
     return reply.code(403).send({ error: err.message });
   }
   if (
+    err instanceof RoadmapProposalNotOpenError ||
     err instanceof NoCapacityError ||
     err instanceof TaskAlreadyAssignedError ||
     err instanceof RunnerNotConfiguredError ||
     err instanceof RunnerBusyError ||
     err instanceof RoadmapConflictError ||
-    err instanceof RoadmapProposalNotOpenError ||
     err instanceof NoOpenReviewGateError ||
     err instanceof AlreadyReviewedError ||
     err instanceof NoReviewerAvailableError ||
@@ -1417,6 +1417,52 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.updateProjectRoadmap(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── roadmap document view (Phase 26 — TASK 29) ────────────────────────────
+  // The parsed doc (real line state, blame-derived provenance, claim overrides).
+  app.get<{ Params: { id: string } }>("/api/projects/:id/roadmap/doc", async (req, reply) => {
+    try {
+      return await ops.getProjectRoadmapDoc(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.get<{ Params: { id: string } }>("/api/projects/:id/roadmap/proposals", async (req, reply) => {
+    try {
+      return await ops.listRoadmapProposals(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string; pid: string } }>("/api/projects/:id/roadmap/proposals/:pid/apply", async (req, reply) => {
+    try {
+      return await ops.applyRoadmapProposal(ws(req), req.params.id, req.params.pid, { operatorId: req.principal!.operatorId });
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string; lineId: string } }>("/api/projects/:id/roadmap/lines/:lineId/claim", async (req, reply) => {
+    try {
+      return await ops.claimRoadmapLine(ws(req), req.params.id, req.params.lineId, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string; lineId: string } }>("/api/projects/:id/roadmap/lines/:lineId/revert", async (req, reply) => {
+    try {
+      return await ops.revertRoadmapLineCommit(ws(req), req.params.id, req.params.lineId, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/projects/:id/roadmap/history", async (req, reply) => {
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    try {
+      return await ops.getRoadmapHistory(ws(req), req.params.id, { limit });
     } catch (err) {
       return fail(reply, err);
     }

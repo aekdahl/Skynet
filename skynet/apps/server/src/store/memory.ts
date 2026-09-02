@@ -25,6 +25,7 @@ import type {
   ProviderInfo,
   Agent,
   RoadmapDoc,
+  RoadmapLineClaim,
   RoadmapProposal,
   RoadmapProposalState,
   Rule,
@@ -64,6 +65,7 @@ export class MemoryStore implements Store {
   protected workspaceSettings = new Map<string, WorkspaceSettings>(); // keyed by workspaceId
   protected roadmapDocs = new Map<string, RoadmapDoc>(); // keyed by projectId
   protected roadmapProposals = new Map<string, RoadmapProposal>();
+  protected roadmapLineClaims = new Map<string, RoadmapLineClaim>(); // keyed by `${projectId}:${lineId}`
   protected policyVersions = new Map<string, PolicyVersion>(); // keyed by id
   protected githubTokens = new Map<string, string>(); // workspaceId → sealed PAT ciphertext
   protected serviceTokens = new Map<string, StoredServiceToken>(); // keyed by id (holds a hash, never the raw token)
@@ -249,6 +251,16 @@ export class MemoryStore implements Store {
     let list = [...this.roadmapProposals.values()].filter((p) => p.projectId === projectId);
     if (opts.state != null) list = list.filter((p) => p.state === opts.state);
     return list;
+  }
+
+  async getRoadmapLineClaim(projectId: string, lineId: string) { return this.roadmapLineClaims.get(`${projectId}:${lineId}`); }
+  async putRoadmapLineClaim(claim: RoadmapLineClaim) {
+    this.roadmapLineClaims.set(`${claim.projectId}:${claim.lineId}`, claim);
+    this.persist();
+    return claim;
+  }
+  async listRoadmapLineClaimsForProject(projectId: string) {
+    return [...this.roadmapLineClaims.values()].filter((c) => c.projectId === projectId);
   }
 
   async listPolicyVersions(ws: string) {

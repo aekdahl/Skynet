@@ -374,6 +374,36 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    id: "roadmap-doc-view",
+    name: "Roadmap document view's doc/proposals endpoints (Phase 26)",
+    desc: "The parsed-doc and proposals-list reads for an unbound project (no repo — control-plane only, no local git checkout needed here), plus applying a nonexistent proposal is refused honestly.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: roadmap doc view ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      const s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+
+      const doc = await api.fetchProjectRoadmapDoc(p.id);
+      steps.push(step("parsed-doc endpoint returns a RoadmapDoc shape (never errors on an unbound project)", Array.isArray(doc.ast) && Array.isArray(doc.sections)));
+
+      const proposals = await api.fetchRoadmapProposals(p.id);
+      steps.push(step("proposals list returns an array", Array.isArray(proposals), `${proposals.length} proposals`));
+      steps.push(step("a fresh project has no proposals yet", proposals.length === 0));
+
+      let refused = false;
+      try {
+        await api.applyRoadmapProposal(p.id, "nope");
+      } catch {
+        refused = true;
+      }
+      steps.push(step("applying a proposal id that doesn't exist is refused, not silently accepted", refused));
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
+  {
     id: "task-detail-panel",
     name: "Task Detail panel's own endpoints — trail + subtask accept",
     desc: "A fresh task's transition trail is empty; accepting all (zero) suggested subtasks is a clean no-op; accepting a specific but nonexistent one is refused — control-plane only, no seeded Proposal needed.",
