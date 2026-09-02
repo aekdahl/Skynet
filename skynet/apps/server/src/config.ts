@@ -328,6 +328,10 @@ export const config = {
   // human-facing gates. `0` disables the wait entirely (all gates ping
   // immediately — old behavior).
   telegramGateAutoReviewDebounceMs: Number(process.env.SKYNET_TELEGRAM_GATE_DEBOUNCE_MS ?? 20_000),
+  // Local hour (0-23) the scheduled daily digest fires at — a fixed unprompted
+  // evening summary, distinct from the on-demand /inbox. Defaults to 18:00.
+  // Any value outside 0-23 (e.g. -1) disables it entirely.
+  telegramDigestHour: Number(process.env.SKYNET_TELEGRAM_DIGEST_HOUR ?? 18),
 
   // ── MFA (second factor on the public login) ────────────────────────────────
   // Opt-in Telegram OTP after the password. SKYNET_MFA_DISABLE is the SSH

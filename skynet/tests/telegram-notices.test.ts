@@ -168,6 +168,33 @@ describe("reviewNotice / completedNotice", () => {
   });
 });
 
+describe("decisionCardHtml — bubble structure (kind label, consequence line, context line)", () => {
+  it("leads with an all-caps kind label, project, and a short run tag", () => {
+    const html = decisionCardHtml(item({ kind: "approval", command: "npm test", diff: null, title: "x" }), NAMES, true);
+    expect(html).toContain("<b>APPROVAL NEEDED</b> · Takeoff · RUN #");
+  });
+
+  it("flags medium/high risk with ⚠️, and reads as reassurance at low risk", () => {
+    const high = decisionCardHtml(item({ risk: "high" }), NAMES, true);
+    expect(high).toContain("⚠️ High risk");
+    const medium = decisionCardHtml(item({ risk: "medium" }), NAMES, true);
+    expect(medium).toContain("⚠️ Medium risk");
+    const low = decisionCardHtml(item({ risk: "low" }), NAMES, true);
+    expect(low).toContain("Low risk — reversible");
+    expect(low).not.toContain("⚠️");
+  });
+
+  it("always states the run is blocked until answered", () => {
+    const html = decisionCardHtml(item({}), NAMES, true);
+    expect(html).toContain("Agent is idle until you answer.");
+  });
+
+  it("a stuck-review escalation gets its own calm kind label, not the generic alarm one", () => {
+    const html = decisionCardHtml(item({ kind: "escalation", diff: null, flags: ["stuck-review"], title: "x" }), NAMES, true);
+    expect(html).toContain("<b>AWAITING REVIEW</b>");
+  });
+});
+
 describe("deep links", () => {
   it("runLink builds the run hash route, or nothing without a base URL", () => {
     expect(runLink("https://skynet.example.com", UGLY_RUN_ID)).toBe(
