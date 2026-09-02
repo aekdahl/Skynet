@@ -50,6 +50,7 @@ import type {
   ProviderInfo,
   ResolveRequest,
   Resolution,
+  RoadmapDoc,
   SourceRef,
   Rule,
   SavePolicyVersionRequest,
@@ -107,7 +108,9 @@ import {
   type ChatTurn,
 } from "./project-assistant.js";
 import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
-import { contentHash, readProjectDoc, resolveRoadmapDoc } from "./steward/docs.js";
+import { contentHash, readProjectDoc, resolveRoadmapDoc, ROADMAP_PATHS } from "./steward/docs.js";
+import { parseRoadmapDoc } from "./roadmap/sync.js";
+import { localRepoHeadSha } from "./roadmap/repo-commit.js";
 import { draftBriefFromConversation, summarizeConversation } from "./steward/crystallize.js";
 import { scanRepo } from "./quality/scan.js";
 import { condenseProjectContext } from "./steward/context.js";
@@ -3153,6 +3156,96 @@ export class Operations {
       throw err;
     }
     return { state: "ok", path: body.path, content: body.content, source: "github" };
+  }
+
+  /**
+   * TASK 27 — re-parse a project's roadmap doc and persist the result in
+   * `Store.getRoadmapDoc`/`putRoadmapDoc`. Called by the GitHub push webhook
+   * when a commit touches the project's roadmap path; also safe to call
+   * standalone (a future manual "resync" action would just call this).
+   *
+   * `opts.commitSha`, when the caller already knows it (the webhook's own
+   * push payload carries the new HEAD), is used directly — no extra lookup.
+   * Left unset, a local `repoPath` project resolves its own HEAD via `git
+   * rev-parse`; a GitHub-only project falls back to the previous cached
+   * doc's commitSha (a Contents-API read has no commit sha of its own to
+   * offer — see RoadmapDoc.commitSha's own doc comment).
+   *
+   * Writes an intermediate `repo_ahead` marker (new commitSha, syncState:
+   * "repo_ahead") BEFORE the actual read+parse, so a caller checking
+   * mid-flight — or a slow GitHub fetch — observes an honest "we know it
+   * moved, still catching up" state instead of stale `in_sync` data. Lands on
+   * `in_sync` on success, `unparseable` if the doc couldn't be read/parsed
+   * (an unbound project, a missing local checkout, a GitHub auth/network
+   * failure — the parser itself essentially never throws, see ast.ts's own
+   * "raw span, not reconstruction" design, so this is really "couldn't even
+   * fetch the content to parse").
+   */
+  async syncProjectRoadmap(ws: string, projectId: string, opts: { commitSha?: string } = {}): Promise<RoadmapDoc> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+
+    const previous = await this.store.getRoadmapDoc(projectId);
+    const commitSha = opts.commitSha ?? (project.repoPath ? await localRepoHeadSha(project.repoPath) : (previous?.commitSha ?? null));
+
+    const ahead: RoadmapDoc = previous
+      ? { ...previous, commitSha, syncState: "repo_ahead", syncedAt: now() }
+      : {
+          workspaceId: ws,
+          projectId,
+          path: project.roadmapPath ?? ROADMAP_PATHS[0],
+          commitSha,
+          syncedAt: now(),
+          syncState: "repo_ahead",
+          raw: "",
+          ast: [],
+          sections: [],
+        };
+    await this.store.putRoadmapDoc(ahead);
+
+    try {
+      const doc = await resolveRoadmapDoc(ws, project);
+      if (!doc) return await this.store.putRoadmapDoc({ ...ahead, syncState: "unparseable" });
+      const parsed = parseRoadmapDoc({
+        workspaceId: ws,
+        projectId,
+        path: doc.path,
+        raw: doc.content,
+        commitSha,
+        syncedAt: now(),
+        previousAst: previous?.ast ?? null,
+      });
+      return await this.store.putRoadmapDoc(parsed);
+    } catch {
+      return await this.store.putRoadmapDoc({ ...ahead, syncState: "unparseable" });
+    }
+  }
+
+  /**
+   * TASK 27 — a GitHub `push` webhook resolved to `{repo, commitSha,
+   * touchedPaths}` (github/webhook.ts's `parseGithubPush`); resyncs every
+   * project bound to that repo whose roadmap doc the push actually touched.
+   * Mirrors `publishGithubSignal`'s own shape (an inline parameter type, not
+   * an import from webhook.ts — operations.ts never imports from the webhook
+   * route file, only the other way around) and its "never error a webhook
+   * GitHub might disable" contract: a repo with no bound project, or a push
+   * that doesn't touch anyone's roadmap, is just an empty result, not a
+   * throw. A repo can be bound by more than one project (rare, but the same
+   * pattern `publishGithubSignal` already handles) — every match resyncs.
+   */
+  async handleGithubRoadmapPush(input: { repo: string; commitSha: string; touchedPaths: Set<string> }): Promise<{ syncedProjectIds: string[] }> {
+    const projects = (await this.store.listAllProjects()).filter((p) => p.repo === input.repo);
+    const syncedProjectIds: string[] = [];
+    for (const project of projects) {
+      // An explicit roadmapPath override is tried EXCLUSIVELY (matching
+      // resolveRoadmapDoc's own contract); unset falls back to the default
+      // ROADMAP_PATHS candidates.
+      const touches = project.roadmapPath ? input.touchedPaths.has(project.roadmapPath) : ROADMAP_PATHS.some((p) => input.touchedPaths.has(p));
+      if (!touches) continue;
+      await this.syncProjectRoadmap(project.workspaceId, project.id, { commitSha: input.commitSha });
+      syncedProjectIds.push(project.id);
+    }
+    return { syncedProjectIds };
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────

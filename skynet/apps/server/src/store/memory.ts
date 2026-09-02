@@ -24,6 +24,7 @@ import type {
   ProposalStatus,
   ProviderInfo,
   Agent,
+  RoadmapDoc,
   Rule,
   Snapshot,
   SolutionBrief,
@@ -59,6 +60,7 @@ export class MemoryStore implements Store {
   protected audit: AuditRecord[] = [];
   protected github = new Map<string, GithubConnection>(); // keyed by workspaceId
   protected workspaceSettings = new Map<string, WorkspaceSettings>(); // keyed by workspaceId
+  protected roadmapDocs = new Map<string, RoadmapDoc>(); // keyed by projectId
   protected policyVersions = new Map<string, PolicyVersion>(); // keyed by id
   protected githubTokens = new Map<string, string>(); // workspaceId → sealed PAT ciphertext
   protected serviceTokens = new Map<string, StoredServiceToken>(); // keyed by id (holds a hash, never the raw token)
@@ -225,6 +227,9 @@ export class MemoryStore implements Store {
 
   async getWorkspaceSettings(ws: string) { return this.workspaceSettings.get(ws); }
   async putWorkspaceSettings(settings: WorkspaceSettings) { this.workspaceSettings.set(settings.workspaceId, settings); this.persist(); }
+
+  async getRoadmapDoc(projectId: string) { return this.roadmapDocs.get(projectId); }
+  async putRoadmapDoc(doc: RoadmapDoc) { this.roadmapDocs.set(doc.projectId, doc); this.persist(); return doc; }
 
   async listPolicyVersions(ws: string) {
     return [...this.policyVersions.values()].filter((v) => v.workspaceId === ws).sort((a, b) => b.version - a.version);
