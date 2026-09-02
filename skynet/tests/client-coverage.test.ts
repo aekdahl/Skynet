@@ -213,6 +213,12 @@ const ALLOW = new Set<string>([
   // the card makes on mount, not a state-changing action a journey would drive.
   // Covered server-side by ready-merge.test.ts's prChecksForRun/ForFeature tests.
   "fetchPrChecks", "fetchFeaturePrChecks",
+  // Review & Merge's READY TO MERGE panel — a real API call the screen makes
+  // on mount, not a state-changing action a journey would drive. Covered
+  // server-side by merge-queue.test.ts's Orchestrator.mergeQueueSnapshot tests
+  // (real approvals through a real merge queue) and merge.test.ts's
+  // MergeEngine.queueFor test (the underlying position bookkeeping).
+  "fetchMergeQueue",
   // Checkpoint / snapshot-restore — creates a real git commit + pinned ref and,
   // on restore, stops the live handle and relaunches the provider with a
   // resumed SDK session. No offline journey can exercise the worktree

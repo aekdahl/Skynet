@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNow, useStore } from "./lib/store";
 import { initialView, onNavigate } from "./pwa/launch"; // [pwa] Inbox-first launch + push deep-link
 import { setDesktopBadge, focusDesktopWindow } from "./lib/desktop"; // [desktop] dock badge + window focus, no-op outside Electron
-import { openQueue } from "./lib/derive";
+import { openQueue, hitlFor } from "./lib/derive";
 import { parseHash, toHash } from "./lib/routing"; // [w7] deep links
 import { gateView } from "./lib/dev"; // dev-only pages hidden from release builds
 import { TitleBar, OpSidebar, OpStatusBar, ConnectingShell } from "./components/shell";
@@ -18,6 +18,7 @@ import { QueueView } from "./views/queue";
 import { AuditView } from "./views/audit";
 import { TaskDetail } from "./views/task";
 import { RunDetailView } from "./kanban/run-detail";
+import { ReviewMergeView } from "./kanban/review-merge";
 import { IntegrationsView } from "./views/integrations";
 import { MergesView } from "./views/merges";
 import { Onboarding } from "./views/onboarding";
@@ -374,12 +375,25 @@ export function App() {
             {store.loaded && view === "designTokens" && <DesignTokensPreview />}
             {store.loaded && view === "task" && agent && (
               store.projects.find((p) => p.id === agent.projectId)?.newBoardEnabled ? (
-                <RunDetailView
-                  agent={agent}
-                  now={now}
-                  onBack={() => setView(from === "task" ? "home" : from)}
-                  backLabel={VIEW_LABEL[from] || "Back"}
-                />
+                (() => {
+                  const gate = hitlFor(store.queue, agent.id);
+                  const reviewing = gate && (gate.kind === "diff" || gate.kind === "merge" || gate.kind === "verifier");
+                  return reviewing ? (
+                    <ReviewMergeView
+                      agent={agent}
+                      now={now}
+                      onBack={() => setView(from === "task" ? "home" : from)}
+                      backLabel={VIEW_LABEL[from] || "Back"}
+                    />
+                  ) : (
+                    <RunDetailView
+                      agent={agent}
+                      now={now}
+                      onBack={() => setView(from === "task" ? "home" : from)}
+                      backLabel={VIEW_LABEL[from] || "Back"}
+                    />
+                  );
+                })()
               ) : (
                 <TaskDetail
                   agent={agent}

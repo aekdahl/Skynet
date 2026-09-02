@@ -30,6 +30,7 @@ import { parseBreakerVerdict, BREAKER_OUTPUT_INSTRUCTION, type BreakerVerdictOut
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
 import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./merge-brief.js";
+import { groupDiffByIntent } from "./diff-groups.js";
 import { composeFeatureBrief, parseFeatureNarrative, FEATURE_BRIEF_INSTRUCTION, FEATURE_BRIEF_SYSTEM } from "./feature-brief.js";
 import { decisionResumePrompt } from "./decision-resume.js";
 import { buildAgentContext, withInstructions } from "./agent-context.js";
@@ -42,7 +43,7 @@ import { MergeEngine, FEATURE_BRANCH_PREFIX, type MergeRequest } from "./merge.j
 import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { providerUsableFromEnv } from "./provider-env.js";
 import { assessProjectDrive } from "./drive.js";
-import { decideAutoMerge, DEFAULT_AUTO_MERGE_POLICY, GATE_REASON_TEXT } from "./merge-policy.js";
+import { decideAutoMerge, DEFAULT_AUTO_MERGE_POLICY, GATE_REASON_TEXT, POLICY_MERGE_REASON } from "./merge-policy.js";
 
 /** How long before a project's board may be re-pulled from its source again. */
 const REFILL_COOLDOWN_MS = 15 * 60 * 1000;
@@ -654,6 +655,14 @@ export class Orchestrator {
   // and so a project bound to its own repo never silently uses the fallback of
   // some other repo's catalog. See moduleMapFor().
   private moduleMaps = new Map<string, ModuleMap>();
+  // Review & Merge (Phase 15): who/what approved the run currently sitting in
+  // the local merge queue — merge.ts's own MergeRequest carries no approval
+  // metadata (see MergeEngine.queueFor's doc comment), so this is set right
+  // before the enqueue() call in deliver()/completeMerged's retry paths and
+  // read back by mergeQueueSnapshot. Small and best-effort: an entry with no
+  // recorded approval (a retry path that doesn't set one) just reads as
+  // "human" below, same as an operator-driven retry actually is.
+  private mergeApprovals = new Map<string, string>();
   // One git backend per repo path (worktrees + serialized merge queue), built on
   // demand. Keyed by repo so a project's local repo and the global integration
   // repo each get their own queue.
@@ -813,6 +822,23 @@ export class Orchestrator {
     const git = this.gitContextFor(project);
     if (!git) throw new Error("This project has no git backend, so a merge can't be reverted here.");
     return git.merge.revert(commit, branch);
+  }
+
+  /** Read-only snapshot of a project's local merge queue (Review & Merge,
+   *  Phase 15) — who's queued, their position, and whether they got there via
+   *  a human's Approve or an auto-merge policy. No new merge decision logic:
+   *  position comes straight from MergeEngine.queueFor, and mode/reason come
+   *  from mergeApprovals (set in deliver(), right before enqueueing). Empty
+   *  for a project with no local git backend (e.g. the GitHub PR flow, which
+   *  has its own separate "Ready to merge" surface — apps/web/src/views/merges.tsx). */
+  mergeQueueSnapshot(project: Project): Array<{ runId: string; position: number; mode: "human" | "auto"; reason: string | null }> {
+    const git = this.gitContextFor(project);
+    if (!git) return [];
+    return git.merge.queueFor(project.id).map(({ runId, position }) => {
+      const by = this.mergeApprovals.get(runId);
+      const reason = by ? POLICY_MERGE_REASON[by] : undefined;
+      return { runId, position, mode: reason ? "auto" : "human", reason: reason ?? null };
+    });
   }
 
   private gitContextFor(project?: Project | null): GitContext | undefined {
@@ -1382,7 +1408,12 @@ export class Orchestrator {
     // project's own module map — not the agent's declared scope (`agent.modules`,
     // initialized []), which would under- or mis-report what changed (#6).
     const project = await this.store.getProject(agent.projectId);
-    const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
+    const moduleMap = this.moduleMapFor(project);
+    const modules = moduleMap.modulesForFiles(stat.files);
+    // Review & Merge (Phase 15): the SAME diff, grouped by likely intent
+    // instead of by file — see diff-groups.ts's own doc comment for why this
+    // reuses the module map rather than a new semantic grouper.
+    const groups = groupDiffByIntent(patch, moduleMap);
     // Record what actually changed on the run so every view reflects it (the run
     // itself, not just the review card). `modifiedFiles` was never populated.
     await this.hub.runModifiedFiles(runId, stat.files);
@@ -1461,7 +1492,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: stat.add, del: stat.del, modules, files: stat.files, walkthrough, mergeBrief, defaultTargetBranch },
+      diff: { add: stat.add, del: stat.del, modules, files: stat.files, walkthrough, mergeBrief, groups, defaultTargetBranch },
       output: null,
       // The fixed path-policy hits, as scannable chips — the evidence behind a
       // "high" risk on an otherwise-small diff. Empty when nothing in the
@@ -2774,6 +2805,10 @@ export class Orchestrator {
     // guardrail: the diff review gated here, so reaching this point means an
     // operator approved the push (or a failed merge/check is being retried).
     if (resolution.action === "approve" && (item.kind === "diff" || item.kind === "merge" || item.kind === "verifier")) {
+      // Recorded before enqueueing so mergeQueueSnapshot can read back WHO
+      // approved this once it's sitting in the local merge queue — see
+      // mergeApprovals's own doc comment.
+      this.mergeApprovals.set(runId, resolution.by);
       const integrated = await this.integrateRun(runId, {
         sourceBranchOverride: item.sourceBranchOverride,
         targetBranch: resolution.targetBranch ?? item.diff?.defaultTargetBranch ?? undefined,
@@ -4268,7 +4303,7 @@ export class Orchestrator {
       // Carry the originally-attempted target branch forward so a plain retry
       // lands in the same place the operator chose (or the default) the first
       // time — deliver() re-reads this on approve (see resolution.targetBranch).
-      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, mergeBrief: null, defaultTargetBranch: req.targetBranch ?? null },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, mergeBrief: null, groups: [], defaultTargetBranch: req.targetBranch ?? null },
       output: null,
       flags: [reason],
       sourceBranchOverride: featureUp ? req.agentBranch : null,
@@ -4319,7 +4354,7 @@ export class Orchestrator {
       recommended: null,
       steps: null,
       // Same carry-forward as raiseMergeFailedHitl above.
-      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, mergeBrief: null, defaultTargetBranch: req.targetBranch ?? null },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, mergeBrief: null, groups: [], defaultTargetBranch: req.targetBranch ?? null },
       output: conflictDiff
         ? `Target branch: ${targetBranch}\n\n${conflictDiff}`.slice(0, Orchestrator.VERIFIER_OUTPUT_CAP)
         : null,

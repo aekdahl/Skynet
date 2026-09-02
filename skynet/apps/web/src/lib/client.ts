@@ -445,6 +445,17 @@ export function dismissFeaturePr(featureId: string) {
 export function fetchFeaturePrChecks(featureId: string) {
   return req<PrChecksStatus | null>("GET", `/api/features/${featureId}/pr/checks`);
 }
+// Review & Merge (Phase 15) — the project's LOCAL merge queue (apps/server/src/merge.ts),
+// distinct from the GitHub-PR-flow "Ready to merge" list above.
+export interface MergeQueueEntry {
+  runId: string;
+  position: number;
+  mode: "human" | "auto";
+  reason: string | null;
+}
+export function fetchMergeQueue(projectId: string) {
+  return req<MergeQueueEntry[]>("GET", `/api/projects/${projectId}/merge-queue`);
+}
 export function pauseAgent(id: string) {
   return req<unknown>("POST", `/api/runs/${id}/pause`);
 }

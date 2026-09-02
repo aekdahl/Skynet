@@ -71,4 +71,27 @@ describe("parseDiffWalkthrough — structured", () => {
     expect(w?.summary).toBe("s");
     expect(w?.comments).toEqual([]); // "missing file" and file-only entries both lack a usable note+file pair
   });
+
+  // Review & Merge (Phase 15): the prompt now requires a "least sure about"
+  // section — read it the same defensive way as every other model-emitted
+  // field (never assume it's actually there).
+  describe("uncertainty (least_sure_about)", () => {
+    it("reads the model's stated uncertainty", () => {
+      const w = parseDiffWalkthrough(
+        '{"summary":"s","comments":[],"least_sure_about":"Not sure the rate limit window handles clock skew."}',
+        FILES,
+      );
+      expect(w?.uncertainty).toBe("Not sure the rate limit window handles clock skew.");
+    });
+
+    it("falls back to an honest placeholder when the field is missing or empty — never drops the walkthrough over it", () => {
+      expect(parseDiffWalkthrough('{"summary":"s","comments":[]}', FILES)?.uncertainty).toBe("Not stated by the agent.");
+      expect(parseDiffWalkthrough('{"summary":"s","comments":[],"least_sure_about":""}', FILES)?.uncertainty).toBe(
+        "Not stated by the agent.",
+      );
+      expect(parseDiffWalkthrough('{"summary":"s","comments":[],"least_sure_about":"   "}', FILES)?.uncertainty).toBe(
+        "Not stated by the agent.",
+      );
+    });
+  });
 });
