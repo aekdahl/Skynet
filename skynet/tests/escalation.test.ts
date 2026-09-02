@@ -54,12 +54,27 @@ class ControllableProvider implements RunnerProvider {
   events = new Map<string, RunnerEvents>();
   handles = new Map<string, Handle>();
   starts: StartSpec[] = [];
+  // Configurable canned consult() reply for the handoff-summary tests — unset
+  // (undefined) means "this provider doesn't support consult", matching a
+  // real CLI vendor with no consult(); most tests never touch this.
+  consultReply?: string;
+  consultCalls = 0;
   async start(spec: StartSpec, events: RunnerEvents): Promise<RunnerHandle> {
     this.starts.push(spec);
     this.events.set(spec.runId, events);
     const h = new Handle(spec.runId);
     this.handles.set(spec.runId, h);
     return h;
+  }
+  // A GETTER (not a field) so it re-evaluates consultReply at ACCESS time —
+  // tests set consultReply after construction, and draftHandoffSummary's own
+  // `if (!provider.consult) return null` check needs to see that live.
+  get consult(): (() => Promise<string>) | undefined {
+    if (this.consultReply === undefined) return undefined;
+    return async () => {
+      this.consultCalls++;
+      return this.consultReply!;
+    };
   }
 }
 
@@ -305,6 +320,12 @@ describe("escalation — agent hands off / guards trip → human resolves", () =
     expect(freed.state).toBe("todo");
     expect(freed.runId).toBeNull();
     expect(freed.reviewVerdict).toBeNull();
+    // Kanban redesign, stage 1 (retireRun consolidation): the "question" gate
+    // this run was parked on is now unanswerable — dismissed, not left
+    // dangling in the Inbox. This reap path never did this before.
+    const question = (await store.listQueue(DEFAULT_WORKSPACE)).find((q) => q.runId === run.id)!;
+    expect(question.resolvedAt).not.toBeNull();
+    expect(question.resolution?.action).toBe("dismiss");
   });
 
   it("out of credits trips the key breaker: escalates once, pauses new runs on the key, resume clears it", async () => {
@@ -623,6 +644,59 @@ describe("reset vs. continue — operator choice on 'Send to Todo' and 'Reassign
     expect((await store.getRun(run.id))?.status).toBe("running"); // same run id, relaunched
     expect((await store.getTask(task.id))?.runId).toBe(run.id);
     expect(worktrees.exists(run.id)).toBe(true);
+  });
+
+  it("Reassign briefs the new agent with an auto-generated summary of the prior agent's log", async () => {
+    // Kanban redesign, stage 1: a reassign used to hand the new agent only a
+    // static "your work is already in the directory" line. Now it also gets
+    // a real, log-grounded summary (draftHandoffSummary), best-effort via
+    // provider.consult().
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    await store.putAgent({ id: "r2", workspaceId: DEFAULT_WORKSPACE, name: "r2", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repoPath: repo });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "do the thing" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    await hub.runLog(run.id, "Tried approach A: refactored the parser, hit a type error in the lexer.");
+
+    provider.consultReply = JSON.stringify({
+      summary: "Tried refactoring the parser but got stuck on a lexer type error.",
+    });
+
+    const cur = (await store.getRun(run.id))!;
+    await store.putRun({ ...cur, status: "running", lastHeartbeatAt: 0 });
+    await orchestrator.reapStaleAgents();
+    await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+    const esc = bus.raised().find((i) => i.kind === "escalation")!;
+
+    await ops.resolveHitl(DEFAULT_WORKSPACE, esc.id, { action: "reassign" }, "op-1");
+
+    expect(provider.consultCalls).toBe(1);
+    const relaunch = provider.starts.filter((s) => s.runId === run.id).at(-1);
+    expect(relaunch?.task).toContain("Summary of the prior agent's work so far:");
+    expect(relaunch?.task).toContain("stuck on a lexer type error");
+  });
+
+  it("Reassign falls back to the static line when the provider has no consult support", async () => {
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    await store.putAgent({ id: "r2", workspaceId: DEFAULT_WORKSPACE, name: "r2", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repoPath: repo });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "do the thing" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    await hub.runLog(run.id, "Tried approach A, hit an error.");
+    // provider.consultReply left unset — consult stays undefined (no support).
+
+    const cur = (await store.getRun(run.id))!;
+    await store.putRun({ ...cur, status: "running", lastHeartbeatAt: 0 });
+    await orchestrator.reapStaleAgents();
+    await waitFor(async () => bus.raised().some((i) => i.kind === "escalation"));
+    const esc = bus.raised().find((i) => i.kind === "escalation")!;
+
+    await ops.resolveHitl(DEFAULT_WORKSPACE, esc.id, { action: "reassign" }, "op-1");
+
+    expect(provider.consultCalls).toBe(0);
+    const relaunch = provider.starts.filter((s) => s.runId === run.id).at(-1);
+    expect(relaunch?.task).not.toContain("Summary of the prior agent's work so far:");
+    expect(relaunch?.task).toContain("already in the working directory");
   });
 });
 

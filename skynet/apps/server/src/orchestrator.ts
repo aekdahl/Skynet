@@ -29,6 +29,7 @@ import { parseReviewVerdict, extractJsonObject, REVIEW_OUTPUT_INSTRUCTION, parse
 import { parseBreakerVerdict, BREAKER_OUTPUT_INSTRUCTION, type BreakerVerdictOut } from "./breaker-verdict.js";
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
+import { parseHandoffSummary, HANDOFF_SUMMARY_INSTRUCTION, HANDOFF_SUMMARY_SYSTEM } from "./handoff-summary.js";
 import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./merge-brief.js";
 import { groupDiffByIntent } from "./diff-groups.js";
 import { composeFeatureBrief, parseFeatureNarrative, FEATURE_BRIEF_INSTRUCTION, FEATURE_BRIEF_SYSTEM } from "./feature-brief.js";
@@ -523,6 +524,26 @@ export function mergeRequiresHumanGlobs(files: string[]): string[] {
   return [...matched];
 }
 
+/** The diff-review gate's `why` line. A real commit can legitimately land
+ *  with `stat.files.length === 0`: `commitAll` commits whenever the WORKING
+ *  TREE differs from the branch's current tip, but `diffStat` then compares
+ *  the fresh commit against `baseRef` — if that comparison's merge-base
+ *  already carries an equivalent change (e.g. the same fix landed on base
+ *  from elsewhere while this run was in flight, or a retried run's branch
+ *  already had it from an earlier turn), the NET diff against base is empty
+ *  even though a real commit exists. The generic "Approve to integrate"
+ *  phrasing read as a normal pending change in that case — reported live
+ *  against a comment-only fix that had already been applied to base by the
+ *  time this run finished — so a zero-file result gets its own, honest copy
+ *  instead of silently reusing the non-empty phrasing. */
+export function diffReviewWhy(branch: string, stat: { add: number; del: number; files: string[] }, requiresHumanGlobs: string[]): string {
+  const body =
+    stat.files.length === 0
+      ? `Finished on ${branch} — a real commit landed, but it's IDENTICAL to the current base: the agent's change (or an equivalent one) already exists there, so there's nothing new to integrate. Approving is a harmless no-op merge; Reject if this task still needs real work.`
+      : `Finished on ${branch} — ${stat.add}+/${stat.del}- across ${stat.files.length} file(s). Approve to integrate.`;
+  return body + (requiresHumanGlobs.length > 0 ? ` Touches ${requiresHumanGlobs.join(", ")} — always needs a human look.` : "");
+}
+
 /** Risk for the ready-to-merge card: a sensitive area → high; an otherwise
  *  broad change → medium; else low. */
 export function mergeRisk(stat: { add: number; del: number; files: string[] }, sensitive: boolean): Risk {
@@ -631,6 +652,36 @@ export function computeFeatureMergeBriefing(input: {
  *  "agent" is agent-driven (the run itself called AskUserQuestion with header
  *  "ESCALATE") and is set directly in `raise()`, never via `escalate()`. */
 type EscalationSource = "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing" | "agent" | "stuck-review" | "paused";
+
+/**
+ * A model-ALIAS resolution failure — mapModel (claude.ts) hands the bundled
+ * CLI a bare alias ("sonnet") and trusts it to resolve to a real, current
+ * model id (its own doc comment says as much); that trust has now broken
+ * HARD rather than just drifting (see the versioned-vs-drifted distinction in
+ * claude.ts's modelMismatchWarning) — the CLI resolved to something the API
+ * flatly 404s on, before any session even starts, so there's no init message
+ * for the drift-warning mechanism to compare against. Found live: an operator
+ * chatting a finished agent got a raw
+ * `HTTP 404: {"type":"error","error":{"type":"not_found_error","message":"model: claude-sonnet"},...}`
+ * blob instead of anything actionable.
+ */
+const MODEL_NOT_FOUND_RE = /"type":"not_found_error"[^}]*"message":"model:\s*([^"}]+)/;
+
+/**
+ * Give that ONE recognized error shape a plain, actionable message; any other
+ * error keeps its original text verbatim — never invent an explanation for a
+ * failure we haven't actually diagnosed.
+ */
+export function friendlyConsultError(err: Error): string {
+  const match = err.message.match(MODEL_NOT_FOUND_RE);
+  if (!match) return err.message;
+  const model = match[1]!.trim();
+  return (
+    `the model "${model}" isn't recognized by the provider right now — this usually means the server is ` +
+    `running an out-of-date build (redeploying with the latest code picks up a fixed model alias) or the ` +
+    `agent's model was set to something invalid in Fleet.`
+  );
+}
 
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
@@ -1158,24 +1209,33 @@ export class Orchestrator {
 
       if (res.committed) {
         const stat = await wt.diffStat(runId, live.baseRef);
-        // Fetched alongside the stat (not inside raiseDiffReview) since it's the
-        // same worktree/baseRef this function already has in scope — raiseDiffReview
-        // only needs the text, to draft the walkthrough and hand to the HITL.
-        const patch = await wt.patch(runId, live.baseRef);
-        await this.freeRunner(live.agentId); // compute is done; awaiting review
-        await this.hub.runStatus(runId, "review");
-        // The run produced a diff → its task enters the review column (a human or
-        // an autonomous reviewer resolves the diff HITL, which merges → done).
-        if (live.taskId) {
-          const task = await this.store.getTask(live.taskId);
-          if (task) await this.hub.upsertTask({ ...task, state: "review" });
+        // `commitAll` only proves the worktree was dirty vs its OWN last commit —
+        // e.g. a revision that undid an earlier turn's change nets to zero against
+        // `baseRef` even though something real got committed just now. Gate on the
+        // net diff, not just "did a commit land", so a genuinely empty result falls
+        // through to the same no-diff handling below instead of opening a review
+        // with nothing in it to look at.
+        if (stat.files.length > 0) {
+          // Fetched alongside the stat (not inside raiseDiffReview) since it's the
+          // same worktree/baseRef this function already has in scope — raiseDiffReview
+          // only needs the text, to draft the walkthrough and hand to the HITL.
+          const patch = await wt.patch(runId, live.baseRef);
+          await this.freeRunner(live.agentId); // compute is done; awaiting review
+          await this.hub.runStatus(runId, "review");
+          // The run produced a diff → its task enters the review column (a human or
+          // an autonomous reviewer resolves the diff HITL, which merges → done).
+          if (live.taskId) {
+            const task = await this.store.getTask(live.taskId);
+            if (task) await this.hub.upsertTask({ ...task, state: "review" });
+          }
+          await this.raiseDiffReview(runId, stat, patch);
+          // Keep what a `modify` review resolution needs to resume this run for a
+          // revision — its worktree survives (retire only happens on merge).
+          this.reviews.set(runId, { git: live.git, baseRef: live.baseRef, taskId: live.taskId });
+          this.live.delete(runId);
+          return;
         }
-        await this.raiseDiffReview(runId, stat, patch);
-        // Keep what a `modify` review resolution needs to resume this run for a
-        // revision — its worktree survives (retire only happens on merge).
-        this.reviews.set(runId, { git: live.git, baseRef: live.baseRef, taskId: live.taskId });
-        this.live.delete(runId);
-        return;
+        await this.hub.runLog(runId, "committed, but the branch is identical to its base — nothing to review");
       }
 
       if ("error" in res && res.error) {
@@ -1269,9 +1329,17 @@ export class Orchestrator {
     if (!res.committed) {
       throw new NothingToReviewError("No changes have been made on this run yet — nothing to review.");
     }
+    // `commitAll` only proves the worktree was dirty vs its OWN last commit — a
+    // revision that undid an earlier turn's change can commit something real
+    // right now while netting to zero against `baseRef`. Check the ACTUAL diff
+    // before stopping the live session, so a false-positive commit never tears
+    // down a still-running agent for a review with nothing in it to look at.
+    const stat = await wt.diffStat(runId, live.baseRef);
+    if (stat.files.length === 0) {
+      throw new NothingToReviewError("No changes have been made on this run yet — nothing to review.");
+    }
 
     await live.handle.stop().catch(() => undefined);
-    const stat = await wt.diffStat(runId, live.baseRef);
     const patch = await wt.patch(runId, live.baseRef);
     await this.freeRunner(live.agentId);
     await this.hub.runStatus(runId, "review");
@@ -1488,9 +1556,7 @@ export class Orchestrator {
       // (queue card, audit row, run header), so embedding the whole task prompt
       // here just bloats the row. The stats + branch live in `why`.
       title: `Review diff — ${stat.add}+/${stat.del}− (${stat.files.length} file${stat.files.length === 1 ? "" : "s"})`,
-      why:
-        `Finished on ${agent.branch} — ${stat.add}+/${stat.del}- across ${stat.files.length} file(s). Approve to integrate.` +
-        (requiresHumanGlobs.length > 0 ? ` Touches ${requiresHumanGlobs.join(", ")} — always needs a human look.` : ""),
+      why: diffReviewWhy(agent.branch, stat, requiresHumanGlobs),
       risk,
       raisedAt: now(),
       expiresAt: null,
@@ -1618,6 +1684,37 @@ export class Orchestrator {
       return parseDiffWalkthrough(reply, files);
     } catch {
       return null; // best-effort — a draft failure never blocks the review
+    }
+  }
+
+  /**
+   * Kanban redesign, stage 1: when a run is REASSIGNED to a different agent,
+   * draft a real summary of the prior agent's log — grounded on the log
+   * itself, same stateless one-shot consult discipline as
+   * draftDiffWalkthrough. Best-effort: an empty log, a provider with no
+   * consult() support, or a failed/unreadable reply all just mean no
+   * summary — relaunchEscalated already has a safe static fallback line, so
+   * this never blocks a reassign.
+   */
+  private async draftHandoffSummary(run: TaskRun, taskText: string): Promise<string | null> {
+    if (!run.log.length) return null;
+    try {
+      const provider = await this.getProvider(run.provider);
+      if (!provider.consult) return null;
+      const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+      const baseUrl = await secretService.resolveEndpoint(run.workspaceId, run.credentialId ?? run.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, run.model);
+      // Recent tail only — enough to ground a handoff summary without
+      // dragging a whole long run's log through the consult.
+      const logTail = run.log.slice(-60).map((l) => l.line).join("\n").slice(-6000);
+      if (!logTail.trim()) return null;
+      const reply = await provider.consult(
+        { task: taskText, model: run.model, cwd: config.runnerCwd, apiKey, baseUrl, rates, context: logTail, system: HANDOFF_SUMMARY_SYSTEM },
+        HANDOFF_SUMMARY_INSTRUCTION,
+      );
+      return parseHandoffSummary(reply);
+    } catch {
+      return null; // best-effort — a draft failure never blocks the reassign
     }
   }
 
@@ -3351,33 +3448,23 @@ export class Orchestrator {
       return;
     }
     if (resolution.action === "reject") {
-      // Stop: abandon the run cleanly and reclaim its worktree.
-      const taskId = this.escalations.get(runId)?.taskId ?? live?.taskId ?? null;
-      if (live) await live.handle.stop().catch(() => undefined);
-      await this.freeRunner(live?.agentId ?? null);
-      this.live.delete(runId);
-      const git = this.escalations.get(runId)?.git ?? live?.git;
-      if (git) await git.worktrees.retire(runId).catch(() => undefined);
-      await this.releaseScratchCwd(live?.scratchCwd);
-      this.escalations.delete(runId);
-      this.failCounts.delete(runId);
-      await this.hub.runStatus(runId, "done");
-      await this.hub.runLog(runId, "escalation resolved — operator stopped the run");
-      // Same invariant haltAgent upholds for a plain (non-escalated) Stop: a
-      // stopped run integrates no change, so its task must not be left
-      // stranded "ongoing"/"review" with no live run behind it — that reads as
+      // Stop: abandon the run cleanly and reclaim its worktree. Same invariant
+      // haltAgent upholds for a plain (non-escalated) Stop: a stopped run
+      // integrates no change, so its task must not be left stranded
+      // "ongoing"/"review" with no live run behind it — that reads as
       // in-progress while nothing is working it. Without this, EVERY
       // escalation stopped via this path (a reap, a stalled runner, an agent
       // escalation the operator declines) orphans its task in the kanban
       // forever — found live, 10 of 11 "ongoing" tasks on a real deployment
       // had already-done runs behind them, none reachable by drag (ongoing's
       // only legal human move is → todo, and nothing was making that move).
-      if (taskId) {
-        const task = await this.store.getTask(taskId).catch(() => undefined);
-        if (task && (task.state === "ongoing" || task.state === "review")) {
-          await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null }).catch(() => undefined);
-        }
-      }
+      // retireRun ALSO dismisses any OTHER HITL still open for this run
+      // (e.g. an approval gate raised alongside the escalation) — the
+      // escalation item itself is already resolved by the time deliver() is
+      // called, so it's not re-touched here.
+      this.escalations.delete(runId);
+      this.failCounts.delete(runId);
+      await this.retireRun(runId, "escalation resolved — operator stopped the run");
       return;
     }
     // A worktree-backed escalation frees its runner + clears `this.live` the
@@ -3402,16 +3489,13 @@ export class Orchestrator {
     if (resolution.action === "reassign" && resolution.resetWork) {
       const run = await this.store.getRun(runId);
       const taskId = this.escalations.get(runId)?.taskId ?? live?.taskId ?? null;
-      if (live) await live.handle.stop().catch(() => undefined);
-      await this.freeRunner(live?.agentId ?? null);
-      this.live.delete(runId);
-      const git = this.escalations.get(runId)?.git ?? live?.git;
-      if (git) await git.worktrees.retire(runId).catch(() => undefined);
-      await this.releaseScratchCwd(live?.scratchCwd);
       this.escalations.delete(runId);
       this.failCounts.delete(runId);
-      await this.hub.runStatus(runId, "done");
-      await this.hub.runLog(runId, "escalation resolved — operator reassigned with a clean slate (previous work discarded)");
+      // unstrand:false — assignTask (below) mints a brand-new run and
+      // overwrites task.runId itself; no need to un-strand to todo first.
+      await this.retireRun(runId, "escalation resolved — operator reassigned with a clean slate (previous work discarded)", {
+        unstrand: false,
+      });
       if (run && taskId) await this.assignTask(run.projectId, taskId).catch(() => undefined);
       return;
     }
@@ -3555,6 +3639,11 @@ export class Orchestrator {
       cleanedGitState.length > 0
         ? `\n\nNote: the previous agent was interrupted mid-\`git ${cleanedGitState.join("/")}\` — it's been aborted for you (no file changes were touched), so the working directory reflects only real committed/uncommitted work, not a half-finished merge. No need to investigate this further.`
         : "";
+    // Kanban redesign, stage 1: brief a reassigned agent with a REAL summary
+    // of what the prior agent tried, not just "the work is in the directory"
+    // — grounded on the actual log, best-effort (see draftHandoffSummary).
+    const handoffSummary = reassign ? await this.draftHandoffSummary(run, task?.text ?? run.name) : null;
+    const handoffNote = handoffSummary ? `\n\nSummary of the prior agent's work so far:\n\n${handoffSummary}` : "";
     const prompt = buildAgentContext({
       project,
       feature,
@@ -3568,9 +3657,9 @@ export class Orchestrator {
       // insurance against the expensive case.
       handoff: run.handoff?.summary,
       body: targetAgentId
-        ? `An operator manually reassigned this task to you mid-run — the previous agent wasn't stuck, they just chose to switch who's working it. Its work so far is already in the working directory (branch ${run.branch}).${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+        ? `An operator manually reassigned this task to you mid-run — the previous agent wasn't stuck, they just chose to switch who's working it. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you get stuck, escalate (AskUserQuestion with header "ESCALATE").`
         : reassign
-          ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+          ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
           : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}).${gitStateNote} Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
     });
     // Reflect the (re)acquired runner on the persisted run: a reassign moves the
@@ -4189,7 +4278,8 @@ export class Orchestrator {
   ): Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }> {
     const run = await this.store.getRun(runId);
     if (!run || run.workspaceId !== workspaceId || run.pr?.state !== "open") throw new Error("No open PR for this run.");
-    const res = await githubService.mergePr(workspaceId, run.pr.repo, run.pr.number, method);
+    const cred = (await this.store.getProject(run.projectId))?.githubCredentialId ?? null;
+    const res = await githubService.mergePr(workspaceId, run.pr.repo, run.pr.number, method, cred);
     if (!res.merged) {
       const blocked = await this.classifyMergeBlock(workspaceId, run.projectId, run.pr, res.reason);
       await this.hub.runLog(runId, `merge blocked (${blocked.blocked}): ${blocked.reason}`);
@@ -4334,7 +4424,8 @@ export class Orchestrator {
   ): Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }> {
     const feature = await this.store.getFeature(featureId);
     if (!feature || feature.workspaceId !== workspaceId || feature.pr?.state !== "open") throw new Error("No open PR for this feature.");
-    const res = await githubService.mergePr(workspaceId, feature.pr.repo, feature.pr.number, method);
+    const cred = (await this.store.getProject(feature.projectId))?.githubCredentialId ?? null;
+    const res = await githubService.mergePr(workspaceId, feature.pr.repo, feature.pr.number, method, cred);
     if (!res.merged) {
       const blocked = await this.classifyMergeBlock(workspaceId, feature.projectId, feature.pr, res.reason);
       return { merged: false, ...blocked };
@@ -4749,7 +4840,7 @@ export class Orchestrator {
         yield await provider.consult!(spec, question);
       }
     } catch (err) {
-      yield `couldn't look into that right now (${(err as Error).message}).`;
+      yield `couldn't look into that right now (${friendlyConsultError(err as Error)}).`;
     }
   }
 
@@ -4778,6 +4869,67 @@ export class Orchestrator {
     await this.releaseScratchCwd(live?.scratchCwd);
     await this.hub.runLog(runId, reason);
     this.live.delete(runId);
+  }
+
+  /**
+   * Kanban redesign, stage 1: the single "this run is over, not reassigned"
+   * teardown. Consolidates what `haltAgent`, `deliverEscalation`'s `reject`
+   * branch, and `reapStaleAgents`' waiting-run branch each hand-rolled
+   * separately — worktree retirement was consistent across them, but HITL
+   * dismissal and `hub.runCompleted` were NOT (audited while building this:
+   * only 2 of the 5 total detach paths in the codebase dismissed dangling
+   * HITL items, which is the "Inbox message doesn't update when a task moves
+   * in kanban" bug class — see the `Operations.transitionTask` fix this
+   * builds on). Always: stops the live handle if any, frees the runner,
+   * retires the worktree, archives the run (a retired run — not reassigned,
+   * not naturally completed — is dead weight for the current work; tucking
+   * it away, reversibly, is more consistent than the old patchwork where
+   * only some paths archived, some only conditionally), marks it terminal
+   * (`status: "done"` + `run.completed`), and dismisses every HITL gate
+   * still open for it — it's now unanswerable.
+   *
+   * `unstrand` (default true) additionally returns the owning task to `todo`
+   * if it was ongoing/review — the invariant "an ongoing/review task always
+   * has a live run" asserted in five places before this. Callers that
+   * already know the operator's chosen destination column (which may not be
+   * `todo` — `Operations.transitionTask`'s done→triage/backlog demotion
+   * case) pass `unstrand: false` and write the task themselves right after.
+   */
+  async retireRun(runId: string, reason: string, opts: { by?: string; unstrand?: boolean } = {}): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (!run) return;
+    await this.stopAgent(runId, reason);
+    await this.hub.setRunArchived(runId, true).catch(() => undefined);
+    if (run.status !== "done") {
+      await this.hub.runStatus(runId, "done");
+      await this.hub.runCompleted(runId, run.branch);
+    }
+    // Any gate still pointing at this run is now unanswerable — it's stopped
+    // and (unless reassigned, a separate path) the task is starting fresh
+    // elsewhere, so leaving the card would strand it in the Inbox pointing
+    // at dead work.
+    const open = (await this.store.listQueue(run.workspaceId).catch(() => [] as HitlItem[])).filter(
+      (q) => q.runId === runId && !q.resolvedAt,
+    );
+    for (const q of open) {
+      await this.hub
+        .resolveHitl(q.id, {
+          action: "dismiss",
+          by: opts.by ?? "system",
+          at: now(),
+          optionIndex: null,
+          guidance: null,
+          targetBranch: null,
+          memoryNote: null,
+          resetWork: false,
+        })
+        .catch(() => undefined);
+    }
+    if (opts.unstrand === false) return;
+    const task = (await this.store.listTasks(run.workspaceId).catch(() => [] as Task[])).find((t) => t.runId === runId);
+    if (task && (task.state === "ongoing" || task.state === "review")) {
+      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
+    }
   }
 
   /**
@@ -4964,22 +5116,13 @@ export class Orchestrator {
         continue;
       }
       // A `waiting` run with a frozen heartbeat that ISN'T an escalation was
-      // parked on a gate whose session died — free its runner + mark it terminal.
-      await this.stopAgent(a.id, reason).catch(() => undefined);
-      await this.hub.runStatus(a.id, "done").catch(() => undefined);
-      await this.hub.runCompleted(a.id, a.branch).catch(() => undefined);
-      // stopAgent retired the worktree — this run integrates no change, so its
-      // owning task must not be left stranded "ongoing" (or "review") showing
-      // a live-looking column next to a run whose chip now reads "done". Same
-      // invariant haltAgent/settleArchivedRun uphold; this sweep was the one
-      // termination path missing it (reported live: a kanban card sitting in
-      // a mid-pipeline column while its status chip showed done).
-      const reapedTask = (await this.store.listTasks(a.workspaceId).catch(() => [] as Task[])).find(
-        (t) => t.runId === a.id,
-      );
-      if (reapedTask && (reapedTask.state === "ongoing" || reapedTask.state === "review")) {
-        await this.hub.upsertTask({ ...reapedTask, state: "todo", runId: null, reviewVerdict: null }).catch(() => undefined);
-      }
+      // parked on a gate whose session died — retireRun frees its runner,
+      // marks it terminal, dismisses that now-unanswerable gate (this sweep
+      // used to leave it dangling in the Inbox — same bug class as the
+      // kanban-move fix), and un-strands its owning task back to `todo` so a
+      // live-looking column doesn't sit next to a run whose chip now reads
+      // "done" (reported live: exactly that kanban symptom).
+      await this.retireRun(a.id, reason).catch(() => undefined);
     }
   }
 
@@ -5577,7 +5720,7 @@ export class Orchestrator {
       };
     } catch (err) {
       return {
-        assessment: `Auto-triaged — "${task.text}" (assessment unavailable: ${(err as Error).message}).`,
+        assessment: `Auto-triaged — "${task.text}" (assessment unavailable: ${friendlyConsultError(err as Error)}).`,
         assessmentEffort: null,
         assessmentRisks: [],
         estimatedDurationMs: null,
@@ -6341,7 +6484,7 @@ export class Orchestrator {
       }
     } catch (err) {
       decision = "flag";
-      reason = `review consult failed: ${(err as Error).message}`;
+      reason = `review consult failed: ${friendlyConsultError(err as Error)}`;
     }
     // The consult above is slow (an LLM round-trip); meanwhile an operator — or
     // another actor — may have resolved this same gate and driven the run to
@@ -6625,29 +6768,7 @@ export class Orchestrator {
   async haltAgent(runId: string): Promise<TaskRun | undefined> {
     const agent = await this.store.getRun(runId);
     if (!agent) return undefined;
-    const live = this.live.get(runId);
-    if (live?.agentId) {
-      const runner = await this.store.getAgent(live.agentId);
-      if (runner) await this.hub.upsertAgent({ ...runner, status: "idle", idleSince: now() });
-    }
-    await this.stopAgent(runId); // stop the handle + retire the worktree + drop the session
-    // stopAgent detaches but leaves the status untouched — halt is the terminal
-    // operator action, so mark it done and emit the completion event.
-    if (agent.status !== "done") {
-      await this.hub.runStatus(runId, "done");
-      await this.hub.runCompleted(runId, agent.branch);
-    }
-    // A stopped run integrates no change, so its owning task must not be left
-    // stranded "ongoing" (or "review") with no live run behind it — that reads as
-    // in-progress while nothing is working it. Return the task to `todo` (cleanly
-    // re-pickable) and archive+detach the dead run, mirroring the abandon path
-    // (transitionTask ongoing/review → todo). Invariant: an `ongoing` task always
-    // has a live run.
-    const task = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === runId);
-    if (task && (task.state === "ongoing" || task.state === "review")) {
-      await this.hub.setRunArchived(runId, true).catch(() => undefined);
-      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
-    }
+    await this.retireRun(runId, "stopped by operator");
     return this.store.getRun(runId);
   }
 

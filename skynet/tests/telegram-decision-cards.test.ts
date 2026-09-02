@@ -132,6 +132,29 @@ describe("gateKeyboard", () => {
     expect(byData["hitl:reject:q-42"]).toMatch(/reject/i);
     expect(Object.keys(byData)).not.toContain("hitl:approve:q-42"); // a choice, not approve/reject
   });
+
+  // Regression: an `escalation` carries the SAME kind of options (the agent's
+  // own offered choices — buildEscalationRaise in claude.ts), but this branch
+  // used to check `kind === "question"` only — an escalation with options fell
+  // through to the generic Approve/Reject row, and tapping Approve silently
+  // discarded the pick (deliverEscalation has no `approve` case, so it fell
+  // through to its catch-all relaunch with EMPTY guidance).
+  it("also renders a button PER option for an escalation with offered choices — not just Approve/Reject", () => {
+    const kb = gateKeyboard(gate({
+      kind: "escalation", diff: null, command: null,
+      options: ["Yes, fix both deploy scripts (Recommended)", "No, leave as-is"],
+    } as Partial<HitlItem>));
+    const byData = Object.fromEntries(kb.inline_keyboard.flat().map((b) => [b.callback_data, b.text]));
+    expect(byData["hitl:option:0:q-42"]).toContain("Yes, fix both deploy scripts");
+    expect(byData["hitl:option:1:q-42"]).toContain("No, leave as-is");
+    expect(Object.keys(byData)).not.toContain("hitl:approve:q-42"); // no single "the" action to approve
+  });
+
+  it("an escalation with NO offered choices (e.g. the autonomy-paused notice) still gets the generic Approve/Reject row", () => {
+    const kb = gateKeyboard(gate({ kind: "escalation", diff: null, command: null, options: null } as Partial<HitlItem>));
+    const datas = kb.inline_keyboard.flat().map((b) => b.callback_data);
+    expect(datas).toContain("hitl:approve:q-42");
+  });
 });
 
 describe("esc", () => {
@@ -236,6 +259,23 @@ describe("Choose a decision option", () => {
     const c = makeControl(false, question);
     await c.handleCallback(OWNER, "hitl:option:0:q-42", "cb-1", 500);
     expect(c.resolveHitl).not.toHaveBeenCalled();
+  });
+
+  // Regression: an escalation gate has no `option` resolve action (deliverEscalation
+  // only understands modify/reject/reassign/dismiss) — tapping a per-option button
+  // must resolve the SAME way the web app's escalation option buttons do: `modify`
+  // with the picked text as guidance. Resolving with `action:"option"` here used to
+  // silently discard the pick (relaunches with empty guidance instead).
+  it("tapping an option on an ESCALATION resolves as `modify` with the picked text as guidance, not `option`", async () => {
+    const escalation = gate({
+      kind: "escalation", diff: null, command: null, title: "Weak DB/store/redis defaults in compose",
+      options: ["Yes, fix both deploy scripts (Recommended)", "No, leave as-is"],
+    } as Partial<HitlItem>);
+    const c = makeControl(true, escalation);
+    await c.handleCallback(OWNER, "hitl:option:0:q-42", "cb-1", 500);
+    expect(c.resolveHitl).toHaveBeenCalledTimes(1);
+    expect(c.resolveHitl.mock.calls[0]?.[1]).toBe("q-42");
+    expect(c.resolveHitl.mock.calls[0]?.[2]).toEqual({ action: "modify", guidance: "Yes, fix both deploy scripts (Recommended)" });
   });
 });
 

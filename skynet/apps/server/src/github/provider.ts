@@ -263,12 +263,22 @@ export class GitHubProvider implements GitProvider {
     return repos.map((r) => ({ id: r.id, name: r.full_name, defaultBranch: r.default_branch, private: r.private, selected: false }));
   }
 
+  // Redacts the token from any error git surfaces (git echoes the authed
+  // remote URL — and Node's execFile puts the full command line, token
+  // included, into the thrown error's message/cmd on failure) since this
+  // error propagates into the run log, which is both persisted and
+  // broadcast live to the operator's UI.
   async pushBranch(token: string, repo: string, worktreePath: string, branch: string, force: boolean): Promise<void> {
     // Token-authenticated HTTPS remote; the worktree is checked out on `branch`.
     const remote = `https://x-access-token:${token}@github.com/${repo}.git`;
     const args = ["-C", worktreePath, "push", remote, `${branch}:refs/heads/${branch}`];
     if (force) args.push("--force-with-lease");
-    await exec(gitBin(), args);
+    try {
+      await exec(gitBin(), args);
+    } catch (err) {
+      const msg = (err as { stderr?: string; message?: string }).stderr || (err as Error).message || String(err);
+      throw new Error(redactToken(msg, token));
+    }
   }
 
   /** Clone `repo` (owner/name) into `dest` over a token-authenticated HTTPS
@@ -355,7 +365,12 @@ export class GitHubProvider implements GitProvider {
 
   async syncBase(token: string, repo: string, worktreePath: string, baseBranch: string): Promise<void> {
     const remote = `https://x-access-token:${token}@github.com/${repo}.git`;
-    await exec(gitBin(), ["-C", worktreePath, "fetch", remote, baseBranch]);
-    await exec(gitBin(), ["-C", worktreePath, "merge", "--no-edit", "FETCH_HEAD"]);
+    try {
+      await exec(gitBin(), ["-C", worktreePath, "fetch", remote, baseBranch]);
+      await exec(gitBin(), ["-C", worktreePath, "merge", "--no-edit", "FETCH_HEAD"]);
+    } catch (err) {
+      const msg = (err as { stderr?: string; message?: string }).stderr || (err as Error).message || String(err);
+      throw new Error(redactToken(msg, token));
+    }
   }
 }

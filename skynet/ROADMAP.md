@@ -592,6 +592,44 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   realistic merge-conflict item: title, why, and conflicting files all present and ordered BEFORE the raw
   (HTML-escaped) conflict text, not instead of it. All prior diff/command/question card tests unaffected —
   `title`/`why` are additive lines, never replacing the existing kind-specific content.
+- [x] **Fix: a diff-review card said "Approve to integrate" on a 0+/0- (0 files) diff — no hint that approving would be a no-op.**
+  Reported live with a real card: an agent's run genuinely committed (`commitAll` saw real working-tree
+  changes and made a commit) for a one-line comment fix, but the diff-review gate's own stat, computed by
+  `diffStat` as `git diff --numstat baseRef...HEAD`, came back `0+/0- (0 files)` — confirmed the project's
+  base branch already had the exact same fix applied by the time this run finished (a duplicate/already-
+  landed change, not data loss — a real commit whose NET content vs. base is empty is a legitimate git
+  state, not a bug in `diffStat` itself). The card's generic `why` text — "Finished on `<branch>` —
+  0+/0- across 0 file(s). Approve to integrate." — read exactly like a normal pending change with nothing
+  to review, giving no hint that clicking Approve would be a harmless no-op merge rather than landing real
+  work. First ruled out the user's own live hypothesis — "do we skip hidden files in diff review?" — by
+  reading `commitAll`/`diffStat`/`patch` directly: `git status --porcelain` / `git add -A` / `git diff
+  --numstat` / `git diff` are all unfiltered, no dotfile/gitignore-aware exclusion exists anywhere in the
+  pipeline. Extracted the `why`-text construction into a new pure `diffReviewWhy` helper (`orchestrator.ts`,
+  alongside `mergeRequiresHumanGlobs`) so a `stat.files.length === 0` result gets its own honest copy
+  ("a real commit landed, but it's IDENTICAL to the current base... Approving is a harmless no-op merge;
+  Reject if this task still needs real work") instead of silently reusing the misleading normal-diff
+  phrasing. Regression-proofed in `tests/diff-review-requires-human.test.ts` (3 new pure unit tests): the
+  zero-file case gets the honest copy and never the `0+/0-` stat phrasing; a non-empty diff is unaffected
+  (exact string match against the pre-existing phrasing); the requires-human-look suffix still appends
+  correctly regardless of which body it follows.
+- [x] **Fix: Telegram silently discarded an operator's pick on an escalation card — "answered" but nothing happened.**
+  Reported live: an agent handed off via `AskUserQuestion` (header "ESCALATE") with concrete choices
+  offered — `buildEscalationRaise` (`claude.ts`) preserves those on the resulting `escalation` HITL's
+  `options` specifically so the operator's one-click pick becomes guidance, exactly like the web queue
+  card's escalation option buttons (`queue.tsx`, which correctly resolve `action:"modify", guidance: opt`).
+  Root cause: `gateKeyboard` (`telegram/notices.ts`) only built per-option buttons for `kind === "question"`
+  — an `escalation` with the SAME shape of `options` fell through to the generic Approve/Request-changes/
+  Reject row. Tapping Approve resolved `action:"approve"`, which `deliverEscalation` (`orchestrator.ts`) has
+  no case for; it fell through to the catch-all `relaunchEscalated(runId, resolution.guidance?.trim() ||
+  "", …)` — and an "approve" resolution never carries `guidance`, so the agent relaunched with an EMPTY
+  string, silently discarding whichever choice was tapped. Fixed by extending `gateKeyboard`'s per-option
+  branch to cover both kinds, and by having `handleCallback`'s `option` decision resolve an escalation gate
+  as `action:"modify", guidance: <picked option text>` (mirroring the web app exactly) instead of
+  `action:"option"`, which `deliverEscalation` doesn't understand either. An escalation with NO offered
+  choices (e.g. the autonomy-paused notice, `options: null`) is untouched — still the generic row.
+  Regression-proofed in `tests/telegram-decision-cards.test.ts` (4 new cases): the keyboard renders per-
+  option buttons for an options-bearing escalation and omits Approve; a bare escalation still gets Approve;
+  tapping an escalation option resolves as `modify` with the option's text as guidance, not `option`.
 - [x] **Fix: answering a triage clarifying question could loop forever — same question, every time.**
   Reported live right after clarifying questions shipped: answer the question → task returns to `backlog`
   for re-triage (by design, since the answer can change the effort/risk/grouping read) → triage runs again
@@ -1557,6 +1595,47 @@ source-trust gate, reachable only when a project has both public issue sync and 
   with recovery stubbed — streak 1 → 2 → fires at 3 → clears → cooldown blocks the next — **without
   taking the live app down to test it**.
 
+- [x] **Kanban/agent redesign, stage 1 — one shared "this run is over" teardown (`Orchestrator.retireRun`).**
+  Prompted by a live bug report: an escalation card sat in the Inbox for a task that was no longer
+  visible in Ongoing/Review, with autonomy off. Root cause traced to a structural gap, not a one-off:
+  "is this task's work alive" is described by FOUR independently-mutable facts — `Task.state`,
+  `TaskRun.status`, `TaskRun.archived`, and whether a HITL is still open for that run — and nothing
+  enforced they agree. Five separate code paths detached a dead agent from its task (`haltAgent`,
+  `deliverEscalation`'s `reject` and `reassign+resetWork` branches, `reapStaleAgents`'s stale-waiting-run
+  sweep, and `Operations.transitionTask`'s abandon branch), each hand-rolled independently — audited live,
+  only 2 of the 5 dismissed the run's still-open HITL items on the way out, which is exactly this bug
+  class: a run stops, its gate doesn't, the card strands in the Inbox. New `Orchestrator.retireRun(runId,
+  reason, opts)` is the one teardown all five now route through: stop the live handle, free the runner,
+  retire the worktree (existing `stopAgent`), archive the run, mark it terminal (`status: "done"` +
+  `hub.runCompleted`), dismiss every HITL gate still open for it, and (unless the caller already knows the
+  destination column — `opts.unstrand: false`, e.g. `transitionTask`'s done→triage/backlog demotion)
+  return an ongoing/review task to `todo` so it's re-pickable instead of stranded. Confirmed live on a real
+  deployment before the fix: 10 of 11 "ongoing" tasks had already-`done` runs behind them, none reachable
+  by drag (ongoing's only legal human move is → todo, and nothing was making that move).
+  Also lands the first piece of the agreed redesign's **Reassign** primitive: `relaunchEscalated`
+  (previously reachable only via resolving an `escalation` HITL) already did 90% of "swap the agent, keep
+  the branch/work" — it now also briefs the new agent with a real, log-grounded summary of what the prior
+  agent tried (`apps/server/src/handoff-summary.ts`'s `draftHandoffSummary`, same stateless one-shot
+  consult discipline as `diff-walkthrough.ts`/`merge-brief.ts`: a structured `{"summary":...}` field, never
+  prose classification), not just a static "your work is already in the directory" line. Best-effort
+  throughout — an empty log, a provider with no `consult()` support, or an unreadable reply all just mean
+  no summary; the existing static fallback line still fires, so a draft failure never blocks a reassign.
+  Design agreed with the operator across several rounds before implementation: Ongoing and Review stay
+  distinct kanban columns (genuinely different business-rule stages — doer vs. review gate — not to be
+  collapsed); a card's position on the board *drives* its status rather than passively reflecting some
+  other system's state; the persistent unit of continuity is the task's WORK (branch + accumulated
+  context), not any specific agent's identity, so Reassign is always a full agent swap and must be
+  reachable from a full drop back to Backlog, not just Todo. A crash/reap resolves as the same case,
+  system-triggered instead of operator-triggered. `retireRun`'s consolidation is covered by
+  `tests/agent-lifecycle.test.ts` (Stop now dismisses dangling HITL — previously it didn't) and
+  `tests/task-transitions.test.ts` (a done→backlog demotion now consistently retires the abandoned run —
+  fixed a test that had been pinning the old, inconsistent per-path behavior); the reassign+summary path by
+  two new `tests/escalation.test.ts` cases (the summary reaches the new agent's kickoff prompt end-to-end
+  when `consult` succeeds; the static fallback fires when it doesn't) plus `tests/handoff-summary.test.ts`
+  for the pure parser. Stages 2–4 (reviewer becomes structural; drag-to-reassign as the board's default
+  backward move with Pause/Abandon as separate explicit actions; delete the now-dead bespoke code and the
+  "⚡ resync" band-aid) are agreed and queued next.
+
 - [x] **⭐ Stop paying twice for the same context — three defects that compounded.** Together these are the
   plausible mechanism behind this deployment's own measured *"only ~19% of spend reached a merge"*.
   **(1) A run parked on a HUMAN was force-failed after 8 minutes.** The stall watchdog only resets on SDK
@@ -1629,7 +1708,7 @@ features below are white space.)
 - [x] **Task grouping & per-project roadmap** — added Features (grouping related tasks) and Milestones (planned per-project releases) as a level above the task board, with Steward and Telegram both able to manage them.
 - [x] **Per-project agent instructions (house rules)** — added a per-project instructions field that rides every prompt an agent sees on that project, plus a shared context assembler (project goal, feature, and a sibling-run digest) so a fresh agent starts with relevant project/feature/in-flight context.
 - [x] **Project Context — meeting notes/emails/docs, condensed into the S2 primer** — the operator can now paste or upload raw context (notes, an email, a doc) on a project's Context tab, which Skynet condenses into a short primer that grounds both an agent's task prompt and "ask about this project" chat.
-- [x] **Per-project isolation for credentials & GitHub identity** — a project can now pin its own LLM credential and GitHub PAT, so its runs bill to the right key and its PRs open under the right account regardless of the workspace default. *Bug fix: `Project.enabledRunnerCredentialIds` (the "Keys" panel's checkbox allowlist — confine a project to specific fleet runner keys) was only enforced by the three sites that ACQUIRE a runner for new work (`acquireAgent`/`acquireOrProvisionRunner`/`acquireSpecificAgent` in `apps/server/src/orchestrator.ts`) — a project restricted to one key was still triaged and auto-reviewed on ANY idle runner in the workspace, because `tickAutonomy`'s triage/periodic-review picks, `requestReview` (manual "Request review"), and `verifyFeatureBeforeShip` (feature-level deep review) each filtered `listAgents` by `status === "idle"` alone, never against the project's allowlist. Root-caused via `keyAllowedForProject`, a single shared helper now used by all seven picking sites (the 3 correct ones refactored onto it too, so a future picking site can't silently reintroduce the gap); a project with no allowed idle runner right now simply skips that tick's triage/review rather than falling back to a disallowed key. Regression-proofed in `tests/project-runner-keys.test.ts` (triage / periodic auto-review / manual request-review, each with the disallowed-key runner as the ONLY idle one) and `tests/feature-verification.test.ts` (feature-level verification correctly skips a disallowed-key idle agent even when it's earlier in store order than the allowed one).*
+- [x] **Per-project isolation for credentials & GitHub identity** — a project can now pin its own LLM credential and GitHub PAT, so its runs bill to the right key and its PRs open under the right account regardless of the workspace default. *Bug fix: `Project.enabledRunnerCredentialIds` (the "Keys" panel's checkbox allowlist — confine a project to specific fleet runner keys) was only enforced by the three sites that ACQUIRE a runner for new work (`acquireAgent`/`acquireOrProvisionRunner`/`acquireSpecificAgent` in `apps/server/src/orchestrator.ts`) — a project restricted to one key was still triaged and auto-reviewed on ANY idle runner in the workspace, because `tickAutonomy`'s triage/periodic-review picks, `requestReview` (manual "Request review"), and `verifyFeatureBeforeShip` (feature-level deep review) each filtered `listAgents` by `status === "idle"` alone, never against the project's allowlist. Root-caused via `keyAllowedForProject`, a single shared helper now used by all seven picking sites (the 3 correct ones refactored onto it too, so a future picking site can't silently reintroduce the gap); a project with no allowed idle runner right now simply skips that tick's triage/review rather than falling back to a disallowed key. Regression-proofed in `tests/project-runner-keys.test.ts` (triage / periodic auto-review / manual request-review, each with the disallowed-key runner as the ONLY idle one) and `tests/feature-verification.test.ts` (feature-level verification correctly skips a disallowed-key idle agent even when it's earlier in store order than the allowed one).* *Second bug fix, same "pinned account isn't honored everywhere" family as `listRepoOwners`/`createRepo` before it (`tests/github-owners.test.ts`): `GithubService.mergePr` — the actual PR-MERGE step of the ready-to-merge flow (`orchestrator.ts`'s `mergeReadyPr`/`mergeReadyFeaturePr`) — was the one GitHub call site that never accepted or threaded `githubCredentialId`, always using `resolveToken` against the WORKSPACE's default connection instead of `projectToken`. Every sibling call (`pushAndOpenPr`, `prStatus`, `cloneRepo`, `listIssues`, `createRepo`, `listRepoOwners`) already resolved the project's pinned PAT correctly — a project confined to its own GitHub account still pushed the branch and opened the PR under that account, but then MERGED it under the workspace default, which can silently succeed against the wrong identity or fail outright (403/404) if that default account has no access to the repo. Fixed by giving `mergePr` the same optional `githubCredentialId` param and `pinned` short-circuit (skip the workspace-connection readiness check entirely when pinned) that `pushAndOpenPr` already had, and threading `project.githubCredentialId` through both `orchestrator.ts` call sites. Regression-proofed in `tests/github-pat.test.ts` (service-level: pinned credential's token used, works with no workspace connection at all) and `tests/ready-merge.test.ts` (orchestrator-level: `mergeReadyPr`/`mergeReadyFeaturePr` pass the project's `githubCredentialId` through to `githubService.mergePr`).*
 - [~] **Project assistant → co-operator (actions from chat)** — the repo-aware project chat (read-only, *shipped*: answers about status + reads repo files like ROADMAP.md) gains the ability to *act* — create a task, start a run, move a card, add a runner — via the same **reply-plus-action envelope** the Telegram intent already uses (`telegram/intent.ts`): the model proposes one action, but it's **validated server-side and gated by the control-flag / a HITL**, never model-trusted. Turns the advisor into a co-operator without a second natural-language surface to maintain. *Steward (the shared brain, `apps/server/src/steward/`) has landed with: 15+ project + task actions (add/move/rename/desc/archive/reorder/schedule/etc.), workspace-wide focus resolution, streaming replies, dock focus-pinning, and **batch actions** — one input can propose up to N actions approved together (an "action budget" with overflow reporting). Grouping/roadmap actions (features + milestones, see below) share the same envelope. Still to do: broader coverage (fleet ops, credentials) + Telegram parity on the newer actions.* Also landed: the Roadmap tab's "reads ROADMAP.md" lookup used to dead-end when a repo kept its plan somewhere else — `Project.roadmapPath` now lets the operator (a picker on the tab's empty state) or Steward (`set_roadmap_path`, confirm-first, e.g. "the roadmap is at docs/PLAN.md") point it at any repo-relative file; `resolveRoadmapDoc` is the single place both the tab's API and Steward's own grounding resolve through, so they can't drift.
 - [~] **Chat → canvas handoff, zero cold start** — the reply-vs-action decision above gets a third
   lane: when a request is better SHOWN than said (review a diff, browse the board, tune the fleet), the
