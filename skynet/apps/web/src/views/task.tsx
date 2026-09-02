@@ -9,6 +9,7 @@ import {
   fmtWait,
   heartbeatSecs,
   KIND_META,
+  fmtCacheHitRate,
   modName,
   openQueue,
   planDone,
@@ -73,6 +74,10 @@ function fmtUsage(u: TaskRun["usage"]): string | null {
   const parts = [`${tok(u.inputTokens)}→${tok(u.outputTokens)} tok`];
   if (u.costUsd != null) parts.push(`$${u.costUsd < 0.01 ? u.costUsd.toFixed(4) : u.costUsd.toFixed(2)}`);
   if (u.turns) parts.push(`${u.turns} turns`);
+  // The split, not the total, is what says whether spend is a caching problem
+  // or a volume one — see cacheHitRate.
+  const cached = fmtCacheHitRate(u);
+  if (cached) parts.push(cached);
   return parts.join(" · ");
 }
 
@@ -387,7 +392,7 @@ export function TaskDetail({
             </span>
           )}
           <span>{fmtElapsed(agent, now)}</span>
-          {fmtUsage(agent.usage) && <span className="usage-chip mono" title="Tokens · cost · turns reported by the agent">{fmtUsage(agent.usage)}</span>}
+          {fmtUsage(agent.usage) && <span className="usage-chip mono" title={"Tokens · cost · turns reported by the agent. “cached” is the share of input served from cache — a low number means something is invalidating the prompt prefix, and fresh input costs ~10x a cache read."}>{fmtUsage(agent.usage)}</span>}
           {agent.status === "done" ? (
             <span className="hb hb-done">♥ finished</span>
           ) : (

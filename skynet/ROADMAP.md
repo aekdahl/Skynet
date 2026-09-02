@@ -1556,6 +1556,26 @@ source-trust gate, reachable only when a project has both public issue sync and 
   with recovery stubbed — streak 1 → 2 → fires at 3 → clears → cooldown blocks the next — **without
   taking the live app down to test it**.
 
+- [x] **⭐ Make the cache hit rate visible — you cannot optimise what you cannot measure.** Chasing a
+  515M-input-token month, the honest finding was that nobody could say what those tokens WERE. `readUsage`
+  folds cache reads and cache writes into `inputTokens` (`claude.ts:332`), so 515M is fresh + cache-read +
+  cache-write summed — and the runner computed the split but the persisted `Usage` contract **dropped it**.
+  Exactly the failure mode of the original under-reporting meter: the data existed, nothing kept it.
+  The split matters far more than the total, because the tiers are priced ~10x apart and the two possible
+  answers call for **opposite** work: a high hit rate means caching is fine and spend is a VOLUME problem
+  (fewer turns, less injected context); a low one means something invalidates the prompt prefix and we're
+  paying fresh-input prices on the dominant token class. `Usage` now carries `cacheReadTokens` /
+  `cacheWriteTokens`, they're summed through the feature rollup, and the run chip reads "72% cached".
+  Unknown is reported as **null, not 0%** — a run recorded before the tiers existed has an unknown hit
+  rate, and rendering that as "0% cached" would invent an alarming fact out of missing data (a real 0%,
+  writes-but-no-reads on a first turn, is still reported as 0). The rollup's `?? 0` is load-bearing rather
+  than defensive noise: summing an undefined legacy field yielded **NaN**, which propagated silently
+  through the whole spend total — caught by the existing feature-brief fixtures.
+- [x] **Exploration model is a setting, and no longer Opus.** Pre-work brief-grounding has no run or agent
+  to inherit a model from, so it was hardcoded — to `opus-4.8`, which kept an expensive model in the loop
+  for every workspace regardless of what its fleet was set to. Now `WorkspaceSettings.exploreModel`
+  (default `sonnet-5`, free-text like every other model field since the catalog is advisory), with a
+  Settings control. It reads code and reports back; it does not need the strongest model available.
 ## v1.5 — Ship-the-wedge: onboarding, fluency & Memory v0  ⛓
 The staggered slice — make Skynet **decisively easier than the field** and start the moat thin, in
 parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktrees/tmux; the ease
