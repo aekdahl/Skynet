@@ -2254,6 +2254,7 @@ export class Orchestrator {
       id: runId,
       endpoint: runEndpoint,
       merge: null, // set when (and if) this run's diff actually lands — see completeMerged
+      handoff: null, // written if this run ever escalates — see composeHandoff
       workspaceId: project.workspaceId,
       projectId,
       name: task.text,
@@ -3037,6 +3038,35 @@ export class Orchestrator {
    *  through raise() instead — same free-the-runner treatment for a
    *  worktree-backed run (a chat-only run's live gate still stays parked;
    *  see raise()'s own doc comment). */
+  /**
+   * What the agent had worked out, for whoever picks this run up next.
+   *
+   * Deliberately NOT a model call. The agent's own escalation reason is already
+   * its account of what it tried and what's blocking (that's what the ESCALATE
+   * payload carries), and its recent log is the record of what it actually did.
+   * Asking a model to summarise those would cost tokens to produce a lossier
+   * version of text we already have — on the exact code path that exists to
+   * stop paying twice for the same context.
+   *
+   * Prose lines only: tool/telemetry chatter ("▸ reading src/x.ts") is noise to
+   * a fresh agent, which can see the working tree for itself.
+   */
+  private composeHandoffFor(run: TaskRun, reason: string): string {
+    const NOISE = /^[▸✓⏸⚠❑●$]/;
+    const recent = run.log
+      .slice(-40)
+      .map((l) => l.line.trim())
+      .filter((l) => l && !NOISE.test(l))
+      .slice(-8);
+    return [
+      `Why it stopped: ${reason}`,
+      run.modifiedFiles.length ? `Files touched so far: ${run.modifiedFiles.slice(0, 20).join(", ")}` : null,
+      recent.length ? `Last notes from the previous agent:\n${recent.map((l) => `- ${l}`).join("\n")}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
   private async escalate(runId: string, reason: string, source: EscalationSource): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
@@ -3053,6 +3083,14 @@ export class Orchestrator {
     // needs the task looked up by its runId pointer, or a successful
     // resume/reassign could never move the task back to "ongoing".
     const taskId = live?.taskId ?? (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === run.id)?.id ?? null;
+    // Record what this agent had worked out, BEFORE the card goes up. If the
+    // resume later lands on a fresh session (the SDK session map is in-memory,
+    // so a server restart loses it), this is what saves the replacement from
+    // re-deriving the whole situation by re-reading the repo — the expensive
+    // half of an escalation resume. No model call: the agent's own escalation
+    // reason plus its recent log is both cheaper and more faithful than asking
+    // a model to summarise them.
+    await this.hub.upsertRun({ ...run, handoff: { summary: this.composeHandoffFor(run, reason), at: now() } }).catch(() => undefined);
     await this.raiseEscalationCard(run, reason, source, { git, baseRef: live?.baseRef, taskId });
   }
 
@@ -3509,6 +3547,13 @@ export class Orchestrator {
       feature,
       brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
       siblings,
+      // Carried into every relaunch prompt. When the SDK session survived, this
+      // is mildly redundant with the agent's own memory and costs a few hundred
+      // characters; when it didn't (a server restart, or a takeover by a
+      // different runner), it is the difference between continuing and
+      // re-reading the entire repo to rediscover what was already known. Cheap
+      // insurance against the expensive case.
+      handoff: run.handoff?.summary,
       body: targetAgentId
         ? `An operator manually reassigned this task to you mid-run — the previous agent wasn't stuck, they just chose to switch who's working it. Its work so far is already in the working directory (branch ${run.branch}).${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you get stuck, escalate (AskUserQuestion with header "ESCALATE").`
         : reassign
@@ -3533,7 +3578,28 @@ export class Orchestrator {
     );
     try {
       const handle = await provider.start(
-        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, disallowedTools: project?.disallowedTools },
+        {
+          runId,
+          projectId: run.projectId,
+          task: prompt,
+          model: run.model,
+          branch: run.branch,
+          cwd,
+          apiKey,
+          baseUrl,
+          rates,
+          disallowedTools: project?.disallowedTools,
+          // RESUME this run's own SDK session instead of starting cold. Without
+          // it, every "Help & resume" / "Reassign" threw the conversation away
+          // and paid full price to re-read the repo and re-derive what the
+          // first agent already knew. The runner resolves this through its
+          // session map (claude.ts) and silently falls back to a fresh session
+          // when there's nothing to resume — which is the RESTART case, and
+          // exactly why the run also carries a handoff summary in its prompt.
+          // Note `reassign + resetWork` never reaches here: it short-circuits
+          // to a clean slate earlier, so a deliberate reset still gets one.
+          parentId: runId,
+        },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId: taskIdForResume ?? null, branch: run.branch, baseRef: ctx?.baseRef ?? live?.baseRef ?? this.baseBranchFor(project), git });
