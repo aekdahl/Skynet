@@ -13,7 +13,7 @@
 // card anatomy (fixed content order, specific copy/labels) doesn't match the
 // legacy queue card's look.
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Decision, Project, Task, TaskRun } from "@skynet/shared";
+import type { Decision, Project, RoadmapProposal, Task, TaskRun } from "@skynet/shared";
 import { dayWindow } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
@@ -31,7 +31,7 @@ type Store = ReturnType<typeof useStore>;
 // only gets the CONFLICT treatment when it carries TASK 15's "file_collision"
 // flag — a plain merge-ready item (no textual collision, e.g. a non-conflict
 // git failure) renders diff-shaped instead, same as the spec calls for.
-export type CardVariant = "approval" | "question" | "diff" | "conflict" | "escalation";
+export type CardVariant = "approval" | "question" | "diff" | "conflict" | "escalation" | "roadmap" | "roadmap_conflict";
 
 // Exported so Home's "first three things" (Phase 22) can reuse the exact
 // same escalation/conflict classification — same left-border language,
@@ -46,6 +46,14 @@ export function cardVariant(item: Decision): CardVariant {
       return "diff";
     case "merge":
       return item.flags.includes("file_collision") ? "conflict" : "diff";
+    case "roadmap_edit":
+      // The plain-vs-conflict split for a roadmap_edit item depends on the
+      // LIVE proposal's state (Rule 4 can flip it after this card was
+      // raised — see roadmapProposalId's own doc comment), which this pure,
+      // Decision-only function can't know. RoadmapEditCardBody re-derives
+      // its own conflict styling once its live fetch resolves; this default
+      // only shapes the outer shell before that (never conflict-red).
+      return "roadmap";
     default: // approval, plan, verifier
       return "approval";
   }
@@ -67,6 +75,8 @@ function provenanceLabel(item: Decision): string {
       return item.flags.includes("file_collision") ? "CONFLICT · MERGE" : "DIFF · MERGE READY";
     case "escalation":
       return item.flags.includes("stuck-review") ? "ESCALATION · AWAITING REVIEW" : "ESCALATION · NEEDS HELP";
+    case "roadmap_edit":
+      return "ROADMAP EDIT · NEEDS YOUR YES";
   }
 }
 
@@ -247,6 +257,247 @@ function SpendRail({ runs, now }: { runs: TaskRun[]; now: number }) {
         <p className="di-side-hint">+{unknownCostRuns} run{unknownCostRuns === 1 ? "" : "s"} with unreported cost</p>
       )}
     </div>
+  );
+}
+
+// ── roadmap_edit card (TASK 30) ──────────────────────────────────────────
+// A machine changing the roadmap becomes a governed Inbox decision — its own
+// body anatomy (a real diff, the agent's-own-words reasoning, two evidence
+// panels) since nothing else in the Inbox needs that shape, plus a
+// held_conflict variant (Rule 4) with its own two-sided compare. Neither
+// variant trusts the HITL item's own title/why snapshot for its rich
+// content (that's a Telegram-only concession, see HitlItem.roadmapProposalId's
+// doc comment) — both live-fetch the real RoadmapProposal.
+
+/** The literal markdown diff: context lines faint, removed lines struck +
+ *  warn-tinted, added lines machine-green-tinted, full-bleed row highlights.
+ *  `diff.context` is the section's ENTIRE raw text as drafted against (not
+ *  just the touched lines), so this walks every line and reclassifies it by
+ *  whether it's in `removed` — the untouched context around the edit still
+ *  renders, same as the literal diff a human reviewing this would see. */
+function RoadmapDiffView({ diff }: { diff: RoadmapProposal["diff"] }) {
+  const removedSet = new Set(diff.removed);
+  return (
+    <div className="di-diff mono">
+      {diff.context.split("\n").map((line, i) => (
+        <div key={`c${i}`} className={"di-diff-line" + (removedSet.has(line) ? " di-diff-del" : " di-diff-ctx")}>
+          {removedSet.has(line) ? "− " : "  "}
+          {line || " "}
+        </div>
+      ))}
+      {diff.added.map((line, i) => (
+        <div key={`a${i}`} className="di-diff-line di-diff-add">
+          {"+ "}
+          {line || " "}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** "IF YOU SAY YES" (impact) / "WHAT IT DIDN'T TOUCH" (respectedBoundaries) —
+ *  the two evidence panels the card spec calls for, straight off the
+ *  proposal's own fields. */
+function ImpactBoundaryPanels({ proposal }: { proposal: RoadmapProposal }) {
+  const impactRows = [
+    ...proposal.impact.tasksCreated.map((t) => `Task created: ${t}`),
+    ...proposal.impact.questionsResolved.map((q) => `Resolves: ${q}`),
+    ...proposal.impact.dependencies.map((d) => `Depends on: ${d}`),
+  ];
+  return (
+    <div className="di-panels">
+      <div className="di-panel">
+        <p className="di-panel-title">If you say yes</p>
+        {impactRows.length > 0 ? (
+          <ul className="di-panel-list">
+            {impactRows.map((r, i) => (
+              <li key={i}>{r}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="di-panel-empty">No further downstream effects noted.</p>
+        )}
+      </div>
+      <div className="di-panel">
+        <p className="di-panel-title">What it didn't touch</p>
+        {proposal.respectedBoundaries.length > 0 ? (
+          <ul className="di-panel-list">
+            {proposal.respectedBoundaries.map((b, i) => (
+              <li key={i}>{b}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="di-panel-empty">Nothing specifically called out.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// TASK 28's four concurrency rules, restated for the conflict card's neutral
+// panel — lime dots = the system already enforces this on its own, blue dots
+// = a human call is structurally required, no autonomy setting bypasses it.
+const CONCURRENCY_RULES: { text: string; machine: boolean }[] = [
+  { text: "One open proposal per section — a compatible second proposal joins it, never forks a new row.", machine: true },
+  { text: "A deletion or a promised-date change always needs a human — at ANY autonomy detent.", machine: false },
+  { text: "The repo wins — a human's direct edit supersedes a stale proposal automatically.", machine: true },
+  { text: "Contradictory proposals are held for you — further agent work on the section locks until you decide.", machine: false },
+];
+
+function RoadmapConcurrencyRules() {
+  return (
+    <div className="di-rules-panel">
+      {CONCURRENCY_RULES.map((r, i) => (
+        <div key={i} className="di-rule-row">
+          <span className={"di-rule-dot " + (r.machine ? "di-rule-dot-machine" : "di-rule-dot-human")} />
+          <span>{r.text}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RoadmapEditCard({
+  item,
+  selected,
+  leaving,
+  now,
+  onOpen,
+  onResolve,
+}: {
+  item: Decision;
+  selected: boolean;
+  leaving: boolean;
+  now: number;
+  onOpen: () => void;
+  onResolve: (action: "approve" | "reject" | "modify" | "option" | "reassign", extra?: { optionIndex?: number; guidance?: string; resetWork?: boolean; remember?: boolean }) => void;
+}) {
+  const [proposal, setProposal] = useState<RoadmapProposal | null>(null);
+  const [other, setOther] = useState<RoadmapProposal | null>(null);
+  const [loading, setLoading] = useState(true);
+  const idleSec = Math.max(0, (now - item.raisedAt) / 1000);
+  const idleUrgent = idleSec > 15 * 60;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!item.projectId || !item.roadmapProposalId) {
+      setLoading(false);
+      return;
+    }
+    api
+      .fetchRoadmapProposal(item.projectId, item.roadmapProposalId)
+      .then(async (p) => {
+        if (cancelled) return;
+        setProposal(p);
+        // held_conflict — fetch the other side of the pair too, so the
+        // conflict card can show both without a second round trip later.
+        if (p.state === "held_conflict" && p.conflictsWith[0]) {
+          const o = await api.fetchRoadmapProposal(item.projectId!, p.conflictsWith[0]).catch(() => null);
+          if (!cancelled) setOther(o);
+        }
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [item.projectId, item.roadmapProposalId]);
+
+  const conflict = proposal?.state === "held_conflict";
+
+  // The conflict actions call the dedicated route directly (its shape
+  // doesn't fit the generic approve/reject `onResolve`), then still call
+  // `onResolve` — Hub.resolveHitl is first-writer-wins, so this redundant
+  // second resolve is a harmless no-op — purely to reuse the parent's
+  // existing collapse/leaving animation instead of duplicating it here.
+  const choose = async (chosenProposalId: string) => {
+    if (!item.projectId) return;
+    await api.resolveRoadmapConflict(item.id, { action: "choose", chosenProposalId }).catch(() => undefined);
+    onResolve("approve");
+  };
+  const writeOwn = async () => {
+    await api.resolveRoadmapConflict(item.id, { action: "write_own" }).catch(() => undefined);
+    onResolve("reject");
+  };
+
+  return (
+    <article className={"di-card" + (selected ? " sel" : "") + (leaving ? " leaving" : "") + (conflict ? " di-card-conflict" : "")}>
+      <div className="di-card-head">
+        <span className="di-kind-label mono">{conflict ? "ROADMAP CONFLICT · NEEDS YOUR CALL" : "ROADMAP EDIT · NEEDS YOUR YES"}</span>
+        <span className="di-meta">{item.projectName}</span>
+        <span className={"di-idle" + (idleUrgent ? " urgent" : "")}>{fmtWait(idleSec)}</span>
+      </div>
+
+      {loading ? (
+        <p className="di-panel-empty">Loading the proposal…</p>
+      ) : !proposal ? (
+        <p className="di-panel-empty">This proposal is no longer available — it may already be resolved elsewhere.</p>
+      ) : conflict ? (
+        <>
+          <p className="di-verdict">Both are reasonable and they cancel out — pick one, or write it yourself.</p>
+          <div className="di-conflict-pair">
+            <div className="di-conflict-side">
+              <p className="di-conflict-side-label">Proposal A</p>
+              <p className="di-conflict-side-headline">{proposal.headline}</p>
+              <p className="di-conflict-side-evidence">{proposal.reasoning}</p>
+            </div>
+            {other && (
+              <div className="di-conflict-side">
+                <p className="di-conflict-side-label">Proposal B</p>
+                <p className="di-conflict-side-headline">{other.headline}</p>
+                <p className="di-conflict-side-evidence">{other.reasoning}</p>
+              </div>
+            )}
+          </div>
+          <div className="di-actions">
+            <button className="di-btn di-btn-primary" onClick={() => choose(proposal.id)}>
+              TAKE A'S
+            </button>
+            {other && (
+              <button className="di-btn di-btn-secondary" onClick={() => choose(other.id)}>
+                TAKE B'S
+              </button>
+            )}
+            <button className="di-btn di-btn-ghost" onClick={writeOwn}>
+              WRITE MY OWN
+            </button>
+          </div>
+          <RoadmapConcurrencyRules />
+        </>
+      ) : (
+        <>
+          <p className="di-verdict">{proposal.headline}</p>
+          <div className="di-roadmap-body">
+            <RoadmapDiffView diff={proposal.diff} />
+            <p className="di-why-label">Why, in its own words</p>
+            <p className="di-why-body">“{proposal.reasoning}”</p>
+            <ImpactBoundaryPanels proposal={proposal} />
+          </div>
+          <div className="di-actions">
+            <button className="di-btn di-btn-primary" onClick={() => onResolve("approve")}>
+              APPROVE & COMMIT
+            </button>
+            <button
+              className="di-btn di-btn-secondary"
+              title="Opens the wording for editing before it commits. Full inline editing lands with the roadmap SOURCE editor — for now this opens the project so you can adjust ROADMAP.md directly."
+              onClick={onOpen}
+            >
+              EDIT THE WORDING FIRST
+            </button>
+            <button className="di-btn di-btn-ghost" onClick={() => onResolve("reject")}>
+              REJECT
+            </button>
+          </div>
+        </>
+      )}
+
+      <p className="di-footnote">also on Telegram</p>
+      <button className="di-open-link" onClick={onOpen} title="Open the project">
+        Open →
+      </button>
+    </article>
   );
 }
 
@@ -443,10 +694,14 @@ function useViewportWidth(): number {
 
 export function DecisionInboxView({
   onOpenTask,
+  onOpenProject,
   onOpenAudit,
   now,
 }: {
   onOpenTask: (runId: string) => void;
+  // TASK 30 — a roadmap_edit item has no run to open (see roadmapProposalId's
+  // own doc comment); its "Open" goes to the project instead.
+  onOpenProject: (projectId: string) => void;
   onOpenAudit: () => void;
   now: number;
 }) {
@@ -550,7 +805,8 @@ export function DecisionInboxView({
         case "Enter":
           if (!it) return;
           e.preventDefault();
-          onOpenTask(it.runId);
+          if (it.kind === "roadmap_edit") onOpenProject(it.projectId);
+          else onOpenTask(it.runId);
           break;
         case "y":
           if (!it) return;
@@ -659,6 +915,24 @@ export function DecisionInboxView({
                 <div className="di-cards">
                   {g.rows.map((it) => {
                     const flatIdx = displayOrder.findIndex((v) => v.id === it.id);
+                    // TASK 30 — a roadmap_edit item is a genuinely different
+                    // shape (no run, no fleet agent behind it) — a separate
+                    // component, not a branch inside DecisionCard, so its
+                    // own hooks (the live proposal fetch) never have to
+                    // coexist with DecisionCard's hooks conditionally.
+                    if (it.kind === "roadmap_edit") {
+                      return (
+                        <RoadmapEditCard
+                          key={it.id}
+                          item={it}
+                          selected={flatIdx === selectedIdx}
+                          leaving={leavingIds.has(it.id)}
+                          now={now}
+                          onOpen={() => onOpenProject(it.projectId)}
+                          onResolve={(action, extra) => resolveAndCollapse(it, action, extra)}
+                        />
+                      );
+                    }
                     return (
                       <DecisionCard
                         key={it.id}

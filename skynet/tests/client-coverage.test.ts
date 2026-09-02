@@ -39,6 +39,14 @@ const ALLOW = new Set<string>([
   "archiveAllAudit", "clearAudit",
   // low-value control-plane (runner rename/model tweak)
   "updateAgent",
+  // TASK 30 — roadmap_edit decision-card actions. proposeRoadmapChange (the
+  // only thing that ever creates a RoadmapProposal) has no agent-facing
+  // trigger yet — no MCP tool, no chat action — so no offline journey can
+  // produce a proposal for a Simulation/Acceptance click-through to act on.
+  // The full server-side round trip (raise → live-fetch → resolve → real
+  // commit with attribution, plus the held_conflict choose/write_own path)
+  // is covered by tests/roadmap-decision-cards.test.ts instead.
+  "fetchRoadmapProposal", "resolveRoadmapConflict",
   // add a second named credential for a provider — needs a real key + the secret
   // store (master key), so no offline journey; the route is guarded server-side
   // and the set/delete-by-id paths it shares ARE journey-covered.
