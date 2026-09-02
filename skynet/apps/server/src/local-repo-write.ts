@@ -64,6 +64,12 @@ function messageWithTrailer(message: string, attribution?: CommitAttribution): s
  * change made since. No-ops (returns `{ committed: false }`) if `content`
  * already matches what's on disk.
  *
+ * `baseline: null` means "this file must not exist yet" (TASK 32's roadmap
+ * scaffold — `readFile` below resolves to `null` for a missing file, so the
+ * same `current !== baseline` check that guards a normal edit against drift
+ * also guards a create against "huh, it's already there" with no separate
+ * branch).
+ *
  * `attribution`, when given, sets the commit's AUTHOR identity (default:
  * the operator's git identity is otherwise left to the flat Skynet identity
  * below) and appends a `Co-authored-by:` trailer — see `CommitAttribution`'s
@@ -73,7 +79,7 @@ export async function commitLocalRepoFile(
   repoPath: string,
   relPath: string,
   content: string,
-  baseline: string,
+  baseline: string | null,
   message: string,
   attribution?: CommitAttribution,
 ): Promise<{ committed: boolean; sha?: string }> {
@@ -85,7 +91,9 @@ export async function commitLocalRepoFile(
   }
   const current = await readFile(join(repoPath, relPath), "utf8").catch(() => null);
   if (current !== baseline) {
-    throw new LocalRepoWriteError(`${relPath} changed on disk since this edit was drafted.`);
+    throw new LocalRepoWriteError(
+      baseline === null ? `${relPath} already exists — refusing to scaffold over it.` : `${relPath} changed on disk since this edit was drafted.`,
+    );
   }
   if (current === content) return { committed: false };
 

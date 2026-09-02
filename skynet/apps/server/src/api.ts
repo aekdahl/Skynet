@@ -1467,6 +1467,26 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return fail(reply, err);
     }
   });
+  // "Without a file there is no roadmap — create one from the board."
+  app.post<{ Params: { id: string } }>("/api/projects/:id/roadmap/scaffold", async (req, reply) => {
+    try {
+      return await ops.scaffoldProjectRoadmap(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── workspace roadmap roll-up (Phase 29 — TASK 32) ────────────────────────
+  // Scoped to the caller's own project access (req.principal — the same
+  // allowlist mcp/project-scope.ts enforces everywhere else); no new
+  // access-control surface.
+  app.get("/api/roadmap-rollup", async (req, reply) => {
+    try {
+      return await ops.getWorkspaceRoadmapRollup(ws(req), req.principal!);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
 
   // ── roadmap proposal governance (TASK 30) ────────────────────────────────
   // The plain approve/reject action rides the existing generic

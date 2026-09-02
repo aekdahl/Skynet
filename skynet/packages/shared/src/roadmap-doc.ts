@@ -220,3 +220,98 @@ export const RoadmapLineClaim = z.object({
   claimedAt: Timestamp,
 });
 export type RoadmapLineClaim = z.infer<typeof RoadmapLineClaim>;
+
+// ─── workspace roll-up (Phase 29 — TASK 32) ─────────────────────────────────
+// "Six repos, one quarter" — an aggregate over every project's ROADMAP.md the
+// CALLER already has access to (no new access-control surface: scoped by the
+// same principal.projectIds allowlist mcp/project-scope.ts already enforces
+// everywhere else; an unrestricted principal — every human/workspace token
+// today — sees every project, unchanged). apps/server/src/roadmap/rollup.ts
+// derives this from a RoadmapDoc + Project; this file is schema only.
+
+// A repo's per-line risk verdict, derived from RoadmapLine.forecast — which
+// TASK 31 is what actually populates (until then every real doc's lines carry
+// `forecast: null`, so this always reads "unknown"; the shape is stable from
+// day one so TASK 31 lighting it up needs no rollup-side change). Never
+// fabricated from an unrelated signal — see `atRiskReason` below for the one
+// real signal available TODAY (TASK 19's credential breaker).
+export const RoadmapDriftVerdict = z.enum(["on_track", "at_risk", "unknown"]);
+export type RoadmapDriftVerdict = z.infer<typeof RoadmapDriftVerdict>;
+
+// One repo's row in the workspace roll-up table (REPO / FILE / LINES / WITH
+// TASKS / WITH CRITERIA / DRIFT / PROPOSALS).
+export const RoadmapRollupRow = z.object({
+  projectId: z.string(),
+  projectName: z.string(),
+  repo: z.string().nullable(), // "owner/name" (GitHub-bound) or null (local repoPath only)
+  // Non-null only for a project WITH a resolved roadmap file — the dashed
+  // "no roadmap" row (see RoadmapWorkspaceRollup.noRoadmapProjects) never
+  // gets a RoadmapRollupRow at all, so this field is never null here.
+  path: z.string(),
+  syncState: RoadmapSyncState,
+  lineCount: z.number().int().nonnegative(),
+  withTasksCount: z.number().int().nonnegative(),
+  withCriteriaCount: z.number().int().nonnegative(),
+  doneCount: z.number().int().nonnegative(),
+  drift: RoadmapDriftVerdict,
+  proposalCount: z.number().int().nonnegative(), // open + held_conflict, this project
+  // The one real, non-fabricated "why might this miss" line available before
+  // TASK 31 ships real per-line forecasts — the project's own credential
+  // breaker state (TASK 19), when one of its enabled runner keys is paused.
+  // Null = nothing to report (not necessarily "healthy" — just nothing this
+  // rollup can currently see).
+  atRiskReason: z.string().nullable(),
+});
+export type RoadmapRollupRow = z.infer<typeof RoadmapRollupRow>;
+
+// One repo's contribution to a cross-repo milestone group — SECTION-scoped
+// (only the lines under that one `##` heading), unlike RoadmapRollupRow which
+// is whole-doc. A project with a 40-line roadmap spanning six milestones
+// contributes a different, much smaller bar to each one.
+export const RoadmapMilestoneRepoBar = z.object({
+  projectId: z.string(),
+  projectName: z.string(),
+  repo: z.string().nullable(),
+  lineCount: z.number().int().nonnegative(),
+  doneCount: z.number().int().nonnegative(),
+  drift: RoadmapDriftVerdict,
+  atRiskReason: z.string().nullable(),
+});
+export type RoadmapMilestoneRepoBar = z.infer<typeof RoadmapMilestoneRepoBar>;
+
+// A milestone NAME matched by plain string equality across repos' own `##`
+// section headings — not a new stored cross-repo entity (per the confirmed
+// decision). Only a heading shared by 2+ projects becomes a group — that's
+// the whole point of "cross-repo"; a repo's own unique section heading is
+// still counted in its RoadmapRollupRow, just never grouped here.
+export const RoadmapMilestoneGroup = z.object({
+  name: z.string(),
+  repos: z.array(RoadmapMilestoneRepoBar),
+  // The single repo (if any) this milestone is most likely to miss — the
+  // first `drift: "at_risk"` bar, else the first bar carrying a real
+  // `atRiskReason` (a tripped breaker), else null (nothing to flag).
+  mostAtRiskProjectId: z.string().nullable(),
+});
+export type RoadmapMilestoneGroup = z.infer<typeof RoadmapMilestoneGroup>;
+
+// A project with no resolved roadmap file (no `roadmapPath` override AND
+// neither default candidate exists) — rendered as the roll-up's dashed final
+// row instead of a normal RoadmapRollupRow, since there's nothing to count.
+export const RoadmaplessProject = z.object({
+  projectId: z.string(),
+  projectName: z.string(),
+});
+export type RoadmaplessProject = z.infer<typeof RoadmaplessProject>;
+
+export const RoadmapWorkspaceRollup = z.object({
+  // Every caller-accessible project WITH a resolved roadmap file — one row
+  // per repo. The repo table renders this directly.
+  rows: z.array(RoadmapRollupRow),
+  // Cross-repo groupings over the SAME rows above (a row can appear under
+  // more than one milestone name only if its doc genuinely has two `##`
+  // headings matching two different groups elsewhere — ordinary, not deduped
+  // against). The milestone card renders this.
+  milestones: z.array(RoadmapMilestoneGroup),
+  noRoadmapProjects: z.array(RoadmaplessProject),
+});
+export type RoadmapWorkspaceRollup = z.infer<typeof RoadmapWorkspaceRollup>;

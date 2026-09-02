@@ -58,6 +58,7 @@ import type {
   ProposeRoadmapChangeRequest,
   RoadmapEditResolveRequest,
   RoadmapConflictResolveRequest,
+  RoadmapWorkspaceRollup,
   SourceRef,
   Rule,
   SavePolicyVersionRequest,
@@ -135,6 +136,9 @@ import { extractText } from "./steward/extract.js";
 import { commitLocalRepoFile, revertCommitInLocalRepo } from "./local-repo-write.js";
 import { enrichRoadmapDocWithBlame } from "./roadmap/enrich.js";
 import { roadmapHistory, type RoadmapHistoryEntry } from "./roadmap/history.js";
+import { computeRollupRow, groupMilestones, pendingProposalCount } from "./roadmap/rollup.js";
+import type { Principal } from "./auth.js";
+import { projectScope } from "./mcp/project-scope.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
 import { classifyApprover } from "./compliance/report.js";
 import type { CapturedDiff, Hub } from "./hub.js";
@@ -3688,6 +3692,93 @@ export class Operations {
     if (!project.repoPath) return [];
     const path = project.roadmapPath ?? ROADMAP_PATHS[0]!;
     return roadmapHistory(project.repoPath, path, opts.limit);
+  }
+
+  // ── workspace roll-up (Phase 29 — TASK 32) ────────────────────────────────
+  /**
+   * The one real, non-fabricated "why might this repo miss" signal available
+   * TODAY, before TASK 31 ships real per-line forecasts (TASK 19's key-health
+   * circuit breaker): the first PAUSED credential among the project's own
+   * `enabledRunnerCredentialIds` (empty list = every workspace credential is
+   * usable — same "empty = unconfined" semantics Project.enabledRunnerCredentialIds
+   * already documents — so every secret is a candidate in that case). Null =
+   * nothing to report, not "definitely healthy" — this rollup can't see a
+   * genuine schedule slip yet, only a stalled key.
+   */
+  private breakerReasonFor(project: Pick<Project, "enabledRunnerCredentialIds">, secrets: SecretMeta[]): string | null {
+    const candidateIds = project.enabledRunnerCredentialIds.length ? new Set(project.enabledRunnerCredentialIds) : null;
+    const paused = secrets.find((s) => (candidateIds ? candidateIds.has(s.id) : true) && s.paused);
+    return paused?.paused?.reason ?? null;
+  }
+
+  /**
+   * "Six repos, one quarter" — a roll-up over every project the CALLER
+   * already has access to, scoped by the same principal.projectIds allowlist
+   * mcp/project-scope.ts enforces everywhere else (no new access-control
+   * surface: an unrestricted principal — every human/workspace token today —
+   * sees the whole workspace, unchanged). A project with no bound repo is
+   * skipped outright (nothing to roll up); one WITH a repo but no resolved
+   * roadmap file lands in `noRoadmapProjects` (the dashed row) instead of
+   * `rows`. Resyncs every accessible project's doc fresh, same freshness
+   * contract getProjectRoadmapDoc already has — this is a dashboard read,
+   * not a hot path, so the per-project resync cost is accepted the same way
+   * it already is there.
+   */
+  async getWorkspaceRoadmapRollup(ws: string, principal: Principal): Promise<RoadmapWorkspaceRollup> {
+    const allProjects = await this.store.listProjects(ws);
+    const scoped = projectScope(principal, this, ws).filterProjects(allProjects);
+    const secrets = await secretService.list(ws);
+
+    const rows: RoadmapWorkspaceRollup["rows"] = [];
+    const noRoadmapProjects: RoadmapWorkspaceRollup["noRoadmapProjects"] = [];
+    const forMilestones: Parameters<typeof groupMilestones>[0] = [];
+
+    for (const project of scoped) {
+      if (!project.repoPath && !project.repo) continue;
+      const found = await resolveRoadmapDoc(ws, project).catch(() => null);
+      if (!found) {
+        noRoadmapProjects.push({ projectId: project.id, projectName: project.name });
+        continue;
+      }
+      const doc = await this.syncProjectRoadmap(ws, project.id).catch(() => null);
+      if (!doc) continue; // resync itself threw (e.g. project vanished mid-loop) — drop, don't error the whole roll-up
+      const proposals = await this.store.listRoadmapProposalsForProject(project.id).catch(() => []);
+      const atRiskReason = this.breakerReasonFor(project, secrets);
+      rows.push(computeRollupRow(project, doc, pendingProposalCount(proposals), atRiskReason));
+      forMilestones.push({ project, doc, atRiskReason });
+    }
+
+    return { rows, milestones: groupMilestones(forMilestones), noRoadmapProjects };
+  }
+
+  /**
+   * "Without a file there is no roadmap — create one from the board." Writes
+   * a minimal starter ROADMAP.md and points `project.roadmapPath` at it,
+   * committing through TASK 28's SAME attribution path (a real operator
+   * author identity, no agent Co-authored-by — nobody proposed this, the
+   * operator asked for it directly) since a repo write is a repo write.
+   * Refuses if a roadmap file is already resolvable — this is a CREATE, not
+   * an overwrite; the operator already has the normal edit paths for that.
+   */
+  async scaffoldProjectRoadmap(ws: string, projectId: string, operatorId: string): Promise<RoadmapDoc> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath && !project.repo) throw new Error("This project has no bound repo to write a roadmap into.");
+    const existing = await resolveRoadmapDoc(ws, project).catch(() => null);
+    if (existing) throw new Error("This project already has a roadmap file.");
+
+    const path = project.roadmapPath ?? ROADMAP_PATHS[0]!;
+    const content = `# ${project.name} Roadmap\n\n## Now\n- [ ] First task\n`;
+    const message = `Skynet: scaffold ${path}`;
+    const identity = operatorGitIdentity(operatorId);
+
+    if (project.repoPath) {
+      await commitLocalRepoFile(project.repoPath, path, content, null, message, identity);
+    } else {
+      await githubService.commitRepoFile(ws, project.repo!, path, content, undefined, message, project.githubCredentialId, identity);
+    }
+    await this.hub.upsertProject({ ...project, roadmapPath: path });
+    return this.syncProjectRoadmap(ws, projectId);
   }
 
   /**
