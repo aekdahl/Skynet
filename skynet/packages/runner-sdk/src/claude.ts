@@ -1420,6 +1420,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
       if (toolName === "ExitPlanMode") {
         return new Promise<PermissionResult>((resolve) => {
           this.gate = resolve;
+          this.pauseIdle(); // parked on a human — not stalled (see pauseIdle)
           this.gateInput = input;
           this.gateTool = toolName;
           this.gateQuestion = null;
@@ -1458,6 +1459,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
         // (auto-approve policy / fast operator) can re-enter during onHitl, and
         // if the resolver isn't stored yet it would miss the gate → permanent stall.
         this.gate = resolve;
+        this.pauseIdle(); // parked on a human — not stalled (see pauseIdle)
         this.gateInput = input;
         this.gateTool = toolName;
         // An escalation is NOT an answerable question: resume() delivers the
@@ -1619,6 +1621,29 @@ class ClaudeRunnerHandle implements RunnerHandle {
    *  timer that keeps ticking for a hung run, so the server reaper can't catch
    *  this; this closes that gap. Force-fail → onFailed → needs-attention (review),
    *  never a silent "running" forever or a false "done". */
+  /**
+   * PAUSE the idle watchdog while a gate is open — a run waiting on a HUMAN is
+   * not stalled.
+   *
+   * The watchdog only resets on SDK messages (see bumpIdle's callers), and no
+   * messages flow while `canUseTool` is parked. So an agent that asked its
+   * operator a question was force-failed after idleCapMs — while the product's
+   * own default is to wait for a human INDEFINITELY
+   * (config.hitlQuestionTimeoutMs = 0). Two defaults contradicting each other,
+   * with the 8-minute one silently winning.
+   *
+   * The cost of that is not the waiting, which is free: it's that the kill
+   * turned a paused, RESUMABLE run into a dead one, whose replacement then paid
+   * again to re-derive everything the first agent knew.
+   *
+   * The total-runtime cap (see `cap`) is deliberately left armed, so a genuinely
+   * wedged run still dies on the outer bound.
+   */
+  private pauseIdle() {
+    if (this.idle) clearTimeout(this.idle);
+    this.idle = undefined;
+  }
+
   private bumpIdle() {
     if (this.finished) return;
     const ms = idleCapMs();
@@ -1939,6 +1964,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
       this.gateInput = null;
       this.gateTool = null;
       this.gateQuestion = null;
+      // Working again → the stall watchdog is meaningful again. Re-arming here
+      // (rather than waiting for the next SDK message) means a resume that
+      // wedges immediately is still caught.
+      this.bumpIdle();
       this.events.onStatus(this.runId, "running");
       // AskUserQuestion: there's no interactive frontend to render the picker, so
       // we never actually run the tool — we deny it and hand the operator's answer

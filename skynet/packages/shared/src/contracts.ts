@@ -391,6 +391,18 @@ export const TaskRun = z.object({
   // GitHub PR merely opened (not yet merged), this is the one field that means a
   // real merge happened. Null → never merged.
   mergedAt: Timestamp.nullable().default(null),
+  // What the previous agent had figured out when this run escalated or stalled.
+  // Read by a RESTARTED session so it doesn't have to re-derive the situation by
+  // re-reading the repo from zero — which is the expensive half of an escalation
+  // resume. Composed from the agent's own words (its escalation reason) plus its
+  // recent log; no extra model call. Null until a run escalates.
+  handoff: z
+    .object({
+      summary: z.string(),
+      at: Timestamp,
+    })
+    .nullable()
+    .default(null),
   // Where the merge landed and what commit it made — recorded so a merge can be
   // UNDONE with one click. That reversibility is what makes unattended merging
   // tolerable: approval stops being final, so it stops needing to be perfect.

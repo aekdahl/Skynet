@@ -1556,6 +1556,28 @@ source-trust gate, reachable only when a project has both public issue sync and 
   with recovery stubbed — streak 1 → 2 → fires at 3 → clears → cooldown blocks the next — **without
   taking the live app down to test it**.
 
+- [x] **⭐ Stop paying twice for the same context — three defects that compounded.** Together these are the
+  plausible mechanism behind this deployment's own measured *"only ~19% of spend reached a merge"*.
+  **(1) A run parked on a HUMAN was force-failed after 8 minutes.** The stall watchdog only resets on SDK
+  messages (`bumpIdle` ← `drain`), and none flow while `canUseTool` is parked — while the product's own
+  default is to wait for a human *indefinitely* (`hitlQuestionTimeoutMs = 0`). Two defaults contradicting
+  each other, with the 8-minute one silently winning. The watchdog now PAUSES while a gate is open and
+  re-arms on resume; the total-runtime cap stays armed, so a genuinely wedged run still dies.
+  **(2) The resume then started a FRESH session.** `relaunchEscalated` passed no `resumeSessionId` and no
+  `parentId`, so every *Help & resume* / *Reassign* threw the conversation away and re-read the repo at
+  full price to re-derive what the first agent already knew. It now passes `parentId: runId`; the runner
+  resolves the session and falls back gracefully when there's nothing to resume. `reassign + resetWork`
+  short-circuits earlier, so a deliberate clean slate still gets one.
+  **(3) …and the replacement started from nothing.** `TaskRun.handoff` now records what the agent had
+  worked out — composed WITHOUT a model call, because the agent's escalation reason is already its own
+  account of what blocked it and its log is the record of what it did; paying a model to summarise text
+  we already have, on the very path that exists to stop paying twice for context, would be
+  self-defeating. Capped at 1500 chars (orientation, not a transcript — an uncapped handoff would
+  re-bloat the prompt it exists to shrink), telemetry chatter stripped, and labelled *"verify before
+  relying on it"*. The session map is in-memory, so a server restart loses it — which is exactly the case
+  the handoff covers.
+  **The waiting was never the cost.** It's free. The cost was the kill turning a paused, RESUMABLE run
+  into a dead one whose replacement paid again.
 - [x] **⭐ Make the cache hit rate visible — you cannot optimise what you cannot measure.** Chasing a
   515M-input-token month, the honest finding was that nobody could say what those tokens WERE. `readUsage`
   folds cache reads and cache writes into `inputTokens` (`claude.ts:332`), so 515M is fresh + cache-read +
