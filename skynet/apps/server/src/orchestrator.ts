@@ -1151,24 +1151,33 @@ export class Orchestrator {
 
       if (res.committed) {
         const stat = await wt.diffStat(runId, live.baseRef);
-        // Fetched alongside the stat (not inside raiseDiffReview) since it's the
-        // same worktree/baseRef this function already has in scope — raiseDiffReview
-        // only needs the text, to draft the walkthrough and hand to the HITL.
-        const patch = await wt.patch(runId, live.baseRef);
-        await this.freeRunner(live.agentId); // compute is done; awaiting review
-        await this.hub.runStatus(runId, "review");
-        // The run produced a diff → its task enters the review column (a human or
-        // an autonomous reviewer resolves the diff HITL, which merges → done).
-        if (live.taskId) {
-          const task = await this.store.getTask(live.taskId);
-          if (task) await this.hub.upsertTask({ ...task, state: "review" });
+        // `commitAll` only proves the worktree was dirty vs its OWN last commit —
+        // e.g. a revision that undid an earlier turn's change nets to zero against
+        // `baseRef` even though something real got committed just now. Gate on the
+        // net diff, not just "did a commit land", so a genuinely empty result falls
+        // through to the same no-diff handling below instead of opening a review
+        // with nothing in it to look at.
+        if (stat.files.length > 0) {
+          // Fetched alongside the stat (not inside raiseDiffReview) since it's the
+          // same worktree/baseRef this function already has in scope — raiseDiffReview
+          // only needs the text, to draft the walkthrough and hand to the HITL.
+          const patch = await wt.patch(runId, live.baseRef);
+          await this.freeRunner(live.agentId); // compute is done; awaiting review
+          await this.hub.runStatus(runId, "review");
+          // The run produced a diff → its task enters the review column (a human or
+          // an autonomous reviewer resolves the diff HITL, which merges → done).
+          if (live.taskId) {
+            const task = await this.store.getTask(live.taskId);
+            if (task) await this.hub.upsertTask({ ...task, state: "review" });
+          }
+          await this.raiseDiffReview(runId, stat, patch);
+          // Keep what a `modify` review resolution needs to resume this run for a
+          // revision — its worktree survives (retire only happens on merge).
+          this.reviews.set(runId, { git: live.git, baseRef: live.baseRef, taskId: live.taskId });
+          this.live.delete(runId);
+          return;
         }
-        await this.raiseDiffReview(runId, stat, patch);
-        // Keep what a `modify` review resolution needs to resume this run for a
-        // revision — its worktree survives (retire only happens on merge).
-        this.reviews.set(runId, { git: live.git, baseRef: live.baseRef, taskId: live.taskId });
-        this.live.delete(runId);
-        return;
+        await this.hub.runLog(runId, "committed, but the branch is identical to its base — nothing to review");
       }
 
       if ("error" in res && res.error) {
@@ -1262,9 +1271,17 @@ export class Orchestrator {
     if (!res.committed) {
       throw new NothingToReviewError("No changes have been made on this run yet — nothing to review.");
     }
+    // `commitAll` only proves the worktree was dirty vs its OWN last commit — a
+    // revision that undid an earlier turn's change can commit something real
+    // right now while netting to zero against `baseRef`. Check the ACTUAL diff
+    // before stopping the live session, so a false-positive commit never tears
+    // down a still-running agent for a review with nothing in it to look at.
+    const stat = await wt.diffStat(runId, live.baseRef);
+    if (stat.files.length === 0) {
+      throw new NothingToReviewError("No changes have been made on this run yet — nothing to review.");
+    }
 
     await live.handle.stop().catch(() => undefined);
-    const stat = await wt.diffStat(runId, live.baseRef);
     const patch = await wt.patch(runId, live.baseRef);
     await this.freeRunner(live.agentId);
     await this.hub.runStatus(runId, "review");
