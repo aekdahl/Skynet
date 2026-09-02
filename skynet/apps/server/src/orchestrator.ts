@@ -524,6 +524,26 @@ export function mergeRequiresHumanGlobs(files: string[]): string[] {
   return [...matched];
 }
 
+/** The diff-review gate's `why` line. A real commit can legitimately land
+ *  with `stat.files.length === 0`: `commitAll` commits whenever the WORKING
+ *  TREE differs from the branch's current tip, but `diffStat` then compares
+ *  the fresh commit against `baseRef` — if that comparison's merge-base
+ *  already carries an equivalent change (e.g. the same fix landed on base
+ *  from elsewhere while this run was in flight, or a retried run's branch
+ *  already had it from an earlier turn), the NET diff against base is empty
+ *  even though a real commit exists. The generic "Approve to integrate"
+ *  phrasing read as a normal pending change in that case — reported live
+ *  against a comment-only fix that had already been applied to base by the
+ *  time this run finished — so a zero-file result gets its own, honest copy
+ *  instead of silently reusing the non-empty phrasing. */
+export function diffReviewWhy(branch: string, stat: { add: number; del: number; files: string[] }, requiresHumanGlobs: string[]): string {
+  const body =
+    stat.files.length === 0
+      ? `Finished on ${branch} — a real commit landed, but it's IDENTICAL to the current base: the agent's change (or an equivalent one) already exists there, so there's nothing new to integrate. Approving is a harmless no-op merge; Reject if this task still needs real work.`
+      : `Finished on ${branch} — ${stat.add}+/${stat.del}- across ${stat.files.length} file(s). Approve to integrate.`;
+  return body + (requiresHumanGlobs.length > 0 ? ` Touches ${requiresHumanGlobs.join(", ")} — always needs a human look.` : "");
+}
+
 /** Risk for the ready-to-merge card: a sensitive area → high; an otherwise
  *  broad change → medium; else low. */
 export function mergeRisk(stat: { add: number; del: number; files: string[] }, sensitive: boolean): Risk {
@@ -1536,9 +1556,7 @@ export class Orchestrator {
       // (queue card, audit row, run header), so embedding the whole task prompt
       // here just bloats the row. The stats + branch live in `why`.
       title: `Review diff — ${stat.add}+/${stat.del}− (${stat.files.length} file${stat.files.length === 1 ? "" : "s"})`,
-      why:
-        `Finished on ${agent.branch} — ${stat.add}+/${stat.del}- across ${stat.files.length} file(s). Approve to integrate.` +
-        (requiresHumanGlobs.length > 0 ? ` Touches ${requiresHumanGlobs.join(", ")} — always needs a human look.` : ""),
+      why: diffReviewWhy(agent.branch, stat, requiresHumanGlobs),
       risk,
       raisedAt: now(),
       expiresAt: null,
