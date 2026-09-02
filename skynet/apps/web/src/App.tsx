@@ -2,10 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { useNow, useStore } from "./lib/store";
 import { initialView, onNavigate } from "./pwa/launch"; // [pwa] Inbox-first launch + push deep-link
 import { setDesktopBadge, focusDesktopWindow } from "./lib/desktop"; // [desktop] dock badge + window focus, no-op outside Electron
-import { openQueue } from "./lib/derive";
+import { openQueue, hitlFor } from "./lib/derive";
 import { parseHash, toHash } from "./lib/routing"; // [w7] deep links
 import { gateView } from "./lib/dev"; // dev-only pages hidden from release builds
-import { TitleBar, OpSidebar, OpStatusBar, ConnectingShell } from "./components/shell";
+import { TitleBar, OpSidebar, OpStatusBar, ConnectingShell, DepletedKeyBanner } from "./components/shell";
 import { StewardDock } from "./components/steward-dock";
 import { CommandPalette } from "./components/command-palette";
 import { useTweaks } from "./components/tweaks";
@@ -17,6 +17,8 @@ import { ProjectView } from "./views/project";
 import { QueueView } from "./views/queue";
 import { AuditView } from "./views/audit";
 import { TaskDetail } from "./views/task";
+import { RunDetailView } from "./kanban/run-detail";
+import { ReviewMergeView } from "./kanban/review-merge";
 import { IntegrationsView } from "./views/integrations";
 import { MergesView } from "./views/merges";
 import { Onboarding } from "./views/onboarding";
@@ -26,11 +28,15 @@ import { LoginView } from "./views/login";
 import { AcceptanceView } from "./views/acceptance";
 import { SimulationView } from "./views/simulation";
 import { RoadmapView } from "./views/roadmap";
+import { WorkspaceRoadmapView } from "./views/workspace-roadmap";
 import { AgentDetailView } from "./views/agent-detail";
+import { DesignTokensPreview } from "./views/design-tokens-preview";
+import { DecisionInboxView } from "./kanban/inbox";
 
 export type ViewName =
   | "home"
   | "queue"
+  | "decisionInbox"
   | "audit"
   | "projects"
   | "fleet"
@@ -42,13 +48,16 @@ export type ViewName =
   | "acceptance"
   | "simulation"
   | "roadmap"
-  | "agentDetail";
+  | "workspaceRoadmap"
+  | "agentDetail"
+  | "designTokens";
 
 const VIEW_LABEL: Record<string, string> = {
   home: "Home",
   projects: "Projects",
   fleet: "Fleet",
   queue: "Inbox",
+  decisionInbox: "Decisions",
   audit: "Audit",
   integrations: "Integrations",
   merges: "Ready to merge",
@@ -57,7 +66,9 @@ const VIEW_LABEL: Record<string, string> = {
   acceptance: "Acceptance",
   simulation: "Simulation",
   roadmap: "Roadmap",
+  workspaceRoadmap: "Roadmap Roll-up",
   agentDetail: "Agent",
+  designTokens: "Design tokens",
 };
 
 export function App() {
@@ -107,6 +118,13 @@ export function App() {
   // task composer focused, so the operator's next move (add a task) is one keystroke
   // away. Cleared once consumed so re-visiting the project doesn't re-open it.
   const [composeProjectId, setComposeProjectId] = useState<string | null>(null);
+  // TASK 21 — a breaker-event source chip's target: `#/project/<id>/autonomy`
+  // pre-opens TASK 19's autonomy dial modal, same consume-once pattern as
+  // composeProjectId above (the modal's own open/close state takes over
+  // once it's mounted).
+  const [autonomyOpenProjectId, setAutonomyOpenProjectId] = useState<string | null>(
+    () => (route0?.autonomyOpen && route0.projectId ? route0.projectId : null),
+  );
   const [selIdx, setSelIdx] = useState(0);
   const [onboarded, setOnboarded] = useState(isOnboarded);
   // Re-run setup on demand (from Settings), even after it's been completed/skipped.
@@ -198,6 +216,7 @@ export function App() {
       if (r.projectId !== undefined) setProjectId(r.projectId);
       if (r.runId !== undefined) setRunId(r.runId);
       if (r.agentId !== undefined) setAgentId(r.agentId);
+      if (r.autonomyOpen && r.projectId) setAutonomyOpenProjectId(r.projectId);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -317,17 +336,14 @@ export function App() {
                 </button>
               </div>
             )}
+            <DepletedKeyBanner />
             {store.loaded && view === "home" && (
               <HomeView
                 now={now}
                 onOpenTask={openTask}
-                onOpenAgent={openAgent}
-                onOpenProject={openProject}
                 onCreate={createProject}
-                onGoInbox={() => setView("queue")}
                 onConfigureFleet={() => setView("fleet")}
                 onOpenSettings={() => setView("settings")}
-                onAssign={() => setView("projects")}
               />
             )}
             {store.loaded && view === "projects" && (
@@ -359,6 +375,8 @@ export function App() {
                 onBack={() => setView(fromP)}
                 autoCompose={composeProjectId === project.id}
                 onComposeConsumed={() => setComposeProjectId(null)}
+                autoOpenAutonomy={autonomyOpenProjectId === project.id}
+                onAutonomyOpenConsumed={() => setAutonomyOpenProjectId(null)}
               />
             )}
             {store.loaded && view === "project" && !project && (
@@ -374,6 +392,9 @@ export function App() {
             {store.loaded && view === "queue" && (
               <QueueView selectedIdx={selIdx} onSelectIdx={setSelIdx} onOpen={openTask} now={now} />
             )}
+            {store.loaded && view === "decisionInbox" && (
+              <DecisionInboxView onOpenTask={openTask} onOpenProject={openProject} onOpenAudit={() => setView("audit")} now={now} />
+            )}
             {store.loaded && view === "audit" && (
               <AuditView now={now} onOpenTask={openTask} />
             )}
@@ -383,13 +404,37 @@ export function App() {
             {store.loaded && view === "acceptance" && <AcceptanceView />}
             {store.loaded && view === "simulation" && <SimulationView />}
             {store.loaded && view === "roadmap" && <RoadmapView />}
+            {store.loaded && view === "workspaceRoadmap" && <WorkspaceRoadmapView />}
+            {store.loaded && view === "designTokens" && <DesignTokensPreview />}
             {store.loaded && view === "task" && agent && (
-              <TaskDetail
-                agent={agent}
-                now={now}
-                onBack={() => setView(from === "task" ? "home" : from)}
-                backLabel={VIEW_LABEL[from] || "Back"}
-              />
+              store.projects.find((p) => p.id === agent.projectId)?.newBoardEnabled ? (
+                (() => {
+                  const gate = hitlFor(store.queue, agent.id);
+                  const reviewing = gate && (gate.kind === "diff" || gate.kind === "merge" || gate.kind === "verifier");
+                  return reviewing ? (
+                    <ReviewMergeView
+                      agent={agent}
+                      now={now}
+                      onBack={() => setView(from === "task" ? "home" : from)}
+                      backLabel={VIEW_LABEL[from] || "Back"}
+                    />
+                  ) : (
+                    <RunDetailView
+                      agent={agent}
+                      now={now}
+                      onBack={() => setView(from === "task" ? "home" : from)}
+                      backLabel={VIEW_LABEL[from] || "Back"}
+                    />
+                  );
+                })()
+              ) : (
+                <TaskDetail
+                  agent={agent}
+                  now={now}
+                  onBack={() => setView(from === "task" ? "home" : from)}
+                  backLabel={VIEW_LABEL[from] || "Back"}
+                />
+              )
             )}
             {store.loaded && view === "task" && !agent && (
               <div className="vw">
@@ -423,6 +468,7 @@ export function App() {
           activeTab={dockTab}
           onActivateTab={setDockTab}
           onCloseTab={closeAgentTab}
+          onOpenTask={openTask}
         />
       )}
       {store.loaded && !stewardOpen && (

@@ -28,6 +28,29 @@ class AutoProvider implements RunnerProvider {
   }
 }
 
+// Records every `stop()` call and lets the test decide WHEN the run finishes
+// (via the captured `events`), instead of completing immediately — the shape
+// needed to prove a budget cap never interrupts an already-ongoing run: it
+// must keep running (never stopped) until it finishes on its own terms.
+class ManualProvider implements RunnerProvider {
+  readonly id = "claude" as const;
+  stopCalls: string[] = [];
+  events = new Map<string, RunnerEvents>();
+  async start(spec: StartSpec, e: RunnerEvents): Promise<RunnerHandle> {
+    this.events.set(spec.runId, e);
+    return {
+      runId: spec.runId,
+      provider: this.id,
+      async pause() {},
+      async resume() {},
+      async message() {},
+      stop: async () => {
+        this.stopCalls.push(spec.runId);
+      },
+    };
+  }
+}
+
 const mkProject = (over: Partial<Project> = {}): Project =>
   ({
     id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [],
@@ -209,5 +232,49 @@ describe("tickAutonomy — daily budget gate", () => {
     expect((await store.getTask("t1"))?.state).toBe("todo"); // p1 paused
     expect((await store.getTask("t2"))?.state).toBe("ongoing"); // p2 unaffected
     expect(provider.started).toBe(1);
+  });
+
+  // The Keys & Budget panel's own cap-behavior sentence claims "running agents
+  // finish their current step, commit, and park" — not an abrupt stop. Prove
+  // it against the real orchestrator: a run already ongoing when the budget
+  // becomes exhausted mid-tick must survive completely untouched — no stop()
+  // call, no status change — since the budget gate (underDailyBudget) is only
+  // ever consulted by auto-PICK (step 2 of tickAutonomy), which never looks at
+  // runs already in flight.
+  it("an already-ongoing run survives the budget going over mid-flight — never stopped, state untouched", async () => {
+    const store = new MemoryStore();
+    const hub = new Hub(store, new NullBus());
+    const provider = new ManualProvider();
+    const orch = new Orchestrator(store, hub, provider);
+
+    // Start with NO budget so assignTask can actually start the run for real
+    // (through the orchestrator's own live-tracking, not a hand-seeded store
+    // row) and land it in the orchestrator's `this.live` map.
+    await store.putProject(mkProject({ dailyBudgetUsd: null }));
+    await store.putAgent(mkAgent());
+    await store.putTask(mkTask());
+    const run = await orch.assignTask("p1", "t1");
+    expect(provider.events.has(run.id)).toBe(true); // genuinely live, not just a store row
+    const ongoingTaskBefore = await store.getTask("t1");
+    expect(ongoingTaskBefore?.state).toBe("ongoing");
+
+    // NOW blow the budget — a second run's cost pushes today's known spend
+    // over the cap, exactly as it would happen mid-session in production.
+    const project = await store.getProject("p1");
+    await hub.upsertProject({ ...project!, dailyBudgetUsd: 1 });
+    await store.putRun(mkRun({ id: "already-spent", startedAt: Date.now(), usage: cost(5) }));
+
+    await orch.tickAutonomy();
+    await orch.tickAutonomy(); // a second tick — still no interruption, not just the first one
+
+    expect(provider.stopCalls).toEqual([]); // never abruptly stopped
+    expect((await store.getRun(run.id))?.status).toBe(run.status); // run status untouched
+    expect((await store.getTask("t1"))?.state).toBe("ongoing"); // task untouched
+
+    // The run finishing NORMALLY afterward (its own "finish current step,
+    // commit" — simulated here via the real onCompleted callback the
+    // provider would invoke) is unaffected by the budget cap either —
+    // completion isn't itself gated by underDailyBudget.
+    expect(() => provider.events.get(run.id)!.onCompleted(run.id, run.branch)).not.toThrow();
   });
 });

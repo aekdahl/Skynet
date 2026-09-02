@@ -12,6 +12,7 @@ import {
   fmtDurMs,
   fmtNum,
   fmtWait,
+  isAutonomyPaused,
   isStuckReview,
   openQueue,
   STATUS_META,
@@ -31,6 +32,14 @@ import { ProjectQualityView } from "./project-quality";
 import { ProjectContextView } from "./project-context";
 import { InformComposer, toastInformResult } from "./fleet";
 import { toast } from "../components/toast";
+import { NewBoardView } from "../kanban/gravity";
+import { RulesTab } from "../kanban/rules";
+import { KeysBudgetPanel } from "../kanban/keys-budget";
+import { ActivityFeed } from "../kanban/feed";
+import { BoardHealth } from "../kanban/health";
+import { AutonomyDialButton } from "../kanban/autonomy-dial";
+import { Chip } from "../kanban/primitives";
+import { isTypingTarget } from "../lib/keys";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -373,6 +382,12 @@ function TaskCard({
   // Force Done now runs a completeness consult before it pushes (server-side),
   // so it can take several real seconds — without this it just looked dead.
   const [forcingDone, setForcingDone] = useState(false);
+  // Re-triage runs a real consult too (server-side, synchronously within the
+  // request) — same "looked dead" problem without a busy indicator. Also
+  // gates the clarification card below: a stale question is about to be
+  // replaced (or removed, if the fresh pass comes back clear), so it's
+  // hidden for the duration rather than sitting there answerable mid-retriage.
+  const [retriaging, setRetriaging] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const detailCloseRef = useRef<HTMLButtonElement>(null);
   // Keyboard a11y for the detail modal: focus its close button on open (Escape
@@ -398,7 +413,10 @@ function TaskCard({
   const [descDraft, setDescDraft] = useState(task.description ?? "");
   const pid = task.projectId;
   const s = task.state;
-  const q = run ? openQueue(queue).find((it) => it.runId === run.id) : undefined;
+  // Excludes an `autonomy-paused` notice — a project-level circuit-breaker
+  // trip, not something this task/run could act on — so it doesn't pin to
+  // this one card as if it were the task that's blocked.
+  const q = run ? openQueue(queue).find((it) => it.runId === run.id && !isAutonomyPaused(it)) : undefined;
   const openRun = run ? () => onOpenTask(run.id) : undefined;
   // A card is always openable: a run card opens its live activity; a card with no
   // run opens a read-only detail modal (the card itself clamps title/description).
@@ -491,7 +509,15 @@ function TaskCard({
       }}
       onDragEnd={() => dnd?.end()}
       onClick={openCard}
-      onKeyDown={(e: React.KeyboardEvent) => (e.key === "Enter" || e.key === " ") && openCard()}
+      onKeyDown={(e: React.KeyboardEvent) => {
+        // Same exclusion as onDragStart above: a keydown that started in an
+        // inner control (typing a space/enter into the clarification answer,
+        // the description edit textarea, an eligibility select, etc.) must
+        // stay that control's own keystroke, not bubble up and pop the
+        // detail modal out from under whoever's mid-typing.
+        if ((e.target as HTMLElement).closest("input,select,textarea,button,label,a")) return;
+        if (e.key === "Enter" || e.key === " ") openCard();
+      }}
     >
       <div className="kb-card-top">
         {run && <StatusDot status={run.status} />}
@@ -645,9 +671,17 @@ function TaskCard({
           <button
             className="kb-unreviewed-btn"
             title="Re-run triage now — useful after project context changed or the description was edited, instead of waiting for it to cycle back through Backlog"
-            onClick={() => void requestRetriage(pid, task.id)}
+            disabled={retriaging}
+            onClick={async () => {
+              setRetriaging(true);
+              try {
+                await requestRetriage(pid, task.id);
+              } finally {
+                setRetriaging(false);
+              }
+            }}
           >
-            Re-triage
+            {retriaging ? "Re-triaging…" : "Re-triage"}
           </button>
         </div>
       )}
@@ -674,7 +708,7 @@ function TaskCard({
           </div>
         )}
       {/* Triage needs something before this can start — ask right on the card. */}
-      {task.clarification && <ClarificationCard pid={pid} task={task} />}
+      {task.clarification && !retriaging && <ClarificationCard pid={pid} task={task} />}
 
       {s === "review" && (
         task.reviewVerdict ? (
@@ -1299,17 +1333,28 @@ function ProjectGovernance({
   project,
   onApprovalLevelChange,
   onChange,
+  autoOpenAutonomy = false,
+  onAutonomyOpenConsumed,
 }: {
   project: Project;
   onApprovalLevelChange: (level: string) => void;
   onChange: (patch: Partial<Project>) => void;
+  // TASK 21 — a breaker-event source chip's target: force this <details> menu
+  // open (it's collapsed by default) and hand the dial its own auto-open
+  // signal, so a click actually lands on the open dial, not a collapsed menu.
+  autoOpenAutonomy?: boolean;
+  onAutonomyOpenConsumed?: () => void;
 }) {
   const LEVEL_LABEL: Record<string, string> = { manual: "Manual", assisted: "Assisted", trusted: "Trusted", full: "Full autonomy" };
   const level = project.approvalLevel ?? "trusted";
   const danger = level === "full";
   const summary = project.autonomy ? LEVEL_LABEL[level] : `${LEVEL_LABEL[level]} · Autonomy off`;
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (autoOpenAutonomy && detailsRef.current) detailsRef.current.open = true;
+  }, [autoOpenAutonomy]);
   return (
-    <details className={"proj-keys" + (danger ? " proj-governance-danger" : "")}>
+    <details ref={detailsRef} className={"proj-keys" + (danger ? " proj-governance-danger" : "")}>
       <summary
         className="proj-keys-summary"
         title="How agents run unattended on this project: how much of their own commands auto-approve, whether the board triages/reviews on its own, spend limits, and review rigor."
@@ -1319,6 +1364,7 @@ function ProjectGovernance({
         <span className="proj-keys-value">{summary}</span>
       </summary>
       <div className="proj-keys-menu proj-governance-menu">
+        <AutonomyDialButton project={project} autoOpen={autoOpenAutonomy} onAutoOpenConsumed={onAutonomyOpenConsumed} />
         <label
           className={"proj-approval" + (danger ? " proj-approval-danger" : "")}
           title="How much an agent may run commands without asking. Diff review needs a human unless Autonomy lets another fleet agent LLM-review and merge it — Full autonomy skips even that: every run's own diff merges immediately, no second opinion."
@@ -1394,6 +1440,42 @@ function ProjectGovernance({
               <span className="proj-autonomy-label">Breaker review</span>
               <span className="proj-autonomy-hint">After the verifier approves, an adversarial agent tries to reproduce failures before it passes.</span>
             </span>
+          </label>
+        )}
+        <label
+          className="proj-autonomy"
+          title="Renders the new 4-column Momentum Board (intake / queued / in flight / landed) instead of the old six-column board, for this project only. On by default for new projects (TASK 14) — switch it off here to fall back to the old board for this project specifically."
+        >
+          <input
+            type="checkbox"
+            className="proj-autonomy-cb"
+            checked={project.newBoardEnabled}
+            onChange={(e) => onChange({ newBoardEnabled: e.target.checked })}
+          />
+          <span className="proj-autonomy-switch" aria-hidden="true" />
+          <span className="proj-autonomy-text">
+            <span className="proj-autonomy-label">Momentum Board</span>
+            <span className="proj-autonomy-hint">The 4-column board (intake / queued / in flight / landed), with automation rules, activity feed, and health metrics. Off falls back to the old board.</span>
+          </span>
+        </label>
+        {project.newBoardEnabled && (
+          <label
+            className="proj-approval"
+            title="Once this many tasks are queued, further incoming tasks render as held (not silently queued) until a slot frees. Blank = no limit."
+          >
+            <span className="proj-approval-label mono">Queued WIP limit</span>
+            <input
+              type="number"
+              min={1}
+              className="qx-input"
+              style={{ width: 80 }}
+              placeholder="none"
+              value={project.queuedWipLimit ?? ""}
+              onChange={(e) => {
+                const n = e.target.value.trim() ? Number(e.target.value) : null;
+                onChange({ queuedWipLimit: n != null && n > 0 ? n : null });
+              }}
+            />
           </label>
         )}
       </div>
@@ -1520,6 +1602,8 @@ export function ProjectView({
   onBack,
   autoCompose = false,
   onComposeConsumed,
+  autoOpenAutonomy = false,
+  onAutonomyOpenConsumed,
 }: {
   project: Project;
   now: number;
@@ -1529,11 +1613,16 @@ export function ProjectView({
   // Set right after Create project → open the task composer focused on land.
   autoCompose?: boolean;
   onComposeConsumed?: () => void;
+  // TASK 21 — set by a `#/project/<id>/autonomy` deep link (a breaker-event
+  // source chip) → pre-opens the Governance menu's autonomy dial on land.
+  autoOpenAutonomy?: boolean;
+  onAutonomyOpenConsumed?: () => void;
 }) {
   const {
     runs,
     queue,
     tasks,
+    features,
     fleet,
     updateProject,
     removeApprovalRule,
@@ -1619,10 +1708,10 @@ export function ProjectView({
   // Per-project lens (Kanban is the default; Archived shows soft-hidden tasks +
   // restore; Roadmap renders ROADMAP.md from the repo). Persisted per-project in
   // sessionStorage so switching back restores the last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "coverage" | "archived">(() => {
+  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "coverage" | "rules" | "keys" | "feed" | "archived" | "health">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "roadmap" || v === "context" || v === "coverage" || v === "archived" ? v : "kanban";
+    return v === "roadmap" || v === "context" || v === "coverage" || v === "rules" || v === "keys" || v === "feed" || v === "archived" || v === "health" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -1699,6 +1788,31 @@ export function ProjectView({
   const [resyncing, setResyncing] = useState(false);
   const hasRepo = !!(project.gitBacked || project.repo);
 
+  // Breadcrumb's "N GATES OPEN" chip — the same underlying workspace-wide
+  // queue TASK 15's /api/decisions filters down to one project (see that
+  // endpoint's own doc comment), derived here from the already-live,
+  // WS-synced store instead of a second fetch so the count never lags.
+  const openGates = queue.filter(
+    (q) => !q.resolvedAt && runs.some((r) => r.id === q.runId && r.projectId === project.id),
+  ).length;
+
+  // Breadcrumb keyboard affordances — Escape or Option/Alt+Left leaves the
+  // project, same action as the ✕ button and the "Projects" crumb itself.
+  // Skipped while typing, or while a local overlay this view owns is open
+  // (that overlay's own Escape handling should win instead).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      if (editing || previewOpen || flyOpen || confirmDel || informOpen) return;
+      if (e.key === "Escape" || (e.altKey && e.key === "ArrowLeft")) {
+        e.preventDefault();
+        onBack();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editing, previewOpen, flyOpen, confirmDel, informOpen, onBack]);
+
   useEffect(() => {
     setName(project.name);
     setGoal(project.goal);
@@ -1711,9 +1825,23 @@ export function ProjectView({
 
   return (
     <section className="projview">
-      <button className="btn btn-ghost btn-back" onClick={onBack}>
-        ← Back
-      </button>
+      <div className="pv-breadcrumb">
+        <div className="pv-breadcrumb-trail">
+          <button className="pv-breadcrumb-projects" onClick={onBack}>Projects</button>
+          <span className="pv-breadcrumb-sep">/</span>
+          <span className="pv-breadcrumb-current">{project.name}</span>
+        </div>
+        <div className="pv-breadcrumb-chips">
+          {hasRepo && (
+            <Chip
+              tone="neutral"
+              label={`${project.repo ?? (project.repoPath ? "local repo" : "no repo")} · ${project.baseBranch || "main"}`}
+            />
+          )}
+          {openGates > 0 && <Chip tone="human" label={`${openGates} GATE${openGates === 1 ? "" : "S"} OPEN`} />}
+        </div>
+        <button className="pv-breadcrumb-close" onClick={onBack} aria-label="Back to projects" title="Back to projects (Esc)">✕</button>
+      </div>
       {editing ? (
         <div className="projview-edit">
           <input className="qx-input" value={name} onChange={(e) => setName(e.target.value)} />
@@ -1821,7 +1949,6 @@ export function ProjectView({
       ) : (
         <div className="projview-head">
           <div className="projview-head-main">
-            <h2>{project.name}</h2>
             <p>{project.goal}</p>
             {project.instructions && (
               <button
@@ -1915,6 +2042,8 @@ export function ProjectView({
               project={project}
               onApprovalLevelChange={(v) => void onApprovalLevelChange(v)}
               onChange={(patch) => updateProject(project.id, patch)}
+              autoOpenAutonomy={autoOpenAutonomy}
+              onAutonomyOpenConsumed={onAutonomyOpenConsumed}
             />
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectFlyAccount project={project} onChange={(id) => updateProject(project.id, { flyCredentialId: id })} />
@@ -2039,13 +2168,31 @@ export function ProjectView({
 
       <div className="projview-lens">
         <div className="lens-switch">
-          {(["kanban", "roadmap", "context", "coverage", "archived"] as const).map((id) => (
+          {(
+            [
+              "kanban",
+              // Rules (Automation Builder, TASK 07) only makes sense over the
+              // new board's mental model — hidden on the legacy 6-column
+              // board, same gating as MomentumBoard itself below.
+              ...(project.newBoardEnabled ? (["rules"] as const) : []),
+              // Keys & Budget ("Boundaries", TASK 20) — governance is a
+              // project-wide concept independent of which board a project
+              // uses, so unlike Rules this is never gated on newBoardEnabled.
+              "keys",
+              "roadmap",
+              "context",
+              "coverage",
+              "feed",
+              "health",
+              "archived",
+            ] as const
+          ).map((id) => (
             <button
               key={id}
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : "Archived"}
+              {id === "kanban" ? "Kanban" : id === "rules" ? "Rules" : id === "keys" ? "Keys" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "feed" ? "Feed" : id === "health" ? "Health" : "Archived"}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
@@ -2067,12 +2214,21 @@ export function ProjectView({
         )}
       </div>
 
-      {lens === "roadmap" ? (
-        <RoadmapDocView project={project} />
+      {lens === "rules" && project.newBoardEnabled ? (
+        <RulesTab project={project} />
+      ) : lens === "keys" ? (
+        <KeysBudgetPanel project={project} runs={runs} />
+      ) : lens === "roadmap" ? (
+        <RoadmapDocView project={project} tasks={tasks} />
       ) : lens === "coverage" ? (
         <ProjectQualityView project={project} />
       ) : lens === "context" ? (
         <ProjectContextView project={project} />
+      ) : lens === "feed" ? (
+        <ActivityFeed project={project} tasks={tasks} now={now} onOpenTask={onOpenTask} />
+      ) : lens === "health" ? (
+        <BoardHealth project={project} tasks={tasks} now={now} onOpenTask={onOpenTask} />
+
       ) : lens === "archived" ? (
         <div className="projview-archived">
           {archivedTasks.length === 0 ? (
@@ -2106,6 +2262,18 @@ export function ProjectView({
         <div className="projview-timeline">
           <TimelineView now={now} onOpenTask={onOpenTask} projectId={project.id} hideHeader />
         </div>
+      ) : project.newBoardEnabled ? (
+        <NewBoardView
+          project={project}
+          tasks={tasks}
+          runs={runs}
+          queue={queue}
+          features={features}
+          fleet={fleet}
+          now={now}
+          onOpenTask={onOpenTask}
+          onOpenFeed={() => setLens("feed")}
+        />
       ) : (
       <BoardDnd.Provider value={{ drag, begin: setDrag, end: () => { setDrag(null); setDropBeforeId(null); }, dropBeforeId }}>
       <div className={"kb-cols kb-cols-6" + (drag ? " kb-dragging" : "")}>

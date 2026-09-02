@@ -32,6 +32,11 @@ ALTER TABLE workspace_secrets ADD COLUMN IF NOT EXISTS base_url text;
 -- breaker: a key benched because something is wrong with it must not come back
 -- on its own after a restart.
 ALTER TABLE workspace_secrets ADD COLUMN IF NOT EXISTS paused jsonb;
+-- Governance flag (SecretMeta.orgOwned) — never inferred, an operator's own
+-- correction. Defaults false so pre-existing rows read as "not org-owned"
+-- (the honest default: nothing provisioned a key without the operator typing
+-- it, so there's no signal to have inferred true from anyway).
+ALTER TABLE workspace_secrets ADD COLUMN IF NOT EXISTS org_owned boolean NOT NULL DEFAULT false;
 -- Backfill the credential id for rows created before named credentials existed:
 -- the default credential's id is its provider.
 UPDATE workspace_secrets SET id = provider WHERE id IS NULL;
@@ -65,6 +70,7 @@ interface Row {
   last4: string;
   base_url: string | null;
   paused: { at: number; by: string; reason: string } | null;
+  org_owned: boolean;
   updated_at: string;
   updated_by: string;
 }
@@ -78,6 +84,7 @@ const toRecord = (r: Row): SecretRecord => ({
   last4: r.last4,
   baseUrl: r.base_url,
   paused: r.paused,
+  orgOwned: r.org_owned,
   updatedAt: Number(r.updated_at),
   updatedBy: r.updated_by,
 });
@@ -103,11 +110,11 @@ export class PostgresSecretStore implements SecretStore {
   async put(r: SecretRecord): Promise<void> {
     const pool = await this.db();
     await pool.query(
-      `INSERT INTO workspace_secrets(workspace_id,id,name,provider,ciphertext,last4,updated_at,updated_by,base_url,paused)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      `INSERT INTO workspace_secrets(workspace_id,id,name,provider,ciphertext,last4,updated_at,updated_by,base_url,paused,org_owned)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        ON CONFLICT(workspace_id,id)
-       DO UPDATE SET name=$3, provider=$4, ciphertext=$5, last4=$6, updated_at=$7, updated_by=$8, base_url=$9, paused=$10`,
-      [r.workspaceId, r.id, r.name, r.provider, r.ciphertext, r.last4, r.updatedAt, r.updatedBy, r.baseUrl ?? null, r.paused ? JSON.stringify(r.paused) : null],
+       DO UPDATE SET name=$3, provider=$4, ciphertext=$5, last4=$6, updated_at=$7, updated_by=$8, base_url=$9, paused=$10, org_owned=$11`,
+      [r.workspaceId, r.id, r.name, r.provider, r.ciphertext, r.last4, r.updatedAt, r.updatedBy, r.baseUrl ?? null, r.paused ? JSON.stringify(r.paused) : null, r.orgOwned ?? false],
     );
   }
 

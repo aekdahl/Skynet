@@ -13,7 +13,7 @@ import type { Store } from "../store/store.js";
 import { MemoryGithubStore } from "./memory.js";
 import { GitHubProvider } from "./provider.js";
 import { evaluateSafety } from "./safety.js";
-import type { GitProvider, GithubConnectionStore, GithubIssue, MergeResult, PrStatus, PushRequest, PushResult } from "./types.js";
+import type { GitCommitAttribution, GitProvider, GithubConnectionStore, GithubIssue, MergeResult, PrStatus, PushRequest, PushResult } from "./types.js";
 
 export class GithubService {
   constructor(
@@ -151,7 +151,7 @@ export class GithubService {
    * pinned a specific GitHub account (`githubCredentialId` — a stored `github`
    * PAT credential), open that PAT so its repos push to / clone from / bill under
    * THAT account (business vs personal). Otherwise the workspace's default
-   * connection token. Central so clone/push/PR/repo-list all agree.
+   * connection token. Central so clone/push/PR/merge/repo-list all agree.
    */
   private async projectToken(workspaceId: string, githubCredentialId: string | null | undefined): Promise<string> {
     if (githubCredentialId) {
@@ -198,9 +198,19 @@ export class GithubService {
     return this.provider.getFile(await this.projectToken(workspaceId, githubCredentialId), repo, path);
   }
   /** Commit an updated repo file (single-file Contents-API commit) — the repo-file
-   *  write-back path (flip a checklist item when a task completes/reopens). */
-  async commitRepoFile(workspaceId: string, repo: string, path: string, content: string, sha: string, message: string, githubCredentialId?: string | null): Promise<void> {
-    await this.provider.putFile(await this.projectToken(workspaceId, githubCredentialId), repo, path, content, sha, message);
+   *  write-back path (flip a checklist item when a task completes/reopens), and
+   *  (with `attribution` set) the TASK 28 roadmap-proposal apply path. */
+  async commitRepoFile(
+    workspaceId: string,
+    repo: string,
+    path: string,
+    content: string,
+    sha: string | undefined,
+    message: string,
+    githubCredentialId?: string | null,
+    attribution?: GitCommitAttribution,
+  ): Promise<void> {
+    await this.provider.putFile(await this.projectToken(workspaceId, githubCredentialId), repo, path, content, sha, message, attribution);
   }
 
   /** Repos a given GitHub account can bind to — a pinned credential's PAT lists
@@ -414,14 +424,26 @@ export class GithubService {
    * Merge an open PR via the API — the operator's Skynet approval IS the
    * approval. Returns the provider's result; `merged:false` when GitHub blocks it
    * (branch protection / required checks or reviews), which the caller surfaces
-   * rather than pretending the work integrated.
+   * rather than pretending the work integrated. `githubCredentialId`: the
+   * project's pinned account, same as push/PR/repo-list — a pinned project
+   * merges under ITS account regardless of the workspace default connection's
+   * state (that connection isn't even required to be ready when pinned).
    */
-  async mergePr(workspaceId: string, repo: string, prNumber: number, method: "merge" | "squash" | "rebase" = "squash"): Promise<MergeResult> {
-    const conn = await this.store.get(workspaceId);
-    const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
-    if (!conn || !ready) throw new Error("GitHub is not connected for this workspace");
-    if (conn.auth === "app" && !this.appHasCreds) throw new Error("GitHub App is not configured on the server");
-    const token = await this.resolveToken(conn);
+  async mergePr(
+    workspaceId: string,
+    repo: string,
+    prNumber: number,
+    method: "merge" | "squash" | "rebase" = "squash",
+    githubCredentialId?: string | null,
+  ): Promise<MergeResult> {
+    const pinned = !!githubCredentialId;
+    if (!pinned) {
+      const conn = await this.store.get(workspaceId);
+      const ready = conn?.connected && (conn.auth === "pat" || !!conn.installation);
+      if (!conn || !ready) throw new Error("GitHub is not connected for this workspace");
+      if (conn.auth === "app" && !this.appHasCreds) throw new Error("GitHub App is not configured on the server");
+    }
+    const token = await this.projectToken(workspaceId, githubCredentialId);
     return this.provider.mergePr(token, repo, prNumber, method);
   }
 

@@ -241,6 +241,53 @@ describe("splitProposedAction — reply / multi-action split", () => {
     expect(r.actions).toEqual([]);
     expect(r.reply).toBe(raw);
   });
+
+  it("returns no sources when the answer proposes nothing citable", () => {
+    const r = splitProposedAction("The roadmap has 3 open items: A, B, C.", ctx);
+    expect(r.sources).toEqual([]);
+  });
+});
+
+// TASK 21 — source citations ("no claim without a chip"): a trailing
+// {"sources":[...]} tag, alongside or instead of proposeActions.
+describe("splitProposedAction — source citations", () => {
+  it("parses a bare sources tag with no proposeActions, and strips it from the reply", () => {
+    const raw = 'Run r-abc123 failed with a timeout.\n{"sources":[{"kind":"run","runId":"r-abc123"}]}';
+    const r = splitProposedAction(raw, ctx);
+    expect(r.reply).toBe("Run r-abc123 failed with a timeout.");
+    expect(r.actions).toEqual([]);
+    expect(r.sources).toEqual([{ kind: "run", runId: "r-abc123" }]);
+  });
+
+  it("parses sources alongside proposeActions in the SAME trailing object", () => {
+    const raw =
+      'Autonomy tripped after 3 bad runs — want me to turn it back on?\n' +
+      JSON.stringify({
+        proposeActions: [{ kind: "set_autonomy", autonomy: true }],
+        sources: [{ kind: "breaker", projectId: "p-1" }],
+      });
+    const r = splitProposedAction(raw, ctx);
+    expect(r.actions).toHaveLength(1);
+    expect(r.sources).toEqual([{ kind: "breaker", projectId: "p-1" }]);
+  });
+
+  it("drops a source that doesn't validate (unknown kind, missing id) but keeps the rest", () => {
+    const raw =
+      "See below.\n" +
+      JSON.stringify({
+        sources: [{ kind: "commit", runId: "r-2" }, { kind: "nonsense" }, { kind: "run" }],
+      });
+    const r = splitProposedAction(raw, ctx);
+    expect(r.sources).toEqual([{ kind: "commit", runId: "r-2" }]);
+  });
+
+  it("multiple source kinds in one citation list", () => {
+    const raw =
+      "Both landed.\n" +
+      JSON.stringify({ sources: [{ kind: "run", runId: "r-1" }, { kind: "commit", runId: "r-1" }, { kind: "breaker", projectId: "p-9" }] });
+    const r = splitProposedAction(raw, ctx);
+    expect(r.sources.map((s) => s.kind)).toEqual(["run", "commit", "breaker"]);
+  });
 });
 
 // S10 — execution intents. Validated the same way as every other kind (id

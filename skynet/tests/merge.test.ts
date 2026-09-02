@@ -100,6 +100,39 @@ describe("MergeEngine", () => {
     expect(git("cat-file", "-t", "skynet/integration/payments:feature.ts").trim()).toBe("blob");
   });
 
+  // Review & Merge (Phase 15): queueFor is pure introspection over the same
+  // FIFO chain `chains` already serializes on — no new merge decision logic.
+  it("queueFor reports position 0/1 while two requests are chained, and drains as each completes", async () => {
+    git("checkout", "-b", "agent/x", "main");
+    commit("x.ts", "export const x = 1;\n", "x");
+    git("checkout", "-b", "agent/y", "main");
+    commit("y.ts", "export const y = 1;\n", "y");
+    git("checkout", "main");
+
+    const { engine, calls } = harness();
+    expect(engine.queueFor("payments")).toEqual([]);
+
+    // Enqueue synchronously, back-to-back — enqueue() itself pushes to the
+    // pending list before any git I/O runs, so both are visible immediately.
+    engine.enqueue(req("x", "agent/x"));
+    engine.enqueue(req("y", "agent/y"));
+    const snapshot = engine.queueFor("payments");
+    expect(snapshot.map((e) => ({ runId: e.runId, position: e.position }))).toEqual([
+      { runId: "x", position: 0 },
+      { runId: "y", position: 1 },
+    ]);
+    // Never reports a different project's runs.
+    expect(engine.queueFor("some-other-project")).toEqual([]);
+
+    // Two REAL, serialized git merges — well past the default 5s timeout in
+    // this environment (see the other tests' own multi-second durations).
+    await waitFor(() => calls.merged.length === 2, 30000);
+    // The shift itself happens slightly AFTER onMerged fires (process()'s own
+    // finally still has to clean up the scratch worktree first) — poll for it
+    // rather than asserting the instant calls.merged reaches 2.
+    await waitFor(() => engine.queueFor("payments").length === 0, 5000);
+  });
+
   it("serializes two merges and escalates the second as a conflict", async () => {
     // Two runs edit the same line off main → first merges clean, second conflicts.
     git("checkout", "-b", "agent/a", "main");

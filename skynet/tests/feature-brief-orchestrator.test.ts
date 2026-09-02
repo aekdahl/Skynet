@@ -157,7 +157,9 @@ describe("feature-level brief — wired into checkFeatureCompletion / openPrForF
     expect(t1Line?.verdict).toBe("approve");
     expect(t1Line?.reviewedBy).toBe("a2");
     // Usage recorded on ONLY t1's run — spend still sums (t2's null usage excluded, not zeroed).
-    expect(brief!.spend).toEqual({ inputTokens: 800, outputTokens: 180, costUsd: 0.03, turns: 3, durationMs: 4500 });
+    expect(brief!.spend).toEqual({ cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      inputTokens: 800, outputTokens: 180, costUsd: 0.03, turns: 3, durationMs: 4500 });
     expect(brief!.evidenceSummary).toContain("All 1 reviewed task(s) approved by their reviewing agent.");
     expect(brief!.narrative).toBe("Ships a batched rate-limiting feature across the API layer.");
     // Grounded on the real combined diff, not a description of it.

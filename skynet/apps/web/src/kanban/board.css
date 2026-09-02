@@ -1,0 +1,234 @@
+/* ─── Momentum Board (Phase 4 — TASK 05) ────────────────────────────────────
+   Layout + card styles for the new 4-column kanban view. Tokens only — every
+   color/spacing/radius value here is one of styles.css's --ak-* tokens (see
+   kanban.css's own header comment); no new one-off colors. Classes are
+   prefixed `mb-` (Momentum Board) to stay distinct from both this app's
+   existing `.kb-*` board and the `ak-*` primitive library it's built from.
+*/
+
+/* ── Card entrance / column-move animation ─────────────────────────────── */
+/* A card mounts fresh in its DOM parent every time it moves to a different
+   column (React remounts on a key/parent change) — so this single mount
+   animation IS the "moved between columns" animation the spec asks for,
+   without a separate stateful diff/tracker. A card that merely re-renders in
+   the SAME column (an unrelated WS delta) is untouched — React only remounts
+   on an actual list-membership change. */
+@keyframes mb-card-enter {
+  from { opacity: 0; translate: 0 6px; }
+  to { opacity: 1; translate: 0 0; }
+}
+.mb-card { animation: mb-card-enter 220ms ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .mb-card { animation: none; }
+}
+
+/* ── Automation pill ────────────────────────────────────────────────────── */
+.mb-pill {
+  display: flex;
+  align-items: center;
+  gap: var(--ak-sp-8);
+  padding: var(--ak-sp-8) var(--ak-sp-12);
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-pill);
+  background: var(--ak-surface-1);
+  width: fit-content;
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .03em;
+  color: var(--ak-text-secondary);
+}
+.mb-pill-stat { color: var(--ak-text-primary); }
+.mb-pill-sep { color: var(--ak-text-faint); }
+.mb-pill-hand { color: var(--ak-human); }
+.mb-pill-skel { width: 220px; }
+
+/* ── Board / columns ────────────────────────────────────────────────────── */
+.mb-board { display: flex; flex-direction: column; gap: var(--ak-sp-16); }
+.mb-cols {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--ak-gap-card);
+  align-items: start;
+}
+.mb-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--ak-surface-0);
+  border: 1px solid var(--ak-border-subtle);
+  border-radius: var(--ak-radius-panel);
+  overflow: hidden;
+}
+
+/* TASK 13 hardening — below ~1100px the 4-up grid has no room to breathe
+   (each column was squishing toward 0 width, per .mb-col's own min-width: 0).
+   Switch to a horizontally-scrolling row holding 3 columns' worth of width;
+   the 4th is one swipe/scroll away instead of illegibly squeezed in. */
+@media (max-width: 1100px) {
+  .mb-cols {
+    display: flex;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    padding-bottom: var(--ak-sp-6);
+  }
+  .mb-col {
+    flex: 0 0 calc((100% - 2 * var(--ak-gap-card)) / 3);
+    scroll-snap-align: start;
+  }
+}
+
+/* Column indicator bars — one visual language per bucket. */
+.mb-col-indicator { height: 4px; position: relative; background: var(--ak-surface-1); }
+.mb-col-indicator-bar { display: block; width: 100%; height: 100%; }
+.mb-col-indicator-dashed {
+  height: 0;
+  border-top: 2px dashed var(--ak-machine);
+  margin-top: 2px;
+}
+.mb-col-indicator-human { background: var(--ak-human); }
+/* .ak-sweep-bar (kanban.css) supplies the in-flight lime gradient + motion. */
+.mb-sparkline {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 100%;
+  padding: 0 var(--ak-sp-6);
+}
+.mb-sparkline-bar {
+  flex: 1;
+  min-width: 2px;
+  background: var(--ak-machine-deep);
+  border-radius: 1px 1px 0 0;
+}
+
+.mb-col-head {
+  display: flex;
+  align-items: center;
+  gap: var(--ak-sp-6);
+  padding: var(--ak-sp-12) var(--ak-pad-column);
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ak-text-secondary);
+}
+.mb-col-hint { color: var(--ak-text-faint); font-size: 10px; cursor: help; }
+.mb-col-count {
+  margin-left: auto;
+  color: var(--ak-text-faint);
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.mb-col-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-gap-card);
+  padding: 0 var(--ak-pad-column) var(--ak-pad-column);
+  min-height: 40px;
+}
+.mb-col-empty {
+  font-size: 12px;
+  color: var(--ak-text-faint);
+  padding: var(--ak-sp-8) 0;
+}
+
+/* ── Card base ──────────────────────────────────────────────────────────── */
+.mb-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-6);
+  padding: var(--ak-pad-card);
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-card);
+  background: var(--ak-surface-1);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+button.mb-card { width: 100%; }
+/* TASK 13 hardening — the shared card-hover treatment: border goes
+   machine-tinted, the surface lightens ~2%, a lift shadow, 120ms. Same
+   values as gv-card's (gravity.css) and mb-detail-subtask's
+   (task-detail.css) — one hard rule from the design handoff, not a reusable
+   class, so it stays inline per file the same way every other :hover/
+   :focus-visible override in this feature area already does. */
+.mb-card {
+  transition: border-color var(--motion-fast), background-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+.mb-card:hover {
+  border-color: color-mix(in oklch, var(--ak-machine), transparent 55%);
+  background-color: color-mix(in oklch, white, transparent 98%);
+  box-shadow: var(--ak-shadow-lift);
+}
+.mb-card:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+@media (prefers-reduced-motion: reduce) {
+  .mb-card { transition: none; }
+}
+.mb-card-title { font-size: 13px; font-weight: 500; color: var(--ak-text-primary); }
+.mb-card-desc {
+  font-size: 12px;
+  color: var(--ak-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.mb-card-meta-row { display: flex; align-items: center; gap: var(--ak-sp-6); flex-wrap: wrap; }
+.mb-card-branch { font-size: 10.5px; color: var(--ak-text-faint); }
+.mb-card-landed-time { margin-left: auto; font-size: 10.5px; color: var(--ak-text-faint); }
+
+/* Draft/intake: shared left-accent primitive (kanban.css .ak-intake-accent). */
+.mb-card-draft { border-left-width: 2px; }
+
+/* Held: dimmed + a one-line explanation of why. */
+.mb-card-held { opacity: .72; }
+.mb-held-note {
+  font-size: 10.5px;
+  color: var(--ak-text-faint);
+  font-family: var(--ak-font-mono);
+}
+
+/* In-flight focus: slightly raised, lime-tinted border. */
+.mb-card-inflight { border-color: color-mix(in oklch, var(--ak-machine), transparent 65%); }
+
+/* Stalled: amber inset panel below the card body. The OUTER .mb-card isn't
+   itself clickable here (the clickzone below is) — no hover feedback on it. */
+.mb-card-stalled { cursor: default; padding: 0; overflow: hidden; }
+.mb-card-stalled:hover { border-color: var(--ak-border); background-color: transparent; box-shadow: none; }
+.mb-card-clickzone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-6);
+  width: 100%;
+  padding: var(--ak-pad-card);
+  border: none;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color var(--motion-fast);
+}
+.mb-card-clickzone:hover { background-color: color-mix(in oklch, var(--ak-machine), transparent 96%); }
+.mb-card-clickzone:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+@media (prefers-reduced-motion: reduce) {
+  .mb-card-clickzone { transition: none; }
+}
+.mb-stall-panel {
+  display: flex;
+  align-items: center;
+  gap: var(--ak-sp-8);
+  padding: var(--ak-sp-8) var(--ak-pad-card);
+  background: color-mix(in oklch, var(--ak-warn), transparent 90%);
+  border-top: 1px solid color-mix(in oklch, var(--ak-warn), transparent 60%);
+}
+.mb-stall-copy { flex: 1; min-width: 0; font-size: 11px; color: var(--ak-warn); }
+.mb-stall-nudge { flex: none; }
+
+/* Landed: auto-archived styling, machine-deep accent. */
+.mb-card-landed { opacity: .85; border-color: color-mix(in oklch, var(--ak-machine-deep), transparent 70%); }

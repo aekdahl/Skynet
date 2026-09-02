@@ -110,3 +110,36 @@ describe("diff-review gate — fixed path-policy list always reads as high risk"
     expect(item.flags).toEqual([]);
   });
 });
+
+// A real commit can legitimately land with `stat.files.length === 0`:
+// commitAll commits whenever the working tree differs from the branch's
+// current tip, but diffStat then compares against `baseRef` — if that
+// comparison's merge-base already carries an equivalent change (the same
+// fix landed on base from elsewhere while this run was in flight, or a
+// retried run's branch already had it), the diff against base is empty even
+// though a real commit exists. Reported live against a comment-only fix
+// that had already been applied to base by the time the run finished — the
+// card's generic "Approve to integrate" phrasing read as a normal pending
+// change, giving no hint that approving would be a no-op.
+describe("diffReviewWhy — a real commit that nets to zero files vs base", () => {
+  it("gets its own honest copy instead of the normal stat phrasing", async () => {
+    const { diffReviewWhy } = await import("../apps/server/src/orchestrator.js");
+    const why = diffReviewWhy("agent/r1", { add: 0, del: 0, files: [] }, []);
+    expect(why).toMatch(/real commit landed/i);
+    expect(why).toMatch(/identical to the current base/i);
+    expect(why).toMatch(/no-op merge/i);
+    expect(why).not.toMatch(/0\+\/0-/); // never the misleading normal stat line
+  });
+
+  it("still reads as a normal pending change once there's at least one file", async () => {
+    const { diffReviewWhy } = await import("../apps/server/src/orchestrator.js");
+    const why = diffReviewWhy("agent/r1", { add: 3, del: 1, files: ["src/x.ts"] }, []);
+    expect(why).toBe("Finished on agent/r1 — 3+/1- across 1 file(s). Approve to integrate.");
+  });
+
+  it("still appends the requires-human-look note on a zero-file diff (defensive — globs come from stat.files, so this never fires alongside an empty file list in practice)", async () => {
+    const { diffReviewWhy } = await import("../apps/server/src/orchestrator.js");
+    const why = diffReviewWhy("agent/r1", { add: 0, del: 0, files: [] }, ["migrations/**"]);
+    expect(why).toMatch(/Touches migrations\/\*\* — always needs a human look/);
+  });
+});

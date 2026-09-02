@@ -8,7 +8,9 @@ import {
   fmtElapsed,
   fmtWait,
   heartbeatSecs,
+  isAutonomyPaused,
   KIND_META,
+  fmtCacheHitRate,
   modName,
   openQueue,
   planDone,
@@ -73,6 +75,10 @@ function fmtUsage(u: TaskRun["usage"]): string | null {
   const parts = [`${tok(u.inputTokens)}→${tok(u.outputTokens)} tok`];
   if (u.costUsd != null) parts.push(`$${u.costUsd < 0.01 ? u.costUsd.toFixed(4) : u.costUsd.toFixed(2)}`);
   if (u.turns) parts.push(`${u.turns} turns`);
+  // The split, not the total, is what says whether spend is a caching problem
+  // or a volume one — see cacheHitRate.
+  const cached = fmtCacheHitRate(u);
+  if (cached) parts.push(cached);
   return parts.join(" · ");
 }
 
@@ -115,7 +121,10 @@ export function TaskDetail({
   } = useStore();
   const confirm = useConfirm();
   const choice = useChoice();
-  const q = openQueue(queue).find((it) => it.runId === agent.id);
+  // Excludes an `autonomy-paused` notice — it's a project-level circuit-breaker
+  // trip, not something this run/agent could act on, so it shouldn't show up
+  // in this run's own decision bar as if Reassign/Stop applied to it.
+  const q = openQueue(queue).find((it) => it.runId === agent.id && !isAutonomyPaused(it));
   // The backing task carries the operator's brief AND the autonomous triage
   // metadata (assessment note + duration estimate) — surface both here so
   // opening a run detail shows what the fleet decided during triage, not just
@@ -399,7 +408,7 @@ export function TaskDetail({
             </span>
           )}
           <span>{fmtElapsed(agent, now)}</span>
-          {fmtUsage(agent.usage) && <span className="usage-chip mono" title="Tokens · cost · turns reported by the agent">{fmtUsage(agent.usage)}</span>}
+          {fmtUsage(agent.usage) && <span className="usage-chip mono" title={"Tokens · cost · turns reported by the agent. “cached” is the share of input served from cache — a low number means something is invalidating the prompt prefix, and fresh input costs ~10x a cache read."}>{fmtUsage(agent.usage)}</span>}
           {agent.status === "done" ? (
             <span className="hb hb-done">♥ finished</span>
           ) : (

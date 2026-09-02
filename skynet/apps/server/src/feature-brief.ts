@@ -46,16 +46,25 @@ export function parseFeatureNarrative(reply: string): string | null {
 function sumUsage(list: Usage[]): Usage | null {
   if (list.length === 0) return null;
   let inputTokens = 0, outputTokens = 0, turns = 0;
+  // Summed too: a feature-level total that dropped the cache split would
+  // reintroduce exactly the blind spot this change removes.
+  let cacheReadTokens = 0, cacheWriteTokens = 0;
   let costUsd = 0, sawCost = false;
   let durationMs = 0, sawDuration = false;
   for (const u of list) {
     inputTokens += u.inputTokens;
     outputTokens += u.outputTokens;
     turns += u.turns;
+    // `?? 0` is load-bearing, not defensive noise: a Usage recorded before the
+    // tiers existed has these undefined, and `0 + undefined` is NaN — which
+    // then propagates silently through the whole spend rollup. A missing number
+    // is recoverable; a NaN masquerading as a total is not.
+    cacheReadTokens += u.cacheReadTokens ?? 0;
+    cacheWriteTokens += u.cacheWriteTokens ?? 0;
     if (u.costUsd != null) { costUsd += u.costUsd; sawCost = true; }
     if (u.durationMs != null) { durationMs += u.durationMs; sawDuration = true; }
   }
-  return { inputTokens, outputTokens, turns, costUsd: sawCost ? costUsd : null, durationMs: sawDuration ? durationMs : null };
+  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, turns, costUsd: sawCost ? costUsd : null, durationMs: sawDuration ? durationMs : null };
 }
 
 /**

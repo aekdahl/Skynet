@@ -22,7 +22,7 @@
 //   • The bot token is a secret — never logged. Message CONTENTS are never
 //     logged either; only the action KIND is.
 
-import { DEFAULT_WORKSPACE } from "@skynet/shared";
+import { computeDailySpend, DEFAULT_WORKSPACE } from "@skynet/shared";
 import type { Agent, Feature, HitlItem, Milestone, Project, ProviderInfo, ServerEvent, Task, TaskRun } from "@skynet/shared";
 import type {
   ConfigureRunnerRequest,
@@ -49,7 +49,10 @@ import {
   gateKeyboard,
   gateHead,
   digestText,
+  dailyDigestHtml,
+  nextDigestDelayMs,
   shippedCardHtml,
+  resolvedCardHtml,
   reviewNotice,
   completedNotice,
   inQuietHours,
@@ -157,7 +160,7 @@ export interface ControlOps {
   // confirmed before they run). Optional so minimal test fakes needn't stub them.
   transitionTask?(ws: string, taskId: string, to: Task["state"], operatorId: string): Promise<Task>;
   updateTask?(ws: string, taskId: string, patch: UpdateTaskRequest): Promise<Task>;
-  updateProject?(ws: string, id: string, patch: UpdateProjectRequest): Promise<Project>;
+  updateProject?(ws: string, id: string, patch: UpdateProjectRequest, operatorId: string): Promise<Project>;
   // Grouping / roadmap ops — mirror the shape Steward uses.
   createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature>;
   updateFeature(ws: string, featureId: string, patch: UpdateFeatureRequest): Promise<Feature>;
@@ -474,7 +477,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           summary,
           run: async () => {
             if (!operations.updateProject) throw new Error("editing projects isn't available here");
-            await operations.updateProject(ws, action.projectId!, { name: action.projectName! });
+            await operations.updateProject(ws, action.projectId!, { name: action.projectName! }, operatorId);
             return `✏️ Renamed project to "${action.projectName}".`;
           },
         };
@@ -487,7 +490,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           summary,
           run: async () => {
             if (!operations.updateProject) throw new Error("editing projects isn't available here");
-            await operations.updateProject(ws, action.projectId!, { goal: action.projectGoal ?? "" });
+            await operations.updateProject(ws, action.projectId!, { goal: action.projectGoal ?? "" }, operatorId);
             return `🎯 Updated ${project?.name ?? action.projectId}'s goal.`;
           },
         };
@@ -500,7 +503,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           summary,
           run: async () => {
             if (!operations.updateProject) throw new Error("editing projects isn't available here");
-            await operations.updateProject(ws, action.projectId!, { autonomy: action.autonomy! });
+            await operations.updateProject(ws, action.projectId!, { autonomy: action.autonomy! }, operatorId);
             return `⚙️ Autonomy ${action.autonomy ? "on" : "off"} for ${project?.name ?? action.projectId}.`;
           },
         };
@@ -513,7 +516,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           summary,
           run: async () => {
             if (!operations.updateProject) throw new Error("editing projects isn't available here");
-            await operations.updateProject(ws, action.projectId!, { status: action.projectStatus as UpdateProjectRequest["status"] });
+            await operations.updateProject(ws, action.projectId!, { status: action.projectStatus as UpdateProjectRequest["status"] }, operatorId);
             return `🏷 ${project?.name ?? action.projectId} is now ${action.projectStatus}.`;
           },
         };
@@ -1029,7 +1032,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           return;
         }
       }
-      if (!["approve", "reject", "modify", "diff", "option"].includes(decision) || !gateId) {
+      if (!["approve", "reject", "modify", "diff", "option", "remember"].includes(decision) || !gateId) {
         await ackCallback(callbackQueryId);
         return;
       }
@@ -1074,15 +1077,40 @@ export function createOwnerControl(deps: OwnerControlDeps): {
       }
 
       // ①②③ Chose a decision option — resolve with that index; the agent resumes
-      // on the selected answer.
+      // on the selected answer. An `escalation` gate has no `option` action to
+      // resolve with (deliverEscalation only understands modify/reject/reassign/
+      // dismiss) — it resolves the SAME way the web app's escalation option
+      // buttons do: `modify` with the picked text as guidance. Resolving an
+      // escalation gate with `action:"option"` here used to silently discard
+      // the pick (deliverEscalation's catch-all relaunches with empty guidance).
       if (decision === "option") {
         await ackCallback(callbackQueryId).catch(() => undefined);
         const chosen = gate.options?.[optionIndex!];
         try {
-          await operations.resolveHitl(ws, gateId, { action: "option", optionIndex }, operatorId);
+          if (gate.kind === "escalation") {
+            await operations.resolveHitl(ws, gateId, { action: "modify", guidance: chosen ?? "" }, operatorId);
+          } else {
+            await operations.resolveHitl(ws, gateId, { action: "option", optionIndex }, operatorId);
+          }
           await notify(`✅ Chose${chosen ? ` “${esc(chosen)}”` : ` option ${optionIndex! + 1}`} — the agent is resuming.`, { parse_mode: "HTML" });
         } catch (err) {
           await notify(`Couldn't submit that choice: ${(err as Error).message}`);
+        }
+        if (messageId) await editReplyMarkup(chatId, messageId).catch(() => undefined);
+        return;
+      }
+
+      // "Always allow for <project>" — the same TASK 16 write path as the web
+      // inbox's remember checkbox: an approve, plus a standing rule for this
+      // exact command (best-effort no-op server-side if it ever isn't
+      // rememberable — see Operations.rememberApproval).
+      if (decision === "remember") {
+        await ackCallback(callbackQueryId).catch(() => undefined);
+        try {
+          await operations.resolveHitl(ws, gateId, { action: "approve", remember: true }, operatorId);
+          await notify("✅ Approved — and remembered as a standing allowance for this project.");
+        } catch (err) {
+          await notify(`Couldn't approve gate ${gateId}: ${(err as Error).message}`);
         }
         if (messageId) await editReplyMarkup(chatId, messageId).catch(() => undefined);
         return;
@@ -1252,6 +1280,11 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
   // A run's live decision card (message id), so completion edits it in place into
   // "✅ Shipped" instead of stacking a separate line under it.
   const runCard = new Map<string, number>();
+  // A gate's live decision card (message id + its run, for name resolution),
+  // so RESOLUTION — from either channel, Telegram tap or the web inbox —
+  // edits it in place into "✅ Approved by you · 3:42 PM" instead of leaving
+  // stale buttons behind. See the `hitl.resolved` case in `handler` below.
+  const gateCard = new Map<string, { messageId: number; runId: string }>();
 
   // ── Outbound: push workspace events to the owner ──────────────────────────
   // Notifications lead with human names — a run's task title + its project — not
@@ -1296,13 +1329,16 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     });
     if (!decision.send) return;
 
+    const names = await nameOf(it.runId);
+    const link = linkFor(it.runId);
     const opts: NotifyOpts = { parse_mode: "HTML" };
-    if (config.telegramControl) opts.reply_markup = gateKeyboard(it);
-    const sent = await notify(decisionCardHtml(it, await nameOf(it.runId), config.telegramControl, linkFor(it.runId)), opts);
+    if (config.telegramControl) opts.reply_markup = gateKeyboard(it, names.project, link);
+    const sent = await notify(decisionCardHtml(it, names, config.telegramControl, link), opts);
     if (sent.messageId) {
       // A reply to this card → "request changes"; completion edits it in place.
       if (config.telegramControl) control.noteCard(sent.messageId, it.id, it.runId);
       runCard.set(it.runId, sent.messageId);
+      gateCard.set(it.id, { messageId: sent.messageId, runId: it.runId });
     }
   };
 
@@ -1326,6 +1362,21 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
   const handler = (event: ServerEvent): void => {
     if (event.type === "hitl.raised") {
       void announceGate(event.item);
+    } else if (event.type === "hitl.resolved") {
+      // Fires on EVERY resolution, whichever channel decided it (Telegram tap
+      // or the web inbox) — resolveHitl doesn't discriminate. This is the one
+      // handler that closes both gaps at once: a Telegram-tapped card used to
+      // just lose its buttons + get a separate "Gate X approved." line; a
+      // web-resolved gate left a Telegram card sitting there with LIVE, stale
+      // buttons until the run happened to complete. Both now edit the same
+      // card in place, in real time, from either origin.
+      const card = gateCard.get(event.id);
+      if (!card) return;
+      gateCard.delete(event.id);
+      void (async () => {
+        const names = await nameOf(card.runId);
+        await editText(card.messageId, resolvedCardHtml(names, event.resolution));
+      })();
     } else if (event.type === "run.status" && event.status === "review") {
       announceReview(event.runId);
     } else if (event.type === "run.completed") {
@@ -1411,4 +1462,53 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
   };
 
   void loop();
+
+  // ── Scheduled daily digest ──────────────────────────────────────────────
+  // Distinct from the on-demand /inbox: fires unprompted at a fixed local
+  // hour (default 18:00 — SKYNET_TELEGRAM_DIGEST_HOUR; an out-of-range value
+  // disables it). Self-rescheduling `setTimeout` rather than `setInterval`,
+  // so DST / a missed tick can never drift the fire time — each run computes
+  // the next 18:00 fresh off the real clock. `.unref()` so it never keeps the
+  // process alive on its own, matching every other sweep in this codebase.
+  const runDigest = async (): Promise<void> => {
+    try {
+      const [hitl, runs, projects] = await Promise.all([
+        operations.listHitl(ws),
+        operations.listRuns(ws),
+        operations.listProjects(ws),
+      ]);
+      const runName = new Map(runs.map((r) => [r.id, r.name || r.id]));
+      const gates = hitl
+        .filter((h) => !h.resolvedAt)
+        .sort((a, b) => a.raisedAt - b.raisedAt) // longest-waiting first → "needs you most"
+        .map((g) => ({ head: gateHead(g), run: runName.get(g.runId) ?? g.title }));
+      const running = runs.filter((r) => r.status === "running" || r.status === "waiting").length;
+      const done = runs.filter((r) => r.status === "done").length;
+      const now = Date.now();
+      let spentUsd = 0;
+      let capUsd = 0;
+      let anyCap = false;
+      for (const p of projects) {
+        spentUsd += computeDailySpend(runs, p.id, now).spentUsd;
+        if (p.dailyBudgetUsd != null) {
+          capUsd += p.dailyBudgetUsd;
+          anyCap = true;
+        }
+      }
+      await notify(
+        dailyDigestHtml({ hour: config.telegramDigestHour, gates, running, done, spentUsd, capUsd: anyCap ? capUsd : null }),
+        { parse_mode: "HTML" },
+      );
+    } catch (err) {
+      log(`daily digest failed: ${(err as Error).message}`);
+    }
+  };
+  const scheduleDigest = (): void => {
+    const hour = config.telegramDigestHour;
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) return; // disabled
+    setTimeout(() => {
+      void runDigest().finally(scheduleDigest); // always reschedule for the next day
+    }, nextDigestDelayMs(hour, new Date())).unref();
+  };
+  scheduleDigest();
 }

@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { GithubService } from "../apps/server/src/github/service.js";
 import { MemoryGithubStore } from "../apps/server/src/github/memory.js";
 import { resetMasterKeyCache } from "../apps/server/src/secrets/crypto.js";
+import { secretService } from "../apps/server/src/secrets/index.js";
 import type { GitProvider, PushRequest } from "../apps/server/src/github/types.js";
 import type { GithubRepo } from "@skynet/shared";
 
@@ -114,6 +115,39 @@ describe("GitHub PAT auth", () => {
     expect(fake.lastMergeToken).toBe("github_pat_SECRET1234");
     expect(fake.lastMergeNumber).toBe(7);
     expect(fake.lastMergeMethod).toBe("squash");
+  });
+
+  it("merges a PR with the PROJECT's pinned account's token, not the workspace default (regression: mergePr was the one GitHub call site that didn't thread githubCredentialId — push/PR/prStatus/clone/create/listRepoOwners already did)", async () => {
+    const fake = new FakeProvider();
+    const svc = new GithubService(new MemoryGithubStore(), fake, false);
+    // Workspace default connection: a PERSONAL PAT.
+    await svc.connectViaPat("ws4", "github_pat_PERSONAL0000");
+    // A separately pinned ORG account, stored as a named credential — this is
+    // what a project's `githubCredentialId` points at.
+    const cred = await secretService.createCredential("ws4", "github", "Org account", "github_pat_ORGACCOUNT01", "op", 1);
+
+    const res = await svc.mergePr("ws4", "org/repo", 9, "squash", cred.id);
+    expect(res.merged).toBe(true);
+    expect(fake.lastMergeToken).toBe("github_pat_ORGACCOUNT01"); // the pinned account's PAT, not the personal default
+  });
+
+  it("mergePr with no pinned credential falls back to the workspace default, exactly as before", async () => {
+    const fake = new FakeProvider();
+    const svc = new GithubService(new MemoryGithubStore(), fake, false);
+    await svc.connectViaPat("ws5", "github_pat_SECRET1234");
+
+    await svc.mergePr("ws5", "octocat/repo", 7, "squash", null);
+    expect(fake.lastMergeToken).toBe("github_pat_SECRET1234");
+  });
+
+  it("mergePr with a pinned credential doesn't require the WORKSPACE's own GitHub connection to be ready", async () => {
+    const fake = new FakeProvider();
+    const svc = new GithubService(new MemoryGithubStore(), fake, false); // never connected at all
+    const cred = await secretService.createCredential("ws6", "github", "Org account", "github_pat_ORGACCOUNT02", "op", 1);
+
+    const res = await svc.mergePr("ws6", "org/repo", 3, "squash", cred.id);
+    expect(res.merged).toBe(true);
+    expect(fake.lastMergeToken).toBe("github_pat_ORGACCOUNT02");
   });
 
   it("rejects an invalid token (nothing stored)", async () => {

@@ -1,7 +1,15 @@
 // Phase 2: the /inbox digest, quiet hours, and the live "shipped" card copy.
 // Pure builders + the /inbox handler (read-only, works with control OFF).
 import { describe, it, expect, vi } from "vitest";
-import { digestText, shippedCardHtml, inQuietHours, parseQuietHours } from "../apps/server/src/telegram/notices.js";
+import {
+  digestText,
+  shippedCardHtml,
+  resolvedCardHtml,
+  dailyDigestHtml,
+  nextDigestDelayMs,
+  inQuietHours,
+  parseQuietHours,
+} from "../apps/server/src/telegram/notices.js";
 import { decide } from "../apps/server/src/telegram/commands.js";
 import { createOwnerControl, type ControlOps, type ControlOrch } from "../apps/server/src/telegram/index.js";
 
@@ -45,6 +53,86 @@ describe("shippedCardHtml", () => {
     expect(shippedCardHtml({ run: "rate-limiter", project: "A & B" })).toBe(
       "✅ <b>Shipped</b> · A &amp; B\nrate-limiter",
     );
+  });
+});
+
+// The gap closed by this task: a Telegram card used to just lose its buttons
+// on resolution ("Gate X approved." arrived as a SEPARATE line); this is what
+// edits the card itself in place — fired identically whether the resolution
+// came from a Telegram tap or the web inbox (see index.ts's `hitl.resolved`
+// handler, which is the only thing that decides WHEN to call this).
+describe("resolvedCardHtml", () => {
+  it("reads 'you' for a Telegram-originated resolution — no name directory exists for the single-owner chat id", () => {
+    const html = resolvedCardHtml({ run: "rate-limiter", project: "Takeoff" }, { action: "approve", by: "telegram:111", at: new Date(2026, 0, 1, 15, 42).getTime() });
+    expect(html).toContain("✅ Approved by you");
+    expect(html).toContain("Takeoff");
+    expect(html).toContain("rate-limiter");
+    expect(html).toMatch(/3:42\s*PM/i);
+  });
+
+  it("shows a web operatorId verbatim — same as the audit trail", () => {
+    const html = resolvedCardHtml({ run: "r", project: "" }, { action: "reject", by: "jordan", at: 0 });
+    expect(html).toContain("🚫 Rejected by jordan");
+  });
+
+  it("covers every resolution action, not just approve/reject", () => {
+    expect(resolvedCardHtml({ run: "r", project: "" }, { action: "modify", by: "jordan", at: 0 })).toContain("✏️ Changes requested");
+    expect(resolvedCardHtml({ run: "r", project: "" }, { action: "option", by: "jordan", at: 0 })).toContain("✅ Answered");
+  });
+});
+
+describe("dailyDigestHtml — scheduled evening summary", () => {
+  it("names the longest-waiting gate as what needs you most, in a lime 'DIGEST · HH:00' header", () => {
+    const html = dailyDigestHtml({
+      hour: 18,
+      gates: [{ head: "Review the changes", run: "rate-limiter" }, { head: "Approve a command", run: "db-migrate" }],
+      running: 2,
+      done: 5,
+      spentUsd: 12.5,
+      capUsd: null,
+    });
+    expect(html).toContain("🟢 <b>DIGEST · 18:00</b>");
+    expect(html).toContain("Review the changes on rate-limiter needs you most.");
+    expect(html).toContain("2 runs active, 5 finished today.");
+    expect(html).toContain("2 decisions are open in total.");
+  });
+
+  it("reads plainly when nothing is waiting", () => {
+    const html = dailyDigestHtml({ hour: 18, gates: [], running: 3, done: 1, spentUsd: 0, capUsd: null });
+    expect(html).toContain("Nothing needs a decision right now.");
+    expect(html).toContain("Autonomy is running the rest without you.");
+  });
+
+  it("shows a plain spend figure with no cap set, and a mini bar once one is", () => {
+    const noCap = dailyDigestHtml({ hour: 18, gates: [], running: 0, done: 0, spentUsd: 4.5, capUsd: null });
+    expect(noCap).toContain("$4.50 spent today");
+    expect(noCap).not.toContain("▓");
+    const withCap = dailyDigestHtml({ hour: 18, gates: [], running: 0, done: 0, spentUsd: 5, capUsd: 10 });
+    expect(withCap).toContain("$5.00 of $10.00 spent today");
+    expect(withCap).toContain("▓▓▓▓▓░░░░░"); // 50% of a 10-cell bar
+  });
+
+  it("escapes dynamic gate text", () => {
+    const html = dailyDigestHtml({ hour: 18, gates: [{ head: "Review <danger>", run: "a & b" }], running: 0, done: 0, spentUsd: 0, capUsd: null });
+    expect(html).toContain("Review &lt;danger&gt;");
+    expect(html).toContain("a &amp; b");
+  });
+});
+
+describe("nextDigestDelayMs", () => {
+  it("counts down to today's occurrence when it hasn't passed yet", () => {
+    const now = new Date(2026, 0, 1, 9, 0, 0);
+    expect(nextDigestDelayMs(18, now)).toBe(9 * 60 * 60 * 1000);
+  });
+
+  it("rolls over to tomorrow once the hour has already passed", () => {
+    const now = new Date(2026, 0, 1, 20, 0, 0);
+    expect(nextDigestDelayMs(18, now)).toBe(22 * 60 * 60 * 1000);
+  });
+
+  it("fires immediately-ish (24h out) at the exact minute", () => {
+    const now = new Date(2026, 0, 1, 18, 0, 0);
+    expect(nextDigestDelayMs(18, now)).toBe(24 * 60 * 60 * 1000);
   });
 });
 
