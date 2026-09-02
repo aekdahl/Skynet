@@ -49,6 +49,7 @@ type NavKey =
   | "integrations"
   | "merges"
   | "roadmap"
+  | "workspaceRoadmap"
   | "settings"
   | "acceptance"
   | "simulation"
@@ -76,6 +77,8 @@ function activeNav(view: ViewName): NavKey | null {
       return "merges";
     case "roadmap":
       return "roadmap";
+    case "workspaceRoadmap":
+      return "workspaceRoadmap";
     case "settings":
       return "settings";
     case "acceptance":
@@ -388,6 +391,9 @@ export function OpSidebar({
         {item("Projects", ProjectsIcon, () => setView("projects"), active === "projects", anyOpenProjectRun ? "lime" : "track", monoCount(live.length))}
         {item("Fleet", FleetIcon, () => setView("fleet"), active === "fleet", busyCount > 0 ? "lime" : "track", monoCount(busyCount))}
         {item("Ready to merge", MergeIcon, () => setView("merges"), active === "merges", mergeCount > 0 ? "human" : "track", limeOutlineBadge(mergeCount))}
+        {/* TASK 32 — "six repos, one quarter": a workspace-wide roll-up over
+            every project's ROADMAP.md the operator already has access to. */}
+        {item("Roadmap Roll-up", RoadmapIcon, () => setView("workspaceRoadmap"), active === "workspaceRoadmap", "track")}
       </nav>
       <div className="op-navsec">CONFIGURE</div>
       <nav className="op-nav">

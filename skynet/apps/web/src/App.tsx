@@ -28,6 +28,7 @@ import { LoginView } from "./views/login";
 import { AcceptanceView } from "./views/acceptance";
 import { SimulationView } from "./views/simulation";
 import { RoadmapView } from "./views/roadmap";
+import { WorkspaceRoadmapView } from "./views/workspace-roadmap";
 import { AgentDetailView } from "./views/agent-detail";
 import { DesignTokensPreview } from "./views/design-tokens-preview";
 import { DecisionInboxView } from "./kanban/inbox";
@@ -47,6 +48,7 @@ export type ViewName =
   | "acceptance"
   | "simulation"
   | "roadmap"
+  | "workspaceRoadmap"
   | "agentDetail"
   | "designTokens";
 
@@ -64,6 +66,7 @@ const VIEW_LABEL: Record<string, string> = {
   acceptance: "Acceptance",
   simulation: "Simulation",
   roadmap: "Roadmap",
+  workspaceRoadmap: "Roadmap Roll-up",
   agentDetail: "Agent",
   designTokens: "Design tokens",
 };
@@ -375,6 +378,7 @@ export function App() {
             {store.loaded && view === "acceptance" && <AcceptanceView />}
             {store.loaded && view === "simulation" && <SimulationView />}
             {store.loaded && view === "roadmap" && <RoadmapView />}
+            {store.loaded && view === "workspaceRoadmap" && <WorkspaceRoadmapView />}
             {store.loaded && view === "designTokens" && <DesignTokensPreview />}
             {store.loaded && view === "task" && agent && (
               store.projects.find((p) => p.id === agent.projectId)?.newBoardEnabled ? (
