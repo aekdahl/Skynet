@@ -187,6 +187,8 @@ export function buildUsage(outputTokens: number, turns: number, durationMs: numb
   return {
     inputTokens: 0, // never reported anywhere in this protocol — see file header
     outputTokens,
+    cacheReadTokens: 0, // no caching concept in this protocol either
+    cacheWriteTokens: 0,
     costUsd: null, // credits/premium-requests, not $/token — there is no per-token price to report
     turns,
     durationMs: durationMs || null,

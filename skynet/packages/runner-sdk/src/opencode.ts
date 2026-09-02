@@ -57,10 +57,20 @@ const EXTRA = (process.env.OPENCODE_EXTRA_ARGS ?? "").split(" ").filter(Boolean)
 const mapModel = (m: string): string | undefined => (m.trim() ? m.trim() : undefined);
 
 function addUsage(ctx: ParseCtx, delta: Usage): Usage {
-  const prev = (ctx.usage as Usage | undefined) ?? { inputTokens: 0, outputTokens: 0, costUsd: null, turns: 0, durationMs: null };
+  const prev = (ctx.usage as Usage | undefined) ?? {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costUsd: null,
+    turns: 0,
+    durationMs: null,
+  };
   const next: Usage = {
     inputTokens: prev.inputTokens + delta.inputTokens,
     outputTokens: prev.outputTokens + delta.outputTokens,
+    cacheReadTokens: prev.cacheReadTokens + delta.cacheReadTokens,
+    cacheWriteTokens: prev.cacheWriteTokens + delta.cacheWriteTokens,
     costUsd: delta.costUsd == null && prev.costUsd == null ? null : (prev.costUsd ?? 0) + (delta.costUsd ?? 0),
     turns: prev.turns + 1,
     durationMs: prev.durationMs, // not reported per-step by opencode
