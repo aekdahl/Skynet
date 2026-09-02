@@ -1017,6 +1017,8 @@ export class Orchestrator {
       id: `q-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId,
+      projectId: null,
+      roadmapProposalId: null,
       kind: raise.kind,
       title: raise.title,
       why,
@@ -1479,6 +1481,8 @@ export class Orchestrator {
       id: `q-diff-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId,
+      projectId: null,
+      roadmapProposalId: null,
       kind: "diff",
       // Concise, scannable title — the run/task is shown separately in every view
       // (queue card, audit row, run header), so embedding the whole task prompt
@@ -3136,6 +3140,8 @@ export class Orchestrator {
       id: `q-${run.id}-${++this.seq}`,
       workspaceId: run.workspaceId,
       runId: run.id,
+      projectId: null,
+      roadmapProposalId: null,
       kind: "escalation",
       title:
         source === "timeout"
@@ -3220,6 +3226,8 @@ export class Orchestrator {
       id: `q-autonomy-${project.id}-${++this.seq}`,
       workspaceId: project.workspaceId,
       runId,
+      projectId: null,
+      roadmapProposalId: null,
       kind: "escalation",
       title: `Autonomy paused — ${streak.count} bad outcomes in a row`,
       why:
@@ -4372,6 +4380,8 @@ export class Orchestrator {
       id: `q-merge-${req.runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId: req.runId,
+      projectId: null,
+      roadmapProposalId: null,
       kind: "merge",
       title: "Integration failed — not a conflict",
       why: featureUp
@@ -4425,6 +4435,8 @@ export class Orchestrator {
       id: `q-merge-${req.runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId: req.runId,
+      projectId: null,
+      roadmapProposalId: null,
       kind: "merge",
       title: `Merge conflict — ${files.length} file${files.length === 1 ? "" : "s"}`,
       why: featureUp
@@ -4488,6 +4500,8 @@ export class Orchestrator {
       id: `q-verifier-${req.runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId: req.runId,
+      projectId: null,
+      roadmapProposalId: null,
       kind: "verifier",
       title: "Checks failed — merge undone",
       why: `${req.agentBranch}'s checks failed after merging; the merge commit was undone. Approve to retry the merge + checks, or reject/modify to send the agent the output as revision guidance.`,

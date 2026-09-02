@@ -291,6 +291,50 @@
 .di-audit-link { font-size: 12.5px; color: var(--ak-text-secondary); }
 .di-link-btn { background: none; border: none; padding: 0; color: var(--ak-human); font-size: 12.5px; cursor: pointer; text-decoration: underline; }
 
+/* ── roadmap_edit card (TASK 30) ──────────────────────────────────────────
+   A machine changing the roadmap becomes a governed Inbox decision — same
+   card shell as everything else, but its own body anatomy (a real diff, an
+   agent's-own-words reasoning block, two evidence panels) since nothing
+   else in the Inbox needs that shape. */
+.di-roadmap-body {
+  display: flex; flex-direction: column; gap: var(--ak-sp-10);
+  padding: var(--ak-sp-10) var(--ak-sp-12);
+  border-left: 3px solid var(--ak-human);
+  background: var(--ak-surface-0);
+  border-radius: var(--ak-radius-sm);
+}
+.di-roadmap-headline { margin: 0; font-size: 13px; color: var(--ak-text-primary); }
+
+.di-diff { display: flex; flex-direction: column; font-family: var(--ak-font-mono); font-size: 11.5px; border-radius: var(--ak-radius-sm); overflow: hidden; }
+.di-diff-line { padding: 2px var(--ak-sp-8); white-space: pre-wrap; word-break: break-word; }
+.di-diff-ctx { color: var(--ak-text-faint); }
+.di-diff-add { color: var(--ak-machine-deep); background: color-mix(in oklch, var(--ak-machine-deep), transparent 88%); }
+.di-diff-del { color: var(--ak-warn); background: color-mix(in oklch, var(--ak-warn), transparent 88%); text-decoration: line-through; text-decoration-thickness: 1px; }
+
+.di-why-label { margin: 0; font-size: 9.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ak-text-faint); }
+.di-why-body { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--ak-text-secondary); font-style: italic; }
+
+.di-panels { display: grid; grid-template-columns: 1fr 1fr; gap: var(--ak-sp-10); }
+@media (max-width: 640px) { .di-panels { grid-template-columns: 1fr; } }
+.di-panel { display: flex; flex-direction: column; gap: var(--ak-sp-6); padding: var(--ak-sp-8) var(--ak-sp-10); background: var(--ak-surface-2); border-radius: var(--ak-radius-sm); border: 1px solid var(--ak-border-subtle); }
+.di-panel-title { margin: 0; font-size: 9.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ak-text-faint); }
+.di-panel-list { margin: 0; padding-left: var(--ak-sp-16); font-size: 12px; color: var(--ak-text-secondary); }
+.di-panel-empty { margin: 0; font-size: 12px; color: var(--ak-text-faint); font-style: italic; }
+
+/* ── roadmap conflict card (TASK 30, Rule 4) ── */
+.di-conflict-pair { display: flex; flex-direction: column; gap: var(--ak-sp-8); }
+.di-conflict-side { display: flex; flex-direction: column; gap: var(--ak-sp-4); padding: var(--ak-sp-8) var(--ak-sp-10); background: var(--ak-surface-2); border-radius: var(--ak-radius-sm); border: 1px solid var(--ak-border-subtle); }
+.di-conflict-side-label { margin: 0; font-size: 9.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ak-warn); }
+.di-conflict-side-headline { margin: 0; font-size: 12.5px; color: var(--ak-text-primary); }
+.di-conflict-side-evidence { margin: 0; font-size: 11.5px; color: var(--ak-text-faint); }
+.di-conflict-note { margin: 0; font-size: 12.5px; color: var(--ak-text-secondary); }
+
+.di-rules-panel { display: flex; flex-direction: column; gap: var(--ak-sp-6); padding: var(--ak-sp-10); background: var(--ak-surface-2); border-radius: var(--ak-radius-sm); }
+.di-rule-row { display: flex; align-items: baseline; gap: var(--ak-sp-8); font-size: 11.5px; color: var(--ak-text-secondary); }
+.di-rule-dot { flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; }
+.di-rule-dot-machine { background: var(--ak-machine); }
+.di-rule-dot-human { background: var(--ak-human); }
+
 /* ── right rail ── */
 .di-side { display: flex; flex-direction: column; gap: var(--ak-sp-16); }
 .di-side-card {

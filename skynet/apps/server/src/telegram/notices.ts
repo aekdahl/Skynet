@@ -74,6 +74,7 @@ const GATE_HEAD: Partial<Record<HitlItem["kind"], string>> = {
   plan: "Review the plan",
   escalation: "A run stopped and needs help",
   verifier: "Checks failed",
+  roadmap_edit: "A roadmap edit needs your yes",
 };
 
 // A `stuck-review` escalation (orchestrator.ts's reapStuckReviews) is the one
@@ -105,6 +106,7 @@ const KIND_LABEL: Record<HitlItem["kind"], string> = {
   plan: "PLAN REVIEW",
   escalation: "NEEDS HELP",
   verifier: "CHECKS FAILED",
+  roadmap_edit: "ROADMAP EDIT · NEEDS YOUR YES",
 };
 
 /** All-caps kind label for the card's header line — "AWAITING REVIEW" for a
@@ -194,6 +196,7 @@ export function gateNotice(it: HitlItem, names: Names, control: boolean, link?: 
  * impossible to act on from a merge-conflict card.
  */
 export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, link?: string): string {
+  if (it.kind === "roadmap_edit") return roadmapEditCardHtml(it, names, control, link);
   const lines: string[] = [];
   // Kind label + run tag — the header line the operator scans first.
   lines.push(`<b>${esc(kindLabel(it))}</b>${names.project ? ` · ${esc(names.project)}` : ""} · RUN #${esc(shortRunTag(it.runId))}`);
@@ -249,6 +252,36 @@ export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, l
 }
 
 /**
+ * TASK 30 — a roadmap_edit gate's compressed Telegram card: headline + why +
+ * actions, none of the rich diff/impact/boundaries anatomy the web Inbox
+ * card renders (no live-fetch here — see HitlItem.roadmapProposalId's own
+ * doc comment for why Telegram works off the static snapshot instead). A
+ * proposal whose diff includes a deletion (`flags` carries "has_deletion",
+ * set once at raise time — Operations.raiseRoadmapEditHitl) gets NO approve
+ * action here at all, held_conflict included (Rule 4 can only fire on an
+ * overlapping REMOVED line, so a conflict always carries a deletion too) —
+ * "Open in Skynet" is the only way to actually decide one of those; a phone
+ * notification is the wrong place to bless a roadmap deletion sight-unseen.
+ */
+function roadmapEditCardHtml(it: HitlItem, names: Names, control: boolean, link?: string): string {
+  const blocked = it.flags.includes("has_deletion");
+  const lines = [`<b>${esc(KIND_LABEL.roadmap_edit)}</b>${names.project ? ` · ${esc(names.project)}` : ""}`, esc(names.run)];
+  if (it.title) lines.push(`<b>${esc(it.title)}</b>`);
+  if (it.why) lines.push(esc(it.why));
+  if (blocked) {
+    lines.push("⚠️ Removes content (or a held conflict) — review the full diff in Skynet before deciding.");
+  } else {
+    lines.push(
+      control
+        ? "Tap below — or open Skynet for the full diff, impact, and what it didn't touch."
+        : `Reply /approve ${it.id} or /reject ${it.id}, or open Skynet for the full diff.`,
+    );
+  }
+  if (link) lines.push(`<a href="${esc(link)}">Open in Skynet ↗</a>`);
+  return lines.join("\n");
+}
+
+/**
  * The inline keyboard for a gate. Pure so it's unit-testable (no client/
  * network). The gate id rides in each callback_data so a tap resolves exactly
  * the gate it was on; an `url` button (never callback_data) opens the run in
@@ -266,6 +299,24 @@ export function gateKeyboard(it: HitlItem, projectName = "", link?: string): Inl
   const openLinkRow: InlineKeyboardMarkup["inline_keyboard"] = link
     ? [[{ text: "Open the run in Skynet ↗", url: link }]]
     : [];
+
+  // TASK 30 — roadmap_edit: no run, so no "View diff"/"Request changes"
+  // machinery applies. A deletion (or held_conflict, which always carries
+  // one — see roadmapEditCardHtml's own doc comment) gets ONLY the open-link
+  // row, no approve action at all.
+  if (it.kind === "roadmap_edit") {
+    const openInSkynet: InlineKeyboardMarkup["inline_keyboard"] = link ? [[{ text: "Open in Skynet ↗", url: link }]] : [];
+    if (it.flags.includes("has_deletion")) return { inline_keyboard: openInSkynet };
+    return {
+      inline_keyboard: [
+        [
+          { text: "✅ Approve & commit", callback_data: `hitl:approve:${it.id}` },
+          { text: "⛔ Reject", callback_data: `hitl:reject:${it.id}` },
+        ],
+        ...openInSkynet,
+      ],
+    };
+  }
 
   // A decision (AskUserQuestion) is a SELECTION, not an approve/reject gate — give
   // it one tappable button PER option (numbered to match the message body) so it's

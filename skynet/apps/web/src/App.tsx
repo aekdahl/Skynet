@@ -364,7 +364,7 @@ export function App() {
               <QueueView selectedIdx={selIdx} onSelectIdx={setSelIdx} onOpen={openTask} now={now} />
             )}
             {store.loaded && view === "decisionInbox" && (
-              <DecisionInboxView onOpenTask={openTask} onOpenAudit={() => setView("audit")} now={now} />
+              <DecisionInboxView onOpenTask={openTask} onOpenProject={openProject} onOpenAudit={() => setView("audit")} now={now} />
             )}
             {store.loaded && view === "audit" && (
               <AuditView now={now} onOpenTask={openTask} />

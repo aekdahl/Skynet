@@ -39,6 +39,7 @@ const KIND_CHIP: Record<Decision["kind"], string> = {
   plan: "PLAN",
   escalation: "ESCALATION",
   verifier: "VERIFIER",
+  roadmap_edit: "ROADMAP EDIT",
 };
 
 interface Action {
